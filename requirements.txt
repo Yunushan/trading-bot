@@ -1,0 +1,8 @@
+
+python-binance>=1.0.19
+PyQt6>=6.5
+pandas>=2.0
+numpy>=1.25
+requests>=2.31
+# Optional technical analysis library; project runs without it
+pandas-ta>=0.3.14b0
