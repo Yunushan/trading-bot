@@ -1,11 +1,45 @@
 
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 from datetime import datetime
+from collections import deque
 import time
-import threading, requests
+import threading
+import requests
 
 import pandas as pd
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
+
+class _SimpleRateLimiter:
+    """Thread-safe sliding window limiter for REST requests."""
+
+    def __init__(self, max_per_minute: int | None = None):
+        self._lock = threading.Lock()
+        self._events = deque()
+        self.set_limit(max_per_minute if max_per_minute is not None else 0)
+
+    def set_limit(self, max_per_minute: int | None) -> None:
+        limit = int(max_per_minute or 0)
+        with self._lock:
+            self.max_per_minute = max(0, limit)
+            self._events.clear()
+
+    def acquire(self) -> None:
+        if self.max_per_minute <= 0:
+            return
+        while True:
+            with self._lock:
+                now = time.time()
+                window = now - 60.0
+                events = self._events
+                while events and events[0] <= window:
+                    events.popleft()
+                if len(events) < self.max_per_minute:
+                    events.append(now)
+                    return
+                sleep_for = max(events[0] + 60.0 - now, 0.0)
+            time.sleep(min(sleep_for if sleep_for > 0 else 0.05, 1.0))
 
 class BinanceWrapper:
 
@@ -79,7 +113,10 @@ class BinanceWrapper:
             msg = str(e)
             if "-4046" in msg or "No need to change margin type" in msg:
                 assume_ok = True
-                self._log(f"change_margin_type({sym}->{target}) says already correct (-4046).", lvl="warn")
+                self._log(
+                    f"change_margin_type({sym}->{target}) already set (-4046).",
+                    lvl="info",
+                )
             else:
                 self._log(f"change_margin_type({sym}->{target}) raised {type(e).__name__}: {e}", lvl="warn")
     
@@ -300,6 +337,9 @@ class BinanceWrapper:
         self._symbol_info_cache_spot = {}
         self._symbol_info_cache_futures = None
         self._futures_dual_side_cache = None
+        default_rest_limit = 1800 if self.account_type == "FUTURES" else 1200
+        self._rest_requests_per_minute = int(default_rest_limit)
+        self._klines_rate_limiter = _SimpleRateLimiter(self._rest_requests_per_minute)
         getcontext().prec = 28
 
     # ---- internal helper for futures methods with recvWindow compatibility
@@ -311,6 +351,12 @@ class BinanceWrapper:
             except TypeError:
                 pass
         return method(**kwargs)
+
+    def set_rest_rate_limit(self, requests_per_minute: int | None) -> None:
+        """Allow callers to lower the REST rate limit if needed."""
+        limit = int(requests_per_minute or 0)
+        self._rest_requests_per_minute = max(0, limit)
+        self._klines_rate_limiter.set_limit(self._rest_requests_per_minute)
 
     def futures_api_ok(self) -> tuple[bool, str | None]:
         """
@@ -497,10 +543,42 @@ class BinanceWrapper:
     def get_klines(self, symbol, interval, limit=500):
         source = (getattr(self, "indicator_source", "") or "").strip().lower()
         raw = None
+        limiter = getattr(self, "_klines_rate_limiter", None)
+        if limiter:
+            limiter.acquire()
+        attempts = 0
+        max_attempts = 5
+        delay = 1.0
         if source in ("", "binance futures", "binance_futures", "futures"):
-            raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+            while True:
+                try:
+                    raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+                    break
+                except BinanceAPIException as e:
+                    if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
+                        self._log(f"Rate limit hit fetching futures klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
+                        time.sleep(delay)
+                        attempts += 1
+                        delay = min(delay * 2, 30.0)
+                        if limiter:
+                            limiter.acquire()
+                        continue
+                    raise
         elif source in ("binance spot", "binance_spot", "spot"):
-            raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+            while True:
+                try:
+                    raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+                    break
+                except BinanceAPIException as e:
+                    if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
+                        self._log(f"Rate limit hit fetching spot klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
+                        time.sleep(delay)
+                        attempts += 1
+                        delay = min(delay * 2, 30.0)
+                        if limiter:
+                            limiter.acquire()
+                        continue
+                    raise
         elif source == "bybit":
             import requests, pandas as pd
             bybit_interval = self._bybit_interval(interval)
@@ -518,9 +596,35 @@ class BinanceWrapper:
         else:
             # fallback to account type
             if self.account_type == "FUTURES":
-                raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+                while True:
+                    try:
+                        raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+                        break
+                    except BinanceAPIException as e:
+                        if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
+                            self._log(f"Rate limit hit fetching futures klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
+                            time.sleep(delay)
+                            attempts += 1
+                            delay = min(delay * 2, 30.0)
+                            if limiter:
+                                limiter.acquire()
+                            continue
+                        raise
             else:
-                raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+                while True:
+                    try:
+                        raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+                        break
+                    except BinanceAPIException as e:
+                        if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
+                            self._log(f"Rate limit hit fetching spot klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
+                            time.sleep(delay)
+                            attempts += 1
+                            delay = min(delay * 2, 30.0)
+                            if limiter:
+                                limiter.acquire()
+                            continue
+                        raise
 
         cols = ['open_time','open','high','low','close','volume','close_time','qav','num_trades','taker_base','taker_quote','ignore']
         import pandas as pd
