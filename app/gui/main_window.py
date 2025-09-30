@@ -238,6 +238,10 @@ class MainWindow(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
+        self._closed_positions_history = []
+        self._closed_history_limit = 300
+        self._active_snapshots = {}
+        self._prev_active_keys = set()
         self.guard = IntervalPositionGuard(stale_ttl_sec=180)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.strategy_threads = {}
@@ -506,6 +510,30 @@ class MainWindow(QtWidgets.QWidget):
         self.pos_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         tab2_layout.addWidget(self.pos_table)
 
+        closed_label = QtWidgets.QLabel("Closed Positions (session)")
+        closed_label.setStyleSheet("font-weight: bold;")
+        tab2_layout.addWidget(closed_label)
+
+        self.closed_pos_table = QtWidgets.QTableWidget(0, 9, tab2)
+        self.closed_pos_table.setHorizontalHeaderLabels([
+            "Symbol",
+            "Side",
+            "Interval",
+            "Qty",
+            "Size (USDT)",
+            "Margin (USDT)",
+            "PNL (ROI%)",
+            "Entry Time",
+            "Exit Time",
+        ])
+        self.closed_pos_table.horizontalHeader().setStretchLastSection(True)
+        self.closed_pos_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        tab2_layout.addWidget(self.closed_pos_table)
+        try:
+            self._refresh_closed_history_table()
+        except Exception:
+            pass
+
         self.tabs.addTab(tab2, "Positions")
 
         # Background positions worker (keeps UI thread snappy)
@@ -546,18 +574,16 @@ class MainWindow(QtWidgets.QWidget):
     
     def _on_positions_ready(self, rows: list, acct: str):
         try:
-            # Use currently selected symbols for a local display filter (None => show all)
+            rows = rows or []
 
-            
-            # Stable order
             try:
                 rows = sorted(rows, key=lambda r: (str(r.get('symbol') or ''), str(r.get('side_key') or '')))
             except Exception:
                 pass
-            # Expand per symbol/side into per-interval rows
+
             try:
                 expanded = []
-                for r in rows or []:
+                for r in rows:
                     sym = r.get('symbol'); sk = r.get('side_key')
                     ivs = []
                     try:
@@ -566,80 +592,208 @@ class MainWindow(QtWidgets.QWidget):
                         ivs = []
                     qty_total = float(r.get('qty') or 0.0)
                     if not ivs:
-                        r2 = dict(r); r2['iv'] = None; r2['qty_iv'] = qty_total; expanded.append(r2); continue
+                        r2 = dict(r)
+                        r2['iv'] = None
+                        r2['qty_iv'] = qty_total
+                        if sk in ('L', 'S'):
+                            r2['entry_time'] = self._entry_times.get((sym, sk), '-')
+                        else:
+                            r2['entry_time'] = '-'
+                        expanded.append(r2)
+                        continue
                     share = qty_total/len(ivs) if qty_total and ivs else 0.0
                     for iv in ivs:
-                        r2 = dict(r); r2['iv'] = iv; r2['qty_iv'] = share if share>0 else qty_total
+                        r2 = dict(r)
+                        r2['iv'] = iv
+                        r2['qty_iv'] = share if share > 0 else qty_total
+                        if sk in ('L', 'S'):
+                            r2['entry_time'] = self._entry_times_by_iv.get((sym, sk, iv), self._entry_times.get((sym, sk), '-'))
+                        else:
+                            r2['entry_time'] = '-'
                         expanded.append(r2)
                 rows = expanded
             except Exception:
                 pass
-            # Status detection (per symbol/side/interval)
-            try:
-                now_keys = {(r.get('symbol'), r.get('side_key'), r.get('iv')) for r in rows}
-                prev = getattr(self, '_prev_active_keys', set())
-                closed = prev - now_keys
+
+            snapshots = getattr(self, '_active_snapshots', None)
+            if snapshots is None:
+                self._active_snapshots = {}
+                snapshots = self._active_snapshots
+
+            now_keys = set()
+            for r in rows:
+                sym = r.get('symbol')
+                side_key = r.get('side_key')
+                iv = r.get('iv')
+                key = (sym, side_key, iv)
+                now_keys.add(key)
+                qty_val = r.get('qty_iv') if r.get('qty_iv') is not None else r.get('qty')
+                qty_float = float(qty_val or 0.0)
+                mark_float = float(r.get('mark') or 0.0)
+                size_val = float(r.get('size_usdt') or (qty_float * mark_float))
+                snapshots[key] = {
+                    'symbol': sym,
+                    'side_key': side_key,
+                    'iv': iv,
+                    'qty': qty_float,
+                    'mark': mark_float,
+                    'size_usdt': size_val,
+                    'margin_usdt': float(r.get('margin_usdt') or 0.0),
+                    'pnl_roi': r.get('pnl_roi'),
+                    'entry_time': r.get('entry_time') or '-',
+                }
+
+            closed = self._prev_active_keys - now_keys
+            if closed:
                 from datetime import datetime
                 for (sym_, skey_, iv_) in closed:
-                    rows.append({'symbol': sym_, 'side_key': skey_, 'iv': iv_, 'qty': 0.0, 'mark': 0.0, 'margin_usdt': 0.0, 'pnl_roi': '-', 'side_text':'—', '_status':'Closed', '_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
-                self._prev_active_keys = now_keys
-            except Exception:
-                pass
-                pass
-# If worker produced no rows (transient error or rate limit), don't wipe the table
+                    snap = snapshots.pop((sym_, skey_, iv_), None)
+                    closed_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    hist_payload = {
+                        'symbol': sym_,
+                        'side_key': skey_,
+                        'interval': iv_,
+                        'qty': float((snap or {}).get('qty', 0.0)),
+                        'size_usdt': float((snap or {}).get('size_usdt', 0.0)),
+                        'margin_usdt': float((snap or {}).get('margin_usdt', 0.0)),
+                        'pnl_roi': (snap or {}).get('pnl_roi', '-'),
+                        'entry_time': (snap or {}).get('entry_time', '-'),
+                        'exit_time': closed_ts,
+                    }
+                    self._record_closed_position(hist_payload)
+                    rows.append({
+                        'symbol': sym_,
+                        'side_key': skey_,
+                        'iv': iv_,
+                        'qty': 0.0,
+                        'qty_iv': 0.0,
+                        'mark': (snap or {}).get('mark', 0.0),
+                        'margin_usdt': (snap or {}).get('margin_usdt', 0.0),
+                        'pnl_roi': (snap or {}).get('pnl_roi', '-'),
+                        'entry_time': (snap or {}).get('entry_time', '-'),
+                        '_time': closed_ts,
+                        '_status': 'Closed',
+                    })
+
+            self._prev_active_keys = now_keys
+
             if not rows:
                 return
 
-            # Fast redraw of table
+            try:
+                rows = sorted(rows, key=lambda r: (str(r.get('symbol') or ''), str(r.get('side_key') or ''), str(r.get('iv') or '')))
+            except Exception:
+                pass
+
             self.pos_table.setRowCount(0)
             for r in rows:
                 try:
                     sym = r.get('symbol')
                     side_key = r.get('side_key')
-                    side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
-                    entry_tfs = ','.join(sorted(self._entry_intervals.get(sym, {}).get(side_key, []))) if sym in self._entry_intervals and side_key in ('L','S') else '-'
-                    tstr = self._entry_times.get((sym, side_key), '-') if side_key in ('L','S') else '-'
                     row = self.pos_table.rowCount()
                     self.pos_table.insertRow(row)
-                    # 0 Symbol
-                    self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
-                    # 1 Qty
                     qty_show = float((r.get('qty_iv') if r.get('qty_iv') is not None else r.get('qty')) or 0.0)
-                    self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_show:.8f}"))
-                    # 2 Last Price
                     mark = float(r.get('mark') or 0.0)
-                    self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}"))
-                    # 3 Size (USDT)
                     size_usdt = qty_show * mark
-                    self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
-                    # 4 Margin Ratio (%)
                     margin_usdt = float(r.get('margin_usdt') or 0.0)
                     ratio = (margin_usdt/size_usdt*100.0) if size_usdt else 0.0
-                    self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{ratio:.2f}%" if size_usdt else '-'))
-                    # 5 Margin (USDT)
-                    self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_usdt:.2f} USDT" if margin_usdt else '-'))
-                    # 6 PNL (ROI%)
                     pnl_roi = r.get('pnl_roi')
-                    self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl_roi or '-')))
-                    # 7 Entry TF (interval)
                     entry_iv = r.get('iv') or '-'
+                    display_time = r.get('_time', r.get('entry_time', '-'))
+                    side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
+
+                    self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
+                    self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_show:.8f}"))
+                    self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}"))
+                    self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
+                    self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{ratio:.2f}%" if size_usdt else '-'))
+                    self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_usdt:.2f} USDT" if margin_usdt else '-'))
+                    self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl_roi or '-')))
                     self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(entry_iv))
-                    # 8 Side
-                    side_text = 'Long' if r.get('side_key') == 'L' else ('Short' if r.get('side_key') == 'S' else '-')
                     self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
-                    # 9 Time
-                    tstr = self._entry_times_by_iv.get((sym, r.get('side_key'), r.get('iv')), self._entry_times.get((sym, r.get('side_key')), '-'))
-                    tstr = r.get('_time', tstr)
-                    self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(tstr or '-')))
-                    # 10 Status
+                    self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(display_time or '-')))
                     status_txt = r.get('_status', 'Active')
                     self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(status_txt))
-                    # 11 Close button
                     self.pos_table.setCellWidget(row, 11, self._make_close_btn(sym))
                 except Exception:
                     pass
         except Exception as e:
             self.log(f"Positions render failed: {e}")
+    def _refresh_closed_history_table(self):
+        try:
+            table = getattr(self, 'closed_pos_table', None)
+            history = getattr(self, '_closed_positions_history', [])
+            if table is None:
+                return
+            table.setRowCount(0)
+            for entry in reversed(history):
+                try:
+                    row = table.rowCount()
+                    table.insertRow(row)
+                    symbol = entry.get('symbol') or '-'
+                    side_txt = entry.get('side_text') or '-'
+                    interval = entry.get('interval') if entry.get('interval') not in (None, '') else '-'
+                    qty = float(entry.get('qty') or 0.0)
+                    size_val = float(entry.get('size_usdt') or 0.0)
+                    margin_val = float(entry.get('margin_usdt') or 0.0)
+                    pnl = entry.get('pnl_roi') or '-'
+                    entry_time = entry.get('entry_time') or '-'
+                    exit_time = entry.get('exit_time') or '-'
+                    table.setItem(row, 0, QtWidgets.QTableWidgetItem(symbol))
+                    table.setItem(row, 1, QtWidgets.QTableWidgetItem(side_txt))
+                    table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(interval)))
+                    table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{qty:.8f}"))
+                    table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{size_val:.2f}"))
+                    table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_val:.2f}"))
+                    table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl)))
+                    table.setItem(row, 7, QtWidgets.QTableWidgetItem(str(entry_time)))
+                    table.setItem(row, 8, QtWidgets.QTableWidgetItem(str(exit_time)))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _record_closed_position(self, payload: dict):
+        try:
+            if not payload or not payload.get('symbol'):
+                return
+            entry = dict(payload)
+            history = getattr(self, '_closed_positions_history', None)
+            if history is None:
+                self._closed_positions_history = []
+                history = self._closed_positions_history
+            side_key = str(entry.get('side_key') or '').upper()
+            if side_key in ('L', 'LONG', 'BUY'):
+                entry['side_key'] = 'L'
+                entry['side_text'] = 'Long'
+            elif side_key in ('S', 'SHORT', 'SELL'):
+                entry['side_key'] = 'S'
+                entry['side_text'] = 'Short'
+            else:
+                entry['side_text'] = entry.get('side_text') or '-'
+            entry['interval'] = entry.get('interval') if entry.get('interval') not in (None, '') else '-'
+            try:
+                entry['qty'] = abs(float(entry.get('qty') or 0.0))
+            except Exception:
+                entry['qty'] = 0.0
+            try:
+                entry['size_usdt'] = float(entry.get('size_usdt') or 0.0)
+            except Exception:
+                entry['size_usdt'] = 0.0
+            try:
+                entry['margin_usdt'] = float(entry.get('margin_usdt') or 0.0)
+            except Exception:
+                entry['margin_usdt'] = 0.0
+            if not entry.get('exit_time'):
+                from datetime import datetime
+                entry['exit_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            history.append(entry)
+            limit = getattr(self, '_closed_history_limit', 0) or 0
+            if limit and len(history) > limit:
+                del history[:-limit]
+            self._refresh_closed_history_table()
+        except Exception:
+            pass
 
     def _reconfigure_positions_worker(self):
         try:
@@ -1179,6 +1333,10 @@ def close_all_positions_async(self):
         def _done(res, err):
             if err:
                 self.log(f"Close-all error: {err}")
+                try:
+                    self.trigger_positions_refresh()
+                except Exception:
+                    pass
                 return
             try:
                 for r in (res or []):
@@ -1189,6 +1347,10 @@ def close_all_positions_async(self):
                 n_ok = sum(1 for r in (res or []) if r.get('ok'))
                 n_all = len(res or [])
                 self.log(f"Close-all completed: {n_ok}/{n_all} ok.")
+                try:
+                    self.trigger_positions_refresh()
+                except Exception:
+                    pass
             except Exception:
                 self.log(f"Close-all result: {res}")
         w = _CallWorker(_do, parent=self)
