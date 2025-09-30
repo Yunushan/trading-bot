@@ -11,8 +11,11 @@ try:
 except Exception:
     pass
 
-# DPI policy first
-QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+# DPI policy first (only if no application exists yet)
+if QtGui.QGuiApplication.instance() is None:
+    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
 
 # Version banner
 from app import preamble  # noqa: F401
@@ -24,7 +27,12 @@ def main():
     app = QApplication(sys.argv)
     try:
         app.setApplicationDisplayName("Binance Trading Bot")
-        app.setWindowIcon(QtGui.QIcon(str(_P(__file__).resolve().parent / 'app' / 'assets' / 'binance_icon.ico')))
+        assets_dir = _P(__file__).resolve().parent / 'app' / 'assets'
+        icon = QtGui.QIcon(str(assets_dir / 'binance_icon.ico'))
+        if icon.isNull():
+            icon = QtGui.QIcon(str(assets_dir / 'binance_icon.png'))
+        if not icon.isNull():
+            app.setWindowIcon(icon)
     except Exception:
         pass
     win = MainWindow()

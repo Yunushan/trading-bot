@@ -113,7 +113,10 @@ class BinanceWrapper:
             msg = str(e)
             if "-4046" in msg or "No need to change margin type" in msg:
                 assume_ok = True
-                self._log(f"change_margin_type({sym}->{target}) says already correct (-4046).", lvl="warn")
+                self._log(
+                    f"change_margin_type({sym}->{target}) already set (-4046).",
+                    lvl="info",
+                )
             else:
                 self._log(f"change_margin_type({sym}->{target}) raised {type(e).__name__}: {e}", lvl="warn")
     
