@@ -236,6 +236,10 @@ class MainWindow(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
+        self._closed_positions_history = []
+        self._closed_history_limit = 300
+        self._active_snapshots = {}
+        self._prev_active_keys = set()
         self.guard = IntervalPositionGuard(stale_ttl_sec=180)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.strategy_threads = {}
@@ -526,6 +530,30 @@ class MainWindow(QtWidgets.QWidget):
         self.pos_table.verticalHeader().setVisible(False)
         tab2_layout.addWidget(self.pos_table)
 
+        closed_label = QtWidgets.QLabel("Closed Positions (session)")
+        closed_label.setStyleSheet("font-weight: bold;")
+        tab2_layout.addWidget(closed_label)
+
+        self.closed_pos_table = QtWidgets.QTableWidget(0, 9, tab2)
+        self.closed_pos_table.setHorizontalHeaderLabels([
+            "Symbol",
+            "Side",
+            "Interval",
+            "Qty",
+            "Size (USDT)",
+            "Margin (USDT)",
+            "PNL (ROI%)",
+            "Entry Time",
+            "Exit Time",
+        ])
+        self.closed_pos_table.horizontalHeader().setStretchLastSection(True)
+        self.closed_pos_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        tab2_layout.addWidget(self.closed_pos_table)
+        try:
+            self._refresh_closed_history_table()
+        except Exception:
+            pass
+
         self.tabs.addTab(tab2, "Positions")
 
         # Background positions worker (keeps UI thread snappy)
@@ -568,75 +596,85 @@ class MainWindow(QtWidgets.QWidget):
         try:
             rows = rows or []
 
-            cleaned = []
-            for raw in rows:
-                sym = raw.get('symbol')
-                if not sym:
-                    continue
-                qty_val = raw.get('qty_iv') if raw.get('qty_iv') is not None else raw.get('qty')
-                try:
-                    qty_float = abs(float(qty_val or 0.0))
-                except Exception:
-                    qty_float = 0.0
-                if qty_float <= 0.0:
-                    continue
-                entry = dict(raw)
-                entry['_qty_float'] = qty_float
-                cleaned.append(entry)
-
-            cleaned.sort(key=lambda item: (str(item.get('symbol') or ''), str(item.get('side_key') or '')))
-
-            self.pos_table.setRowCount(0)
-            for entry in cleaned:
-                try:
-                    sym = entry.get('symbol')
-                    side_key = entry.get('side_key')
-                    row = self.pos_table.rowCount()
-                    self.pos_table.insertRow(row)
-
-                    qty_float = float(entry.get('_qty_float', 0.0))
-                    mark = float(entry.get('mark') or 0.0)
-                    size_usdt = float(entry.get('size_usdt') or 0.0)
-                    if size_usdt <= 0.0:
-                        size_usdt = qty_float * mark
-                    margin_usdt = float(entry.get('margin_usdt') or 0.0)
-                    ratio = (margin_usdt / size_usdt * 100.0) if size_usdt else 0.0
-                    pnl_value = entry.get('pnl_roi')
-                    pnl_text = '-' if pnl_value in (None, '') else str(pnl_value)
-
-                    entry_ivs = []
-                    try:
-                        entry_ivs = sorted(self._entry_intervals.get(sym, {}).get(side_key, []))
-                    except Exception:
-                        entry_ivs = []
-                    entry_tf = ", ".join(entry_ivs) if entry_ivs else '-'
-
-                    entry_time = '-'
-                    try:
-                        entry_time = self._entry_times.get((sym, side_key), '-')
-                    except Exception:
-                        pass
-
-                    side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
-
-                    self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
-                    self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_float:.8f}"))
-                    self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}"))
-                    self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
-                    ratio_text = f"{ratio:.2f}%" if size_usdt else '-'
-                    self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(ratio_text))
-                    margin_text = f"{margin_usdt:.2f} USDT" if margin_usdt else '-'
-                    self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(margin_text))
-                    self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(pnl_text))
-                    self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(entry_tf))
-                    self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
-                    self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(entry_time or '-')))
-                    self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem('Active'))
-                    self.pos_table.setCellWidget(row, 11, self._make_close_btn(sym, side_key))
                 except Exception:
                     continue
         except Exception as e:
             self.log(f"Positions render failed: {e}")
+    def _refresh_closed_history_table(self):
+        try:
+            table = getattr(self, 'closed_pos_table', None)
+            history = getattr(self, '_closed_positions_history', [])
+            if table is None:
+                return
+            table.setRowCount(0)
+            for entry in reversed(history):
+                try:
+                    row = table.rowCount()
+                    table.insertRow(row)
+                    symbol = entry.get('symbol') or '-'
+                    side_txt = entry.get('side_text') or '-'
+                    interval = entry.get('interval') if entry.get('interval') not in (None, '') else '-'
+                    qty = float(entry.get('qty') or 0.0)
+                    size_val = float(entry.get('size_usdt') or 0.0)
+                    margin_val = float(entry.get('margin_usdt') or 0.0)
+                    pnl = entry.get('pnl_roi') or '-'
+                    entry_time = entry.get('entry_time') or '-'
+                    exit_time = entry.get('exit_time') or '-'
+                    table.setItem(row, 0, QtWidgets.QTableWidgetItem(symbol))
+                    table.setItem(row, 1, QtWidgets.QTableWidgetItem(side_txt))
+                    table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(interval)))
+                    table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{qty:.8f}"))
+                    table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{size_val:.2f}"))
+                    table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_val:.2f}"))
+                    table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl)))
+                    table.setItem(row, 7, QtWidgets.QTableWidgetItem(str(entry_time)))
+                    table.setItem(row, 8, QtWidgets.QTableWidgetItem(str(exit_time)))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _record_closed_position(self, payload: dict):
+        try:
+            if not payload or not payload.get('symbol'):
+                return
+            entry = dict(payload)
+            history = getattr(self, '_closed_positions_history', None)
+            if history is None:
+                self._closed_positions_history = []
+                history = self._closed_positions_history
+            side_key = str(entry.get('side_key') or '').upper()
+            if side_key in ('L', 'LONG', 'BUY'):
+                entry['side_key'] = 'L'
+                entry['side_text'] = 'Long'
+            elif side_key in ('S', 'SHORT', 'SELL'):
+                entry['side_key'] = 'S'
+                entry['side_text'] = 'Short'
+            else:
+                entry['side_text'] = entry.get('side_text') or '-'
+            entry['interval'] = entry.get('interval') if entry.get('interval') not in (None, '') else '-'
+            try:
+                entry['qty'] = abs(float(entry.get('qty') or 0.0))
+            except Exception:
+                entry['qty'] = 0.0
+            try:
+                entry['size_usdt'] = float(entry.get('size_usdt') or 0.0)
+            except Exception:
+                entry['size_usdt'] = 0.0
+            try:
+                entry['margin_usdt'] = float(entry.get('margin_usdt') or 0.0)
+            except Exception:
+                entry['margin_usdt'] = 0.0
+            if not entry.get('exit_time'):
+                from datetime import datetime
+                entry['exit_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            history.append(entry)
+            limit = getattr(self, '_closed_history_limit', 0) or 0
+            if limit and len(history) > limit:
+                del history[:-limit]
+            self._refresh_closed_history_table()
+        except Exception:
+            pass
 
     def _make_close_btn(self, symbol: str, side_key=None):
         btn = QtWidgets.QPushButton("Close")
