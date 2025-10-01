@@ -113,10 +113,6 @@ class BinanceWrapper:
             msg = str(e)
             if "-4046" in msg or "No need to change margin type" in msg:
                 assume_ok = True
-                self._log(
-                    f"change_margin_type({sym}->{target}) already set (-4046).",
-                    lvl="info",
-                )
             else:
                 self._log(f"change_margin_type({sym}->{target}) raised {type(e).__name__}: {e}", lvl="warn")
     
@@ -341,6 +337,7 @@ class BinanceWrapper:
         self._rest_requests_per_minute = int(default_rest_limit)
         self._klines_rate_limiter = _SimpleRateLimiter(self._rest_requests_per_minute)
         getcontext().prec = 28
+        self._margin_log_squelch: set[tuple[str, str]] = set()
 
     # ---- internal helper for futures methods with recvWindow compatibility
     def _futures_call(self, method_name: str, allow_recv=True, **kwargs):
@@ -964,59 +961,192 @@ class BinanceWrapper:
         return results
 
     def list_open_futures_positions(self):
-        infos = None
-        try:
-            infos = self.client.futures_position_information()
-        except Exception:
+        def _safe_call(name: str):
             try:
-                infos = self.client.futures_position_risk()
+                return getattr(self.client, name)()
             except Exception:
-                infos = None
-        out = []
-        if not infos:
+                return None
+
+        def _to_float(val, default: float = 0.0) -> float:
             try:
-                acc = self.client.futures_account() or {}
-                for p in acc.get('positions', []):
-                    amt = float(p.get('positionAmt') or 0.0)
-                    if abs(amt) <= 0.0:
-                        continue
-                    out.append({
-                        'symbol': p.get('symbol'),
-                        'positionAmt': amt,
-                        'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
-                        'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
-                        'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
-                        'entryPrice': float(p.get('entryPrice') or 0.0),
-                        'markPrice': float(p.get('markPrice') or 0.0),
-                        'marginType': p.get('marginType'),
-                        'leverage': int(float(p.get('leverage') or 0)),
-                        'unRealizedProfit': float(p.get('unRealizedProfit') or 0.0),
-                        'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
-                    })
+                if val is None:
+                    return float(default)
+                if isinstance(val, str):
+                    val = val.strip()
+                    if not val:
+                        return float(default)
+                return float(val)
             except Exception:
-                pass
-        else:
-            for p in infos or []:
-            # Enrich with notional/margins/ROI-friendly fields when present
+                return float(default)
+
+        def _norm_side(raw_side, position_amt) -> str:
+            side = str(raw_side or "BOTH").upper()
+            if side not in ("LONG", "SHORT"):
                 try:
-                    amt = float(p.get('positionAmt') or 0.0)
+                    amt = float(position_amt)
+                    if amt > 0:
+                        return "LONG"
+                    if amt < 0:
+                        return "SHORT"
+                except Exception:
+                    pass
+                return "BOTH"
+            return side
+
+        combined: dict[tuple[str, str], dict] = {}
+
+        for name in ("futures_position_information", "futures_position_risk"):
+            rows = _safe_call(name) or []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                sym = (row.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                try:
+                    amt = float(row.get("positionAmt") or 0.0)
+                except Exception:
+                    amt = 0.0
+                side = _norm_side(row.get("positionSide"), amt)
+                key = (sym, side)
+                entry = combined.setdefault(key, {})
+                entry.update(row)
+
+        try:
+            account = self.client.futures_account() or {}
+            for row in account.get("positions", []) or []:
+                if not isinstance(row, dict):
+                    continue
+                sym = (row.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                try:
+                    amt = float(row.get("positionAmt") or 0.0)
+                except Exception:
+                    amt = 0.0
+                side = _norm_side(row.get("positionSide"), amt)
+                key = (sym, side)
+                entry = combined.setdefault(key, {})
+                entry.update(row)
+        except Exception:
+            pass
+
+        out = []
+        for (sym, side), data in combined.items():
+            try:
+                amt = _to_float(data.get("positionAmt"))
+                if abs(amt) <= 0.0:
+                    continue
+
+                mark = _to_float(data.get("markPrice"))
+                entry_price = _to_float(data.get("entryPrice"))
+                leverage = int(_to_float(data.get("leverage") or 0.0))
+
+                notional = _to_float(
+                    data.get("notional")
+                    or data.get("notionalValue")
+                    or data.get("notionalUsd")
+                )
+                if notional == 0.0 and mark:
+                    notional = abs(amt) * mark
+
+                iso_wallet_raw = data.get("isolatedWallet")
+                if iso_wallet_raw in (None, ""):
+                    iso_wallet_raw = data.get("isolatedMargin")
+                initial_margin_raw = data.get("initialMargin")
+                if initial_margin_raw in (None, ""):
+                    initial_margin_raw = data.get("positionInitialMargin")
+
+                maint_margin_raw = data.get("maintMargin")
+                if maint_margin_raw in (None, ""):
+                    maint_margin_raw = data.get("maintenanceMargin")
+
+                margin_ratio_raw = data.get("marginRatio")
+
+                update_time = None
+                for key_name in (
+                    "updateTime",
+                    "updateTimestamp",
+                    "time",
+                    "closeTime",
+                    "openTime",
+                ):
+                    if data.get(key_name):
+                        update_time = data.get(key_name)
+                        break
+
+                margin_type = data.get("marginType") or data.get("margin_type")
+                margin_type = str(margin_type or "").upper() or None
+
+                entry = {
+                    "symbol": sym,
+                    "positionSide": side,
+                    "positionAmt": amt,
+                    "entryPrice": entry_price,
+                    "markPrice": mark,
+                    "notional": notional,
+                    "initialMargin": _to_float(initial_margin_raw),
+                    "isolatedWallet": _to_float(iso_wallet_raw),
+                    "marginType": margin_type,
+                    "leverage": leverage,
+                    "unRealizedProfit": _to_float(
+                        data.get("unRealizedProfit", data.get("unrealizedProfit"))
+                    ),
+                    "liquidationPrice": _to_float(data.get("liquidationPrice")),
+                    "maintMargin": _to_float(maint_margin_raw),
+                    "marginBalance": _to_float(data.get("marginBalance")),
+                    "walletBalance": _to_float(data.get("walletBalance")),
+                    "marginRatio": _to_float(margin_ratio_raw) if margin_ratio_raw not in (None, "") else None,
+                }
+
+                if update_time is not None:
+                    entry["updateTime"] = update_time
+                    entry["time"] = update_time
+
+                out.append(entry)
+            except Exception:
+                continue
+
+        if out:
+            return out
+
+        # Legacy fallback when the fast endpoints are unavailable
+        try:
+            acc = self.client.futures_account() or {}
+            for p in acc.get('positions', []):
+                try:
+                    amt = _to_float(p.get('positionAmt'))
                     if abs(amt) <= 0.0:
                         continue
+                    sym = (p.get('symbol') or '').upper()
+                    if not sym:
+                        continue
+                    mark = _to_float(p.get('markPrice'))
+                    notional = _to_float(p.get('notional'))
+                    if notional == 0.0 and mark:
+                        notional = abs(amt) * mark
                     out.append({
-                        'symbol': p.get('symbol'),
+                        'symbol': sym,
+                        'positionSide': _norm_side(p.get('positionSide'), amt),
                         'positionAmt': amt,
-                        'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
-                        'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
-                        'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
-                        'entryPrice': float(p.get('entryPrice') or 0.0),
-                        'markPrice': float(p.get('markPrice') or 0.0),
-                        'marginType': p.get('marginType'),
-                        'leverage': int(float(p.get('leverage') or 0)),
-                        'unRealizedProfit': float(p.get('unRealizedProfit') or 0.0),
-                        'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
+                        'notional': notional,
+                        'initialMargin': _to_float(p.get('initialMargin')), 
+                        'isolatedWallet': _to_float(p.get('isolatedWallet')), 
+                        'entryPrice': _to_float(p.get('entryPrice')),
+                        'markPrice': mark,
+                        'marginType': str(p.get('marginType') or '').upper() or None,
+                        'leverage': int(_to_float(p.get('leverage'))),
+                        'unRealizedProfit': _to_float(p.get('unRealizedProfit')),
+                        'liquidationPrice': _to_float(p.get('liquidationPrice')),
+                        'maintMargin': _to_float(p.get('maintMargin')), 
+                        'marginBalance': _to_float(p.get('marginBalance')),
+                        'walletBalance': _to_float(p.get('walletBalance')),
                     })
                 except Exception:
                     continue
+        except Exception:
+            pass
+
         return out
 
     

@@ -152,9 +152,11 @@ class _PositionsWorker(QtCore.QObject):
                         value = abs(amt) * mark if mark else 0.0
                         side_key = 'L' if amt > 0 else 'S'
                         size_usdt, margin_usdt, pnl_roi = self._compute_futures_metrics(p)
-                        rows.append({
+                        row = dict(p) if isinstance(p, dict) else {}
+                        row.update({
                             'symbol': sym,
                             'qty': abs(amt),
+                            'positionAmt': amt,
                             'mark': mark,
                             'value': value,
                             'size_usdt': size_usdt,
@@ -162,6 +164,13 @@ class _PositionsWorker(QtCore.QObject):
                             'pnl_roi': pnl_roi,
                             'side_key': side_key,
                         })
+                        # Normalise a few timestamp aliases so the UI can format them later
+                        if 'time' not in row:
+                            for key in ('updateTime', 'updateTimestamp', 'closeTime', 'openTime'):
+                                if key in row and row.get(key):
+                                    row['time'] = row.get(key)
+                                    break
+                        rows.append(row)
                     except Exception:
                         pass
             else:
@@ -244,8 +253,11 @@ class MainWindow(QtWidgets.QWidget):
         super().__init__()
         self._closed_positions_history = []
         self._closed_history_limit = 300
+        self._closed_display_limit = 50
         self._active_snapshots = {}
         self._prev_active_keys = set()
+        self._run_lock_widgets = []
+        self._is_running = False
         self.guard = IntervalPositionGuard(stale_ttl_sec=180)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.strategy_threads = {}
@@ -510,6 +522,7 @@ class MainWindow(QtWidgets.QWidget):
         # Map symbol -> {'L': set(), 'S': set()} for intervals shown in Positions tab
         self._entry_intervals = {}
         self._entry_times = {}  # (sym, 'L'/'S') -> last trade time string
+        self._last_interval = {}
 
 
         # ---------------- Positions tab ----------------
@@ -583,6 +596,9 @@ class MainWindow(QtWidgets.QWidget):
 
         
 
+        self._init_run_lock_widgets()
+        self._set_running_controls_locked(False)
+
         self.resize(1200, 900)
         self.apply_theme(self.theme_combo.currentText())
         self._setup_log_buffer()
@@ -594,6 +610,76 @@ class MainWindow(QtWidgets.QWidget):
     
     
     
+
+    def _init_run_lock_widgets(self):
+        widgets = [
+            getattr(self, 'api_key_edit', None),
+            getattr(self, 'api_secret_edit', None),
+            getattr(self, 'mode_combo', None),
+            getattr(self, 'theme_combo', None),
+            getattr(self, 'account_combo', None),
+            getattr(self, 'refresh_balance_btn', None),
+            getattr(self, 'leverage_spin', None),
+            getattr(self, 'margin_mode_combo', None),
+            getattr(self, 'position_mode_combo', None),
+            getattr(self, 'assets_mode_combo', None),
+            getattr(self, 'tif_combo', None),
+            getattr(self, 'gtd_minutes_spin', None),
+            getattr(self, 'close_on_exit_combo', None),
+            getattr(self, 'ind_source_combo', None),
+            getattr(self, 'symbol_list', None),
+            getattr(self, 'refresh_symbols_btn', None),
+            getattr(self, 'interval_list', None),
+            getattr(self, 'custom_interval_edit', None),
+            getattr(self, 'add_interval_btn', None),
+            getattr(self, 'side_combo', None),
+            getattr(self, 'pospct_spin', None),
+            getattr(self, 'loop_edit', None),
+            getattr(self, 'cb_add_only', None),
+            getattr(self, 'start_btn', None),
+            getattr(self, 'save_btn', None),
+            getattr(self, 'load_btn', None),
+        ]
+        self._run_lock_widgets = [w for w in widgets if w is not None]
+
+    def _set_running_controls_locked(self, running: bool):
+        self._is_running = bool(running)
+        for widget in getattr(self, '_run_lock_widgets', []):
+            try:
+                widget.setEnabled(not running)
+            except Exception:
+                pass
+        try:
+            self.start_btn.setEnabled(not running)
+        except Exception:
+            pass
+        try:
+            self.stop_btn.setEnabled(bool(running))
+        except Exception:
+            pass
+        try:
+            self.refresh_pos_btn.setEnabled(True)
+            self.close_all_btn.setEnabled(True)
+        except Exception:
+            pass
+        table = getattr(self, 'pos_table', None)
+        if table is not None:
+            try:
+                rows = table.rowCount()
+            except Exception:
+                rows = 0
+            for r in range(rows):
+                try:
+                    btn = table.cellWidget(r, 11)
+                    if isinstance(btn, QtWidgets.QPushButton):
+                        allow = btn.property('allow_when_running')
+                        if running:
+                            btn.setEnabled(bool(allow is None or allow))
+                        else:
+                            btn.setEnabled(True)
+                except Exception:
+                    continue
+
     def _resolve_entry_tf(self, payload):
         try:
             itf = str((payload or {}).get('interval') or '').strip()
@@ -643,7 +729,7 @@ class MainWindow(QtWidgets.QWidget):
             pass
         return "-"
     def _on_positions_ready(self, rows: list, acct: str):
-                # Safety: if the table was destroyed (tab closed/rebuilt), skip render
+        # Safety: if the table was destroyed (tab closed/rebuilt), skip render
         table = getattr(self, 'pos_table', None)
         try:
             import sip
@@ -665,78 +751,271 @@ class MainWindow(QtWidgets.QWidget):
                 except Exception:
                     return float(d)
 
+            def _format_time(raw):
+                if raw in (None, '', '-', 0, '0'):
+                    return '-'
+                try:
+                    if isinstance(raw, str):
+                        txt = raw.strip()
+                        if not txt:
+                            return '-'
+                        try:
+                            raw = float(txt)
+                        except ValueError:
+                            return txt
+                    if isinstance(raw, (int, float)):
+                        ts = float(raw)
+                        if ts <= 0:
+                            return '-'
+                        if ts > 1e12:
+                            ts /= 1000.0
+                        elif ts > 1e10:
+                            ts /= 1000.0
+                        try:
+                            dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone()
+                        except Exception:
+                            dt = datetime.fromtimestamp(ts)
+                        return self._fmt_dt(dt)
+                except Exception:
+                    pass
+                try:
+                    return str(raw)
+                except Exception:
+                    return '-'
+
+            def _calc_margin_ratio(payload: dict, margin_usdt: float) -> tuple[float | None, str]:
+                margin_balance = _f(
+                    payload.get('marginBalance',
+                                payload.get('isolatedWallet',
+                                            payload.get('walletBalance', margin_usdt)))
+                )
+                maint = _f(
+                    payload.get('maintMargin',
+                                payload.get('maintenanceMargin',
+                                            payload.get('maintMarginRequired', 0.0)))
+                )
+                ratio = None
+                if margin_balance > 0:
+                    unreal = _f(payload.get('unRealizedProfit', payload.get('unrealizedProfit', 0.0)))
+                    loss = -unreal if unreal < 0 else 0.0
+                    ratio = (maint + loss) / margin_balance if margin_balance else None
+                raw_ratio = payload.get('marginRatio')
+                if (ratio is None or ratio <= 0.0) and raw_ratio not in (None, '', '-'):
+                    val = _f(raw_ratio)
+                    if val > 1.0:
+                        ratio = val / 100.0
+                    else:
+                        ratio = val
+                if ratio is not None and ratio < 0:
+                    ratio = 0.0
+                text = f"{ratio * 100.0:.2f}%" if ratio is not None else '-'
+                return ratio, text
+
+            prev_snapshots = dict(getattr(self, '_active_snapshots', {}) or {})
+            current_snapshots = {}
+            display_rows = []
+
+            acct_upper = str(acct or '').upper()
+
             for payload in rows:
                 try:
-                    row = table.rowCount()
-                    table.insertRow(row)
                     sym = str(payload.get('symbol') or payload.get('symbolPair') or '-').upper()
-                    qty = abs(_f(payload.get('qty', payload.get('positionAmt', 0.0))))
-                    mark = _f(payload.get('mark', payload.get('markPrice', 0.0)))
-                    size_usdt = _f(payload.get('size_usdt', qty*mark))
-                    margin_usdt = _f(payload.get('margin_usdt', payload.get('initialMargin', 0.0)))
-                    pnl = _f(payload.get('unRealizedProfit', payload.get('unrealizedProfit', 0.0)))
-                    roi = (100.0*pnl/margin_usdt) if margin_usdt else None
-                    pnl_roi = f"{pnl:+.2f} USDT" + (f"\n({roi:+.2f}%)" if roi is not None else "")
+                    if not sym or sym == '-':
+                        continue
 
-                    raw_q = _f(payload.get('qty', payload.get('positionAmt', 0.0)))
-                    side_key = 'L' if raw_q >= 0 else 'S'
+                    raw_amt = _f(payload.get('positionAmt', payload.get('qty', 0.0)))
+                    if abs(raw_amt) <= 0.0:
+                        continue
+
+                    qty = abs(raw_amt)
+                    mark = _f(payload.get('mark', payload.get('markPrice', 0.0)))
+                    size_usdt = _f(payload.get('size_usdt'))
+                    margin_usdt = _f(payload.get('margin_usdt'))
+                    size_calc, margin_calc, pnl_roi = self._compute_futures_metrics(payload)
+                    if size_usdt == 0.0:
+                        size_usdt = size_calc
+                    if margin_usdt == 0.0:
+                        margin_usdt = margin_calc
+                    if size_usdt == 0.0 and qty and mark:
+                        size_usdt = qty * mark
+
+                    pnl_val = _f(payload.get('unRealizedProfit', payload.get('unrealizedProfit', 0.0)))
+                    if not pnl_roi:
+                        roi = (100.0 * pnl_val / margin_usdt) if margin_usdt else None
+                        pnl_roi = f"{pnl_val:+.2f} USDT" + (f"\n({roi:+.2f}%)" if roi is not None else '')
+
+                    pos_side = str(payload.get('positionSide') or '').upper()
+                    if pos_side in ('LONG', 'SHORT'):
+                        side_key = 'L' if pos_side == 'LONG' else 'S'
+                    else:
+                        side_key = 'L' if raw_amt >= 0 else 'S'
                     side_txt = 'Long' if side_key == 'L' else 'Short'
 
+                    payload_interval = str(
+                        payload.get('interval')
+                        or payload.get('timeframe')
+                        or payload.get('tf')
+                        or ''
+                    ).strip()
+                    if payload_interval:
+                        self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
+                        self._entry_intervals[sym].setdefault(side_key, set()).add(payload_interval)
+                        self._last_interval[(sym, side_key)] = payload_interval
+
                     entry_tf = self._resolve_entry_tf({'symbol': sym, 'side_key': side_key, **payload})
-                    entry_time_txt = payload.get('entry_time') or payload.get('time') or '-'
+                    if not entry_tf or str(entry_tf).strip() in ('', '-'):
+                        cached = self._entry_intervals.get(sym, {}).get(side_key, set())
+                        if cached:
+                            entry_tf = ', '.join(sorted(str(v) for v in cached if v))
+                    if entry_tf and entry_tf not in ('', '-'):
+                        self._last_interval[(sym, side_key)] = entry_tf
 
-                    mr = payload.get('marginRatio')
-                    if mr is not None:
-                        mr = _f(mr)
-                        if mr <= 1.0:
-                            mr *= 100.0
-                        mr_txt = f"{mr:.2f}%"
+                    entry_time_raw = (
+                        payload.get('entry_time')
+                        or payload.get('time')
+                        or payload.get('updateTime')
+                        or payload.get('updateTimestamp')
+                        or payload.get('closeTime')
+                        or payload.get('openTime')
+                    )
+                    entry_time_txt = _format_time(entry_time_raw)
+                    if entry_time_txt in (None, '', '-'):
+                        entry_time_txt = self._entry_times.get((sym, side_key), '-')
                     else:
-                        iso = _f(payload.get('isolatedWallet', 0.0))
-                        maint = _f(payload.get('maintMargin', 0.0))
-                        if maint == 0.0:
-                            rate = _f(payload.get('maintMarginRate', 0.0))
-                            notional = _f(payload.get('notional', size_usdt))
-                            maint = rate*notional if (rate>0 and notional>0) else 0.0
-                        unreal = _f(payload.get('unRealizedProfit', payload.get('unrealizedProfit', 0.0)))
-                        loss = -unreal if unreal < 0 else 0.0
-                        mr_txt = f"{((maint+loss)/iso)*100:.2f}%" if iso>0 else "-"
+                        self._entry_times[(sym, side_key)] = entry_time_txt
 
-                    def _set(col, text, center=True):
-                        item = QtWidgets.QTableWidgetItem(str(text))
-                        if center:
-                            item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-                        else:
-                            item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft)
-                        table.setItem(row, col, item)
+                    mr_ratio_val, mr_txt = _calc_margin_ratio(payload, margin_usdt)
 
-                    _set(0, sym, center=False)
-                    _set(1, f"{qty:g}")
-                    _set(2, f"{mark:.6f}")
-                    _set(3, f"{size_usdt:.2f}")
-                    _set(4, mr_txt)
-                    _set(5, f"{margin_usdt:.2f}")
-                    _set(6, pnl_roi)
-                    _set(7, entry_tf)
-                    _set(8, side_txt)
-                    _t = str(entry_time_txt)
-                    _set(9, _t)
-                    _set(10, "Open")
+                    row_display = {
+                        'symbol': sym,
+                        'qty_text': f"{qty:g}",
+                        'mark_text': f"{mark:.6f}",
+                        'size_text': f"{size_usdt:.2f}",
+                        'margin_ratio_text': mr_txt,
+                        'margin_text': f"{margin_usdt:.2f}",
+                        'pnl_roi_text': pnl_roi,
+                        'entry_tf_text': entry_tf if entry_tf else '-',
+                        'side_text': side_txt,
+                        'time_text': entry_time_txt,
+                        'status': 'Open',
+                        'close_allowed': True,
+                        'side_key': side_key,
+                    }
+                    display_rows.append(row_display)
 
-                    side_arg = side_key if (acct or '').upper() == 'FUTURES' else None
-                    try:
-                        btn = self._make_close_btn(sym, side_arg)
-                        table.setCellWidget(row, 11, btn)
-                    except Exception:
-                        _set(11, "Close")
+                    current_snapshots[(sym, side_key)] = {
+                        'symbol': sym,
+                        'side_key': side_key,
+                        'side_text': side_txt,
+                        'qty_text': row_display['qty_text'],
+                        'mark_text': row_display['mark_text'],
+                        'size_text': row_display['size_text'],
+                        'margin_text': row_display['margin_text'],
+                        'margin_ratio_text': mr_txt,
+                        'margin_ratio_value': mr_ratio_val,
+                        'pnl_roi_text': row_display['pnl_roi_text'],
+                        'entry_tf_text': row_display['entry_tf_text'],
+                        'entry_time_text': entry_time_txt,
+                        'entry_time_raw': entry_time_raw,
+                        'margin_usdt': margin_usdt,
+                        'size_usdt': size_usdt,
+                        'positionAmt': raw_amt,
+                    }
                 except Exception:
                     continue
+
+            closed_entries = []
+            for key, snap in prev_snapshots.items():
+                if key not in current_snapshots:
+                    try:
+                        exit_time = self._fmt_dt(datetime.now().astimezone())
+                    except Exception:
+                        exit_time = self._fmt_dt(datetime.now())
+                    entry_time_txt = snap.get('entry_time_text') or '-'
+                    if entry_time_txt not in (None, '', '-'):
+                        time_text = f"Entry: {entry_time_txt}\nExit: {exit_time}"
+                    else:
+                        time_text = exit_time
+                    closed_entries.append({
+                        'symbol': snap.get('symbol', '-'),
+                        'side_key': snap.get('side_key', ''),
+                        'side_text': snap.get('side_text', '-'),
+                        'qty_text': snap.get('qty_text', '0'),
+                        'mark_text': snap.get('mark_text', '0'),
+                        'size_text': snap.get('size_text', '0'),
+                        'margin_text': snap.get('margin_text', '0'),
+                        'margin_ratio_text': snap.get('margin_ratio_text', '-'),
+                        'pnl_roi_text': snap.get('pnl_roi_text', '-'),
+                        'entry_tf_text': snap.get('entry_tf_text', '-'),
+                        'time_text': time_text,
+                        'status': 'Closed',
+                        'close_allowed': False,
+                        'exit_time_text': exit_time,
+                        'entry_time_text': entry_time_txt,
+                    })
+
+            if closed_entries:
+                history = getattr(self, '_closed_positions_history', []) or []
+                history.extend(closed_entries)
+                limit = getattr(self, '_closed_history_limit', 0) or 0
+                if limit and len(history) > limit:
+                    history[:] = history[-limit:]
+                self._closed_positions_history = history
+
+            self._active_snapshots = current_snapshots
+
+            history_rows = getattr(self, '_closed_positions_history', []) or []
+            if history_rows:
+                limit = getattr(self, '_closed_display_limit', 0) or len(history_rows)
+                for entry in reversed(history_rows[-limit:]):
+                    display_rows.append(dict(entry))
+
+            def _set(row_idx: int, col: int, text, center: bool = True):
+                item = QtWidgets.QTableWidgetItem(str(text))
+                if center:
+                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                else:
+                    item.setTextAlignment(
+                        QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft
+                    )
+                table.setItem(row_idx, col, item)
+
+            for row_data in display_rows:
+                try:
+                    row_idx = table.rowCount()
+                    table.insertRow(row_idx)
+                    _set(row_idx, 0, row_data.get('symbol', '-'), center=False)
+                    _set(row_idx, 1, row_data.get('qty_text', '0'))
+                    _set(row_idx, 2, row_data.get('mark_text', '0'))
+                    _set(row_idx, 3, row_data.get('size_text', '0'))
+                    _set(row_idx, 4, row_data.get('margin_ratio_text', '-'))
+                    _set(row_idx, 5, row_data.get('margin_text', '0'))
+                    _set(row_idx, 6, row_data.get('pnl_roi_text', '-'))
+                    _set(row_idx, 7, row_data.get('entry_tf_text', '-'))
+                    _set(row_idx, 8, row_data.get('side_text', '-'))
+                    _set(row_idx, 9, row_data.get('time_text', '-'))
+                    _set(row_idx, 10, row_data.get('status', 'Open'))
+
+                    if row_data.get('close_allowed'):
+                        side_arg = row_data.get('side_key') if acct_upper == 'FUTURES' else None
+                        try:
+                            btn = self._make_close_btn(row_data.get('symbol'), side_arg)
+                            btn.setProperty('allow_when_running', True)
+                            table.setCellWidget(row_idx, 11, btn)
+                        except Exception:
+                            _set(row_idx, 11, 'Close')
+                    else:
+                        _set(row_idx, 11, '-')
+                except Exception:
+                    continue
+
+            if getattr(self, '_is_running', False):
+                self._set_running_controls_locked(True)
         except Exception as e:
             try:
                 self.log(f"Positions render failed: {e}")
             except Exception:
                 pass
-
     def _refresh_closed_history_table(self):
         try:
             table = getattr(self, 'closed_pos_table', None)
@@ -820,6 +1099,10 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
         btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        try:
+            btn.setProperty("allow_when_running", True)
+        except Exception:
+            pass
         btn.setProperty("symbol", symbol)
         btn.setProperty("side_key", side_key or "")
         btn.clicked.connect(lambda _, s=symbol, sk=side_key, b=btn: self._close_position_async(s, sk, b))
@@ -1043,6 +1326,7 @@ class MainWindow(QtWidgets.QWidget):
             side_key = 'L' if str(side).upper() in ('BUY','LONG') else 'S'
             self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
             self._entry_intervals[sym][side_key].add(interval)
+            self._last_interval[(sym, side_key)] = interval
             tstr = order_info.get('time')
             if tstr:
                 self._entry_times[(sym, side_key)] = tstr
@@ -1280,10 +1564,9 @@ def start_strategy(self):
 
         if started == 0:
             self.log("No new engines started (already running?)")
-        try:
-            self.start_btn.setEnabled(False); self.stop_btn.setEnabled(True)
-        except Exception:
-            pass
+            self._set_running_controls_locked(False)
+        else:
+            self._set_running_controls_locked(True)
     except Exception as e:
         try:
             self.log(f"Start error: {e}")
@@ -1310,10 +1593,7 @@ def stop_strategy_async(self):
             self.log("Stopped all strategy engines.")
         else:
             self.log("No engines to stop.")
-        try:
-            self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
-        except Exception:
-            pass
+        self._set_running_controls_locked(False)
 
         # 2) Then close all open positions in background (non-blocking)
         try:
