@@ -1631,3 +1631,14 @@ try:
     BinanceWrapper.place_futures_market_order = _place_futures_market_order_FLEX
 except Exception:
     pass
+
+    @staticmethod
+    def _quantize_step(value: float, step: float) -> float:
+        try:
+            if step <= 0:
+                return float(value)
+            s = ('%f' % step).rstrip('0').rstrip('.')
+            decs = len(s.split('.')[-1]) if '.' in s else 0
+            return float(f"{value:.{decs}f}")
+        except Exception:
+            return float(value)

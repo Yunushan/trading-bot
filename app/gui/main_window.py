@@ -234,6 +234,12 @@ class MainWindow(QtWidgets.QWidget):
     QLabel { color: #E0E0E0; }
     """
 
+    
+    def _fmt_dt(self, dt):
+        try:
+            return dt.strftime('%d-%m-%Y %H:%M:%S')
+        except Exception:
+            return str(dt)
     def __init__(self):
         super().__init__()
         self._closed_positions_history = []
@@ -353,6 +359,22 @@ class MainWindow(QtWidgets.QWidget):
         self.tif_combo.currentTextChanged.connect(_update_gtd_visibility)
         _update_gtd_visibility(self.tif_combo.currentText())
 
+        
+        # Close All on Exit (dashboard toggle)
+        grid.addWidget(QtWidgets.QLabel("Close All on Exit:"), 3, 5)
+        self.close_on_exit_combo = QtWidgets.QComboBox()
+        self.close_on_exit_combo.addItems(["Disabled", "Enabled"])
+        self.close_all_on_exit = bool(self.config.get("close_all_on_exit", False))
+        self.close_on_exit_combo.setCurrentText("Enabled" if self.close_all_on_exit else "Disabled")
+        grid.addWidget(self.close_on_exit_combo, 3, 6)
+        def _update_close_on_exit(text: str):
+            enabled = (text.lower() in ("enabled","on","yes","true","1"))
+            self.close_all_on_exit = enabled
+            try:
+                self.config["close_all_on_exit"] = enabled
+            except Exception:
+                pass
+        self.close_on_exit_combo.currentTextChanged.connect(_update_close_on_exit)
         grid.addWidget(QtWidgets.QLabel("Indicator Source:"), 3, 0)
         self.ind_source_combo = QtWidgets.QComboBox()
         self.ind_source_combo.addItems(["Binance spot","Binance futures","TradingView","Bybit"])
@@ -529,31 +551,10 @@ class MainWindow(QtWidgets.QWidget):
         self.pos_table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.pos_table.verticalHeader().setVisible(False)
         tab2_layout.addWidget(self.pos_table)
+        # (Closed Positions session removed)
+        self.closed_pos_table = None
 
-        closed_label = QtWidgets.QLabel("Closed Positions (session)")
-        closed_label.setStyleSheet("font-weight: bold;")
-        tab2_layout.addWidget(closed_label)
-
-        self.closed_pos_table = QtWidgets.QTableWidget(0, 9, tab2)
-        self.closed_pos_table.setHorizontalHeaderLabels([
-            "Symbol",
-            "Side",
-            "Interval",
-            "Qty",
-            "Size (USDT)",
-            "Margin (USDT)",
-            "PNL (ROI%)",
-            "Entry Time",
-            "Exit Time",
-        ])
-        self.closed_pos_table.horizontalHeader().setStretchLastSection(True)
-        self.closed_pos_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
-        tab2_layout.addWidget(self.closed_pos_table)
-        try:
-            self._refresh_closed_history_table()
-        except Exception:
-            pass
-
+        # Ensure Positions tab is added
         self.tabs.addTab(tab2, "Positions")
 
         # Background positions worker (keeps UI thread snappy)
@@ -592,14 +593,150 @@ class MainWindow(QtWidgets.QWidget):
 
     
     
-    def _on_positions_ready(self, rows: list, acct: str):
+    
+    def _resolve_entry_tf(self, payload):
         try:
+            itf = str((payload or {}).get('interval') or '').strip()
+            if itf:
+                return itf
+            sym = str((payload or {}).get('symbol') or '').upper()
+            skey = str((payload or {}).get('side_key') or '').upper()
+            if not skey:
+                try:
+                    q = float((payload or {}).get('qty') or (payload or {}).get('positionAmt') or 0.0)
+                    skey = 'L' if q >= 0 else 'S'
+                except Exception:
+                    skey = 'L'
+            # cache
+            try:
+                v = getattr(self, '_last_interval', {}).get((sym, skey))
+                if v:
+                    return str(v)
+            except Exception:
+                pass
+            # strategy thread
+            try:
+                th = getattr(self, 'strategy_thread', None)
+                for key in ('interval','timeframe','tf'):
+                    v = getattr(th, key, None)
+                    if v:
+                        return str(v)
+            except Exception:
+                pass
+            # UI combo
+            try:
+                cb = getattr(self, 'interval_combo', None)
+                v = cb.currentText() if cb else ''
+                if v:
+                    return v
+            except Exception:
+                pass
+            # config
+            try:
+                for k in ('interval','timeframe','tf'):
+                    v = self.config.get(k)
+                    if v:
+                        return str(v)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return "-"
+    def _on_positions_ready(self, rows: list, acct: str):
+                # Safety: if the table was destroyed (tab closed/rebuilt), skip render
+        table = getattr(self, 'pos_table', None)
+        try:
+            import sip
+            if table is None or sip.isdeleted(table):
+                return
+        except Exception:
+            if table is None:
+                return
+        try:
+            table = getattr(self, 'pos_table', None)
+            if table is None:
+                return
             rows = rows or []
+            table.setRowCount(0)
 
+            def _f(x, d=0.0):
+                try:
+                    return float(x)
+                except Exception:
+                    return float(d)
+
+            for payload in rows:
+                try:
+                    row = table.rowCount()
+                    table.insertRow(row)
+                    sym = str(payload.get('symbol') or payload.get('symbolPair') or '-').upper()
+                    qty = abs(_f(payload.get('qty', payload.get('positionAmt', 0.0))))
+                    mark = _f(payload.get('mark', payload.get('markPrice', 0.0)))
+                    size_usdt = _f(payload.get('size_usdt', qty*mark))
+                    margin_usdt = _f(payload.get('margin_usdt', payload.get('initialMargin', 0.0)))
+                    pnl = _f(payload.get('unRealizedProfit', payload.get('unrealizedProfit', 0.0)))
+                    roi = (100.0*pnl/margin_usdt) if margin_usdt else None
+                    pnl_roi = f"{pnl:+.2f} USDT" + (f"\n({roi:+.2f}%)" if roi is not None else "")
+
+                    raw_q = _f(payload.get('qty', payload.get('positionAmt', 0.0)))
+                    side_key = 'L' if raw_q >= 0 else 'S'
+                    side_txt = 'Long' if side_key == 'L' else 'Short'
+
+                    entry_tf = self._resolve_entry_tf({'symbol': sym, 'side_key': side_key, **payload})
+                    entry_time_txt = payload.get('entry_time') or payload.get('time') or '-'
+
+                    mr = payload.get('marginRatio')
+                    if mr is not None:
+                        mr = _f(mr)
+                        if mr <= 1.0:
+                            mr *= 100.0
+                        mr_txt = f"{mr:.2f}%"
+                    else:
+                        iso = _f(payload.get('isolatedWallet', 0.0))
+                        maint = _f(payload.get('maintMargin', 0.0))
+                        if maint == 0.0:
+                            rate = _f(payload.get('maintMarginRate', 0.0))
+                            notional = _f(payload.get('notional', size_usdt))
+                            maint = rate*notional if (rate>0 and notional>0) else 0.0
+                        unreal = _f(payload.get('unRealizedProfit', payload.get('unrealizedProfit', 0.0)))
+                        loss = -unreal if unreal < 0 else 0.0
+                        mr_txt = f"{((maint+loss)/iso)*100:.2f}%" if iso>0 else "-"
+
+                    def _set(col, text, center=True):
+                        item = QtWidgets.QTableWidgetItem(str(text))
+                        if center:
+                            item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                        else:
+                            item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft)
+                        table.setItem(row, col, item)
+
+                    _set(0, sym, center=False)
+                    _set(1, f"{qty:g}")
+                    _set(2, f"{mark:.6f}")
+                    _set(3, f"{size_usdt:.2f}")
+                    _set(4, mr_txt)
+                    _set(5, f"{margin_usdt:.2f}")
+                    _set(6, pnl_roi)
+                    _set(7, entry_tf)
+                    _set(8, side_txt)
+                    _t = str(entry_time_txt)
+                    _set(9, _t)
+                    _set(10, "Open")
+
+                    side_arg = side_key if (acct or '').upper() == 'FUTURES' else None
+                    try:
+                        btn = self._make_close_btn(sym, side_arg)
+                        table.setCellWidget(row, 11, btn)
+                    except Exception:
+                        _set(11, "Close")
                 except Exception:
                     continue
         except Exception as e:
-            self.log(f"Positions render failed: {e}")
+            try:
+                self.log(f"Positions render failed: {e}")
+            except Exception:
+                pass
+
     def _refresh_closed_history_table(self):
         try:
             table = getattr(self, 'closed_pos_table', None)
@@ -667,7 +804,7 @@ class MainWindow(QtWidgets.QWidget):
                 entry['margin_usdt'] = 0.0
             if not entry.get('exit_time'):
                 from datetime import datetime
-                entry['exit_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                entry['exit_time'] = self._fmt_dt(datetime.now())
             history.append(entry)
             limit = getattr(self, '_closed_history_limit', 0) or 0
             if limit and len(history) > limit:
@@ -911,7 +1048,7 @@ class MainWindow(QtWidgets.QWidget):
                 self._entry_times[(sym, side_key)] = tstr
             else:
                 from datetime import datetime
-                tstr = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                tstr = self._fmt_dt(datetime.now())
                 self._entry_times[(sym, side_key)] = tstr
         if sym:
             self.traded_symbols.add(sym)
@@ -1380,6 +1517,18 @@ def _teardown_positions_thread(self):
     except Exception:
         pass
 
+
+    def close_all_positions_sync(self, timeout_ms: int = 6000):
+        try:
+            self.close_all_positions_async()
+            loop = QtCore.QEventLoop()
+            timer = QtCore.QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(loop.quit)
+            timer.start(max(1000, int(timeout_ms)))
+            loop.exec()
+        except Exception:
+            pass
 def closeEvent(self, event):
     try:
         # Stop strategy loops and close positions if needed
