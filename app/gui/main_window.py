@@ -152,9 +152,11 @@ class _PositionsWorker(QtCore.QObject):
                         value = abs(amt) * mark if mark else 0.0
                         side_key = 'L' if amt > 0 else 'S'
                         size_usdt, margin_usdt, pnl_roi = self._compute_futures_metrics(p)
-                        rows.append({
+                        row = dict(p) if isinstance(p, dict) else {}
+                        row.update({
                             'symbol': sym,
                             'qty': abs(amt),
+                            'positionAmt': amt,
                             'mark': mark,
                             'value': value,
                             'size_usdt': size_usdt,
@@ -162,6 +164,13 @@ class _PositionsWorker(QtCore.QObject):
                             'pnl_roi': pnl_roi,
                             'side_key': side_key,
                         })
+                        # Normalise a few timestamp aliases so the UI can format them later
+                        if 'time' not in row:
+                            for key in ('updateTime', 'updateTimestamp', 'closeTime', 'openTime'):
+                                if key in row and row.get(key):
+                                    row['time'] = row.get(key)
+                                    break
+                        rows.append(row)
                     except Exception:
                         pass
             else:
@@ -510,6 +519,7 @@ class MainWindow(QtWidgets.QWidget):
         # Map symbol -> {'L': set(), 'S': set()} for intervals shown in Positions tab
         self._entry_intervals = {}
         self._entry_times = {}  # (sym, 'L'/'S') -> last trade time string
+        self._last_interval = {}
 
 
         # ---------------- Positions tab ----------------
@@ -665,6 +675,40 @@ class MainWindow(QtWidgets.QWidget):
                 except Exception:
                     return float(d)
 
+            def _format_time(raw):
+                if raw in (None, "", "-", 0, "0"):
+                    return "-"
+                try:
+                    if isinstance(raw, str):
+                        txt = raw.strip()
+                        if not txt:
+                            return "-"
+                        # If the string looks numeric try to interpret it as a timestamp
+                        try:
+                            raw = float(txt)
+                        except ValueError:
+                            return txt
+                    if isinstance(raw, (int, float)):
+                        ts = float(raw)
+                        if ts <= 0:
+                            return "-"
+                        # Binance usually returns ms timestamps
+                        if ts > 1e12:
+                            ts /= 1000.0
+                        elif ts > 1e10:
+                            ts /= 1000.0
+                        try:
+                            dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone()
+                        except Exception:
+                            dt = datetime.fromtimestamp(ts)
+                        return self._fmt_dt(dt)
+                except Exception:
+                    pass
+                try:
+                    return str(raw)
+                except Exception:
+                    return "-"
+
             for payload in rows:
                 try:
                     row = table.rowCount()
@@ -682,8 +726,34 @@ class MainWindow(QtWidgets.QWidget):
                     side_key = 'L' if raw_q >= 0 else 'S'
                     side_txt = 'Long' if side_key == 'L' else 'Short'
 
+                    # Track any interval provided by the payload so subsequent refreshes can reuse it
+                    payload_interval = str(payload.get('interval') or payload.get('timeframe') or payload.get('tf') or '').strip()
+                    if payload_interval:
+                        self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
+                        self._entry_intervals[sym].setdefault(side_key, set()).add(payload_interval)
+                        self._last_interval[(sym, side_key)] = payload_interval
+
                     entry_tf = self._resolve_entry_tf({'symbol': sym, 'side_key': side_key, **payload})
-                    entry_time_txt = payload.get('entry_time') or payload.get('time') or '-'
+                    if not entry_tf or str(entry_tf).strip() in ('', '-'):
+                        cached = self._entry_intervals.get(sym, {}).get(side_key, set())
+                        if cached:
+                            entry_tf = ", ".join(sorted(str(v) for v in cached if v))
+                    if entry_tf and entry_tf not in ('', '-'):
+                        self._last_interval[(sym, side_key)] = entry_tf
+
+                    entry_time_raw = (
+                        payload.get('entry_time')
+                        or payload.get('time')
+                        or payload.get('updateTime')
+                        or payload.get('updateTimestamp')
+                        or payload.get('closeTime')
+                        or payload.get('openTime')
+                    )
+                    entry_time_txt = _format_time(entry_time_raw)
+                    if entry_time_txt in (None, '', '-'):
+                        entry_time_txt = self._entry_times.get((sym, side_key), '-')
+                    else:
+                        self._entry_times[(sym, side_key)] = entry_time_txt
 
                     mr = payload.get('marginRatio')
                     if mr is not None:
@@ -1043,6 +1113,7 @@ class MainWindow(QtWidgets.QWidget):
             side_key = 'L' if str(side).upper() in ('BUY','LONG') else 'S'
             self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
             self._entry_intervals[sym][side_key].add(interval)
+            self._last_interval[(sym, side_key)] = interval
             tstr = order_info.get('time')
             if tstr:
                 self._entry_times[(sym, side_key)] = tstr

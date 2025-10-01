@@ -1,4 +1,8 @@
+import os
 import sys
+
+# Ensure Qt uses pass-through DPI rounding even when the helper is unavailable.
+os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
 
 from PyQt6 import QtGui
 from PyQt6.QtCore import Qt
@@ -10,12 +14,6 @@ try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Binance.TradingBot")
 except Exception:
     pass
-
-# DPI policy first (only if no application exists yet)
-if QtGui.QGuiApplication.instance() is None:
-    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
 
 # Version banner
 from app import preamble  # noqa: F401

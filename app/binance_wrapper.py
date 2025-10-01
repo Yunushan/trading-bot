@@ -113,10 +113,16 @@ class BinanceWrapper:
             msg = str(e)
             if "-4046" in msg or "No need to change margin type" in msg:
                 assume_ok = True
-                self._log(
-                    f"change_margin_type({sym}->{target}) already set (-4046).",
-                    lvl="info",
-                )
+                key = (sym, target)
+                if key not in getattr(self, "_margin_log_squelch", set()):
+                    try:
+                        self._margin_log_squelch.add(key)
+                    except Exception:
+                        pass
+                    self._log(
+                        f"change_margin_type({sym}->{target}) already set (-4046).",
+                        lvl="info",
+                    )
             else:
                 self._log(f"change_margin_type({sym}->{target}) raised {type(e).__name__}: {e}", lvl="warn")
     
@@ -341,6 +347,7 @@ class BinanceWrapper:
         self._rest_requests_per_minute = int(default_rest_limit)
         self._klines_rate_limiter = _SimpleRateLimiter(self._rest_requests_per_minute)
         getcontext().prec = 28
+        self._margin_log_squelch: set[tuple[str, str]] = set()
 
     # ---- internal helper for futures methods with recvWindow compatibility
     def _futures_call(self, method_name: str, allow_recv=True, **kwargs):
