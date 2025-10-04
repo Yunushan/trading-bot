@@ -1,10 +1,6 @@
-import os
 import sys
 
-# Ensure Qt uses pass-through DPI rounding even when the helper is unavailable.
-os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
-
-from PyQt6 import QtGui, QtCore
+from PyQt6 import QtGui
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
@@ -15,6 +11,9 @@ try:
 except Exception:
     pass
 
+# DPI policy first
+QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
 # Version banner
 from app import preamble  # noqa: F401
 
@@ -22,22 +21,10 @@ from app.gui.main_window import MainWindow
 from pathlib import Path as _P
 
 def main():
-    try:
-        QtCore.QCoreApplication.setHighDpiScaleFactorRoundingPolicy(
-            QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
-    except Exception:
-        pass
-
     app = QApplication(sys.argv)
     try:
         app.setApplicationDisplayName("Binance Trading Bot")
-        assets_dir = _P(__file__).resolve().parent / 'app' / 'assets'
-        icon = QtGui.QIcon(str(assets_dir / 'binance_icon.ico'))
-        if icon.isNull():
-            icon = QtGui.QIcon(str(assets_dir / 'binance_icon.png'))
-        if not icon.isNull():
-            app.setWindowIcon(icon)
+        app.setWindowIcon(QtGui.QIcon(str(_P(__file__).resolve().parent / 'app' / 'assets' / 'binance_icon.ico')))
     except Exception:
         pass
     win = MainWindow()

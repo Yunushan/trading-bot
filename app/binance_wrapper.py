@@ -1,45 +1,11 @@
 
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 from datetime import datetime
-from collections import deque
 import time
-import threading
-import requests
+import threading, requests
 
 import pandas as pd
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
-
-
-class _SimpleRateLimiter:
-    """Thread-safe sliding window limiter for REST requests."""
-
-    def __init__(self, max_per_minute: int | None = None):
-        self._lock = threading.Lock()
-        self._events = deque()
-        self.set_limit(max_per_minute if max_per_minute is not None else 0)
-
-    def set_limit(self, max_per_minute: int | None) -> None:
-        limit = int(max_per_minute or 0)
-        with self._lock:
-            self.max_per_minute = max(0, limit)
-            self._events.clear()
-
-    def acquire(self) -> None:
-        if self.max_per_minute <= 0:
-            return
-        while True:
-            with self._lock:
-                now = time.time()
-                window = now - 60.0
-                events = self._events
-                while events and events[0] <= window:
-                    events.popleft()
-                if len(events) < self.max_per_minute:
-                    events.append(now)
-                    return
-                sleep_for = max(events[0] + 60.0 - now, 0.0)
-            time.sleep(min(sleep_for if sleep_for > 0 else 0.05, 1.0))
 
 class BinanceWrapper:
 
@@ -113,6 +79,7 @@ class BinanceWrapper:
             msg = str(e)
             if "-4046" in msg or "No need to change margin type" in msg:
                 assume_ok = True
+                self._log(f"change_margin_type({sym}->{target}) says already correct (-4046).", lvl="warn")
             else:
                 self._log(f"change_margin_type({sym}->{target}) raised {type(e).__name__}: {e}", lvl="warn")
     
@@ -248,56 +215,96 @@ class BinanceWrapper:
             return math.ceil(float(value) / float(step)) * float(step)
         except Exception:
             return float(value)
-
     
     def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
-        """Return a list of tradable USDT symbols. Optionally sort by 24h quote volume and trim to top_n."""
-        try:
-            if sort_by_volume:
-                # Use 24hr tickers sorted by quoteVolume
-                if self.account_type == "FUTURES":
-                    base = self._futures_base()
-                    url = f"{base}/v1/ticker/24hr"
-                else:
-                    base = self._spot_base()
-                    url = f"{base}/v3/ticker/24hr"
-                try:
-                    import requests
-                    r = requests.get(url, timeout=10)
-                    if r.status_code != 200:
-                        raise RuntimeError(f"HTTP {r.status_code}")
-                    data = r.json() or []
-                except Exception:
-                    data = []
-                items = []
-                for t in data:
-                    sym = t.get("symbol", "")
-                    if not sym.endswith("USDT"):
-                        continue
-                    try:
-                        vol = float(t.get("quoteVolume", 0.0))
-                    except Exception:
-                        vol = 0.0
-                    items.append((sym, vol))
-                items.sort(key=lambda x: x[1], reverse=True)
-                syms = [s for s,_ in items]
-                if top_n:
-                    syms = syms[:int(top_n)]
-                return syms
-            # Fallback to exchange info
-            if self.account_type == "FUTURES":
-                info = self.client.futures_exchange_info()
-                symbols = [s['symbol'] for s in info.get('symbols', []) if s.get('quoteAsset') == 'USDT' and s.get('contractType') != 'PERPETUAL_DELIVERING']
-            else:
-                info = self.client.get_exchange_info()
-                symbols = [s['symbol'] for s in info.get('symbols', []) if s.get('quoteAsset') == 'USDT' and s.get('status') == 'TRADING']
-            if sort_by_volume and symbols:
-                # If we couldn't fetch /24hr, just return unsorted list
-                pass
-            return symbols
-        except Exception:
-            return []
+        """
+        Robust symbol fetcher.
+        FUTURES: Return only USDT-M **PERPETUAL** symbols from /fapi/v1/exchangeInfo.
+        SPOT   : Return USDT quote symbols from /api/v3/exchangeInfo.
+        When sort_by_volume is requested, we sort the **allowed** set by 24h quoteVolume,
+        but we never add anything outside the allow-list.
+        """
+        import requests
 
+        def _safe_json(url: str, timeout: float = 10.0):
+            try:
+                r = requests.get(url, timeout=timeout)
+                if r.status_code == 200:
+                    return r.json()
+            except Exception:
+                return None
+            return None
+
+        acct = str(getattr(self, "account_type", "SPOT") or "SPOT").strip().upper()
+        allowed = set()
+
+        if acct.startswith("FUT"):
+            info = None
+            try:
+                info = self.client.futures_exchange_info()
+            except Exception:
+                info = None
+            if not info or not isinstance(info, dict) or "symbols" not in info:
+                info = _safe_json(f"{self._futures_base()}/v1/exchangeInfo") or {}
+
+            for s in (info or {}).get("symbols", []):
+                try:
+                    if (s.get("status") == "TRADING"
+                        and s.get("quoteAsset") == "USDT"
+                        and s.get("contractType") == "PERPETUAL"):
+                        allowed.add((s.get("symbol") or "").upper())
+                except Exception:
+                    continue
+
+            ordered = sorted(list(allowed))
+            if sort_by_volume and ordered:
+                vol_map = {}
+                data = _safe_json(f"{self._futures_base()}/v1/ticker/24hr") or []
+                for t in data:
+                    sym = (t.get("symbol") or "").upper()
+                    try:
+                        vol_map[sym] = float(t.get("quoteVolume") or 0.0)
+                    except Exception:
+                        vol_map[sym] = 0.0
+                ordered = sorted(ordered, key=lambda s: vol_map.get(s, 0.0), reverse=True)
+
+            if top_n:
+                ordered = ordered[:int(top_n)]
+            return ordered
+
+        # SPOT path
+        info = None
+        try:
+            info = self.client.get_exchange_info()
+        except Exception:
+            info = None
+        if not info or not isinstance(info, dict) or "symbols" not in info:
+            info = _safe_json(f"{self._spot_base()}/v3/exchangeInfo") or {}
+
+        for s in (info or {}).get("symbols", []):
+            try:
+                if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT":
+                    allowed.add((s.get("symbol") or "").upper())
+            except Exception:
+                continue
+
+        ordered = sorted(list(allowed))
+        if sort_by_volume and ordered:
+            vol_map = {}
+            data = _safe_json(f"{self._spot_base()}/v3/ticker/24hr") or []
+            for t in data:
+                sym = (t.get("symbol") or "").upper()
+                try:
+                    vol_map[sym] = float(t.get("quoteVolume") or 0.0)
+                except Exception:
+                    vol_map[sym] = 0.0
+            ordered = sorted(ordered, key=lambda s: vol_map.get(s, 0.0), reverse=True)
+
+        if top_n:
+            ordered = ordered[:int(top_n)]
+        return ordered
+
+    
     def _spot_base(self) -> str:
         # Public REST base for SPOT depending on testnet/production
         return "https://testnet.binance.vision/api" if ("demo" in self.mode.lower() or "test" in self.mode.lower()) else "https://api.binance.com/api"
@@ -333,11 +340,7 @@ class BinanceWrapper:
         self._symbol_info_cache_spot = {}
         self._symbol_info_cache_futures = None
         self._futures_dual_side_cache = None
-        default_rest_limit = 1800 if self.account_type == "FUTURES" else 1200
-        self._rest_requests_per_minute = int(default_rest_limit)
-        self._klines_rate_limiter = _SimpleRateLimiter(self._rest_requests_per_minute)
         getcontext().prec = 28
-        self._margin_log_squelch: set[tuple[str, str]] = set()
 
     # ---- internal helper for futures methods with recvWindow compatibility
     def _futures_call(self, method_name: str, allow_recv=True, **kwargs):
@@ -348,12 +351,6 @@ class BinanceWrapper:
             except TypeError:
                 pass
         return method(**kwargs)
-
-    def set_rest_rate_limit(self, requests_per_minute: int | None) -> None:
-        """Allow callers to lower the REST rate limit if needed."""
-        limit = int(requests_per_minute or 0)
-        self._rest_requests_per_minute = max(0, limit)
-        self._klines_rate_limiter.set_limit(self._rest_requests_per_minute)
 
     def futures_api_ok(self) -> tuple[bool, str | None]:
         """
@@ -540,42 +537,10 @@ class BinanceWrapper:
     def get_klines(self, symbol, interval, limit=500):
         source = (getattr(self, "indicator_source", "") or "").strip().lower()
         raw = None
-        limiter = getattr(self, "_klines_rate_limiter", None)
-        if limiter:
-            limiter.acquire()
-        attempts = 0
-        max_attempts = 5
-        delay = 1.0
         if source in ("", "binance futures", "binance_futures", "futures"):
-            while True:
-                try:
-                    raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-                    break
-                except BinanceAPIException as e:
-                    if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
-                        self._log(f"Rate limit hit fetching futures klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
-                        time.sleep(delay)
-                        attempts += 1
-                        delay = min(delay * 2, 30.0)
-                        if limiter:
-                            limiter.acquire()
-                        continue
-                    raise
+            raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
         elif source in ("binance spot", "binance_spot", "spot"):
-            while True:
-                try:
-                    raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-                    break
-                except BinanceAPIException as e:
-                    if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
-                        self._log(f"Rate limit hit fetching spot klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
-                        time.sleep(delay)
-                        attempts += 1
-                        delay = min(delay * 2, 30.0)
-                        if limiter:
-                            limiter.acquire()
-                        continue
-                    raise
+            raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
         elif source == "bybit":
             import requests, pandas as pd
             bybit_interval = self._bybit_interval(interval)
@@ -593,35 +558,9 @@ class BinanceWrapper:
         else:
             # fallback to account type
             if self.account_type == "FUTURES":
-                while True:
-                    try:
-                        raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-                        break
-                    except BinanceAPIException as e:
-                        if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
-                            self._log(f"Rate limit hit fetching futures klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
-                            time.sleep(delay)
-                            attempts += 1
-                            delay = min(delay * 2, 30.0)
-                            if limiter:
-                                limiter.acquire()
-                            continue
-                        raise
+                raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
             else:
-                while True:
-                    try:
-                        raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-                        break
-                    except BinanceAPIException as e:
-                        if getattr(e, "code", None) in (-1003, "-1003") and attempts < max_attempts:
-                            self._log(f"Rate limit hit fetching spot klines for {symbol} {interval}; sleeping {delay:.2f}s", lvl="warn")
-                            time.sleep(delay)
-                            attempts += 1
-                            delay = min(delay * 2, 30.0)
-                            if limiter:
-                                limiter.acquire()
-                            continue
-                        raise
+                raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
 
         cols = ['open_time','open','high','low','close','volume','close_time','qav','num_trades','taker_base','taker_quote','ignore']
         import pandas as pd
@@ -827,6 +766,18 @@ class BinanceWrapper:
         if pct > 0.0:
             bal = float(self.get_futures_available_balance() or 0.0)
             margin_budget = bal * (pct / 100.0)
+            # Respect cap PER SYMBOL across intervals: subtract current margin already tied to this symbol
+            try:
+                used_usd = 0.0
+                for p in (self.list_open_futures_positions() or []):
+                    if (p or {}).get('symbol','').upper() == sym:
+                        # prefer isolatedWallet, then initialMargin, else notional/leverage
+                        used_usd += float(p.get('isolatedWallet') or p.get('initialMargin') or (abs(p.get('notional') or 0.0) / max(lev, 1) ))
+                margin_budget = max(margin_budget - used_usd, 0.0)
+            except Exception:
+                # if anything goes wrong, fall back to original budget
+                pass
+
             qty = _floor_to_step((margin_budget * lev) / px, step)
             need_qty = max(minQty, _ceil_to_step(minNotional/px, step))
             if qty < need_qty:
@@ -961,192 +912,59 @@ class BinanceWrapper:
         return results
 
     def list_open_futures_positions(self):
-        def _safe_call(name: str):
-            try:
-                return getattr(self.client, name)()
-            except Exception:
-                return None
-
-        def _to_float(val, default: float = 0.0) -> float:
-            try:
-                if val is None:
-                    return float(default)
-                if isinstance(val, str):
-                    val = val.strip()
-                    if not val:
-                        return float(default)
-                return float(val)
-            except Exception:
-                return float(default)
-
-        def _norm_side(raw_side, position_amt) -> str:
-            side = str(raw_side or "BOTH").upper()
-            if side not in ("LONG", "SHORT"):
-                try:
-                    amt = float(position_amt)
-                    if amt > 0:
-                        return "LONG"
-                    if amt < 0:
-                        return "SHORT"
-                except Exception:
-                    pass
-                return "BOTH"
-            return side
-
-        combined: dict[tuple[str, str], dict] = {}
-
-        for name in ("futures_position_information", "futures_position_risk"):
-            rows = _safe_call(name) or []
-            for row in rows or []:
-                if not isinstance(row, dict):
-                    continue
-                sym = (row.get("symbol") or "").upper()
-                if not sym:
-                    continue
-                try:
-                    amt = float(row.get("positionAmt") or 0.0)
-                except Exception:
-                    amt = 0.0
-                side = _norm_side(row.get("positionSide"), amt)
-                key = (sym, side)
-                entry = combined.setdefault(key, {})
-                entry.update(row)
-
+        infos = None
         try:
-            account = self.client.futures_account() or {}
-            for row in account.get("positions", []) or []:
-                if not isinstance(row, dict):
-                    continue
-                sym = (row.get("symbol") or "").upper()
-                if not sym:
-                    continue
-                try:
-                    amt = float(row.get("positionAmt") or 0.0)
-                except Exception:
-                    amt = 0.0
-                side = _norm_side(row.get("positionSide"), amt)
-                key = (sym, side)
-                entry = combined.setdefault(key, {})
-                entry.update(row)
+            infos = self.client.futures_position_information()
         except Exception:
-            pass
-
-        out = []
-        for (sym, side), data in combined.items():
             try:
-                amt = _to_float(data.get("positionAmt"))
-                if abs(amt) <= 0.0:
-                    continue
-
-                mark = _to_float(data.get("markPrice"))
-                entry_price = _to_float(data.get("entryPrice"))
-                leverage = int(_to_float(data.get("leverage") or 0.0))
-
-                notional = _to_float(
-                    data.get("notional")
-                    or data.get("notionalValue")
-                    or data.get("notionalUsd")
-                )
-                if notional == 0.0 and mark:
-                    notional = abs(amt) * mark
-
-                iso_wallet_raw = data.get("isolatedWallet")
-                if iso_wallet_raw in (None, ""):
-                    iso_wallet_raw = data.get("isolatedMargin")
-                initial_margin_raw = data.get("initialMargin")
-                if initial_margin_raw in (None, ""):
-                    initial_margin_raw = data.get("positionInitialMargin")
-
-                maint_margin_raw = data.get("maintMargin")
-                if maint_margin_raw in (None, ""):
-                    maint_margin_raw = data.get("maintenanceMargin")
-
-                margin_ratio_raw = data.get("marginRatio")
-
-                update_time = None
-                for key_name in (
-                    "updateTime",
-                    "updateTimestamp",
-                    "time",
-                    "closeTime",
-                    "openTime",
-                ):
-                    if data.get(key_name):
-                        update_time = data.get(key_name)
-                        break
-
-                margin_type = data.get("marginType") or data.get("margin_type")
-                margin_type = str(margin_type or "").upper() or None
-
-                entry = {
-                    "symbol": sym,
-                    "positionSide": side,
-                    "positionAmt": amt,
-                    "entryPrice": entry_price,
-                    "markPrice": mark,
-                    "notional": notional,
-                    "initialMargin": _to_float(initial_margin_raw),
-                    "isolatedWallet": _to_float(iso_wallet_raw),
-                    "marginType": margin_type,
-                    "leverage": leverage,
-                    "unRealizedProfit": _to_float(
-                        data.get("unRealizedProfit", data.get("unrealizedProfit"))
-                    ),
-                    "liquidationPrice": _to_float(data.get("liquidationPrice")),
-                    "maintMargin": _to_float(maint_margin_raw),
-                    "marginBalance": _to_float(data.get("marginBalance")),
-                    "walletBalance": _to_float(data.get("walletBalance")),
-                    "marginRatio": _to_float(margin_ratio_raw) if margin_ratio_raw not in (None, "") else None,
-                }
-
-                if update_time is not None:
-                    entry["updateTime"] = update_time
-                    entry["time"] = update_time
-
-                out.append(entry)
+                infos = self.client.futures_position_risk()
             except Exception:
-                continue
-
-        if out:
-            return out
-
-        # Legacy fallback when the fast endpoints are unavailable
-        try:
-            acc = self.client.futures_account() or {}
-            for p in acc.get('positions', []):
-                try:
-                    amt = _to_float(p.get('positionAmt'))
+                infos = None
+        out = []
+        if not infos:
+            try:
+                acc = self.client.futures_account() or {}
+                for p in acc.get('positions', []):
+                    amt = float(p.get('positionAmt') or 0.0)
                     if abs(amt) <= 0.0:
                         continue
-                    sym = (p.get('symbol') or '').upper()
-                    if not sym:
-                        continue
-                    mark = _to_float(p.get('markPrice'))
-                    notional = _to_float(p.get('notional'))
-                    if notional == 0.0 and mark:
-                        notional = abs(amt) * mark
                     out.append({
-                        'symbol': sym,
-                        'positionSide': _norm_side(p.get('positionSide'), amt),
+                        'symbol': p.get('symbol'),
                         'positionAmt': amt,
-                        'notional': notional,
-                        'initialMargin': _to_float(p.get('initialMargin')), 
-                        'isolatedWallet': _to_float(p.get('isolatedWallet')), 
-                        'entryPrice': _to_float(p.get('entryPrice')),
-                        'markPrice': mark,
-                        'marginType': str(p.get('marginType') or '').upper() or None,
-                        'leverage': int(_to_float(p.get('leverage'))),
-                        'unRealizedProfit': _to_float(p.get('unRealizedProfit')),
-                        'liquidationPrice': _to_float(p.get('liquidationPrice')),
-                        'maintMargin': _to_float(p.get('maintMargin')), 
-                        'marginBalance': _to_float(p.get('marginBalance')),
-                        'walletBalance': _to_float(p.get('walletBalance')),
+                        'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
+                        'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
+                        'entryPrice': float(p.get('entryPrice') or 0.0),
+                        'markPrice': float(p.get('markPrice') or 0.0),
+                        'marginType': p.get('marginType'),
+                        'leverage': int(float(p.get('leverage') or 0)),
+                        'unRealizedProfit': float(p.get('unRealizedProfit') or 0.0),
+                        'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
+                    })
+            except Exception:
+                pass
+        else:
+            for p in infos or []:
+            # Enrich with notional/margins/ROI-friendly fields when present
+                try:
+                    amt = float(p.get('positionAmt') or 0.0)
+                    if abs(amt) <= 0.0:
+                        continue
+                    out.append({
+                        'symbol': p.get('symbol'),
+                        'positionAmt': amt,
+                        'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
+                        'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
+                        'entryPrice': float(p.get('entryPrice') or 0.0),
+                        'markPrice': float(p.get('markPrice') or 0.0),
+                        'marginType': p.get('marginType'),
+                        'leverage': int(float(p.get('leverage') or 0)),
+                        'unRealizedProfit': float(p.get('unRealizedProfit') or 0.0),
+                        'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
                     })
                 except Exception:
                     continue
-        except Exception:
-            pass
-
         return out
 
     
@@ -1761,14 +1579,3 @@ try:
     BinanceWrapper.place_futures_market_order = _place_futures_market_order_FLEX
 except Exception:
     pass
-
-    @staticmethod
-    def _quantize_step(value: float, step: float) -> float:
-        try:
-            if step <= 0:
-                return float(value)
-            s = ('%f' % step).rstrip('0').rstrip('.')
-            decs = len(s.split('.')[-1]) if '.' in s else 0
-            return float(f"{value:.{decs}f}")
-        except Exception:
-            return float(value)
