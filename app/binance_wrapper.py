@@ -119,6 +119,25 @@ class BinanceWrapper:
             return 1.0
         return 2.0
 
+    @staticmethod
+    def _format_quantity_for_order(value: float, step: float | None = None) -> str:
+        try:
+            if value is None:
+                return "0"
+            from decimal import Decimal, ROUND_DOWN
+            quant = Decimal(str(value))
+            if step and float(step) > 0:
+                step_dec = Decimal(str(step))
+                quant = quant.quantize(step_dec, rounding=ROUND_DOWN)
+            quant = quant.normalize()
+            text_value = format(quant, "f")
+            text_value = text_value.rstrip("0").rstrip(".") if "." in text_value else text_value
+            return text_value if text_value else "0"
+        except Exception:
+            try:
+                return f"{float(value):.8f}".rstrip("0").rstrip(".")
+            except Exception:
+                return "0"
     def _install_request_throttler(self) -> None:
         client = getattr(self, "client", None)
         if not client or getattr(client, "_bw_throttled", False):
@@ -1035,7 +1054,8 @@ class BinanceWrapper:
             if dual and not pos_side:
                 pos_side = 'SHORT' if side_up == 'SELL' else 'LONG'
 
-            params = dict(symbol=sym, side=side_up, type='MARKET', quantity=str(qty))
+            qty_str = self._format_quantity_for_order(qty, step)
+            params = dict(symbol=sym, side=side_up, type='MARKET', quantity=qty_str)
             if dual and pos_side:
                 params['positionSide'] = pos_side
 
@@ -1053,7 +1073,13 @@ class BinanceWrapper:
             q = float(qty or 0)
             if q <= 0:
                 return {'ok': False, 'error': 'qty<=0'}
-            params = dict(symbol=sym, side=(side or 'SELL').upper(), type='MARKET', quantity=str(q))
+            try:
+                filters = self.get_futures_symbol_filters(sym) or {}
+                step = float(filters.get('stepSize') or 0.0)
+            except Exception:
+                step = 0.0
+            qty_str = self._format_quantity_for_order(q, step)
+            params = dict(symbol=sym, side=(side or 'SELL').upper(), type='MARKET', quantity=qty_str)
             if position_side:
                 params['positionSide'] = position_side
             else:
@@ -1074,6 +1100,11 @@ class BinanceWrapper:
         """
         try:
             sym = (symbol or '').upper()
+            try:
+                filters = self.get_futures_symbol_filters(sym) or {}
+                step = float(filters.get('stepSize') or 0.0)
+            except Exception:
+                step = 0.0
             dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
             rows = self.list_open_futures_positions() or []
             closed = 0
@@ -1086,7 +1117,7 @@ class BinanceWrapper:
                 if abs(amt) < 1e-12:
                     continue
                 side = 'SELL' if amt > 0 else 'BUY'
-                params = dict(symbol=sym, side=side, type='MARKET', quantity=str(abs(amt)))
+                params = dict(symbol=sym, side=side, type='MARKET', quantity=self._format_quantity_for_order(abs(amt), step))
                 if dual:
                     params['positionSide'] = 'LONG' if amt > 0 else 'SHORT'
                 else:
@@ -1129,7 +1160,13 @@ class BinanceWrapper:
                         continue
                     side = 'SELL' if amt > 0 else 'BUY'
                     qty = abs(amt)
-                    params = dict(symbol=sym, side=side, type='MARKET', quantity=str(qty))
+                    try:
+                        filters = self.get_futures_symbol_filters(sym) or {}
+                        step = float(filters.get('stepSize') or 0.0)
+                    except Exception:
+                        step = 0.0
+                    qty_str = self._format_quantity_for_order(qty, step)
+                    params = dict(symbol=sym, side=side, type='MARKET', quantity=qty_str)
                     if dual:
                         params['positionSide'] = 'LONG' if amt > 0 else 'SHORT'
                     info = self.client.futures_create_order(**params)
@@ -1297,7 +1334,7 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
         if not v:
             # Some symbols do not report marginType even after a successful change.
             # If Binance doesn't give us an answer, assume success and continue.
-            self._log(f"margin_type probe returned blank for {sym}; assuming {want_mm}", lvl='warn')
+            self._log(f"margin_type probe returned blank for {sym}; assuming {want_mm}", lvl='info')
             break
         try:
             net_amt = abs(float(self._futures_net_position_amt(sym)))
@@ -1470,7 +1507,13 @@ def _bw_place_futures_market_order(self, symbol: str, side: str, percent_balance
         qty, err = self.adjust_qty_to_filters_futures(sym, qty, px)
         if err: return {'ok': False, 'error': err, 'computed': {'qty': qty, 'price': px}}
         dual = bool(self.get_futures_dual_side())
-        params = dict(symbol=sym, side=side.upper(), type='MARKET', quantity=str(qty))
+        try:
+            filters = self.get_futures_symbol_filters(sym) or {}
+            step = float(filters.get('stepSize') or 0.0)
+        except Exception:
+            step = 0.0
+        qty_str = self._format_quantity_for_order(qty, step)
+        params = dict(symbol=sym, side=side.upper(), type='MARKET', quantity=qty_str)
         if dual:
             params['positionSide'] = (position_side or ('LONG' if side.upper()=='BUY' else 'SHORT'))
         try:
@@ -1536,8 +1579,9 @@ def _bw_close_futures_position(self, symbol: str):
             need = (min_notional / max(1e-12, last_px))
             qty = _ceil_to_step(max(qty, need), step) if step > 0 else max(qty, need)
 
+        qty_str = self._format_quantity_for_order(qty, step)
         # Primary attempt: MARKET reduceOnly (best-effort)
-        params = dict(symbol=sym, side=side, type='MARKET', quantity=str(qty))
+        params = dict(symbol=sym, side=side, type='MARKET', quantity=qty_str)
         if dual:
             params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
         else:
@@ -1556,7 +1600,7 @@ def _bw_close_futures_position(self, symbol: str):
                         px = last_px if last_px>0 else (1.0 if side=='BUY' else 1.0)
                     px = _round_to_tick(px, tick) if tick>0 else px
                     alt = dict(symbol=sym, side=side, type='LIMIT', timeInForce='IOC',
-                               price=str(px), quantity=str(qty))
+                               price=str(px), quantity=qty_str)
                     if dual:
                         alt['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
                     else:
@@ -1692,7 +1736,7 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
 
     # reduceOnly & positionSide
     side_up = (side or '').upper()
-    params = dict(symbol=sym, side=side_up, type='MARKET', quantity=str(qty))
+    params = dict(symbol=sym, side=side_up, type='MARKET', quantity=qty_str)
     if bool(kwargs.get('reduce_only')):
         params['reduceOnly'] = True
     if dual:
@@ -1839,7 +1883,9 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
 
     # Build order params
     # MARKET orders: no TIF/goodTillDate
-    params = dict(symbol=sym, side=side_up, type='MARKET', quantity=str(qty))
+
+    qty_str = self._format_quantity_for_order(qty, step)
+    params = dict(symbol=sym, side=side_up, type='MARKET', quantity=qty_str)
     if dual and pos_side:
         params['positionSide'] = pos_side
     if reduce_only and not (dual and pos_side):

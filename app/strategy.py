@@ -29,6 +29,24 @@ class StrategyEngine:
         self.can_open_cb = can_open_callback
         self._stop = False
 
+    def _notify_interval_closed(self, symbol: str, interval: str, position_side: str):
+        if not self.trade_cb:
+            return
+        try:
+            info = {
+                'symbol': symbol,
+                'interval': interval,
+                'side': position_side,
+                'position_side': position_side,
+                'event': 'close_interval',
+                'status': 'closed',
+                'ok': True,
+                'time': datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            self.trade_cb(info)
+        except Exception:
+            pass
+
     def stop(self):
         self._stop = True
 
@@ -45,13 +63,37 @@ class StrategyEngine:
         desired = (next_side or '').upper()
         if desired not in ('BUY', 'SELL'):
             return True
-        dual = False
         try:
             dual = bool(self.binance.get_futures_dual_side())
         except Exception:
             dual = False
-        closed_any = False
         opp = 'SELL' if desired == 'BUY' else 'BUY'
+        opp_key = (symbol, interval, opp)
+
+        if dual:
+            entry = self._leg_ledger.get(opp_key) if hasattr(self, '_leg_ledger') else None
+            try:
+                qty_to_close = float(entry.get('qty', 0.0)) if entry else 0.0
+            except Exception:
+                qty_to_close = 0.0
+            if qty_to_close <= 0:
+                return True
+            pos_side = 'SHORT' if opp == 'SELL' else 'LONG'
+            try:
+                res = self.binance.close_futures_leg_exact(symbol, qty_to_close, side=desired, position_side=pos_side)
+                self._notify_interval_closed(symbol, interval, opp)
+            except Exception as exc:
+                self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
+                return False
+            if not (isinstance(res, dict) and res.get('ok')):
+                self.log(f"{symbol}@{interval} close-opposite failed: {res}")
+                return False
+            self._leg_ledger.pop(opp_key, None)
+            if hasattr(self, '_last_order_time'):
+                self._last_order_time.pop(opp_key, None)
+            return True
+
+        closed_any = False
         for p in positions:
             try:
                 if str(p.get('symbol') or '').upper() != symbol:
@@ -59,16 +101,16 @@ class StrategyEngine:
                 amt = float(p.get('positionAmt') or 0.0)
                 if desired == 'BUY' and amt < 0:
                     qty = abs(amt)
-                    pos_side = 'SHORT' if dual else None
-                    res = self.binance.close_futures_leg_exact(symbol, qty, side='BUY', position_side=pos_side)
+                    res = self.binance.close_futures_leg_exact(symbol, qty, side='BUY', position_side=None)
+                    self._notify_interval_closed(symbol, interval, 'SELL')
                     if not (isinstance(res, dict) and res.get('ok')):
                         self.log(f"{symbol}@{interval} close-short failed: {res}")
                         return False
                     closed_any = True
                 elif desired == 'SELL' and amt > 0:
                     qty = abs(amt)
-                    pos_side = 'LONG' if dual else None
-                    res = self.binance.close_futures_leg_exact(symbol, qty, side='SELL', position_side=pos_side)
+                    res = self.binance.close_futures_leg_exact(symbol, qty, side='SELL', position_side=None)
+                    self._notify_interval_closed(symbol, interval, 'BUY')
                     if not (isinstance(res, dict) and res.get('ok')):
                         self.log(f"{symbol}@{interval} close-long failed: {res}")
                         return False
@@ -86,7 +128,6 @@ class StrategyEngine:
                 if key[0] == symbol and key[2] == opp:
                     self._leg_ledger.pop(key, None)
         return True
-
     # ---- indicator computation (uses pandas_ta when available)
     def compute_indicators(self, df):
         cfg = self.config['indicators']
@@ -255,6 +296,7 @@ class StrategyEngine:
                                 if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'BUY')
                             except Exception:
                                 pass
+                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'BUY')
                             self.log(f"Closed LONG for {cw['symbol']}@{cw.get('interval')} (RSI ≥ {exit_up}).")
                 except Exception:
                     pass
@@ -272,6 +314,7 @@ class StrategyEngine:
                                 if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'SELL')
                             except Exception:
                                 pass
+                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'SELL')
                             self.log(f"Closed SHORT for {cw['symbol']}@{cw.get('interval')} (RSI ≤ {exit_dn}).")
                 except Exception:
                     pass

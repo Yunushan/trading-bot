@@ -15,7 +15,6 @@ This repository provides a desktop assistant for building and exercising trading
 
 
 
----
 
 ## Requirements
 - Python 3.10+ (3.11 or 3.12 recommended)
@@ -108,5 +107,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+See [LICENSE](LICENSE) for the official terms.
+
+
 
 
