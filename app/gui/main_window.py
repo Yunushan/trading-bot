@@ -8,7 +8,7 @@ import copy, threading
 from datetime import datetime, timezone
 
 from ..config import DEFAULT_CONFIG
-from ..binance_wrapper import BinanceWrapper
+from ..binance_wrapper import BinanceWrapper, normalize_margin_ratio
 from ..strategy import StrategyEngine
 from ..workers import StopWorker, StartWorker
 
@@ -119,16 +119,7 @@ class _PositionsWorker(QtCore.QObject):
             pnl_roi_str = f"{pnl:+.2f} USDT ({roi:+.2f}%)"
 
             # Prefer Binance-provided marginRatio when available, otherwise approximate.
-            ratio = 0.0
-            try:
-                mr_raw = p.get('marginRatio')
-                if isinstance(mr_raw, str) and mr_raw.endswith('%'):
-                    mr_raw = mr_raw.rstrip('%')
-                mr = float(mr_raw or 0.0)
-                if mr > 0.0:
-                    ratio = mr * 100.0 if mr <= 1.0 else mr
-            except Exception:
-                ratio = 0.0
+            ratio = normalize_margin_ratio(p.get('marginRatio'))
             if ratio <= 0.0:
                 # Margin Ratio (isolated) ~= (maintMargin + unrealizedLoss) / isolatedWallet
                 try:
@@ -708,11 +699,25 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         side_key = 'L' if amt > 0 else 'S'
                         margin_usdt = float(p.get('isolatedWallet') or p.get('initialMargin') or 0.0)
                         pnl = float(p.get('unRealizedProfit') or 0.0)
-                        margin_ratio = float(p.get('marginRatio') or 0.0)
+                        margin_ratio = normalize_margin_ratio(p.get('marginRatio') or p.get('margin_ratio'))
+                        if margin_ratio <= 0.0 and margin_usdt > 0:
+                            try:
+                                maint = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
+                            except Exception:
+                                maint = 0.0
+                            unrealized_loss = abs(pnl) if pnl < 0 else 0.0
+                            margin_balance = margin_usdt + (pnl if pnl > 0 else 0.0)
+                            denom = margin_balance if margin_balance > 0.0 else margin_usdt
+                            if denom > 0.0:
+                                margin_ratio = ((maint + unrealized_loss) / denom) * 100.0
                         if margin_usdt > 0:
                             pnl_roi = f"{pnl:+.2f} USDT ({(pnl / margin_usdt * 100.0):+.2f}%)"
                         else:
                             pnl_roi = f"{pnl:+.2f} USDT"
+                        try:
+                            update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
+                        except Exception:
+                            update_time = 0
                         data = {
                             'symbol': sym,
                             'qty': abs(amt),
@@ -722,6 +727,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'margin_ratio': margin_ratio,
                             'pnl_roi': pnl_roi,
                             'side_key': side_key,
+                            'update_time': update_time,
                         }
                         rec = positions_map.get((sym, side_key))
                         if rec is None:
@@ -738,6 +744,50 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         rec['data'] = data
                         rec['status'] = 'Active'
                         rec['close_time'] = '-'
+                        intervals = {str(iv).strip().lower() for iv in (self._entry_intervals.get(sym, {}) or {}).get(side_key, set()) if str(iv).strip()}
+                        entry_times_map = getattr(self, '_entry_times_by_iv', {}) or {}
+                        try:
+                            for (sym_key, side_key_key, iv_key), ts in entry_times_map.items():
+                                if sym_key == sym and side_key_key == side_key and iv_key:
+                                    intervals.add(str(iv_key).strip().lower())
+                        except Exception:
+                            pass
+                        intervals.update(str(iv).strip().lower() for iv in self._collect_strategy_intervals(sym, side_key) if str(iv).strip())
+                        if intervals:
+                            rec['entry_tf'] = ', '.join(sorted(intervals, key=_mw_interval_sort_key))
+                        open_times = []
+                        for iv in intervals:
+                            ts = entry_times_map.get((sym, side_key, iv))
+                            dt_obj = self._parse_any_datetime(ts)
+                            if dt_obj:
+                                try:
+                                    epoch = dt_obj.timestamp()
+                                except Exception:
+                                    epoch = None
+                                if epoch is not None:
+                                    open_times.append((epoch, dt_obj))
+                        if not open_times:
+                            base_ts = getattr(self, '_entry_times', {}).get((sym, side_key)) if hasattr(self, '_entry_times') else None
+                            dt_obj = self._parse_any_datetime(base_ts)
+                            if dt_obj:
+                                try:
+                                    epoch = dt_obj.timestamp()
+                                except Exception:
+                                    epoch = None
+                                if epoch is not None:
+                                    open_times.append((epoch, dt_obj))
+                        if not open_times and data.get('update_time'):
+                            dt_obj = self._parse_any_datetime(data.get('update_time'))
+                            if dt_obj:
+                                try:
+                                    epoch = dt_obj.timestamp()
+                                except Exception:
+                                    epoch = None
+                                if epoch is not None:
+                                    open_times.append((epoch, dt_obj))
+                        if open_times:
+                            open_times.sort(key=lambda item: item[0])
+                            rec['open_time'] = self._format_display_time(open_times[0][1])
                         positions_map[(sym, side_key)] = rec
                     except Exception:
                         continue
@@ -782,7 +832,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                 qty_show = float(data.get('qty') or 0.0)
                 mark = float(data.get('mark') or 0.0)
                 size_usdt = float(data.get('size_usdt') or (qty_show * mark))
-                mr = float(data.get('margin_ratio') or 0.0)
+                mr = normalize_margin_ratio(data.get('margin_ratio'))
                 margin_usdt = float(data.get('margin_usdt') or 0.0)
                 pnl_roi = data.get('pnl_roi')
                 side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
@@ -999,36 +1049,66 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
         except Exception:
             pass
 
-    def _format_display_time(self, value):
+    def _parse_any_datetime(self, value):
         from datetime import datetime as _dt
         if value is None:
-            return '-'
-        try:
-            if isinstance(value, _dt):
-                dt = value
-            else:
-                s = str(value).strip()
-                if not s:
-                    return '-'
-                s_norm = s.replace('/', '-')
-                dt = None
-                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%fZ", "%d-%m-%Y %H:%M:%S"):
-                    try:
-                        dt = _dt.strptime(s_norm, fmt)
-                        break
-                    except Exception:
-                        continue
-                if dt is None:
-                    try:
-                        dt = _dt.fromisoformat(s_norm.replace('Z', '+00:00'))
-                    except Exception:
-                        return s
-            return dt.strftime("%d-%m-%Y %H:%M:%S")
-        except Exception:
+            return None
+        if isinstance(value, _dt):
             try:
-                return str(value)
+                return value.astimezone() if value.tzinfo else value
+            except Exception:
+                return value
+        if isinstance(value, (int, float)):
+            try:
+                raw = float(value)
+                if raw > 1e12:
+                    raw /= 1000.0
+                return _dt.fromtimestamp(raw, tz=timezone.utc).astimezone()
+            except Exception:
+                pass
+        try:
+            s = str(value).strip()
+        except Exception:
+            return None
+        if not s:
+            return None
+        s_norm = s.replace('/', '-')
+        patterns = (
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S.%f',
+            '%Y-%m-%dT%H:%M:%S.%fZ',
+            '%d-%m-%Y %H:%M:%S',
+            '%d.%m.%Y %H:%M:%S',
+        )
+        for fmt in patterns:
+            try:
+                dt = _dt.strptime(s_norm, fmt)
+                if fmt.endswith('Z'):
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone() if dt.tzinfo else dt
+            except Exception:
+                continue
+        try:
+            dt = _dt.fromisoformat(s_norm.replace('Z', '+00:00'))
+            return dt.astimezone() if dt.tzinfo else dt
+        except Exception:
+            return None
+
+    def _format_display_time(self, value):
+        dt = self._parse_any_datetime(value)
+        if dt is None:
+            try:
+                return str(value) if value not in (None, '') else '-'
             except Exception:
                 return '-'
+        try:
+            if getattr(dt, 'tzinfo', None):
+                dt = dt.astimezone()
+        except Exception:
+            pass
+        return dt.strftime('%d.%m.%Y %H:%M:%S')
+
 
     def _parse_pos_interval_label(self, label: str) -> int:
         # return milliseconds
@@ -1050,6 +1130,34 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
 
     
     
+    def _collect_strategy_intervals(self, symbol: str, side_key: str):
+        intervals = set()
+        try:
+            engines = getattr(self, 'strategy_engines', {}) or {}
+            sym_upper = (symbol or '').upper()
+            side_key_upper = (side_key or '').upper()
+            for eng in engines.values():
+                cfg = getattr(eng, 'config', {}) or {}
+                cfg_sym = str(cfg.get('symbol') or '').upper()
+                if not cfg_sym or cfg_sym != sym_upper:
+                    continue
+                interval = str(cfg.get('interval') or '').strip()
+                if not interval:
+                    continue
+                side_pref = str(cfg.get('side') or 'BOTH').upper()
+                if side_pref in ('BUY', 'LONG'):
+                    allowed = {'L'}
+                elif side_pref in ('SELL', 'SHORT'):
+                    allowed = {'S'}
+                else:
+                    allowed = {'L', 'S'}
+                if side_key_upper in allowed:
+                    intervals.add(interval)
+        except Exception:
+            pass
+        return intervals
+
+
     def _apply_positions_refresh_settings(self):
         try:
             self.req_pos_start.emit(5000)
@@ -1677,6 +1785,113 @@ def _mw_reconfigure_positions_worker(self):
         pass
 
 
+def _mw_collect_strategy_intervals(self, symbol: str, side_key: str):
+    intervals = set()
+    try:
+        engines = getattr(self, 'strategy_engines', {}) or {}
+        sym_upper = (symbol or '').upper()
+        side_key_upper = (side_key or '').upper()
+        for eng in engines.values():
+            cfg = getattr(eng, 'config', {}) or {}
+            cfg_sym = str(cfg.get('symbol') or '').upper()
+            if not cfg_sym or cfg_sym != sym_upper:
+                continue
+            interval = str(cfg.get('interval') or '').strip()
+            if not interval:
+                continue
+            side_pref = str(cfg.get('side') or 'BOTH').upper()
+            if side_pref in ('BUY', 'LONG'):
+                allowed = {'L'}
+            elif side_pref in ('SELL', 'SHORT'):
+                allowed = {'S'}
+            else:
+                allowed = {'L', 'S'}
+            if side_key_upper in allowed:
+                intervals.add(interval)
+    except Exception:
+        pass
+    return intervals
+
+
+def _mw_parse_any_datetime(self, value):
+    from datetime import datetime as _dt
+    if value is None:
+        return None
+    if isinstance(value, _dt):
+        try:
+            return value.astimezone() if value.tzinfo else value
+        except Exception:
+            return value
+    if isinstance(value, (int, float)):
+        try:
+            raw = float(value)
+            if raw > 1e12:
+                raw /= 1000.0
+            return _dt.fromtimestamp(raw, tz=timezone.utc).astimezone()
+        except Exception:
+            pass
+    try:
+        s = str(value).strip()
+    except Exception:
+        return None
+    if not s:
+        return None
+    s_norm = s.replace('/', '-')
+    patterns = (
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%dT%H:%M:%S',
+        '%Y-%m-%dT%H:%M:%S.%f',
+        '%Y-%m-%dT%H:%M:%S.%fZ',
+        '%d-%m-%Y %H:%M:%S',
+        '%d.%m.%Y %H:%M:%S',
+    )
+    for fmt in patterns:
+        try:
+            dt = _dt.strptime(s_norm, fmt)
+            if fmt.endswith('Z'):
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone() if dt.tzinfo else dt
+        except Exception:
+            continue
+    try:
+        dt = _dt.fromisoformat(s_norm.replace('Z', '+00:00'))
+        return dt.astimezone() if dt.tzinfo else dt
+    except Exception:
+        return None
+
+
+def _mw_format_display_time(self, value):
+    dt = _mw_parse_any_datetime(self, value)
+    if dt is None:
+        try:
+            return str(value) if value not in (None, '') else '-'
+        except Exception:
+            return '-'
+    try:
+        if getattr(dt, 'tzinfo', None):
+            dt = dt.astimezone()
+    except Exception:
+        pass
+    return dt.strftime('%d.%m.%Y %H:%M:%S')
+
+
+def _mw_interval_sort_key(label: str):
+    try:
+        lbl = (label or '').strip().lower()
+        if not lbl:
+            return (float('inf'), '')
+        import re as _re
+        match = _re.match(r'(\d+(?:\.\d+)?)([smhdw]?)', lbl)
+        if not match:
+            return (float('inf'), lbl)
+        value = float(match.group(1))
+        unit = match.group(2) or 'm'
+        factor = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}.get(unit, 60)
+        return (value * factor, lbl)
+    except Exception:
+        return (float('inf'), str(label))
+
+
 def _gui_flush_log_buffer(self):
     try:
         if not hasattr(self, '_log_buf') or not self._log_buf:
@@ -1718,6 +1933,18 @@ def _gui_flush_log_buffer(self):
         self.log_edit.verticalScrollBar().setValue(self.log_edit.verticalScrollBar().maximum())
     except Exception:
         pass
+
+try:
+    MainWindow._collect_strategy_intervals = _mw_collect_strategy_intervals
+except Exception:
+    pass
+
+try:
+    MainWindow._parse_any_datetime = _mw_parse_any_datetime
+    MainWindow._format_display_time = _mw_format_display_time
+except Exception:
+    pass
+
 
 try:
     MainWindow._setup_log_buffer = _gui_setup_log_buffer

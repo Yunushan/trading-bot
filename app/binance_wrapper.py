@@ -34,6 +34,40 @@ def _coerce_interval_seconds(interval: str | None) -> float:
     except Exception:
         return 60.0
 
+def normalize_margin_ratio(value):
+    """Convert Binance margin ratio payloads to percentage values."""
+    try:
+        if value is None:
+            return 0.0
+        if isinstance(value, str):
+            txt = value.strip()
+            if not txt:
+                return 0.0
+            if txt.endswith('%'):
+                txt = txt[:-1]
+            value = float(txt)
+        else:
+            value = float(value)
+    except Exception:
+        return 0.0
+    if value <= 0.0:
+        return 0.0
+    return value * 100.0 if value <= 1.0 else value
+
+def _coerce_int(value):
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return 0
+        if value is None:
+            return 0
+        return int(float(value))
+    except Exception:
+        return 0
+
+
+
 
 class _SimpleRateLimiter:
     def __init__(self, max_per_minute: float = 1100.0, min_interval: float = 0.08, safety_margin: float = 0.85):
@@ -1201,13 +1235,15 @@ class BinanceWrapper:
                         'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
                         'maintMargin': float(p.get('maintMargin') or 0.0) if isinstance(p, dict) else 0.0,
-                        'marginRatio': float(p.get('marginRatio') or 0.0) if isinstance(p, dict) else 0.0,
+                        'marginRatio': normalize_margin_ratio(p.get('marginRatio')),
                         'entryPrice': float(p.get('entryPrice') or 0.0),
                         'markPrice': float(p.get('markPrice') or 0.0),
                         'marginType': p.get('marginType'),
                         'leverage': int(float(p.get('leverage') or 0)),
                         'unRealizedProfit': float(p.get('unRealizedProfit') or 0.0),
                         'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
+                        'positionSide': (p.get('positionSide') or p.get('positionside')),
+                        'updateTime': _coerce_int(p.get('updateTime') or p.get('update_time')),
                     })
             except Exception:
                 pass
@@ -1225,13 +1261,15 @@ class BinanceWrapper:
                         'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
                         'maintMargin': float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0) if isinstance(p, dict) else 0.0,
-                        'marginRatio': float(p.get('marginRatio') or 0.0) if isinstance(p, dict) else 0.0,
+                        'marginRatio': normalize_margin_ratio(p.get('marginRatio')),
                         'entryPrice': float(p.get('entryPrice') or 0.0),
                         'markPrice': float(p.get('markPrice') or 0.0),
                         'marginType': p.get('marginType'),
                         'leverage': int(float(p.get('leverage') or 0)),
                         'unRealizedProfit': float(p.get('unRealizedProfit') or 0.0),
                         'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
+                        'positionSide': (p.get('positionSide') or p.get('positionside')),
+                        'updateTime': _coerce_int(p.get('updateTime') or p.get('update_time')),
                     })
                 except Exception:
                     continue
