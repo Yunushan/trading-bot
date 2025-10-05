@@ -1,6 +1,21 @@
+<p style="color:#b71c1c; font-weight:bold; text-align:center;">
+  WARNING: Binance Trading Bot is still in BETA. It may contain mistakes, bugs, or errors.
+</p>
+<p style="color:#b71c1c; text-align:center;">
+  Neither the author nor this bot accepts any legal responsibility for trading outcomes. Use it at your own risk.
+</p>
+
 # Binance Trading Bot
 
 A PyQt6 desktop GUI for spot and futures trading on Binance.
+
+## Introduction
+
+This repository provides a desktop assistant for building and exercising trading strategies on Binance. The application focuses on transparency and configurability, yet it is an experimental project that should be evaluated carefully on demo accounts before live deployment. Attachments such as hero banners or platform-specific previews can help you showcase the bot inside documentation or release notes.
+
+
+
+---
 
 ## Requirements
 - Python 3.10+ (3.11 or 3.12 recommended)
@@ -70,5 +85,28 @@ python3 main.py
 ### Safe Exit
 Closing the window or pressing Alt+F4 will market-close all active positions (best effort).
 
+---
+
 ## License
-MIT
+
+Copyright (c) 2025 Binance Trading Bot contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+

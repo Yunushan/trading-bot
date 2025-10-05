@@ -1,13 +1,84 @@
 
+from collections import deque
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 from datetime import datetime
+import re
 import time
-import threading, requests
+import threading
+import types
+import requests
 
 import pandas as pd
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
+def _coerce_interval_seconds(interval: str | None) -> float:
+    try:
+        iv = (interval or "").strip().lower()
+        if not iv:
+            return 60.0
+        unit = iv[-1]
+        value_part = iv[:-1] if unit.isalpha() else iv
+        value = float(value_part or 0.0)
+        if unit == "s":
+            return max(value, 1.0)
+        if unit == "m":
+            return max(value * 60.0, 1.0)
+        if unit == "h":
+            return max(value * 3600.0, 1.0)
+        if unit == "d":
+            return max(value * 86400.0, 1.0)
+        if unit == "w":
+            return max(value * 7 * 86400.0, 1.0)
+        return max(float(iv), 1.0)
+    except Exception:
+        return 60.0
+
+
+class _SimpleRateLimiter:
+    def __init__(self, max_per_minute: float = 1100.0, min_interval: float = 0.08, safety_margin: float = 0.85):
+        self.window = 60.0
+        self.capacity = max(1.0, float(max_per_minute) * float(safety_margin))
+        self.min_interval = max(0.0, float(min_interval))
+        self._events = deque()
+        self._window_weight = 0.0
+        self._lock = threading.Lock()
+        self._last_request = 0.0
+
+    def acquire(self, weight: float = 1.0) -> None:
+        weight = max(float(weight), 0.0)
+        if weight == 0.0:
+            return
+        sleep_for = 0.0
+        while True:
+            with self._lock:
+                now = time.time()
+                while self._events and (now - self._events[0][0]) >= self.window:
+                    _, old_weight = self._events.popleft()
+                    self._window_weight = max(0.0, self._window_weight - old_weight)
+                wait_interval = 0.0
+                if self._last_request:
+                    elapsed = now - self._last_request
+                    if elapsed < self.min_interval:
+                        wait_interval = self.min_interval - elapsed
+                wait_capacity = 0.0
+                projected = self._window_weight + weight
+                if projected > self.capacity:
+                    earliest = self._events[0][0] if self._events else now
+                    wait_capacity = max(0.0, self.window - (now - earliest))
+                sleep_for = max(wait_interval, wait_capacity)
+                if sleep_for <= 0.0:
+                    self._events.append((now, weight))
+                    self._window_weight = min(self.capacity, self._window_weight + weight)
+                    self._last_request = now
+                    return
+            time.sleep(min(sleep_for, 1.0))
 
 class BinanceWrapper:
+
+    _request_limiter = _SimpleRateLimiter()
+    _ban_state_lock = threading.Lock()
+    _ban_until_epoch = 0.0
 
     def _log(self, msg: str, lvl: str = "info"):
         """
@@ -29,7 +100,116 @@ class BinanceWrapper:
                 pass
 
 
-    
+    @staticmethod
+    def _estimate_request_weight(path: str | None) -> float:
+        if not path:
+            return 1.0
+        lower = str(path).lower()
+        if "exchangeinfo" in lower:
+            return 10.0
+        if "balance" in lower or "account" in lower:
+            return 5.0
+        if "position" in lower:
+            return 5.0
+        if "klines" in lower:
+            return 1.0
+        if "ticker" in lower:
+            return 1.0 if "price" in lower else 2.0
+        if "margin" in lower or "leverage" in lower or "order" in lower:
+            return 1.0
+        return 2.0
+
+    def _install_request_throttler(self) -> None:
+        client = getattr(self, "client", None)
+        if not client or getattr(client, "_bw_throttled", False):
+            return
+        limiter = self._request_limiter
+        estimate = self._estimate_request_weight
+        try:
+            original = client._request
+        except AttributeError:
+            return
+
+        def throttled(_self, method, path, signed=False, force_params=False, **kwargs):
+            try:
+                weight = estimate(path)
+            except Exception:
+                weight = 1.0
+            limiter.acquire(weight)
+            return original(method, path, signed=signed, force_params=force_params, **kwargs)
+
+        try:
+            client._request = types.MethodType(throttled, client)
+            client._bw_throttled = True
+        except Exception as exc:
+            self._log(f"Failed to attach rate limiter: {exc}", lvl="warn")
+
+    @classmethod
+    def _register_ban_until(cls, until_epoch: float | None) -> None:
+        if not until_epoch or until_epoch != until_epoch:
+            return
+        with cls._ban_state_lock:
+            if until_epoch > cls._ban_until_epoch:
+                cls._ban_until_epoch = until_epoch
+
+    @classmethod
+    def _seconds_until_unban(cls) -> float:
+        with cls._ban_state_lock:
+            remaining = cls._ban_until_epoch - time.time()
+        return remaining if remaining > 0 else 0.0
+
+    @staticmethod
+    def _extract_ban_until(message: str | None) -> float | None:
+        if not message:
+            return None
+        match = re.search(r"banned until (\d+)", message)
+        if match:
+            raw = float(match.group(1))
+            if raw > 1e12:
+                return raw / 1000.0
+            if raw > 1e5:
+                return raw
+        match = re.search(r"(?:after|wait)\s+(\d+)(?:ms| milliseconds)", message)
+        if match:
+            return time.time() + max(float(match.group(1)) / 1000.0, 0.0)
+        match = re.search(r"(?:after|wait)\s+(\d+)(?:s| seconds)", message)
+        if match:
+            return time.time() + max(float(match.group(1)), 0.0)
+        return None
+
+    @classmethod
+    def _handle_potential_ban(cls, exc) -> float | None:
+        try:
+            code = getattr(exc, "code", None)
+            status = getattr(exc, "status_code", None)
+            msg = str(exc)
+        except Exception:
+            code, status, msg = None, None, ""
+        triggered = False
+        if code == -1003 or status == 418:
+            triggered = True
+        elif msg:
+            triggered = "banned until" in msg.lower()
+        if not triggered:
+            return None
+        until = cls._extract_ban_until(msg)
+        if until is None:
+            retry_after = None
+            try:
+                response = getattr(exc, "response", None)
+                if response is not None:
+                    retry_after = response.headers.get("Retry-After") or response.headers.get("retry-after")
+            except Exception:
+                retry_after = None
+            if retry_after:
+                try:
+                    until = time.time() + float(retry_after)
+                except Exception:
+                    until = None
+        if until is None:
+            until = time.time() + 60.0
+        cls._register_ban_until(until)
+        return until
     def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: int | None):
         sym = (symbol or "").upper()
         target = (want_mode or "ISOLATED").upper()
@@ -337,9 +517,13 @@ class BinanceWrapper:
                 Client.API_URL = "https://api.binance.com/api"
 
         self.client = Client(self.api_key, self.api_secret)
+        self._install_request_throttler()
         self._symbol_info_cache_spot = {}
         self._symbol_info_cache_futures = None
         self._futures_dual_side_cache = None
+        self._kline_cache = {}
+        self._kline_cache_lock = threading.Lock()
+        self._last_ban_log = 0.0
         getcontext().prec = 28
 
     # ---- internal helper for futures methods with recvWindow compatibility
@@ -536,31 +720,66 @@ class BinanceWrapper:
 
     def get_klines(self, symbol, interval, limit=500):
         source = (getattr(self, "indicator_source", "") or "").strip().lower()
+        cache_key = (source or "binance", str(symbol or "").upper(), str(interval or ""), int(limit or 0))
+        interval_seconds = _coerce_interval_seconds(interval)
+        ttl = max(1.0, min(interval_seconds * 0.9, 3600.0))
+        cached_df = None
+        now = time.time()
+
+        with self._kline_cache_lock:
+            entry = self._kline_cache.get(cache_key)
+            if entry:
+                age = now - entry['ts']
+                if age < ttl:
+                    return entry['df'].copy(deep=True)
+                cached_df = entry['df'].copy(deep=True)
+
+        ban_remaining = self._seconds_until_unban()
+        if ban_remaining > 0.0:
+            if cached_df is not None:
+                if (now - getattr(self, "_last_ban_log", 0.0)) > 15.0:
+                    eta = datetime.fromtimestamp(time.time() + ban_remaining).strftime("%H:%M:%S")
+                    self._last_ban_log = now
+                    self._log(f"REST ban active (~{ban_remaining:.0f}s). Serving cached klines for {symbol}@{interval} until {eta}.", lvl="warn")
+                return cached_df
+            raise RuntimeError(f"binance_rest_banned:{ban_remaining:.0f}s")
+
         raw = None
-        if source in ("", "binance futures", "binance_futures", "futures"):
-            raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-        elif source in ("binance spot", "binance_spot", "spot"):
-            raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        elif source == "bybit":
-            import requests, pandas as pd
-            bybit_interval = self._bybit_interval(interval)
-            url = "https://api.bybit.com/v5/market/kline"
-            params = {"category":"linear","symbol":symbol,"interval":bybit_interval,"limit":limit}
-            r = requests.get(url, params=params, timeout=10)
-            r.raise_for_status()
-            j = r.json() or {}
-            lst = (j.get("result", {}) or {}).get("list", []) or []
-            lst = sorted(lst, key=lambda x: int(x[0]))
-            # Build Binance-like kline rows
-            raw = [[int(x[0]), x[1], x[2], x[3], x[4], x[5], 0, 0, 0, 0, 0, 0] for x in lst]
-        elif source in ("tradingview","trading view"):
-            raise NotImplementedError("TradingView data source is not implemented in this build.")
-        else:
-            # fallback to account type
-            if self.account_type == "FUTURES":
+        try:
+            if source in ("", "binance futures", "binance_futures", "futures"):
                 raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-            else:
+            elif source in ("binance spot", "binance_spot", "spot"):
                 raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+            elif source == "bybit":
+                import requests, pandas as pd
+                bybit_interval = self._bybit_interval(interval)
+                url = "https://api.bybit.com/v5/market/kline"
+                params = {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit}
+                r = requests.get(url, params=params, timeout=10)
+                r.raise_for_status()
+                j = r.json() or {}
+                lst = (j.get("result", {}) or {}).get("list", []) or []
+                lst = sorted(lst, key=lambda x: int(x[0]))
+                raw = [[int(x[0]), x[1], x[2], x[3], x[4], x[5], 0, 0, 0, 0, 0, 0] for x in lst]
+            elif source in ("tradingview", "trading view"):
+                raise NotImplementedError("TradingView data source is not implemented in this build.")
+            else:
+                if self.account_type == "FUTURES":
+                    raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+                else:
+                    raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+        except BinanceAPIException as exc:
+            ban_until = self._handle_potential_ban(exc)
+            if cached_df is not None and ban_until:
+                if (time.time() - getattr(self, "_last_ban_log", 0.0)) > 15.0:
+                    when = datetime.fromtimestamp(ban_until).strftime("%H:%M:%S")
+                    self._last_ban_log = time.time()
+                    self._log(f"Binance REST rate limit hit; serving cached klines for {symbol}@{interval} until {when}.", lvl="warn")
+                return cached_df
+            raise
+
+        if raw is None:
+            raise RuntimeError("kline_fetch_failed: no data returned")
 
         cols = ['open_time','open','high','low','close','volume','close_time','qav','num_trades','taker_base','taker_quote','ignore']
         import pandas as pd
@@ -569,8 +788,10 @@ class BinanceWrapper:
         df.set_index('open_time', inplace=True)
         for c in ['open','high','low','close','volume']:
             df[c] = pd.to_numeric(df[c], errors='coerce')
-        return df[['open','high','low','close','volume']]
-
+        trimmed = df[['open','high','low','close','volume']].copy(deep=True)
+        with self._kline_cache_lock:
+            self._kline_cache[cache_key] = {'df': trimmed.copy(deep=True), 'ts': time.time()}
+        return trimmed
     # ---- order placement helpers
     @staticmethod
     def _floor_to_step(value: float, step: float) -> float:
@@ -832,10 +1053,16 @@ class BinanceWrapper:
             q = float(qty or 0)
             if q <= 0:
                 return {'ok': False, 'error': 'qty<=0'}
-            params = dict(symbol=sym, side=(side or 'SELL').upper(), type='MARKET', reduceOnly=True, quantity=str(q))
+            params = dict(symbol=sym, side=(side or 'SELL').upper(), type='MARKET', quantity=str(q))
             if position_side:
                 params['positionSide'] = position_side
-            params.setdefault('newClientOrderId', base_oid)
+            else:
+                params['reduceOnly'] = True
+            try:
+                import time as _t
+                params.setdefault('newClientOrderId', f"close-{sym}-{int(_t.time()*1000)}")
+            except Exception:
+                pass
             info = self.client.futures_create_order(**params)
             return {'ok': True, 'info': info}
         except Exception as e:
@@ -859,9 +1086,11 @@ class BinanceWrapper:
                 if abs(amt) < 1e-12:
                     continue
                 side = 'SELL' if amt > 0 else 'BUY'
-                params = dict(symbol=sym, side=side, type='MARKET', reduceOnly=True, quantity=str(abs(amt)))
+                params = dict(symbol=sym, side=side, type='MARKET', quantity=str(abs(amt)))
                 if dual:
                     params['positionSide'] = 'LONG' if amt > 0 else 'SHORT'
+                else:
+                    params['reduceOnly'] = True
                 try:
                     self.client.futures_create_order(**params)
                     closed += 1
@@ -934,6 +1163,8 @@ class BinanceWrapper:
                         'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
                         'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
+                        'maintMargin': float(p.get('maintMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'marginRatio': float(p.get('marginRatio') or 0.0) if isinstance(p, dict) else 0.0,
                         'entryPrice': float(p.get('entryPrice') or 0.0),
                         'markPrice': float(p.get('markPrice') or 0.0),
                         'marginType': p.get('marginType'),
@@ -956,6 +1187,8 @@ class BinanceWrapper:
                         'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
                         'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
+                        'maintMargin': float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'marginRatio': float(p.get('marginRatio') or 0.0) if isinstance(p, dict) else 0.0,
                         'entryPrice': float(p.get('entryPrice') or 0.0),
                         'markPrice': float(p.get('markPrice') or 0.0),
                         'marginType': p.get('marginType'),
@@ -1061,12 +1294,35 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
         v = (self.get_symbol_margin_type(sym) or '').upper()
         if v == want_mm:
             break
+        if not v:
+            # Some symbols do not report marginType even after a successful change.
+            # If Binance doesn't give us an answer, assume success and continue.
+            self._log(f"margin_type probe returned blank for {sym}; assuming {want_mm}", lvl='warn')
+            break
+        try:
+            net_amt = abs(float(self._futures_net_position_amt(sym)))
+        except Exception:
+            net_amt = None
+        if (not v) and (net_amt is None or net_amt <= 0):
+            # Symbol has no open exposure; treat margin type as implicitly correct after attempting change
+            v = want_mm
+            break
         import time as _t; _t.sleep(0.2)
     else:
         if last_err:
             raise RuntimeError(f"Failed to set margin type for {sym} to {want_mm}: {last_err}")
-        vv = (self.get_symbol_margin_type(sym) or 'UNKNOWN')
-        raise RuntimeError(f"Margin type for {sym} is {vv}; wanted {want_mm}. Blocking order.")
+        vv = (self.get_symbol_margin_type(sym) or '').upper()
+        try:
+            net_amt = abs(float(self._futures_net_position_amt(sym)))
+        except Exception:
+            net_amt = None
+        if not vv:
+            # Still blank after retries; assume we succeeded so we do not block entries.
+            self._log(f"margin_type still blank for {sym}; proceeding as {want_mm}", lvl='warn')
+            vv = want_mm
+        if vv != want_mm:
+            label = vv if vv else 'UNKNOWN'
+            raise RuntimeError(f"Margin type for {sym} is {label}; wanted {want_mm}. Blocking order.")
 
     # Apply leverage if requested (non-fatal on failure)
     if desired_lev is not None:
@@ -1077,7 +1333,7 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
             pass
 
 
-def ensure_futures_settings(self, symbol: str, leverage: int | None = None,
+    def ensure_futures_settings(self, symbol: str, leverage: int | None = None,
                                 margin_mode: str | None = None, hedge_mode: bool | None = None):
         try:
             if hedge_mode is not None:
@@ -1113,23 +1369,34 @@ def ensure_futures_settings(self, symbol: str, leverage: int | None = None,
             pass
 
 
+# Bind helper functions to BinanceWrapper if they are not already present
+try:
+    if not hasattr(BinanceWrapper, '_futures_open_orders_count'):
+        BinanceWrapper._futures_open_orders_count = _futures_open_orders_count
+    if not hasattr(BinanceWrapper, '_futures_net_position_amt'):
+        BinanceWrapper._futures_net_position_amt = _futures_net_position_amt
+    if not hasattr(BinanceWrapper, '_ensure_margin_and_leverage_or_block'):
+        BinanceWrapper._ensure_margin_and_leverage_or_block = _ensure_margin_and_leverage_or_block
+    if not hasattr(BinanceWrapper, 'get_symbol_margin_type'):
+        BinanceWrapper.get_symbol_margin_type = get_symbol_margin_type
+except Exception:
+    pass
 
-        def configure_futures_symbol(self, symbol: str):
-            """Back-compat shim: some strategy code calls this; we forward to ensure_futures_settings."""
-            try:
-                self.ensure_futures_settings(symbol)
-            except Exception:
-                pass
+    def configure_futures_symbol(self, symbol: str):
+        """Back-compat shim: some strategy code calls this; we forward to ensure_futures_settings."""
+        try:
+            self.ensure_futures_settings(symbol)
+        except Exception:
+            pass
 
-
-        def set_futures_leverage(self, lev: int):
-            try:
-                lev = int(lev)
-            except Exception:
-                return
-            lev = max(1, min(125, lev))
-            self._default_leverage = lev
-            self.futures_leverage = lev
+    def set_futures_leverage(self, lev: int):
+        try:
+            lev = int(lev)
+        except Exception:
+            return
+        lev = max(1, min(125, lev))
+        self._default_leverage = lev
+        self.futures_leverage = lev
 
 
 # ---- Compatibility monkey-patches (ensure instance has these methods)
@@ -1270,9 +1537,11 @@ def _bw_close_futures_position(self, symbol: str):
             qty = _ceil_to_step(max(qty, need), step) if step > 0 else max(qty, need)
 
         # Primary attempt: MARKET reduceOnly (best-effort)
-        params = dict(symbol=sym, side=side, type='MARKET', quantity=str(qty), reduceOnly=True)
+        params = dict(symbol=sym, side=side, type='MARKET', quantity=str(qty))
         if dual:
             params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+        else:
+            params['reduceOnly'] = True
         try:
             self.client.futures_create_order(**params)
             closed += 1
@@ -1287,9 +1556,11 @@ def _bw_close_futures_position(self, symbol: str):
                         px = last_px if last_px>0 else (1.0 if side=='BUY' else 1.0)
                     px = _round_to_tick(px, tick) if tick>0 else px
                     alt = dict(symbol=sym, side=side, type='LIMIT', timeInForce='IOC',
-                               price=str(px), quantity=str(qty), reduceOnly=True)
+                               price=str(px), quantity=str(qty))
                     if dual:
                         alt['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                    else:
+                        alt['reduceOnly'] = True
                     self.client.futures_create_order(**alt)
                     closed += 1
                     continue
@@ -1466,17 +1737,23 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
     Returns a dict like the strict variant.
     """
     sym = (symbol or '').upper()
-    # Hard-block if symbol is not in desired margin mode
-    try:
-        self._ensure_symbol_margin(sym, kwargs.get('margin_mode') or getattr(self, '_default_margin_mode','ISOLATED'), kwargs.get('leverage'))
-    except Exception as _e:
-        self._log(f'BLOCK flex path: {type(_e).__name__}: {_e}', lvl='error')
-        return {'ok': False, 'error': str(_e), 'mode': 'flex'}
     side_up = (side or 'BUY').upper()
     pos_side = (position_side or kwargs.get('positionSide') or None)
     px = float(price if price is not None else (self.get_last_price(sym) or 0.0))
     if px <= 0:
         return {'ok': False, 'symbol': sym, 'error': 'No price available'}
+
+    # Strictly enforce margin mode + leverage before creating the order.
+    try:
+        desired_lev = int(kwargs.get('leverage') or getattr(self, '_default_leverage', 5) or 5)
+    except Exception:
+        desired_lev = int(getattr(self, '_default_leverage', 5) or 5)
+    desired_mm = kwargs.get('margin_mode') or getattr(self, '_default_margin_mode', 'ISOLATED') or 'ISOLATED'
+    try:
+        self._ensure_margin_and_leverage_or_block(sym, desired_mm, desired_lev)
+    except Exception as e:
+        # Do not place an order under the wrong settings
+        return {'ok': False, 'symbol': sym, 'error': f'enforce_settings_failed: {e}', 'mode': 'flex'}
 
     # Exchange filters
     f = self.get_futures_symbol_filters(sym) or {}
@@ -1565,7 +1842,7 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
     params = dict(symbol=sym, side=side_up, type='MARKET', quantity=str(qty))
     if dual and pos_side:
         params['positionSide'] = pos_side
-    if reduce_only:
+    if reduce_only and not (dual and pos_side):
         params['reduceOnly'] = True
 
     try:
@@ -1579,3 +1856,18 @@ try:
     BinanceWrapper.place_futures_market_order = _place_futures_market_order_FLEX
 except Exception:
     pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

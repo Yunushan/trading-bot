@@ -35,6 +35,58 @@ class StrategyEngine:
     def stopped(self):
         return self._stop
 
+    def _close_opposite_position(self, symbol: str, interval: str, next_side: str) -> bool:
+        """Ensure no net exposure in the opposite direction before opening a new leg."""
+        try:
+            positions = self.binance.list_open_futures_positions() or []
+        except Exception as e:
+            self.log(f"{symbol}@{interval} read positions failed: {e}")
+            return False
+        desired = (next_side or '').upper()
+        if desired not in ('BUY', 'SELL'):
+            return True
+        dual = False
+        try:
+            dual = bool(self.binance.get_futures_dual_side())
+        except Exception:
+            dual = False
+        closed_any = False
+        opp = 'SELL' if desired == 'BUY' else 'BUY'
+        for p in positions:
+            try:
+                if str(p.get('symbol') or '').upper() != symbol:
+                    continue
+                amt = float(p.get('positionAmt') or 0.0)
+                if desired == 'BUY' and amt < 0:
+                    qty = abs(amt)
+                    pos_side = 'SHORT' if dual else None
+                    res = self.binance.close_futures_leg_exact(symbol, qty, side='BUY', position_side=pos_side)
+                    if not (isinstance(res, dict) and res.get('ok')):
+                        self.log(f"{symbol}@{interval} close-short failed: {res}")
+                        return False
+                    closed_any = True
+                elif desired == 'SELL' and amt > 0:
+                    qty = abs(amt)
+                    pos_side = 'LONG' if dual else None
+                    res = self.binance.close_futures_leg_exact(symbol, qty, side='SELL', position_side=pos_side)
+                    if not (isinstance(res, dict) and res.get('ok')):
+                        self.log(f"{symbol}@{interval} close-long failed: {res}")
+                        return False
+                    closed_any = True
+            except Exception as exc:
+                self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
+                return False
+        if closed_any:
+            try:
+                import time as _t
+                _t.sleep(0.05)
+            except Exception:
+                pass
+            for key in list(self._leg_ledger.keys()):
+                if key[0] == symbol and key[2] == opp:
+                    self._leg_ledger.pop(key, None)
+        return True
+
     # ---- indicator computation (uses pandas_ta when available)
     def compute_indicators(self, df):
         cfg = self.config['indicators']
@@ -298,21 +350,12 @@ class StrategyEngine:
                         pass
 
                     # Close prior leg for the same (symbol, interval) on opposite signal
-                    try:
-                        opp = 'SELL' if signal.upper()=='BUY' else 'BUY'
-                        key_opp = (cw['symbol'], cw.get('interval'), opp)
-                        leg = self._leg_ledger.get(key_opp)
-                        if leg and float(leg.get('qty',0))>0:
-                            self.binance.close_futures_leg_exact(cw['symbol'], leg['qty'], side=opp,
-
-                                                                 position_side=('SHORT' if opp=='SELL' else 'LONG') if self.binance.get_futures_dual_side() else None)
-                            self._leg_ledger.pop(key_opp, None)
-                    except Exception:
-                        pass
+                    if not self._close_opposite_position(cw['symbol'], cw.get('interval'), signal.upper()):
+                        return
 
                     if callable(self.can_open_cb):
                         if not self.can_open_cb(cw['symbol'], cw.get('interval'), signal.upper()):
-                            self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {signal.upper()} already open — skipping.")
+                            self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {signal.upper()} already open - skipping.")
                             return
                     order_res = self.binance.place_futures_market_order(
                         cw['symbol'], signal,
