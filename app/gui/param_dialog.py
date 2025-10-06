@@ -1,9 +1,10 @@
 from PyQt6 import QtWidgets, QtCore
 
 class ParamDialog(QtWidgets.QDialog):
-    def __init__(self, key, original_params: dict, parent=None):
+    def __init__(self, key, original_params: dict, parent=None, display_name=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Params: {key}")
+        title = display_name or key
+        self.setWindowTitle(f"Params: {title}")
         self._key = key
         # Copy without mutating original
         self._params = dict(original_params)

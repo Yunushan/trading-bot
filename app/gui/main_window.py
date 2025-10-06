@@ -7,10 +7,15 @@ import re
 import copy, threading
 from datetime import datetime, timezone
 
-from ..config import DEFAULT_CONFIG
+from ..config import DEFAULT_CONFIG, INDICATOR_DISPLAY_NAMES
 from ..binance_wrapper import BinanceWrapper, normalize_margin_ratio
 from ..strategy import StrategyEngine
 from ..workers import StopWorker, StartWorker
+
+BINANCE_SUPPORTED_INTERVALS = {
+    "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo"
+}
+
 
 
 
@@ -265,6 +270,9 @@ class MainWindow(QtWidgets.QWidget):
         self.traded_symbols = set()
         self._indicator_runtime_controls = []
         self._runtime_lock_widgets = []
+        self.bot_status_label_tab1 = None
+        self.bot_status_label_tab2 = None
+        self._bot_active = False
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
@@ -278,6 +286,70 @@ class MainWindow(QtWidgets.QWidget):
                 widget.setEnabled(enabled)
         except Exception:
             pass
+
+    def _on_indicator_toggled(self, key: str, checked: bool):
+        try:
+            indicators = self.config.setdefault('indicators', {})
+            params = indicators.setdefault(key, {})
+            params['enabled'] = bool(checked)
+        except Exception:
+            pass
+
+    def _update_bot_status(self, active=None):
+        try:
+            if active is not None:
+                self._bot_active = bool(active)
+            text = "Bot Status: ON" if getattr(self, '_bot_active', False) else "Bot Status: OFF"
+            color = "#3FB950" if self._bot_active else "#F97068"
+            for label in (getattr(self, 'bot_status_label_tab1', None), getattr(self, 'bot_status_label_tab2', None)):
+                if label is None:
+                    continue
+                label.setText(text)
+                label.setStyleSheet(f"font-weight: bold; color: {color};")
+        except Exception:
+            pass
+
+    def _has_active_engines(self):
+        try:
+            engines = getattr(self, 'strategy_engines', {}) or {}
+        except Exception:
+            return False
+        for eng in engines.values():
+            try:
+                if hasattr(eng, 'is_alive'):
+                    if eng.is_alive():
+                        return True
+                else:
+                    thread = getattr(eng, '_thread', None)
+                    if thread and getattr(thread, 'is_alive', lambda: False)():
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _sync_runtime_state(self):
+        active = self._has_active_engines()
+        if active:
+            self._set_runtime_controls_enabled(False)
+        else:
+            self._set_runtime_controls_enabled(True)
+        try:
+            btn = getattr(self, 'refresh_balance_btn', None)
+            if btn is not None:
+                btn.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            start_btn = getattr(self, 'start_btn', None)
+            stop_btn = getattr(self, 'stop_btn', None)
+            if start_btn is not None:
+                start_btn.setEnabled(not active)
+            if stop_btn is not None:
+                stop_btn.setEnabled(active)
+        except Exception:
+            pass
+        self._update_bot_status(active)
+        return active
 
     def init_ui(self):
         self.setWindowTitle("Binance Trading Bot")
@@ -323,6 +395,10 @@ class MainWindow(QtWidgets.QWidget):
         self.theme_combo.setCurrentText(current_theme)
         self.theme_combo.currentTextChanged.connect(self.apply_theme)
         grid.addWidget(self.theme_combo, 0, 5)
+
+        self.bot_status_label_tab1 = QtWidgets.QLabel()
+        self.bot_status_label_tab1.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self.bot_status_label_tab1, 0, 6, 1, 4)
 
         grid.addWidget(QtWidgets.QLabel("Account Type:"), 1, 2)
         self.account_combo = QtWidgets.QComboBox()
@@ -408,7 +484,7 @@ class MainWindow(QtWidgets.QWidget):
         sgrid.addWidget(QtWidgets.QLabel("Intervals (select 1 or more):"), 0, 2)
         self.interval_list = QtWidgets.QListWidget()
         self.interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
-        for it in ["1s","1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"]:
+        for it in ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"]:
             self.interval_list.addItem(QtWidgets.QListWidgetItem(it))
         sgrid.addWidget(self.interval_list, 1, 2, 3, 2)
 
@@ -421,9 +497,17 @@ class MainWindow(QtWidgets.QWidget):
                 return
             parts = [p.strip() for p in txt.split(",") if p.strip()]
             existing = set(self.interval_list.item(i).text() for i in range(self.interval_list.count()))
+            source = (self.ind_source_combo.currentText() or '').strip().lower() if hasattr(self, 'ind_source_combo') else ''
+            is_binance_source = 'binance' in source
             for p in parts:
-                if p not in existing:
-                    self.interval_list.addItem(QtWidgets.QListWidgetItem(p))
+                norm = p.strip()
+                key = norm.lower()
+                if is_binance_source and key not in BINANCE_SUPPORTED_INTERVALS:
+                    self.log(f"Skipping unsupported Binance interval '{norm}'.")
+                    continue
+                if norm not in existing:
+                    self.interval_list.addItem(QtWidgets.QListWidgetItem(norm))
+                    existing.add(norm)
             self.custom_interval_edit.clear()
         self.add_interval_btn.clicked.connect(_add_custom_intervals)
         sgrid.addWidget(self.custom_interval_edit, 4, 2)
@@ -476,12 +560,19 @@ class MainWindow(QtWidgets.QWidget):
         self._indicator_runtime_controls = []
         row = 0
         for key, params in self.config['indicators'].items():
-            cb = QtWidgets.QCheckBox(key)
+            label = INDICATOR_DISPLAY_NAMES.get(key, key)
+            cb = QtWidgets.QCheckBox(label)
+            cb.setProperty('indicator_key', key)
             cb.setChecked(bool(params.get("enabled", False)))
+            def make_toggle_handler(_key=key):
+                def _toggle(checked):
+                    self._on_indicator_toggled(_key, checked)
+                return _toggle
+            cb.toggled.connect(make_toggle_handler())
             btn = QtWidgets.QPushButton("Params...")
             def make_handler(_key=key, _params=params):
                 def handler():
-                    dlg = ParamDialog(_key, _params, self)
+                    dlg = ParamDialog(_key, _params, self, display_name=INDICATOR_DISPLAY_NAMES.get(_key, _key))
                     if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
                         self.config['indicators'][_key].update(dlg.get_params())
                         self.indicator_widgets[_key][0].setChecked(bool(self.config['indicators'][_key].get("enabled", False)))
@@ -518,7 +609,6 @@ class MainWindow(QtWidgets.QWidget):
             self.mode_combo,
             self.theme_combo,
             self.account_combo,
-            self.refresh_balance_btn,
             self.leverage_spin,
             self.margin_mode_combo,
             self.position_mode_combo,
@@ -568,15 +658,17 @@ class MainWindow(QtWidgets.QWidget):
 
         ctrl_layout = QtWidgets.QHBoxLayout()
         self.refresh_pos_btn = QtWidgets.QPushButton("Refresh Positions")
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.addWidget(self.refresh_pos_btn, 1)
-        tab2_layout.addLayout(top_row)
         self.refresh_pos_btn.clicked.connect(self.refresh_positions)
         ctrl_layout.addWidget(self.refresh_pos_btn)
         self.close_all_btn = QtWidgets.QPushButton("Market Close ALL Positions")
         self.close_all_btn.clicked.connect(self.close_all_positions_async)
         ctrl_layout.addWidget(self.close_all_btn)
+        ctrl_layout.addStretch()
+        self.bot_status_label_tab2 = QtWidgets.QLabel()
+        self.bot_status_label_tab2.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        ctrl_layout.addWidget(self.bot_status_label_tab2)
         tab2_layout.addLayout(ctrl_layout)
+        self._sync_runtime_state()
 
         self.pos_table = QtWidgets.QTableWidget(0, 13, tab2)
         self.pos_table.setHorizontalHeaderLabels(["Symbol","Balance/Position","Last Price (USDT)","Size (USDT)","Margin Ratio","Margin (USDT)","PNL (ROI%)","Entry TF","Side","Open Time","Close Time","Status","Close"])
@@ -744,17 +836,22 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         rec['data'] = data
                         rec['status'] = 'Active'
                         rec['close_time'] = '-'
-                        intervals = {str(iv).strip().lower() for iv in (self._entry_intervals.get(sym, {}) or {}).get(side_key, set()) if str(iv).strip()}
                         entry_times_map = getattr(self, '_entry_times_by_iv', {}) or {}
+                        intervals = set()
                         try:
                             for (sym_key, side_key_key, iv_key), ts in entry_times_map.items():
-                                if sym_key == sym and side_key_key == side_key and iv_key:
-                                    intervals.add(str(iv_key).strip().lower())
+                                if sym_key == sym and side_key_key == side_key and ts and iv_key:
+                                    iv_norm = str(iv_key).strip().lower()
+                                    if iv_norm:
+                                        intervals.add(iv_norm)
                         except Exception:
                             pass
-                        intervals.update(str(iv).strip().lower() for iv in self._collect_strategy_intervals(sym, side_key) if str(iv).strip())
+                        if not intervals:
+                            intervals = {str(iv).strip().lower() for iv in (self._entry_intervals.get(sym, {}) or {}).get(side_key, set()) if str(iv).strip()}
                         if intervals:
                             rec['entry_tf'] = ', '.join(sorted(intervals, key=_mw_interval_sort_key))
+                        else:
+                            rec['entry_tf'] = '-'
                         open_times = []
                         for iv in intervals:
                             ts = entry_times_map.get((sym, side_key, iv))
@@ -1411,6 +1508,7 @@ except Exception:
 
 
 def start_strategy(self):
+    started = 0
     try:
         # Loop Interval Override from UI (e.g., "10s", "2m", "1h", "1d", "1w"). Empty = use candle interval.
         raw_override = (self.loop_edit.text().strip() if hasattr(self, 'loop_edit') else '')
@@ -1429,6 +1527,11 @@ def start_strategy(self):
         if not ivs:
             ivs = ["1m"]
 
+        total_jobs = len(syms) * len(ivs)
+        concurrency = StrategyEngine.concurrent_limit()
+        if total_jobs > concurrency:
+            self.log(f"{total_jobs} symbol/interval loops requested; limiting concurrent execution to {concurrency} to keep the UI responsive.")
+
         if not syms:
             self.log("No symbols available. Click Refresh Symbols.")
             return
@@ -1444,7 +1547,6 @@ def start_strategy(self):
         if not hasattr(self, "strategy_engines"):
             self.strategy_engines = {}
 
-        started = 0
         for sym in syms:
             for iv in ivs:
                 key = f"{sym}@{iv}"
@@ -1473,15 +1575,14 @@ def start_strategy(self):
 
         if started == 0:
             self.log("No new engines started (already running?)")
-        if started > 0:
-            self._set_runtime_controls_enabled(False)
-        try:
-            self.start_btn.setEnabled(False); self.stop_btn.setEnabled(True)
-        except Exception:
-            pass
     except Exception as e:
         try:
             self.log(f"Start error: {e}")
+        except Exception:
+            pass
+    finally:
+        try:
+            self._sync_runtime_state()
         except Exception:
             pass
 
@@ -1505,12 +1606,6 @@ def stop_strategy_async(self, close_positions: bool = True):
             self.log("Stopped all strategy engines.")
         else:
             self.log("No engines to stop.")
-        self._set_runtime_controls_enabled(True)
-        try:
-            self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
-        except Exception:
-            pass
-
         # 2) Then close all open positions in background (non-blocking)
         try:
             if close_positions:
@@ -1522,6 +1617,11 @@ def stop_strategy_async(self, close_positions: bool = True):
     except Exception as e:
         try: self.log(f"Stop error: {e}")
         except Exception: pass
+    finally:
+        try:
+            self._sync_runtime_state()
+        except Exception:
+            pass
 
 def save_config(self):
     try:
@@ -2038,6 +2138,7 @@ try:
         MainWindow._on_trade_signal = _mw_on_trade_signal
 except Exception:
     pass
+
 
 
 

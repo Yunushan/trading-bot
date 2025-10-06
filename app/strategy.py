@@ -1,5 +1,5 @@
 
-import time, copy, traceback, math, threading
+import time, copy, traceback, math, threading, os
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -16,7 +16,18 @@ def _interval_to_seconds(iv:str)->int:
         pass
     return 60
 
+
+_MAX_PARALLEL_RUNS = max(2, min(8, (os.cpu_count() or 4)))
+
+
 class StrategyEngine:
+    _RUN_GATE = threading.BoundedSemaphore(_MAX_PARALLEL_RUNS)
+    _MAX_ACTIVE = _MAX_PARALLEL_RUNS
+
+    @classmethod
+    def concurrent_limit(cls):
+        return cls._MAX_ACTIVE
+
     def __init__(self, binance_wrapper, config, log_callback, trade_callback=None, loop_interval_override=None, can_open_callback=None):
         self.config = copy.deepcopy(config)
         self.binance = binance_wrapper
@@ -28,6 +39,10 @@ class StrategyEngine:
         self._last_bar_key = set()  # prevent multi entries within same bar per (symbol, interval, side)
         self.can_open_cb = can_open_callback
         self._stop = False
+        key = f"{str(self.config.get('symbol') or '').upper()}@{str(self.config.get('interval') or '').lower()}"
+        h = abs(hash(key)) if key.strip('@') else 0
+        self._phase_offset = (h % 1000) / 1000.0 * 5.0
+        self._thread = None
 
     def _notify_interval_closed(self, symbol: str, interval: str, position_side: str):
         if not self.trade_cb:
@@ -52,6 +67,21 @@ class StrategyEngine:
 
     def stopped(self):
         return self._stop
+
+    def is_alive(self):
+        try:
+            thread = getattr(self, '_thread', None)
+            return bool(thread) and bool(getattr(thread, 'is_alive', lambda: False)())
+        except Exception:
+            return False
+
+    def join(self, timeout=None):
+        try:
+            thread = getattr(self, '_thread', None)
+            if thread and thread.is_alive():
+                thread.join(timeout)
+        except Exception:
+            pass
 
     def _close_opposite_position(self, symbol: str, interval: str, next_side: str) -> bool:
         """Ensure no net exposure in the opposite direction before opening a new leg."""
@@ -173,6 +203,21 @@ class StrategyEngine:
             else:
                 ind['rsi'] = rsi_fallback(df['close'], length=int(cfg['rsi']['length']))
 
+        # Williams %R
+        if cfg['willr']['enabled']:
+            try:
+                length = int(cfg['willr'].get('length') or 14)
+            except Exception:
+                length = 14
+            length = max(1, length)
+            if has_accessor:
+                try:
+                    ind['willr'] = df.ta.willr(length=length)
+                except Exception:
+                    ind['willr'] = williams_r_fallback(df, length=length)
+            else:
+                ind['willr'] = williams_r_fallback(df, length=length)
+
         # MACD (kept for completeness)
         if cfg['macd']['enabled']:
             if has_accessor:
@@ -224,6 +269,31 @@ class StrategyEngine:
                     trigger_desc.append("RSI=NaN/inf skipped")
             except Exception as e:
                 trigger_desc.append(f"RSI error:{e!r}")
+
+        # --- Williams %R thresholds ---
+        willr_cfg = cfg['indicators'].get('willr', {})
+        willr_enabled = bool(willr_cfg.get('enabled', False))
+        if willr_enabled and 'willr' in ind and not ind['willr'].dropna().empty:
+            try:
+                wr = float(ind['willr'].iloc[-2])
+                if math.isfinite(wr):
+                    trigger_desc.append(f"Williams %R={wr:.2f}")
+                    buy_val = willr_cfg.get('buy_value')
+                    sell_val = willr_cfg.get('sell_value')
+                    buy_th = float(buy_val if buy_val is not None else -80.0)
+                    sell_th = float(sell_val if sell_val is not None else -20.0)
+                    buy_upper = max(-100.0, min(0.0, buy_th))
+                    buy_lower = -100.0
+                    sell_lower = max(-100.0, min(0.0, sell_th))
+                    sell_upper = 0.0
+                    if signal is None and cfg['side'] in ('BUY','BOTH') and buy_lower <= wr <= buy_upper:
+                        signal = 'BUY'; trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] → BUY")
+                    elif signal is None and cfg['side'] in ('SELL','BOTH') and sell_lower <= wr <= sell_upper:
+                        signal = 'SELL'; trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] → SELL")
+                else:
+                    trigger_desc.append("Williams %R=NaN/inf skipped")
+            except Exception as e:
+                trigger_desc.append(f"Williams %R error:{e!r}")
 
         # --- MA crossover (optional alternative trigger) ---
         ma_cfg = cfg['indicators'].get('ma', {})
@@ -523,21 +593,41 @@ class StrategyEngine:
     def run_loop(self):
         sym = self.config.get('symbol', '(unknown)')
         interval = self.config.get('interval', '(unknown)')
-        self.log(f"Loop start for {sym} @ {interval}. ")
+        self.log(f"Loop start for {sym} @ {interval}.")
         if self.loop_override:
             interval_seconds = max(1, int(self._interval_seconds(self.loop_override)))
         else:
             interval_seconds = max(1, int(self._interval_seconds(self.config['interval'])))
+        phase = min(self._phase_offset, max(0.0, interval_seconds * 0.5))
+        if phase > 0:
+            waited = 0.0
+            while waited < phase and not self.stopped():
+                chunk = min(0.5, phase - waited)
+                time.sleep(chunk)
+                waited += chunk
         while not self.stopped():
+            got_gate = False
             try:
+                if self.stopped():
+                    break
+                got_gate = StrategyEngine._RUN_GATE.acquire(timeout=1.0)
+                if not got_gate:
+                    continue
                 self.run_once()
             except Exception as e:
                 self.log(f"Error in {sym}@{interval} loop: {repr(e)}")
                 self.log(traceback.format_exc())
-            slept = 0
-            while slept < interval_seconds and not self.stopped():
-                time.sleep(1)
-                slept += 1
+            finally:
+                if got_gate:
+                    try:
+                        StrategyEngine._RUN_GATE.release()
+                    except Exception:
+                        pass
+            sleep_remaining = interval_seconds
+            while sleep_remaining > 0 and not self.stopped():
+                chunk = min(1.0, sleep_remaining)
+                time.sleep(chunk)
+                sleep_remaining -= chunk
         self.log(f"Loop stopped for {sym} @ {interval}.")
 
     def set_guard(self, guard):

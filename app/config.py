@@ -44,3 +44,16 @@ AVAILABLE_INDICATORS = {
     "willr":     {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
     "macd":      {"enabled": False, "fast": 12, "slow": 26, "signal": 9, "buy_value": None, "sell_value": None},
 }
+
+INDICATOR_DISPLAY_NAMES = {
+    'ma': 'Moving Average (MA)',
+    'donchian': 'Donchian Channels (DC)',
+    'psar': 'Parabolic SAR (PSAR)',
+    'bb': 'Bollinger Bands (BB)',
+    'rsi': 'Relative Strength Index (RSI)',
+    'volume': 'Volume',
+    'stoch_rsi': 'Stochastic RSI (SRSI)',
+    'willr': 'Williams %R',
+    'macd': 'Moving Average Convergence/Divergence (MACD)',
+}
+
