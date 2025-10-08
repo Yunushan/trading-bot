@@ -886,7 +886,8 @@ class BinanceWrapper:
         interval_ms = max(int(_coerce_interval_seconds(interval) * 1000), 1)
         all_frames = []
         current = start_ms
-        limit = max(1, min(int(limit), 1000))
+        max_limit = 1500 if acct.startswith("FUT") else 1000
+        limit = max(1, min(int(limit), max_limit))
         guard = 0
 
         while current < end_ms and guard < 10000:

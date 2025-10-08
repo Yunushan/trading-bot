@@ -58,6 +58,8 @@ class BacktestEngine:
         if not active_indicators:
             raise ValueError("No indicators available for backtesting.")
 
+        data_cache: dict[tuple[str, str], pd.DataFrame] = {}
+
         for symbol in request.symbols:
             symbol = symbol.strip().upper()
             if not symbol:
@@ -67,9 +69,14 @@ class BacktestEngine:
                 if not interval:
                     continue
                 try:
-                    detail = f" ({source_label})" if source_label else ""
-                    progress(f"Fetching {symbol} @ {interval}{detail} data...")
-                    df = self._load_klines(symbol, interval, request.start, request.end, active_indicators)
+                    cache_key = (symbol, interval)
+                    df = data_cache.get(cache_key)
+                    if df is None:
+                        detail = f" ({source_label})" if source_label else ""
+                        progress(f"Fetching {symbol} @ {interval}{detail} data...")
+                        df = self._load_klines(symbol, interval, request.start, request.end, active_indicators)
+                        if df is not None:
+                            data_cache[cache_key] = df
                     if df is None or df.empty:
                         raise RuntimeError("No historical data returned.")
                     if logic == "SEPARATE":
@@ -94,7 +101,9 @@ class BacktestEngine:
         warmup_bars = max(self._estimate_warmup(indicator) for indicator in indicators) or 100
         warmup_seconds = warmup_bars * _coerce_interval_seconds(interval)
         buffered_start = start - timedelta(seconds=warmup_seconds * 2)
-        return self.wrapper.get_klines_range(symbol, interval, buffered_start, end)
+        acct = str(getattr(self.wrapper, "account_type", "") or "").upper()
+        limit = 1500 if acct.startswith("FUT") else 1000
+        return self.wrapper.get_klines_range(symbol, interval, buffered_start, end, limit=limit)
 
     @staticmethod
     def _estimate_warmup(indicator: IndicatorDefinition) -> int:
@@ -112,7 +121,7 @@ class BacktestEngine:
     def _simulate(self, df: pd.DataFrame, indicators: List[IndicatorDefinition],
                   start: datetime, logic: str, capital: float) -> Optional[BacktestRunResult]:
         logic = (logic or "AND").upper()
-        work_df = df.loc[df.index >= start].copy()
+        work_df = df.loc[df.index >= start]
         if work_df.empty:
             return None
 
@@ -192,6 +201,14 @@ class BacktestEngine:
         if series is None or series.empty:
             return None, None
 
+        def _to_bool(ser: pd.Series) -> pd.Series:
+            ser = ser.fillna(False)
+            try:
+                ser = ser.infer_objects(copy=False)
+            except AttributeError:
+                pass
+            return ser.astype(bool, copy=False)
+
         buy_events = None
         sell_events = None
         if buy_value is not None:
@@ -200,16 +217,16 @@ class BacktestEngine:
             else:
                 buy_condition = series >= float(buy_value)
         if buy_value is not None:
-            buy_condition = buy_condition.fillna(False).astype(bool, copy=False)
-            prev_buy = buy_condition.shift(1).fillna(False).astype(bool, copy=False)
+            buy_condition = _to_bool(buy_condition)
+            prev_buy = _to_bool(buy_condition.shift(1))
             buy_events = buy_condition & (~prev_buy)
         if sell_value is not None:
             if buy_value is not None and float(buy_value) < float(sell_value):
                 sell_condition = series >= float(sell_value)
             else:
                 sell_condition = series <= float(sell_value)
-            sell_condition = sell_condition.fillna(False).astype(bool, copy=False)
-            prev_sell = sell_condition.shift(1).fillna(False).astype(bool, copy=False)
+            sell_condition = _to_bool(sell_condition)
+            prev_sell = _to_bool(sell_condition.shift(1))
             sell_events = sell_condition & (~prev_sell)
         return buy_events, sell_events
 

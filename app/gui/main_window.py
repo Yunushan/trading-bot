@@ -18,6 +18,8 @@ BINANCE_SUPPORTED_INTERVALS = {
     "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo"
 }
 
+BACKTEST_INTERVAL_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
+
 
 
 
@@ -294,6 +296,7 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_worker = None
         self._backtest_symbol_worker = None
         self.backtest_symbols_all = []
+        self._backtest_wrappers = {}
         self.backtest_config = copy.deepcopy(self.config.get("backtest", {}))
         if not self.backtest_config:
             self.backtest_config = copy.deepcopy(DEFAULT_CONFIG.get("backtest", {}))
@@ -447,44 +450,66 @@ class MainWindow(QtWidgets.QWidget):
     def _populate_backtest_lists(self):
         try:
             if not self.backtest_symbols_all:
-                fallback = set(str(s).upper() for s in (self.backtest_config.get("symbols") or []))
+                fallback_ordered: list[str] = []
+
+                def _extend_unique(seq):
+                    for sym in seq or []:
+                        sym_up = str(sym).strip().upper()
+                        if not sym_up:
+                            continue
+                        if sym_up not in fallback_ordered:
+                            fallback_ordered.append(sym_up)
+
+                _extend_unique(self.backtest_config.get("symbols"))
+                _extend_unique(self.config.get("symbols"))
                 try:
                     if hasattr(self, "symbol_list"):
                         for i in range(self.symbol_list.count()):
                             item = self.symbol_list.item(i)
                             if item:
-                                fallback.add(item.text().strip().upper())
+                                _extend_unique([item.text()])
                 except Exception:
                     pass
-                if not fallback:
-                    fallback = {"BTCUSDT"}
-                self.backtest_symbols_all = sorted(fallback)
+                if not fallback_ordered:
+                    fallback_ordered.append("BTCUSDT")
+                self.backtest_symbols_all = list(fallback_ordered)
             self._update_backtest_symbol_list(self.backtest_symbols_all)
         except Exception:
             pass
 
-        intervals = set()
-        try:
-            intervals.update(str(iv) for iv in (self.backtest_config.get("intervals") or []))
-        except Exception:
-            pass
+        interval_candidates: list[str] = []
+
+        def _extend_interval(seq):
+            for iv in seq or []:
+                iv_norm = str(iv).strip()
+                if not iv_norm:
+                    continue
+                if iv_norm not in interval_candidates:
+                    interval_candidates.append(iv_norm)
+
+        _extend_interval(self.backtest_config.get("intervals"))
         try:
             if hasattr(self, "interval_list"):
                 for i in range(self.interval_list.count()):
                     item = self.interval_list.item(i)
                     if item:
-                        intervals.add(item.text().strip())
+                        _extend_interval([item.text()])
         except Exception:
             pass
-        if not intervals:
-            intervals = {"1h", "4h", "1d"}
-        sorted_intervals = sorted(intervals, key=lambda x: (len(x), x))
-        selected_intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv in intervals]
-        if not selected_intervals and sorted_intervals:
-            selected_intervals = [sorted_intervals[0]]
+        _extend_interval(BACKTEST_INTERVAL_ORDER)
+        if not interval_candidates:
+            interval_candidates.append("1h")
+
+        ordered_intervals = [iv for iv in BACKTEST_INTERVAL_ORDER if iv in interval_candidates]
+        extras = [iv for iv in interval_candidates if iv not in BACKTEST_INTERVAL_ORDER]
+        full_order = ordered_intervals + extras
+
+        selected_intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv in full_order]
+        if not selected_intervals and full_order:
+            selected_intervals = [full_order[0]]
         with QtCore.QSignalBlocker(self.backtest_interval_list):
             self.backtest_interval_list.clear()
-            for iv in sorted_intervals:
+            for iv in full_order:
                 item = QtWidgets.QListWidgetItem(iv)
                 item.setSelected(iv in selected_intervals)
                 self.backtest_interval_list.addItem(item)
@@ -516,11 +541,21 @@ class MainWindow(QtWidgets.QWidget):
     def _update_backtest_symbol_list(self, candidates):
         try:
             candidates = [str(sym).upper() for sym in (candidates or []) if sym]
-            unique_candidates = sorted(dict.fromkeys(candidates))
+            unique_candidates: list[str] = []
+            seen = set()
+            for sym in candidates:
+                if sym and sym not in seen:
+                    seen.add(sym)
+                    unique_candidates.append(sym)
             selected_cfg = [str(s).upper() for s in (self.backtest_config.get("symbols") or []) if s]
             selected = [s for s in selected_cfg if s in unique_candidates]
             if not unique_candidates and selected_cfg:
-                unique_candidates = sorted(dict.fromkeys(selected_cfg))
+                unique_candidates = []
+                seen.clear()
+                for sym in selected_cfg:
+                    if sym and sym not in seen:
+                        seen.add(sym)
+                        unique_candidates.append(sym)
                 selected = list(unique_candidates)
             if not selected and unique_candidates:
                 selected = [unique_candidates[0]]
@@ -759,6 +794,10 @@ class MainWindow(QtWidgets.QWidget):
         self._update_backtest_config("symbol_source", symbol_source)
         account_type = "Spot" if symbol_source.lower().startswith("spot") else "Futures"
 
+        api_key = self.api_key_edit.text().strip()
+        api_secret = self.api_secret_edit.text().strip()
+        mode = self.mode_combo.currentText()
+
         request = BacktestRequest(
             symbols=symbols,
             intervals=intervals,
@@ -770,19 +809,35 @@ class MainWindow(QtWidgets.QWidget):
             capital=capital,
         )
 
+        signature = (mode, api_key, api_secret)
+        wrapper_entry = self._backtest_wrappers.get(account_type)
+        wrapper = None
+        if isinstance(wrapper_entry, dict) and wrapper_entry.get("signature") == signature:
+            wrapper = wrapper_entry.get("wrapper")
+        if wrapper is None:
+            try:
+                wrapper = BinanceWrapper(
+                    api_key,
+                    api_secret,
+                    mode=mode,
+                    account_type=account_type,
+                )
+                self._backtest_wrappers[account_type] = {"signature": signature, "wrapper": wrapper}
+            except Exception as exc:
+                msg = f"Unable to initialize Binance wrapper: {exc}"
+                self.backtest_status_label.setText(msg)
+                self.log(msg)
+                return
+        else:
+            try:
+                wrapper.account_type = account_type
+            except Exception:
+                pass
+
         try:
-            wrapper = BinanceWrapper(
-                self.api_key_edit.text().strip(),
-                self.api_secret_edit.text().strip(),
-                mode=self.mode_combo.currentText(),
-                account_type=account_type,
-            )
             wrapper.indicator_source = self.ind_source_combo.currentText()
-        except Exception as exc:
-            msg = f"Unable to initialize Binance wrapper: {exc}"
-            self.backtest_status_label.setText(msg)
-            self.log(msg)
-            return
+        except Exception:
+            pass
 
         engine = BacktestEngine(wrapper)
         self.backtest_worker = _BacktestWorker(engine, request, self)
@@ -872,6 +927,11 @@ class MainWindow(QtWidgets.QWidget):
     def _populate_backtest_results_table(self, runs):
         try:
             self.backtest_results_table.setRowCount(0)
+            if self.backtest_results_table.isSortingEnabled():
+                try:
+                    self.backtest_results_table.setSortingEnabled(False)
+                except Exception:
+                    pass
             for run in runs or []:
                 data = run if isinstance(run, dict) else self._normalize_backtest_run(run)
                 symbol = data.get("symbol") or "-"
@@ -890,10 +950,19 @@ class MainWindow(QtWidgets.QWidget):
                 self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(logic or "-"))
                 self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(indicators_display or "-"))
                 self.backtest_results_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(trades or 0)))
-                self.backtest_results_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{roi_value:+.2f}"))
-                self.backtest_results_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{roi_percent:+.2f}%"))
+                roi_value_item = QtWidgets.QTableWidgetItem(f"{roi_value:+.2f}")
+                roi_value_item.setData(QtCore.Qt.ItemDataRole.UserRole, float(roi_value))
+                self.backtest_results_table.setItem(row, 5, roi_value_item)
+                roi_percent_item = QtWidgets.QTableWidgetItem(f"{roi_percent:+.2f}%")
+                roi_percent_item.setData(QtCore.Qt.ItemDataRole.UserRole, float(roi_percent))
+                self.backtest_results_table.setItem(row, 6, roi_percent_item)
         except Exception as exc:
             self.log(f"Backtest results table error: {exc}")
+        finally:
+            try:
+                self.backtest_results_table.setSortingEnabled(True)
+            except Exception:
+                pass
 
     def init_ui(self):
         self.setWindowTitle("Binance Trading Bot")
@@ -1356,6 +1425,7 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_results_table = QtWidgets.QTableWidget(0, 7)
         self.backtest_results_table.setHorizontalHeaderLabels(["Symbol", "Interval", "Logic", "Indicators", "Trades", "ROI (USDT)", "ROI (%)"])
         self.backtest_results_table.horizontalHeader().setStretchLastSection(True)
+        self.backtest_results_table.setSortingEnabled(True)
         try:
             self.backtest_results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         except Exception:

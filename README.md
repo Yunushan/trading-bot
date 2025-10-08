@@ -17,7 +17,7 @@ This repository provides a desktop assistant for building and exercising trading
 
 
 ## Requirements
-- Python 3.10+ (3.11 or 3.12 recommended)
+- Python 3.10+ to 3.14 (3.11,3.12,3.13)
 - pip
 - Internet access for the Binance API
 
@@ -25,7 +25,12 @@ This repository provides a desktop assistant for building and exercising trading
 
 ## Install Python + dependencies
 
+### For Easy Windows Install (If Python 3.10,3.11,3.12,3.13 Installed)
 ### Windows
+   ```execute
+    run (Double Click) "Binance-Bot-Trading.bat" file.
+   ```
+### For Regular Windows Install (If Python 3.10,3.11,3.12,3.13 Installed)
 1. Install Python from https://python.org (check **Add Python to PATH** during setup).
 2. Open **PowerShell**:
    ```powershell
