@@ -1,4 +1,5 @@
 import os
+import copy
 
 DEFAULT_CONFIG = {
     "api_key": os.getenv("BINANCE_API_KEY", ""),
@@ -25,6 +26,16 @@ DEFAULT_CONFIG = {
         "stoch_rsi": {"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": None, "sell_value": None},
         "willr":     {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
         "macd":      {"enabled": False, "fast": 12, "slow": 26, "signal": 9, "buy_value": None, "sell_value": None},
+    },
+    "backtest": {
+        "symbols": ["BTCUSDT"],
+        "intervals": ["1h"],
+        "capital": 1000.0,
+        "logic": "AND",
+        "symbol_source": "Futures",
+        "start_date": None,
+        "end_date": None,
+        "indicators": {},
     },
     "side": "BOTH",              # "BUY", "SELL", or "BOTH"
     "position_pct": 2.0,         # % of USDT to allocate (Futures: notional before leverage)
@@ -56,4 +67,8 @@ INDICATOR_DISPLAY_NAMES = {
     'willr': 'Williams %R',
     'macd': 'Moving Average Convergence/Divergence (MACD)',
 }
+
+DEFAULT_CONFIG["backtest"]["indicators"] = copy.deepcopy(DEFAULT_CONFIG["indicators"])
+if "rsi" in DEFAULT_CONFIG["backtest"]["indicators"]:
+    DEFAULT_CONFIG["backtest"]["indicators"]["rsi"].update({"enabled": True, "buy_value": 30, "sell_value": 70})
 

@@ -845,6 +845,88 @@ class BinanceWrapper:
         with self._kline_cache_lock:
             self._kline_cache[cache_key] = {'df': trimmed.copy(deep=True), 'ts': time.time()}
         return trimmed
+
+    def get_klines_range(self, symbol, interval, start_time, end_time, limit=1000):
+        """
+        Fetch historical klines between start_time and end_time (inclusive) and return a DataFrame.
+        start_time/end_time may be datetime, int milliseconds, or string accepted by pandas.to_datetime.
+        """
+        from datetime import datetime
+
+        try:
+            if isinstance(start_time, str):
+                start_dt = pd.to_datetime(start_time)
+            elif isinstance(start_time, datetime):
+                start_dt = start_time
+            else:
+                start_dt = pd.to_datetime(int(start_time), unit='ms')
+        except Exception as exc:
+            raise ValueError(f"Invalid start_time: {start_time}") from exc
+
+        try:
+            if isinstance(end_time, str):
+                end_dt = pd.to_datetime(end_time)
+            elif isinstance(end_time, datetime):
+                end_dt = end_time
+            else:
+                end_dt = pd.to_datetime(int(end_time), unit='ms')
+        except Exception as exc:
+            raise ValueError(f"Invalid end_time: {end_time}") from exc
+
+        if end_dt <= start_dt:
+            raise ValueError("end_time must be greater than start_time")
+
+        source = (getattr(self, "indicator_source", "") or "").strip().lower()
+        acct = str(getattr(self, "account_type", "") or "").upper()
+        if source not in ("", "binance futures", "binance_futures", "futures", "binance spot", "binance_spot", "spot"):
+            raise NotImplementedError(f"Historical klines not supported for source '{source}' in backtester.")
+
+        start_ms = int(start_dt.timestamp() * 1000)
+        end_ms = int(end_dt.timestamp() * 1000)
+        interval_ms = max(int(_coerce_interval_seconds(interval) * 1000), 1)
+        all_frames = []
+        current = start_ms
+        limit = max(1, min(int(limit), 1000))
+        guard = 0
+
+        while current < end_ms and guard < 10000:
+            guard += 1
+            try:
+                if acct == "FUTURES" or source in ("binance futures", "binance_futures", "futures", ""):
+                    raw = self.client.futures_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
+                else:
+                    raw = self.client.get_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
+            except BinanceAPIException as exc:
+                ban_until = self._handle_potential_ban(exc)
+                if ban_until:
+                    raise RuntimeError(f"binance_rest_banned_until:{ban_until}") from exc
+                raise
+
+            if not raw:
+                break
+
+            cols = ['open_time','open','high','low','close','volume','close_time','qav','num_trades','taker_base','taker_quote','ignore']
+            df = pd.DataFrame(raw, columns=cols)
+            df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+            df.set_index('open_time', inplace=True)
+            for c in ['open','high','low','close','volume']:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+            all_frames.append(df[['open', 'high', 'low', 'close', 'volume']])
+
+            last_open = int(raw[-1][0])
+            next_open = last_open + interval_ms
+            if next_open <= current:
+                break
+            current = next_open
+
+        if not all_frames:
+            raise RuntimeError("No kline data returned for requested range.")
+
+        full = pd.concat(all_frames).sort_index()
+        full = full[~full.index.duplicated(keep='first')]
+        mask = (full.index >= start_dt) & (full.index <= end_dt)
+        return full.loc[mask].copy()
+
     # ---- order placement helpers
     @staticmethod
     def _floor_to_step(value: float, step: float) -> float:

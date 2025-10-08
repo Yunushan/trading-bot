@@ -5,12 +5,14 @@ from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import pyqtSignal
 import re
 import copy, threading
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 
 from ..config import DEFAULT_CONFIG, INDICATOR_DISPLAY_NAMES
 from ..binance_wrapper import BinanceWrapper, normalize_margin_ratio
+from ..backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
 from ..strategy import StrategyEngine
-from ..workers import StopWorker, StartWorker
+from ..workers import StopWorker, StartWorker, CallWorker
 
 BINANCE_SUPPORTED_INTERVALS = {
     "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo"
@@ -223,6 +225,23 @@ class _PositionsWorker(QtCore.QObject):
             self.positions_ready.emit(rows, acct)
         finally:
             self._busy = False
+
+
+class _BacktestWorker(QtCore.QThread):
+    progress = QtCore.pyqtSignal(str)
+    finished = QtCore.pyqtSignal(dict, object)
+
+    def __init__(self, engine: BacktestEngine, request: BacktestRequest, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.request = request
+
+    def run(self):
+        try:
+            result = self.engine.run(self.request, progress=self.progress.emit)
+            self.finished.emit(result, None)
+        except Exception as exc:
+            self.finished.emit({}, exc)
 from ..position_guard import IntervalPositionGuard
 from .param_dialog import ParamDialog
 
@@ -270,6 +289,22 @@ class MainWindow(QtWidgets.QWidget):
         self.traded_symbols = set()
         self._indicator_runtime_controls = []
         self._runtime_lock_widgets = []
+        self.backtest_indicator_widgets = {}
+        self.backtest_results = []
+        self.backtest_worker = None
+        self._backtest_symbol_worker = None
+        self.backtest_symbols_all = []
+        self.backtest_config = copy.deepcopy(self.config.get("backtest", {}))
+        if not self.backtest_config:
+            self.backtest_config = copy.deepcopy(DEFAULT_CONFIG.get("backtest", {}))
+        else:
+            self.backtest_config = copy.deepcopy(self.backtest_config)
+        if not self.backtest_config.get("indicators"):
+            self.backtest_config["indicators"] = copy.deepcopy(DEFAULT_CONFIG["backtest"]["indicators"])
+        self.backtest_config.setdefault(
+            "symbol_source",
+            (DEFAULT_CONFIG.get("backtest", {}) or {}).get("symbol_source", "Futures")
+        )
         self.bot_status_label_tab1 = None
         self.bot_status_label_tab2 = None
         self._bot_active = False
@@ -350,6 +385,515 @@ class MainWindow(QtWidgets.QWidget):
             pass
         self._update_bot_status(active)
         return active
+
+    @staticmethod
+    def _coerce_qdate(value):
+        if isinstance(value, QtCore.QDate):
+            return value
+        if isinstance(value, datetime):
+            return QtCore.QDate(value.year, value.month, value.day)
+        if isinstance(value, str):
+            # Try common formats
+            for fmt in ("yyyy-MM-dd", "yyyy/MM/dd", "dd.MM.yyyy"):
+                qd = QtCore.QDate.fromString(value, fmt)
+                if qd.isValid():
+                    return qd
+            try:
+                dt = datetime.fromisoformat(value)
+                return QtCore.QDate(dt.year, dt.month, dt.day)
+            except Exception:
+                pass
+        return QtCore.QDate.currentDate()
+
+    def _initialize_backtest_ui_defaults(self):
+        fetch_triggered = False
+        try:
+            source = self.backtest_config.get("symbol_source") or "Futures"
+            idx = self.backtest_symbol_source_combo.findText(source)
+            if idx is not None and idx >= 0 and self.backtest_symbol_source_combo.currentIndex() != idx:
+                self.backtest_symbol_source_combo.setCurrentIndex(idx)
+                fetch_triggered = True
+        except Exception:
+            pass
+        try:
+            self._populate_backtest_lists()
+        except Exception:
+            pass
+        try:
+            logic = (self.backtest_config.get("logic") or "AND").upper()
+            idx = self.backtest_logic_combo.findText(logic)
+            if idx is not None and idx >= 0:
+                self.backtest_logic_combo.setCurrentIndex(idx)
+            else:
+                self.backtest_logic_combo.setCurrentIndex(0)
+            capital = float(self.backtest_config.get("capital", 1000.0))
+            self.backtest_capital_spin.setValue(capital)
+            today = QtCore.QDate.currentDate()
+            start_cfg = self.backtest_config.get("start_date")
+            end_cfg = self.backtest_config.get("end_date")
+            start_qdate = self._coerce_qdate(start_cfg) if start_cfg else today.addMonths(-3)
+            end_qdate = self._coerce_qdate(end_cfg) if end_cfg else today
+            if not end_qdate.isValid():
+                end_qdate = today
+            if not start_qdate.isValid() or start_qdate > end_qdate:
+                start_qdate = end_qdate.addMonths(-3)
+            self.backtest_start_edit.setDate(start_qdate)
+            self.backtest_end_edit.setDate(end_qdate)
+        except Exception:
+            pass
+        if not fetch_triggered:
+            self._refresh_backtest_symbols()
+
+    def _populate_backtest_lists(self):
+        try:
+            if not self.backtest_symbols_all:
+                fallback = set(str(s).upper() for s in (self.backtest_config.get("symbols") or []))
+                try:
+                    if hasattr(self, "symbol_list"):
+                        for i in range(self.symbol_list.count()):
+                            item = self.symbol_list.item(i)
+                            if item:
+                                fallback.add(item.text().strip().upper())
+                except Exception:
+                    pass
+                if not fallback:
+                    fallback = {"BTCUSDT"}
+                self.backtest_symbols_all = sorted(fallback)
+            self._update_backtest_symbol_list(self.backtest_symbols_all)
+        except Exception:
+            pass
+
+        intervals = set()
+        try:
+            intervals.update(str(iv) for iv in (self.backtest_config.get("intervals") or []))
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "interval_list"):
+                for i in range(self.interval_list.count()):
+                    item = self.interval_list.item(i)
+                    if item:
+                        intervals.add(item.text().strip())
+        except Exception:
+            pass
+        if not intervals:
+            intervals = {"1h", "4h", "1d"}
+        sorted_intervals = sorted(intervals, key=lambda x: (len(x), x))
+        selected_intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv in intervals]
+        if not selected_intervals and sorted_intervals:
+            selected_intervals = [sorted_intervals[0]]
+        with QtCore.QSignalBlocker(self.backtest_interval_list):
+            self.backtest_interval_list.clear()
+            for iv in sorted_intervals:
+                item = QtWidgets.QListWidgetItem(iv)
+                item.setSelected(iv in selected_intervals)
+                self.backtest_interval_list.addItem(item)
+        self.backtest_config["intervals"] = list(selected_intervals)
+        cfg = self.config.setdefault("backtest", {})
+        cfg["intervals"] = list(selected_intervals)
+        self._backtest_store_intervals()
+
+    def _set_backtest_symbol_selection(self, symbols):
+        symbols_upper = {str(s).upper() for s in (symbols or []) if s}
+        with QtCore.QSignalBlocker(self.backtest_symbol_list):
+            for i in range(self.backtest_symbol_list.count()):
+                item = self.backtest_symbol_list.item(i)
+                if not item:
+                    continue
+                item.setSelected(item.text().upper() in symbols_upper)
+        self._backtest_store_symbols()
+
+    def _set_backtest_interval_selection(self, intervals):
+        intervals_norm = {str(iv) for iv in (intervals or []) if iv}
+        with QtCore.QSignalBlocker(self.backtest_interval_list):
+            for i in range(self.backtest_interval_list.count()):
+                item = self.backtest_interval_list.item(i)
+                if not item:
+                    continue
+                item.setSelected(item.text() in intervals_norm)
+        self._backtest_store_intervals()
+
+    def _update_backtest_symbol_list(self, candidates):
+        try:
+            candidates = [str(sym).upper() for sym in (candidates or []) if sym]
+            unique_candidates = sorted(dict.fromkeys(candidates))
+            selected_cfg = [str(s).upper() for s in (self.backtest_config.get("symbols") or []) if s]
+            selected = [s for s in selected_cfg if s in unique_candidates]
+            if not unique_candidates and selected_cfg:
+                unique_candidates = sorted(dict.fromkeys(selected_cfg))
+                selected = list(unique_candidates)
+            if not selected and unique_candidates:
+                selected = [unique_candidates[0]]
+            with QtCore.QSignalBlocker(self.backtest_symbol_list):
+                self.backtest_symbol_list.clear()
+                for sym in unique_candidates:
+                    item = QtWidgets.QListWidgetItem(sym)
+                    item.setSelected(sym in selected)
+                    self.backtest_symbol_list.addItem(item)
+            self.backtest_symbols_all = list(unique_candidates)
+            self.backtest_config["symbols"] = list(selected)
+            cfg = self.config.setdefault("backtest", {})
+            cfg["symbols"] = list(selected)
+            if unique_candidates and not selected and self.backtest_symbol_list.count():
+                self.backtest_symbol_list.item(0).setSelected(True)
+            self._backtest_store_symbols()
+        except Exception:
+            pass
+
+    def _backtest_store_symbols(self):
+        try:
+            symbols = []
+            for i in range(self.backtest_symbol_list.count()):
+                item = self.backtest_symbol_list.item(i)
+                if item and item.isSelected():
+                    symbols.append(item.text().upper())
+            self.backtest_config["symbols"] = symbols
+            cfg = self.config.setdefault("backtest", {})
+            cfg["symbols"] = list(symbols)
+        except Exception:
+            pass
+
+    def _backtest_store_intervals(self):
+        try:
+            intervals = []
+            for i in range(self.backtest_interval_list.count()):
+                item = self.backtest_interval_list.item(i)
+                if item and item.isSelected():
+                    intervals.append(item.text())
+            self.backtest_config["intervals"] = intervals
+            cfg = self.config.setdefault("backtest", {})
+            cfg["intervals"] = list(intervals)
+        except Exception:
+            pass
+
+    def _backtest_symbol_source_changed(self, text: str):
+        self._update_backtest_config("symbol_source", text)
+        self._refresh_backtest_symbols()
+
+    def _refresh_backtest_symbols(self):
+        try:
+            worker = getattr(self, "_backtest_symbol_worker", None)
+            if worker is not None and worker.isRunning():
+                return
+        except Exception:
+            pass
+        if not hasattr(self, "backtest_refresh_symbols_btn"):
+            return
+        self.backtest_refresh_symbols_btn.setEnabled(False)
+        self.backtest_refresh_symbols_btn.setText("Refreshing...")
+        source_text = (self.backtest_symbol_source_combo.currentText() or "Futures").strip()
+        source_lower = source_text.lower()
+        acct = "Spot" if source_lower.startswith("spot") else "Futures"
+        api_key = self.api_key_edit.text().strip()
+        api_secret = self.api_secret_edit.text().strip()
+        mode = self.mode_combo.currentText()
+
+        def _do():
+            wrapper = BinanceWrapper(
+                api_key,
+                api_secret,
+                mode=mode,
+                account_type=acct,
+            )
+            return wrapper.fetch_symbols(sort_by_volume=True)
+
+        worker = CallWorker(_do, parent=self)
+        try:
+            worker.progress.connect(self.log)
+        except Exception:
+            pass
+        worker.done.connect(lambda res, err, src=acct: self._on_backtest_symbols_ready(res, err, src))
+        self._backtest_symbol_worker = worker
+        try:
+            self.backtest_status_label.setText(f"Refreshing {acct.upper()} symbols...")
+        except Exception:
+            pass
+        worker.start()
+
+    def _on_backtest_symbols_ready(self, result, error, source_label):
+        try:
+            self.backtest_refresh_symbols_btn.setEnabled(True)
+            self.backtest_refresh_symbols_btn.setText("Refresh")
+        except Exception:
+            pass
+        self._backtest_symbol_worker = None
+        if error or not result:
+            msg = f"Backtest symbol refresh failed: {error or 'no symbols returned'}"
+            self.log(msg)
+            try:
+                self.backtest_status_label.setText(msg)
+            except Exception:
+                pass
+            return
+        symbols = [str(sym).upper() for sym in (result or []) if sym]
+        self.backtest_symbols_all = symbols
+        self._update_backtest_symbol_list(symbols)
+        msg = f"Loaded {len(symbols)} {source_label.upper()} symbols for backtest."
+        self.log(msg)
+        try:
+            self.backtest_status_label.setText(msg)
+        except Exception:
+            pass
+
+    def _backtest_sync_symbols(self):
+        try:
+            if hasattr(self, "symbol_list"):
+                selection = [
+                    self.symbol_list.item(i).text()
+                    for i in range(self.symbol_list.count())
+                    if self.symbol_list.item(i).isSelected()
+                ]
+                if not selection:
+                    selection = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count())]
+                if selection:
+                    self._set_backtest_symbol_selection(selection)
+        except Exception:
+            pass
+
+    def _backtest_sync_intervals(self):
+        try:
+            if hasattr(self, "interval_list"):
+                selection = [
+                    self.interval_list.item(i).text()
+                    for i in range(self.interval_list.count())
+                    if self.interval_list.item(i).isSelected()
+                ]
+                if not selection:
+                    selection = [self.interval_list.item(i).text() for i in range(self.interval_list.count())]
+                if selection:
+                    self._set_backtest_interval_selection(selection)
+        except Exception:
+            pass
+
+    def _backtest_dates_changed(self):
+        try:
+            start_str = self.backtest_start_edit.date().toString("yyyy-MM-dd")
+            end_str = self.backtest_end_edit.date().toString("yyyy-MM-dd")
+            self.backtest_config["start_date"] = start_str
+            self.backtest_config["end_date"] = end_str
+            cfg = self.config.setdefault("backtest", {})
+            cfg["start_date"] = start_str
+            cfg["end_date"] = end_str
+        except Exception:
+            pass
+
+    def _update_backtest_config(self, key, value):
+        try:
+            self.backtest_config[key] = value
+            cfg = self.config.setdefault("backtest", {})
+            cfg[key] = value
+        except Exception:
+            pass
+
+    def _backtest_toggle_indicator(self, key: str, checked: bool):
+        try:
+            indicators = self.backtest_config.setdefault("indicators", {})
+            params = indicators.setdefault(key, {})
+            params["enabled"] = bool(checked)
+            cfg = self.config.setdefault("backtest", {}).setdefault("indicators", {})
+            cfg[key] = copy.deepcopy(params)
+        except Exception:
+            pass
+
+    def _open_backtest_params(self, key: str):
+        try:
+            params = self.backtest_config.setdefault("indicators", {}).setdefault(key, {})
+            dlg = ParamDialog(key, params, self, display_name=INDICATOR_DISPLAY_NAMES.get(key, key))
+            if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+                updates = dlg.get_params()
+                params.update(updates)
+                cfg = self.config.setdefault("backtest", {}).setdefault("indicators", {})
+                cfg[key] = copy.deepcopy(params)
+        except Exception:
+            pass
+
+    def _run_backtest(self):
+        if self.backtest_worker and self.backtest_worker.isRunning():
+            self.backtest_status_label.setText("Backtest already running...")
+            return
+
+        symbols = [s for s in (self.backtest_config.get("symbols") or []) if s]
+        intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv]
+        if not symbols:
+            self.backtest_status_label.setText("Select at least one symbol.")
+            return
+        if not intervals:
+            self.backtest_status_label.setText("Select at least one interval.")
+            return
+
+        indicators_cfg = self.backtest_config.get("indicators", {}) or {}
+        indicators = []
+        for key, params in indicators_cfg.items():
+            if not params or not params.get("enabled"):
+                continue
+            clean_params = copy.deepcopy(params)
+            clean_params.pop("enabled", None)
+            indicators.append(IndicatorDefinition(key=key, params=clean_params))
+        if not indicators:
+            self.backtest_status_label.setText("Enable at least one indicator to backtest.")
+            return
+
+        start_qdate = self.backtest_start_edit.date()
+        end_qdate = self.backtest_end_edit.date()
+        if start_qdate > end_qdate:
+            self.backtest_status_label.setText("Start date must be before end date.")
+            return
+
+        start_dt = datetime(start_qdate.year(), start_qdate.month(), start_qdate.day())
+        end_dt = datetime(end_qdate.year(), end_qdate.month(), end_qdate.day(), 23, 59, 59)
+        if start_dt >= end_dt:
+            self.backtest_status_label.setText("Backtest range must span at least one day.")
+            return
+
+        capital = float(self.backtest_capital_spin.value())
+        if capital <= 0.0:
+            self.backtest_status_label.setText("Margin capital must be positive.")
+            return
+
+        logic = (self.backtest_logic_combo.currentText() or "AND").upper()
+        self._update_backtest_config("logic", logic)
+        self._update_backtest_config("capital", capital)
+        self._backtest_dates_changed()
+
+        symbol_source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip()
+        self._update_backtest_config("symbol_source", symbol_source)
+        account_type = "Spot" if symbol_source.lower().startswith("spot") else "Futures"
+
+        request = BacktestRequest(
+            symbols=symbols,
+            intervals=intervals,
+            indicators=indicators,
+            logic=logic,
+            symbol_source=symbol_source,
+            start=start_dt,
+            end=end_dt,
+            capital=capital,
+        )
+
+        try:
+            wrapper = BinanceWrapper(
+                self.api_key_edit.text().strip(),
+                self.api_secret_edit.text().strip(),
+                mode=self.mode_combo.currentText(),
+                account_type=account_type,
+            )
+            wrapper.indicator_source = self.ind_source_combo.currentText()
+        except Exception as exc:
+            msg = f"Unable to initialize Binance wrapper: {exc}"
+            self.backtest_status_label.setText(msg)
+            self.log(msg)
+            return
+
+        engine = BacktestEngine(wrapper)
+        self.backtest_worker = _BacktestWorker(engine, request, self)
+        self.backtest_worker.progress.connect(self._on_backtest_progress)
+        self.backtest_worker.finished.connect(self._on_backtest_finished)
+        self.backtest_results_table.setRowCount(0)
+        self.backtest_status_label.setText("Running backtest...")
+        self.backtest_run_btn.setEnabled(False)
+        self.backtest_worker.start()
+
+    def _on_backtest_progress(self, msg: str):
+        self.backtest_status_label.setText(str(msg))
+
+    @staticmethod
+    def _normalize_backtest_run(run):
+        if is_dataclass(run):
+            data = asdict(run)
+        elif isinstance(run, dict):
+            data = dict(run)
+        else:
+            indicator_keys = getattr(run, "indicator_keys", [])
+            if indicator_keys is None:
+                indicator_keys = []
+            elif not isinstance(indicator_keys, (list, tuple)):
+                indicator_keys = [indicator_keys]
+            data = {
+                "symbol": getattr(run, "symbol", ""),
+                "interval": getattr(run, "interval", ""),
+                "logic": getattr(run, "logic", ""),
+                "indicator_keys": list(indicator_keys),
+                "trades": getattr(run, "trades", 0),
+                "roi_value": getattr(run, "roi_value", 0.0),
+                "roi_percent": getattr(run, "roi_percent", 0.0),
+            }
+        data.setdefault("indicator_keys", [])
+        keys = data.get("indicator_keys") or []
+        if not isinstance(keys, (list, tuple)):
+            keys = [keys]
+        data["indicator_keys"] = [str(k) for k in keys if k is not None]
+        try:
+            data["trades"] = int(data.get("trades", 0) or 0)
+        except Exception:
+            data["trades"] = 0
+        for key in ("roi_value", "roi_percent"):
+            try:
+                data[key] = float(data.get(key, 0.0) or 0.0)
+            except Exception:
+                data[key] = 0.0
+        data["symbol"] = str(data.get("symbol") or "")
+        data["interval"] = str(data.get("interval") or "")
+        data["logic"] = str(data.get("logic") or "")
+        return data
+
+    def _on_backtest_finished(self, result: dict, error: object):
+        self.backtest_run_btn.setEnabled(True)
+        worker = getattr(self, "backtest_worker", None)
+        if worker and worker.isRunning():
+            worker.wait(100)
+        self.backtest_worker = None
+        if error:
+            msg = f"Backtest failed: {error}"
+            self.backtest_status_label.setText(msg)
+            self.log(msg)
+            return
+        runs_raw = result.get("runs", []) if isinstance(result, dict) else []
+        errors = result.get("errors", []) if isinstance(result, dict) else []
+        run_dicts = [self._normalize_backtest_run(r) for r in (runs_raw or [])]
+        self.backtest_results = run_dicts
+        self._populate_backtest_results_table(run_dicts)
+        summary_parts = []
+        if run_dicts:
+            summary_parts.append(f"{len(run_dicts)} run(s) completed")
+            total_roi = sum(r.get("roi_value", 0.0) for r in run_dicts)
+            summary_parts.append(f"Total ROI: {total_roi:+.2f} USDT")
+            avg_roi_pct = sum(r.get("roi_percent", 0.0) for r in run_dicts) / max(len(run_dicts), 1)
+            summary_parts.append(f"Avg ROI %: {avg_roi_pct:+.2f}%")
+        if errors:
+            summary_parts.append(f"{len(errors)} error(s)")
+            for err in errors:
+                sym = err.get("symbol")
+                interval = err.get("interval")
+                self.log(f"Backtest error for {sym}@{interval}: {err.get('error')}")
+        if not summary_parts:
+            summary_parts.append("No results generated.")
+        self.backtest_status_label.setText(" | ".join(summary_parts))
+
+    def _populate_backtest_results_table(self, runs):
+        try:
+            self.backtest_results_table.setRowCount(0)
+            for run in runs or []:
+                data = run if isinstance(run, dict) else self._normalize_backtest_run(run)
+                symbol = data.get("symbol") or "-"
+                interval = data.get("interval") or "-"
+                logic = data.get("logic") or "-"
+                indicator_keys = data.get("indicator_keys") or []
+                trades = data.get("trades", 0)
+                roi_value = data.get("roi_value", 0.0)
+                roi_percent = data.get("roi_percent", 0.0)
+
+                indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys)
+                row = self.backtest_results_table.rowCount()
+                self.backtest_results_table.insertRow(row)
+                self.backtest_results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(symbol or "-"))
+                self.backtest_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(interval or "-"))
+                self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(logic or "-"))
+                self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(indicators_display or "-"))
+                self.backtest_results_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(trades or 0)))
+                self.backtest_results_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{roi_value:+.2f}"))
+                self.backtest_results_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{roi_percent:+.2f}%"))
+        except Exception as exc:
+            self.log(f"Backtest results table error: {exc}")
 
     def init_ui(self):
         self.setWindowTitle("Binance Trading Bot")
@@ -708,6 +1252,118 @@ class MainWindow(QtWidgets.QWidget):
             self._apply_positions_refresh_settings()
         except Exception:
             pass
+
+        # ---------------- Backtest tab ----------------
+        tab3 = QtWidgets.QWidget()
+        tab3_layout = QtWidgets.QVBoxLayout(tab3)
+
+        top_layout = QtWidgets.QHBoxLayout()
+
+        market_group = QtWidgets.QGroupBox("Markets")
+        market_layout = QtWidgets.QGridLayout(market_group)
+
+        market_layout.addWidget(QtWidgets.QLabel("Symbol Source:"), 0, 0)
+        self.backtest_symbol_source_combo = QtWidgets.QComboBox()
+        self.backtest_symbol_source_combo.addItems(["Futures", "Spot"])
+        self.backtest_symbol_source_combo.currentTextChanged.connect(self._backtest_symbol_source_changed)
+        market_layout.addWidget(self.backtest_symbol_source_combo, 0, 1)
+        self.backtest_refresh_symbols_btn = QtWidgets.QPushButton("Refresh")
+        self.backtest_refresh_symbols_btn.clicked.connect(self._refresh_backtest_symbols)
+        market_layout.addWidget(self.backtest_refresh_symbols_btn, 0, 2)
+
+        market_layout.addWidget(QtWidgets.QLabel("Symbols (select 1 or more):"), 1, 0, 1, 3)
+        self.backtest_symbol_list = QtWidgets.QListWidget()
+        self.backtest_symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        self.backtest_symbol_list.itemSelectionChanged.connect(self._backtest_store_symbols)
+        market_layout.addWidget(self.backtest_symbol_list, 2, 0, 4, 3)
+        self.backtest_use_dashboard_symbols_btn = QtWidgets.QPushButton("Use Dashboard Selection")
+        self.backtest_use_dashboard_symbols_btn.clicked.connect(self._backtest_sync_symbols)
+        market_layout.addWidget(self.backtest_use_dashboard_symbols_btn, 6, 0, 1, 3)
+
+        market_layout.addWidget(QtWidgets.QLabel("Intervals (select 1 or more):"), 1, 3)
+        self.backtest_interval_list = QtWidgets.QListWidget()
+        self.backtest_interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        self.backtest_interval_list.itemSelectionChanged.connect(self._backtest_store_intervals)
+        market_layout.addWidget(self.backtest_interval_list, 2, 3, 4, 2)
+        self.backtest_use_dashboard_intervals_btn = QtWidgets.QPushButton("Use Dashboard Intervals")
+        self.backtest_use_dashboard_intervals_btn.clicked.connect(self._backtest_sync_intervals)
+        market_layout.addWidget(self.backtest_use_dashboard_intervals_btn, 6, 3, 1, 2)
+
+        market_layout.setColumnStretch(0, 2)
+        market_layout.setColumnStretch(1, 1)
+        market_layout.setColumnStretch(2, 1)
+        market_layout.setColumnStretch(3, 1)
+        market_layout.setColumnStretch(4, 1)
+
+        top_layout.addWidget(market_group)
+
+        param_group = QtWidgets.QGroupBox("Backtest Parameters")
+        param_form = QtWidgets.QFormLayout(param_group)
+
+        self.backtest_start_edit = QtWidgets.QDateEdit(calendarPopup=True)
+        self.backtest_start_edit.setDisplayFormat("yyyy-MM-dd")
+        self.backtest_end_edit = QtWidgets.QDateEdit(calendarPopup=True)
+        self.backtest_end_edit.setDisplayFormat("yyyy-MM-dd")
+        self.backtest_start_edit.dateChanged.connect(self._backtest_dates_changed)
+        self.backtest_end_edit.dateChanged.connect(self._backtest_dates_changed)
+
+        param_form.addRow("Start Date:", self.backtest_start_edit)
+        param_form.addRow("End Date:", self.backtest_end_edit)
+
+        self.backtest_logic_combo = QtWidgets.QComboBox()
+        self.backtest_logic_combo.addItems(["AND", "OR", "SEPARATE"])
+        self.backtest_logic_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("logic", v))
+        param_form.addRow("Signal Logic:", self.backtest_logic_combo)
+
+        self.backtest_capital_spin = QtWidgets.QDoubleSpinBox()
+        self.backtest_capital_spin.setDecimals(2)
+        self.backtest_capital_spin.setRange(1.0, 1_000_000_000.0)
+        self.backtest_capital_spin.setSuffix(" USDT")
+        self.backtest_capital_spin.valueChanged.connect(lambda v: self._update_backtest_config("capital", float(v)))
+        param_form.addRow("Margin Capital:", self.backtest_capital_spin)
+
+        top_layout.addWidget(param_group)
+
+        indicator_group = QtWidgets.QGroupBox("Indicators")
+        ind_layout = QtWidgets.QGridLayout(indicator_group)
+        self.backtest_indicator_widgets.clear()
+        row = 0
+        for key, params in self.backtest_config.get("indicators", {}).items():
+            label = INDICATOR_DISPLAY_NAMES.get(key, key)
+            cb = QtWidgets.QCheckBox(label)
+            cb.setProperty("indicator_key", key)
+            cb.setChecked(bool(params.get("enabled", False)))
+            cb.toggled.connect(lambda checked, _key=key: self._backtest_toggle_indicator(_key, checked))
+            btn = QtWidgets.QPushButton("Params...")
+            btn.clicked.connect(lambda _=False, _key=key: self._open_backtest_params(_key))
+            ind_layout.addWidget(cb, row, 0)
+            ind_layout.addWidget(btn, row, 1)
+            self.backtest_indicator_widgets[key] = (cb, btn)
+            row += 1
+        top_layout.addWidget(indicator_group, stretch=1)
+
+        tab3_layout.addLayout(top_layout)
+
+        controls_layout = QtWidgets.QHBoxLayout()
+        self.backtest_run_btn = QtWidgets.QPushButton("Run Backtest")
+        self.backtest_run_btn.clicked.connect(self._run_backtest)
+        controls_layout.addWidget(self.backtest_run_btn)
+        self.backtest_status_label = QtWidgets.QLabel()
+        controls_layout.addWidget(self.backtest_status_label)
+        controls_layout.addStretch()
+        tab3_layout.addLayout(controls_layout)
+
+        self.backtest_results_table = QtWidgets.QTableWidget(0, 7)
+        self.backtest_results_table.setHorizontalHeaderLabels(["Symbol", "Interval", "Logic", "Indicators", "Trades", "ROI (USDT)", "ROI (%)"])
+        self.backtest_results_table.horizontalHeader().setStretchLastSection(True)
+        try:
+            self.backtest_results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        except Exception:
+            self.backtest_results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        tab3_layout.addWidget(self.backtest_results_table)
+
+        self.tabs.addTab(tab3, "Backtest")
+        self._initialize_backtest_ui_defaults()
 
 
         

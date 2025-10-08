@@ -12,7 +12,8 @@ except Exception:
     pass
 
 # DPI policy first
-QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+if QtGui.QGuiApplication.instance() is None:
+    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
 # Version banner
 from app import preamble  # noqa: F401
