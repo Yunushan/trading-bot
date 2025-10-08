@@ -237,10 +237,15 @@ class _BacktestWorker(QtCore.QThread):
         super().__init__(parent)
         self.engine = engine
         self.request = request
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
 
     def run(self):
         try:
-            result = self.engine.run(self.request, progress=self.progress.emit)
+            result = self.engine.run(self.request, progress=self.progress.emit,
+                                     should_stop=lambda: bool(self._stop_requested))
             self.finished.emit(result, None)
         except Exception as exc:
             self.finished.emit({}, exc)
@@ -304,10 +309,31 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_config = copy.deepcopy(self.backtest_config)
         if not self.backtest_config.get("indicators"):
             self.backtest_config["indicators"] = copy.deepcopy(DEFAULT_CONFIG["backtest"]["indicators"])
-        self.backtest_config.setdefault(
-            "symbol_source",
-            (DEFAULT_CONFIG.get("backtest", {}) or {}).get("symbol_source", "Futures")
-        )
+        default_backtest = DEFAULT_CONFIG.get("backtest", {}) or {}
+        self.backtest_config.setdefault("symbol_source", default_backtest.get("symbol_source", "Futures"))
+        self.backtest_config.setdefault("capital", float(default_backtest.get("capital", 1000.0)))
+        self.backtest_config.setdefault("logic", default_backtest.get("logic", "AND"))
+        self.backtest_config.setdefault("start_date", default_backtest.get("start_date"))
+        self.backtest_config.setdefault("end_date", default_backtest.get("end_date"))
+        self.backtest_config.setdefault("symbols", list(default_backtest.get("symbols", [])))
+        self.backtest_config.setdefault("intervals", list(default_backtest.get("intervals", [])))
+        self.backtest_config.setdefault("position_pct", float(default_backtest.get("position_pct", 2.0)))
+        self.backtest_config.setdefault("side", default_backtest.get("side", "BOTH"))
+        self.backtest_config.setdefault("margin_mode", default_backtest.get("margin_mode", "Isolated"))
+        self.backtest_config.setdefault("position_mode", default_backtest.get("position_mode", "Hedge"))
+        self.backtest_config.setdefault("assets_mode", default_backtest.get("assets_mode", "Single-Asset"))
+        self.backtest_config.setdefault("leverage", int(default_backtest.get("leverage", 5)))
+        self.backtest_config.setdefault("backtest_symbol_interval_pairs", list(self.config.get("backtest_symbol_interval_pairs", [])))
+        self._backtest_futures_widgets = []
+        self.config.setdefault("runtime_symbol_interval_pairs", [])
+        self.config.setdefault("backtest_symbol_interval_pairs", [])
+        self.symbol_interval_table = None
+        self.pair_add_btn = None
+        self.pair_remove_btn = None
+        self.pair_clear_btn = None
+        self.backtest_run_btn = None
+        self.backtest_stop_btn = None
+        self.override_contexts = {}
         self.bot_status_label_tab1 = None
         self.bot_status_label_tab2 = None
         self._bot_active = False
@@ -324,6 +350,204 @@ class MainWindow(QtWidgets.QWidget):
                 widget.setEnabled(enabled)
         except Exception:
             pass
+
+    def _override_ctx(self, kind: str) -> dict:
+        return getattr(self, "override_contexts", {}).get(kind, {})
+
+    def _override_config_list(self, kind: str) -> list:
+        ctx = self._override_ctx(kind)
+        cfg_key = ctx.get("config_key")
+        if not cfg_key:
+            return []
+        lst = self.config.setdefault(cfg_key, [])
+        if kind == "backtest":
+            try:
+                self.backtest_config[cfg_key] = list(lst)
+            except Exception:
+                pass
+        return lst
+
+    def _refresh_symbol_interval_pairs(self, kind: str = "runtime"):
+        ctx = self._override_ctx(kind)
+        table = ctx.get("table")
+        if table is None:
+            return
+        pairs_cfg = self._override_config_list(kind) or []
+        table.setRowCount(0)
+        seen = set()
+        cleaned = []
+        for entry in pairs_cfg:
+            sym = str((entry or {}).get('symbol') or '').strip().upper()
+            iv = str((entry or {}).get('interval') or '').strip()
+            if not sym or not iv:
+                continue
+            key = (sym, iv)
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append({'symbol': sym, 'interval': iv})
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
+            table.setItem(row, 1, QtWidgets.QTableWidgetItem(iv))
+        cfg_key = ctx.get("config_key")
+        if cfg_key:
+            self.config[cfg_key] = cleaned
+            if kind == "backtest":
+                try:
+                    self.backtest_config[cfg_key] = list(cleaned)
+                except Exception:
+                    pass
+
+    def _add_selected_symbol_interval_pairs(self, kind: str = "runtime"):
+        ctx = self._override_ctx(kind)
+        symbol_list = ctx.get("symbol_list")
+        interval_list = ctx.get("interval_list")
+        if symbol_list is None or interval_list is None:
+            return
+        try:
+            symbols = []
+            for i in range(symbol_list.count()):
+                item = symbol_list.item(i)
+                if item and item.isSelected():
+                    symbols.append(item.text().strip().upper())
+            intervals = []
+            for i in range(interval_list.count()):
+                item = interval_list.item(i)
+                if item and item.isSelected():
+                    intervals.append(item.text().strip())
+            if not symbols or not intervals:
+                return
+            pairs_cfg = self._override_config_list(kind)
+            existing = {(str(p.get('symbol') or '').strip().upper(), str(p.get('interval') or '').strip()) for p in pairs_cfg}
+            changed = False
+            for sym in symbols:
+                if not sym:
+                    continue
+                for iv in intervals:
+                    if not iv:
+                        continue
+                    key = (sym, iv)
+                    if key in existing:
+                        continue
+                    pairs_cfg.append({'symbol': sym, 'interval': iv})
+                    existing.add(key)
+                    changed = True
+            if changed:
+                self._refresh_symbol_interval_pairs(kind)
+            for widget in (symbol_list, interval_list):
+                try:
+                    for i in range(widget.count()):
+                        item = widget.item(i)
+                        if item:
+                            item.setSelected(False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _remove_selected_symbol_interval_pairs(self, kind: str = "runtime"):
+        ctx = self._override_ctx(kind)
+        table = ctx.get("table")
+        if table is None:
+            return
+        try:
+            rows = sorted({idx.row() for idx in table.selectionModel().selectedRows()}, reverse=True)
+            if not rows:
+                return
+            pairs_cfg = self._override_config_list(kind)
+            updated = []
+            remove_set = set()
+            for row in rows:
+                sym_item = table.item(row, 0)
+                iv_item = table.item(row, 1)
+                sym = sym_item.text().strip().upper() if sym_item else ''
+                iv = iv_item.text().strip() if iv_item else ''
+                if sym and iv:
+                    remove_set.add((sym, iv))
+            for entry in pairs_cfg:
+                sym = str(entry.get('symbol') or '').strip().upper()
+                iv = str(entry.get('interval') or '').strip()
+                if (sym, iv) in remove_set:
+                    continue
+                updated.append({'symbol': sym, 'interval': iv})
+            cfg_key = ctx.get("config_key")
+            if cfg_key:
+                self.config[cfg_key] = updated
+                if kind == "backtest":
+                    try:
+                        self.backtest_config[cfg_key] = list(updated)
+                    except Exception:
+                        pass
+            self._refresh_symbol_interval_pairs(kind)
+        except Exception:
+            pass
+
+    def _clear_symbol_interval_pairs(self, kind: str = "runtime"):
+        ctx = self._override_ctx(kind)
+        cfg_key = ctx.get("config_key")
+        if not cfg_key:
+            return
+        try:
+            self.config[cfg_key] = []
+            if kind == "backtest":
+                try:
+                    self.backtest_config[cfg_key] = []
+                except Exception:
+                    pass
+            self._refresh_symbol_interval_pairs(kind)
+        except Exception:
+            pass
+
+    def _create_override_group(self, kind: str, symbol_list, interval_list) -> QtWidgets.QGroupBox:
+        group = QtWidgets.QGroupBox("Symbol / Interval Overrides")
+        layout = QtWidgets.QVBoxLayout(group)
+        table = QtWidgets.QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["Symbol", "Interval"])
+        table.horizontalHeader().setStretchLastSection(True)
+        try:
+            table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        except Exception:
+            table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        layout.addWidget(table)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        add_btn = QtWidgets.QPushButton("Add Selected")
+        add_btn.clicked.connect(lambda _, k=kind: self._add_selected_symbol_interval_pairs(k))
+        btn_layout.addWidget(add_btn)
+        remove_btn = QtWidgets.QPushButton("Remove Selected")
+        remove_btn.clicked.connect(lambda _, k=kind: self._remove_selected_symbol_interval_pairs(k))
+        btn_layout.addWidget(remove_btn)
+        clear_btn = QtWidgets.QPushButton("Clear All")
+        clear_btn.clicked.connect(lambda _, k=kind: self._clear_symbol_interval_pairs(k))
+        btn_layout.addWidget(clear_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        config_key = "runtime_symbol_interval_pairs" if kind == "runtime" else "backtest_symbol_interval_pairs"
+        self.override_contexts[kind] = {
+            "table": table,
+            "symbol_list": symbol_list,
+            "interval_list": interval_list,
+            "config_key": config_key,
+            "add_btn": add_btn,
+            "remove_btn": remove_btn,
+            "clear_btn": clear_btn,
+        }
+        if kind == "runtime":
+            self.symbol_interval_table = table
+            self.pair_add_btn = add_btn
+            self.pair_remove_btn = remove_btn
+            self.pair_clear_btn = clear_btn
+        lock_widgets = getattr(self, '_runtime_lock_widgets', None)
+        if isinstance(lock_widgets, list):
+            for widget in (table, add_btn, remove_btn, clear_btn):
+                if widget and widget not in lock_widgets:
+                    lock_widgets.append(widget)
+        self._refresh_symbol_interval_pairs(kind)
+        return group
 
     def _on_indicator_toggled(self, key: str, checked: bool):
         try:
@@ -423,14 +647,43 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            if self.backtest_stop_btn is not None:
+                self.backtest_stop_btn.setEnabled(False)
+        except Exception:
+            pass
+        try:
             logic = (self.backtest_config.get("logic") or "AND").upper()
-            idx = self.backtest_logic_combo.findText(logic)
-            if idx is not None and idx >= 0:
-                self.backtest_logic_combo.setCurrentIndex(idx)
-            else:
-                self.backtest_logic_combo.setCurrentIndex(0)
+            def _set_combo(combo: QtWidgets.QComboBox, value: str):
+                if combo is None:
+                    return
+                try:
+                    target = (value or "").strip().lower()
+                    for i in range(combo.count()):
+                        if combo.itemText(i).strip().lower() == target:
+                            combo.setCurrentIndex(i)
+                            return
+                except Exception:
+                    pass
+            _set_combo(self.backtest_logic_combo, logic)
             capital = float(self.backtest_config.get("capital", 1000.0))
             self.backtest_capital_spin.setValue(capital)
+            pct_cfg = float(self.backtest_config.get("position_pct", 2.0) or 0.0)
+            if pct_cfg <= 1.0:
+                pct_disp = pct_cfg * 100.0
+                self.backtest_pospct_spin.setValue(pct_disp)
+                self._update_backtest_config("position_pct", pct_disp)
+            else:
+                self.backtest_pospct_spin.setValue(pct_cfg)
+            side_cfg = (self.backtest_config.get("side") or "BOTH").upper()
+            _set_combo(self.backtest_side_combo, side_cfg)
+            margin_mode_cfg = (self.backtest_config.get("margin_mode") or "Isolated")
+            _set_combo(self.backtest_margin_mode_combo, margin_mode_cfg)
+            position_mode_cfg = (self.backtest_config.get("position_mode") or "Hedge")
+            _set_combo(self.backtest_position_mode_combo, position_mode_cfg)
+            assets_mode_cfg = (self.backtest_config.get("assets_mode") or "Single-Asset")
+            _set_combo(self.backtest_assets_mode_combo, assets_mode_cfg)
+            leverage_cfg = int(self.backtest_config.get("leverage", 5) or 1)
+            self.backtest_leverage_spin.setValue(leverage_cfg)
             today = QtCore.QDate.currentDate()
             start_cfg = self.backtest_config.get("start_date")
             end_cfg = self.backtest_config.get("end_date")
@@ -444,6 +697,7 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_end_edit.setDate(end_qdate)
         except Exception:
             pass
+        self._update_backtest_futures_controls()
         if not fetch_triggered:
             self._refresh_backtest_symbols()
 
@@ -601,8 +855,24 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _update_backtest_futures_controls(self):
+        try:
+            source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip().lower()
+            is_futures = source.startswith("fut")
+        except Exception:
+            is_futures = True
+        for widget in getattr(self, "_backtest_futures_widgets", []):
+            if widget is None:
+                continue
+            try:
+                widget.setVisible(is_futures)
+                widget.setEnabled(is_futures)
+            except Exception:
+                pass
+
     def _backtest_symbol_source_changed(self, text: str):
         self._update_backtest_config("symbol_source", text)
+        self._update_backtest_futures_controls()
         self._refresh_backtest_symbols()
 
     def _refresh_backtest_symbols(self):
@@ -670,36 +940,6 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-    def _backtest_sync_symbols(self):
-        try:
-            if hasattr(self, "symbol_list"):
-                selection = [
-                    self.symbol_list.item(i).text()
-                    for i in range(self.symbol_list.count())
-                    if self.symbol_list.item(i).isSelected()
-                ]
-                if not selection:
-                    selection = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count())]
-                if selection:
-                    self._set_backtest_symbol_selection(selection)
-        except Exception:
-            pass
-
-    def _backtest_sync_intervals(self):
-        try:
-            if hasattr(self, "interval_list"):
-                selection = [
-                    self.interval_list.item(i).text()
-                    for i in range(self.interval_list.count())
-                    if self.interval_list.item(i).isSelected()
-                ]
-                if not selection:
-                    selection = [self.interval_list.item(i).text() for i in range(self.interval_list.count())]
-                if selection:
-                    self._set_backtest_interval_selection(selection)
-        except Exception:
-            pass
-
     def _backtest_dates_changed(self):
         try:
             start_str = self.backtest_start_edit.date().toString("yyyy-MM-dd")
@@ -747,14 +987,64 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_status_label.setText("Backtest already running...")
             return
 
+        ctx_backtest = self._override_ctx("backtest")
+        pair_table = ctx_backtest.get("table") if ctx_backtest else None
+        selected_pairs = []
+        if pair_table is not None:
+            try:
+                rows = sorted({idx.row() for idx in pair_table.selectionModel().selectedRows()})
+            except Exception:
+                rows = []
+            if rows:
+                for row in rows:
+                    sym_item = pair_table.item(row, 0)
+                    iv_item = pair_table.item(row, 1)
+                    sym = sym_item.text().strip().upper() if sym_item else ''
+                    iv = iv_item.text().strip() if iv_item else ''
+                    if sym and iv:
+                        selected_pairs.append((sym, iv))
+        if selected_pairs:
+            pairs_override_raw = selected_pairs
+        else:
+            pairs_override_raw = [(str((entry or {}).get('symbol') or '').strip().upper(), str((entry or {}).get('interval') or '').strip())
+                                for entry in self.config.get('backtest_symbol_interval_pairs', []) or []
+                                if str((entry or {}).get('symbol') or '').strip() and str((entry or {}).get('interval') or '').strip()]
+        pairs_override = []
+        seen_pairs = set()
+        for sym, iv in pairs_override_raw:
+            key = (sym, iv)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+
+            pairs_override.append(key)
         symbols = [s for s in (self.backtest_config.get("symbols") or []) if s]
         intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv]
+        if pairs_override:
+            symbol_order = []
+            interval_order = []
+            for sym, iv in pairs_override:
+                if sym not in symbol_order:
+                    symbol_order.append(sym)
+                if iv not in interval_order:
+                    interval_order.append(iv)
+            if not symbol_order or not interval_order:
+                self.backtest_status_label.setText("Symbol/Interval overrides list is empty.")
+                return
+            symbols = symbol_order
+            intervals = interval_order
         if not symbols:
             self.backtest_status_label.setText("Select at least one symbol.")
             return
         if not intervals:
             self.backtest_status_label.setText("Select at least one interval.")
             return
+
+        self.backtest_config["symbols"] = list(symbols)
+        self.backtest_config["intervals"] = list(intervals)
+        cfg_bt = self.config.setdefault("backtest", {})
+        cfg_bt["symbols"] = list(symbols)
+        cfg_bt["intervals"] = list(intervals)
 
         indicators_cfg = self.backtest_config.get("indicators", {}) or {}
         indicators = []
@@ -785,9 +1075,22 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_status_label.setText("Margin capital must be positive.")
             return
 
+        position_pct = float(self.backtest_pospct_spin.value())
+        side_value = (self.backtest_side_combo.currentText() or "BOTH").strip()
+        margin_mode = (self.backtest_margin_mode_combo.currentText() or "Isolated").strip()
+        position_mode = (self.backtest_position_mode_combo.currentText() or "Hedge").strip()
+        assets_mode = (self.backtest_assets_mode_combo.currentText() or "Single-Asset").strip()
+        leverage_value = int(self.backtest_leverage_spin.value() or 1)
+
         logic = (self.backtest_logic_combo.currentText() or "AND").upper()
         self._update_backtest_config("logic", logic)
         self._update_backtest_config("capital", capital)
+        self._update_backtest_config("position_pct", position_pct)
+        self._update_backtest_config("side", side_value)
+        self._update_backtest_config("margin_mode", margin_mode)
+        self._update_backtest_config("position_mode", position_mode)
+        self._update_backtest_config("assets_mode", assets_mode)
+        self._update_backtest_config("leverage", leverage_value)
         self._backtest_dates_changed()
 
         symbol_source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip()
@@ -807,6 +1110,13 @@ class MainWindow(QtWidgets.QWidget):
             start=start_dt,
             end=end_dt,
             capital=capital,
+            side=side_value,
+            position_pct=position_pct,
+            leverage=leverage_value,
+            margin_mode=margin_mode,
+            position_mode=position_mode,
+            assets_mode=assets_mode,
+            pair_overrides=pairs_override if pairs_override else None,
         )
 
         signature = (mode, api_key, api_secret)
@@ -846,7 +1156,31 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_results_table.setRowCount(0)
         self.backtest_status_label.setText("Running backtest...")
         self.backtest_run_btn.setEnabled(False)
+        try:
+            self.backtest_stop_btn.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.backtest_stop_btn.setEnabled(True)
+        except Exception:
+            pass
         self.backtest_worker.start()
+
+    def _stop_backtest(self):
+        try:
+            worker = getattr(self, 'backtest_worker', None)
+            if worker and worker.isRunning():
+                if hasattr(worker, 'request_stop'):
+                    worker.request_stop()
+                self.backtest_status_label.setText('Stopping backtest...')
+                try:
+                    self.backtest_stop_btn.setEnabled(False)
+                except Exception:
+                    pass
+                return
+            self.backtest_status_label.setText('No backtest running.')
+        except Exception:
+            pass
 
     def _on_backtest_progress(self, msg: str):
         self.backtest_status_label.setText(str(msg))
@@ -893,11 +1227,19 @@ class MainWindow(QtWidgets.QWidget):
 
     def _on_backtest_finished(self, result: dict, error: object):
         self.backtest_run_btn.setEnabled(True)
+        try:
+            self.backtest_stop_btn.setEnabled(False)
+        except Exception:
+            pass
         worker = getattr(self, "backtest_worker", None)
         if worker and worker.isRunning():
             worker.wait(100)
         self.backtest_worker = None
         if error:
+            err_text = str(error) if error is not None else ''
+            if isinstance(error, RuntimeError) and 'backtest_cancelled' in err_text.lower():
+                self.backtest_status_label.setText('Backtest cancelled.')
+                return
             msg = f"Backtest failed: {error}"
             self.backtest_status_label.setText(msg)
             self.log(msg)
@@ -1128,6 +1470,9 @@ class MainWindow(QtWidgets.QWidget):
 
         tab1_layout.addWidget(sym_group)
 
+        runtime_override_group = self._create_override_group("runtime", self.symbol_list, self.interval_list)
+        tab1_layout.addWidget(runtime_override_group)
+
         # Strategy Controls
         strat_group = QtWidgets.QGroupBox("Strategy Controls")
         g = QtWidgets.QGridLayout(strat_group)
@@ -1345,18 +1690,15 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
         self.backtest_symbol_list.itemSelectionChanged.connect(self._backtest_store_symbols)
         market_layout.addWidget(self.backtest_symbol_list, 2, 0, 4, 3)
-        self.backtest_use_dashboard_symbols_btn = QtWidgets.QPushButton("Use Dashboard Selection")
-        self.backtest_use_dashboard_symbols_btn.clicked.connect(self._backtest_sync_symbols)
-        market_layout.addWidget(self.backtest_use_dashboard_symbols_btn, 6, 0, 1, 3)
 
         market_layout.addWidget(QtWidgets.QLabel("Intervals (select 1 or more):"), 1, 3)
         self.backtest_interval_list = QtWidgets.QListWidget()
         self.backtest_interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
         self.backtest_interval_list.itemSelectionChanged.connect(self._backtest_store_intervals)
         market_layout.addWidget(self.backtest_interval_list, 2, 3, 4, 2)
-        self.backtest_use_dashboard_intervals_btn = QtWidgets.QPushButton("Use Dashboard Intervals")
-        self.backtest_use_dashboard_intervals_btn.clicked.connect(self._backtest_sync_intervals)
-        market_layout.addWidget(self.backtest_use_dashboard_intervals_btn, 6, 3, 1, 2)
+        pair_group = self._create_override_group("backtest", self.backtest_symbol_list, self.backtest_interval_list)
+        market_layout.addWidget(pair_group, 6, 0, 1, 5)
+
 
         market_layout.setColumnStretch(0, 2)
         market_layout.setColumnStretch(1, 1)
@@ -1391,6 +1733,49 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_capital_spin.valueChanged.connect(lambda v: self._update_backtest_config("capital", float(v)))
         param_form.addRow("Margin Capital:", self.backtest_capital_spin)
 
+        self.backtest_pospct_spin = QtWidgets.QDoubleSpinBox()
+        self.backtest_pospct_spin.setDecimals(2)
+        self.backtest_pospct_spin.setRange(0.01, 100.0)
+        self.backtest_pospct_spin.setSuffix(" %")
+        self.backtest_pospct_spin.valueChanged.connect(lambda v: self._update_backtest_config("position_pct", float(v)))
+        param_form.addRow("Position % of Balance:", self.backtest_pospct_spin)
+
+        self.backtest_side_combo = QtWidgets.QComboBox()
+        self.backtest_side_combo.addItems(["BUY", "SELL", "BOTH"])
+        self.backtest_side_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("side", v))
+        param_form.addRow("Side:", self.backtest_side_combo)
+
+        self.backtest_margin_mode_combo = QtWidgets.QComboBox()
+        self.backtest_margin_mode_combo.addItems(["Isolated", "Cross"])
+        self.backtest_margin_mode_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("margin_mode", v))
+        param_form.addRow("Margin Mode (Futures):", self.backtest_margin_mode_combo)
+
+        self.backtest_position_mode_combo = QtWidgets.QComboBox()
+        self.backtest_position_mode_combo.addItems(["Hedge", "One-way"])
+        self.backtest_position_mode_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("position_mode", v))
+        param_form.addRow("Position Mode:", self.backtest_position_mode_combo)
+
+        self.backtest_assets_mode_combo = QtWidgets.QComboBox()
+        self.backtest_assets_mode_combo.addItems(["Single-Asset", "Multi-Assets"])
+        self.backtest_assets_mode_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("assets_mode", v))
+        param_form.addRow("Assets Mode:", self.backtest_assets_mode_combo)
+
+        self.backtest_leverage_spin = QtWidgets.QSpinBox()
+        self.backtest_leverage_spin.setRange(1, 125)
+        self.backtest_leverage_spin.valueChanged.connect(lambda v: self._update_backtest_config("leverage", int(v)))
+        param_form.addRow("Leverage (Futures):", self.backtest_leverage_spin)
+
+        self._backtest_futures_widgets = [
+            self.backtest_margin_mode_combo,
+            param_form.labelForField(self.backtest_margin_mode_combo),
+            self.backtest_position_mode_combo,
+            param_form.labelForField(self.backtest_position_mode_combo),
+            self.backtest_assets_mode_combo,
+            param_form.labelForField(self.backtest_assets_mode_combo),
+            self.backtest_leverage_spin,
+            param_form.labelForField(self.backtest_leverage_spin),
+        ]
+
         top_layout.addWidget(param_group)
 
         indicator_group = QtWidgets.QGroupBox("Indicators")
@@ -1417,10 +1802,20 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_run_btn = QtWidgets.QPushButton("Run Backtest")
         self.backtest_run_btn.clicked.connect(self._run_backtest)
         controls_layout.addWidget(self.backtest_run_btn)
+        self.backtest_stop_btn = QtWidgets.QPushButton("Stop")
+        self.backtest_stop_btn.setEnabled(False)
+        self.backtest_stop_btn.clicked.connect(self._stop_backtest)
+        controls_layout.addWidget(self.backtest_stop_btn)
         self.backtest_status_label = QtWidgets.QLabel()
         controls_layout.addWidget(self.backtest_status_label)
         controls_layout.addStretch()
         tab3_layout.addLayout(controls_layout)
+        try:
+            for widget in (self.backtest_run_btn, self.backtest_stop_btn):
+                if widget and widget not in self._runtime_lock_widgets:
+                    self._runtime_lock_widgets.append(widget)
+        except Exception:
+            pass
 
         self.backtest_results_table = QtWidgets.QTableWidget(0, 7)
         self.backtest_results_table.setHorizontalHeaderLabels(["Symbol", "Interval", "Logic", "Indicators", "Trades", "ROI (USDT)", "ROI (%)"])
@@ -1433,6 +1828,8 @@ class MainWindow(QtWidgets.QWidget):
         tab3_layout.addWidget(self.backtest_results_table)
 
         self.tabs.addTab(tab3, "Backtest")
+        self._refresh_symbol_interval_pairs("runtime")
+        self._refresh_symbol_interval_pairs("backtest")
         self._initialize_backtest_ui_defaults()
 
 
@@ -2243,6 +2640,28 @@ def start_strategy(self):
             self.log(f"Invalid loop interval override: {raw_override}. Use formats like '10s', '2m', '1h'. Ignoring.")
             loop_override = None
 
+        runtime_ctx = self._override_ctx("runtime")
+        pair_entries = []
+        table = runtime_ctx.get("table") if runtime_ctx else None
+        if table is not None:
+            try:
+                selected_rows = sorted({idx.row() for idx in table.selectionModel().selectedRows()})
+            except Exception:
+                selected_rows = []
+            if selected_rows:
+                for row in selected_rows:
+                    sym_item = table.item(row, 0)
+                    iv_item = table.item(row, 1)
+                    sym = sym_item.text().strip().upper() if sym_item else ''
+                    iv = iv_item.text().strip() if iv_item else ''
+                    if sym and iv:
+                        pair_entries.append((sym, iv))
+        if not pair_entries:
+            for entry in self.config.get("runtime_symbol_interval_pairs", []) or []:
+                sym = str((entry or {}).get('symbol') or '').strip().upper()
+                interval_val = str((entry or {}).get('interval') or '').strip()
+                if sym and interval_val:
+                    pair_entries.append((sym, interval_val))
         syms = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count())
                 if self.symbol_list.item(i).isSelected()]
         if not syms and self.symbol_list.count():
@@ -2253,14 +2672,36 @@ def start_strategy(self):
         if not ivs:
             ivs = ["1m"]
 
-        total_jobs = len(syms) * len(ivs)
+
+
+        if pair_entries:
+            combos = pair_entries
+        else:
+            if not syms:
+                self.log("No symbols available. Click Refresh Symbols.")
+                return
+            combos = []
+            for sym in syms:
+                for iv in ivs:
+                    combos.append((sym, iv))
+        # Deduplicate combos while preserving order
+        unique_combos = []
+        seen_combo = set()
+        for sym, iv in combos:
+            sym_norm = str(sym).strip().upper()
+            iv_norm = str(iv).strip().lower()
+            key = (sym_norm, iv_norm)
+            if not sym_norm or not iv_norm:
+                continue
+            if key in seen_combo:
+                continue
+            seen_combo.add(key)
+            unique_combos.append((sym_norm, iv_norm))
+        combos = unique_combos
+        total_jobs = len(combos)
         concurrency = StrategyEngine.concurrent_limit()
         if total_jobs > concurrency:
             self.log(f"{total_jobs} symbol/interval loops requested; limiting concurrent execution to {concurrency} to keep the UI responsive.")
-
-        if not syms:
-            self.log("No symbols available. Click Refresh Symbols.")
-            return
 
         if getattr(self, "shared_binance", None) is None:
             self.shared_binance = BinanceWrapper(
@@ -2273,31 +2714,30 @@ def start_strategy(self):
         if not hasattr(self, "strategy_engines"):
             self.strategy_engines = {}
 
-        for sym in syms:
-            for iv in ivs:
-                key = f"{sym}@{iv}"
-                try:
-                    # Skip if an engine is already running for this key
-                    if key in self.strategy_engines and getattr(self.strategy_engines[key], "is_alive", lambda: False)():
-                        self.log(f"Engine already running for {key}, skipping.")
-                        continue
+        for sym, iv in combos:
+            key = f"{sym}@{iv}"
+            try:
+                # Skip if an engine is already running for this key
+                if key in self.strategy_engines and getattr(self.strategy_engines[key], "is_alive", lambda: False)():
+                    self.log(f"Engine already running for {key}, skipping.")
+                    continue
 
-                    cfg = copy.deepcopy(self.config)
-                    cfg.update({
-                        "symbol": sym,
-                        "interval": iv,
-                        "position_pct": float(self.pospct_spin.value() or self.config.get("position_pct", 100.0)),
-                        "side": self.side_combo.currentText(),
-                    })
-                    eng = StrategyEngine(self.shared_binance, cfg, log_callback=self.log,
-                                         trade_callback=self._on_trade_signal,
-                                         loop_interval_override=loop_override)
-                    eng.start()
-                    self.strategy_engines[key] = eng
-                    self.log(f"Loop start for {key}.")
-                    started += 1
-                except Exception as e:
-                    self.log(f"Failed to start engine for {key}: {e}")
+                cfg = copy.deepcopy(self.config)
+                cfg.update({
+                    "symbol": sym,
+                    "interval": iv,
+                    "position_pct": float(self.pospct_spin.value() or self.config.get("position_pct", 100.0)),
+                    "side": self.side_combo.currentText(),
+                })
+                eng = StrategyEngine(self.shared_binance, cfg, log_callback=self.log,
+                                     trade_callback=self._on_trade_signal,
+                                     loop_interval_override=loop_override)
+                eng.start()
+                self.strategy_engines[key] = eng
+                self.log(f"Loop start for {key}.")
+                started += 1
+            except Exception as e:
+                self.log(f"Failed to start engine for {key}: {e}")
 
         if started == 0:
             self.log("No new engines started (already running?)")
@@ -2377,6 +2817,11 @@ def load_config(self):
             cfg = json.load(f)
         if isinstance(cfg, dict):
             self.config.update(cfg)
+        self.config.setdefault('runtime_symbol_interval_pairs', [])
+        self.config.setdefault('backtest_symbol_interval_pairs', [])
+        self.backtest_config.setdefault('backtest_symbol_interval_pairs', list(self.config.get('backtest_symbol_interval_pairs', [])))
+        self._refresh_symbol_interval_pairs("runtime")
+        self._refresh_symbol_interval_pairs("backtest")
         self.log(f"Loaded config from {fn}")
         try:
             self.leverage_spin.setValue(int(self.config.get("leverage", self.leverage_spin.value())))
@@ -2864,9 +3309,3 @@ try:
         MainWindow._on_trade_signal = _mw_on_trade_signal
 except Exception:
     pass
-
-
-
-
-
-

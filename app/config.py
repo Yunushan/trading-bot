@@ -35,8 +35,16 @@ DEFAULT_CONFIG = {
         "symbol_source": "Futures",
         "start_date": None,
         "end_date": None,
+        "position_pct": 2.0,
+        "side": "BOTH",
+        "margin_mode": "Isolated",
+        "position_mode": "Hedge",
+        "assets_mode": "Single-Asset",
+        "leverage": 5,
         "indicators": {},
     },
+    "runtime_symbol_interval_pairs": [],
+    "backtest_symbol_interval_pairs": [],
     "side": "BOTH",              # "BUY", "SELL", or "BOTH"
     "position_pct": 2.0,         # % of USDT to allocate (Futures: notional before leverage)
     "order_type": "MARKET",
