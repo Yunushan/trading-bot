@@ -11,10 +11,6 @@ try:
 except Exception:
     pass
 
-# DPI policy first
-if QtGui.QGuiApplication.instance() is None:
-    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-
 # Version banner
 from app import preamble  # noqa: F401
 
@@ -22,6 +18,8 @@ from app.gui.main_window import MainWindow
 from pathlib import Path as _P
 
 def main():
+    if QtGui.QGuiApplication.instance() is None:
+        QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     try:
         app.setApplicationDisplayName("Binance Trading Bot")

@@ -28,6 +28,7 @@ BINANCE_SUPPORTED_INTERVALS = {
 
 BACKTEST_INTERVAL_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
 
+MAX_CLOSED_HISTORY = 200
 
 
 
@@ -2046,72 +2047,111 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
             except Exception:
                 pass
 
-        if not hasattr(self, '_open_position_records'):
-            self._open_position_records = {}
-            self._closed_position_records = []
-
-        from datetime import datetime as _dt
-        now_dt = _dt.now().astimezone()
-        prev_records = getattr(self, '_open_position_records', {}) or {}
-        closed_keys = set(prev_records.keys()) - set(positions_map.keys())
-        if closed_keys:
-            now_fmt = self._format_display_time(now_dt)
-            for key in closed_keys:
-                rec = prev_records.get(key)
-                if not rec:
-                    continue
-                closed_rec = dict(rec)
-                closed_rec['status'] = 'Closed'
-                closed_rec['close_time'] = now_fmt
-                self._closed_position_records.insert(0, closed_rec)
-            if len(self._closed_position_records) > 200:
-                self._closed_position_records = self._closed_position_records[:200]
-
-        self._open_position_records = positions_map
-
-        display_records = sorted(positions_map.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf'))) + self._closed_position_records
-
-        self.pos_table.setRowCount(0)
-        for rec in display_records:
-            try:
-                data = rec.get('data', {}) or {}
-                sym = rec.get('symbol')
-                side_key = rec.get('side_key')
-                interval = rec.get('entry_tf') or '-'
-                row = self.pos_table.rowCount()
-                self.pos_table.insertRow(row)
-
-                qty_show = float(data.get('qty') or 0.0)
-                mark = float(data.get('mark') or 0.0)
-                size_usdt = float(data.get('size_usdt') or (qty_show * mark))
-                mr = normalize_margin_ratio(data.get('margin_ratio'))
-                margin_usdt = float(data.get('margin_usdt') or 0.0)
-                pnl_roi = data.get('pnl_roi')
-                side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
-                open_time = rec.get('open_time') or '-'
-                close_time = rec.get('close_time') if rec.get('status') == 'Closed' else '-'
-                status_txt = rec.get('status', 'Active')
-
-                self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
-                self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_show:.8f}"))
-                self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}" if mark else '-'))
-                self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
-                self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{mr:.2f}%" if mr > 0 else '-'))
-                self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_usdt:.2f} USDT" if margin_usdt else '-'))
-                self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl_roi or '-')))
-                self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
-                self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
-                self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(open_time or '-')))
-                self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(close_time or '-')))
-                self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(status_txt))
-                btn = self._make_close_btn(sym, side_key, interval, qty_show)
-                if status_txt != 'Active':
-                    btn.setEnabled(False)
-                self.pos_table.setCellWidget(row, 12, btn)
-            except Exception:
-                pass
+        self._update_position_history(positions_map)
+        self._render_positions_table()
     except Exception as e:
         self.log(f"Positions render failed: {e}")
+
+    def _update_position_history(self, positions_map: dict):
+        try:
+            if not hasattr(self, "_open_position_records"):
+                self._open_position_records = {}
+            if not hasattr(self, "_closed_position_records"):
+                self._closed_position_records = []
+            prev_records = getattr(self, "_open_position_records", {}) or {}
+            closed_keys = [key for key in prev_records if key not in positions_map]
+            if closed_keys:
+                from datetime import datetime as _dt
+                now_fmt = self._format_display_time(_dt.now().astimezone())
+                for key in closed_keys:
+                    rec = prev_records.get(key)
+                    if not rec:
+                        continue
+                    snap = copy.deepcopy(rec)
+                    snap["status"] = "Closed"
+                    snap["close_time"] = now_fmt
+                    self._closed_position_records.insert(0, snap)
+                if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
+                    self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
+            self._open_position_records = positions_map
+        except Exception:
+            pass
+
+    def _render_positions_table(self):
+        try:
+            open_records = getattr(self, "_open_position_records", {}) or {}
+            closed_records = getattr(self, "_closed_position_records", []) or []
+            display_records = sorted(open_records.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf'))) + list(closed_records)
+            self.pos_table.setRowCount(0)
+            for rec in display_records:
+                try:
+                    data = rec.get('data', {}) or {}
+                    sym = rec.get('symbol')
+                    side_key = rec.get('side_key')
+                    interval = rec.get('entry_tf') or '-'
+                    row = self.pos_table.rowCount()
+                    self.pos_table.insertRow(row)
+
+                    qty_show = float(data.get('qty') or 0.0)
+                    mark = float(data.get('mark') or 0.0)
+                    size_usdt = float(data.get('size_usdt') or (qty_show * mark))
+                    mr = normalize_margin_ratio(data.get('margin_ratio'))
+                    margin_usdt = float(data.get('margin_usdt') or 0.0)
+                    pnl_roi = data.get('pnl_roi')
+                    side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
+                    open_time = rec.get('open_time') or '-'
+                    close_time = rec.get('close_time') if rec.get('status') == 'Closed' else '-'
+                    status_txt = rec.get('status', 'Active')
+
+                    self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
+                    self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_show:.8f}"))
+                    self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}" if mark else '-'))
+                    self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
+                    self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{mr:.2f}%" if mr > 0 else '-'))
+                    self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_usdt:.2f} USDT" if margin_usdt else '-'))
+                    self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl_roi or '-')))
+                    self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
+                    self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
+                    self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(open_time or '-')))
+                    self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(close_time or '-')))
+                    self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(status_txt))
+                    btn = self._make_close_btn(sym, side_key, interval, qty_show)
+                    if status_txt != 'Active':
+                        btn.setEnabled(False)
+                    self.pos_table.setCellWidget(row, 12, btn)
+                except Exception:
+                    pass
+        except Exception as exc:
+            try:
+                self.log(f"Positions table update failed: {exc}")
+            except Exception:
+                pass
+
+    def _snapshot_closed_position(self, symbol: str, side_key: str) -> bool:
+        try:
+            if not symbol or side_key not in ("L", "S"):
+                return False
+            if not hasattr(self, "_closed_position_records"):
+                self._closed_position_records = []
+            open_records = getattr(self, "_open_position_records", {}) or {}
+            rec = open_records.get((symbol, side_key))
+            if not rec:
+                return False
+            from datetime import datetime as _dt
+            snap = copy.deepcopy(rec)
+            snap['status'] = 'Closed'
+            snap['close_time'] = self._format_display_time(_dt.now().astimezone())
+            self._closed_position_records.insert(0, snap)
+            if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
+                self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
+            try:
+                open_records.pop((symbol, side_key), None)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
     def _make_close_btn(self, symbol: str, side_key: str | None = None, interval: str | None = None, qty: float | None = None):
         label = "Close"
         if side_key == "L":
@@ -2237,269 +2277,20 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
         worker.finished.connect(_cleanup)
         worker.start()
 
-    def _setup_log_buffer(self):
-        from collections import deque
-        self._log_buf = deque(maxlen=8000)
-        self._log_timer = QtCore.QTimer(self)
-        self._log_timer.setInterval(200)
-        self._log_timer.timeout.connect(self._flush_log_buffer)
-        self._log_timer.start()
-
-    def _buffer_log(self, msg: str):
-        try:
-            self._log_buf.append(msg)
-        except Exception:
-            pass
-
-    def _flush_log_buffer(self):
-        try:
-            if not hasattr(self, '_log_buf') or not self._log_buf:
-                return
-            lines = []
-            for _ in range(300):
-                if not self._log_buf:
-                    break
-                lines.append(self._log_buf.popleft())
-            if not lines:
-                return
-            from datetime import datetime as _dt
-            import re as _re
-            pat = _re.compile(r'^\[?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]?\s*(.*)$')
-            pat2 = _re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*(.*)$')
-            formatted = []
-            for raw in lines:
-                line = str(raw)
-                match = pat.match(line)
-                if match:
-                    iso_ts, rest = match.groups()
-                    body = rest.strip()
-                    nested = pat2.match(body)
-                    if nested:
-                        body = nested.group(2).strip()
-                    try:
-                        ts = _dt.strptime(iso_ts, "%Y-%m-%d %H:%M:%S").strftime("%d-%m-%Y %H:%M:%S")
-                    except Exception:
-                        ts = _dt.now().strftime("%d-%m-%Y %H:%M:%S")
-                    formatted.append(f"[{ts}] {body}" if body else f"[{ts}]")
-                else:
-                    ts = _dt.now().strftime("%d-%m-%Y %H:%M:%S")
-                    formatted.append(f"[{ts}] {line}")
-            text = '\n'.join(formatted)
-            try:
-                self.log_edit.appendPlainText(text)
-            except Exception:
-                self.log_edit.append(text)
-            self.log_edit.verticalScrollBar().setValue(self.log_edit.verticalScrollBar().maximum())
-        except Exception:
-            pass
-
-
-    def trigger_positions_refresh(self):
-        try:
-            if hasattr(self, '_pos_worker') and self._pos_worker is not None:
-                QtCore.QMetaObject.invokeMethod(self._pos_worker, "_tick", QtCore.Qt.QueuedConnection)
-        except Exception:
-            pass
-
-    def _parse_any_datetime(self, value):
-        from datetime import datetime as _dt
-        if value is None:
-            return None
-        if isinstance(value, _dt):
-            try:
-                return value.astimezone() if value.tzinfo else value
-            except Exception:
-                return value
-        if isinstance(value, (int, float)):
-            try:
-                raw = float(value)
-                if raw > 1e12:
-                    raw /= 1000.0
-                return _dt.fromtimestamp(raw, tz=timezone.utc).astimezone()
-            except Exception:
-                pass
-        try:
-            s = str(value).strip()
-        except Exception:
-            return None
-        if not s:
-            return None
-        s_norm = s.replace('/', '-')
-        patterns = (
-            '%Y-%m-%d %H:%M:%S',
-            '%Y-%m-%dT%H:%M:%S',
-            '%Y-%m-%dT%H:%M:%S.%f',
-            '%Y-%m-%dT%H:%M:%S.%fZ',
-            '%d-%m-%Y %H:%M:%S',
-            '%d.%m.%Y %H:%M:%S',
-        )
-        for fmt in patterns:
-            try:
-                dt = _dt.strptime(s_norm, fmt)
-                if fmt.endswith('Z'):
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone() if dt.tzinfo else dt
-            except Exception:
-                continue
-        try:
-            dt = _dt.fromisoformat(s_norm.replace('Z', '+00:00'))
-            return dt.astimezone() if dt.tzinfo else dt
-        except Exception:
-            return None
-
-    def _format_display_time(self, value):
-        dt = self._parse_any_datetime(value)
-        if dt is None:
-            try:
-                return str(value) if value not in (None, '') else '-'
-            except Exception:
-                return '-'
-        try:
-            if getattr(dt, 'tzinfo', None):
-                dt = dt.astimezone()
-        except Exception:
-            pass
-        return dt.strftime('%d.%m.%Y %H:%M:%S')
-
-
-    def _parse_pos_interval_label(self, label: str) -> int:
-        # return milliseconds
-        try:
-            s = (label or "").strip().lower().replace(" ", "")
-            if s.startswith("5second"): return 5_000
-            if s.startswith("15second"): return 15_000
-            if s.startswith("30second"): return 30_000
-            if s.startswith("1minute"): return 60_000
-            if s.startswith("3minute"): return 180_000
-            if s.startswith("5minute"): return 300_000
-            if s.startswith("10minute"): return 600_000
-            if s.startswith("15minute"): return 900_000
-            if s.startswith("30minute"): return 1_800_000
-            if s.startswith("1hour"): return 3_600_000
-        except Exception:
-            pass
-        return 5_000
-
-    
-    
-    def _collect_strategy_intervals(self, symbol: str, side_key: str):
-        intervals = set()
-        try:
-            engines = getattr(self, 'strategy_engines', {}) or {}
-            sym_upper = (symbol or '').upper()
-            side_key_upper = (side_key or '').upper()
-            for eng in engines.values():
-                cfg = getattr(eng, 'config', {}) or {}
-                cfg_sym = str(cfg.get('symbol') or '').upper()
-                if not cfg_sym or cfg_sym != sym_upper:
-                    continue
-                interval = str(cfg.get('interval') or '').strip()
-                if not interval:
-                    continue
-                side_pref = str(cfg.get('side') or 'BOTH').upper()
-                if side_pref in ('BUY', 'LONG'):
-                    allowed = {'L'}
-                elif side_pref in ('SELL', 'SHORT'):
-                    allowed = {'S'}
-                else:
-                    allowed = {'L', 'S'}
-                if side_key_upper in allowed:
-                    intervals.add(interval)
-        except Exception:
-            pass
-        return intervals
-
-
-    def _apply_positions_refresh_settings(self):
-        try:
-            self.req_pos_start.emit(5000)
-        except Exception:
-            pass
-
-    def apply_theme(self, name: str):
-        theme = (name or '').strip().lower()
-        stylesheet = self.DARK_THEME if theme.startswith('dark') else self.LIGHT_THEME
-        self.setStyleSheet(stylesheet)
-        try:
-            self.config['theme'] = 'Dark' if theme.startswith('dark') else 'Light'
-        except Exception:
-            pass
-
-    def _append_log(self, msg: str):
-        ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        self.log_edit.append(f"[{ts}] {msg}")
-        self.log_edit.verticalScrollBar().setValue(self.log_edit.verticalScrollBar().maximum())
-
-    def log(self, msg: str):
-        self.log_signal.emit(msg)
-
-    def _trade_mux(self, evt: dict):
-        try:
-            # forward to guard first
-            if hasattr(self, 'guard') and callable(getattr(self.guard, 'trade_hook', None)):
-                self.guard.trade_hook(evt)
-        except Exception:
-            pass
-        try:
-            # then notify UI
-            self.trade_signal.emit(evt)
-        except Exception:
-            pass
-
-    def _on_trade_signal(self, order_info: dict):
-        self.log(f"TRADE UPDATE: {order_info}")
-        sym = order_info.get("symbol")
-        interval = order_info.get("interval")
-        side = order_info.get("side")
-        position_side = order_info.get("position_side") or side
-        event_type = str(order_info.get("event") or "").lower()
-        status = str(order_info.get("status") or "").lower()
-        ok_flag = order_info.get("ok")
-        interval = order_info.get("interval")
-        side_for_key = position_side or side
-        side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
-        if event_type == "close_interval":
-            try:
-                self._entry_intervals.setdefault(sym, {"L": set(), "S": set()}).setdefault(side_key, set()).discard(interval)
-            except Exception:
-                pass
-            try:
-                self._entry_times_by_iv.pop((sym, side_key, interval), None)
-            except Exception:
-                pass
-            if sym:
-                self.traded_symbols.add(sym)
-            self.update_balance_label()
-            self.refresh_positions(symbols=[sym] if sym else None)
-            return
-        is_success = (status != "error") and (ok_flag is None or ok_flag is True)
-        if sym and interval and side_for_key:
-            side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
-            self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
-            if is_success:
-                self._entry_intervals[sym][side_key].add(interval)
-                tstr = order_info.get('time')
-                if tstr:
-                    self._entry_times[(sym, side_key)] = tstr
-                else:
-                    from datetime import datetime
-                    tstr = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    self._entry_times[(sym, side_key)] = tstr
-                self._entry_times_by_iv[(sym, side_key, interval)] = tstr
-            else:
-                # Remove any stale interval markers when an order fails.
-                try:
-                    self._entry_intervals[sym][side_key].discard(interval)
-                    self._entry_times_by_iv.pop((sym, side_key, interval), None)
-                except Exception:
-                    pass
-        if sym:
-            self.traded_symbols.add(sym)
-        self.update_balance_label()
-        self.refresh_positions(symbols=[sym] if sym else None)
-
-    # ---- actions
-    
+def on_leverage_changed(self, value):
+    try:
+        value_int = int(value)
+    except Exception:
+        value_int = 0
+    try:
+        self.config['leverage'] = value_int
+    except Exception:
+        pass
+    try:
+        if value_int > 0 and hasattr(self, 'shared_binance') and self.shared_binance and (self.account_combo.currentText() or '').upper().startswith('FUT'):
+            self.shared_binance.set_futures_leverage(value_int)
+    except Exception:
+        pass
 
 
 def refresh_symbols(self):
@@ -2531,21 +2322,6 @@ def refresh_symbols(self):
     w.done.connect(_done)
     w.start()
 
-def start_stop_worker(self):
-    try:
-        self.log("Stop requested…")
-        self.stop_button.setEnabled(False)
-        self.start_button.setEnabled(False)
-    except Exception:
-        pass
-    try:
-        self.stop_worker = StopWorker(self.api, account_type=self.account_type, is_futures=(self.account_type=='futures'))
-        self.stop_worker.log_signal.connect(self.log)
-        self.stop_worker.finished.connect(lambda: self.on_stop_done())
-        self.start_stop_worker()
-    except Exception as e:
-        self.log(f"Failed to start stop-worker: {e!r}")
-    
 def apply_futures_modes(self):
     from ..workers import CallWorker as _CallWorker
     mm = self.margin_mode_combo.currentText().upper()
@@ -2569,7 +2345,7 @@ def apply_futures_modes(self):
         if err:
             self.log(f"Apply futures modes error: {err}")
             return
-        self.config['margin_mode'] = 'Isolated' if mm=='ISOLATED' else 'Cross'
+        self.config['margin_mode'] = 'Isolated' if mm == 'ISOLATED' else 'Cross'
         self.config['position_mode'] = 'Hedge' if hedge else 'One-way'
         self.config['assets_mode'] = 'Multi-Assets' if multi else 'Single-Asset'
         self.config['tif'] = tif
@@ -2582,90 +2358,10 @@ def apply_futures_modes(self):
     w.done.connect(_done)
     w.start()
 
-def _mw_update_balance_label(self):
-    from ..workers import CallWorker as _CallWorker
-    if not hasattr(self, "_bg_workers"):
-        self._bg_workers = []
-    def _compute():
-        bw = BinanceWrapper(
-            self.api_key_edit.text().strip(),
-            self.api_secret_edit.text().strip(),
-            mode=self.mode_combo.currentText(),
-            account_type=self.account_combo.currentText(),
-        )
-        try: bw.indicator_source = str(self.ind_source_combo.currentText())
-        except Exception: pass
-        out = {"ok": True, "bal": 0.0, "acct": str(self.account_combo.currentText()).strip().upper(), "dual": None, "err": None}
-        try:
-            if out["acct"] == "FUTURES":
-                ok, err = bw.futures_api_ok()
-                if ok:
-                    try: out["dual"] = bool(bw.get_futures_dual_side())
-                    except Exception: out["dual"] = None
-                else:
-                    out["ok"] = False; out["err"] = err
-            out["bal"] = float(bw.get_total_usdt_value() or 0.0)
-        except Exception as e:
-            out["ok"] = False; out["err"] = str(e)
-        return out
-    w = _CallWorker(_compute, parent=self)
-    def on_done(res, err):
-        try:
-            if err or not res or not res.get("ok", True):
-                msg = (err and str(err)) or (res and res.get("err")) or "unknown error"
-                try: self.log(f"Balance refresh failed: {msg}")
-                except Exception: pass
-                try: self.balance_label.setText("0.0000 USDT")
-                except Exception: pass
-            else:
-                try:
-                    if res.get("acct") == "FUTURES":
-                        dual = res.get("dual")
-                        self.pos_mode_label.setText(f"Position Mode: {'Hedge' if (dual is True) else 'One-way' if (dual is False) else 'Unknown'}")
-                    self.balance_label.setText(f"{float(res.get('bal') or 0.0):.4f} USDT")
-                except Exception: pass
-        finally:
-            try: self.refresh_balance_btn.setEnabled(True); self.refresh_balance_btn.setText("Refresh Balance")
-            except Exception: pass
-    try: self.refresh_balance_btn.setEnabled(False); self.refresh_balance_btn.setText("Refreshing...")
-    except Exception: pass
-    try:
-        w.done.connect(on_done)
-        w.finished.connect(w.deleteLater)
-        def _cleanup():
-            try:
-                self._bg_workers.remove(w)
-            except Exception:
-                pass
-        w.finished.connect(_cleanup)
-    except Exception:
-        pass
-    self._bg_workers.append(w)
-    w.start()
-
-
-def _on_leverage_changed(self, value):
-    try:
-        self.config['leverage'] = int(value)
-    except Exception:
-        pass
-    try:
-        if hasattr(self, 'shared_binance') and self.shared_binance:
-            self.shared_binance.set_futures_leverage(int(value))
-    except Exception:
-        pass
-
-try:
-    MainWindow.on_leverage_changed = _on_leverage_changed
-except Exception:
-    pass
-
-
 
 def start_strategy(self):
     started = 0
     try:
-        # Loop Interval Override from UI (e.g., "10s", "2m", "1h", "1d", "1w"). Empty = use candle interval.
         raw_override = (self.loop_edit.text().strip() if hasattr(self, 'loop_edit') else '')
         loop_override = re.sub(r'\s+', '', raw_override.lower()) if raw_override else None
         if loop_override and not re.match(r'^\d+(s|m|h|d|w)?$', loop_override):
@@ -2704,8 +2400,6 @@ def start_strategy(self):
         if not ivs:
             ivs = ["1m"]
 
-
-
         if pair_entries:
             combos = pair_entries
         else:
@@ -2716,7 +2410,6 @@ def start_strategy(self):
             for sym in syms:
                 for iv in ivs:
                     combos.append((sym, iv))
-        # Deduplicate combos while preserving order
         unique_combos = []
         seen_combo = set()
         for sym, iv in combos:
@@ -2749,7 +2442,6 @@ def start_strategy(self):
         for sym, iv in combos:
             key = f"{sym}@{iv}"
             try:
-                # Skip if an engine is already running for this key
                 if key in self.strategy_engines and getattr(self.strategy_engines[key], "is_alive", lambda: False)():
                     self.log(f"Engine already running for {key}, skipping.")
                     continue
@@ -2788,14 +2480,12 @@ def start_strategy(self):
 def stop_strategy_async(self, close_positions: bool = True):
     """Stop all StrategyEngine threads and then market-close ALL active positions asynchronously."""
     try:
-        # 1) Stop loops
         if hasattr(self, "strategy_engines") and self.strategy_engines:
             for key, eng in list(self.strategy_engines.items()):
                 try:
                     eng.stop()
                 except Exception:
                     pass
-            # tiny pause to let threads settle
             try:
                 import time as _t; _t.sleep(0.05)
             except Exception:
@@ -2804,22 +2494,25 @@ def stop_strategy_async(self, close_positions: bool = True):
             self.log("Stopped all strategy engines.")
         else:
             self.log("No engines to stop.")
-        # 2) Then close all open positions in background (non-blocking)
         try:
             if close_positions:
                 self.close_all_positions_async()
         except Exception as e:
-            try: self.log(f"Failed to trigger close-all: {e}")
-            except Exception: pass
-
+            try:
+                self.log(f"Failed to trigger close-all: {e}")
+            except Exception:
+                pass
     except Exception as e:
-        try: self.log(f"Stop error: {e}")
-        except Exception: pass
+        try:
+            self.log(f"Stop error: {e}")
+        except Exception:
+            pass
     finally:
         try:
             self._sync_runtime_state()
         except Exception:
             pass
+
 
 def save_config(self):
     try:
@@ -2835,8 +2528,11 @@ def save_config(self):
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
             self.log(f"Saved config to {fn}")
     except Exception as e:
-        try: self.log(f"Save config error: {e}")
-        except Exception: pass
+        try:
+            self.log(f"Save config error: {e}")
+        except Exception:
+            pass
+
 
 def load_config(self):
     try:
@@ -2865,8 +2561,28 @@ def load_config(self):
         except Exception:
             pass
     except Exception as e:
-        try: self.log(f"Load config error: {e}")
-        except Exception: pass
+        try:
+            self.log(f"Load config error: {e}")
+        except Exception:
+            pass
+
+def refresh_positions(self, symbols=None, *args, **kwargs):
+    """Manual refresh of positions: reconfigure worker and trigger an immediate tick."""
+    try:
+        try:
+            self._reconfigure_positions_worker(symbols=symbols)
+        except Exception:
+            pass
+        try:
+            self.req_pos_start.emit(5000)
+        except Exception:
+            pass
+        self.log("Positions refresh requested.")
+    except Exception as e:
+        try:
+            self.log(f"Refresh positions error: {e}")
+        except Exception:
+            pass
 
 try:
     MainWindow.start_strategy = start_strategy
@@ -2881,34 +2597,18 @@ try:
     MainWindow.load_config = load_config
 except Exception:
     pass
-
 try:
     MainWindow.refresh_symbols = refresh_symbols
 except Exception:
     pass
-
 try:
     MainWindow.apply_futures_modes = apply_futures_modes
 except Exception:
     pass
-
-
-def refresh_positions(self, *args, **kwargs):
-    """Manual refresh of positions: reconfigure worker and trigger an immediate tick."""
-    try:
-        try:
-            self._reconfigure_positions_worker()
-        except Exception:
-            pass
-        try:
-            self.req_pos_start.emit(5000)
-        except Exception:
-            pass
-        self.log("Positions refresh requested.")
-    except Exception as e:
-        try: self.log(f"Refresh positions error: {e}")
-        except Exception: pass
-
+try:
+    MainWindow.on_leverage_changed = on_leverage_changed
+except Exception:
+    pass
 try:
     MainWindow.refresh_positions = refresh_positions
 except Exception:
@@ -2926,33 +2626,50 @@ def close_all_positions_async(self):
                 default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
             )
         def _do():
-            if (self.account_combo.currentText() or '').upper().startswith('FUT'):
-                return self.shared_binance.close_all_futures_positions()
-            else:
-                return self.shared_binance.close_all_spot_positions()
+            acct_text = (self.account_combo.currentText() or '').upper()
+            if acct_text.startswith('FUT'):
+                from ..close_all import close_all_futures_positions as _close_all_futures
+                return _close_all_futures(self.shared_binance)
+            return self.shared_binance.close_all_spot_positions()
         def _done(res, err):
             if err:
                 self.log(f"Close-all error: {err}")
                 return
             try:
-                for r in (res or []):
+                details = res or []
+                for r in details:
+                    sym = r.get('symbol') or '?'
                     if not r.get('ok'):
-                        self.log(f"Close-all {r.get('symbol')}: error → {r.get('error')}")
+                        self.log(f"Close-all {sym}: error -> {r.get('error')}")
+                    elif r.get('skipped'):
+                        self.log(f"Close-all {sym}: skipped ({r.get('reason')})")
                     else:
-                        self.log(f"Close-all {r.get('symbol')}: closed={r.get('closed')}")
-                n_ok = sum(1 for r in (res or []) if r.get('ok'))
-                n_all = len(res or [])
+                        self.log(f"Close-all {sym}: ok")
+                n_ok = sum(1 for r in details if r.get('ok'))
+                n_all = len(details)
                 self.log(f"Close-all completed: {n_ok}/{n_all} ok.")
             except Exception:
                 self.log(f"Close-all result: {res}")
+            try:
+                self.refresh_positions()
+            except Exception:
+                pass
+            try:
+                self.trigger_positions_refresh()
+            except Exception:
+                pass
         w = _CallWorker(_do, parent=self)
-        try: w.progress.connect(self.log)
-        except Exception: pass
+        try:
+            w.progress.connect(self.log)
+        except Exception:
+            pass
         w.done.connect(_done)
         w.start()
     except Exception as e:
-        try: self.log(f"Close-all setup error: {e}")
-        except Exception: pass
+        try:
+            self.log(f"Close-all setup error: {e}")
+        except Exception:
+            pass
 
 try:
     MainWindow.close_all_positions_async = close_all_positions_async
@@ -3068,15 +2785,16 @@ def _gui_buffer_log(self, msg: str):
     except Exception:
         pass
 
-def _mw_reconfigure_positions_worker(self):
+def _mw_reconfigure_positions_worker(self, symbols=None):
     try:
         worker = getattr(self, '_pos_worker', None)
         if worker is None:
             return
-        try:
-            symbols = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count()) if self.symbol_list.item(i).isSelected()]
-        except Exception:
-            symbols = None
+        if symbols is None:
+            try:
+                symbols = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count()) if self.symbol_list.item(i).isSelected()]
+            except Exception:
+                symbols = None
         worker.configure(
             api_key=self.api_key_edit.text().strip(),
             api_secret=self.api_secret_edit.text().strip(),
@@ -3341,3 +3059,7 @@ try:
         MainWindow._on_trade_signal = _mw_on_trade_signal
 except Exception:
     pass
+
+
+
+
