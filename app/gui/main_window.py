@@ -1394,7 +1394,7 @@ class MainWindow(QtWidgets.QWidget):
         self.pos_mode_label = QtWidgets.QLabel("Position Mode: N/A")
         grid.addWidget(self.pos_mode_label, 2, 6, 1, 2)
         self.refresh_balance_btn = QtWidgets.QPushButton("Refresh Balance")
-        self.refresh_balance_btn.clicked.connect(lambda: _mw_update_balance_label(self))
+        self.refresh_balance_btn.clicked.connect(lambda: self.update_balance_label())
         grid.addWidget(self.refresh_balance_btn, 2, 2)
 
         grid.addWidget(QtWidgets.QLabel("Leverage (Futures):"), 2, 3)
@@ -2052,230 +2052,236 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
     except Exception as e:
         self.log(f"Positions render failed: {e}")
 
-    def _update_position_history(self, positions_map: dict):
+
+def _mw_update_position_history(self, positions_map: dict):
+    try:
+        if not hasattr(self, "_open_position_records"):
+            self._open_position_records = {}
+        if not hasattr(self, "_closed_position_records"):
+            self._closed_position_records = []
+        prev_records = getattr(self, "_open_position_records", {}) or {}
+        closed_keys = [key for key in prev_records if key not in positions_map]
+        if closed_keys:
+            from datetime import datetime as _dt
+            now_fmt = self._format_display_time(_dt.now().astimezone())
+            for key in closed_keys:
+                rec = prev_records.get(key)
+                if not rec:
+                    continue
+                snap = copy.deepcopy(rec)
+                snap["status"] = "Closed"
+                snap["close_time"] = now_fmt
+                self._closed_position_records.insert(0, snap)
+            if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
+                self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
+        self._open_position_records = positions_map
+    except Exception:
+        pass
+
+
+def _mw_render_positions_table(self):
+    try:
+        open_records = getattr(self, "_open_position_records", {}) or {}
+        closed_records = getattr(self, "_closed_position_records", []) or []
+        display_records = sorted(open_records.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf'))) + list(closed_records)
+        self.pos_table.setRowCount(0)
+        for rec in display_records:
+            try:
+                data = rec.get('data', {}) or {}
+                sym = rec.get('symbol')
+                side_key = rec.get('side_key')
+                interval = rec.get('entry_tf') or '-'
+                row = self.pos_table.rowCount()
+                self.pos_table.insertRow(row)
+
+                qty_show = float(data.get('qty') or 0.0)
+                mark = float(data.get('mark') or 0.0)
+                size_usdt = float(data.get('size_usdt') or (qty_show * mark))
+                mr = normalize_margin_ratio(data.get('margin_ratio'))
+                margin_usdt = float(data.get('margin_usdt') or 0.0)
+                pnl_roi = data.get('pnl_roi')
+                side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
+                open_time = rec.get('open_time') or '-'
+                close_time = rec.get('close_time') if rec.get('status') == 'Closed' else '-'
+                status_txt = rec.get('status', 'Active')
+
+                self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
+                self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_show:.8f}"))
+                self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}" if mark else '-'))
+                self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
+                self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{mr:.2f}%" if mr > 0 else '-'))
+                self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_usdt:.2f} USDT" if margin_usdt else '-'))
+                self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl_roi or '-')))
+                self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
+                self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
+                self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(open_time or '-')))
+                self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(close_time or '-')))
+                self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(status_txt))
+                btn = self._make_close_btn(sym, side_key, interval, qty_show)
+                if status_txt != 'Active':
+                    btn.setEnabled(False)
+                self.pos_table.setCellWidget(row, 12, btn)
+            except Exception:
+                pass
+    except Exception as exc:
         try:
-            if not hasattr(self, "_open_position_records"):
-                self._open_position_records = {}
-            if not hasattr(self, "_closed_position_records"):
-                self._closed_position_records = []
-            prev_records = getattr(self, "_open_position_records", {}) or {}
-            closed_keys = [key for key in prev_records if key not in positions_map]
-            if closed_keys:
-                from datetime import datetime as _dt
-                now_fmt = self._format_display_time(_dt.now().astimezone())
-                for key in closed_keys:
-                    rec = prev_records.get(key)
-                    if not rec:
-                        continue
-                    snap = copy.deepcopy(rec)
-                    snap["status"] = "Closed"
-                    snap["close_time"] = now_fmt
-                    self._closed_position_records.insert(0, snap)
-                if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
-                    self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
-            self._open_position_records = positions_map
+            self.log(f"Positions table update failed: {exc}")
         except Exception:
             pass
 
-    def _render_positions_table(self):
-        try:
-            open_records = getattr(self, "_open_position_records", {}) or {}
-            closed_records = getattr(self, "_closed_position_records", []) or []
-            display_records = sorted(open_records.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf'))) + list(closed_records)
-            self.pos_table.setRowCount(0)
-            for rec in display_records:
-                try:
-                    data = rec.get('data', {}) or {}
-                    sym = rec.get('symbol')
-                    side_key = rec.get('side_key')
-                    interval = rec.get('entry_tf') or '-'
-                    row = self.pos_table.rowCount()
-                    self.pos_table.insertRow(row)
 
-                    qty_show = float(data.get('qty') or 0.0)
-                    mark = float(data.get('mark') or 0.0)
-                    size_usdt = float(data.get('size_usdt') or (qty_show * mark))
-                    mr = normalize_margin_ratio(data.get('margin_ratio'))
-                    margin_usdt = float(data.get('margin_usdt') or 0.0)
-                    pnl_roi = data.get('pnl_roi')
-                    side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
-                    open_time = rec.get('open_time') or '-'
-                    close_time = rec.get('close_time') if rec.get('status') == 'Closed' else '-'
-                    status_txt = rec.get('status', 'Active')
-
-                    self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
-                    self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_show:.8f}"))
-                    self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}" if mark else '-'))
-                    self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
-                    self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{mr:.2f}%" if mr > 0 else '-'))
-                    self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_usdt:.2f} USDT" if margin_usdt else '-'))
-                    self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl_roi or '-')))
-                    self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
-                    self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
-                    self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(open_time or '-')))
-                    self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(close_time or '-')))
-                    self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(status_txt))
-                    btn = self._make_close_btn(sym, side_key, interval, qty_show)
-                    if status_txt != 'Active':
-                        btn.setEnabled(False)
-                    self.pos_table.setCellWidget(row, 12, btn)
-                except Exception:
-                    pass
-        except Exception as exc:
-            try:
-                self.log(f"Positions table update failed: {exc}")
-            except Exception:
-                pass
-
-    def _snapshot_closed_position(self, symbol: str, side_key: str) -> bool:
-        try:
-            if not symbol or side_key not in ("L", "S"):
-                return False
-            if not hasattr(self, "_closed_position_records"):
-                self._closed_position_records = []
-            open_records = getattr(self, "_open_position_records", {}) or {}
-            rec = open_records.get((symbol, side_key))
-            if not rec:
-                return False
-            from datetime import datetime as _dt
-            snap = copy.deepcopy(rec)
-            snap['status'] = 'Closed'
-            snap['close_time'] = self._format_display_time(_dt.now().astimezone())
-            self._closed_position_records.insert(0, snap)
-            if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
-                self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
-            try:
-                open_records.pop((symbol, side_key), None)
-            except Exception:
-                pass
-            return True
-        except Exception:
+def _mw_snapshot_closed_position(self, symbol: str, side_key: str) -> bool:
+    try:
+        if not symbol or side_key not in ("L", "S"):
             return False
-
-    def _make_close_btn(self, symbol: str, side_key: str | None = None, interval: str | None = None, qty: float | None = None):
-        label = "Close"
-        if side_key == "L":
-            label = "Close Long"
-        elif side_key == "S":
-            label = "Close Short"
-        btn = QtWidgets.QPushButton(label)
-        tooltip_bits = []
-        if side_key == "L":
-            tooltip_bits.append("Closes the long leg")
-        elif side_key == "S":
-            tooltip_bits.append("Closes the short leg")
-        if interval and interval not in ("-", "SPOT"):
-            tooltip_bits.append(f"Interval {interval}")
-        if qty and qty > 0:
-            try:
-                tooltip_bits.append(f"Qty ~= {qty:.6f}")
-            except Exception:
-                pass
-        if tooltip_bits:
-            btn.setToolTip(" | ".join(tooltip_bits))
-        btn.setEnabled(side_key in ("L", "S"))
-        interval_key = interval if interval not in ("-", "SPOT") else None
-        btn.clicked.connect(lambda _, s=symbol, sk=side_key, iv=interval_key, q=qty: self._close_position_single(s, sk, iv, q))
-        return btn
-
-    def _close_position_single(self, symbol: str, side_key: str | None, interval: str | None, qty: float | None):
-        if not symbol:
-            return
+        if not hasattr(self, "_closed_position_records"):
+            self._closed_position_records = []
+        open_records = getattr(self, "_open_position_records", {}) or {}
+        rec = open_records.get((symbol, side_key))
+        if not rec:
+            return False
+        from datetime import datetime as _dt
+        snap = copy.deepcopy(rec)
+        snap['status'] = 'Closed'
+        snap['close_time'] = self._format_display_time(_dt.now().astimezone())
+        self._closed_position_records.insert(0, snap)
+        if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
+            self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
         try:
-            from ..workers import CallWorker as _CallWorker
+            open_records.pop((symbol, side_key), None)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _mw_make_close_btn(self, symbol: str, side_key: str | None = None, interval: str | None = None, qty: float | None = None):
+    label = "Close"
+    if side_key == "L":
+        label = "Close Long"
+    elif side_key == "S":
+        label = "Close Short"
+    btn = QtWidgets.QPushButton(label)
+    tooltip_bits = []
+    if side_key == "L":
+        tooltip_bits.append("Closes the long leg")
+    elif side_key == "S":
+        tooltip_bits.append("Closes the short leg")
+    if interval and interval not in ("-", "SPOT"):
+        tooltip_bits.append(f"Interval {interval}")
+    if qty and qty > 0:
+        try:
+            tooltip_bits.append(f"Qty ~= {qty:.6f}")
+        except Exception:
+            pass
+    if tooltip_bits:
+        btn.setToolTip(" | ".join(tooltip_bits))
+    btn.setEnabled(side_key in ("L", "S"))
+    interval_key = interval if interval not in ("-", "SPOT") else None
+    btn.clicked.connect(lambda _, s=symbol, sk=side_key, iv=interval_key, q=qty: self._close_position_single(s, sk, iv, q))
+    return btn
+
+
+def _mw_close_position_single(self, symbol: str, side_key: str | None, interval: str | None, qty: float | None):
+    if not symbol:
+        return
+    try:
+        from ..workers import CallWorker as _CallWorker
+    except Exception as exc:
+        try:
+            self.log(f"Close {symbol} setup error: {exc}")
+        except Exception:
+            pass
+        return
+    if side_key not in ("L", "S"):
+        try:
+            self.log(f"{symbol}: manual close is only available for futures legs.")
+        except Exception:
+            pass
+        return
+    if getattr(self, "shared_binance", None) is None:
+        try:
+            self.shared_binance = BinanceWrapper(
+                self.api_key_edit.text().strip(),
+                self.api_secret_edit.text().strip(),
+                mode=self.mode_combo.currentText(),
+                account_type=self.account_combo.currentText(),
+                default_leverage=int(self.leverage_spin.value() or 1),
+                default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
+            )
         except Exception as exc:
             try:
                 self.log(f"Close {symbol} setup error: {exc}")
             except Exception:
                 pass
             return
-        if side_key not in ("L", "S"):
-            try:
-                self.log(f"{symbol}: manual close is only available for futures legs.")
-            except Exception:
-                pass
-            return
-        if getattr(self, "shared_binance", None) is None:
-            try:
-                self.shared_binance = BinanceWrapper(
-                    self.api_key_edit.text().strip(),
-                    self.api_secret_edit.text().strip(),
-                    mode=self.mode_combo.currentText(),
-                    account_type=self.account_combo.currentText(),
-                    default_leverage=int(self.leverage_spin.value() or 1),
-                    default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
-                )
-            except Exception as exc:
+    account = (self.account_combo.currentText() or "").upper()
+    try:
+        qty_val = float(qty or 0.0)
+    except Exception:
+        qty_val = 0.0
+
+    def _do():
+        bw = self.shared_binance
+        if account.startswith("FUT"):
+            if side_key in ("L", "S") and qty_val > 0:
                 try:
-                    self.log(f"Close {symbol} setup error: {exc}")
+                    dual = bool(bw.get_futures_dual_side())
+                except Exception:
+                    dual = False
+                order_side = "SELL" if side_key == "L" else "BUY"
+                pos_side = None
+                if dual:
+                    pos_side = "LONG" if side_key == "L" else "SHORT"
+                return bw.close_futures_leg_exact(symbol, qty_val, side=order_side, position_side=pos_side)
+            return bw.close_futures_position(symbol)
+        return {"ok": False, "error": "Spot manual close via UI is not available yet"}
+
+    def _done(res, err):
+        succeeded = False
+        try:
+            if err:
+                self.log(f"Close {symbol} error: {err}")
+            else:
+                self.log(f"Close {symbol} result: {res}")
+                succeeded = isinstance(res, dict) and res.get("ok")
+            if succeeded and interval and side_key in ("L", "S"):
+                try:
+                    self._entry_intervals.setdefault(symbol, {"L": set(), "S": set()}).setdefault(side_key, set()).discard(interval)
                 except Exception:
                     pass
-                return
-        account = (self.account_combo.currentText() or "").upper()
-        try:
-            qty_val = float(qty or 0.0)
-        except Exception:
-            qty_val = 0.0
-
-        def _do():
-            bw = self.shared_binance
-            if account.startswith("FUT"):
-                if side_key in ("L", "S") and qty_val > 0:
-                    try:
-                        dual = bool(bw.get_futures_dual_side())
-                    except Exception:
-                        dual = False
-                    order_side = "SELL" if side_key == "L" else "BUY"
-                    pos_side = None
-                    if dual:
-                        pos_side = "LONG" if side_key == "L" else "SHORT"
-                    return bw.close_futures_leg_exact(symbol, qty_val, side=order_side, position_side=pos_side)
-                return bw.close_futures_position(symbol)
-            return {"ok": False, "error": "Spot manual close via UI is not available yet"}
-
-        def _done(res, err):
-            succeeded = False
-            try:
-                if err:
-                    self.log(f"Close {symbol} error: {err}")
-                else:
-                    self.log(f"Close {symbol} result: {res}")
-                    succeeded = isinstance(res, dict) and res.get("ok")
-                if succeeded and interval and side_key in ("L", "S"):
-                    try:
-                        self._entry_intervals.setdefault(symbol, {"L": set(), "S": set()}).setdefault(side_key, set()).discard(interval)
-                    except Exception:
-                        pass
-                    try:
-                        self._entry_times_by_iv.pop((symbol, side_key, interval), None)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            try:
-                self.refresh_positions(symbols=[symbol])
-            except Exception:
-                pass
-
-        worker = _CallWorker(_do, parent=self)
-        try:
-            worker.progress.connect(self.log)
+                try:
+                    self._entry_times_by_iv.pop((symbol, side_key, interval), None)
+                except Exception:
+                    pass
         except Exception:
             pass
-        worker.done.connect(_done)
-        worker.finished.connect(worker.deleteLater)
+        try:
+            self.refresh_positions(symbols=[symbol])
+        except Exception:
+            pass
 
-        def _cleanup():
-            try:
-                self._bg_workers.remove(worker)
-            except Exception:
-                pass
+    worker = _CallWorker(_do, parent=self)
+    try:
+        worker.progress.connect(self.log)
+    except Exception:
+        pass
+    worker.done.connect(_done)
+    worker.finished.connect(worker.deleteLater)
 
-        if not hasattr(self, "_bg_workers"):
-            self._bg_workers = []
-        self._bg_workers.append(worker)
-        worker.finished.connect(_cleanup)
-        worker.start()
+    def _cleanup():
+        try:
+            self._bg_workers.remove(worker)
+        except Exception:
+            pass
+
+    if not hasattr(self, "_bg_workers"):
+        self._bg_workers = []
+    self._bg_workers.append(worker)
+    worker.finished.connect(_cleanup)
+    worker.start()
+
 
 def on_leverage_changed(self, value):
     try:
@@ -2679,25 +2685,100 @@ except Exception:
 
 def update_balance_label(self):
     """Refresh the 'Total USDT balance' label safely after an order."""
+    btn = getattr(self, "refresh_balance_btn", None)
+    old_btn_text = btn.text() if btn else None
     try:
-        if getattr(self, "shared_binance", None) is None:
-            return
-        bal = 0.0
+        if btn:
+            btn.setEnabled(False)
+            btn.setText("Refreshing...")
         try:
-            if (self.account_combo.currentText() or '').upper().startswith('FUT'):
-                bal = float(self.shared_binance.get_futures_balance_usdt() or 0.0)
-            else:
-                bal = float(self.shared_binance.get_spot_balance('USDT') or 0.0)
+            if getattr(self, "balance_label", None):
+                self.balance_label.setText("Refreshing...")
         except Exception:
             pass
+
+        if getattr(self, "shared_binance", None) is None:
+            api_key = ""
+            api_secret = ""
+            try:
+                if hasattr(self, "api_key_edit"):
+                    api_key = (self.api_key_edit.text() or "").strip()
+                if hasattr(self, "api_secret_edit"):
+                    api_secret = (self.api_secret_edit.text() or "").strip()
+            except Exception:
+                api_key = api_key or ""
+                api_secret = api_secret or ""
+
+            if not api_key or not api_secret:
+                try:
+                    if getattr(self, "balance_label", None):
+                        self.balance_label.setText("API credentials missing")
+                except Exception:
+                    pass
+                return
+
+            try:
+                default_leverage = int(self.leverage_spin.value() or 1)
+            except Exception:
+                default_leverage = 1
+            default_margin_mode = "Isolated"
+            try:
+                default_margin_mode = self.margin_mode_combo.currentText() or "Isolated"
+            except Exception:
+                pass
+            try:
+                self.shared_binance = BinanceWrapper(
+                    api_key,
+                    api_secret,
+                    mode=getattr(self.mode_combo, "currentText", lambda: "Live")(),
+                    account_type=getattr(self.account_combo, "currentText", lambda: "Futures")(),
+                    default_leverage=default_leverage,
+                    default_margin_mode=default_margin_mode,
+                )
+            except Exception as exc:
+                try:
+                    if getattr(self, "balance_label", None):
+                        self.balance_label.setText("Balance error")
+                    self.log(f"Balance setup error: {exc}")
+                except Exception:
+                    pass
+                return
+
+        bal = 0.0
         try:
-            self.balance_label.setText(f"{bal:.3f} USDT")
+            account_text = (self.account_combo.currentText() or "").upper()
+        except Exception:
+            account_text = ""
+        try:
+            if account_text.startswith("FUT"):
+                bal = float(self.shared_binance.get_futures_balance_usdt() or 0.0)
+            else:
+                bal = float(self.shared_binance.get_spot_balance("USDT") or 0.0)
+        except Exception as exc:
+            try:
+                self.log(f"Balance fetch error: {exc}")
+            except Exception:
+                pass
+
+        try:
+            if getattr(self, "balance_label", None):
+                self.balance_label.setText(f"{bal:.3f} USDT")
         except Exception:
             # Fallback: log only
-            self.log(f"Balance updated: {bal:.3f} USDT")
+            try:
+                self.log(f"Balance updated: {bal:.3f} USDT")
+            except Exception:
+                pass
     except Exception as e:
-        try: self.log(f"Balance label update error: {e}")
-        except Exception: pass
+        try:
+            self.log(f"Balance label update error: {e}")
+        except Exception:
+            pass
+    finally:
+        if btn:
+            btn.setEnabled(True)
+            if old_btn_text is not None:
+                btn.setText(old_btn_text)
 
 try:
     MainWindow.update_balance_label = update_balance_label
@@ -2762,6 +2843,15 @@ def _gui_apply_theme(self, name: str):
 
 try:
     MainWindow.apply_theme = _gui_apply_theme
+except Exception:
+    pass
+
+try:
+    MainWindow._update_position_history = _mw_update_position_history
+    MainWindow._render_positions_table = _mw_render_positions_table
+    MainWindow._snapshot_closed_position = _mw_snapshot_closed_position
+    MainWindow._make_close_btn = _mw_make_close_btn
+    MainWindow._close_position_single = _mw_close_position_single
 except Exception:
     pass
 
