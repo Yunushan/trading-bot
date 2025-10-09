@@ -26,6 +26,12 @@ DEFAULT_CONFIG = {
         "stoch_rsi": {"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": None, "sell_value": None},
         "willr":     {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
         "macd":      {"enabled": False, "fast": 12, "slow": 26, "signal": 9, "buy_value": None, "sell_value": None},
+        "uo":        {"enabled": False, "short": 7, "medium": 14, "long": 28, "buy_value": None, "sell_value": None},
+        "adx":       {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+        "dmi":       {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+        "supertrend": {"enabled": False, "atr_period": 10, "multiplier": 3.0, "buy_value": None, "sell_value": None},
+        "ema":       {"enabled": False, "length": 20, "buy_value": None, "sell_value": None},
+        "stochastic": {"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": None, "sell_value": None},
     },
     "backtest": {
         "symbols": ["BTCUSDT"],
@@ -62,6 +68,12 @@ AVAILABLE_INDICATORS = {
     "stoch_rsi": {"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": None, "sell_value": None},
     "willr":     {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
     "macd":      {"enabled": False, "fast": 12, "slow": 26, "signal": 9, "buy_value": None, "sell_value": None},
+    "uo":        {"enabled": False, "short": 7, "medium": 14, "long": 28, "buy_value": None, "sell_value": None},
+    "adx":       {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+    "dmi":       {"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+    "supertrend": {"enabled": False, "atr_period": 10, "multiplier": 3.0, "buy_value": None, "sell_value": None},
+    "ema":       {"enabled": False, "length": 20, "buy_value": None, "sell_value": None},
+    "stochastic": {"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": None, "sell_value": None},
 }
 
 INDICATOR_DISPLAY_NAMES = {
@@ -74,6 +86,12 @@ INDICATOR_DISPLAY_NAMES = {
     'stoch_rsi': 'Stochastic RSI (SRSI)',
     'willr': 'Williams %R',
     'macd': 'Moving Average Convergence/Divergence (MACD)',
+    'uo': 'Ultimate Oscillator (UO)',
+    'adx': 'Average Directional Index (ADX)',
+    'dmi': 'Directional Movement Index (DMI)',
+    'supertrend': 'SuperTrend (ST)',
+    'ema': 'Exponential Moving Average (EMA)',
+    'stochastic': 'Stochastic Oscillator',
 }
 
 DEFAULT_CONFIG["backtest"]["indicators"] = copy.deepcopy(DEFAULT_CONFIG["indicators"])

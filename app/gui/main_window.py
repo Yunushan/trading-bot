@@ -1,18 +1,26 @@
-from PyQt6 import QtCore, QtGui, QtWidgets
-from pathlib import Path
+from __future__ import annotations
 
-from PyQt6 import QtWidgets, QtCore
-from PyQt6.QtCore import pyqtSignal
+import copy
 import re
-import copy, threading
+import threading
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
-from ..config import DEFAULT_CONFIG, INDICATOR_DISPLAY_NAMES
-from ..binance_wrapper import BinanceWrapper, normalize_margin_ratio
-from ..backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
-from ..strategy import StrategyEngine
-from ..workers import StopWorker, StartWorker, CallWorker
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import pyqtSignal
+
+if __package__ in (None, ""):
+    import sys
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from app.config import DEFAULT_CONFIG, INDICATOR_DISPLAY_NAMES
+from app.binance_wrapper import BinanceWrapper, normalize_margin_ratio
+from app.backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
+from app.strategy import StrategyEngine
+from app.workers import StopWorker, StartWorker, CallWorker
+from app.position_guard import IntervalPositionGuard
+from app.gui.param_dialog import ParamDialog
 
 BINANCE_SUPPORTED_INTERVALS = {
     "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo"
@@ -505,6 +513,11 @@ class MainWindow(QtWidgets.QWidget):
         table = QtWidgets.QTableWidget(0, 2)
         table.setHorizontalHeaderLabels(["Symbol", "Interval"])
         table.horizontalHeader().setStretchLastSection(True)
+        table.setMinimumHeight(180)
+        try:
+            table.verticalHeader().setDefaultSectionSize(28)
+        except Exception:
+            pass
         try:
             table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         except Exception:
@@ -1319,6 +1332,18 @@ class MainWindow(QtWidgets.QWidget):
         # ---------------- Dashboard tab ----------------
         tab1 = QtWidgets.QWidget()
         tab1_layout = QtWidgets.QVBoxLayout(tab1)
+        tab1_layout.setContentsMargins(0, 0, 0, 0)
+        tab1_layout.setSpacing(0)
+
+        self.dashboard_scroll = QtWidgets.QScrollArea()
+        self.dashboard_scroll.setWidgetResizable(True)
+        tab1_layout.addWidget(self.dashboard_scroll)
+
+        scroll_contents = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_contents)
+        scroll_layout.setContentsMargins(10, 10, 10, 10)
+        scroll_layout.setSpacing(10)
+        self.dashboard_scroll.setWidget(scroll_contents)
 
         # Top grid
         grid = QtWidgets.QGridLayout()
@@ -1420,7 +1445,7 @@ class MainWindow(QtWidgets.QWidget):
         self.ind_source_combo.setCurrentText(self.config.get("indicator_source", "Binance futures"))
         grid.addWidget(self.ind_source_combo, 3, 1, 1, 2)
 
-        tab1_layout.addLayout(grid)
+        scroll_layout.addLayout(grid)
 
         # Markets & Intervals
         sym_group = QtWidgets.QGroupBox("Markets & Intervals")
@@ -1429,6 +1454,7 @@ class MainWindow(QtWidgets.QWidget):
         sgrid.addWidget(QtWidgets.QLabel("Symbols (select 1 or more):"), 0, 0)
         self.symbol_list = QtWidgets.QListWidget()
         self.symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        self.symbol_list.setMinimumHeight(260)
         self.symbol_list.itemSelectionChanged.connect(self._reconfigure_positions_worker)
         sgrid.addWidget(self.symbol_list, 1, 0, 4, 2)
 
@@ -1439,6 +1465,7 @@ class MainWindow(QtWidgets.QWidget):
         sgrid.addWidget(QtWidgets.QLabel("Intervals (select 1 or more):"), 0, 2)
         self.interval_list = QtWidgets.QListWidget()
         self.interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        self.interval_list.setMinimumHeight(260)
         for it in ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"]:
             self.interval_list.addItem(QtWidgets.QListWidgetItem(it))
         sgrid.addWidget(self.interval_list, 1, 2, 3, 2)
@@ -1468,10 +1495,10 @@ class MainWindow(QtWidgets.QWidget):
         sgrid.addWidget(self.custom_interval_edit, 4, 2)
         sgrid.addWidget(self.add_interval_btn, 4, 3)
 
-        tab1_layout.addWidget(sym_group)
+        scroll_layout.addWidget(sym_group)
 
         runtime_override_group = self._create_override_group("runtime", self.symbol_list, self.interval_list)
-        tab1_layout.addWidget(runtime_override_group)
+        scroll_layout.addWidget(runtime_override_group)
 
         # Strategy Controls
         strat_group = QtWidgets.QGroupBox("Strategy Controls")
@@ -1509,7 +1536,7 @@ class MainWindow(QtWidgets.QWidget):
         self.cb_close_on_exit.stateChanged.connect(lambda state: self.config.__setitem__('close_on_exit', bool(state)))
         g.addWidget(self.cb_close_on_exit, 2, 0, 1, 6)
 
-        tab1_layout.addWidget(strat_group)
+        scroll_layout.addWidget(strat_group)
 
         # Indicators
         ind_group = QtWidgets.QGroupBox("Indicators")
@@ -1542,7 +1569,7 @@ class MainWindow(QtWidgets.QWidget):
             self._indicator_runtime_controls.extend([cb, btn])
             row += 1
 
-        tab1_layout.addWidget(ind_group)
+        scroll_layout.addWidget(ind_group)
 
         # Buttons
         btn_layout = QtWidgets.QHBoxLayout()
@@ -1559,7 +1586,7 @@ class MainWindow(QtWidgets.QWidget):
         self.load_btn = QtWidgets.QPushButton("Load Config")
         self.load_btn.clicked.connect(self.load_config)
         btn_layout.addWidget(self.load_btn)
-        tab1_layout.addLayout(btn_layout)
+        scroll_layout.addLayout(btn_layout)
 
         self._runtime_lock_widgets = [
             self.api_key_edit,
@@ -1594,11 +1621,16 @@ class MainWindow(QtWidgets.QWidget):
         # Log
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
+        self.log_edit.setMinimumHeight(220)
+        try:
+            self.log_edit.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        except Exception:
+            pass
         try:
             self.log_edit.document().setMaximumBlockCount(1000)
         except Exception:
             pass
-        tab1_layout.addWidget(self.log_edit)
+        scroll_layout.addWidget(self.log_edit)
 
         self.tabs.addTab(tab1, "Dashboard")
 

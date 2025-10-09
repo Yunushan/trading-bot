@@ -890,18 +890,46 @@ class BinanceWrapper:
         limit = max(1, min(int(limit), max_limit))
         guard = 0
 
+        max_network_retries = 4
         while current < end_ms and guard < 10000:
             guard += 1
-            try:
-                if acct == "FUTURES" or source in ("binance futures", "binance_futures", "futures", ""):
-                    raw = self.client.futures_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
-                else:
-                    raw = self.client.get_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
-            except BinanceAPIException as exc:
-                ban_until = self._handle_potential_ban(exc)
-                if ban_until:
-                    raise RuntimeError(f"binance_rest_banned_until:{ban_until}") from exc
-                raise
+            raw = None
+            last_error = None
+            for attempt in range(max_network_retries):
+                try:
+                    if acct == "FUTURES" or source in ("binance futures", "binance_futures", "futures", ""):
+                        raw = self.client.futures_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
+                    else:
+                        raw = self.client.get_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
+                    break
+                except BinanceAPIException as exc:
+                    ban_until = self._handle_potential_ban(exc)
+                    if ban_until:
+                        raise RuntimeError(f"binance_rest_banned_until:{ban_until}") from exc
+                    last_error = exc
+                    break
+                except requests.exceptions.RequestException as req_err:
+                    last_error = req_err
+                    sleep_for = min(1.5 * (attempt + 1), 6.0)
+                    time.sleep(sleep_for)
+                except Exception as exc:
+                    last_error = exc
+                    break
+
+            if raw is None:
+                if last_error is not None:
+                    if isinstance(last_error, requests.exceptions.RequestException):
+                        guard -= 1
+                        now = time.time()
+                        if (now - getattr(self, "_last_network_log", 0.0)) > 10.0:
+                            self._last_network_log = now
+                            try:
+                                self._log(f"Network hiccup while fetching {symbol}@{interval}; retrying...", lvl="warn")
+                            except Exception:
+                                pass
+                        continue
+                    raise RuntimeError(f"network_error:{last_error}") from last_error
+                break
 
             if not raw:
                 break

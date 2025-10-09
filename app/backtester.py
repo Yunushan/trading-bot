@@ -148,7 +148,7 @@ class BacktestEngine:
     def _estimate_warmup(indicator: IndicatorDefinition) -> int:
         params = indicator.params or {}
         length_candidates = []
-        for key in ("length", "fast", "slow", "signal", "smooth_k", "smooth_d"):
+        for key in ("length", "fast", "slow", "signal", "smooth_k", "smooth_d", "short", "medium", "long", "atr_period"):
             try:
                 val = params.get(key)
                 if val is not None:
@@ -406,6 +406,31 @@ class BacktestEngine:
                 return hist
             if key == "volume":
                 return df['volume']
+            if key == "uo":
+                short = int(params.get("short") or 7)
+                medium = int(params.get("medium") or 14)
+                long = int(params.get("long") or 28)
+                return ind.ultimate_oscillator(df, short=short, medium=medium, long=long)
+            if key == "ema":
+                length = int(params.get("length") or 20)
+                return ind.ema(df['close'], length)
+            if key == "adx":
+                length = int(params.get("length") or 14)
+                return ind.adx(df, length=length)
+            if key == "dmi":
+                length = int(params.get("length") or 14)
+                plus_di, minus_di, _ = ind.dmi(df, length=length)
+                return (plus_di - minus_di)
+            if key == "supertrend":
+                atr_period = int(params.get("atr_period") or 10)
+                multiplier = float(params.get("multiplier") or 3.0)
+                return ind.supertrend(df, atr_period=atr_period, multiplier=multiplier)
+            if key == "stochastic":
+                length = int(params.get("length") or 14)
+                smooth_k = int(params.get("smooth_k") or 3)
+                smooth_d = int(params.get("smooth_d") or 3)
+                k, _d = ind.stochastic(df, length=length, smooth_k=smooth_k, smooth_d=smooth_d)
+                return k
         except Exception:
             return None
         return None
