@@ -31,6 +31,15 @@ BACKTEST_INTERVAL_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h
 MAX_CLOSED_HISTORY = 200
 
 
+def _format_indicator_list(keys):
+    if not keys:
+        return "-"
+    rendered = []
+    for key in keys:
+        rendered.append(INDICATOR_DISPLAY_NAMES.get(key, key))
+    return ", ".join(rendered) if rendered else "-"
+
+
 
 class _PositionsWorker(QtCore.QObject):
     positions_ready = QtCore.pyqtSignal(list, str)  # rows, account_type
@@ -376,6 +385,28 @@ class MainWindow(QtWidgets.QWidget):
                 pass
         return lst
 
+    def _get_selected_indicator_keys(self, kind: str) -> list[str]:
+        try:
+            if kind == "runtime":
+                widgets = getattr(self, "indicator_widgets", {}) or {}
+            else:
+                widgets = getattr(self, "backtest_indicator_widgets", {}) or {}
+            keys: list[str] = []
+            for key, control in widgets.items():
+                cb = control[0] if isinstance(control, (tuple, list)) and control else None
+                if cb and cb.isChecked():
+                    keys.append(str(key))
+            if keys:
+                return keys
+        except Exception:
+            pass
+        try:
+            cfg = self.config if kind == "runtime" else self.backtest_config
+            indicators_cfg = (cfg or {}).get("indicators", {}) or {}
+            return [key for key, params in indicators_cfg.items() if params.get("enabled")]
+        except Exception:
+            return []
+
     def _refresh_symbol_interval_pairs(self, kind: str = "runtime"):
         ctx = self._override_ctx(kind)
         table = ctx.get("table")
@@ -394,11 +425,22 @@ class MainWindow(QtWidgets.QWidget):
             if key in seen:
                 continue
             seen.add(key)
-            cleaned.append({'symbol': sym, 'interval': iv})
+            indicators = entry.get('indicators')
+            if isinstance(indicators, (list, tuple)):
+                indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
+            else:
+                indicators = None
+            cleaned.append({'symbol': sym, 'interval': iv, 'indicators': list(indicators) if indicators else None})
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
             table.setItem(row, 1, QtWidgets.QTableWidgetItem(iv))
+            try:
+                table.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, cleaned[-1])
+            except Exception:
+                pass
+            if table.columnCount() >= 3:
+                table.setItem(row, 2, QtWidgets.QTableWidgetItem(_format_indicator_list(indicators)))
         cfg_key = ctx.get("config_key")
         if cfg_key:
             self.config[cfg_key] = cleaned
@@ -428,8 +470,19 @@ class MainWindow(QtWidgets.QWidget):
             if not symbols or not intervals:
                 return
             pairs_cfg = self._override_config_list(kind)
-            existing = {(str(p.get('symbol') or '').strip().upper(), str(p.get('interval') or '').strip()) for p in pairs_cfg}
+            existing_map = {}
+            for entry in pairs_cfg:
+                sym = str(entry.get('symbol') or '').strip().upper()
+                iv = str(entry.get('interval') or '').strip()
+                if sym and iv:
+                    existing_map[(sym, iv)] = entry
             changed = False
+            sel_indicators = self._get_selected_indicator_keys(kind)
+            indicators_value = list(sel_indicators) if sel_indicators else None
+            if indicators_value is not None:
+                indicators_value = sorted({str(k).strip() for k in indicators_value if str(k).strip()})
+                if not indicators_value:
+                    indicators_value = None
             for sym in symbols:
                 if not sym:
                     continue
@@ -437,10 +490,20 @@ class MainWindow(QtWidgets.QWidget):
                     if not iv:
                         continue
                     key = (sym, iv)
-                    if key in existing:
+                    existing_entry = existing_map.get(key)
+                    if existing_entry is not None:
+                        if existing_entry.get('indicators') != indicators_value:
+                            if indicators_value is None:
+                                existing_entry.pop('indicators', None)
+                            else:
+                                existing_entry['indicators'] = list(indicators_value)
+                            changed = True
                         continue
-                    pairs_cfg.append({'symbol': sym, 'interval': iv})
-                    existing.add(key)
+                    new_entry = {'symbol': sym, 'interval': iv}
+                    if indicators_value is not None:
+                        new_entry['indicators'] = list(indicators_value)
+                    pairs_cfg.append(new_entry)
+                    existing_map[key] = new_entry
                     changed = True
             if changed:
                 self._refresh_symbol_interval_pairs(kind)
@@ -479,7 +542,15 @@ class MainWindow(QtWidgets.QWidget):
                 iv = str(entry.get('interval') or '').strip()
                 if (sym, iv) in remove_set:
                     continue
-                updated.append({'symbol': sym, 'interval': iv})
+                indicators = entry.get('indicators')
+                if isinstance(indicators, (list, tuple)):
+                    indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
+                else:
+                    indicators = None
+                new_entry = {'symbol': sym, 'interval': iv}
+                if indicators:
+                    new_entry['indicators'] = indicators
+                updated.append(new_entry)
             cfg_key = ctx.get("config_key")
             if cfg_key:
                 self.config[cfg_key] = updated
@@ -511,8 +582,11 @@ class MainWindow(QtWidgets.QWidget):
     def _create_override_group(self, kind: str, symbol_list, interval_list) -> QtWidgets.QGroupBox:
         group = QtWidgets.QGroupBox("Symbol / Interval Overrides")
         layout = QtWidgets.QVBoxLayout(group)
-        table = QtWidgets.QTableWidget(0, 2)
-        table.setHorizontalHeaderLabels(["Symbol", "Interval"])
+        columns = ["Symbol", "Interval"]
+        if kind == "runtime":
+            columns.append("Indicators")
+        table = QtWidgets.QTableWidget(0, len(columns))
+        table.setHorizontalHeaderLabels(columns)
         table.horizontalHeader().setStretchLastSection(True)
         table.setMinimumHeight(180)
         try:
@@ -2389,13 +2463,39 @@ def start_strategy(self):
                     sym = sym_item.text().strip().upper() if sym_item else ''
                     iv = iv_item.text().strip() if iv_item else ''
                     if sym and iv:
-                        pair_entries.append((sym, iv))
+                        entry_obj = None
+                        try:
+                            entry_obj = sym_item.data(QtCore.Qt.ItemDataRole.UserRole)
+                        except Exception:
+                            entry_obj = None
+                        indicators = None
+                        if isinstance(entry_obj, dict):
+                            indicators = entry_obj.get("indicators")
+                            if isinstance(indicators, (list, tuple)):
+                                indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
+                            else:
+                                indicators = None
+                        pair_entries.append({
+                            "symbol": sym,
+                            "interval": iv,
+                            "indicators": list(indicators) if indicators else None,
+                        })
         if not pair_entries:
             for entry in self.config.get("runtime_symbol_interval_pairs", []) or []:
                 sym = str((entry or {}).get('symbol') or '').strip().upper()
                 interval_val = str((entry or {}).get('interval') or '').strip()
-                if sym and interval_val:
-                    pair_entries.append((sym, interval_val))
+                if not (sym and interval_val):
+                    continue
+                indicators = entry.get("indicators")
+                if isinstance(indicators, (list, tuple)):
+                    indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
+                else:
+                    indicators = None
+                pair_entries.append({
+                    "symbol": sym,
+                    "interval": interval_val,
+                    "indicators": list(indicators) if indicators else None,
+                })
         syms = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count())
                 if self.symbol_list.item(i).isSelected()]
         if not syms and self.symbol_list.count():
@@ -2407,28 +2507,46 @@ def start_strategy(self):
             ivs = ["1m"]
 
         if pair_entries:
-            combos = pair_entries
+            combos_source = pair_entries
         else:
             if not syms:
                 self.log("No symbols available. Click Refresh Symbols.")
                 return
-            combos = []
+            current_indicators = self._get_selected_indicator_keys("runtime")
+            indicator_value = sorted({str(k).strip() for k in current_indicators if str(k).strip()}) if current_indicators else None
+            combos_source = []
             for sym in syms:
                 for iv in ivs:
-                    combos.append((sym, iv))
-        unique_combos = []
-        seen_combo = set()
-        for sym, iv in combos:
-            sym_norm = str(sym).strip().upper()
-            iv_norm = str(iv).strip().lower()
-            key = (sym_norm, iv_norm)
-            if not sym_norm or not iv_norm:
+                    combos_source.append({
+                        "symbol": sym,
+                        "interval": iv,
+                        "indicators": list(indicator_value) if indicator_value else None,
+                    })
+
+        combos = []
+        seen_combo = {}
+        for entry in combos_source:
+            sym = str(entry.get("symbol") or "").strip().upper()
+            iv = str(entry.get("interval") or "").strip().lower()
+            if not sym or not iv:
                 continue
-            if key in seen_combo:
-                continue
-            seen_combo.add(key)
-            unique_combos.append((sym_norm, iv_norm))
-        combos = unique_combos
+            key = (sym, iv)
+            indicators = entry.get("indicators")
+            if isinstance(indicators, (list, tuple)):
+                indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
+            else:
+                indicators = None
+            existing = seen_combo.get(key)
+            if existing is None:
+                item = {"symbol": sym, "interval": iv}
+                if indicators:
+                    item["indicators"] = indicators
+                seen_combo[key] = item
+                combos.append(item)
+            else:
+                if indicators:
+                    if existing.get("indicators") != indicators:
+                        existing["indicators"] = indicators
         total_jobs = len(combos)
         concurrency = StrategyEngine.concurrent_limit()
         if total_jobs > concurrency:
@@ -2445,7 +2563,12 @@ def start_strategy(self):
         if not hasattr(self, "strategy_engines"):
             self.strategy_engines = {}
 
-        for sym, iv in combos:
+        for combo in combos:
+            sym = combo.get("symbol")
+            iv = combo.get("interval")
+            if not sym or not iv:
+                continue
+            indicator_override = combo.get("indicators")
             key = f"{sym}@{iv}"
             try:
                 if key in self.strategy_engines and getattr(self.strategy_engines[key], "is_alive", lambda: False)():
@@ -2459,12 +2582,31 @@ def start_strategy(self):
                     "position_pct": float(self.pospct_spin.value() or self.config.get("position_pct", 100.0)),
                     "side": self.side_combo.currentText(),
                 })
+                if indicator_override is not None:
+                    try:
+                        indicator_set = {str(k).strip() for k in indicator_override if str(k).strip()}
+                    except Exception:
+                        indicator_set = set()
+                    indicators_cfg = cfg.get("indicators", {})
+                    if isinstance(indicators_cfg, dict):
+                        for ind_key, params in indicators_cfg.items():
+                            try:
+                                params['enabled'] = ind_key in indicator_set
+                            except Exception:
+                                try:
+                                    indicators_cfg[ind_key] = dict(params)
+                                    indicators_cfg[ind_key]['enabled'] = ind_key in indicator_set
+                                except Exception:
+                                    pass
                 eng = StrategyEngine(self.shared_binance, cfg, log_callback=self.log,
                                      trade_callback=self._on_trade_signal,
                                      loop_interval_override=loop_override)
                 eng.start()
                 self.strategy_engines[key] = eng
-                self.log(f"Loop start for {key}.")
+                indicator_note = ""
+                if indicator_override is not None:
+                    indicator_note = f" (Indicators: {_format_indicator_list(indicator_override)})"
+                self.log(f"Loop start for {key}{indicator_note}.")
                 started += 1
             except Exception as e:
                 self.log(f"Failed to start engine for {key}: {e}")
