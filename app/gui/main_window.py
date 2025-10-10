@@ -40,6 +40,52 @@ def _format_indicator_list(keys):
     return ", ".join(rendered) if rendered else "-"
 
 
+class _NumericItem(QtWidgets.QTableWidgetItem):
+    def __init__(self, text: str, value: float = 0.0):
+        super().__init__(text)
+        try:
+            self._numeric = float(value)
+        except Exception:
+            self._numeric = 0.0
+        self.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+
+    def __lt__(self, other):
+        if isinstance(other, _NumericItem):
+            return self._numeric < other._numeric
+        try:
+            return self._numeric < float(other.text().replace('%', '').strip() or 0.0)
+        except Exception:
+            try:
+                return float(self.text().replace('%', '').strip() or 0.0) < float(other.text().replace('%', '').strip() or 0.0)
+            except Exception:
+                return super().__lt__(other)
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if isinstance(value, str):
+            value = value.replace('%', '').strip()
+            if value == "":
+                return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _make_engine_key(symbol: str, interval: str, indicators: list[str] | None) -> str:
+    base = f"{symbol}@{interval}"
+    if indicators:
+        base += "#" + ",".join(indicators)
+    return base
+
+
 
 class _PositionsWorker(QtCore.QObject):
     positions_ready = QtCore.pyqtSignal(list, str)  # rows, account_type
@@ -421,26 +467,29 @@ class MainWindow(QtWidgets.QWidget):
             iv = str((entry or {}).get('interval') or '').strip()
             if not sym or not iv:
                 continue
-            key = (sym, iv)
+            indicators_raw = entry.get('indicators')
+            if isinstance(indicators_raw, (list, tuple)):
+                indicator_values = sorted({str(k).strip() for k in indicators_raw if str(k).strip()})
+            else:
+                indicator_values = []
+            key = (sym, iv, tuple(indicator_values))
             if key in seen:
                 continue
             seen.add(key)
-            indicators = entry.get('indicators')
-            if isinstance(indicators, (list, tuple)):
-                indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
-            else:
-                indicators = None
-            cleaned.append({'symbol': sym, 'interval': iv, 'indicators': list(indicators) if indicators else None})
+            entry_clean = {'symbol': sym, 'interval': iv}
+            if indicator_values:
+                entry_clean['indicators'] = list(indicator_values)
+            cleaned.append(entry_clean)
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
             table.setItem(row, 1, QtWidgets.QTableWidgetItem(iv))
             try:
-                table.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, cleaned[-1])
+                table.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
             except Exception:
                 pass
             if table.columnCount() >= 3:
-                table.setItem(row, 2, QtWidgets.QTableWidgetItem(_format_indicator_list(indicators)))
+                table.setItem(row, 2, QtWidgets.QTableWidgetItem(_format_indicator_list(indicator_values)))
         cfg_key = ctx.get("config_key")
         if cfg_key:
             self.config[cfg_key] = cleaned
@@ -470,40 +519,37 @@ class MainWindow(QtWidgets.QWidget):
             if not symbols or not intervals:
                 return
             pairs_cfg = self._override_config_list(kind)
-            existing_map = {}
+            existing_keys = {}
             for entry in pairs_cfg:
-                sym = str(entry.get('symbol') or '').strip().upper()
-                iv = str(entry.get('interval') or '').strip()
-                if sym and iv:
-                    existing_map[(sym, iv)] = entry
+                sym_existing = str(entry.get('symbol') or '').strip().upper()
+                iv_existing = str(entry.get('interval') or '').strip()
+                if not (sym_existing and iv_existing):
+                    continue
+                indicators_existing = entry.get('indicators')
+                if isinstance(indicators_existing, (list, tuple)):
+                    indicators_existing = sorted({str(k).strip() for k in indicators_existing if str(k).strip()})
+                else:
+                    indicators_existing = []
+                key = (sym_existing, iv_existing, tuple(indicators_existing))
+                existing_keys[key] = entry
             changed = False
             sel_indicators = self._get_selected_indicator_keys(kind)
-            indicators_value = list(sel_indicators) if sel_indicators else None
-            if indicators_value is not None:
-                indicators_value = sorted({str(k).strip() for k in indicators_value if str(k).strip()})
-                if not indicators_value:
-                    indicators_value = None
+            indicators_value = sorted({str(k).strip() for k in sel_indicators if str(k).strip()}) if sel_indicators else []
+            indicators_tuple = tuple(indicators_value)
             for sym in symbols:
                 if not sym:
                     continue
                 for iv in intervals:
                     if not iv:
                         continue
-                    key = (sym, iv)
-                    existing_entry = existing_map.get(key)
-                    if existing_entry is not None:
-                        if existing_entry.get('indicators') != indicators_value:
-                            if indicators_value is None:
-                                existing_entry.pop('indicators', None)
-                            else:
-                                existing_entry['indicators'] = list(indicators_value)
-                            changed = True
+                    key = (sym, iv, indicators_tuple)
+                    if key in existing_keys:
                         continue
                     new_entry = {'symbol': sym, 'interval': iv}
-                    if indicators_value is not None:
+                    if indicators_value:
                         new_entry['indicators'] = list(indicators_value)
                     pairs_cfg.append(new_entry)
-                    existing_map[key] = new_entry
+                    existing_keys[key] = new_entry
                     changed = True
             if changed:
                 self._refresh_symbol_interval_pairs(kind)
@@ -535,21 +581,40 @@ class MainWindow(QtWidgets.QWidget):
                 iv_item = table.item(row, 1)
                 sym = sym_item.text().strip().upper() if sym_item else ''
                 iv = iv_item.text().strip() if iv_item else ''
-                if sym and iv:
-                    remove_set.add((sym, iv))
+                if not (sym and iv):
+                    continue
+                indicators_raw = None
+                exact_match = True
+                try:
+                    entry_data = sym_item.data(QtCore.Qt.ItemDataRole.UserRole)
+                except Exception:
+                    entry_data = None
+                if isinstance(entry_data, dict):
+                    indicators_raw = entry_data.get('indicators')
+                else:
+                    exact_match = False
+                if isinstance(indicators_raw, (list, tuple)):
+                    indicators_norm = sorted({str(k).strip() for k in indicators_raw if str(k).strip()})
+                else:
+                    indicators_norm = []
+                if exact_match:
+                    remove_set.add((sym, iv, tuple(indicators_norm)))
+                else:
+                    remove_set.add((sym, iv, None))
             for entry in pairs_cfg:
                 sym = str(entry.get('symbol') or '').strip().upper()
                 iv = str(entry.get('interval') or '').strip()
-                if (sym, iv) in remove_set:
-                    continue
-                indicators = entry.get('indicators')
-                if isinstance(indicators, (list, tuple)):
-                    indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
+                indicators_raw = entry.get('indicators')
+                if isinstance(indicators_raw, (list, tuple)):
+                    indicators_norm = sorted({str(k).strip() for k in indicators_raw if str(k).strip()})
                 else:
-                    indicators = None
+                    indicators_norm = []
+                key = (sym, iv, tuple(indicators_norm))
+                if key in remove_set or (sym, iv, None) in remove_set:
+                    continue
                 new_entry = {'symbol': sym, 'interval': iv}
-                if indicators:
-                    new_entry['indicators'] = indicators
+                if indicators_norm:
+                    new_entry['indicators'] = list(indicators_norm)
                 updated.append(new_entry)
             cfg_key = ctx.get("config_key")
             if cfg_key:
@@ -1075,6 +1140,8 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_status_label.setText("Backtest already running...")
             return
 
+        self._backtest_expected_runs = []
+
         ctx_backtest = self._override_ctx("backtest")
         pair_table = ctx_backtest.get("table") if ctx_backtest else None
         selected_pairs = []
@@ -1179,6 +1246,18 @@ class MainWindow(QtWidgets.QWidget):
         self._update_backtest_config("position_mode", position_mode)
         self._update_backtest_config("assets_mode", assets_mode)
         self._update_backtest_config("leverage", leverage_value)
+        indicator_keys_order = [ind.key for ind in indicators]
+        combos_sequence = list(pairs_override) if pairs_override else [(sym, iv) for sym in symbols for iv in intervals]
+        expected_runs = []
+        if logic == "SEPARATE":
+            for sym, iv in combos_sequence:
+                for ind in indicators:
+                    expected_runs.append((sym, iv, [ind.key]))
+        else:
+            expected_indicator_list = list(indicator_keys_order)
+            for sym, iv in combos_sequence:
+                expected_runs.append((sym, iv, list(expected_indicator_list)))
+        self._backtest_expected_runs = expected_runs
         self._backtest_dates_changed()
 
         symbol_source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip()
@@ -1336,6 +1415,22 @@ class MainWindow(QtWidgets.QWidget):
         errors = result.get("errors", []) if isinstance(result, dict) else []
         run_dicts = [self._normalize_backtest_run(r) for r in (runs_raw or [])]
         self.backtest_results = run_dicts
+        expected_runs = getattr(self, "_backtest_expected_runs", []) or []
+        for idx, rd in enumerate(run_dicts):
+            if idx < len(expected_runs):
+                sym, iv, inds = expected_runs[idx]
+                if not rd.get("symbol") and sym:
+                    rd["symbol"] = sym
+                if not rd.get("interval") and iv:
+                    rd["interval"] = iv
+                if (not rd.get("indicator_keys")) and inds:
+                    rd["indicator_keys"] = list(inds)
+        try:
+            self.log(f"Backtest returned {len(run_dicts)} run(s).")
+            for idx, rd in enumerate(run_dicts):
+                self.log(f"Backtest run[{idx}]: {rd}")
+        except Exception:
+            pass
         self._populate_backtest_results_table(run_dicts)
         summary_parts = []
         if run_dicts:
@@ -1356,36 +1451,56 @@ class MainWindow(QtWidgets.QWidget):
 
     def _populate_backtest_results_table(self, runs):
         try:
-            self.backtest_results_table.setRowCount(0)
-            if self.backtest_results_table.isSortingEnabled():
+            rows_data = list(runs or [])
+            try:
+                self.backtest_results_table.setSortingEnabled(False)
+            except Exception:
+                pass
+            try:
+                self.backtest_results_table.clearContents()
+            except Exception:
+                pass
+            self.backtest_results_table.setRowCount(len(rows_data))
+            for row, run in enumerate(rows_data):
                 try:
-                    self.backtest_results_table.setSortingEnabled(False)
-                except Exception:
-                    pass
-            for run in runs or []:
-                data = run if isinstance(run, dict) else self._normalize_backtest_run(run)
-                symbol = data.get("symbol") or "-"
-                interval = data.get("interval") or "-"
-                logic = data.get("logic") or "-"
-                indicator_keys = data.get("indicator_keys") or []
-                trades = data.get("trades", 0)
-                roi_value = data.get("roi_value", 0.0)
-                roi_percent = data.get("roi_percent", 0.0)
+                    data = run if isinstance(run, dict) else self._normalize_backtest_run(run)
+                    symbol = data.get("symbol") or "-"
+                    interval = data.get("interval") or "-"
+                    logic = data.get("logic") or "-"
+                    indicator_keys = data.get("indicator_keys") or []
+                    trades = _safe_float(data.get("trades", 0.0), 0.0)
+                    roi_value = _safe_float(data.get("roi_value", 0.0), 0.0)
+                    roi_percent = _safe_float(data.get("roi_percent", 0.0), 0.0)
+                    try:
+                        self.log(f"Render row {row}: {symbol}@{interval}, trades={trades}, roi={roi_value}/{roi_percent}")
+                    except Exception:
+                        pass
 
-                indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys)
-                row = self.backtest_results_table.rowCount()
-                self.backtest_results_table.insertRow(row)
-                self.backtest_results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(symbol or "-"))
-                self.backtest_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(interval or "-"))
-                self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(logic or "-"))
-                self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(indicators_display or "-"))
-                self.backtest_results_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(trades or 0)))
-                roi_value_item = QtWidgets.QTableWidgetItem(f"{roi_value:+.2f}")
-                roi_value_item.setData(QtCore.Qt.ItemDataRole.UserRole, float(roi_value))
-                self.backtest_results_table.setItem(row, 5, roi_value_item)
-                roi_percent_item = QtWidgets.QTableWidgetItem(f"{roi_percent:+.2f}%")
-                roi_percent_item.setData(QtCore.Qt.ItemDataRole.UserRole, float(roi_percent))
-                self.backtest_results_table.setItem(row, 6, roi_percent_item)
+                    indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys)
+                    self.backtest_results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(symbol or "-"))
+                    self.backtest_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(interval or "-"))
+                    self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(logic or "-"))
+                    self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(indicators_display or "-"))
+                    trades_display = _safe_int(trades, 0)
+                    trades_item = _NumericItem(str(trades_display), trades_display)
+                    self.backtest_results_table.setItem(row, 4, trades_item)
+                    roi_value_item = _NumericItem(f"{roi_value:+.2f}", roi_value)
+                    self.backtest_results_table.setItem(row, 5, roi_value_item)
+                    roi_percent_item = _NumericItem(f"{roi_percent:+.2f}%", roi_percent)
+                    self.backtest_results_table.setItem(row, 6, roi_percent_item)
+                except Exception as row_exc:
+                    self.log(f"Backtest table row {row} error: {row_exc}")
+                    err_item = QtWidgets.QTableWidgetItem(f"Error: {row_exc}")
+                    err_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+                    self.backtest_results_table.setItem(row, 0, err_item)
+                    self.backtest_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem("-"))
+                    self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem("-"))
+                    self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem("-"))
+                    self.backtest_results_table.setItem(row, 4, QtWidgets.QTableWidgetItem("0"))
+                    self.backtest_results_table.setItem(row, 5, QtWidgets.QTableWidgetItem("0.00"))
+                    self.backtest_results_table.setItem(row, 6, QtWidgets.QTableWidgetItem("0.00%"))
+                    continue
+            self.backtest_results_table.resizeRowsToContents()
         except Exception as exc:
             self.log(f"Backtest results table error: {exc}")
         finally:
@@ -1926,7 +2041,15 @@ class MainWindow(QtWidgets.QWidget):
 
         self.backtest_results_table = QtWidgets.QTableWidget(0, 7)
         self.backtest_results_table.setHorizontalHeaderLabels(["Symbol", "Interval", "Logic", "Indicators", "Trades", "ROI (USDT)", "ROI (%)"])
-        self.backtest_results_table.horizontalHeader().setStretchLastSection(True)
+        header = self.backtest_results_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        try:
+            header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        except Exception:
+            try:
+                header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+            except Exception:
+                pass
         self.backtest_results_table.setSortingEnabled(True)
         try:
             self.backtest_results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -2032,8 +2155,13 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             denom = margin_balance if margin_balance > 0.0 else margin_usdt
                             if denom > 0.0:
                                 margin_ratio = ((maint + unrealized_loss) / denom) * 100.0
+                        roi_pct = 0.0
                         if margin_usdt > 0:
-                            pnl_roi = f"{pnl:+.2f} USDT ({(pnl / margin_usdt * 100.0):+.2f}%)"
+                            try:
+                                roi_pct = (pnl / margin_usdt) * 100.0
+                            except Exception:
+                                roi_pct = 0.0
+                            pnl_roi = f"{pnl:+.2f} USDT ({roi_pct:+.2f}%)"
                         else:
                             pnl_roi = f"{pnl:+.2f} USDT"
                         try:
@@ -2048,6 +2176,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'margin_usdt': margin_usdt,
                             'margin_ratio': margin_ratio,
                             'pnl_roi': pnl_roi,
+                            'pnl_value': pnl,
+                            'roi_percent': roi_pct,
                             'side_key': side_key,
                             'update_time': update_time,
                         }
@@ -2180,12 +2310,25 @@ def _mw_render_positions_table(self):
                 status_txt = rec.get('status', 'Active')
 
                 self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
-                self.pos_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{qty_show:.8f}"))
-                self.pos_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{mark:.8f}" if mark else '-'))
-                self.pos_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{size_usdt:.2f}"))
-                self.pos_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{mr:.2f}%" if mr > 0 else '-'))
-                self.pos_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{margin_usdt:.2f} USDT" if margin_usdt else '-'))
-                self.pos_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(pnl_roi or '-')))
+
+                qty_item = _NumericItem(f"{qty_show:.8f}", qty_show)
+                self.pos_table.setItem(row, 1, qty_item)
+
+                mark_item = _NumericItem(f"{mark:.8f}" if mark else "-", mark)
+                self.pos_table.setItem(row, 2, mark_item)
+
+                size_item = _NumericItem(f"{size_usdt:.2f}", size_usdt)
+                self.pos_table.setItem(row, 3, size_item)
+
+                mr_display = f"{mr:.2f}%" if mr > 0 else "-"
+                mr_item = _NumericItem(mr_display, mr)
+                self.pos_table.setItem(row, 4, mr_item)
+
+                margin_item = _NumericItem(f"{margin_usdt:.2f} USDT" if margin_usdt else "-", margin_usdt)
+                self.pos_table.setItem(row, 5, margin_item)
+
+                pnl_item = _NumericItem(str(pnl_roi or "-"), float(data.get('pnl_value') or 0.0))
+                self.pos_table.setItem(row, 6, pnl_item)
                 self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
                 self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
                 self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(open_time or '-')))
@@ -2524,29 +2667,25 @@ def start_strategy(self):
                     })
 
         combos = []
-        seen_combo = {}
+        seen_combo = set()
         for entry in combos_source:
             sym = str(entry.get("symbol") or "").strip().upper()
             iv = str(entry.get("interval") or "").strip().lower()
             if not sym or not iv:
                 continue
-            key = (sym, iv)
             indicators = entry.get("indicators")
             if isinstance(indicators, (list, tuple)):
                 indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
             else:
-                indicators = None
-            existing = seen_combo.get(key)
-            if existing is None:
-                item = {"symbol": sym, "interval": iv}
-                if indicators:
-                    item["indicators"] = indicators
-                seen_combo[key] = item
-                combos.append(item)
-            else:
-                if indicators:
-                    if existing.get("indicators") != indicators:
-                        existing["indicators"] = indicators
+                indicators = []
+            key = (sym, iv, tuple(indicators))
+            if key in seen_combo:
+                continue
+            seen_combo.add(key)
+            item = {"symbol": sym, "interval": iv}
+            if indicators:
+                item["indicators"] = indicators
+            combos.append(item)
         total_jobs = len(combos)
         concurrency = StrategyEngine.concurrent_limit()
         if total_jobs > concurrency:
@@ -2569,7 +2708,13 @@ def start_strategy(self):
             if not sym or not iv:
                 continue
             indicator_override = combo.get("indicators")
-            key = f"{sym}@{iv}"
+            if isinstance(indicator_override, (list, tuple)):
+                indicator_override = [str(k).strip() for k in indicator_override if str(k).strip()]
+                if not indicator_override:
+                    indicator_override = None
+            else:
+                indicator_override = None
+            key = _make_engine_key(sym, iv, indicator_override)
             try:
                 if key in self.strategy_engines and getattr(self.strategy_engines[key], "is_alive", lambda: False)():
                     self.log(f"Engine already running for {key}, skipping.")
@@ -2582,11 +2727,8 @@ def start_strategy(self):
                     "position_pct": float(self.pospct_spin.value() or self.config.get("position_pct", 100.0)),
                     "side": self.side_combo.currentText(),
                 })
-                if indicator_override is not None:
-                    try:
-                        indicator_set = {str(k).strip() for k in indicator_override if str(k).strip()}
-                    except Exception:
-                        indicator_set = set()
+                if indicator_override:
+                    indicator_set = set(indicator_override)
                     indicators_cfg = cfg.get("indicators", {})
                     if isinstance(indicators_cfg, dict):
                         for ind_key, params in indicators_cfg.items():
@@ -2604,7 +2746,7 @@ def start_strategy(self):
                 eng.start()
                 self.strategy_engines[key] = eng
                 indicator_note = ""
-                if indicator_override is not None:
+                if indicator_override:
                     indicator_note = f" (Indicators: {_format_indicator_list(indicator_override)})"
                 self.log(f"Loop start for {key}{indicator_note}.")
                 started += 1

@@ -230,6 +230,31 @@ class StrategyEngine:
             else:
                 ind['rsi'] = rsi_fallback(df['close'], length=int(cfg['rsi']['length']))
 
+        # Stochastic RSI
+        stoch_rsi_cfg = cfg.get('stoch_rsi', {})
+        if stoch_rsi_cfg.get('enabled'):
+            length = int(stoch_rsi_cfg.get('length') or 14)
+            smooth_k = int(stoch_rsi_cfg.get('smooth_k') or 3)
+            smooth_d = int(stoch_rsi_cfg.get('smooth_d') or 3)
+            k_series = None
+            d_series = None
+            if has_accessor:
+                try:
+                    srsi_df = df['close'].ta.stochrsi(length=length, rsi_length=length, k=smooth_k, d=smooth_d)
+                    cols = list(srsi_df.columns) if srsi_df is not None else []
+                    if cols:
+                        k_series = srsi_df[cols[0]]
+                        if len(cols) > 1:
+                            d_series = srsi_df[cols[1]]
+                except Exception:
+                    k_series = None
+                    d_series = None
+            if k_series is None or d_series is None:
+                k_series, d_series = stoch_rsi_fallback(df['close'], length=length, smooth_k=smooth_k, smooth_d=smooth_d)
+            ind['stoch_rsi'] = k_series
+            ind['stoch_rsi_k'] = k_series
+            ind['stoch_rsi_d'] = d_series
+
         # Williams %R
         if cfg.get('willr', {}).get('enabled'):
             try:
@@ -360,6 +385,26 @@ class StrategyEngine:
                     trigger_desc.append("RSI=NaN/inf skipped")
             except Exception as e:
                 trigger_desc.append(f"RSI error:{e!r}")
+
+        # --- Stochastic RSI thresholds ---
+        stoch_rsi_cfg = cfg['indicators'].get('stoch_rsi', {})
+        stoch_rsi_enabled = bool(stoch_rsi_cfg.get('enabled', False))
+        if stoch_rsi_enabled and 'stoch_rsi_k' in ind and ind['stoch_rsi_k'] is not None:
+            try:
+                srsi_series = ind['stoch_rsi_k'].dropna()
+                if not srsi_series.empty:
+                    srsi_val = float(srsi_series.iloc[-2])
+                    trigger_desc.append(f"StochRSI %K={srsi_val:.2f}")
+                    buy_th = stoch_rsi_cfg.get('buy_value')
+                    sell_th = stoch_rsi_cfg.get('sell_value')
+                    buy_limit = float(buy_th if buy_th is not None else 20.0)
+                    sell_limit = float(sell_th if sell_th is not None else 80.0)
+                    if signal is None and cfg['side'] in ('BUY', 'BOTH') and srsi_val <= buy_limit:
+                        signal = 'BUY'; trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} → BUY")
+                    elif signal is None and cfg['side'] in ('SELL', 'BOTH') and srsi_val >= sell_limit:
+                        signal = 'SELL'; trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} → SELL")
+            except Exception as e:
+                trigger_desc.append(f"StochRSI error:{e!r}")
 
         # --- Williams %R thresholds ---
         willr_cfg = cfg['indicators'].get('willr', {})
