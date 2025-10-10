@@ -1386,6 +1386,30 @@ class BinanceWrapper:
                     continue
         return out
 
+    def get_net_futures_position_amt(self, symbol: str) -> float:
+        """
+        Return the net position quantity for a symbol (positive long, negative short, 0 if flat).
+        """
+        try:
+            infos = self.client.futures_position_information()
+        except Exception:
+            try:
+                infos = self.client.futures_position_risk()
+            except Exception:
+                infos = None
+        if not infos:
+            return 0.0
+        symbol_upper = str(symbol or "").strip().upper()
+        for entry in infos:
+            try:
+                if str(entry.get('symbol', '')).upper() != symbol_upper:
+                    continue
+                amt = float(entry.get('positionAmt') or entry.get('positionAmt', 0.0) or 0.0)
+                return amt
+            except Exception:
+                continue
+        return 0.0
+
     
 
 def get_symbol_margin_type(self, symbol: str) -> str | None:

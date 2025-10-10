@@ -548,8 +548,19 @@ class StrategyEngine:
             key_dup = (cw['symbol'], cw.get('interval'), str(signal).upper())
             leg_dup = self._leg_ledger.get(key_dup)
             if signal and leg_dup and float(leg_dup.get('qty',0))>0:
-                self.log(f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active).")
-                signal = None
+                position_amt = 0.0
+                try:
+                    position_amt = float(self.binance.get_net_futures_position_amt(cw['symbol']))
+                except Exception:
+                    position_amt = 0.0
+                if abs(position_amt) <= 0.0:
+                    try:
+                        self._leg_ledger.pop(key_dup, None)
+                    except Exception:
+                        pass
+                else:
+                    self.log(f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active).")
+                    signal = None
         except Exception:
             pass
         if signal and cw.get('trade_on_signal', True):
