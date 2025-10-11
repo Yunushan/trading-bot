@@ -12,6 +12,8 @@ import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
+MAX_FUTURES_LEVERAGE = 150
+
 def _coerce_interval_seconds(interval: str | None) -> float:
     try:
         iv = (interval or "").strip().lower()
@@ -550,12 +552,20 @@ class BinanceWrapper:
         self.api_key = api_key or ""
         self.api_secret = api_secret or ""
         self.mode = (mode or "Demo/Testnet").strip()
-        self._default_leverage = int(default_leverage) if (default_leverage is not None) else 20
-        self.futures_leverage = self._default_leverage
+        initial_leverage = int(default_leverage) if (default_leverage is not None) else 20
+        if initial_leverage < 1:
+            initial_leverage = 1
+        if initial_leverage > MAX_FUTURES_LEVERAGE:
+            initial_leverage = MAX_FUTURES_LEVERAGE
+        self._requested_default_leverage = initial_leverage
+        self._default_leverage = initial_leverage
+        self.futures_leverage = initial_leverage
         self._default_margin_mode = str((default_margin_mode or "ISOLATED")).upper()
         self.account_type = (account_type or "Spot").strip().upper()  # "SPOT" or "FUTURES"
         self.indicator_source = "Binance futures"
         self.recv_window = 5000  # ms for futures calls
+        self._futures_max_leverage_cache = {}
+        self._leverage_cap_notified = set()
 
         # Set base URLs BEFORE creating Client
         if "demo" in self.mode.lower() or "test" in self.mode.lower():
@@ -669,6 +679,94 @@ class BinanceWrapper:
                 except Exception:
                     min_notional = 0.0
         return {'stepSize': step_size or 0.0, 'minQty': min_qty or 0.0, 'tickSize': price_tick or 0.0, 'minNotional': min_notional or 0.0}
+
+    def get_futures_max_leverage(self, symbol: str) -> int:
+        sym = str(symbol or "").upper()
+        if not sym:
+            return MAX_FUTURES_LEVERAGE
+        cache = getattr(self, "_futures_max_leverage_cache", {})
+        if sym in cache:
+            try:
+                return int(cache[sym])
+            except Exception:
+                pass
+        max_lev = None
+        try:
+            data = self.client.futures_leverage_bracket(symbol=sym)
+            records = []
+            if isinstance(data, dict):
+                records = [data]
+            elif isinstance(data, list):
+                records = data
+            for rec in records:
+                if isinstance(rec, dict):
+                    rec_sym = str(rec.get("symbol") or sym).upper()
+                    if rec_sym and rec_sym != sym:
+                        continue
+                    brackets = rec.get("brackets") or []
+                else:
+                    rec_sym = sym
+                    brackets = []
+                for bracket in brackets:
+                    if not isinstance(bracket, dict):
+                        continue
+                    lev_val = bracket.get("initialLeverage") or bracket.get("initial_leverage")
+                    try:
+                        lev_int = int(float(lev_val))
+                    except Exception:
+                        continue
+                    if lev_int > 0:
+                        max_lev = max(max_lev or 0, lev_int)
+                if max_lev:
+                    break
+        except Exception:
+            max_lev = None if max_lev is None else max_lev
+        if max_lev is None:
+            try:
+                info = self.get_futures_symbol_info(sym)
+                for filt in info.get("filters", []):
+                    if str(filt.get("filterType") or "").upper() == "LEVERAGE":
+                        lev_val = filt.get("maxLeverage") or filt.get("max_leverage")
+                        if lev_val is not None:
+                            max_lev = int(float(lev_val))
+                            break
+            except Exception:
+                pass
+        if not max_lev or int(max_lev) <= 0:
+            max_lev = MAX_FUTURES_LEVERAGE
+        max_lev = max(1, min(int(max_lev), MAX_FUTURES_LEVERAGE))
+        self._futures_max_leverage_cache[sym] = max_lev
+        return max_lev
+
+    def clamp_futures_leverage(self, symbol: str, leverage: int | None = None) -> int:
+        sym = str(symbol or "").upper()
+        desired = leverage if leverage is not None else getattr(self, "_requested_default_leverage", getattr(self, "_default_leverage", 5))
+        try:
+            desired_int = int(float(desired))
+        except Exception:
+            desired_int = 1
+        if desired_int < 1:
+            desired_int = 1
+        if desired_int > MAX_FUTURES_LEVERAGE:
+            desired_int = MAX_FUTURES_LEVERAGE
+        account_label = str(getattr(self, "account_type", "") or "").upper()
+        if not account_label.startswith("FUT"):
+            return desired_int
+        max_allowed = self.get_futures_max_leverage(sym) if sym else MAX_FUTURES_LEVERAGE
+        effective = max(1, min(desired_int, max_allowed or MAX_FUTURES_LEVERAGE))
+        if effective < desired_int and sym:
+            notified = getattr(self, "_leverage_cap_notified", set())
+            if sym not in notified:
+                try:
+                    self._log(f"{sym} max futures leverage {max_allowed}x; requested {desired_int}x -> using {effective}x.", lvl="warn")
+                except Exception:
+                    try:
+                        print(f"[BinanceWrapper] {sym} leverage limited to {effective}x (requested {desired_int}x).")
+                    except Exception:
+                        pass
+                notified.add(sym)
+                self._leverage_cap_notified = notified
+        return effective
 
     # ---- balances
     def get_spot_balance(self, asset="USDT") -> float:
@@ -1536,9 +1634,10 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
 
     # Apply leverage if requested (non-fatal on failure)
     if desired_lev is not None:
+        lev = self.clamp_futures_leverage(sym, desired_lev)
         try:
-            lev = max(1, min(125, int(desired_lev)))
             self.client.futures_change_leverage(symbol=sym, leverage=lev)
+            self.futures_leverage = lev
         except Exception:
             pass
 
@@ -1563,17 +1662,16 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
                 if 'no need to change' not in str(e).lower() and '-4046' not in str(e):
                     pass
             try:
-                lev = int(leverage if leverage is not None else getattr(self, 'futures_leverage', getattr(self, '_default_leverage', 5)) or 5)
+                lev_requested = int(leverage if leverage is not None else getattr(self, '_requested_default_leverage', getattr(self, '_default_leverage', 5)) or 5)
             except Exception:
-                lev = 5
-            lev = max(1, min(125, int(lev)))
+                lev_requested = 5
+            lev = self.clamp_futures_leverage(sym, lev_requested)
             try:
                 self.client.futures_change_leverage(symbol=sym, leverage=lev)
             except Exception as e:
                 if 'same leverage' not in str(e).lower() and 'not modified' not in str(e).lower():
                     pass
             self._default_margin_mode = mm
-            self._default_leverage = lev
             self.futures_leverage = lev
         except Exception:
             pass
@@ -1604,7 +1702,8 @@ except Exception:
             lev = int(lev)
         except Exception:
             return
-        lev = max(1, min(125, lev))
+        lev = max(1, min(MAX_FUTURES_LEVERAGE, lev))
+        self._requested_default_leverage = lev
         self._default_leverage = lev
         self.futures_leverage = lev
 
@@ -1869,7 +1968,8 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
     # Decide order quantity
     qty = float(quantity or 0.0)
     mode = 'quantity'
-    lev = int(kwargs.get('leverage') or getattr(self, "_default_leverage", 5) or 5)
+    lev_requested = int(kwargs.get('leverage') or getattr(self, "_default_leverage", 5) or 5)
+    lev = self.clamp_futures_leverage(sym, lev_requested)
     if qty <= 0 and percent_balance is not None:
         mode = 'percent(strict)'
         pct = float(percent_balance)
@@ -1962,12 +2062,13 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
 
     # Strictly enforce margin mode + leverage before creating the order.
     try:
-        desired_lev = int(kwargs.get('leverage') or getattr(self, '_default_leverage', 5) or 5)
+        desired_requested = int(kwargs.get('leverage') or getattr(self, '_default_leverage', 5) or 5)
     except Exception:
-        desired_lev = int(getattr(self, '_default_leverage', 5) or 5)
+        desired_requested = int(getattr(self, '_default_leverage', 5) or 5)
     desired_mm = kwargs.get('margin_mode') or getattr(self, '_default_margin_mode', 'ISOLATED') or 'ISOLATED'
+    effective_lev = self.clamp_futures_leverage(sym, desired_requested)
     try:
-        self._ensure_margin_and_leverage_or_block(sym, desired_mm, desired_lev)
+        self._ensure_margin_and_leverage_or_block(sym, desired_mm, desired_requested)
     except Exception as e:
         # Do not place an order under the wrong settings
         return {'ok': False, 'symbol': sym, 'error': f'enforce_settings_failed: {e}', 'mode': 'flex'}
@@ -2004,7 +2105,7 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
     min_qty_by_notional = _ceil_to_step((minNotional / px), step)
     min_legal_qty = max(minQty, min_qty_by_notional)
 
-    lev = int(kwargs.get('leverage') or getattr(self, "_default_leverage", 5) or 5)
+    lev = max(1, int(effective_lev))
     reduce_only = bool(kwargs.get('reduce_only') or kwargs.get('reduceOnly') or False)
 
     # Compute starting qty

@@ -1,14 +1,30 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import threading
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
 from PyQt6 import QtCore, QtGui, QtWidgets
+try:
+    from PyQt6.QtCharts import (
+        QChart,
+        QChartView,
+        QCandlestickSeries,
+        QCandlestickSet,
+        QDateTimeAxis,
+        QValueAxis,
+    )
+    QT_CHARTS_AVAILABLE = True
+except Exception:
+    QT_CHARTS_AVAILABLE = False
+    QChart = QChartView = QCandlestickSeries = QCandlestickSet = QDateTimeAxis = QValueAxis = None
 from PyQt6.QtCore import pyqtSignal
+
+ENABLE_CHART_TAB = False
 
 if __package__ in (None, ""):
     import sys
@@ -23,13 +39,89 @@ from app.position_guard import IntervalPositionGuard
 from app.gui.param_dialog import ParamDialog
 
 BINANCE_SUPPORTED_INTERVALS = {
-    "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo"
+    "1m", "3m", "5m", "10m", "15m", "20m", "30m",
+    "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
+    "1d", "2d", "3d", "4d", "5d", "6d",
+    "1w", "2w", "3w",
+    "1month", "2months", "3months", "6months",
+    "1year", "2year",
+    "1mo", "2mo", "3mo", "6mo",
+    "1y", "2y"
 }
 
-BACKTEST_INTERVAL_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
+BACKTEST_INTERVAL_ORDER = [
+    "1m", "3m", "5m", "10m", "15m", "20m", "30m",
+    "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
+    "1d", "2d", "3d", "4d", "5d", "6d",
+    "1w", "2w", "3w",
+    "1month", "2months", "3months", "6months",
+    "1year", "2year",
+    "1mo", "2mo", "3mo", "6mo",
+    "1y", "2y"
+]
 
 MAX_CLOSED_HISTORY = 200
 
+TRADINGVIEW_SYMBOL_PREFIX = "BINANCE:"
+TRADINGVIEW_INTERVAL_MAP = {
+    "1m": "1",
+    "3m": "3",
+    "5m": "5",
+    "10m": "10",
+    "15m": "15",
+    "20m": "20",
+    "30m": "30",
+    "45m": "45",
+    "1h": "60",
+    "2h": "120",
+    "3h": "180",
+    "4h": "240",
+    "5h": "300",
+    "6h": "360",
+    "7h": "420",
+    "8h": "480",
+    "9h": "540",
+    "10h": "600",
+    "11h": "660",
+    "12h": "720",
+    "1d": "1D",
+    "2d": "2D",
+    "3d": "3D",
+    "4d": "4D",
+    "5d": "5D",
+    "6d": "6D",
+    "1w": "1W",
+    "2w": "2W",
+    "3w": "3W",
+    "1mo": "1M",
+    "2mo": "2M",
+    "3mo": "3M",
+    "6mo": "6M",
+    "1month": "1M",
+    "2months": "2M",
+    "3months": "3M",
+    "6months": "6M",
+    "1y": "12M",
+    "2y": "24M",
+    "1year": "12M",
+    "2year": "24M",
+}
+
+CHART_INTERVAL_OPTIONS = [
+    "1m", "3m", "5m", "10m", "15m", "20m", "30m", "45m",
+    "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
+    "1d", "2d", "3d", "4d", "5d", "6d",
+    "1w", "2w", "3w",
+    "1mo", "2mo", "3mo", "6mo",
+    "1y", "2y"
+]
+
+CHART_MARKET_OPTIONS = ["Futures", "Spot"]
+
+DEFAULT_CHART_SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT",
+]
 
 def _format_indicator_list(keys):
     if not keys:
@@ -358,6 +450,41 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_worker = None
         self.indicator_widgets = {}
         self.traded_symbols = set()
+        self._chart_pending_initial_load = True
+        self._chart_needs_render = True
+        self.config.setdefault("chart", {})
+        if not isinstance(self.config.get("chart"), dict):
+            self.config["chart"] = {}
+        self.chart_config = self.config["chart"]
+        try:
+            self.chart_config.pop("follow_dashboard", None)
+        except Exception:
+            pass
+        self.chart_config.setdefault("auto_follow", True)
+        self.chart_auto_follow = bool(self.chart_config.get("auto_follow", True))
+        self._chart_manual_override = False
+        self._chart_updating = False
+        self.chart_enabled = ENABLE_CHART_TAB
+        self._chart_worker = None
+        default_symbols = self.config.get("symbols") or ["BTCUSDT"]
+        default_intervals = self.config.get("intervals") or ["1h"]
+        self.chart_symbol_cache = {opt: [] for opt in CHART_MARKET_OPTIONS}
+        self._chart_symbol_loading = set()
+        default_market = self.config.get("account_type", "Futures")
+        if not default_market or default_market not in CHART_MARKET_OPTIONS:
+            default_market = "Futures"
+        self.chart_config.setdefault("market", default_market)
+        initial_symbols_norm = [str(sym).strip().upper() for sym in (default_symbols or []) if str(sym).strip()]
+        if initial_symbols_norm:
+            dedup = []
+            seen = set()
+            for sym in initial_symbols_norm:
+                if sym not in seen:
+                    seen.add(sym)
+                    dedup.append(sym)
+            self.chart_symbol_cache["Futures"] = dedup
+        self.chart_config.setdefault("symbol", (default_symbols[0] if default_symbols else "BTCUSDT"))
+        self.chart_config.setdefault("interval", (default_intervals[0] if default_intervals else "1h"))
         self._indicator_runtime_controls = []
         self._runtime_lock_widgets = []
         self.backtest_indicator_widgets = {}
@@ -1509,6 +1636,773 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 pass
 
+    def _create_chart_tab(self):
+        tab = QtWidgets.QWidget()
+        self.chart_tab = tab
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        controls_layout = QtWidgets.QHBoxLayout()
+        layout.addLayout(controls_layout)
+
+        controls_layout.addWidget(QtWidgets.QLabel("Market:"))
+        self.chart_market_combo = QtWidgets.QComboBox()
+        for opt in CHART_MARKET_OPTIONS:
+            self.chart_market_combo.addItem(opt)
+        controls_layout.addWidget(self.chart_market_combo)
+
+        controls_layout.addWidget(QtWidgets.QLabel("Symbol:"))
+        self.chart_symbol_combo = QtWidgets.QComboBox()
+        self.chart_symbol_combo.setEditable(True)
+        self.chart_symbol_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.chart_symbol_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        controls_layout.addWidget(self.chart_symbol_combo)
+
+        controls_layout.addWidget(QtWidgets.QLabel("Interval:"))
+        self.chart_interval_combo = QtWidgets.QComboBox()
+        self.chart_interval_combo.setEditable(True)
+        self.chart_interval_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.chart_interval_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        for iv in CHART_INTERVAL_OPTIONS:
+            self.chart_interval_combo.addItem(iv)
+        controls_layout.addWidget(self.chart_interval_combo)
+
+        controls_layout.addStretch()
+
+        if QT_CHARTS_AVAILABLE:
+            self.chart_view = QChartView()
+            try:
+                self.chart_view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            except Exception:
+                pass
+            self.chart_view.setMinimumHeight(300)
+            layout.addWidget(self.chart_view, stretch=1)
+            self.chart_placeholder = None
+        else:
+            self.chart_view = None
+            self.chart_placeholder = QtWidgets.QTextBrowser(tab)
+            self.chart_placeholder.setReadOnly(True)
+            self.chart_placeholder.setOpenExternalLinks(True)
+            self.chart_placeholder.setHtml(
+                "<h3>Chart unavailable</h3>"
+                "<p>Install PyQt6-Charts to enable in-app candlestick charts.</p>"
+                "<p><a href=\"https://pypi.org/project/PyQt6-Charts/\">PyQt6-Charts on PyPI</a></p>"
+            )
+            layout.addWidget(self.chart_placeholder, stretch=1)
+
+        self.chart_symbol_combo.currentTextChanged.connect(self._on_chart_controls_changed)
+        self.chart_symbol_combo.editTextChanged.connect(self._on_chart_controls_changed)
+        self.chart_interval_combo.currentTextChanged.connect(self._on_chart_controls_changed)
+        self.chart_interval_combo.editTextChanged.connect(self._on_chart_controls_changed)
+        self.chart_market_combo.currentTextChanged.connect(self._on_chart_market_changed)
+
+        self._restore_chart_controls_from_config()
+        self._on_chart_market_changed(self.chart_market_combo.currentText())
+        # Preload symbol universes for both markets so selections react quickly.
+        self._load_chart_symbols_async("Futures")
+        self._load_chart_symbols_async("Spot")
+
+        return tab
+
+    def _restore_chart_controls_from_config(self):
+        if not getattr(self, "chart_enabled", False):
+            return
+        market_cfg = self._normalize_chart_market(self.chart_config.get("market"))
+        auto_follow_cfg = self.chart_config.get("auto_follow")
+        self._chart_manual_override = False
+        if auto_follow_cfg is None:
+            self.chart_auto_follow = (market_cfg == "Futures")
+        else:
+            self.chart_auto_follow = bool(auto_follow_cfg) and market_cfg == "Futures"
+        market_combo = getattr(self, "chart_market_combo", None)
+        if market_combo is not None:
+            try:
+                with QtCore.QSignalBlocker(market_combo):
+                    idx = market_combo.findText(market_cfg, QtCore.Qt.MatchFlag.MatchFixedString)
+                    if idx >= 0:
+                        market_combo.setCurrentIndex(idx)
+                    else:
+                        market_combo.setCurrentText(market_cfg)
+            except Exception:
+                market_combo.setCurrentText(market_cfg)
+        self.chart_config["market"] = market_cfg
+        self.chart_config["auto_follow"] = self.chart_auto_follow
+        symbol_cfg = str(self.chart_config.get("symbol") or "").strip().upper()
+        interval_cfg = str(self.chart_config.get("interval") or "").strip()
+        if symbol_cfg:
+            self._set_chart_symbol(symbol_cfg, ensure_option=True)
+        if interval_cfg:
+            self._set_chart_interval(interval_cfg)
+        elif CHART_INTERVAL_OPTIONS:
+            self._set_chart_interval(CHART_INTERVAL_OPTIONS[0])
+
+    def _update_chart_symbol_options(self, symbols=None):
+        if not getattr(self, "chart_enabled", False):
+            return
+        if not hasattr(self, "chart_symbol_combo"):
+            return
+        combo = self.chart_symbol_combo
+        current = combo.currentText().strip().upper()
+        market = self._normalize_chart_market(getattr(self, "chart_market_combo", None).currentText() if hasattr(self, "chart_market_combo") else None)
+        if symbols is None:
+            symbols = list(self.chart_symbol_cache.get(market) or [])
+            if not symbols and market == "Futures":
+                symbols = self._current_dashboard_symbols()
+                if symbols:
+                    self.chart_symbol_cache[market] = list(symbols)
+        uniques = []
+        seen = set()
+        for sym in symbols or []:
+            sym_norm = str(sym or "").strip().upper()
+            if sym_norm and sym_norm not in seen:
+                seen.add(sym_norm)
+                uniques.append(sym_norm)
+        self.chart_symbol_cache[market] = list(uniques)
+        try:
+            with QtCore.QSignalBlocker(combo):
+                combo.clear()
+                if uniques:
+                    combo.addItems(uniques)
+        except Exception:
+            combo.clear()
+            if uniques:
+                combo.addItems(uniques)
+        if current:
+            if combo.findText(current, QtCore.Qt.MatchFlag.MatchFixedString) >= 0:
+                combo.setCurrentText(current)
+            else:
+                combo.setEditText(current)
+        elif uniques:
+            combo.setCurrentIndex(0)
+
+    @staticmethod
+    def _normalize_chart_market(market):
+        text = str(market or "").strip().lower()
+        for opt in CHART_MARKET_OPTIONS:
+            if text.startswith(opt.lower()):
+                return opt
+        return "Futures"
+
+    def _current_dashboard_symbols(self):
+        symbols = []
+        if hasattr(self, "symbol_list") and isinstance(self.symbol_list, QtWidgets.QListWidget):
+            try:
+                for idx in range(self.symbol_list.count()):
+                    item = self.symbol_list.item(idx)
+                    if item:
+                        sym = item.text().strip().upper()
+                        if sym:
+                            symbols.append(sym)
+            except Exception:
+                return symbols
+        return symbols
+
+    def _on_chart_controls_changed(self, *_args):
+        if not getattr(self, "chart_enabled", False):
+            return
+        if not hasattr(self, "chart_config"):
+            return
+        try:
+            symbol = (self.chart_symbol_combo.currentText() or "").strip().upper()
+            interval = (self.chart_interval_combo.currentText() or "").strip()
+        except Exception:
+            return
+        changed = False
+        symbol_changed = False
+        if symbol:
+            if self.chart_config.get("symbol") != symbol:
+                changed = True
+                symbol_changed = True
+            self.chart_config["symbol"] = symbol
+        if interval:
+            if self.chart_config.get("interval") != interval:
+                changed = True
+            self.chart_config["interval"] = interval
+        if self._chart_updating:
+            return
+        market = self._normalize_chart_market(self.chart_config.get("market"))
+        if market == "Futures" and symbol_changed:
+            self._chart_manual_override = True
+            self.chart_auto_follow = False
+            self.chart_config["auto_follow"] = False
+        if changed:
+            self._chart_needs_render = True
+            if self._is_chart_visible():
+                self.load_chart(auto=True)
+
+    def _chart_account_type(self, market: str) -> str:
+        normalized = self._normalize_chart_market(market)
+        return "Spot" if normalized == "Spot" else "Futures"
+
+    def _on_chart_market_changed(self, text: str):
+        if not getattr(self, "chart_enabled", False):
+            return
+        market = self._normalize_chart_market(text)
+        self.chart_config["market"] = market
+        self._chart_manual_override = False
+        self.chart_auto_follow = (market == "Futures")
+        self.chart_config["auto_follow"] = self.chart_auto_follow
+        cache = list(self.chart_symbol_cache.get(market) or [])
+        if not cache:
+            cache = list(DEFAULT_CHART_SYMBOLS)
+            self.chart_symbol_cache[market] = cache
+        self._update_chart_symbol_options(cache)
+        self._chart_needs_render = True
+        if cache:
+            preferred = self.chart_config.get("symbol")
+            if not preferred or preferred not in cache:
+                preferred = cache[0]
+            changed = self._set_chart_symbol(preferred, ensure_option=True, from_follow=self.chart_auto_follow)
+            if self.chart_auto_follow and market == "Futures":
+                if changed or self._chart_needs_render:
+                    self._apply_dashboard_selection_to_chart(load=False)
+            elif self._is_chart_visible():
+                self.load_chart(auto=True)
+        self._load_chart_symbols_async(market)
+
+    def _load_chart_symbols_async(self, market: str):
+        if not getattr(self, "chart_enabled", False):
+            return
+        market_key = self._normalize_chart_market(market)
+        if market_key in self._chart_symbol_loading:
+            return
+        self._chart_symbol_loading.add(market_key)
+        api_key = self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") else ""
+        api_secret = self.api_secret_edit.text().strip() if hasattr(self, "api_secret_edit") else ""
+        mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else "Live"
+        account_type = self._chart_account_type(market_key)
+
+        def _do():
+            tmp_wrapper = BinanceWrapper(api_key, api_secret, mode=mode, account_type=account_type)
+            syms = tmp_wrapper.fetch_symbols(sort_by_volume=True)
+            cleaned = []
+            seen_local = set()
+            for sym in syms or []:
+                sym_norm = str(sym or "").strip().upper()
+                if not sym_norm:
+                    continue
+                if sym_norm in seen_local:
+                    continue
+                seen_local.add(sym_norm)
+                cleaned.append(sym_norm)
+            return cleaned
+
+        def _chart_should_render():
+            try:
+                return bool(self._chart_pending_initial_load or self._is_chart_visible())
+            except Exception:
+                return False
+
+        def _done(res, err):
+            try:
+                symbols = []
+                if isinstance(res, list) and res:
+                    symbols = [str(sym or "").strip().upper() for sym in res if str(sym or "").strip()]
+                if err or not symbols:
+                    try:
+                        self.log(f"Chart symbol load error for {market_key}: {err or 'no symbols returned'}; using defaults.")
+                    except Exception:
+                        pass
+                    symbols = list(DEFAULT_CHART_SYMBOLS)
+                self.chart_symbol_cache[market_key] = symbols
+                self._chart_needs_render = True
+                current_market = self._normalize_chart_market(getattr(self, "chart_market_combo", None).currentText() if hasattr(self, "chart_market_combo") else None)
+                if current_market == market_key:
+                    self._update_chart_symbol_options(symbols)
+                    if symbols:
+                        preferred = self.chart_config.get("symbol")
+                        if not preferred or preferred not in symbols:
+                            preferred = symbols[0]
+                        from_follow = (market_key == "Futures") and not self._chart_manual_override
+                        changed = self._set_chart_symbol(preferred, ensure_option=True, from_follow=from_follow)
+                        if from_follow:
+                            if changed:
+                                self._apply_dashboard_selection_to_chart(load=True)
+                        elif changed and _chart_should_render():
+                            self.load_chart(auto=True)
+                    elif _chart_should_render():
+                        self.load_chart(auto=True)
+            finally:
+                self._chart_symbol_loading.discard(market_key)
+
+        worker = CallWorker(_do, parent=self)
+        try:
+            worker.progress.connect(self.log)
+        except Exception:
+            pass
+        worker.done.connect(_done)
+        if not hasattr(self, "_bg_workers"):
+            self._bg_workers = []
+        self._bg_workers.append(worker)
+
+        def _cleanup():
+            try:
+                self._bg_workers.remove(worker)
+            except Exception:
+                pass
+
+        worker.finished.connect(_cleanup)
+        worker.start()
+
+    def _apply_dashboard_selection_to_chart(self, load: bool = False):
+        if not getattr(self, "chart_enabled", False):
+            return
+        should_render = self._chart_pending_initial_load or self._is_chart_visible()
+        if not self.chart_auto_follow:
+            if load and should_render:
+                self.load_chart(auto=True)
+            return
+        current_market = self._normalize_chart_market(getattr(self, "chart_market_combo", None).currentText() if hasattr(self, "chart_market_combo") else None)
+        if current_market != "Futures":
+            if load and should_render:
+                self.load_chart(auto=True)
+            return
+        changed = False
+        symbol = self._selected_dashboard_symbol()
+        interval = self._selected_dashboard_interval()
+        if symbol:
+            changed = self._set_chart_symbol(symbol, ensure_option=True, from_follow=True) or changed
+        if interval:
+            changed = self._set_chart_interval(interval) or changed
+        if (changed and should_render) or (load and should_render):
+            self.load_chart(auto=True)
+
+    def _selected_dashboard_symbol(self):
+        if not getattr(self, "chart_enabled", False):
+            return ""
+        if not hasattr(self, "symbol_list"):
+            return ""
+        selected = []
+        try:
+            for idx in range(self.symbol_list.count()):
+                item = self.symbol_list.item(idx)
+                if item and item.isSelected():
+                    sym = item.text().strip().upper()
+                    if sym:
+                        selected.append(sym)
+        except Exception:
+            return ""
+        if selected:
+            return selected[0]
+        if self.symbol_list.count():
+            first_item = self.symbol_list.item(0)
+            if first_item:
+                return first_item.text().strip().upper()
+        return self.chart_config.get("symbol", "")
+
+    def _selected_dashboard_interval(self):
+        if not getattr(self, "chart_enabled", False):
+            return ""
+        if not hasattr(self, "interval_list"):
+            return ""
+        selected = []
+        try:
+            for idx in range(self.interval_list.count()):
+                item = self.interval_list.item(idx)
+                if item and item.isSelected():
+                    iv = item.text().strip()
+                    if iv:
+                        selected.append(iv)
+        except Exception:
+            return ""
+        if selected:
+            return selected[0]
+        if self.interval_list.count():
+            first_item = self.interval_list.item(0)
+            if first_item:
+                return first_item.text().strip()
+        return self.chart_config.get("interval", "")
+
+    def _set_chart_symbol(self, symbol: str, ensure_option: bool = False, from_follow: bool = False) -> bool:
+        if not getattr(self, "chart_enabled", False):
+            return False
+        if not hasattr(self, "chart_symbol_combo"):
+            return False
+        combo = self.chart_symbol_combo
+        normalized = str(symbol or "").strip().upper()
+        if not normalized:
+            return False
+        before = combo.currentText().strip().upper()
+        self._chart_updating = True
+        changed = False
+        try:
+            try:
+                with QtCore.QSignalBlocker(combo):
+                    idx = combo.findText(normalized, QtCore.Qt.MatchFlag.MatchFixedString)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
+                    elif ensure_option:
+                        combo.addItem(normalized)
+                        combo.setCurrentIndex(combo.count() - 1)
+                    else:
+                        combo.setEditText(normalized)
+            except Exception:
+                idx = combo.findText(normalized, QtCore.Qt.MatchFlag.MatchFixedString)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                elif ensure_option:
+                    combo.addItem(normalized)
+                    combo.setCurrentIndex(combo.count() - 1)
+                else:
+                    combo.setEditText(normalized)
+            after = combo.currentText().strip().upper()
+            changed = before != after
+            if after:
+                self.chart_config["symbol"] = after
+        finally:
+            self._chart_updating = False
+        if changed:
+            self._chart_needs_render = True
+        if from_follow:
+            self._chart_manual_override = False
+            self.chart_auto_follow = True
+            self.chart_config["auto_follow"] = True
+        return changed
+
+    def _set_chart_interval(self, interval: str) -> bool:
+        if not getattr(self, "chart_enabled", False):
+            return False
+        if not hasattr(self, "chart_interval_combo"):
+            return False
+        combo = self.chart_interval_combo
+        normalized = str(interval or "").strip()
+        if not normalized:
+            return False
+        before = combo.currentText().strip()
+        self._chart_updating = True
+        changed = False
+        try:
+            try:
+                with QtCore.QSignalBlocker(combo):
+                    idx = combo.findText(normalized, QtCore.Qt.MatchFlag.MatchFixedString)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
+                    else:
+                        combo.addItem(normalized)
+                        combo.setCurrentIndex(combo.count() - 1)
+            except Exception:
+                idx = combo.findText(normalized, QtCore.Qt.MatchFlag.MatchFixedString)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                else:
+                    combo.addItem(normalized)
+                    combo.setCurrentIndex(combo.count() - 1)
+            after = combo.currentText().strip()
+            changed = before != after
+            if after:
+                self.chart_config["interval"] = after
+        finally:
+            self._chart_updating = False
+        if changed:
+            self._chart_needs_render = True
+        return changed
+
+    def _map_chart_interval(self, interval: str) -> str | None:
+        key = str(interval or "").strip().lower()
+        if not key:
+            return None
+        mapped = TRADINGVIEW_INTERVAL_MAP.get(key)
+        if mapped:
+            return mapped
+        if key.endswith("m"):
+            try:
+                minutes = int(float(key[:-1]))
+                if minutes > 0:
+                    return str(minutes)
+            except Exception:
+                return None
+        if key.endswith("h"):
+            try:
+                hours = float(key[:-1])
+                minutes = int(hours * 60)
+                if minutes > 0:
+                    return str(minutes)
+            except Exception:
+                return None
+        if key.endswith("d"):
+            try:
+                days = int(float(key[:-1]))
+                if days > 0:
+                    return f"{days}D"
+            except Exception:
+                return None
+        if key.endswith("w"):
+            try:
+                weeks = int(float(key[:-1]))
+                if weeks > 0:
+                    return f"{weeks}W"
+            except Exception:
+                return None
+        if key.endswith("mo") or key.endswith("month") or key.endswith("months"):
+            digits = "".join(ch for ch in key if ch.isdigit())
+            try:
+                qty = int(digits) if digits else 1
+            except Exception:
+                qty = 1
+            if qty > 0:
+                return f"{qty}M"
+        if key.endswith("y") or key.endswith("year") or key.endswith("years"):
+            digits = "".join(ch for ch in key if ch.isdigit())
+            try:
+                qty = int(digits) if digits else 1
+            except Exception:
+                qty = 1
+            if qty > 0:
+                return f"{qty * 12}M"
+        return None
+
+    def _format_chart_symbol(self, symbol: str, market: str | None = None) -> str:
+        raw = str(symbol or "").strip().upper().replace("/", "")
+        if ":" in raw:
+            return raw
+        market_norm = self._normalize_chart_market(market)
+        prefix = TRADINGVIEW_SYMBOL_PREFIX
+        try:
+            account_text = (self.account_combo.currentText() or "").strip().lower()
+            if "bybit" in account_text:
+                prefix = "BYBIT:"
+            elif "spot" in account_text:
+                prefix = "BINANCE:"
+            elif "future" in account_text:
+                prefix = "BINANCE:"
+        except Exception:
+            prefix = TRADINGVIEW_SYMBOL_PREFIX
+        return f"{prefix}{raw}"
+
+    def _show_chart_status(self, message: str, color: str = "#d1d4dc"):
+        if not getattr(self, "chart_enabled", False):
+            return
+        if QT_CHARTS_AVAILABLE and getattr(self, "chart_view", None):
+            chart = QChart()
+            chart.setBackgroundBrush(QtGui.QBrush(QtGui.QColor("#0b0e11")))
+            chart.legend().hide()
+            text_item = chart.addText(message)
+            text_item.setDefaultTextColor(QtGui.QColor(color))
+            text_item.setPos(12, 12)
+            self.chart_view.setChart(chart)
+        elif getattr(self, "chart_placeholder", None):
+            try:
+                self.chart_placeholder.setHtml(f"<p style='color:{color};'>{message}</p>")
+            except Exception:
+                self.chart_placeholder.setText(message)
+
+    def _render_candlestick_chart(self, symbol: str, interval_code: str, candles: list[dict]):
+        if not getattr(self, "chart_enabled", False):
+            return
+        if not QT_CHARTS_AVAILABLE or not getattr(self, "chart_view", None):
+            return
+        if not candles:
+            self._show_chart_status("No data available.", color="#f75467")
+            return
+        chart = QChart()
+        chart.setTitle(f"{symbol} · {interval_code}")
+        chart.setBackgroundBrush(QtGui.QBrush(QtGui.QColor("#0b0e11")))
+        chart.legend().hide()
+        chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
+
+        series = QCandlestickSeries()
+        try:
+            series.setIncreasingColor(QtGui.QColor("#0ebb7a"))
+            series.setDecreasingColor(QtGui.QColor("#f75467"))
+        except Exception:
+            pass
+
+        lows = []
+        highs = []
+        for candle in candles:
+            try:
+                open_ = float(candle.get("open", 0.0))
+                high = float(candle.get("high", 0.0))
+                low = float(candle.get("low", 0.0))
+                close = float(candle.get("close", 0.0))
+                timestamp = float(candle.get("time", 0.0)) * 1000.0
+            except Exception:
+                continue
+            set_item = QCandlestickSet(open_, high, low, close, timestamp)
+            series.append(set_item)
+            lows.append(low)
+            highs.append(high)
+
+        if not lows or not highs:
+            self._show_chart_status("No data available.", color="#f75467")
+            return
+
+        chart.addSeries(series)
+
+        axis_x = QDateTimeAxis()
+        axis_x.setFormat("dd.MM HH:mm")
+        axis_x.setLabelsColor(QtGui.QColor("#d1d4dc"))
+        axis_x.setTitleText("Time")
+        chart.addAxis(axis_x, QtCore.Qt.AlignmentFlag.AlignBottom)
+        series.attachAxis(axis_x)
+        try:
+            axis_x.setRange(
+                QtCore.QDateTime.fromSecsSinceEpoch(int(candles[0]["time"])),
+                QtCore.QDateTime.fromSecsSinceEpoch(int(candles[-1]["time"])),
+            )
+        except Exception:
+            pass
+
+        axis_y = QValueAxis()
+        axis_y.setLabelFormat("%.2f")
+        axis_y.setTitleText("Price")
+        axis_y.setLabelsColor(QtGui.QColor("#d1d4dc"))
+        chart.addAxis(axis_y, QtCore.Qt.AlignmentFlag.AlignLeft)
+        series.attachAxis(axis_y)
+        try:
+            axis_y.setRange(min(lows), max(highs))
+        except Exception:
+            pass
+
+        chart.setMargins(QtCore.QMargins(8, 8, 8, 8))
+        self.chart_view.setChart(chart)
+
+    def _on_dashboard_selection_for_chart(self):
+        if self.chart_auto_follow:
+            self._apply_dashboard_selection_to_chart(load=True)
+
+    def _is_chart_visible(self):
+        if not getattr(self, "chart_enabled", False):
+            return False
+        try:
+            tabs = getattr(self, "tabs", None)
+            chart_tab = getattr(self, "chart_tab", None)
+            if tabs is None or chart_tab is None:
+                return False
+            return tabs.currentWidget() is chart_tab
+        except Exception:
+            return False
+
+    def _on_tab_changed(self, index: int):
+        try:
+            widget = self.tabs.widget(index)
+        except Exception:
+            return
+        if widget is getattr(self, "chart_tab", None):
+            if self._chart_pending_initial_load:
+                self.load_chart(auto=True)
+            elif self.chart_auto_follow:
+                self._apply_dashboard_selection_to_chart(load=True)
+            elif self._chart_needs_render:
+                self.load_chart(auto=True)
+            self._chart_pending_initial_load = False
+
+    def load_chart(self, auto: bool = False):
+        if not getattr(self, "chart_enabled", False):
+            return
+        if not QT_CHARTS_AVAILABLE or getattr(self, "chart_view", None) is None:
+            if not auto:
+                self.log("Charts unavailable: install PyQt6-Charts for visualization.")
+            self._show_chart_status("Charts unavailable.", color="#f75467")
+            return
+        try:
+            symbol_text = (self.chart_symbol_combo.currentText() or "").strip().upper()
+            interval_text = (self.chart_interval_combo.currentText() or "").strip()
+        except Exception:
+            if not auto:
+                self.log("Chart: unable to read current selection.")
+            return
+        if not symbol_text:
+            if not auto:
+                self.log("Chart: please choose a symbol.")
+            return
+        if not interval_text:
+            if not auto:
+                self.log("Chart: please choose an interval.")
+            return
+        interval_code = self._map_chart_interval(interval_text)
+        if not interval_code:
+            if not auto:
+                self.log(f"Chart: unsupported interval '{interval_text}'.")
+            return
+        market_text = self._normalize_chart_market(self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else None)
+        account_type = "Futures" if market_text == "Futures" else "Spot"
+        api_key = self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") else ""
+        api_secret = self.api_secret_edit.text().strip() if hasattr(self, "api_secret_edit") else ""
+        mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else "Live"
+
+        existing_worker = getattr(self, "_chart_worker", None)
+        if existing_worker and existing_worker.isRunning():
+            try:
+                existing_worker.requestInterruption()
+            except Exception:
+                pass
+
+        def _do():
+            thread = QtCore.QThread.currentThread()
+            if thread.isInterruptionRequested():
+                return None
+            wrapper = BinanceWrapper(api_key, api_secret, mode=mode, account_type=account_type)
+            try:
+                wrapper.indicator_source = self.ind_source_combo.currentText()
+            except Exception:
+                pass
+            df = wrapper.get_klines(symbol_text, interval_text, limit=400)
+            if df is None or df.empty:
+                raise RuntimeError("no_kline_data")
+            df = df.tail(400)
+            candles = []
+            for ts, row in df.iterrows():
+                if thread.isInterruptionRequested():
+                    return None
+                try:
+                    dt = ts.to_pydatetime()
+                except Exception:
+                    dt = ts
+                if not isinstance(dt, datetime):
+                    continue
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                else:
+                    dt = dt.astimezone(timezone.utc)
+                epoch = int(dt.timestamp())
+                try:
+                    candles.append({
+                        "time": epoch,
+                        "open": float(row.get('open', 0.0)),
+                        "high": float(row.get('high', 0.0)),
+                        "low": float(row.get('low', 0.0)),
+                        "close": float(row.get('close', 0.0)),
+                    })
+                except Exception:
+                    continue
+            if thread.isInterruptionRequested():
+                return None
+            if not candles:
+                raise RuntimeError("no_valid_candles")
+            return {"candles": candles}
+
+        def _done(res, err, worker_ref=None):
+            if worker_ref is not getattr(self, "_chart_worker", None):
+                return
+            self._chart_worker = None
+            self._chart_pending_initial_load = False
+            if err or not isinstance(res, dict):
+                self._chart_needs_render = True
+                if not auto and err:
+                    self.log(f"Chart load failed: {err}")
+                self._show_chart_status("Failed to load chart data.", color="#f75467")
+                return
+            candles = res.get("candles") or []
+            self._render_candlestick_chart(symbol_text, interval_code, candles)
+            self.chart_config["symbol"] = symbol_text
+            self.chart_config["interval"] = interval_text
+            self.chart_config["market"] = market_text
+            self.chart_config["auto_follow"] = bool(self.chart_auto_follow and market_text == "Futures")
+            self._chart_needs_render = False
+
+        self._show_chart_status("Loading chart…", color="#d1d4dc")
+        self._chart_needs_render = True
+        worker = CallWorker(_do, parent=self)
+        self._chart_worker = worker
+        try:
+            worker.progress.connect(self.log)
+        except Exception:
+            pass
+        worker.done.connect(lambda res, err, w=worker: _done(res, err, worker_ref=w))
+        worker.start()
+
     def init_ui(self):
         self.setWindowTitle("Binance Trading Bot")
         try:
@@ -1517,6 +2411,7 @@ class MainWindow(QtWidgets.QWidget):
             pass
         root_layout = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         root_layout.addWidget(self.tabs)
 
         # ---------------- Dashboard tab ----------------
@@ -1646,6 +2541,7 @@ class MainWindow(QtWidgets.QWidget):
         self.symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
         self.symbol_list.setMinimumHeight(260)
         self.symbol_list.itemSelectionChanged.connect(self._reconfigure_positions_worker)
+        self.symbol_list.itemSelectionChanged.connect(self._on_dashboard_selection_for_chart)
         sgrid.addWidget(self.symbol_list, 1, 0, 4, 2)
 
         self.refresh_symbols_btn = QtWidgets.QPushButton("Refresh Symbols")
@@ -1658,6 +2554,7 @@ class MainWindow(QtWidgets.QWidget):
         self.interval_list.setMinimumHeight(260)
         for it in ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"]:
             self.interval_list.addItem(QtWidgets.QListWidgetItem(it))
+        self.interval_list.itemSelectionChanged.connect(self._on_dashboard_selection_for_chart)
         sgrid.addWidget(self.interval_list, 1, 2, 3, 2)
 
         self.custom_interval_edit = QtWidgets.QLineEdit()
@@ -1823,6 +2720,29 @@ class MainWindow(QtWidgets.QWidget):
         scroll_layout.addWidget(self.log_edit)
 
         self.tabs.addTab(tab1, "Dashboard")
+
+        if self.chart_enabled:
+            chart_tab = self._create_chart_tab()
+            self.tabs.addTab(chart_tab, "Chart")
+            try:
+                self._runtime_lock_widgets.extend([
+                    self.chart_market_combo,
+                    self.chart_symbol_combo,
+                    self.chart_interval_combo,
+                ])
+            except Exception:
+                pass
+            if self.chart_auto_follow:
+                self._apply_dashboard_selection_to_chart(load=False)
+            elif QT_CHARTS_AVAILABLE:
+                try:
+                    self.load_chart(auto=True)
+                except Exception:
+                    pass
+        else:
+            self.chart_tab = None
+            self.chart_view = None
+            self.chart_placeholder = None
 
         # Map symbol -> {'L': set(), 'S': set()} for intervals shown in Positions tab
         self._entry_intervals = {}
@@ -2532,7 +3452,29 @@ def refresh_symbols(self):
                 self.log(f"Failed to refresh symbols: {err or 'no symbols'}")
                 return
             self.symbol_list.clear()
-            self.symbol_list.addItems([s for s in res if s.endswith("USDT")])
+            all_symbols = []
+            filtered = []
+            seen = set()
+            for sym in res or []:
+                sym_norm = str(sym or "").strip().upper()
+                if not sym_norm or sym_norm in seen:
+                    continue
+                seen.add(sym_norm)
+                all_symbols.append(sym_norm)
+                if sym_norm.endswith("USDT"):
+                    filtered.append(sym_norm)
+            if filtered:
+                self.symbol_list.addItems(filtered)
+            if all_symbols:
+                self.chart_symbol_cache["Futures"] = all_symbols
+            current_market = self._normalize_chart_market(getattr(self, "chart_market_combo", None).currentText() if hasattr(self, "chart_market_combo") else None)
+            if current_market == "Futures":
+                self._update_chart_symbol_options(all_symbols if all_symbols else filtered)
+                self._chart_needs_render = True
+                if self.chart_auto_follow and not self._chart_manual_override:
+                    self._apply_dashboard_selection_to_chart(load=True)
+                elif self._chart_pending_initial_load or self._is_chart_visible():
+                    self.load_chart(auto=True)
             self.log(f"Loaded {self.symbol_list.count()} USDT-pair symbols for {self.account_combo.currentText()}.")
         finally:
             self.refresh_symbols_btn.setEnabled(True)
@@ -2835,6 +3777,26 @@ def load_config(self):
             cfg = json.load(f)
         if isinstance(cfg, dict):
             self.config.update(cfg)
+        chart_cfg = self.config.get("chart")
+        if not isinstance(chart_cfg, dict):
+            chart_cfg = {}
+        self.config["chart"] = chart_cfg
+        self.chart_config = chart_cfg
+        if getattr(self, "chart_enabled", False):
+            self.chart_config.setdefault("auto_follow", True)
+            self.chart_auto_follow = bool(self.chart_config.get("auto_follow", True))
+            self._restore_chart_controls_from_config()
+            current_market_text = self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else "Futures"
+            self._chart_needs_render = True
+            self._on_chart_market_changed(current_market_text)
+            if self.chart_auto_follow:
+                self._apply_dashboard_selection_to_chart(load=True)
+            elif QT_CHARTS_AVAILABLE:
+                try:
+                    if self._is_chart_visible() or self._chart_pending_initial_load:
+                        self.load_chart(auto=True)
+                except Exception:
+                    pass
         self.config.setdefault('runtime_symbol_interval_pairs', [])
         self.config.setdefault('backtest_symbol_interval_pairs', [])
         self.backtest_config.setdefault('backtest_symbol_interval_pairs', list(self.config.get('backtest_symbol_interval_pairs', [])))
@@ -3433,6 +4395,7 @@ try:
         MainWindow._on_trade_signal = _mw_on_trade_signal
 except Exception:
     pass
+
 
 
 

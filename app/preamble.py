@@ -2,8 +2,9 @@ from __future__ import annotations
 import os, importlib
 from importlib import metadata as _md
 
-# Must be set BEFORE any Qt object exists
-os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
+# Must be set BEFORE any Qt object exists. Force the value so Qt picks it up even if the
+# environment already provided something else (Windows defaults to RoundPreferFloor).
+os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"
 
 def _resolve_pandas_version():
     try:
@@ -41,7 +42,25 @@ try:
 except Exception:
     pass
 
-print(f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}", flush=True)
+_WEBENGINE = "PyQt6-WebEngine=not-installed"
+try:
+    from PyQt6 import QtWebEngineCore as _QtWebEngineCore  # noqa: F401
+    ver = (
+        getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION_STR", None)
+        or getattr(_QtWebEngineCore, "QTWEBENGINE_VERSION_STR", None)
+        or getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION", None)
+    )
+    if isinstance(ver, int):
+        major = (ver >> 16) & 0xFF
+        minor = (ver >> 8) & 0xFF
+        patch = ver & 0xFF
+        ver = f"{major}.{minor}.{patch}"
+    if ver:
+        _WEBENGINE = f"PyQt6-WebEngine={ver}"
+except Exception:
+    pass
+
+print(f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}, {_WEBENGINE}", flush=True)
 
 PANDAS_VERSION = _PANDAS_VER
 PANDAS_TA_VERSION = _PTA

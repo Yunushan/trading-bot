@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -14,6 +14,14 @@ from .binance_wrapper import _coerce_interval_seconds
 class IndicatorDefinition:
     key: str
     params: Dict[str, object]
+
+
+@dataclass
+class PairOverride:
+    symbol: str
+    interval: str
+    indicators: Optional[List[str]] = None
+    leverage: Optional[int] = None
 
 
 @dataclass
@@ -32,7 +40,7 @@ class BacktestRequest:
     margin_mode: str = "Isolated"
     position_mode: str = "Hedge"
     assets_mode: str = "Single-Asset"
-    pair_overrides: Optional[List[Tuple[str, str]]] = None
+    pair_overrides: Optional[List[PairOverride]] = None
 
 
 @dataclass
@@ -45,6 +53,7 @@ class BacktestRunResult:
     roi_percent: float
     final_equity: float
     logic: str
+    leverage: float
 
 
 class BacktestEngine:
@@ -68,23 +77,51 @@ class BacktestEngine:
         if not active_indicators:
             raise ValueError("No indicators available for backtesting.")
 
+        indicator_map = {ind.key: ind for ind in active_indicators}
         data_cache: dict[tuple[str, str], pd.DataFrame] = {}
 
-        combos: List[tuple[str, str]]
+        combos: List[tuple[str, str, Optional[Sequence[str]], Optional[int]]]
         pair_override = getattr(request, "pair_overrides", None) or []
         if pair_override:
             combos = []
-            seen = set()
-            for sym, iv in pair_override:
-                sym_norm = str(sym).strip().upper()
-                iv_norm = str(iv).strip()
+            seen: set[tuple[str, str, Tuple[str, ...]]] = set()
+            for entry in pair_override:
+                if isinstance(entry, PairOverride):
+                    sym_raw = entry.symbol
+                    iv_raw = entry.interval
+                    ind_raw = entry.indicators
+                    lev_raw = entry.leverage
+                elif isinstance(entry, dict):
+                    sym_raw = entry.get("symbol")
+                    iv_raw = entry.get("interval")
+                    ind_raw = entry.get("indicators")
+                    lev_raw = entry.get("leverage")
+                elif isinstance(entry, (list, tuple)):
+                    sym_raw = entry[0] if len(entry) > 0 else None
+                    iv_raw = entry[1] if len(entry) > 1 else None
+                    ind_raw = entry[2] if len(entry) > 2 else None
+                    lev_raw = entry[3] if len(entry) > 3 else None
+                else:
+                    continue
+                sym_norm = str(sym_raw or "").strip().upper()
+                iv_norm = str(iv_raw or "").strip()
                 if not sym_norm or not iv_norm:
                     continue
-                key = (sym_norm, iv_norm)
+                if isinstance(ind_raw, (list, tuple)):
+                    indicator_keys = sorted({str(k).strip() for k in ind_raw if str(k).strip()})
+                else:
+                    indicator_keys = []
+                key = (sym_norm, iv_norm, tuple(indicator_keys))
                 if key in seen:
                     continue
                 seen.add(key)
-                combos.append(key)
+                lev_val = None
+                try:
+                    if lev_raw is not None:
+                        lev_val = int(float(lev_raw))
+                except Exception:
+                    lev_val = None
+                combos.append((sym_norm, iv_norm, indicator_keys or None, lev_val))
         else:
             combos = []
             for symbol in request.symbols:
@@ -95,37 +132,61 @@ class BacktestEngine:
                     iv_norm = str(interval).strip()
                     if not iv_norm:
                         continue
-                    combos.append((sym_norm, iv_norm))
+                    combos.append((sym_norm, iv_norm, None, None))
 
         try:
-            for symbol, interval in combos:
+            source_label_lower = str(request.symbol_source or "").strip().lower()
+            for symbol, interval, override_keys, override_leverage in combos:
                 if should_stop and should_stop():
                     raise RuntimeError("backtest_cancelled")
                 try:
+                    if isinstance(override_leverage, (int, float)):
+                        requested_leverage = int(float(override_leverage))
+                    else:
+                        requested_leverage = int(request.leverage or 1)
+                    if requested_leverage < 1:
+                        requested_leverage = 1
+                    if source_label_lower.startswith("fut") and hasattr(self.wrapper, "clamp_futures_leverage"):
+                        try:
+                            effective_leverage = int(self.wrapper.clamp_futures_leverage(symbol, requested_leverage))
+                        except Exception:
+                            effective_leverage = requested_leverage
+                    else:
+                        effective_leverage = requested_leverage
+                    if override_keys:
+                        override_defs = [indicator_map[k] for k in override_keys if k in indicator_map]
+                        if override_defs:
+                            indicator_bundle = override_defs
+                        else:
+                            indicator_bundle = active_indicators
+                    else:
+                        indicator_bundle = active_indicators
                     cache_key = (symbol, interval)
                     df = data_cache.get(cache_key)
                     if df is None:
                         detail = f" ({source_label})" if source_label else ""
                         progress(f"Fetching {symbol} @ {interval}{detail} data...")
-                        df = self._load_klines(symbol, interval, request.start, request.end, active_indicators)
+                        df = self._load_klines(symbol, interval, request.start, request.end, indicator_bundle)
                         if df is not None:
                             data_cache[cache_key] = df
                     if df is None or df.empty:
                         raise RuntimeError("No historical data returned.")
                     if logic == "SEPARATE":
-                        for indicator in active_indicators:
+                        for indicator in indicator_bundle:
                             if should_stop and should_stop():
                                 raise RuntimeError("backtest_cancelled")
-                            run = self._simulate(df, [indicator], request)
+                            run = self._simulate(df, [indicator], request, leverage_override=effective_leverage)
                             if run is not None:
                                 run.symbol = symbol
                                 run.interval = interval
+                                run.leverage = float(effective_leverage)
                                 runs.append(run)
                     else:
-                        run = self._simulate(df, active_indicators, request)
+                        run = self._simulate(df, indicator_bundle, request, leverage_override=effective_leverage)
                         if run is not None:
                             run.symbol = symbol
                             run.interval = interval
+                            run.leverage = float(effective_leverage)
                             runs.append(run)
                 except Exception as exc:
                     if str(exc).lower().startswith("backtest_cancelled"):
@@ -158,7 +219,7 @@ class BacktestEngine:
         return max(length_candidates or [50])
 
     def _simulate(self, df: pd.DataFrame, indicators: List[IndicatorDefinition],
-                  request: BacktestRequest) -> Optional[BacktestRunResult]:
+                  request: BacktestRequest, leverage_override: float | None = None) -> Optional[BacktestRunResult]:
         logic = (request.logic or "AND").upper()
         work_df = df.loc[df.index >= request.start]
         if work_df.empty:
@@ -171,7 +232,7 @@ class BacktestEngine:
         pct_raw = float(request.position_pct or 0.0)
         pct_fraction = pct_raw / 100.0 if pct_raw > 1.0 else pct_raw
         pct_fraction = max(0.0001, min(1.0, pct_fraction))
-        leverage = max(1.0, float(request.leverage or 1.0))
+        leverage = max(1.0, float(leverage_override if leverage_override is not None else (request.leverage or 1.0)))
         margin_mode = (request.margin_mode or "Isolated").strip().upper()
         side_pref = (request.side or "BOTH").strip().upper()
 
@@ -324,6 +385,7 @@ class BacktestEngine:
             roi_percent=float(roi_percent),
             final_equity=float(equity),
             logic=logic,
+            leverage=float(leverage),
         )
 
     @staticmethod
