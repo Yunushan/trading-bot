@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import sys
 from functools import lru_cache
+from importlib import resources as _resources
 from pathlib import Path
 
 from PyQt6 import QtGui
@@ -9,6 +11,23 @@ from PyQt6 import QtGui
 _ICON_FILENAMES_WINDOWS = ("binance_icon.ico", "binance_icon.png")
 _ICON_FILENAMES_UNIX = ("binance_icon.png", "binance_icon.ico")
 _COMMON_FALLBACKS = ("binance_icon.svg",)
+
+FALLBACK_ICON_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAYPklEQVR4nO3dsY5d13XH4a1IgJVAALsAbFxEDxCA"
+    "8xAs3PIV3Lh0wYdg4TKNX0FtCr4EgfRxCjcE3BEQArkQlII+GY54OXPvOWfvvdZe39c5keQ7gz3r//MQcb66u7v7"
+    "pQEApfzT7A8AAIwnAACgIAEAAAUJAAAoSAAAQEECAAAKEgAAUJAAAICCBAAAFCQAAKAgAQAABQkAAChIAABAQQIA"
+    "AAoSAABQkAAAgIIEAAAUJAAAoCABAAAFCQAAKEgAAEBBAgAAChIAAFCQAACAggQAABQkAACgIAEAAAUJAAAoSAAA"
+    "QEECAAAKEgAAUJAAAICCBAAAFCQAAKAgAQAABQkAAChIAABAQQIAAAoSAABQkAAAgIIEAAAUJAAAoCABAAAFCQAA"
+    "KEgAAEBBAgAAChIAAFCQAACAggQAABQkAACgIAEAAAUJAAAoSAAAQEECAAAKEgAAUJAAAICCBAAAFCQAAKAgAQAA"
+    "BQkAAChIAABAQQIAAAoSAABQkAAAgIIEAAAUJAAAoCABAAAFCQAAKEgAAEBBAgAAChIAAFCQAACAggQAABQkAACg"
+    "IAEAAAUJAAAoSAAAQEECAAAKEgAAUJAAAICCBAAAFCQAAKAgAQAABQkAAChIAABAQQIAAAoSAABQkAAAgIIEAAAU"
+    "JAAAoCABAAAFCQAAKEgAAEBBAgAAChIAAFCQAACAggQAABQkAACgIAEAAAUJAAAoSAAAQEECAAAKEgAAUJAAAICC"
+    "BAAAFCQAAKAgAQAABQkAAChIAABAQQIAAAoSAABQkAAAgIIEAAAUJAAAoCABAAAFCQAAKEgAAEBBAgAAChIAAFCQ"
+    "AACAggQAABQkAACgIAEAAAUJAAAoSAAAQEECAAAKEgAAUJAAAICCBAAAFCQAAKAgAQAABQkAAChIAABAQQIAAAoS"
+    "AABQkAAAgIIEAAAUJAAAoCABAAAFCQAAKEgAAEBBAgAAChIAAFCQAACAggQAABQkAACgIAEAAAUJAAAoSAAAQEECA"
+    "AAKEgAAUJAAAICCBAAAFCQAAKAgAQAABQkAAChIAABAQQIAAAoSAABQkAAAgIIEAAAUJAAAoCABAAAFCQAAKEgAA"
+    "EBBAgAAChIAAFCQAACAggQAABQkAACgoP8DyvnXGJ6q+6wAAAAASUVORK5CYII="
+)
 
 
 def _candidate_directories() -> list[Path]:
@@ -50,11 +69,41 @@ def _icon_filename_candidates() -> tuple[str, ...]:
         return _ICON_FILENAMES_WINDOWS + _COMMON_FALLBACKS
     return _ICON_FILENAMES_UNIX + _COMMON_FALLBACKS
 
+def _load_from_package_resources() -> QtGui.QIcon | None:
+    try:
+        files = _resources.files("app.assets")
+    except Exception:
+        return None
+    for filename in _icon_filename_candidates():
+        try:
+            resource = files.joinpath(filename)
+        except FileNotFoundError:
+            continue
+        try:
+            with _resources.as_file(resource) as tmp_path:
+                candidate = QtGui.QIcon(str(tmp_path))
+                if not candidate.isNull():
+                    return candidate
+        except FileNotFoundError:
+            pass
+        try:
+            data = _resources.read_binary("app.assets", filename)
+            pixmap = QtGui.QPixmap()
+            if pixmap.loadFromData(data):
+                icon = QtGui.QIcon(pixmap)
+                if not icon.isNull():
+                    return icon
+        except Exception:
+            continue
+    return None
+
 
 @lru_cache(maxsize=1)
 def load_app_icon() -> QtGui.QIcon:
     """Load the Binance app icon with platform-aware fallbacks."""
-    icon = QtGui.QIcon()
+    icon = _load_from_package_resources()
+    if icon and not icon.isNull():
+        return icon
     for directory in _candidate_directories():
         for filename in _icon_filename_candidates():
             path = directory / filename
@@ -66,4 +115,13 @@ def load_app_icon() -> QtGui.QIcon:
     theme_icon = QtGui.QIcon.fromTheme("binance")
     if theme_icon and not theme_icon.isNull():
         return theme_icon
-    return icon
+    try:
+        data = base64.b64decode(FALLBACK_ICON_PNG)
+        pixmap = QtGui.QPixmap()
+        if pixmap.loadFromData(data):
+            icon = QtGui.QIcon(pixmap)
+            if not icon.isNull():
+                return icon
+    except Exception:
+        pass
+    return QtGui.QIcon()

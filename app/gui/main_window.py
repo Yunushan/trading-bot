@@ -24,7 +24,7 @@ except Exception:
     QChart = QChartView = QCandlestickSeries = QCandlestickSet = QDateTimeAxis = QValueAxis = None
 from PyQt6.QtCore import pyqtSignal
 
-ENABLE_CHART_TAB = False
+ENABLE_CHART_TAB = True
 
 if __package__ in (None, ""):
     import sys
@@ -107,14 +107,7 @@ TRADINGVIEW_INTERVAL_MAP = {
     "2year": "24M",
 }
 
-CHART_INTERVAL_OPTIONS = [
-    "1m", "3m", "5m", "10m", "15m", "20m", "30m", "45m",
-    "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
-    "1d", "2d", "3d", "4d", "5d", "6d",
-    "1w", "2w", "3w",
-    "1mo", "2mo", "3mo", "6mo",
-    "1y", "2y"
-]
+CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
 
 CHART_MARKET_OPTIONS = ["Futures", "Spot"]
 
@@ -122,6 +115,111 @@ DEFAULT_CHART_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT",
 ]
+
+class SimpleCandlestickWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._candles: list[dict] = []
+        self._message: str | None = "Charts unavailable."
+        self._message_color: str = "#f75467"
+        self.setMinimumHeight(320)
+
+    def set_message(self, message: str, color: str = "#d1d4dc") -> None:
+        self._candles = []
+        self._message = message
+        self._message_color = color
+        self.update()
+
+    def set_candles(self, candles: list[dict]) -> None:
+        self._candles = candles or []
+        if not self._candles:
+            self._message = "No data available."
+            self._message_color = "#f75467"
+        else:
+            self._message = None
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect()
+        painter.fillRect(rect, QtGui.QColor("#0b0e11"))
+
+        if not self._candles:
+            if self._message:
+                painter.setPen(QtGui.QColor(self._message_color))
+                painter.drawText(
+                    rect,
+                    QtCore.Qt.AlignmentFlag.AlignCenter,
+                    self._message,
+                )
+            return
+
+        highs = [float(c.get("high", 0.0)) for c in self._candles]
+        lows = [float(c.get("low", 0.0)) for c in self._candles]
+        if not highs or not lows:
+            return
+
+        max_high = max(highs)
+        min_low = min(lows)
+        if max_high <= min_low:
+            max_high = min_low + 1.0
+
+        margin_x = max(int(rect.width() * 0.05), 40)
+        margin_y = max(int(rect.height() * 0.1), 30)
+        chart_rect = rect.adjusted(margin_x, margin_y, -margin_x, -margin_y)
+        if chart_rect.width() <= 0 or chart_rect.height() <= 0:
+            return
+
+        painter.setPen(QtGui.QColor("#1f2326"))
+        painter.drawRect(chart_rect)
+
+        count = len(self._candles)
+        spacing = chart_rect.width() / max(count, 1)
+        body_width = max(4.0, spacing * 0.6)
+
+        def price_to_y(price: float) -> float:
+            ratio = (price - min_low) / (max_high - min_low)
+            return chart_rect.bottom() - ratio * chart_rect.height()
+
+        for idx, candle in enumerate(self._candles):
+            try:
+                open_ = float(candle.get("open", 0.0))
+                close = float(candle.get("close", 0.0))
+                high = float(candle.get("high", 0.0))
+                low = float(candle.get("low", 0.0))
+            except Exception:
+                continue
+
+            x_center = chart_rect.left() + (idx + 0.5) * spacing
+            color = QtGui.QColor("#0ebb7a" if close >= open_ else "#f75467")
+            painter.setPen(QtGui.QPen(color, 1.0))
+
+            y_high = price_to_y(high)
+            y_low = price_to_y(low)
+            painter.drawLine(QtCore.QPointF(x_center, y_high), QtCore.QPointF(x_center, y_low))
+
+            body_top = price_to_y(max(open_, close))
+            body_bottom = price_to_y(min(open_, close))
+            rect_body = QtCore.QRectF(
+                x_center - body_width / 2.0,
+                body_top,
+                body_width,
+                max(1.0, body_bottom - body_top),
+            )
+            painter.fillRect(rect_body, QtGui.QBrush(color))
+
+        painter.setPen(QtGui.QColor("#3b434a"))
+        painter.drawText(
+            chart_rect.adjusted(4, 2, -4, -4),
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft,
+            f"High: {max_high:.4f}",
+        )
+        painter.drawText(
+            chart_rect.adjusted(4, 2, -4, -4),
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignRight,
+            f"Low: {min_low:.4f}",
+        )
 
 def _format_indicator_list(keys):
     if not keys:
@@ -421,22 +519,44 @@ class MainWindow(QtWidgets.QWidget):
     QWidget { background-color: #FFFFFF; color: #000000; font-family: Arial; }
     QGroupBox { border: 1px solid #C0C0C0; margin-top: 6px; }
     QPushButton { background-color: #F0F0F0; border: 1px solid #B0B0B0; padding: 6px; }
+    QPushButton:disabled { background-color: #D5D5D5; border: 1px solid #B8B8B8; color: #7A7A7A; }
     QTextEdit { background-color: #FFFFFF; color: #000000; }
     QLineEdit { background-color: #FFFFFF; color: #000000; }
+    QLineEdit:disabled,
+    QComboBox:disabled,
+    QListWidget:disabled,
+    QSpinBox:disabled,
+    QDoubleSpinBox:disabled,
+    QTextEdit:disabled,
+    QPlainTextEdit:disabled { background-color: #E6E6E6; color: #7A7A7A; }
+    QCheckBox:disabled,
+    QRadioButton:disabled { color: #7A7A7A; }
     QComboBox { background-color: #FFFFFF; color: #000000; }
     QListWidget { background-color: #FFFFFF; color: #000000; }
     QLabel { color: #000000; }
+    QLabel:disabled { color: #7A7A7A; }
     """
 
     DARK_THEME = """
     QWidget { background-color: #121212; color: #E0E0E0; font-family: Arial; }
     QGroupBox { border: 1px solid #333; margin-top: 6px; }
     QPushButton { background-color: #1E1E1E; border: 1px solid #333; padding: 6px; }
+    QPushButton:disabled { background-color: #2A2A2A; border: 1px solid #444; color: #808080; }
     QTextEdit { background-color: #0E0E0E; color: #E0E0E0; }
     QLineEdit { background-color: #1E1E1E; color: #E0E0E0; }
+    QLineEdit:disabled,
+    QComboBox:disabled,
+    QListWidget:disabled,
+    QSpinBox:disabled,
+    QDoubleSpinBox:disabled,
+    QTextEdit:disabled,
+    QPlainTextEdit:disabled { background-color: #1A1A1A; color: #7E7E7E; }
+    QCheckBox:disabled,
+    QRadioButton:disabled { color: #7E7E7E; }
     QComboBox { background-color: #1E1E1E; color: #E0E0E0; }
     QListWidget { background-color: #0E0E0E; color: #E0E0E0; }
     QLabel { color: #E0E0E0; }
+    QLabel:disabled { color: #6F6F6F; }
     """
 
     def __init__(self):
@@ -1135,6 +1255,36 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _apply_backtest_intervals_to_dashboard(self):
+        try:
+            intervals = [
+                str(iv).strip()
+                for iv in (self.backtest_config.get("intervals") or [])
+                if str(iv).strip()
+            ]
+        except Exception:
+            intervals = []
+        if not intervals:
+            intervals = list(BACKTEST_INTERVAL_ORDER)
+        existing = {self.interval_list.item(i).text() for i in range(self.interval_list.count())}
+        for iv in intervals:
+            if iv not in existing:
+                self.interval_list.addItem(QtWidgets.QListWidgetItem(iv))
+        with QtCore.QSignalBlocker(self.interval_list):
+            for i in range(self.interval_list.count()):
+                item = self.interval_list.item(i)
+                if item is None:
+                    continue
+                item.setSelected(item.text() in intervals)
+        try:
+            self.config["intervals"] = list(intervals)
+        except Exception:
+            pass
+        try:
+            self._reconfigure_positions_worker()
+        except Exception:
+            pass
+
     def _update_backtest_futures_controls(self):
         try:
             source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip().lower()
@@ -1654,15 +1804,13 @@ class MainWindow(QtWidgets.QWidget):
 
         controls_layout.addWidget(QtWidgets.QLabel("Symbol:"))
         self.chart_symbol_combo = QtWidgets.QComboBox()
-        self.chart_symbol_combo.setEditable(True)
-        self.chart_symbol_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.chart_symbol_combo.setEditable(False)
         self.chart_symbol_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
         controls_layout.addWidget(self.chart_symbol_combo)
 
         controls_layout.addWidget(QtWidgets.QLabel("Interval:"))
         self.chart_interval_combo = QtWidgets.QComboBox()
-        self.chart_interval_combo.setEditable(True)
-        self.chart_interval_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.chart_interval_combo.setEditable(False)
         self.chart_interval_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
         for iv in CHART_INTERVAL_OPTIONS:
             self.chart_interval_combo.addItem(iv)
@@ -1678,23 +1826,12 @@ class MainWindow(QtWidgets.QWidget):
                 pass
             self.chart_view.setMinimumHeight(300)
             layout.addWidget(self.chart_view, stretch=1)
-            self.chart_placeholder = None
         else:
-            self.chart_view = None
-            self.chart_placeholder = QtWidgets.QTextBrowser(tab)
-            self.chart_placeholder.setReadOnly(True)
-            self.chart_placeholder.setOpenExternalLinks(True)
-            self.chart_placeholder.setHtml(
-                "<h3>Chart unavailable</h3>"
-                "<p>Install PyQt6-Charts to enable in-app candlestick charts.</p>"
-                "<p><a href=\"https://pypi.org/project/PyQt6-Charts/\">PyQt6-Charts on PyPI</a></p>"
-            )
-            layout.addWidget(self.chart_placeholder, stretch=1)
+            self.chart_view = SimpleCandlestickWidget()
+            layout.addWidget(self.chart_view, stretch=1)
 
         self.chart_symbol_combo.currentTextChanged.connect(self._on_chart_controls_changed)
-        self.chart_symbol_combo.editTextChanged.connect(self._on_chart_controls_changed)
         self.chart_interval_combo.currentTextChanged.connect(self._on_chart_controls_changed)
-        self.chart_interval_combo.editTextChanged.connect(self._on_chart_controls_changed)
         self.chart_market_combo.currentTextChanged.connect(self._on_chart_market_changed)
 
         self._restore_chart_controls_from_config()
@@ -2173,90 +2310,101 @@ class MainWindow(QtWidgets.QWidget):
     def _show_chart_status(self, message: str, color: str = "#d1d4dc"):
         if not getattr(self, "chart_enabled", False):
             return
-        if QT_CHARTS_AVAILABLE and getattr(self, "chart_view", None):
+        view = getattr(self, "chart_view", None)
+        if QT_CHARTS_AVAILABLE and isinstance(view, QChartView):
             chart = QChart()
             chart.setBackgroundBrush(QtGui.QBrush(QtGui.QColor("#0b0e11")))
-            chart.legend().hide()
+            try:
+                chart.legend().hide()
+            except Exception:
+                pass
             text_item = chart.addText(message)
             text_item.setDefaultTextColor(QtGui.QColor(color))
             text_item.setPos(12, 12)
-            self.chart_view.setChart(chart)
-        elif getattr(self, "chart_placeholder", None):
-            try:
-                self.chart_placeholder.setHtml(f"<p style='color:{color};'>{message}</p>")
-            except Exception:
-                self.chart_placeholder.setText(message)
+            view.setChart(chart)
+        elif isinstance(view, SimpleCandlestickWidget):
+            view.set_message(message, color=color)
 
     def _render_candlestick_chart(self, symbol: str, interval_code: str, candles: list[dict]):
         if not getattr(self, "chart_enabled", False):
             return
-        if not QT_CHARTS_AVAILABLE or not getattr(self, "chart_view", None):
-            return
-        if not candles:
-            self._show_chart_status("No data available.", color="#f75467")
-            return
-        chart = QChart()
-        chart.setTitle(f"{symbol} · {interval_code}")
-        chart.setBackgroundBrush(QtGui.QBrush(QtGui.QColor("#0b0e11")))
-        chart.legend().hide()
-        chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
-
-        series = QCandlestickSeries()
-        try:
-            series.setIncreasingColor(QtGui.QColor("#0ebb7a"))
-            series.setDecreasingColor(QtGui.QColor("#f75467"))
-        except Exception:
-            pass
-
-        lows = []
-        highs = []
-        for candle in candles:
+        view = getattr(self, "chart_view", None)
+        if QT_CHARTS_AVAILABLE and isinstance(view, QChartView):
+            if not candles:
+                self._show_chart_status("No data available.", color="#f75467")
+                return
+            chart = QChart()
+            chart.setTitle(f"{symbol} • {interval_code}")
+            chart.setBackgroundBrush(QtGui.QBrush(QtGui.QColor("#0b0e11")))
+            chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
             try:
-                open_ = float(candle.get("open", 0.0))
-                high = float(candle.get("high", 0.0))
-                low = float(candle.get("low", 0.0))
-                close = float(candle.get("close", 0.0))
-                timestamp = float(candle.get("time", 0.0)) * 1000.0
+                chart.legend().hide()
             except Exception:
-                continue
-            set_item = QCandlestickSet(open_, high, low, close, timestamp)
-            series.append(set_item)
-            lows.append(low)
-            highs.append(high)
+                pass
 
-        if not lows or not highs:
-            self._show_chart_status("No data available.", color="#f75467")
+            series = QCandlestickSeries()
+            try:
+                series.setIncreasingColor(QtGui.QColor("#0ebb7a"))
+                series.setDecreasingColor(QtGui.QColor("#f75467"))
+            except Exception:
+                pass
+
+            lows: list[float] = []
+            highs: list[float] = []
+            for candle in candles:
+                try:
+                    open_ = float(candle.get("open", 0.0))
+                    high = float(candle.get("high", 0.0))
+                    low = float(candle.get("low", 0.0))
+                    close = float(candle.get("close", 0.0))
+                    timestamp = float(candle.get("time", 0.0)) * 1000.0
+                except Exception:
+                    continue
+                set_item = QCandlestickSet(open_, high, low, close, timestamp)
+                series.append(set_item)
+                lows.append(low)
+                highs.append(high)
+
+            if not lows or not highs:
+                self._show_chart_status("No data available.", color="#f75467")
+                return
+
+            chart.addSeries(series)
+
+            axis_x = QDateTimeAxis()
+            axis_x.setFormat("dd.MM HH:mm")
+            axis_x.setLabelsColor(QtGui.QColor("#d1d4dc"))
+            axis_x.setTitleText("Time")
+            chart.addAxis(axis_x, QtCore.Qt.AlignmentFlag.AlignBottom)
+            series.attachAxis(axis_x)
+            try:
+                axis_x.setRange(
+                    QtCore.QDateTime.fromSecsSinceEpoch(int(candles[0]["time"])),
+                    QtCore.QDateTime.fromSecsSinceEpoch(int(candles[-1]["time"])),
+                )
+            except Exception:
+                pass
+
+            axis_y = QValueAxis()
+            axis_y.setLabelFormat("%.2f")
+            axis_y.setTitleText("Price")
+            axis_y.setLabelsColor(QtGui.QColor("#d1d4dc"))
+            chart.addAxis(axis_y, QtCore.Qt.AlignmentFlag.AlignLeft)
+            series.attachAxis(axis_y)
+            try:
+                axis_y.setRange(min(lows), max(highs))
+            except Exception:
+                pass
+
+            chart.setMargins(QtCore.QMargins(8, 8, 8, 8))
+            view.setChart(chart)
+        elif isinstance(view, SimpleCandlestickWidget):
+            if not candles:
+                view.set_message("No data available.", color="#f75467")
+            else:
+                view.set_candles(candles)
+        else:
             return
-
-        chart.addSeries(series)
-
-        axis_x = QDateTimeAxis()
-        axis_x.setFormat("dd.MM HH:mm")
-        axis_x.setLabelsColor(QtGui.QColor("#d1d4dc"))
-        axis_x.setTitleText("Time")
-        chart.addAxis(axis_x, QtCore.Qt.AlignmentFlag.AlignBottom)
-        series.attachAxis(axis_x)
-        try:
-            axis_x.setRange(
-                QtCore.QDateTime.fromSecsSinceEpoch(int(candles[0]["time"])),
-                QtCore.QDateTime.fromSecsSinceEpoch(int(candles[-1]["time"])),
-            )
-        except Exception:
-            pass
-
-        axis_y = QValueAxis()
-        axis_y.setLabelFormat("%.2f")
-        axis_y.setTitleText("Price")
-        axis_y.setLabelsColor(QtGui.QColor("#d1d4dc"))
-        chart.addAxis(axis_y, QtCore.Qt.AlignmentFlag.AlignLeft)
-        series.attachAxis(axis_y)
-        try:
-            axis_y.setRange(min(lows), max(highs))
-        except Exception:
-            pass
-
-        chart.setMargins(QtCore.QMargins(8, 8, 8, 8))
-        self.chart_view.setChart(chart)
 
     def _on_dashboard_selection_for_chart(self):
         if self.chart_auto_follow:
@@ -2291,7 +2439,13 @@ class MainWindow(QtWidgets.QWidget):
     def load_chart(self, auto: bool = False):
         if not getattr(self, "chart_enabled", False):
             return
-        if not QT_CHARTS_AVAILABLE or getattr(self, "chart_view", None) is None:
+        view = getattr(self, "chart_view", None)
+        if view is None:
+            if not auto:
+                self.log("Charts unavailable: install PyQt6-Charts for visualization.")
+            self._show_chart_status("Charts unavailable.", color="#f75467")
+            return
+        if not QT_CHARTS_AVAILABLE and not isinstance(view, SimpleCandlestickWidget):
             if not auto:
                 self.log("Charts unavailable: install PyQt6-Charts for visualization.")
             self._show_chart_status("Charts unavailable.", color="#f75467")
@@ -2581,6 +2735,9 @@ class MainWindow(QtWidgets.QWidget):
         self.add_interval_btn.clicked.connect(_add_custom_intervals)
         sgrid.addWidget(self.custom_interval_edit, 4, 2)
         sgrid.addWidget(self.add_interval_btn, 4, 3)
+        self.use_backtest_intervals_btn = QtWidgets.QPushButton("Use Backtest Intervals")
+        self.use_backtest_intervals_btn.clicked.connect(self._apply_backtest_intervals_to_dashboard)
+        sgrid.addWidget(self.use_backtest_intervals_btn, 5, 2, 1, 2)
 
         scroll_layout.addWidget(sym_group)
 
@@ -2693,6 +2850,7 @@ class MainWindow(QtWidgets.QWidget):
             self.interval_list,
             self.custom_interval_edit,
             self.add_interval_btn,
+            self.use_backtest_intervals_btn,
             self.side_combo,
             self.pospct_spin,
             self.loop_edit,
@@ -2742,8 +2900,6 @@ class MainWindow(QtWidgets.QWidget):
         else:
             self.chart_tab = None
             self.chart_view = None
-            self.chart_placeholder = None
-
         # Map symbol -> {'L': set(), 'S': set()} for intervals shown in Positions tab
         self._entry_intervals = {}
         self._entry_times = {}  # (sym, 'L'/'S') -> last trade time string

@@ -42,23 +42,38 @@ try:
 except Exception:
     pass
 
-_WEBENGINE = "PyQt6-WebEngine=not-installed"
-try:
-    from PyQt6 import QtWebEngineCore as _QtWebEngineCore  # noqa: F401
-    ver = (
-        getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION_STR", None)
-        or getattr(_QtWebEngineCore, "QTWEBENGINE_VERSION_STR", None)
-        or getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION", None)
-    )
-    if isinstance(ver, int):
-        major = (ver >> 16) & 0xFF
-        minor = (ver >> 8) & 0xFF
-        patch = ver & 0xFF
-        ver = f"{major}.{minor}.{patch}"
-    if ver:
-        _WEBENGINE = f"PyQt6-WebEngine={ver}"
-except Exception:
-    pass
+def _resolve_webengine_version():
+    for dist in ("PyQt6-WebEngine", "pyqt6-webengine", "PyQt6_WebEngine"):
+        try:
+            return _md.version(dist)
+        except Exception:
+            pass
+    try:
+        from PyQt6 import QtWebEngineCore as _QtWebEngineCore  # noqa: F401
+        ver = (
+            getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION_STR", None)
+            or getattr(_QtWebEngineCore, "QTWEBENGINE_VERSION_STR", None)
+            or getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION", None)
+        )
+        if not ver:
+            try:
+                from PyQt6 import QtWebEngineWidgets as _QtWebEngineWidgets  # noqa: F401
+                ver = getattr(_QtWebEngineWidgets, "PYQT_WEBENGINE_VERSION_STR", None)
+            except Exception:
+                pass
+        if isinstance(ver, int):
+            major = (ver >> 16) & 0xFF
+            minor = (ver >> 8) & 0xFF
+            patch = ver & 0xFF
+            ver = f"{major}.{minor}.{patch}"
+        if ver:
+            return str(ver)
+        return "installed"
+    except Exception:
+        return None
+
+_WEBENGINE_VER = _resolve_webengine_version()
+_WEBENGINE = f"PyQt6-WebEngine={_WEBENGINE_VER}" if _WEBENGINE_VER else "PyQt6-WebEngine=not-installed"
 
 print(f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}, {_WEBENGINE}", flush=True)
 
