@@ -37,17 +37,18 @@ from app.strategy import StrategyEngine
 from app.workers import StopWorker, StartWorker, CallWorker
 from app.position_guard import IntervalPositionGuard
 from app.gui.param_dialog import ParamDialog
+try:
+    from app.gui.tradingview_widget import TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
+except Exception:
+    TradingViewWidget = None  # type: ignore[assignment]
+    TRADINGVIEW_EMBED_AVAILABLE = False
 
 BINANCE_SUPPORTED_INTERVALS = {
-    "1m", "3m", "5m", "10m", "15m", "20m", "30m",
-    "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
-    "1d", "2d", "3d", "4d", "5d", "6d",
-    "1w", "2w", "3w",
-    "1month", "2months", "3months", "6months",
-    "1year", "2year",
-    "1mo", "2mo", "3mo", "6mo",
-    "1y", "2y"
+    "1m", "3m", "5m", "15m", "30m",
+    "1h", "2h", "4h", "6h", "8h", "12h",
+    "1d", "3d", "1w", "1M",
 }
+BINANCE_INTERVAL_LOWER = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"}
 
 BACKTEST_INTERVAL_ORDER = [
     "1m", "3m", "5m", "10m", "15m", "20m", "30m",
@@ -115,6 +116,13 @@ DEFAULT_CHART_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT",
 ]
+
+SIDE_LABELS = {
+    "BUY": "Buy (Long)",
+    "SELL": "Sell (Short)",
+    "BOTH": "Both (Long/Short)",
+}
+SIDE_LABEL_LOOKUP = {label.lower(): code for code, label in SIDE_LABELS.items()}
 
 class SimpleCandlestickWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -586,6 +594,7 @@ class MainWindow(QtWidgets.QWidget):
         self._chart_updating = False
         self.chart_enabled = ENABLE_CHART_TAB
         self._chart_worker = None
+        self._chart_theme_signal_installed = False
         default_symbols = self.config.get("symbols") or ["BTCUSDT"]
         default_intervals = self.config.get("intervals") or ["1h"]
         self.chart_symbol_cache = {opt: [] for opt in CHART_MARKET_OPTIONS}
@@ -647,6 +656,7 @@ class MainWindow(QtWidgets.QWidget):
         self.override_contexts = {}
         self.bot_status_label_tab1 = None
         self.bot_status_label_tab2 = None
+        self.bot_status_label_tab3 = None
         self._bot_active = False
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
@@ -963,7 +973,11 @@ class MainWindow(QtWidgets.QWidget):
                 self._bot_active = bool(active)
             text = "Bot Status: ON" if getattr(self, '_bot_active', False) else "Bot Status: OFF"
             color = "#3FB950" if self._bot_active else "#F97068"
-            for label in (getattr(self, 'bot_status_label_tab1', None), getattr(self, 'bot_status_label_tab2', None)):
+            for label in (
+                getattr(self, 'bot_status_label_tab1', None),
+                getattr(self, 'bot_status_label_tab2', None),
+                getattr(self, 'bot_status_label_tab3', None),
+            ):
                 if label is None:
                     continue
                 label.setText(text)
@@ -1032,6 +1046,28 @@ class MainWindow(QtWidgets.QWidget):
                 pass
         return QtCore.QDate.currentDate()
 
+    @staticmethod
+    def _coerce_qdatetime(value):
+        if isinstance(value, QtCore.QDateTime):
+            return value
+        if isinstance(value, datetime):
+            return QtCore.QDateTime(value)
+        if isinstance(value, str):
+            from datetime import datetime as _dt
+            for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+                try:
+                    dt = _dt.strptime(value, fmt)
+                    return QtCore.QDateTime(QtCore.QDate(dt.year, dt.month, dt.day), QtCore.QTime(dt.hour, dt.minute))
+                except Exception:
+                    continue
+            try:
+                dt = _dt.fromisoformat(value)
+                return QtCore.QDateTime(QtCore.QDate(dt.year, dt.month, dt.day), QtCore.QTime(dt.hour, dt.minute))
+            except Exception:
+                pass
+        current = QtCore.QDateTime.currentDateTime()
+        return current
+
     def _initialize_backtest_ui_defaults(self):
         fetch_triggered = False
         try:
@@ -1075,7 +1111,13 @@ class MainWindow(QtWidgets.QWidget):
             else:
                 self.backtest_pospct_spin.setValue(pct_cfg)
             side_cfg = (self.backtest_config.get("side") or "BOTH").upper()
-            _set_combo(self.backtest_side_combo, side_cfg)
+            side_label = SIDE_LABELS.get(side_cfg, SIDE_LABELS["BOTH"])
+            try:
+                idx_side = self.backtest_side_combo.findText(side_label, QtCore.Qt.MatchFlag.MatchFixedString)
+            except Exception:
+                idx_side = self.backtest_side_combo.findText(side_label)
+            if idx_side is not None and idx_side >= 0:
+                self.backtest_side_combo.setCurrentIndex(idx_side)
             margin_mode_cfg = (self.backtest_config.get("margin_mode") or "Isolated")
             _set_combo(self.backtest_margin_mode_combo, margin_mode_cfg)
             position_mode_cfg = (self.backtest_config.get("position_mode") or "Hedge")
@@ -1084,17 +1126,17 @@ class MainWindow(QtWidgets.QWidget):
             _set_combo(self.backtest_assets_mode_combo, assets_mode_cfg)
             leverage_cfg = int(self.backtest_config.get("leverage", 5) or 1)
             self.backtest_leverage_spin.setValue(leverage_cfg)
-            today = QtCore.QDate.currentDate()
+            now_dt = QtCore.QDateTime.currentDateTime()
             start_cfg = self.backtest_config.get("start_date")
             end_cfg = self.backtest_config.get("end_date")
-            start_qdate = self._coerce_qdate(start_cfg) if start_cfg else today.addMonths(-3)
-            end_qdate = self._coerce_qdate(end_cfg) if end_cfg else today
-            if not end_qdate.isValid():
-                end_qdate = today
-            if not start_qdate.isValid() or start_qdate > end_qdate:
-                start_qdate = end_qdate.addMonths(-3)
-            self.backtest_start_edit.setDate(start_qdate)
-            self.backtest_end_edit.setDate(end_qdate)
+            end_qdt = self._coerce_qdatetime(end_cfg) if end_cfg else now_dt
+            if not end_qdt.isValid():
+                end_qdt = now_dt
+            start_qdt = self._coerce_qdatetime(start_cfg) if start_cfg else end_qdt.addMonths(-3)
+            if not start_qdt.isValid() or start_qdt > end_qdt:
+                start_qdt = end_qdt.addMonths(-3)
+            self.backtest_start_edit.setDateTime(start_qdt)
+            self.backtest_end_edit.setDateTime(end_qdt)
         except Exception:
             pass
         self._update_backtest_futures_controls()
@@ -1372,18 +1414,20 @@ class MainWindow(QtWidgets.QWidget):
 
     def _backtest_dates_changed(self):
         try:
-            start_str = self.backtest_start_edit.date().toString("yyyy-MM-dd")
-            end_str = self.backtest_end_edit.date().toString("yyyy-MM-dd")
-            self.backtest_config["start_date"] = start_str
-            self.backtest_config["end_date"] = end_str
+            start_dt = self.backtest_start_edit.dateTime().toString("yyyy-MM-dd HH:mm")
+            end_dt = self.backtest_end_edit.dateTime().toString("yyyy-MM-dd HH:mm")
+            self.backtest_config["start_date"] = start_dt
+            self.backtest_config["end_date"] = end_dt
             cfg = self.config.setdefault("backtest", {})
-            cfg["start_date"] = start_str
-            cfg["end_date"] = end_str
+            cfg["start_date"] = start_dt
+            cfg["end_date"] = end_dt
         except Exception:
             pass
 
     def _update_backtest_config(self, key, value):
         try:
+            if key == "side":
+                value = self._canonical_side_from_text(value)
             self.backtest_config[key] = value
             cfg = self.config.setdefault("backtest", {})
             cfg[key] = value
@@ -1490,16 +1534,16 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_status_label.setText("Enable at least one indicator to backtest.")
             return
 
-        start_qdate = self.backtest_start_edit.date()
-        end_qdate = self.backtest_end_edit.date()
-        if start_qdate > end_qdate:
-            self.backtest_status_label.setText("Start date must be before end date.")
+        start_qdt = self.backtest_start_edit.dateTime()
+        end_qdt = self.backtest_end_edit.dateTime()
+        if start_qdt > end_qdt:
+            self.backtest_status_label.setText("Start date/time must be before end date/time.")
             return
 
-        start_dt = datetime(start_qdate.year(), start_qdate.month(), start_qdate.day())
-        end_dt = datetime(end_qdate.year(), end_qdate.month(), end_qdate.day(), 23, 59, 59)
+        start_dt = start_qdt.toPyDateTime()
+        end_dt = end_qdt.toPyDateTime()
         if start_dt >= end_dt:
-            self.backtest_status_label.setText("Backtest range must span at least one day.")
+            self.backtest_status_label.setText("Backtest range must span a positive duration.")
             return
 
         capital = float(self.backtest_capital_spin.value())
@@ -1508,7 +1552,7 @@ class MainWindow(QtWidgets.QWidget):
             return
 
         position_pct = float(self.backtest_pospct_spin.value())
-        side_value = (self.backtest_side_combo.currentText() or "BOTH").strip()
+        side_value = self._canonical_side_from_text(self.backtest_side_combo.currentText())
         margin_mode = (self.backtest_margin_mode_combo.currentText() or "Isolated").strip()
         position_mode = (self.backtest_position_mode_combo.currentText() or "Hedge").strip()
         assets_mode = (self.backtest_assets_mode_combo.currentText() or "Single-Asset").strip()
@@ -1818,14 +1862,23 @@ class MainWindow(QtWidgets.QWidget):
 
         controls_layout.addStretch()
 
-        if QT_CHARTS_AVAILABLE:
-            self.chart_view = QChartView()
+        self.chart_view = None
+        if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None:
             try:
-                self.chart_view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+                self.chart_view = TradingViewWidget(self)
+            except Exception:
+                self.chart_view = None
+        if self.chart_view is not None:
+            layout.addWidget(self.chart_view, stretch=1)
+        elif QT_CHARTS_AVAILABLE:
+            view = QChartView()
+            try:
+                view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             except Exception:
                 pass
-            self.chart_view.setMinimumHeight(300)
-            layout.addWidget(self.chart_view, stretch=1)
+            view.setMinimumHeight(300)
+            layout.addWidget(view, stretch=1)
+            self.chart_view = view
         else:
             self.chart_view = SimpleCandlestickWidget()
             layout.addWidget(self.chart_view, stretch=1)
@@ -1839,6 +1892,13 @@ class MainWindow(QtWidgets.QWidget):
         # Preload symbol universes for both markets so selections react quickly.
         self._load_chart_symbols_async("Futures")
         self._load_chart_symbols_async("Spot")
+
+        if not getattr(self, "_chart_theme_signal_installed", False):
+            try:
+                self.theme_combo.currentTextChanged.connect(self._on_chart_theme_changed)
+                self._chart_theme_signal_installed = True
+            except Exception:
+                pass
 
         return tab
 
@@ -2151,6 +2211,57 @@ class MainWindow(QtWidgets.QWidget):
                 return first_item.text().strip()
         return self.chart_config.get("interval", "")
 
+    @staticmethod
+    def _canonical_side_from_text(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return "BOTH"
+        lower = raw.lower()
+        if lower in SIDE_LABEL_LOOKUP:
+            return SIDE_LABEL_LOOKUP[lower]
+        if lower.startswith("buy"):
+            return "BUY"
+        if lower.startswith("sell"):
+            return "SELL"
+        return "BOTH"
+
+    @staticmethod
+    def _canonicalize_interval(interval: str) -> str:
+        raw = str(interval or "").strip()
+        if not raw:
+            return ""
+        lower = raw.lower()
+        if lower in BINANCE_INTERVAL_LOWER:
+            return lower
+        if raw.upper() == "1M" or lower in {"1month", "1mo"}:
+            return "1M"
+        return ""
+
+    def _resolve_dashboard_side(self) -> str:
+        sel = self.side_combo.currentText() if hasattr(self, "side_combo") else ""
+        return self._canonical_side_from_text(sel)
+
+    def _collect_strategy_indicators(self, symbol: str, side_key: str) -> list[str]:
+        indicators = set()
+        metadata = getattr(self, "_engine_indicator_map", {}) or {}
+        side_key = (side_key or "").upper()
+        for meta in metadata.values():
+            if not isinstance(meta, dict):
+                continue
+            if meta.get("symbol") != symbol:
+                continue
+            side_cfg = (meta.get("side") or "BOTH").upper()
+            if side_key in ("", "SPOT") or side_cfg == "BOTH":
+                pass
+            elif side_key == "L" and side_cfg != "BUY":
+                continue
+            elif side_key == "S" and side_cfg != "SELL":
+                continue
+            for ind in meta.get("indicators") or []:
+                if ind:
+                    indicators.add(str(ind))
+        return sorted(indicators)
+
     def _set_chart_symbol(self, symbol: str, ensure_option: bool = False, from_follow: bool = False) -> bool:
         if not getattr(self, "chart_enabled", False):
             return False
@@ -2318,10 +2429,22 @@ class MainWindow(QtWidgets.QWidget):
                 chart.legend().hide()
             except Exception:
                 pass
-            text_item = chart.addText(message)
-            text_item.setDefaultTextColor(QtGui.QColor(color))
-            text_item.setPos(12, 12)
+            try:
+                text_item = QtWidgets.QGraphicsSimpleTextItem(str(message), chart)
+                text_item.setBrush(QtGui.QBrush(QtGui.QColor(color)))
+                text_item.setPos(12, 12)
+            except Exception:
+                try:
+                    chart.setTitle(str(message))
+                    chart.setTitleBrush(QtGui.QBrush(QtGui.QColor(color)))
+                except Exception:
+                    pass
             view.setChart(chart)
+        elif TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None and isinstance(view, TradingViewWidget):
+            try:
+                view.show_message(message, color=color)
+            except Exception:
+                pass
         elif isinstance(view, SimpleCandlestickWidget):
             view.set_message(message, color=color)
 
@@ -2334,7 +2457,7 @@ class MainWindow(QtWidgets.QWidget):
                 self._show_chart_status("No data available.", color="#f75467")
                 return
             chart = QChart()
-            chart.setTitle(f"{symbol} • {interval_code}")
+            chart.setTitle(f"{symbol} - {interval_code}")
             chart.setBackgroundBrush(QtGui.QBrush(QtGui.QColor("#0b0e11")))
             chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
             try:
@@ -2406,6 +2529,20 @@ class MainWindow(QtWidgets.QWidget):
         else:
             return
 
+    def _on_chart_theme_changed(self, *_args):
+        if not getattr(self, "chart_enabled", False):
+            return
+        view = getattr(self, "chart_view", None)
+        if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None and isinstance(view, TradingViewWidget):
+            try:
+                theme_name = (self.theme_combo.currentText() or "").strip()
+            except Exception:
+                theme_name = self.config.get("theme", "Dark")
+            try:
+                view.apply_theme(theme_name)
+            except Exception:
+                pass
+
     def _on_dashboard_selection_for_chart(self):
         if self.chart_auto_follow:
             self._apply_dashboard_selection_to_chart(load=True)
@@ -2445,11 +2582,6 @@ class MainWindow(QtWidgets.QWidget):
                 self.log("Charts unavailable: install PyQt6-Charts for visualization.")
             self._show_chart_status("Charts unavailable.", color="#f75467")
             return
-        if not QT_CHARTS_AVAILABLE and not isinstance(view, SimpleCandlestickWidget):
-            if not auto:
-                self.log("Charts unavailable: install PyQt6-Charts for visualization.")
-            self._show_chart_status("Charts unavailable.", color="#f75467")
-            return
         try:
             symbol_text = (self.chart_symbol_combo.currentText() or "").strip().upper()
             interval_text = (self.chart_interval_combo.currentText() or "").strip()
@@ -2471,10 +2603,6 @@ class MainWindow(QtWidgets.QWidget):
                 self.log(f"Chart: unsupported interval '{interval_text}'.")
             return
         market_text = self._normalize_chart_market(self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else None)
-        account_type = "Futures" if market_text == "Futures" else "Spot"
-        api_key = self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") else ""
-        api_secret = self.api_secret_edit.text().strip() if hasattr(self, "api_secret_edit") else ""
-        mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else "Live"
 
         existing_worker = getattr(self, "_chart_worker", None)
         if existing_worker and existing_worker.isRunning():
@@ -2482,6 +2610,42 @@ class MainWindow(QtWidgets.QWidget):
                 existing_worker.requestInterruption()
             except Exception:
                 pass
+        self._chart_worker = None
+
+        if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None and isinstance(view, TradingViewWidget):
+            try:
+                theme_name = (self.theme_combo.currentText() or "").strip()
+            except Exception:
+                theme_name = self.config.get("theme", "Dark")
+            tv_symbol = self._format_chart_symbol(symbol_text, market_text)
+            theme_code = "light" if str(theme_name or "").lower().startswith("light") else "dark"
+            self._chart_pending_initial_load = False
+            try:
+                view.set_chart(tv_symbol, interval_code, theme=theme_code, timezone="Etc/UTC")
+                self.chart_config["symbol"] = symbol_text
+                self.chart_config["interval"] = interval_text
+                self.chart_config["market"] = market_text
+                self.chart_config["auto_follow"] = bool(self.chart_auto_follow and market_text == "Futures")
+                self._chart_needs_render = False
+            except Exception as exc:
+                self._chart_needs_render = True
+                if not auto:
+                    self.log(f"Chart load failed: {exc}")
+                try:
+                    view.show_message("Failed to load TradingView chart.", color="#f75467")
+                except Exception:
+                    pass
+            return
+
+        if not QT_CHARTS_AVAILABLE and not isinstance(view, SimpleCandlestickWidget):
+            if not auto:
+                self.log("Charts unavailable: install PyQt6-Charts for visualization.")
+            self._show_chart_status("Charts unavailable.", color="#f75467")
+            return
+        account_type = "Futures" if market_text == "Futures" else "Spot"
+        api_key = self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") else ""
+        api_secret = self.api_secret_edit.text().strip() if hasattr(self, "api_secret_edit") else ""
+        mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else "Live"
 
         def _do():
             thread = QtCore.QThread.currentThread()
@@ -2546,7 +2710,7 @@ class MainWindow(QtWidgets.QWidget):
             self.chart_config["auto_follow"] = bool(self.chart_auto_follow and market_text == "Futures")
             self._chart_needs_render = False
 
-        self._show_chart_status("Loading chart…", color="#d1d4dc")
+        self._show_chart_status("Loading chartâ€¦", color="#d1d4dc")
         self._chart_needs_render = True
         worker = CallWorker(_do, parent=self)
         self._chart_worker = worker
@@ -2680,7 +2844,20 @@ class MainWindow(QtWidgets.QWidget):
 
         grid.addWidget(QtWidgets.QLabel("Indicator Source:"), 3, 0)
         self.ind_source_combo = QtWidgets.QComboBox()
-        self.ind_source_combo.addItems(["Binance spot","Binance futures","TradingView","Bybit"])
+        self.ind_source_combo.addItems([
+            "Binance spot",
+            "Binance futures",
+            "TradingView",
+            "Bybit",
+            "Coinbase",
+            "OKX",
+            "Gate",
+            "Bitget",
+            "Mexc",
+            "Kucoin",
+            "HTX",
+            "Kraken",
+        ])
         self.ind_source_combo.setCurrentText(self.config.get("indicator_source", "Binance futures"))
         grid.addWidget(self.ind_source_combo, 3, 1, 1, 2)
 
@@ -2706,7 +2883,7 @@ class MainWindow(QtWidgets.QWidget):
         self.interval_list = QtWidgets.QListWidget()
         self.interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
         self.interval_list.setMinimumHeight(260)
-        for it in ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"]:
+        for it in CHART_INTERVAL_OPTIONS:
             self.interval_list.addItem(QtWidgets.QListWidgetItem(it))
         self.interval_list.itemSelectionChanged.connect(self._on_dashboard_selection_for_chart)
         sgrid.addWidget(self.interval_list, 1, 2, 3, 2)
@@ -2750,8 +2927,16 @@ class MainWindow(QtWidgets.QWidget):
 
         g.addWidget(QtWidgets.QLabel("Side:"), 0, 0)
         self.side_combo = QtWidgets.QComboBox()
-        self.side_combo.addItems(["BUY","SELL","BOTH"])
-        self.side_combo.setCurrentText(self.config.get("side", "BOTH"))
+        self.side_combo.addItems([SIDE_LABELS["BUY"], SIDE_LABELS["SELL"], SIDE_LABELS["BOTH"]])
+        current_side = (self.config.get("side", "BOTH") or "BOTH").upper()
+        label = SIDE_LABELS.get(current_side, SIDE_LABELS["BOTH"])
+        idx = self.side_combo.findText(label, QtCore.Qt.MatchFlag.MatchFixedString) if hasattr(QtCore.Qt, "MatchFlag") else self.side_combo.findText(label)
+        if idx >= 0:
+            self.side_combo.setCurrentIndex(idx)
+        else:
+            self.side_combo.setCurrentIndex(2)
+        self.config["side"] = self._resolve_dashboard_side()
+        self.side_combo.currentTextChanged.connect(lambda _=None: self.config.__setitem__("side", self._resolve_dashboard_side()))
         g.addWidget(self.side_combo, 0, 1)
 
         g.addWidget(QtWidgets.QLabel("Position % of Balance:"), 0, 2)
@@ -2906,6 +3091,7 @@ class MainWindow(QtWidgets.QWidget):
         self._entry_times_by_iv = {}
         self._open_position_records = {}
         self._closed_position_records = []
+        self._engine_indicator_map = {}
 
 
         # ---------------- Positions tab ----------------
@@ -2926,8 +3112,8 @@ class MainWindow(QtWidgets.QWidget):
         tab2_layout.addLayout(ctrl_layout)
         self._sync_runtime_state()
 
-        self.pos_table = QtWidgets.QTableWidget(0, 13, tab2)
-        self.pos_table.setHorizontalHeaderLabels(["Symbol","Balance/Position","Last Price (USDT)","Size (USDT)","Margin Ratio","Margin (USDT)","PNL (ROI%)","Entry TF","Side","Open Time","Close Time","Status","Close"])
+        self.pos_table = QtWidgets.QTableWidget(0, 14, tab2)
+        self.pos_table.setHorizontalHeaderLabels(["Symbol","Balance/Position","Last Price (USDT)","Size (USDT)","Margin Ratio","Margin (USDT)","PNL (ROI%)","Interval","Indicator","Side","Open Time","Close Time","Status","Close"])
         self.pos_table.horizontalHeader().setStretchLastSection(True)
         self.pos_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         try:
@@ -3009,15 +3195,17 @@ class MainWindow(QtWidgets.QWidget):
         param_group = QtWidgets.QGroupBox("Backtest Parameters")
         param_form = QtWidgets.QFormLayout(param_group)
 
-        self.backtest_start_edit = QtWidgets.QDateEdit(calendarPopup=True)
-        self.backtest_start_edit.setDisplayFormat("yyyy-MM-dd")
-        self.backtest_end_edit = QtWidgets.QDateEdit(calendarPopup=True)
-        self.backtest_end_edit.setDisplayFormat("yyyy-MM-dd")
-        self.backtest_start_edit.dateChanged.connect(self._backtest_dates_changed)
-        self.backtest_end_edit.dateChanged.connect(self._backtest_dates_changed)
+        self.backtest_start_edit = QtWidgets.QDateTimeEdit()
+        self.backtest_start_edit.setCalendarPopup(True)
+        self.backtest_start_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.backtest_end_edit = QtWidgets.QDateTimeEdit()
+        self.backtest_end_edit.setCalendarPopup(True)
+        self.backtest_end_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.backtest_start_edit.dateTimeChanged.connect(self._backtest_dates_changed)
+        self.backtest_end_edit.dateTimeChanged.connect(self._backtest_dates_changed)
 
-        param_form.addRow("Start Date:", self.backtest_start_edit)
-        param_form.addRow("End Date:", self.backtest_end_edit)
+        param_form.addRow("Start Date/Time:", self.backtest_start_edit)
+        param_form.addRow("End Date/Time:", self.backtest_end_edit)
 
         self.backtest_logic_combo = QtWidgets.QComboBox()
         self.backtest_logic_combo.addItems(["AND", "OR", "SEPARATE"])
@@ -3039,7 +3227,7 @@ class MainWindow(QtWidgets.QWidget):
         param_form.addRow("Position % of Balance:", self.backtest_pospct_spin)
 
         self.backtest_side_combo = QtWidgets.QComboBox()
-        self.backtest_side_combo.addItems(["BUY", "SELL", "BOTH"])
+        self.backtest_side_combo.addItems([SIDE_LABELS["BUY"], SIDE_LABELS["SELL"], SIDE_LABELS["BOTH"]])
         self.backtest_side_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("side", v))
         param_form.addRow("Side:", self.backtest_side_combo)
 
@@ -3107,7 +3295,11 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_status_label = QtWidgets.QLabel()
         controls_layout.addWidget(self.backtest_status_label)
         controls_layout.addStretch()
+        self.bot_status_label_tab3 = QtWidgets.QLabel()
+        self.bot_status_label_tab3.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        controls_layout.addWidget(self.bot_status_label_tab3)
         tab3_layout.addLayout(controls_layout)
+        self._update_bot_status()
         try:
             for widget in (self.backtest_run_btn, self.backtest_stop_btn):
                 if widget and widget not in self._runtime_lock_widgets:
@@ -3175,6 +3367,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'close_time': '-',
                     'status': 'Active',
                     'data': dict(r),
+                    'indicators': self._collect_strategy_indicators(sym, side_key),
                 }
             except Exception:
                 continue
@@ -3321,6 +3514,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if open_times:
                             open_times.sort(key=lambda item: item[0])
                             rec['open_time'] = self._format_display_time(open_times[0][1])
+                        rec['indicators'] = self._collect_strategy_indicators(sym, side_key)
                         positions_map[(sym, side_key)] = rec
                     except Exception:
                         continue
@@ -3406,14 +3600,21 @@ def _mw_render_positions_table(self):
                 pnl_item = _NumericItem(str(pnl_roi or "-"), float(data.get('pnl_value') or 0.0))
                 self.pos_table.setItem(row, 6, pnl_item)
                 self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
-                self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(side_text))
-                self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(open_time or '-')))
-                self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(close_time or '-')))
-                self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(status_txt))
+                indicators_raw = rec.get('indicators')
+                indicators_display = '-'
+                if isinstance(indicators_raw, (list, tuple)):
+                    indicators_display = _format_indicator_list(indicators_raw) or '-'
+                elif isinstance(indicators_raw, str) and indicators_raw.strip():
+                    indicators_display = indicators_raw.strip()
+                self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(indicators_display))
+                self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(side_text))
+                self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(open_time or '-')))
+                self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(str(close_time or '-')))
+                self.pos_table.setItem(row, 12, QtWidgets.QTableWidgetItem(status_txt))
                 btn = self._make_close_btn(sym, side_key, interval, qty_show)
                 if status_txt != 'Active':
                     btn.setEnabled(False)
-                self.pos_table.setCellWidget(row, 12, btn)
+                self.pos_table.setCellWidget(row, 13, btn)
             except Exception:
                 pass
     except Exception as exc:
@@ -3690,6 +3891,7 @@ def start_strategy(self):
             loop_override = None
 
         runtime_ctx = self._override_ctx("runtime")
+        account_type_text = (self.account_combo.currentText() or "Futures").strip()
         pair_entries = []
         table = runtime_ctx.get("table") if runtime_ctx else None
         if table is not None:
@@ -3702,8 +3904,9 @@ def start_strategy(self):
                     sym_item = table.item(row, 0)
                     iv_item = table.item(row, 1)
                     sym = sym_item.text().strip().upper() if sym_item else ''
-                    iv = iv_item.text().strip() if iv_item else ''
-                    if sym and iv:
+                    iv_raw = iv_item.text().strip() if iv_item else ''
+                    iv_canonical = self._canonicalize_interval(iv_raw)
+                    if sym and iv_canonical:
                         entry_obj = None
                         try:
                             entry_obj = sym_item.data(QtCore.Qt.ItemDataRole.UserRole)
@@ -3718,14 +3921,19 @@ def start_strategy(self):
                                 indicators = None
                         pair_entries.append({
                             "symbol": sym,
-                            "interval": iv,
+                            "interval": iv_canonical,
                             "indicators": list(indicators) if indicators else None,
                         })
+                    elif sym and iv_raw:
+                        self.log(f"Skipping unsupported interval '{iv_raw}' for {account_type_text} {sym}.")
         if not pair_entries:
             for entry in self.config.get("runtime_symbol_interval_pairs", []) or []:
                 sym = str((entry or {}).get('symbol') or '').strip().upper()
                 interval_val = str((entry or {}).get('interval') or '').strip()
-                if not (sym and interval_val):
+                iv_canonical = self._canonicalize_interval(interval_val)
+                if not (sym and iv_canonical):
+                    if sym and interval_val:
+                        self.log(f"Skipping unsupported interval '{interval_val}' for {account_type_text} {sym}.")
                     continue
                 indicators = entry.get("indicators")
                 if isinstance(indicators, (list, tuple)):
@@ -3734,7 +3942,7 @@ def start_strategy(self):
                     indicators = None
                 pair_entries.append({
                     "symbol": sym,
-                    "interval": interval_val,
+                    "interval": iv_canonical,
                     "indicators": list(indicators) if indicators else None,
                 })
         syms = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count())
@@ -3758,9 +3966,13 @@ def start_strategy(self):
             combos_source = []
             for sym in syms:
                 for iv in ivs:
+                    iv_canonical = self._canonicalize_interval(iv)
+                    if not iv_canonical:
+                        self.log(f"Skipping unsupported interval '{iv}' for {account_type_text} {sym}.")
+                        continue
                     combos_source.append({
                         "symbol": sym,
-                        "interval": iv,
+                        "interval": iv_canonical,
                         "indicators": list(indicator_value) if indicator_value else None,
                     })
 
@@ -3768,8 +3980,11 @@ def start_strategy(self):
         seen_combo = set()
         for entry in combos_source:
             sym = str(entry.get("symbol") or "").strip().upper()
-            iv = str(entry.get("interval") or "").strip().lower()
+            iv_raw = str(entry.get("interval") or "").strip()
+            iv = self._canonicalize_interval(iv_raw)
             if not sym or not iv:
+                if sym and iv_raw:
+                    self.log(f"Skipping unsupported interval '{iv_raw}' for {account_type_text} {sym}.")
                 continue
             indicators = entry.get("indicators")
             if isinstance(indicators, (list, tuple)):
@@ -3806,13 +4021,12 @@ def start_strategy(self):
             if not sym or not iv:
                 continue
             indicator_override = combo.get("indicators")
+            indicator_list = []
             if isinstance(indicator_override, (list, tuple)):
-                indicator_override = [str(k).strip() for k in indicator_override if str(k).strip()]
-                if not indicator_override:
-                    indicator_override = None
-            else:
-                indicator_override = None
-            key = _make_engine_key(sym, iv, indicator_override)
+                indicator_list = [str(k).strip() for k in indicator_override if str(k).strip()]
+            elif indicator_override:
+                indicator_list = [str(indicator_override).strip()]
+            key = _make_engine_key(sym, iv, indicator_list)
             try:
                 if key in self.strategy_engines and getattr(self.strategy_engines[key], "is_alive", lambda: False)():
                     self.log(f"Engine already running for {key}, skipping.")
@@ -3823,11 +4037,11 @@ def start_strategy(self):
                     "symbol": sym,
                     "interval": iv,
                     "position_pct": float(self.pospct_spin.value() or self.config.get("position_pct", 100.0)),
-                    "side": self.side_combo.currentText(),
+                    "side": self._resolve_dashboard_side(),
                 })
-                if indicator_override:
-                    indicator_set = set(indicator_override)
-                    indicators_cfg = cfg.get("indicators", {})
+                indicators_cfg = cfg.get("indicators", {}) or {}
+                if indicator_list:
+                    indicator_set = set(indicator_list)
                     if isinstance(indicators_cfg, dict):
                         for ind_key, params in indicators_cfg.items():
                             try:
@@ -3838,14 +4052,38 @@ def start_strategy(self):
                                     indicators_cfg[ind_key]['enabled'] = ind_key in indicator_set
                                 except Exception:
                                     pass
+                active_indicators = []
+                try:
+                    active_indicators = [
+                        ind_key
+                        for ind_key, params in indicators_cfg.items()
+                        if isinstance(params, dict) and params.get("enabled")
+                    ]
+                except Exception:
+                    active_indicators = []
+                if not active_indicators:
+                    if indicator_list:
+                        active_indicators = list(indicator_list)
+                    else:
+                        active_indicators = self._get_selected_indicator_keys("runtime")
+                active_indicators = sorted({str(k).strip() for k in (active_indicators or []) if str(k).strip()})
                 eng = StrategyEngine(self.shared_binance, cfg, log_callback=self.log,
                                      trade_callback=self._on_trade_signal,
                                      loop_interval_override=loop_override)
                 eng.start()
                 self.strategy_engines[key] = eng
+                try:
+                    self._engine_indicator_map[key] = {
+                        "symbol": sym,
+                        "interval": iv,
+                        "side": cfg.get("side", "BOTH"),
+                        "indicators": active_indicators,
+                    }
+                except Exception:
+                    pass
                 indicator_note = ""
-                if indicator_override:
-                    indicator_note = f" (Indicators: {_format_indicator_list(indicator_override)})"
+                if active_indicators:
+                    indicator_note = f" (Indicators: {_format_indicator_list(active_indicators)})"
                 self.log(f"Loop start for {key}{indicator_note}.")
                 started += 1
             except Exception as e:
@@ -3865,7 +4103,7 @@ def start_strategy(self):
             pass
 
 
-def stop_strategy_async(self, close_positions: bool = True):
+def stop_strategy_async(self, close_positions: bool = True, blocking: bool = False):
     """Stop all StrategyEngine threads and then market-close ALL active positions asynchronously."""
     try:
         if hasattr(self, "strategy_engines") and self.strategy_engines:
@@ -3879,12 +4117,19 @@ def stop_strategy_async(self, close_positions: bool = True):
             except Exception:
                 pass
             self.strategy_engines.clear()
+            try:
+                self._engine_indicator_map.clear()
+            except Exception:
+                pass
             self.log("Stopped all strategy engines.")
         else:
             self.log("No engines to stop.")
         try:
             if close_positions:
-                self.close_all_positions_async()
+                if blocking:
+                    self._close_all_positions_blocking()
+                else:
+                    self.close_all_positions_async()
         except Exception as e:
             try:
                 self.log(f"Failed to trigger close-all: {e}")
@@ -4022,50 +4267,63 @@ try:
 except Exception:
     pass
 
+def _close_all_positions_sync(self):
+    from ..close_all import close_all_futures_positions as _close_all_futures
+    if getattr(self, "shared_binance", None) is None:
+        self.shared_binance = BinanceWrapper(
+            self.api_key_edit.text().strip(), self.api_secret_edit.text().strip(),
+            mode=self.mode_combo.currentText(), account_type=self.account_combo.currentText(),
+            default_leverage=int(self.leverage_spin.value() or 1),
+            default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
+        )
+    acct_text = (self.account_combo.currentText() or '').upper()
+    if acct_text.startswith('FUT'):
+        return _close_all_futures(self.shared_binance)
+    return self.shared_binance.close_all_spot_positions()
+
+def _handle_close_all_result(self, res):
+    try:
+        details = res or []
+        for r in details:
+            sym = r.get('symbol') or '?'
+            if not r.get('ok'):
+                self.log(f"Close-all {sym}: error -> {r.get('error')}")
+            elif r.get('skipped'):
+                self.log(f"Close-all {sym}: skipped ({r.get('reason')})")
+            else:
+                self.log(f"Close-all {sym}: ok")
+        n_ok = sum(1 for r in details if r.get('ok'))
+        n_all = len(details)
+        self.log(f"Close-all completed: {n_ok}/{n_all} ok.")
+    except Exception:
+        self.log(f"Close-all result: {res}")
+    try:
+        self.refresh_positions()
+    except Exception:
+        pass
+    try:
+        self.trigger_positions_refresh()
+    except Exception:
+        pass
+
+def _close_all_positions_blocking(self):
+    try:
+        result = _close_all_positions_sync(self)
+        _handle_close_all_result(self, result)
+    except Exception as e:
+        self.log(f"Close-all error: {e}")
+
 def close_all_positions_async(self):
     """Close all open futures positions using reduce-only market orders in a worker."""
     try:
         from ..workers import CallWorker as _CallWorker
-        if getattr(self, "shared_binance", None) is None:
-            self.shared_binance = BinanceWrapper(
-                self.api_key_edit.text().strip(), self.api_secret_edit.text().strip(),
-                mode=self.mode_combo.currentText(), account_type=self.account_combo.currentText(),
-                default_leverage=int(self.leverage_spin.value() or 1),
-                default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
-            )
         def _do():
-            acct_text = (self.account_combo.currentText() or '').upper()
-            if acct_text.startswith('FUT'):
-                from ..close_all import close_all_futures_positions as _close_all_futures
-                return _close_all_futures(self.shared_binance)
-            return self.shared_binance.close_all_spot_positions()
+            return _close_all_positions_sync(self)
         def _done(res, err):
             if err:
                 self.log(f"Close-all error: {err}")
                 return
-            try:
-                details = res or []
-                for r in details:
-                    sym = r.get('symbol') or '?'
-                    if not r.get('ok'):
-                        self.log(f"Close-all {sym}: error -> {r.get('error')}")
-                    elif r.get('skipped'):
-                        self.log(f"Close-all {sym}: skipped ({r.get('reason')})")
-                    else:
-                        self.log(f"Close-all {sym}: ok")
-                n_ok = sum(1 for r in details if r.get('ok'))
-                n_all = len(details)
-                self.log(f"Close-all completed: {n_ok}/{n_all} ok.")
-            except Exception:
-                self.log(f"Close-all result: {res}")
-            try:
-                self.refresh_positions()
-            except Exception:
-                pass
-            try:
-                self.trigger_positions_refresh()
-            except Exception:
-                pass
+            _handle_close_all_result(self, res)
         w = _CallWorker(_do, parent=self)
         try:
             w.progress.connect(self.log)
@@ -4081,6 +4339,9 @@ def close_all_positions_async(self):
 
 try:
     MainWindow.close_all_positions_async = close_all_positions_async
+    MainWindow._close_all_positions_sync = _close_all_positions_sync
+    MainWindow._close_all_positions_blocking = _close_all_positions_blocking
+    MainWindow._handle_close_all_result = _handle_close_all_result
 except Exception:
     pass
 
@@ -4213,7 +4474,7 @@ def closeEvent(self, event):
     try:
         # Stop strategy loops and close positions if needed
         try:
-            self.stop_strategy_async(close_positions=bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked()))
+            self.stop_strategy_async(close_positions=bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked()), blocking=True)
         except Exception:
             pass
         _teardown_positions_thread(self)
