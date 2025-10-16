@@ -6,6 +6,22 @@ from importlib import metadata as _md
 # environment already provided something else (Windows defaults to RoundPreferFloor).
 os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"
 
+# When running PyQt WebEngine as root (common on some server setups / Docker),
+# Chromium refuses to launch without disabling the sandbox. Detect that case
+# early and append the required flags so the TradingView/QtWebEngine widgets
+# can start without crashing.
+try:
+    if os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+        flag_parts = [part for part in flags.split() if part]
+        if "--no-sandbox" not in flag_parts:
+            flag_parts.append("--no-sandbox")
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flag_parts).strip()
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+except Exception:
+    # Never allow env-setup failures to abort app startup.
+    pass
+
 def _resolve_pandas_version():
     try:
         import pandas as _pd

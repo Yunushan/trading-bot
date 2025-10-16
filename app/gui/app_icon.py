@@ -69,6 +69,24 @@ def _icon_filename_candidates() -> tuple[str, ...]:
         return _ICON_FILENAMES_WINDOWS + _COMMON_FALLBACKS
     return _ICON_FILENAMES_UNIX + _COMMON_FALLBACKS
 
+
+def _icon_from_path(path: Path) -> QtGui.QIcon:
+    """Attempt to build an icon from the given path using multiple strategies."""
+    icon = QtGui.QIcon(str(path))
+    if not icon.isNull():
+        return icon
+    suffix = path.suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".svg"}:
+        try:
+            pixmap = QtGui.QPixmap(str(path))
+            if not pixmap.isNull():
+                icon = QtGui.QIcon(pixmap)
+                if not icon.isNull():
+                    return icon
+        except Exception:
+            pass
+    return QtGui.QIcon()
+
 def _load_from_package_resources() -> QtGui.QIcon | None:
     try:
         files = _resources.files("app.assets")
@@ -81,7 +99,7 @@ def _load_from_package_resources() -> QtGui.QIcon | None:
             continue
         try:
             with _resources.as_file(resource) as tmp_path:
-                candidate = QtGui.QIcon(str(tmp_path))
+                candidate = _icon_from_path(tmp_path)
                 if not candidate.isNull():
                     return candidate
         except FileNotFoundError:
@@ -109,7 +127,7 @@ def load_app_icon() -> QtGui.QIcon:
             path = directory / filename
             if not path.exists():
                 continue
-            candidate = QtGui.QIcon(str(path))
+            candidate = _icon_from_path(path)
             if not candidate.isNull():
                 return candidate
     theme_icon = QtGui.QIcon.fromTheme("binance")
