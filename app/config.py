@@ -1,6 +1,17 @@
 import os
 import copy
 
+STOP_LOSS_MODE_ORDER = ["usdt", "percent", "both"]
+STOP_LOSS_SCOPE_OPTIONS = ["per_trade", "cumulative"]
+STOP_LOSS_DEFAULT = {
+    "enabled": False,
+    "mode": "usdt",
+    "usdt": 0.0,
+    "percent": 0.0,
+    "scope": "per_trade",
+}
+
+
 DEFAULT_CONFIG = {
     "api_key": os.getenv("BINANCE_API_KEY", ""),
     "api_secret": os.getenv("BINANCE_API_SECRET", ""),
@@ -48,6 +59,7 @@ DEFAULT_CONFIG = {
         "assets_mode": "Single-Asset",
         "leverage": 5,
         "indicators": {},
+        "stop_loss": copy.deepcopy(STOP_LOSS_DEFAULT),
     },
     "runtime_symbol_interval_pairs": [],
     "backtest_symbol_interval_pairs": [],
@@ -55,6 +67,7 @@ DEFAULT_CONFIG = {
     "position_pct": 2.0,         # % of USDT to allocate (Futures: notional before leverage)
     "order_type": "MARKET",
     "max_auto_bump_percent": 5.0,
+    "stop_loss": copy.deepcopy(STOP_LOSS_DEFAULT),
 }
 
 # Central registry of available indicators and their default params (all disabled by default)
@@ -98,3 +111,27 @@ DEFAULT_CONFIG["backtest"]["indicators"] = copy.deepcopy(DEFAULT_CONFIG["indicat
 if "rsi" in DEFAULT_CONFIG["backtest"]["indicators"]:
     DEFAULT_CONFIG["backtest"]["indicators"]["rsi"].update({"enabled": True, "buy_value": 30, "sell_value": 70})
 
+def normalize_stop_loss_dict(value):
+    data = copy.deepcopy(STOP_LOSS_DEFAULT)
+    if isinstance(value, dict):
+        for key in ("enabled", "mode", "usdt", "percent"):
+            if key in value:
+                data[key] = value[key]
+    data["enabled"] = bool(data.get("enabled", False))
+    mode = str(data.get("mode") or "usdt").lower()
+    if mode not in STOP_LOSS_MODE_ORDER:
+        mode = "usdt"
+    data["mode"] = mode
+    try:
+        data["usdt"] = max(0.0, float(data.get("usdt", 0.0) or 0.0))
+    except Exception:
+        data["usdt"] = 0.0
+    try:
+        data["percent"] = max(0.0, float(data.get("percent", 0.0) or 0.0))
+    except Exception:
+        data["percent"] = 0.0
+    scope = str(data.get("scope") or "per_trade").lower()
+    if scope not in STOP_LOSS_SCOPE_OPTIONS:
+        scope = STOP_LOSS_SCOPE_OPTIONS[0]
+    data["scope"] = scope
+    return data

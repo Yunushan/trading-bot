@@ -30,7 +30,13 @@ if __package__ in (None, ""):
     import sys
     sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.config import DEFAULT_CONFIG, INDICATOR_DISPLAY_NAMES
+from app.config import (
+    DEFAULT_CONFIG,
+    INDICATOR_DISPLAY_NAMES,
+    STOP_LOSS_MODE_ORDER,
+    STOP_LOSS_SCOPE_OPTIONS,
+    normalize_stop_loss_dict,
+)
 from app.binance_wrapper import BinanceWrapper, normalize_margin_ratio
 from app.backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
 from app.strategy import StrategyEngine
@@ -56,7 +62,6 @@ BACKTEST_INTERVAL_ORDER = [
     "1d", "2d", "3d", "4d", "5d", "6d",
     "1w", "2w", "3w",
     "1month", "2months", "3months", "6months",
-    "1year", "2year",
     "1mo", "2mo", "3mo", "6mo",
     "1y", "2y"
 ]
@@ -126,8 +131,17 @@ TRADINGVIEW_INTERVAL_MAP = {
     "6months": "6M",
     "1y": "12M",
     "2y": "24M",
-    "1year": "12M",
-    "2year": "24M",
+}
+
+STOP_LOSS_MODE_LABELS = {
+    "usdt": "USDT Based Stop Loss",
+    "percent": "Percentage Based Stop Loss",
+    "both": "Both Stop Loss (USDT & Percentage)",
+}
+
+STOP_LOSS_SCOPE_LABELS = {
+    "per_trade": "Per Trade Stop Loss",
+    "cumulative": "Cumulative Stop Loss",
 }
 
 CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
@@ -598,6 +612,7 @@ class MainWindow(QtWidgets.QWidget):
         self._auto_close_on_restart_triggered = False
         self.guard = IntervalPositionGuard(stale_ttl_sec=180)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
+        self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         state_close_pref = bool(self._app_state.get("close_on_exit", self.config.get("close_on_exit", False)))
         self.config.setdefault('theme', 'Dark')
         self.config['close_on_exit'] = state_close_pref
@@ -685,6 +700,9 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_config.setdefault("assets_mode", default_backtest.get("assets_mode", "Single-Asset"))
         self.backtest_config.setdefault("leverage", int(default_backtest.get("leverage", 5)))
         self.backtest_config.setdefault("backtest_symbol_interval_pairs", list(self.config.get("backtest_symbol_interval_pairs", [])))
+        default_stop_loss = normalize_stop_loss_dict(default_backtest.get("stop_loss"))
+        self.backtest_config["stop_loss"] = normalize_stop_loss_dict(self.backtest_config.get("stop_loss", default_stop_loss))
+        self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(self.backtest_config["stop_loss"])
         self._backtest_futures_widgets = []
         self.config.setdefault("runtime_symbol_interval_pairs", [])
         self.config.setdefault("backtest_symbol_interval_pairs", [])
@@ -698,6 +716,7 @@ class MainWindow(QtWidgets.QWidget):
         self.bot_status_label_tab1 = None
         self.bot_status_label_tab2 = None
         self.bot_status_label_tab3 = None
+        self.bot_status_label_chart = None
         self._bot_active = False
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
@@ -868,6 +887,253 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 pass
         return lst
+
+    def _runtime_stop_loss_update(self, **updates):
+        current = normalize_stop_loss_dict(self.config.get("stop_loss"))
+        current.update(updates)
+        current = normalize_stop_loss_dict(current)
+        self.config["stop_loss"] = current
+        return current
+
+    def _update_runtime_stop_loss_widgets(self):
+        cfg = normalize_stop_loss_dict(self.config.get("stop_loss"))
+        self.config["stop_loss"] = cfg
+        enabled = bool(cfg.get("enabled"))
+        mode = str(cfg.get("mode") or "usdt").lower()
+        scope = str(cfg.get("scope") or "per_trade").lower()
+        checkbox = getattr(self, "stop_loss_enable_cb", None)
+        combo = getattr(self, "stop_loss_mode_combo", None)
+        usdt_spin = getattr(self, "stop_loss_usdt_spin", None)
+        pct_spin = getattr(self, "stop_loss_percent_spin", None)
+        scope_combo = getattr(self, "stop_loss_scope_combo", None)
+        if checkbox is not None:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(enabled)
+            checkbox.blockSignals(False)
+        if combo is not None:
+            combo.blockSignals(True)
+            idx = combo.findData(mode)
+            if idx < 0:
+                idx = combo.findData(STOP_LOSS_MODE_ORDER[0])
+                if idx < 0:
+                    idx = 0
+            combo.setCurrentIndex(idx)
+            combo.setEnabled(enabled)
+            combo.blockSignals(False)
+        if usdt_spin is not None:
+            usdt_spin.blockSignals(True)
+            usdt_spin.setValue(float(cfg.get("usdt", 0.0)))
+            usdt_spin.blockSignals(False)
+            usdt_spin.setEnabled(enabled and mode in ("usdt", "both"))
+        if pct_spin is not None:
+            pct_spin.blockSignals(True)
+            pct_spin.setValue(float(cfg.get("percent", 0.0)))
+            pct_spin.blockSignals(False)
+            pct_spin.setEnabled(enabled and mode in ("percent", "both"))
+        if scope_combo is not None:
+            scope_combo.blockSignals(True)
+            idx_scope = scope_combo.findData(scope)
+            if idx_scope < 0:
+                idx_scope = scope_combo.findData(STOP_LOSS_SCOPE_OPTIONS[0])
+                if idx_scope < 0:
+                    idx_scope = 0
+            scope_combo.setCurrentIndex(idx_scope)
+            scope_combo.setEnabled(enabled)
+            scope_combo.blockSignals(False)
+
+    def _on_runtime_stop_loss_enabled(self, checked: bool):
+        self._runtime_stop_loss_update(enabled=bool(checked))
+        self._update_runtime_stop_loss_widgets()
+
+    def _on_runtime_stop_loss_mode_changed(self):
+        combo = getattr(self, "stop_loss_mode_combo", None)
+        mode = combo.currentData() if combo is not None else None
+        if mode not in STOP_LOSS_MODE_ORDER:
+            mode = STOP_LOSS_MODE_ORDER[0]
+        self._runtime_stop_loss_update(mode=mode)
+        self._update_runtime_stop_loss_widgets()
+
+    def _on_runtime_stop_loss_scope_changed(self):
+        combo = getattr(self, "stop_loss_scope_combo", None)
+        scope = combo.currentData() if combo is not None else None
+        if scope not in STOP_LOSS_SCOPE_OPTIONS:
+            scope = STOP_LOSS_SCOPE_OPTIONS[0]
+        self._runtime_stop_loss_update(scope=scope)
+        self._update_runtime_stop_loss_widgets()
+
+    def _on_runtime_stop_loss_value_changed(self, kind: str, value: float):
+        if kind == "usdt":
+            self._runtime_stop_loss_update(usdt=max(0.0, float(value)))
+        elif kind == "percent":
+            self._runtime_stop_loss_update(percent=max(0.0, float(value)))
+        self._update_runtime_stop_loss_widgets()
+
+    def _backtest_stop_loss_update(self, **updates):
+        current = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
+        current.update(updates)
+        current = normalize_stop_loss_dict(current)
+        self.backtest_config["stop_loss"] = current
+        backtest_cfg = self.config.setdefault("backtest", {})
+        backtest_cfg["stop_loss"] = copy.deepcopy(current)
+        return current
+
+    def _update_backtest_stop_loss_widgets(self):
+        cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
+        self.backtest_config["stop_loss"] = cfg
+        self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(cfg)
+        enabled = bool(cfg.get("enabled"))
+        mode = str(cfg.get("mode") or "usdt").lower()
+        scope = str(cfg.get("scope") or "per_trade").lower()
+        checkbox = getattr(self, "backtest_stop_loss_enable_cb", None)
+        combo = getattr(self, "backtest_stop_loss_mode_combo", None)
+        usdt_spin = getattr(self, "backtest_stop_loss_usdt_spin", None)
+        pct_spin = getattr(self, "backtest_stop_loss_percent_spin", None)
+        scope_combo = getattr(self, "backtest_stop_loss_scope_combo", None)
+        if checkbox is not None:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(enabled)
+            checkbox.blockSignals(False)
+        if combo is not None:
+            combo.blockSignals(True)
+            idx = combo.findData(mode)
+            if idx < 0:
+                idx = combo.findData(STOP_LOSS_MODE_ORDER[0])
+                if idx < 0:
+                    idx = 0
+            combo.setCurrentIndex(idx)
+            combo.setEnabled(enabled)
+            combo.blockSignals(False)
+        if usdt_spin is not None:
+            usdt_spin.blockSignals(True)
+            usdt_spin.setValue(float(cfg.get("usdt", 0.0)))
+            usdt_spin.blockSignals(False)
+            usdt_spin.setEnabled(enabled and mode in ("usdt", "both"))
+        if pct_spin is not None:
+            pct_spin.blockSignals(True)
+            pct_spin.setValue(float(cfg.get("percent", 0.0)))
+            pct_spin.blockSignals(False)
+            pct_spin.setEnabled(enabled and mode in ("percent", "both"))
+        if scope_combo is not None:
+            scope_combo.blockSignals(True)
+            idx_scope = scope_combo.findData(scope)
+            if idx_scope < 0:
+                idx_scope = scope_combo.findData(STOP_LOSS_SCOPE_OPTIONS[0])
+                if idx_scope < 0:
+                    idx_scope = 0
+            scope_combo.setCurrentIndex(idx_scope)
+            scope_combo.setEnabled(enabled)
+            scope_combo.blockSignals(False)
+
+    def _on_backtest_stop_loss_enabled(self, checked: bool):
+        self._backtest_stop_loss_update(enabled=bool(checked))
+        self._update_backtest_stop_loss_widgets()
+
+    def _on_backtest_stop_loss_mode_changed(self):
+        combo = getattr(self, "backtest_stop_loss_mode_combo", None)
+        mode = combo.currentData() if combo is not None else None
+        if mode not in STOP_LOSS_MODE_ORDER:
+            mode = STOP_LOSS_MODE_ORDER[0]
+        self._backtest_stop_loss_update(mode=mode)
+        self._update_backtest_stop_loss_widgets()
+
+    def _on_backtest_stop_loss_scope_changed(self):
+        combo = getattr(self, "backtest_stop_loss_scope_combo", None)
+        scope = combo.currentData() if combo is not None else None
+        if scope not in STOP_LOSS_SCOPE_OPTIONS:
+            scope = STOP_LOSS_SCOPE_OPTIONS[0]
+        self._backtest_stop_loss_update(scope=scope)
+        self._update_backtest_stop_loss_widgets()
+
+    def _on_backtest_stop_loss_value_changed(self, kind: str, value: float):
+        if kind == "usdt":
+            self._backtest_stop_loss_update(usdt=max(0.0, float(value)))
+        elif kind == "percent":
+            self._backtest_stop_loss_update(percent=max(0.0, float(value)))
+        self._update_backtest_stop_loss_widgets()
+
+    def _backtest_add_selected_to_dashboard(self):
+        try:
+            table = getattr(self, "backtest_results_table", None)
+            results = list(getattr(self, "backtest_results", []) or [])
+            if table is None or not results:
+                try:
+                    self.backtest_status_label.setText("No backtest results available to import.")
+                except Exception:
+                    pass
+                return
+            selection = table.selectionModel()
+            if selection is None:
+                return
+            selected_rows = sorted({index.row() for index in selection.selectedRows()})
+            if not selected_rows:
+                try:
+                    self.backtest_status_label.setText("Select one or more backtest rows to add.")
+                except Exception:
+                    pass
+                return
+            runtime_pairs = self._override_config_list("runtime")
+            existing = {}
+            for entry in runtime_pairs:
+                sym = str((entry or {}).get("symbol") or "").strip().upper()
+                iv = str((entry or {}).get("interval") or "").strip()
+                indicators = entry.get("indicators")
+                if isinstance(indicators, (list, tuple)):
+                    indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
+                else:
+                    indicators = []
+                existing[(sym, iv, tuple(indicators))] = entry
+            added_count = 0
+            for row_idx in selected_rows:
+                if row_idx < 0 or row_idx >= len(results):
+                    continue
+                data = {}
+                try:
+                    item_symbol = table.item(row_idx, 0)
+                    if item_symbol is not None:
+                        payload = item_symbol.data(QtCore.Qt.ItemDataRole.UserRole)
+                        if isinstance(payload, dict):
+                            data = dict(payload)
+                except Exception:
+                    data = {}
+                if not data and 0 <= row_idx < len(results):
+                    data = dict(results[row_idx] or {})
+                sym = str(data.get("symbol") or "").strip().upper()
+                iv = str(data.get("interval") or "").strip()
+                if not sym or not iv:
+                    continue
+                indicators = data.get("indicator_keys") or []
+                if not isinstance(indicators, (list, tuple)):
+                    indicators = [indicators]
+                indicators_clean = sorted({str(k).strip() for k in indicators if str(k).strip()})
+                key = (sym, iv, tuple(indicators_clean))
+                if key in existing:
+                    continue
+                entry = {"symbol": sym, "interval": iv}
+                if indicators_clean:
+                    entry["indicators"] = list(indicators_clean)
+                runtime_pairs.append(entry)
+                existing[key] = entry
+                added_count += 1
+            if added_count:
+                self._refresh_symbol_interval_pairs("runtime")
+                try:
+                    self.backtest_status_label.setText(f"Added {added_count} row(s) to dashboard overrides.")
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.backtest_status_label.setText("Selected results already exist in dashboard overrides.")
+                except Exception:
+                    pass
+        except Exception as exc:
+            try:
+                self.backtest_status_label.setText(f"Add to dashboard failed: {exc}")
+            except Exception:
+                pass
+            try:
+                self.log(f"Add backtest results to dashboard error: {exc}")
+            except Exception:
+                pass
 
     def _get_selected_indicator_keys(self, kind: str) -> list[str]:
         try:
@@ -1086,11 +1352,19 @@ class MainWindow(QtWidgets.QWidget):
         group = QtWidgets.QGroupBox("Symbol / Interval Overrides")
         layout = QtWidgets.QVBoxLayout(group)
         columns = ["Symbol", "Interval"]
-        if kind == "runtime":
+        if kind in ("runtime", "backtest"):
             columns.append("Indicators")
         table = QtWidgets.QTableWidget(0, len(columns))
         table.setHorizontalHeaderLabels(columns)
-        table.horizontalHeader().setStretchLastSection(True)
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        try:
+            header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        except Exception:
+            pass
+        table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        table.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
+        table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
         table.setMinimumHeight(180)
         try:
             table.verticalHeader().setDefaultSectionSize(28)
@@ -1161,6 +1435,7 @@ class MainWindow(QtWidgets.QWidget):
                 getattr(self, 'bot_status_label_tab1', None),
                 getattr(self, 'bot_status_label_tab2', None),
                 getattr(self, 'bot_status_label_tab3', None),
+                getattr(self, 'bot_status_label_chart', None),
             ):
                 if label is None:
                     continue
@@ -1209,6 +1484,10 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
         self._update_bot_status(active)
+        try:
+            self._update_runtime_stop_loss_widgets()
+        except Exception:
+            pass
         return active
 
     @staticmethod
@@ -1321,6 +1600,10 @@ class MainWindow(QtWidgets.QWidget):
                 start_qdt = end_qdt.addMonths(-3)
             self.backtest_start_edit.setDateTime(start_qdt)
             self.backtest_end_edit.setDateTime(end_qdt)
+        except Exception:
+            pass
+        try:
+            self._update_backtest_stop_loss_widgets()
         except Exception:
             pass
         self._update_backtest_futures_controls()
@@ -1773,6 +2056,10 @@ class MainWindow(QtWidgets.QWidget):
         api_secret = self.api_secret_edit.text().strip()
         mode = self.mode_combo.currentText()
 
+        stop_cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
+        self.backtest_config["stop_loss"] = stop_cfg
+        self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(stop_cfg)
+
         request = BacktestRequest(
             symbols=symbols,
             intervals=intervals,
@@ -1788,6 +2075,11 @@ class MainWindow(QtWidgets.QWidget):
             margin_mode=margin_mode,
             position_mode=position_mode,
             assets_mode=assets_mode,
+            stop_loss_enabled=bool(stop_cfg.get("enabled")),
+            stop_loss_mode=str(stop_cfg.get("mode") or "usdt"),
+            stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
+            stop_loss_percent=float(stop_cfg.get("percent", 0.0) or 0.0),
+            stop_loss_scope=str(stop_cfg.get("scope") or "per_trade"),
             pair_overrides=pairs_override if pairs_override else None,
         )
 
@@ -1982,7 +2274,12 @@ class MainWindow(QtWidgets.QWidget):
                         pass
 
                     indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys)
-                    self.backtest_results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(symbol or "-"))
+                    item_symbol = QtWidgets.QTableWidgetItem(symbol or "-")
+                    try:
+                        item_symbol.setData(QtCore.Qt.ItemDataRole.UserRole, dict(data))
+                    except Exception:
+                        pass
+                    self.backtest_results_table.setItem(row, 0, item_symbol)
                     self.backtest_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(interval or "-"))
                     self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(logic or "-"))
                     self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(indicators_display or "-"))
@@ -2045,6 +2342,9 @@ class MainWindow(QtWidgets.QWidget):
         controls_layout.addWidget(self.chart_interval_combo)
 
         controls_layout.addStretch()
+        self.bot_status_label_chart = QtWidgets.QLabel()
+        self.bot_status_label_chart.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        controls_layout.addWidget(self.bot_status_label_chart)
 
         self.chart_view = None
         if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None:
@@ -2073,6 +2373,7 @@ class MainWindow(QtWidgets.QWidget):
 
         self._restore_chart_controls_from_config()
         self._on_chart_market_changed(self.chart_market_combo.currentText())
+        self._update_bot_status()
         # Preload symbol universes for both markets so selections react quickly.
         self._load_chart_symbols_async("Futures")
         self._load_chart_symbols_async("Spot")
@@ -3212,6 +3513,58 @@ class MainWindow(QtWidgets.QWidget):
         self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
         g.addWidget(self.cb_close_on_exit, 2, 0, 1, 6)
 
+        stop_cfg = normalize_stop_loss_dict(self.config.get("stop_loss"))
+        self.config["stop_loss"] = stop_cfg
+
+        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 3, 0)
+        self.stop_loss_enable_cb = QtWidgets.QCheckBox("Enable")
+        self.stop_loss_enable_cb.setToolTip("Toggle automatic stop-loss handling for live trades.")
+        self.stop_loss_enable_cb.setChecked(stop_cfg.get("enabled", False))
+        g.addWidget(self.stop_loss_enable_cb, 3, 1)
+
+        self.stop_loss_mode_combo = QtWidgets.QComboBox()
+        for mode_key in STOP_LOSS_MODE_ORDER:
+            self.stop_loss_mode_combo.addItem(STOP_LOSS_MODE_LABELS.get(mode_key, mode_key.title()), mode_key)
+        mode_idx = self.stop_loss_mode_combo.findData(stop_cfg.get("mode"))
+        if mode_idx < 0:
+            mode_idx = 0
+        self.stop_loss_mode_combo.setCurrentIndex(mode_idx)
+        g.addWidget(self.stop_loss_mode_combo, 3, 2, 1, 2)
+
+        self.stop_loss_usdt_spin = QtWidgets.QDoubleSpinBox()
+        self.stop_loss_usdt_spin.setRange(0.0, 1_000_000_000.0)
+        self.stop_loss_usdt_spin.setDecimals(2)
+        self.stop_loss_usdt_spin.setSingleStep(1.0)
+        self.stop_loss_usdt_spin.setSuffix(" USDT")
+        self.stop_loss_usdt_spin.setValue(float(stop_cfg.get("usdt", 0.0)))
+        g.addWidget(self.stop_loss_usdt_spin, 3, 4)
+
+        self.stop_loss_percent_spin = QtWidgets.QDoubleSpinBox()
+        self.stop_loss_percent_spin.setRange(0.0, 100.0)
+        self.stop_loss_percent_spin.setDecimals(2)
+        self.stop_loss_percent_spin.setSingleStep(0.5)
+        self.stop_loss_percent_spin.setSuffix(" %")
+        self.stop_loss_percent_spin.setValue(float(stop_cfg.get("percent", 0.0)))
+        g.addWidget(self.stop_loss_percent_spin, 3, 5)
+
+        self.stop_loss_scope_combo = QtWidgets.QComboBox()
+        for scope_key in STOP_LOSS_SCOPE_OPTIONS:
+            label = STOP_LOSS_SCOPE_LABELS.get(scope_key, scope_key.replace("_", " ").title())
+            self.stop_loss_scope_combo.addItem(label, scope_key)
+        scope_idx = self.stop_loss_scope_combo.findData(stop_cfg.get("scope"))
+        if scope_idx < 0:
+            scope_idx = 0
+        self.stop_loss_scope_combo.setCurrentIndex(scope_idx)
+        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 4, 0)
+        g.addWidget(self.stop_loss_scope_combo, 4, 1, 1, 2)
+
+        self.stop_loss_enable_cb.toggled.connect(self._on_runtime_stop_loss_enabled)
+        self.stop_loss_mode_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_mode_changed)
+        self.stop_loss_usdt_spin.valueChanged.connect(lambda v: self._on_runtime_stop_loss_value_changed("usdt", v))
+        self.stop_loss_percent_spin.valueChanged.connect(lambda v: self._on_runtime_stop_loss_value_changed("percent", v))
+        self.stop_loss_scope_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_scope_changed)
+        self._update_runtime_stop_loss_widgets()
+
         scroll_layout.addWidget(strat_group)
 
         # Indicators
@@ -3288,6 +3641,11 @@ class MainWindow(QtWidgets.QWidget):
             self.loop_edit,
             self.cb_add_only,
             self.cb_close_on_exit,
+            self.stop_loss_enable_cb,
+            self.stop_loss_mode_combo,
+            self.stop_loss_usdt_spin,
+            self.stop_loss_percent_spin,
+            self.stop_loss_scope_combo,
             self.start_btn,
             self.save_btn,
             self.load_btn
@@ -3485,6 +3843,67 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_pospct_spin.valueChanged.connect(lambda v: self._update_backtest_config("position_pct", float(v)))
         param_form.addRow("Position % of Balance:", self.backtest_pospct_spin)
 
+        backtest_stop_cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
+        self.backtest_config["stop_loss"] = backtest_stop_cfg
+        self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(backtest_stop_cfg)
+
+        stop_loss_row = QtWidgets.QWidget()
+        stop_loss_layout = QtWidgets.QHBoxLayout(stop_loss_row)
+        stop_loss_layout.setContentsMargins(0, 0, 0, 0)
+        stop_loss_layout.setSpacing(6)
+
+        self.backtest_stop_loss_enable_cb = QtWidgets.QCheckBox("Enable")
+        self.backtest_stop_loss_enable_cb.setChecked(backtest_stop_cfg.get("enabled", False))
+        stop_loss_layout.addWidget(self.backtest_stop_loss_enable_cb)
+
+        self.backtest_stop_loss_mode_combo = QtWidgets.QComboBox()
+        for mode_key in STOP_LOSS_MODE_ORDER:
+            self.backtest_stop_loss_mode_combo.addItem(STOP_LOSS_MODE_LABELS.get(mode_key, mode_key.title()), mode_key)
+        mode_idx = self.backtest_stop_loss_mode_combo.findData(backtest_stop_cfg.get("mode"))
+        if mode_idx < 0:
+            mode_idx = 0
+        self.backtest_stop_loss_mode_combo.setCurrentIndex(mode_idx)
+        stop_loss_layout.addWidget(self.backtest_stop_loss_mode_combo)
+
+        stop_loss_layout.addWidget(QtWidgets.QLabel("Scope:"))
+        self.backtest_stop_loss_scope_combo = QtWidgets.QComboBox()
+        for scope_key in STOP_LOSS_SCOPE_OPTIONS:
+            self.backtest_stop_loss_scope_combo.addItem(
+                STOP_LOSS_SCOPE_LABELS.get(scope_key, scope_key.replace("_", " ").title()), scope_key
+            )
+        scope_idx = self.backtest_stop_loss_scope_combo.findData(backtest_stop_cfg.get("scope"))
+        if scope_idx < 0:
+            scope_idx = 0
+        self.backtest_stop_loss_scope_combo.setCurrentIndex(scope_idx)
+        stop_loss_layout.addWidget(self.backtest_stop_loss_scope_combo)
+
+        self.backtest_stop_loss_usdt_spin = QtWidgets.QDoubleSpinBox()
+        self.backtest_stop_loss_usdt_spin.setRange(0.0, 1_000_000_000.0)
+        self.backtest_stop_loss_usdt_spin.setDecimals(2)
+        self.backtest_stop_loss_usdt_spin.setSingleStep(1.0)
+        self.backtest_stop_loss_usdt_spin.setSuffix(" USDT")
+        self.backtest_stop_loss_usdt_spin.setValue(float(backtest_stop_cfg.get("usdt", 0.0)))
+        stop_loss_layout.addWidget(self.backtest_stop_loss_usdt_spin)
+
+        self.backtest_stop_loss_percent_spin = QtWidgets.QDoubleSpinBox()
+        self.backtest_stop_loss_percent_spin.setRange(0.0, 100.0)
+        self.backtest_stop_loss_percent_spin.setDecimals(2)
+        self.backtest_stop_loss_percent_spin.setSingleStep(0.5)
+        self.backtest_stop_loss_percent_spin.setSuffix(" %")
+        self.backtest_stop_loss_percent_spin.setValue(float(backtest_stop_cfg.get("percent", 0.0)))
+        stop_loss_layout.addWidget(self.backtest_stop_loss_percent_spin)
+
+        stop_loss_layout.addStretch()
+
+        param_form.addRow("Stop Loss:", stop_loss_row)
+
+        self.backtest_stop_loss_enable_cb.toggled.connect(self._on_backtest_stop_loss_enabled)
+        self.backtest_stop_loss_mode_combo.currentIndexChanged.connect(self._on_backtest_stop_loss_mode_changed)
+        self.backtest_stop_loss_scope_combo.currentIndexChanged.connect(self._on_backtest_stop_loss_scope_changed)
+        self.backtest_stop_loss_usdt_spin.valueChanged.connect(lambda v: self._on_backtest_stop_loss_value_changed("usdt", v))
+        self.backtest_stop_loss_percent_spin.valueChanged.connect(lambda v: self._on_backtest_stop_loss_value_changed("percent", v))
+        self._update_backtest_stop_loss_widgets()
+
         self.backtest_side_combo = QtWidgets.QComboBox()
         self.backtest_side_combo.addItems([SIDE_LABELS["BUY"], SIDE_LABELS["SELL"], SIDE_LABELS["BOTH"]])
         self.backtest_side_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("side", v))
@@ -3553,6 +3972,9 @@ class MainWindow(QtWidgets.QWidget):
         controls_layout.addWidget(self.backtest_stop_btn)
         self.backtest_status_label = QtWidgets.QLabel()
         controls_layout.addWidget(self.backtest_status_label)
+        self.backtest_add_to_dashboard_btn = QtWidgets.QPushButton("Add Selected to Dashboard")
+        self.backtest_add_to_dashboard_btn.clicked.connect(self._backtest_add_selected_to_dashboard)
+        controls_layout.addWidget(self.backtest_add_to_dashboard_btn)
         controls_layout.addStretch()
         self.bot_status_label_tab3 = QtWidgets.QLabel()
         self.bot_status_label_tab3.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
@@ -3560,7 +3982,7 @@ class MainWindow(QtWidgets.QWidget):
         tab3_layout.addLayout(controls_layout)
         self._update_bot_status()
         try:
-            for widget in (self.backtest_run_btn, self.backtest_stop_btn):
+            for widget in (self.backtest_run_btn, self.backtest_stop_btn, self.backtest_add_to_dashboard_btn):
                 if widget and widget not in self._runtime_lock_widgets:
                     self._runtime_lock_widgets.append(widget)
                     self._register_runtime_active_exemption(widget)
@@ -3583,6 +4005,13 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         except Exception:
             self.backtest_results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.backtest_results_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.backtest_results_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.backtest_results_table.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
+        self.backtest_results_table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.backtest_results_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.backtest_results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.backtest_results_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
         tab3_layout.addWidget(self.backtest_results_table)
 
         self.tabs.addTab(tab3, "Backtest")
@@ -4559,6 +4988,14 @@ def load_config(self):
             cfg = json.load(f)
         if isinstance(cfg, dict):
             self.config.update(cfg)
+        self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
+        backtest_cfg = self.config.get("backtest", {})
+        if not isinstance(backtest_cfg, dict):
+            backtest_cfg = {}
+        backtest_cfg = copy.deepcopy(backtest_cfg)
+        backtest_cfg["stop_loss"] = normalize_stop_loss_dict(backtest_cfg.get("stop_loss"))
+        self.config["backtest"] = backtest_cfg
+        self.backtest_config.update(copy.deepcopy(backtest_cfg))
         chart_cfg = self.config.get("chart")
         if not isinstance(chart_cfg, dict):
             chart_cfg = {}
@@ -4592,6 +5029,8 @@ def load_config(self):
             self.assets_mode_combo.setCurrentText(self.config.get("assets_mode", self.assets_mode_combo.currentText()))
             self.tif_combo.setCurrentText(self.config.get("tif", self.tif_combo.currentText()))
             self.gtd_minutes_spin.setValue(int(self.config.get("gtd_minutes", self.gtd_minutes_spin.value())))
+            self._update_runtime_stop_loss_widgets()
+            self._update_backtest_stop_loss_widgets()
         except Exception:
             pass
     except Exception as e:
@@ -4735,6 +5174,10 @@ def update_balance_label(self):
         if btn:
             btn.setEnabled(False)
             btn.setText("Refreshing...")
+            try:
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
         try:
             if getattr(self, "balance_label", None):
                 self.balance_label.setText("Refreshing...")

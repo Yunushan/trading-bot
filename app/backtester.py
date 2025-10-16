@@ -8,6 +8,7 @@ import pandas as pd
 
 from . import indicators as ind
 from .binance_wrapper import _coerce_interval_seconds
+from .config import STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS
 
 
 @dataclass
@@ -40,6 +41,11 @@ class BacktestRequest:
     margin_mode: str = "Isolated"
     position_mode: str = "Hedge"
     assets_mode: str = "Single-Asset"
+    stop_loss_enabled: bool = False
+    stop_loss_mode: str = "usdt"
+    stop_loss_usdt: float = 0.0
+    stop_loss_percent: float = 0.0
+    stop_loss_scope: str = "per_trade"
     pair_overrides: Optional[List[PairOverride]] = None
 
 
@@ -265,6 +271,16 @@ class BacktestEngine:
 
         can_long = side_pref in ("BUY", "BOTH")
         can_short = side_pref in ("SELL", "BOTH")
+        stop_enabled = bool(getattr(request, "stop_loss_enabled", False))
+        stop_mode = str(getattr(request, "stop_loss_mode", "usdt")).lower()
+        if stop_mode not in STOP_LOSS_MODE_ORDER:
+            stop_mode = STOP_LOSS_MODE_ORDER[0]
+        stop_usdt = max(0.0, float(getattr(request, "stop_loss_usdt", 0.0) or 0.0))
+        stop_percent = max(0.0, float(getattr(request, "stop_loss_percent", 0.0) or 0.0))
+        scope = str(getattr(request, "stop_loss_scope", "per_trade") or "per_trade").lower()
+        if scope not in STOP_LOSS_SCOPE_OPTIONS:
+            scope = STOP_LOSS_SCOPE_OPTIONS[0]
+        is_cumulative = stop_enabled and scope == "cumulative"
 
         for idx, row in work_df.iterrows():
             if should_stop_cb and callable(should_stop_cb) and should_stop_cb():
@@ -313,6 +329,31 @@ class BacktestEngine:
                         units = 0.0
                         position_margin = 0.0
                         direction = ""
+                        continue
+
+                if stop_enabled and units > 0.0 and entry_price > 0.0:
+                    if direction == "LONG":
+                        worst_price = min(price, low_price)
+                        loss_usdt = max(0.0, (entry_price - worst_price) * units)
+                    else:
+                        worst_price = max(price, high_price)
+                        loss_usdt = max(0.0, (worst_price - entry_price) * units)
+                    denom = entry_price * units
+                    loss_pct = (loss_usdt / denom * 100.0) if denom > 0 else 0.0
+                    triggered = False
+                    if stop_mode in ("usdt", "both") and stop_usdt > 0.0 and loss_usdt >= stop_usdt:
+                        triggered = True
+                    if not triggered and stop_mode in ("percent", "both") and stop_percent > 0.0 and loss_pct >= stop_percent:
+                        triggered = True
+                    if triggered:
+                        exit_price = worst_price
+                        pnl = (exit_price - entry_price) * units if direction == "LONG" else (entry_price - exit_price) * units
+                        equity = max(0.0, equity + pnl)
+                        position_open = False
+                        units = 0.0
+                        position_margin = 0.0
+                        direction = ""
+                        trades += 1
                         continue
 
                 if direction == "LONG" and aggregated_sell:

@@ -3,6 +3,7 @@ import time, copy, traceback, math, threading, os
 from datetime import datetime, timezone
 
 import pandas as pd
+from .config import STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS, normalize_stop_loss_dict
 from .binance_wrapper import NetworkConnectivityError
 from .indicators import (
     sma,
@@ -45,6 +46,7 @@ class StrategyEngine:
 
     def __init__(self, binance_wrapper, config, log_callback, trade_callback=None, loop_interval_override=None, can_open_callback=None):
         self.config = copy.deepcopy(config)
+        self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.binance = binance_wrapper
         self.log = log_callback
         self.trade_cb = trade_callback
@@ -466,6 +468,20 @@ class StrategyEngine:
 
     def run_once(self):
         cw = self.config
+        stop_cfg = normalize_stop_loss_dict(cw.get("stop_loss"))
+        stop_mode = str(stop_cfg.get("mode") or "usdt").lower()
+        if stop_mode not in STOP_LOSS_MODE_ORDER:
+            stop_mode = STOP_LOSS_MODE_ORDER[0]
+        stop_usdt_limit = max(0.0, float(stop_cfg.get("usdt", 0.0) or 0.0))
+        stop_percent_limit = max(0.0, float(stop_cfg.get("percent", 0.0) or 0.0))
+        scope = str(stop_cfg.get("scope") or "per_trade").lower()
+        if scope not in STOP_LOSS_SCOPE_OPTIONS:
+            scope = STOP_LOSS_SCOPE_OPTIONS[0]
+        stop_enabled = bool(stop_cfg.get("enabled", False))
+        apply_usdt_limit = stop_enabled and stop_mode in ("usdt", "both") and stop_usdt_limit > 0.0
+        apply_percent_limit = stop_enabled and stop_mode in ("percent", "both") and stop_percent_limit > 0.0
+        stop_enabled = apply_usdt_limit or apply_percent_limit
+        is_cumulative = stop_enabled and scope == "cumulative"
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
         ind = self.compute_indicators(df)
         signal, trigger_desc, trigger_price = self.generate_signal(df, ind)
@@ -530,6 +546,275 @@ class StrategyEngine:
                     pass
 
         last_price = float(df['close'].iloc[-1]) if not df.empty else None
+
+        account_type = str((self.config.get("account_type") or self.binance.account_type)).upper()
+        dual_side = False
+        if account_type == "FUTURES":
+            try:
+                dual_side = bool(self.binance.get_futures_dual_side())
+            except Exception:
+                dual_side = False
+        positions_cache = None
+
+        if stop_enabled and last_price is not None and account_type == "FUTURES":
+            def _ensure_entry_price(leg_key, expect_long: bool):
+                nonlocal positions_cache
+                leg = self._leg_ledger.get(leg_key, {}) or {}
+                qty_val = float(leg.get("qty") or 0.0)
+                entry_px = float(leg.get("entry_price") or 0.0)
+                if qty_val > 0.0 and entry_px <= 0.0:
+                    if positions_cache is None:
+                        try:
+                            positions_cache = self.binance.list_open_futures_positions() or []
+                        except Exception:
+                            positions_cache = []
+                    for pos in positions_cache or []:
+                        try:
+                            if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                                continue
+                            pos_side = str(pos.get("positionSide") or "").upper()
+                            amt = float(pos.get("positionAmt") or 0.0)
+                            if dual_side:
+                                if expect_long and pos_side != "LONG":
+                                    continue
+                                if (not expect_long) and pos_side != "SHORT":
+                                    continue
+                                qty_candidate = abs(float(pos.get("positionAmt") or 0.0))
+                                if qty_candidate <= 0.0:
+                                    continue
+                                entry_px = float(pos.get("entryPrice") or 0.0)
+                                break
+                            else:
+                                if expect_long and amt <= 0.0:
+                                    continue
+                                if (not expect_long) and amt >= 0.0:
+                                    continue
+                                entry_px = float(pos.get("entryPrice") or 0.0)
+                                break
+                        except Exception:
+                            continue
+                    if entry_px > 0.0:
+                        leg["entry_price"] = entry_px
+                        self._leg_ledger[leg_key] = leg
+                return leg, qty_val, entry_px
+
+            leg_long, qty_long, entry_price_long = _ensure_entry_price(key_long, True)
+            leg_short, qty_short, entry_price_short = _ensure_entry_price(key_short, False)
+
+            if is_cumulative:
+                if positions_cache is None:
+                    try:
+                        positions_cache = self.binance.list_open_futures_positions() or []
+                    except Exception:
+                        positions_cache = []
+                totals = {
+                    "LONG": {"qty": 0.0, "loss": 0.0, "margin": 0.0},
+                    "SHORT": {"qty": 0.0, "loss": 0.0, "margin": 0.0},
+                }
+                for pos in positions_cache or []:
+                    try:
+                        if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                            continue
+                        pos_side = str(pos.get("positionSide") or "").upper()
+                        amt = float(pos.get("positionAmt") or 0.0)
+                        entry_px = float(pos.get("entryPrice") or 0.0)
+                        if entry_px <= 0.0:
+                            continue
+                        if dual_side:
+                            if pos_side == "LONG":
+                                qty_pos = max(0.0, float(pos.get("positionAmt") or 0.0))
+                                side_key = "LONG"
+                            elif pos_side == "SHORT":
+                                qty_pos = max(0.0, abs(float(pos.get("positionAmt") or 0.0)))
+                                side_key = "SHORT"
+                            else:
+                                continue
+                        else:
+                            if amt > 0.0:
+                                qty_pos = amt
+                                side_key = "LONG"
+                            elif amt < 0.0:
+                                qty_pos = abs(amt)
+                                side_key = "SHORT"
+                            else:
+                                continue
+                        if qty_pos <= 0.0:
+                            continue
+                        margin_val = float(pos.get("isolatedWallet") or 0.0)
+                        if margin_val <= 0.0:
+                            margin_val = float(pos.get("initialMargin") or 0.0)
+                        if margin_val <= 0.0:
+                            notional_val = abs(float(pos.get("notional") or 0.0))
+                            lev = float(pos.get("leverage") or 1.0) or 1.0
+                            if lev > 0.0:
+                                margin_val = notional_val / lev
+                        if side_key == "LONG":
+                            loss_val = max(0.0, (entry_px - last_price) * qty_pos)
+                        else:
+                            loss_val = max(0.0, (last_price - entry_px) * qty_pos)
+                        totals[side_key]["qty"] += qty_pos
+                        totals[side_key]["loss"] += loss_val
+                        totals[side_key]["margin"] += max(0.0, margin_val)
+                    except Exception:
+                        continue
+                cumulative_triggered = False
+                for side_key in ("LONG", "SHORT"):
+                    data = totals[side_key]
+                    if data["qty"] <= 0.0:
+                        continue
+                    triggered = False
+                    if apply_usdt_limit and data["loss"] >= stop_usdt_limit:
+                        triggered = True
+                    if (
+                        not triggered
+                        and apply_percent_limit
+                        and data["margin"] > 0.0
+                        and (data["loss"] / data["margin"] * 100.0) >= stop_percent_limit
+                    ):
+                        triggered = True
+                    if not triggered:
+                        continue
+                    cumulative_triggered = True
+                    close_side = "BUY" if side_key == "LONG" else "SELL"
+                    position_side = side_key if dual_side else None
+                    try:
+                        res = self.binance.close_futures_leg_exact(
+                            cw["symbol"], data["qty"], side=close_side, position_side=position_side
+                        )
+                    except Exception as exc:
+                        try:
+                            self.log(f"Cumulative stop-loss close error for {cw['symbol']} ({side_key}): {exc}")
+                        except Exception:
+                            pass
+                        continue
+                    if isinstance(res, dict) and res.get("ok"):
+                        target_side_label = "BUY" if side_key == "LONG" else "SELL"
+                        for leg_key in list(self._leg_ledger.keys()):
+                            if leg_key[0] == cw["symbol"] and leg_key[2] == target_side_label:
+                                self._leg_ledger.pop(leg_key, None)
+                                self._last_order_time.pop(leg_key, None)
+                        try:
+                            if hasattr(self.guard, "mark_closed"):
+                                self.guard.mark_closed(cw["symbol"], cw.get("interval"), target_side_label)
+                        except Exception:
+                            pass
+                        self._notify_interval_closed(cw["symbol"], cw.get("interval"), target_side_label)
+                        try:
+                            margin_val = data["margin"] or 0.0
+                            pct_loss = (data["loss"] / margin_val * 100.0) if margin_val > 0.0 else 0.0
+                            self.log(
+                                f"Cumulative stop-loss closed {target_side_label} for {cw['symbol']}@{cw.get('interval')} "
+                                f"(loss {data['loss']:.4f} USDT / {pct_loss:.2f}%)."
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            self.log(
+                                f"Cumulative stop-loss close failed for {cw['symbol']} ({side_key}): {res}"
+                            )
+                        except Exception:
+                            pass
+                if cumulative_triggered:
+                    position_open = False
+                    units = 0.0
+                    position_margin = 0.0
+                    direction = ""
+                    long_open = False
+                    short_open = False
+            else:
+                if qty_long > 0.0 and entry_price_long > 0.0:
+                    loss_usdt_long = max(0.0, (entry_price_long - last_price) * qty_long)
+                    denom_long = entry_price_long * qty_long
+                    loss_pct_long = (loss_usdt_long / denom_long * 100.0) if denom_long > 0 else 0.0
+                    triggered_long = False
+                    if apply_usdt_limit and loss_usdt_long >= stop_usdt_limit:
+                        triggered_long = True
+                    if not triggered_long and apply_percent_limit and loss_pct_long >= stop_percent_limit:
+                        triggered_long = True
+                    if triggered_long:
+                        desired_ps = "LONG" if dual_side else None
+                        try:
+                            res = self.binance.close_futures_leg_exact(
+                                cw["symbol"], qty_long, side="BUY", position_side=desired_ps
+                            )
+                            if isinstance(res, dict) and res.get("ok"):
+                                self._leg_ledger.pop(key_long, None)
+                                self._last_order_time.pop(key_long, None)
+                                long_open = False
+                                try:
+                                    if hasattr(self.guard, "mark_closed"):
+                                        self.guard.mark_closed(cw["symbol"], cw.get("interval"), "BUY")
+                                except Exception:
+                                    pass
+                                self._notify_interval_closed(cw["symbol"], cw.get("interval"), "BUY")
+                                try:
+                                    self.log(
+                                        f"Stop-loss closed BUY for {cw['symbol']}@{cw.get('interval')} "
+                                        f"(loss {loss_usdt_long:.4f} USDT / {loss_pct_long:.2f}%)."
+                                    )
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    self.log(
+                                        f"Stop-loss close failed for {cw['symbol']}@{cw.get('interval')} (BUY): {res}"
+                                    )
+                                except Exception:
+                                    pass
+                        except Exception as exc:
+                            try:
+                                self.log(
+                                    f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (BUY): {exc}"
+                                )
+                            except Exception:
+                                pass
+                if qty_short > 0.0 and entry_price_short > 0.0:
+                    loss_usdt_short = max(0.0, (last_price - entry_price_short) * qty_short)
+                    denom_short = entry_price_short * qty_short
+                    loss_pct_short = (loss_usdt_short / denom_short * 100.0) if denom_short > 0 else 0.0
+                    triggered_short = False
+                    if apply_usdt_limit and loss_usdt_short >= stop_usdt_limit:
+                        triggered_short = True
+                    if not triggered_short and apply_percent_limit and loss_pct_short >= stop_percent_limit:
+                        triggered_short = True
+                    if triggered_short:
+                        desired_ps = "SHORT" if dual_side else None
+                        try:
+                            res = self.binance.close_futures_leg_exact(
+                                cw["symbol"], qty_short, side="SELL", position_side=desired_ps
+                            )
+                            if isinstance(res, dict) and res.get("ok"):
+                                self._leg_ledger.pop(key_short, None)
+                                self._last_order_time.pop(key_short, None)
+                                short_open = False
+                                try:
+                                    if hasattr(self.guard, "mark_closed"):
+                                        self.guard.mark_closed(cw["symbol"], cw.get("interval"), "SELL")
+                                except Exception:
+                                    pass
+                                self._notify_interval_closed(cw["symbol"], cw.get("interval"), "SELL")
+                                try:
+                                    self.log(
+                                        f"Stop-loss closed SELL for {cw['symbol']}@{cw.get('interval')} "
+                                        f"(loss {loss_usdt_short:.4f} USDT / {loss_pct_short:.2f}%)."
+                                    )
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    self.log(
+                                        f"Stop-loss close failed for {cw['symbol']}@{cw.get('interval')} (SELL): {res}"
+                                    )
+                                except Exception:
+                                    pass
+                        except Exception as exc:
+                            try:
+                                self.log(
+                                    f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (SELL): {exc}"
+                                )
+                            except Exception:
+                                pass
 
         thresholds = []
         try:
@@ -688,8 +973,23 @@ class StrategyEngine:
                         if order_res.get('ok'):
                             key = (cw['symbol'], cw.get('interval'), signal.upper())
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
-                            if qty>0:
-                                self._leg_ledger[key] = {'qty': qty, 'timestamp': time.time()}
+                            if qty > 0:
+                                entry_price_est = price
+                                try:
+                                    avg_px = (order_res.get('info', {}) or {}).get('avgPrice')
+                                    if avg_px:
+                                        entry_price_est = float(avg_px)
+                                    else:
+                                        computed_px = (order_res.get('computed', {}) or {}).get('px')
+                                        if computed_px:
+                                            entry_price_est = float(computed_px)
+                                except Exception:
+                                    entry_price_est = price
+                                self._leg_ledger[key] = {
+                                    'qty': qty,
+                                    'timestamp': time.time(),
+                                    'entry_price': float(entry_price_est or price),
+                                }
                                 self._last_order_time[key] = time.time()
                     except Exception:
                         pass
