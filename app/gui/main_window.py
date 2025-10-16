@@ -63,6 +63,28 @@ BACKTEST_INTERVAL_ORDER = [
 
 MAX_CLOSED_HISTORY = 200
 
+APP_STATE_PATH = Path.home() / ".binance_trading_bot_state.json"
+
+def _load_app_state_file(path: Path) -> dict:
+    try:
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+def _save_app_state_file(path: Path, data: dict) -> None:
+    try:
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    except Exception:
+        pass
+
 TRADINGVIEW_SYMBOL_PREFIX = "BINANCE:"
 TRADINGVIEW_INTERVAL_MAP = {
     "1m": "1",
@@ -569,10 +591,17 @@ class MainWindow(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
+        self._state_path = APP_STATE_PATH
+        self._app_state = _load_app_state_file(self._state_path)
+        self._previous_session_unclosed = bool(self._app_state.get("session_active", False))
+        self._session_marker_active = False
+        self._auto_close_on_restart_triggered = False
         self.guard = IntervalPositionGuard(stale_ttl_sec=180)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
+        state_close_pref = bool(self._app_state.get("close_on_exit", self.config.get("close_on_exit", False)))
         self.config.setdefault('theme', 'Dark')
-        self.config.setdefault('close_on_exit', False)
+        self.config['close_on_exit'] = state_close_pref
+        self.config.setdefault('close_on_exit', state_close_pref)
         self.strategy_threads = {}
         self.shared_binance = None
         self.stop_worker = None
@@ -598,6 +627,7 @@ class MainWindow(QtWidgets.QWidget):
         default_symbols = self.config.get("symbols") or ["BTCUSDT"]
         default_intervals = self.config.get("intervals") or ["1h"]
         self.chart_symbol_cache = {opt: [] for opt in CHART_MARKET_OPTIONS}
+        self._chart_symbol_alias_map = {}
         self._chart_symbol_loading = set()
         default_market = self.config.get("account_type", "Futures")
         if not default_market or default_market not in CHART_MARKET_OPTIONS:
@@ -611,11 +641,22 @@ class MainWindow(QtWidgets.QWidget):
                 if sym not in seen:
                     seen.add(sym)
                     dedup.append(sym)
-            self.chart_symbol_cache["Futures"] = dedup
-        self.chart_config.setdefault("symbol", (default_symbols[0] if default_symbols else "BTCUSDT"))
+        self.chart_symbol_cache["Futures"] = dedup
+        default_symbol = (default_symbols[0] if default_symbols else "BTCUSDT")
+        if default_market == "Futures":
+            default_symbol = self._futures_display_symbol(default_symbol)
+        self.chart_config.setdefault("symbol", default_symbol)
         self.chart_config.setdefault("interval", (default_intervals[0] if default_intervals else "1h"))
+        try:
+            if self._normalize_chart_market(self.chart_config.get("market")) == "Futures":
+                current_cfg_symbol = str(self.chart_config.get("symbol") or "").strip()
+                if current_cfg_symbol and not current_cfg_symbol.endswith(".P"):
+                    self.chart_config["symbol"] = self._futures_display_symbol(current_cfg_symbol)
+        except Exception:
+            pass
         self._indicator_runtime_controls = []
         self._runtime_lock_widgets = []
+        self._runtime_active_exemptions = set()
         self.backtest_indicator_widgets = {}
         self.backtest_results = []
         self.backtest_worker = None
@@ -661,19 +702,159 @@ class MainWindow(QtWidgets.QWidget):
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
+        QtCore.QTimer.singleShot(0, self._handle_post_init_state)
+
+    def _on_close_on_exit_changed(self, state):
+        enabled = bool(state)
+        self.config['close_on_exit'] = enabled
+        try:
+            data = dict(getattr(self, "_app_state", {}) or {})
+        except Exception:
+            data = {}
+        data['close_on_exit'] = enabled
+        if getattr(self, "_session_marker_active", False):
+            data['session_active'] = True
+        else:
+            data['session_active'] = bool(data.get('session_active', False))
+        data['updated_at'] = datetime.utcnow().isoformat()
+        try:
+            _save_app_state_file(self._state_path, data)
+            self._app_state = data
+        except Exception:
+            pass
+        try:
+            engines = getattr(self, "strategy_engines", {}) or {}
+            for eng in engines.values():
+                try:
+                    if hasattr(eng, "config"):
+                        eng.config['close_on_exit'] = enabled
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _mark_session_active(self):
+        if getattr(self, "_session_marker_active", False):
+            return
+        self._session_marker_active = True
+        try:
+            data = dict(getattr(self, "_app_state", {}) or {})
+        except Exception:
+            data = {}
+        data['session_active'] = True
+        data['close_on_exit'] = bool(self.config.get('close_on_exit', False))
+        data['activated_at'] = datetime.utcnow().isoformat()
+        try:
+            _save_app_state_file(self._state_path, data)
+            self._app_state = data
+        except Exception:
+            pass
+
+    def _mark_session_inactive(self):
+        if not getattr(self, "_session_marker_active", False):
+            return
+        self._session_marker_active = False
+        try:
+            data = dict(getattr(self, "_app_state", {}) or {})
+        except Exception:
+            data = {}
+        data['session_active'] = False
+        data['close_on_exit'] = bool(self.config.get('close_on_exit', False))
+        data['deactivated_at'] = datetime.utcnow().isoformat()
+        try:
+            _save_app_state_file(self._state_path, data)
+            self._app_state = data
+        except Exception:
+            pass
+
+    def _handle_post_init_state(self):
+        try:
+            self._mark_session_active()
+            if self.config.get('close_on_exit') and getattr(self, "_previous_session_unclosed", False):
+                if not getattr(self, "_auto_close_on_restart_triggered", False):
+                    self._auto_close_on_restart_triggered = True
+                    self._previous_session_unclosed = False
+                    self.log("Previous session ended unexpectedly with close-on-exit enabled; triggering emergency close of all positions.")
+                    try:
+                        api_key_ready = bool(getattr(self, "api_key_edit", None) and self.api_key_edit.text().strip())
+                        api_secret_ready = bool(getattr(self, "api_secret_edit", None) and self.api_secret_edit.text().strip())
+                        if api_key_ready and api_secret_ready:
+                            try:
+                                self.stop_strategy_async(close_positions=False, blocking=True)
+                            except Exception:
+                                pass
+                            wrapper = getattr(self, "shared_binance", None)
+                            if wrapper is None:
+                                wrapper = BinanceWrapper(
+                                    self.api_key_edit.text().strip(),
+                                    self.api_secret_edit.text().strip(),
+                                    mode=self.mode_combo.currentText(),
+                                    account_type=self.account_combo.currentText(),
+                                    default_leverage=int(self.leverage_spin.value() or 1),
+                                    default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
+                                )
+                                self.shared_binance = wrapper
+                            else:
+                                wrapper = self.shared_binance
+                            try:
+                                wrapper.trigger_emergency_close_all(reason="restart_recovery", source="startup")
+                            except Exception as exc_inner:
+                                self.log(f"Emergency close scheduling error: {exc_inner}")
+                        else:
+                            self.log("Emergency close skipped: API credentials are missing.")
+                    except Exception as exc:
+                        try:
+                            self.log(f"Emergency close scheduling error: {exc}")
+                        except Exception:
+                            pass
+                    try:
+                        data = dict(getattr(self, "_app_state", {}) or {})
+                        data['session_active'] = True
+                        data['close_on_exit'] = bool(self.config.get('close_on_exit', False))
+                        data['last_recovery_at'] = datetime.utcnow().isoformat()
+                        data['last_recovery_reason'] = 'restart_recovery'
+                        _save_app_state_file(self._state_path, data)
+                        self._app_state = data
+                    except Exception:
+                        pass
+        except Exception as exc:
+            try:
+                self.log(f"Post-init state handler error: {exc}")
+            except Exception:
+                pass
 
     def _set_runtime_controls_enabled(self, enabled: bool):
         try:
             widgets = getattr(self, "_runtime_lock_widgets", [])
+            exemptions = getattr(self, "_runtime_active_exemptions", set())
             for widget in widgets:
                 if widget is None:
                     continue
-                widget.setEnabled(enabled)
+                if enabled:
+                    widget.setEnabled(True)
+                    continue
+                if widget in exemptions:
+                    try:
+                        widget.setEnabled(True)
+                    except Exception:
+                        pass
+                else:
+                    widget.setEnabled(False)
         except Exception:
             pass
 
     def _override_ctx(self, kind: str) -> dict:
         return getattr(self, "override_contexts", {}).get(kind, {})
+
+    def _register_runtime_active_exemption(self, widget):
+        if widget is None:
+            return
+        try:
+            exemptions = getattr(self, "_runtime_active_exemptions", None)
+            if isinstance(exemptions, set):
+                exemptions.add(widget)
+        except Exception:
+            pass
 
     def _override_config_list(self, kind: str) -> list:
         ctx = self._override_ctx(kind)
@@ -956,6 +1137,9 @@ class MainWindow(QtWidgets.QWidget):
             for widget in (table, add_btn, remove_btn, clear_btn):
                 if widget and widget not in lock_widgets:
                     lock_widgets.append(widget)
+        if kind == "backtest":
+            for btn in (add_btn, remove_btn, clear_btn):
+                self._register_runtime_active_exemption(btn)
         self._refresh_symbol_interval_pairs(kind)
         return group
 
@@ -1956,21 +2140,48 @@ class MainWindow(QtWidgets.QWidget):
                 seen.add(sym_norm)
                 uniques.append(sym_norm)
         self.chart_symbol_cache[market] = list(uniques)
+        display_symbols = list(uniques)
+        alias_map = {}
+        if market == "Futures":
+            display_symbols = []
+            for sym in uniques:
+                disp = self._futures_display_symbol(sym)
+                alias_map[disp] = sym
+                if disp not in display_symbols:
+                    display_symbols.append(disp)
+            preferred_disp = self._futures_display_symbol("BTCUSDT")
+            if "BTCUSDT" in uniques:
+                if preferred_disp in display_symbols:
+                    display_symbols.remove(preferred_disp)
+                display_symbols.insert(0, preferred_disp)
+                alias_map[preferred_disp] = "BTCUSDT"
+        if not isinstance(getattr(self, "_chart_symbol_alias_map", None), dict):
+            self._chart_symbol_alias_map = {}
+        self._chart_symbol_alias_map[market] = alias_map
+        if market == "Futures" and current:
+            if current not in alias_map:
+                reverse_map = {v: k for k, v in alias_map.items()}
+                if current in reverse_map:
+                    current = reverse_map[current]
+                else:
+                    current = self._futures_display_symbol(current)
+        elif market != "Futures":
+            alias_map = {}
         try:
             with QtCore.QSignalBlocker(combo):
                 combo.clear()
-                if uniques:
-                    combo.addItems(uniques)
+                if display_symbols:
+                    combo.addItems(display_symbols)
         except Exception:
             combo.clear()
-            if uniques:
-                combo.addItems(uniques)
+            if display_symbols:
+                combo.addItems(display_symbols)
         if current:
             if combo.findText(current, QtCore.Qt.MatchFlag.MatchFixedString) >= 0:
                 combo.setCurrentText(current)
             else:
                 combo.setEditText(current)
-        elif uniques:
+        elif display_symbols:
             combo.setCurrentIndex(0)
 
     @staticmethod
@@ -1980,6 +2191,36 @@ class MainWindow(QtWidgets.QWidget):
             if text.startswith(opt.lower()):
                 return opt
         return "Futures"
+
+    def _futures_display_symbol(self, symbol: str) -> str:
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return sym
+        if sym.endswith(".P"):
+            return sym
+        if sym.endswith("USDT") and not sym.endswith("BUSD"):
+            return f"{sym}.P"
+        return sym
+
+    def _resolve_chart_symbol_for_api(self, symbol: str, market: str | None = None) -> str:
+        sym = (symbol or "").strip().upper()
+        cfg_market = market
+        if cfg_market is None:
+            try:
+                cfg_market = self.chart_config.get("market")
+            except Exception:
+                cfg_market = None
+        market_norm = self._normalize_chart_market(cfg_market)
+        if market_norm == "Futures":
+            alias_map = {}
+            mapping = getattr(self, "_chart_symbol_alias_map", {})
+            if isinstance(mapping, dict):
+                alias_map = mapping.get(market_norm, {}) or {}
+            if sym in alias_map:
+                return alias_map[sym]
+            if sym.endswith(".P"):
+                return sym[:-2]
+        return sym
 
     def _current_dashboard_symbols(self):
         symbols = []
@@ -2047,10 +2288,12 @@ class MainWindow(QtWidgets.QWidget):
         self._update_chart_symbol_options(cache)
         self._chart_needs_render = True
         if cache:
-            preferred = self.chart_config.get("symbol")
-            if not preferred or preferred not in cache:
-                preferred = cache[0]
-            changed = self._set_chart_symbol(preferred, ensure_option=True, from_follow=self.chart_auto_follow)
+            preferred_cfg = self.chart_config.get("symbol")
+            preferred_actual = self._resolve_chart_symbol_for_api(preferred_cfg, market) if preferred_cfg else None
+            if not preferred_actual or preferred_actual not in cache:
+                preferred_actual = cache[0]
+            preferred_display = self._futures_display_symbol(preferred_actual) if market == "Futures" else preferred_actual
+            changed = self._set_chart_symbol(preferred_display, ensure_option=True, from_follow=self.chart_auto_follow)
             if self.chart_auto_follow and market == "Futures":
                 if changed or self._chart_needs_render:
                     self._apply_dashboard_selection_to_chart(load=False)
@@ -2108,11 +2351,13 @@ class MainWindow(QtWidgets.QWidget):
                 if current_market == market_key:
                     self._update_chart_symbol_options(symbols)
                     if symbols:
-                        preferred = self.chart_config.get("symbol")
-                        if not preferred or preferred not in symbols:
-                            preferred = symbols[0]
+                        preferred_cfg = self.chart_config.get("symbol")
+                        preferred_actual = self._resolve_chart_symbol_for_api(preferred_cfg, market_key) if preferred_cfg else None
+                        if not preferred_actual or preferred_actual not in symbols:
+                            preferred_actual = symbols[0]
+                        preferred_display = self._futures_display_symbol(preferred_actual) if market_key == "Futures" else preferred_actual
                         from_follow = (market_key == "Futures") and not self._chart_manual_override
-                        changed = self._set_chart_symbol(preferred, ensure_option=True, from_follow=from_follow)
+                        changed = self._set_chart_symbol(preferred_display, ensure_option=True, from_follow=from_follow)
                         if from_follow:
                             if changed:
                                 self._apply_dashboard_selection_to_chart(load=True)
@@ -2159,7 +2404,8 @@ class MainWindow(QtWidgets.QWidget):
         symbol = self._selected_dashboard_symbol()
         interval = self._selected_dashboard_interval()
         if symbol:
-            changed = self._set_chart_symbol(symbol, ensure_option=True, from_follow=True) or changed
+            display_symbol = self._futures_display_symbol(symbol) if current_market == "Futures" else symbol
+            changed = self._set_chart_symbol(display_symbol, ensure_option=True, from_follow=True) or changed
         if interval:
             changed = self._set_chart_interval(interval) or changed
         if (changed and should_render) or (load and should_render):
@@ -2603,6 +2849,7 @@ class MainWindow(QtWidgets.QWidget):
                 self.log(f"Chart: unsupported interval '{interval_text}'.")
             return
         market_text = self._normalize_chart_market(self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else None)
+        api_symbol = self._resolve_chart_symbol_for_api(symbol_text, market_text)
 
         existing_worker = getattr(self, "_chart_worker", None)
         if existing_worker and existing_worker.isRunning():
@@ -2656,7 +2903,7 @@ class MainWindow(QtWidgets.QWidget):
                 wrapper.indicator_source = self.ind_source_combo.currentText()
             except Exception:
                 pass
-            df = wrapper.get_klines(symbol_text, interval_text, limit=400)
+            df = wrapper.get_klines(api_symbol, interval_text, limit=400)
             if df is None or df.empty:
                 raise RuntimeError("no_kline_data")
             df = df.tail(400)
@@ -2801,7 +3048,7 @@ class MainWindow(QtWidgets.QWidget):
 
         grid.addWidget(QtWidgets.QLabel("Leverage (Futures):"), 2, 3)
         self.leverage_spin = QtWidgets.QSpinBox()
-        self.leverage_spin.setRange(1, 125)
+        self.leverage_spin.setRange(1, 150)
         self.leverage_spin.setValue(self.config.get('leverage', 5))
         self.leverage_spin.valueChanged.connect(self.on_leverage_changed)
         grid.addWidget(self.leverage_spin, 2, 4)
@@ -2962,7 +3209,7 @@ class MainWindow(QtWidgets.QWidget):
 
         self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All On Window Close")
         self.cb_close_on_exit.setChecked(bool(self.config.get('close_on_exit', False)))
-        self.cb_close_on_exit.stateChanged.connect(lambda state: self.config.__setitem__('close_on_exit', bool(state)))
+        self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
         g.addWidget(self.cb_close_on_exit, 2, 0, 1, 6)
 
         scroll_layout.addWidget(strat_group)
@@ -3073,6 +3320,8 @@ class MainWindow(QtWidgets.QWidget):
                     self.chart_symbol_combo,
                     self.chart_interval_combo,
                 ])
+                for widget in (self.chart_market_combo, self.chart_symbol_combo, self.chart_interval_combo):
+                    self._register_runtime_active_exemption(widget)
             except Exception:
                 pass
             if self.chart_auto_follow:
@@ -3121,6 +3370,16 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             self.pos_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         tab2_layout.addWidget(self.pos_table)
+
+        pos_btn_layout = QtWidgets.QHBoxLayout()
+        self.pos_clear_selected_btn = QtWidgets.QPushButton("Clear Selected")
+        self.pos_clear_selected_btn.clicked.connect(self._clear_positions_selected)
+        pos_btn_layout.addWidget(self.pos_clear_selected_btn)
+        self.pos_clear_all_btn = QtWidgets.QPushButton("Clear All")
+        self.pos_clear_all_btn.clicked.connect(self._clear_positions_all)
+        pos_btn_layout.addWidget(self.pos_clear_all_btn)
+        pos_btn_layout.addStretch()
+        tab2_layout.addLayout(pos_btn_layout)
 
         self.tabs.addTab(tab2, "Positions")
 
@@ -3247,7 +3506,7 @@ class MainWindow(QtWidgets.QWidget):
         param_form.addRow("Assets Mode:", self.backtest_assets_mode_combo)
 
         self.backtest_leverage_spin = QtWidgets.QSpinBox()
-        self.backtest_leverage_spin.setRange(1, 125)
+        self.backtest_leverage_spin.setRange(1, 150)
         self.backtest_leverage_spin.valueChanged.connect(lambda v: self._update_backtest_config("leverage", int(v)))
         param_form.addRow("Leverage (Futures):", self.backtest_leverage_spin)
 
@@ -3304,6 +3563,7 @@ class MainWindow(QtWidgets.QWidget):
             for widget in (self.backtest_run_btn, self.backtest_stop_btn):
                 if widget and widget not in self._runtime_lock_widgets:
                     self._runtime_lock_widgets.append(widget)
+                    self._register_runtime_active_exemption(widget)
         except Exception:
             pass
 
@@ -3617,11 +3877,76 @@ def _mw_render_positions_table(self):
                 self.pos_table.setCellWidget(row, 13, btn)
             except Exception:
                 pass
+        try:
+            if getattr(self, "chart_enabled", False) and getattr(self, "chart_auto_follow", False) and not getattr(self, "_chart_manual_override", False):
+                self._sync_chart_to_active_positions()
+        except Exception:
+            pass
     except Exception as exc:
         try:
             self.log(f"Positions table update failed: {exc}")
         except Exception:
             pass
+
+
+def _mw_clear_positions_selected(self):
+    try:
+        table = getattr(self, "pos_table", None)
+        if table is None:
+            return
+        sel_model = table.selectionModel()
+        if sel_model is None:
+            return
+        rows = sorted({index.row() for index in sel_model.selectedRows()}, reverse=True)
+        if not rows:
+            return
+        closed_records = list(getattr(self, "_closed_position_records", []) or [])
+        changed = False
+        skipped_active = False
+        for row in rows:
+            status_item = table.item(row, 12)
+            status = (status_item.text().strip().upper() if status_item else "")
+            if status != "CLOSED":
+                skipped_active = True
+                continue
+            symbol_item = table.item(row, 0)
+            side_item = table.item(row, 9)
+            symbol = (symbol_item.text().strip().upper() if symbol_item else "")
+            side_txt = (side_item.text().strip().upper() if side_item else "")
+            side_key = None
+            if "LONG" in side_txt or side_txt == "BUY":
+                side_key = "L"
+            elif "SHORT" in side_txt or side_txt == "SELL":
+                side_key = "S"
+            remove_idx = None
+            for idx, rec in enumerate(closed_records):
+                rec_sym = str(rec.get('symbol') or '').strip().upper()
+                rec_side = str(rec.get('side_key') or '').strip().upper()
+                if rec_sym == symbol and (side_key is None or not rec_side or rec_side == side_key):
+                    remove_idx = idx
+                    break
+            if remove_idx is not None:
+                closed_records.pop(remove_idx)
+                changed = True
+        if changed:
+            self._closed_position_records = closed_records
+            self._render_positions_table()
+        if skipped_active:
+            try:
+                self.log("Positions: only closed history rows can be cleared.")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _mw_clear_positions_all(self):
+    try:
+        if hasattr(self, "_closed_position_records"):
+            self._closed_position_records = []
+        self._render_positions_table()
+    except Exception:
+        pass
 
 
 def _mw_snapshot_closed_position(self, symbol: str, side_key: str) -> bool:
@@ -3648,6 +3973,62 @@ def _mw_snapshot_closed_position(self, symbol: str, side_key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _mw_sync_chart_to_active_positions(self):
+    try:
+        if not getattr(self, "chart_enabled", False):
+            return
+        open_records = getattr(self, "_open_position_records", {}) or {}
+        if not open_records:
+            return
+        active_syms = []
+        for rec in open_records.values():
+            try:
+                if str(rec.get('status', 'Active')).upper() != 'ACTIVE':
+                    continue
+                sym = str(rec.get('symbol') or '').strip().upper()
+                if sym:
+                    active_syms.append(sym)
+            except Exception:
+                continue
+        if not active_syms:
+            return
+        target_sym = active_syms[0]
+        market_combo = getattr(self, "chart_market_combo", None)
+        if market_combo is None:
+            return
+        current_market = self._normalize_chart_market(market_combo.currentText())
+        if current_market != "Futures":
+            try:
+                idx = market_combo.findText("Futures", QtCore.Qt.MatchFlag.MatchFixedString)
+                if idx >= 0:
+                    market_combo.setCurrentIndex(idx)
+                else:
+                    market_combo.addItem("Futures")
+                    market_combo.setCurrentIndex(market_combo.count() - 1)
+            except Exception:
+                try:
+                    market_combo.setCurrentText("Futures")
+                except Exception:
+                    pass
+            return
+        display_sym = self._futures_display_symbol(target_sym)
+        cache = self.chart_symbol_cache.setdefault("Futures", [])
+        if target_sym not in cache:
+            cache.append(target_sym)
+        alias_map = getattr(self, "_chart_symbol_alias_map", None)
+        if not isinstance(alias_map, dict):
+            alias_map = {}
+            self._chart_symbol_alias_map = alias_map
+        futures_alias = alias_map.setdefault("Futures", {})
+        futures_alias[display_sym] = target_sym
+        self._update_chart_symbol_options(cache)
+        changed = self._set_chart_symbol(display_sym, ensure_option=True, from_follow=True)
+        if changed or self._chart_needs_render or self._is_chart_visible():
+            self.load_chart(auto=True)
+    except Exception:
+        pass
 
 
 def _mw_make_close_btn(self, symbol: str, side_key: str | None = None, interval: str | None = None, qty: float | None = None):
@@ -4478,6 +4859,10 @@ def closeEvent(self, event):
         except Exception:
             pass
         _teardown_positions_thread(self)
+        try:
+            self._mark_session_inactive()
+        except Exception:
+            pass
     finally:
         try:
             super(MainWindow, self).closeEvent(event)
@@ -4515,6 +4900,8 @@ try:
     MainWindow._snapshot_closed_position = _mw_snapshot_closed_position
     MainWindow._make_close_btn = _mw_make_close_btn
     MainWindow._close_position_single = _mw_close_position_single
+    MainWindow._clear_positions_selected = _mw_clear_positions_selected
+    MainWindow._clear_positions_all = _mw_clear_positions_all
 except Exception:
     pass
 
@@ -4692,12 +5079,12 @@ def _gui_flush_log_buffer(self):
                 if nested:
                     body = nested.group(2).strip()
                 try:
-                    ts = _dt.strptime(iso_ts, '%Y-%m-%d %H:%M:%S').strftime('%d-%m-%Y %H:%M:%S')
+                    ts = _dt.strptime(iso_ts, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M:%S')
                 except Exception:
-                    ts = _dt.now().strftime('%d-%m-%Y %H:%M:%S')
+                    ts = _dt.now().strftime('%d.%m.%Y %H:%M:%S')
                 formatted.append(f"[{ts}] {body}" if body else f"[{ts}]")
             else:
-                ts = _dt.now().strftime('%d-%m-%Y %H:%M:%S')
+                ts = _dt.now().strftime('%d.%m.%Y %H:%M:%S')
                 formatted.append(f"[{ts}] {line}")
         text = '\n'.join(formatted)
         try:

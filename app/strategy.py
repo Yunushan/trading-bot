@@ -3,6 +3,7 @@ import time, copy, traceback, math, threading, os
 from datetime import datetime, timezone
 
 import pandas as pd
+from .binance_wrapper import NetworkConnectivityError
 from .indicators import (
     sma,
     ema,
@@ -57,6 +58,9 @@ class StrategyEngine:
         h = abs(hash(key)) if key.strip('@') else 0
         self._phase_offset = (h % 1000) / 1000.0 * 5.0
         self._thread = None
+        self._offline_backoff = 0.0
+        self._last_network_log = 0.0
+        self._emergency_close_triggered = False
 
     def _notify_interval_closed(self, symbol: str, interval: str, position_side: str):
         if not self.trade_cb:
@@ -737,6 +741,56 @@ class StrategyEngine:
             except Exception as e:
                 self.log(f"{cw['symbol']}@{cw['interval']} Order failed: {e}")
 
+    def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
+        if self._emergency_close_triggered:
+            return
+        self._emergency_close_triggered = True
+        try:
+            self.log(f"{sym}@{interval} connectivity lost ({reason}); scheduling emergency close of all positions.")
+        except Exception:
+            pass
+        try:
+            closer = getattr(self.binance, "trigger_emergency_close_all", None)
+            if callable(closer):
+                closer(reason=f"{sym}@{interval}: {reason}", source="strategy")
+            else:
+                from .close_all import close_all_futures_positions as _close_all_fut
+                def _do_close():
+                    try:
+                        _close_all_fut(self.binance)
+                    except Exception:
+                        pass
+                threading.Thread(target=_do_close, name=f"EmergencyClose-{sym}@{interval}", daemon=True).start()
+        except Exception as exc:
+            try:
+                self.log(f"{sym}@{interval} emergency close scheduling failed: {exc}")
+            except Exception:
+                pass
+        finally:
+            try:
+                self.stop()
+            except Exception:
+                self._stop = True
+
+    def _handle_network_outage(self, sym: str, interval: str, exc: Exception) -> float:
+        prev = getattr(self, "_offline_backoff", 0.0) or 0.0
+        backoff = 5.0 if prev <= 0.0 else min(90.0, max(prev * 1.5, 5.0))
+        self._offline_backoff = backoff
+        now = time.time()
+        reason_txt = str(exc)
+        if reason_txt.startswith("network_offline"):
+            parts = reason_txt.split(":", 2)
+            if len(parts) >= 2:
+                reason_txt = parts[-1] or "network_offline"
+        if (now - getattr(self, "_last_network_log", 0.0)) >= 8.0:
+            self._last_network_log = now
+            try:
+                self.log(f"{sym}@{interval} network offline ({reason_txt}); emergency close queued; retrying in {backoff:.0f}s.")
+            except Exception:
+                pass
+        self._trigger_emergency_close(sym, interval, reason_txt)
+        return backoff
+
     def run_loop(self):
         sym = self.config.get('symbol', '(unknown)')
         interval = self.config.get('interval', '(unknown)')
@@ -754,6 +808,7 @@ class StrategyEngine:
                 waited += chunk
         while not self.stopped():
             got_gate = False
+            sleep_override = None
             try:
                 if self.stopped():
                     break
@@ -761,16 +816,23 @@ class StrategyEngine:
                 if not got_gate:
                     continue
                 self.run_once()
+                self._offline_backoff = 0.0
+                self._last_network_log = 0.0
+            except NetworkConnectivityError as e:
+                sleep_override = self._handle_network_outage(sym, interval, e)
             except Exception as e:
                 self.log(f"Error in {sym}@{interval} loop: {repr(e)}")
-                self.log(traceback.format_exc())
+                try:
+                    self.log(traceback.format_exc())
+                except Exception:
+                    pass
             finally:
                 if got_gate:
                     try:
                         StrategyEngine._RUN_GATE.release()
                     except Exception:
                         pass
-            sleep_remaining = interval_seconds
+            sleep_remaining = interval_seconds if sleep_override is None else float(max(0.0, sleep_override))
             while sleep_remaining > 0 and not self.stopped():
                 chunk = min(1.0, sleep_remaining)
                 time.sleep(chunk)

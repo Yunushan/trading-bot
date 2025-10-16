@@ -12,6 +12,11 @@ import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
+
+class NetworkConnectivityError(RuntimeError):
+    """Raised when outbound HTTP connectivity to the exchange is unavailable."""
+    pass
+
 MAX_FUTURES_LEVERAGE = 150
 
 def _coerce_interval_seconds(interval: str | None) -> float:
@@ -587,6 +592,13 @@ class BinanceWrapper:
         self._kline_cache = {}
         self._kline_cache_lock = threading.Lock()
         self._last_ban_log = 0.0
+        self._last_network_error_log = 0.0
+        self._emergency_closer_lock = threading.Lock()
+        self._emergency_closer_thread = None
+        self._emergency_close_requested = False
+        self._emergency_close_info = {}
+        self._network_offline = False
+        self._network_offline_since = 0.0
         getcontext().prec = 28
 
     # ---- internal helper for futures methods with recvWindow compatibility
@@ -831,6 +843,91 @@ class BinanceWrapper:
                 results.append({'symbol': symbol, 'qty': qty, 'ok': False, 'error': str(e)})
         return results
 
+    def trigger_emergency_close_all(self, *, reason: str | None = None, source: str | None = None,
+                                    max_attempts: int = 12, initial_delay: float = 5.0) -> bool:
+        """
+        Launch a background worker that repeatedly attempts to close all open positions.
+        Returns True if a new worker was started, False if one was already running.
+        """
+        meta = {
+            "reason": reason or "",
+            "source": source or "",
+            "requested_at": datetime.utcnow().isoformat()
+        }
+        with self._emergency_closer_lock:
+            existing = getattr(self, "_emergency_closer_thread", None)
+            if existing and existing.is_alive():
+                # Update metadata and let the existing worker continue
+                self._emergency_close_requested = True
+                try:
+                    self._emergency_close_info.update(meta)
+                except Exception:
+                    self._emergency_close_info = dict(meta)
+                if reason:
+                    self._log(f"Emergency close-all already running; latest reason: {reason}", lvl="warn")
+                return False
+
+            self._emergency_close_requested = True
+            self._emergency_close_info = dict(meta)
+            base_delay = max(1.0, float(initial_delay or 1.0))
+            account = str(getattr(self, "account_type", "FUTURES") or "FUTURES").upper()
+
+            def _worker():
+                success = False
+                attempt = 0
+                last_error = None
+                while max_attempts <= 0 or attempt < max_attempts:
+                    attempt += 1
+                    try:
+                        if account.startswith("FUT"):
+                            from .close_all import close_all_futures_positions as _close_all_futures
+                            result = _close_all_futures(self) or []
+                            ok = all((r.get('ok') or r.get('skipped')) for r in result) if result else True
+                        else:
+                            result = self.close_all_spot_positions() or []
+                            ok = all(bool(r.get('ok')) for r in result) if result else True
+                        if ok:
+                            success = True
+                            if attempt == 1:
+                                self._log("Emergency close-all completed successfully on first attempt.", lvl="warn")
+                            else:
+                                self._log(f"Emergency close-all completed successfully on attempt {attempt}.", lvl="warn")
+                            break
+                        last_error = RuntimeError("partial failures")
+                        self._log(f"Emergency close-all attempt {attempt} had partial failures; retrying...", lvl="error")
+                    except requests.exceptions.RequestException as exc:
+                        last_error = exc
+                        self._log(f"Emergency close-all attempt {attempt} failed (network): {exc}", lvl="error")
+                    except Exception as exc:
+                        last_error = exc
+                        self._log(f"Emergency close-all attempt {attempt} failed: {exc}", lvl="error")
+                    time.sleep(min(90.0, base_delay * (attempt + 1)))
+
+                if not success:
+                    if last_error:
+                        self._log(f"Emergency close-all aborted after {attempt} attempts: {last_error}", lvl="error")
+                    else:
+                        self._log(f"Emergency close-all aborted after {attempt} attempts without success.", lvl="error")
+
+                with self._emergency_closer_lock:
+                    self._emergency_closer_thread = None
+                    self._emergency_close_requested = False
+                    info = dict(self._emergency_close_info or {})
+                    info["completed_at"] = datetime.utcnow().isoformat()
+                    info["success"] = bool(success)
+                    if last_error:
+                        info["error"] = str(last_error)
+                    self._emergency_close_info = info
+
+            thread = threading.Thread(target=_worker, name="EmergencyCloseAll", daemon=True)
+            self._emergency_closer_thread = thread
+            self._log(
+                f"Emergency close-all triggered ({source or 'unspecified'}): {reason or 'no reason provided'}.",
+                lvl="warn"
+            )
+            thread.start()
+            return True
+
     def get_futures_balance_usdt(self) -> float:
         try:
             bals = self._futures_call('futures_account_balance', allow_recv=True)
@@ -869,6 +966,34 @@ class BinanceWrapper:
         except Exception:
             return 0.0
 
+    def _handle_network_offline(self, context: str, exc: Exception) -> None:
+        now = time.time()
+        message = f"Network connectivity lost while {context}. Emergency close queued."
+        already_offline = getattr(self, "_network_offline", False)
+        if not already_offline:
+            self._network_offline = True
+            self._network_offline_since = now
+            self._last_network_error_log = now
+            self._log(message, lvl="error")
+        else:
+            if (now - getattr(self, "_last_network_error_log", 0.0)) > 60.0:
+                self._last_network_error_log = now
+                self._log(message, lvl="warn")
+        try:
+            reason = context or "network_offline"
+            self.trigger_emergency_close_all(reason=reason, source="network")
+        except Exception:
+            pass
+
+    def _handle_network_recovered(self) -> None:
+        if getattr(self, "_network_offline", False):
+            self._network_offline = False
+            self._network_offline_since = 0.0
+            try:
+                self._log("Network connectivity restored.", lvl="info")
+            except Exception:
+                pass
+
     def get_klines(self, symbol, interval, limit=500):
         source = (getattr(self, "indicator_source", "") or "").strip().lower()
         cache_key = (source or "binance", str(symbol or "").upper(), str(interval or ""), int(limit or 0))
@@ -902,7 +1027,7 @@ class BinanceWrapper:
             elif source in ("binance spot", "binance_spot", "spot"):
                 raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
             elif source == "bybit":
-                import requests, pandas as pd
+                import pandas as pd  # local import to avoid optional dependency cost when unused
                 bybit_interval = self._bybit_interval(interval)
                 url = "https://api.bybit.com/v5/market/kline"
                 params = {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit}
@@ -928,6 +1053,10 @@ class BinanceWrapper:
                     self._log(f"Binance REST rate limit hit; serving cached klines for {symbol}@{interval} until {when}.", lvl="warn")
                 return cached_df
             raise
+        except requests.exceptions.RequestException as exc:
+            context = f"fetching {symbol}@{interval}"
+            self._handle_network_offline(context, exc)
+            raise NetworkConnectivityError(f"network_offline:{symbol}@{interval}") from exc
 
         if raw is None:
             raise RuntimeError("kline_fetch_failed: no data returned")
@@ -942,6 +1071,8 @@ class BinanceWrapper:
         trimmed = df[['open','high','low','close','volume']].copy(deep=True)
         with self._kline_cache_lock:
             self._kline_cache[cache_key] = {'df': trimmed.copy(deep=True), 'ts': time.time()}
+        self._last_network_error_log = 0.0
+        self._handle_network_recovered()
         return trimmed
 
     def get_klines_range(self, symbol, interval, start_time, end_time, limit=1000):
@@ -1512,22 +1643,59 @@ class BinanceWrapper:
 
 def get_symbol_margin_type(self, symbol: str) -> str | None:
     """Return current margin type for symbol ('ISOLATED' | 'CROSSED') or None on error."""
+    sym = (symbol or "").upper()
+    if not sym:
+        return None
     try:
         info = None
         try:
-            info = self.client.futures_position_information(symbol=symbol.upper())
+            info = self.client.futures_position_information(symbol=sym)
         except Exception:
             try:
-                info = self.client.futures_position_risk(symbol=symbol.upper())
+                info = self.client.futures_position_risk(symbol=sym)
             except Exception:
                 info = None
-        if not info:
+        rows = []
+        if isinstance(info, list):
+            rows.extend(info)
+        elif info:
+            rows.append(info)
+        def _extract(row):
+            if not isinstance(row, dict):
+                return None
+            row_sym = (row.get('symbol') or row.get('pair') or '').upper()
+            if row_sym and row_sym != sym:
+                return None
+            raw = row.get('marginType')
+            if raw in (None, ''):
+                raw = row.get('margintype')
+            if raw in (None, ''):
+                raw = row.get('margin_type')
+            text = str(raw or '').strip().upper()
+            if text in ('ISOLATED', 'CROSSED', 'CROSS'):
+                return 'CROSSED' if text.startswith('CROSS') else 'ISOLATED'
             return None
-        row = info[0] if isinstance(info, list) and info else info
-        mt = (row.get('marginType') or row.get('margintype') or '').upper()
-        return mt if mt in ('ISOLATED','CROSSED') else None
+        for row in rows:
+            mt = _extract(row)
+            if mt:
+                return mt
+        # fallback to futures_account positions payload
+        try:
+            acct = self.client.futures_account() or {}
+            for row in acct.get('positions', []):
+                mt = _extract(row)
+                if mt:
+                    return mt
+        except Exception:
+            pass
     except Exception:
         return None
+    fallback = getattr(self, "_default_margin_mode", None)
+    if fallback:
+        fb = str(fallback).strip().upper()
+        if fb:
+            return 'CROSSED' if fb.startswith('CROSS') else 'ISOLATED'
+    return None
 
 
 
