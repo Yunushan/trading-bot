@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import sys
 import json
 import re
 import threading
@@ -605,6 +606,12 @@ class MainWindow(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
+        try:
+            self.setWindowFlag(QtCore.Qt.WindowType.WindowMinimizeButtonHint, True)
+            self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint, True)
+            self.setWindowFlag(QtCore.Qt.WindowType.WindowTitleHint, True)
+        except Exception:
+            pass
         self._state_path = APP_STATE_PATH
         self._app_state = _load_app_state_file(self._state_path)
         self._previous_session_unclosed = bool(self._app_state.get("session_active", False))
@@ -940,6 +947,28 @@ class MainWindow(QtWidgets.QWidget):
             scope_combo.setCurrentIndex(idx_scope)
             scope_combo.setEnabled(enabled)
             scope_combo.blockSignals(False)
+
+    def _apply_initial_geometry(self):
+        """Ensure the window fits on the active screen on Linux desktops."""
+        if not sys.platform.startswith("linux"):
+            return
+        try:
+            screen = QtGui.QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+            avail = screen.availableGeometry()
+            if not avail or not avail.isValid():
+                return
+            min_w, min_h = 1024, 640
+            target_w = min(max(min_w, int(avail.width() * 0.9)), avail.width())
+            target_h = min(max(min_h, int(avail.height() * 0.9)), avail.height())
+            self.setMinimumSize(min(min_w, avail.width()), min(min_h, avail.height()))
+            self.resize(target_w, target_h)
+            frame_geo = self.frameGeometry()
+            frame_geo.moveCenter(avail.center())
+            self.move(frame_geo.topLeft())
+        except Exception:
+            pass
 
     def _on_runtime_stop_loss_enabled(self, checked: bool):
         self._runtime_stop_loss_update(enabled=bool(checked))
@@ -4023,6 +4052,7 @@ class MainWindow(QtWidgets.QWidget):
         
 
         self.resize(1200, 900)
+        self._apply_initial_geometry()
         self.apply_theme(self.theme_combo.currentText())
         self._setup_log_buffer()
         try:

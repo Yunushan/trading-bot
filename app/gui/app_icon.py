@@ -142,4 +142,12 @@ def load_app_icon() -> QtGui.QIcon:
                 return icon
     except Exception:
         pass
-    return QtGui.QIcon()
+    fallback_pixmap = QtGui.QPixmap(64, 64)
+    fallback_pixmap.fill(QtGui.QColor("#F3BA2F"))
+    painter = QtGui.QPainter(fallback_pixmap)
+    try:
+        painter.setPen(QtGui.QPen(QtGui.QColor("#1F1F1F"), 6))
+        painter.drawEllipse(6, 6, 52, 52)
+    finally:
+        painter.end()
+    return QtGui.QIcon(fallback_pixmap)
