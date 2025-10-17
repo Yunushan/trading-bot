@@ -4627,6 +4627,17 @@ def on_leverage_changed(self, value):
     except Exception:
         pass
     try:
+        engines = getattr(self, "strategy_engines", {}) or {}
+        for eng in engines.values():
+            try:
+                conf = getattr(eng, "config", None)
+                if isinstance(conf, dict):
+                    conf['leverage'] = value_int
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
         if value_int > 0 and hasattr(self, 'shared_binance') and self.shared_binance and (self.account_combo.currentText() or '').upper().startswith('FUT'):
             self.shared_binance.set_futures_leverage(value_int)
     except Exception:
