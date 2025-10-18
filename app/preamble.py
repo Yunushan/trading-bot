@@ -11,22 +11,30 @@ os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"
 # early and append the required flags so the TradingView/QtWebEngine widgets
 # can start without crashing.
 try:
-    if os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0:
+    if os.name == "posix":
+        is_root = hasattr(os, "geteuid") and os.geteuid() == 0
         flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
         flag_parts = [part for part in flags.split() if part]
-        if "--no-sandbox" not in flag_parts:
-            flag_parts.append("--no-sandbox")
-        if "--disable-gpu-sandbox" not in flag_parts:
-            flag_parts.append("--disable-gpu-sandbox")
-        if "--disable-software-rasterizer" not in flag_parts:
-            flag_parts.append("--disable-software-rasterizer")
-        if "--disable-gpu" not in flag_parts:
-            flag_parts.append("--disable-gpu")
+        needed_flags = [
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-gpu-sandbox",
+            "--disable-software-rasterizer",
+            "--disable-dev-shm-usage",
+            "--no-zygote",
+        ]
+        for flag in needed_flags:
+            if flag not in flag_parts:
+                flag_parts.append(flag)
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flag_parts).strip()
-        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
-        os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "0")
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1" if is_root else os.environ.get("QTWEBENGINE_DISABLE_SANDBOX", "0"))
+        os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "0" if is_root else os.environ.get("QTWEBENGINE_USE_SANDBOX", "1"))
+        os.environ.setdefault("QT_OPENGL", "software")
+        os.environ.setdefault("QSG_RHI_BACKEND", "software")
+        os.environ.setdefault("QT_QUICK_BACKEND", "software")
+        os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
         # Some distros crash unless XDG_RUNTIME_DIR is defined; fallback to /tmp for headless runs.
-        if not os.environ.get("XDG_RUNTIME_DIR"):
+        if is_root and not os.environ.get("XDG_RUNTIME_DIR"):
             tmp_runtime = "/tmp/qt-runtime-root"
             try:
                 os.makedirs(tmp_runtime, mode=0o700, exist_ok=True)
@@ -39,6 +47,13 @@ try:
             os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
 except Exception:
     # Never allow env-setup failures to abort app startup.
+    pass
+
+try:
+    from PyQt6 import QtCore  # type: ignore[import]
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+except Exception:
     pass
 
 def _resolve_pandas_version():
