@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 
 from . import indicators as ind
@@ -41,6 +42,7 @@ class BacktestRequest:
     margin_mode: str = "Isolated"
     position_mode: str = "Hedge"
     assets_mode: str = "Single-Asset"
+    account_mode: str = "Classic Trading"
     stop_loss_enabled: bool = False
     stop_loss_mode: str = "usdt"
     stop_loss_usdt: float = 0.0
@@ -85,6 +87,7 @@ class BacktestEngine:
 
         indicator_map = {ind.key: ind for ind in active_indicators}
         data_cache: dict[tuple[str, str], pd.DataFrame] = {}
+        indicator_cache: dict[tuple[str, str, str, Tuple[Tuple[str, object], ...]], pd.Series] = {}
 
         combos: List[tuple[str, str, Optional[Sequence[str]], Optional[int]]]
         pair_override = getattr(request, "pair_overrides", None) or []
@@ -181,14 +184,30 @@ class BacktestEngine:
                         for indicator in indicator_bundle:
                             if should_stop and should_stop():
                                 raise RuntimeError("backtest_cancelled")
-                            run = self._simulate(df, [indicator], request, leverage_override=effective_leverage)
+                            run = self._simulate(
+                                symbol,
+                                interval,
+                                df,
+                                [indicator],
+                                request,
+                                leverage_override=effective_leverage,
+                                indicator_cache=indicator_cache,
+                            )
                             if run is not None:
                                 run.symbol = symbol
                                 run.interval = interval
                                 run.leverage = float(effective_leverage)
                                 runs.append(run)
                     else:
-                        run = self._simulate(df, indicator_bundle, request, leverage_override=effective_leverage)
+                        run = self._simulate(
+                            symbol,
+                            interval,
+                            df,
+                            indicator_bundle,
+                            request,
+                            leverage_override=effective_leverage,
+                            indicator_cache=indicator_cache,
+                        )
                         if run is not None:
                             run.symbol = symbol
                             run.interval = interval
@@ -224,8 +243,17 @@ class BacktestEngine:
                 continue
         return max(length_candidates or [50])
 
-    def _simulate(self, df: pd.DataFrame, indicators: List[IndicatorDefinition],
-                  request: BacktestRequest, leverage_override: float | None = None) -> Optional[BacktestRunResult]:
+    def _simulate(
+        self,
+        symbol: str,
+        interval: str,
+        df: pd.DataFrame,
+        indicators: List[IndicatorDefinition],
+        request: BacktestRequest,
+        *,
+        leverage_override: float | None = None,
+        indicator_cache: Optional[dict[tuple[str, str, str, Tuple[Tuple[str, object], ...]], pd.Series]] = None,
+    ) -> Optional[BacktestRunResult]:
         logic = (request.logic or "AND").upper()
         work_df = df.loc[df.index >= request.start]
         if work_df.empty:
@@ -242,19 +270,51 @@ class BacktestEngine:
         margin_mode = (request.margin_mode or "Isolated").strip().upper()
         side_pref = (request.side or "BOTH").strip().upper()
 
-        indicator_signals: List[Dict[str, pd.Series]] = []
+        indicator_signals: List[Dict[str, Optional[np.ndarray]]] = []
         indicator_keys: List[str] = []
+        work_index = work_df.index
         for indicator in indicators:
-            series = self._compute_indicator_series(df, indicator)
+            cache_key = (
+                symbol,
+                interval,
+                indicator.key,
+                tuple(
+                    sorted(
+                        (key, (value if isinstance(value, (int, float, str, bool, type(None))) else repr(value)))
+                        for key, value in (indicator.params or {}).items()
+                    )
+                ),
+            )
+            series_full = None
+            if indicator_cache is not None:
+                series_full = indicator_cache.get(cache_key)
+            if series_full is None:
+                series_full = self._compute_indicator_series(df, indicator)
+                if series_full is not None:
+                    series_full = series_full.astype(float, copy=False)
+                    if indicator_cache is not None:
+                        indicator_cache[cache_key] = series_full
+            if series_full is None:
+                continue
+
+            series = series_full.reindex(work_index)
             if series is None:
                 continue
-            series = series.reindex(work_df.index).astype(float)
             buy_val = indicator.params.get("buy_value")
             sell_val = indicator.params.get("sell_value")
             buy_events, sell_events = self._generate_signals(series, buy_val, sell_val)
             if buy_events is None and sell_events is None:
                 continue
-            indicator_signals.append({"buy": buy_events, "sell": sell_events})
+
+            buy_array = (
+                buy_events.reindex(work_index, fill_value=False).to_numpy(dtype=bool, copy=False)
+                if buy_events is not None else None
+            )
+            sell_array = (
+                sell_events.reindex(work_index, fill_value=False).to_numpy(dtype=bool, copy=False)
+                if sell_events is not None else None
+            )
+            indicator_signals.append({"buy": buy_array, "sell": sell_array})
             indicator_keys.append(indicator.key)
 
         if not indicator_signals:
@@ -282,27 +342,47 @@ class BacktestEngine:
             scope = STOP_LOSS_SCOPE_OPTIONS[0]
         is_cumulative = stop_enabled and scope == "cumulative"
 
-        for idx, row in work_df.iterrows():
+        n_rows = len(work_df)
+        if n_rows == 0:
+            return None
+
+        close_values = work_df["close"].to_numpy(dtype=float, copy=False)
+        high_values = work_df["high"].to_numpy(dtype=float, copy=False) if "high" in work_df else close_values
+        low_values = work_df["low"].to_numpy(dtype=float, copy=False) if "low" in work_df else close_values
+
+        buy_arrays = [signals["buy"] for signals in indicator_signals if signals["buy"] is not None]
+        sell_arrays = [signals["sell"] for signals in indicator_signals if signals["sell"] is not None]
+
+        if buy_arrays:
+            buy_stack = np.vstack(buy_arrays)
+            if logic == "AND":
+                aggregated_buy_array = np.all(buy_stack, axis=0)
+            else:
+                aggregated_buy_array = np.any(buy_stack, axis=0)
+        else:
+            aggregated_buy_array = np.zeros(n_rows, dtype=bool)
+
+        if sell_arrays:
+            sell_stack = np.vstack(sell_arrays)
+            aggregated_sell_array = np.any(sell_stack, axis=0)
+        else:
+            aggregated_sell_array = np.zeros(n_rows, dtype=bool)
+
+        for idx in range(n_rows):
             if should_stop_cb and callable(should_stop_cb) and should_stop_cb():
                 raise RuntimeError('backtest_cancelled')
-            price = float(row.get('close', 0.0) or 0.0)
+            price = float(close_values[idx] if np.isfinite(close_values[idx]) else 0.0)
             if price <= 0.0:
                 continue
-            high_price = float(row.get('high', price) or price)
-            low_price = float(row.get('low', price) or price)
+            high_price_val = float(high_values[idx] if np.isfinite(high_values[idx]) else price)
+            if high_price_val <= 0.0:
+                high_price_val = price
+            low_price_val = float(low_values[idx] if np.isfinite(low_values[idx]) else price)
+            if low_price_val <= 0.0:
+                low_price_val = price
 
-            buys = [signals["buy"].get(idx, False) if signals["buy"] is not None else False
-                    for signals in indicator_signals]
-            sells = [signals["sell"].get(idx, False) if signals["sell"] is not None else False
-                     for signals in indicator_signals]
-
-            if logic == "AND":
-                aggregated_buy = bool(buys) and all(buys)
-            elif logic == "OR":
-                aggregated_buy = any(buys)
-            else:  # SEPARATE handled earlier
-                aggregated_buy = any(buys)
-            aggregated_sell = any(sells)
+            aggregated_buy = bool(aggregated_buy_array[idx])
+            aggregated_sell = bool(aggregated_sell_array[idx])
 
             if position_open:
                 effective_leverage = leverage
@@ -312,7 +392,7 @@ class BacktestEngine:
                     liq_price = entry_price * (1.0 - (1.0 / effective_leverage))
                     if liq_price < 0.0:
                         liq_price = 0.0
-                    if low_price <= liq_price:
+                    if low_price_val <= liq_price:
                         loss = min(equity, position_margin)
                         equity = max(0.0, equity - loss)
                         position_open = False
@@ -322,7 +402,7 @@ class BacktestEngine:
                         continue
                 if direction == "SHORT" and effective_leverage > 1.0:
                     liq_price = entry_price * (1.0 + (1.0 / effective_leverage))
-                    if high_price >= liq_price:
+                    if high_price_val >= liq_price:
                         loss = min(equity, position_margin)
                         equity = max(0.0, equity - loss)
                         position_open = False
@@ -333,10 +413,10 @@ class BacktestEngine:
 
                 if stop_enabled and units > 0.0 and entry_price > 0.0:
                     if direction == "LONG":
-                        worst_price = min(price, low_price)
+                        worst_price = min(price, low_price_val)
                         loss_usdt = max(0.0, (entry_price - worst_price) * units)
                     else:
-                        worst_price = max(price, high_price)
+                        worst_price = max(price, high_price_val)
                         loss_usdt = max(0.0, (worst_price - entry_price) * units)
                     denom = entry_price * units
                     loss_pct = (loss_usdt / denom * 100.0) if denom > 0 else 0.0
@@ -435,11 +515,12 @@ class BacktestEngine:
             return None, None
 
         def _to_bool(ser: pd.Series) -> pd.Series:
-            ser = ser.fillna(False)
-            try:
-                ser = ser.infer_objects(copy=False)
-            except AttributeError:
-                pass
+            if not pd.api.types.is_bool_dtype(ser):
+                ser = ser.where(ser.notna(), False)
+                try:
+                    ser = ser.infer_objects(copy=False)
+                except AttributeError:
+                    pass
             return ser.astype(bool, copy=False)
 
         buy_events = None

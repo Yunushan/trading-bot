@@ -77,7 +77,7 @@ def _coerce_int(value):
 
 
 class _SimpleRateLimiter:
-    def __init__(self, max_per_minute: float = 1100.0, min_interval: float = 0.08, safety_margin: float = 0.85):
+    def __init__(self, max_per_minute: float = 1100.0, min_interval: float = 0.12, safety_margin: float = 0.85):
         self.window = 60.0
         self.capacity = max(1.0, float(max_per_minute) * float(safety_margin))
         self.min_interval = max(0.0, float(min_interval))
@@ -85,6 +85,7 @@ class _SimpleRateLimiter:
         self._window_weight = 0.0
         self._lock = threading.Lock()
         self._last_request = 0.0
+        self._pause_until = 0.0
 
     def acquire(self, weight: float = 1.0) -> None:
         weight = max(float(weight), 0.0)
@@ -107,13 +108,23 @@ class _SimpleRateLimiter:
                 if projected > self.capacity:
                     earliest = self._events[0][0] if self._events else now
                     wait_capacity = max(0.0, self.window - (now - earliest))
-                sleep_for = max(wait_interval, wait_capacity)
+                pause_remaining = max(0.0, self._pause_until - now)
+                sleep_for = max(wait_interval, wait_capacity, pause_remaining)
                 if sleep_for <= 0.0:
                     self._events.append((now, weight))
                     self._window_weight = min(self.capacity, self._window_weight + weight)
                     self._last_request = now
                     return
             time.sleep(min(sleep_for, 1.0))
+
+    def pause_for(self, seconds: float) -> None:
+        seconds = float(seconds or 0.0)
+        if seconds <= 0.0:
+            return
+        with self._lock:
+            until = time.time() + seconds
+            if until > self._pause_until:
+                self._pause_until = until
 
 class BinanceWrapper:
 
@@ -246,10 +257,12 @@ class BinanceWrapper:
         except Exception:
             code, status, msg = None, None, ""
         triggered = False
-        if code == -1003 or status == 418:
+        msg_lower = msg.lower() if isinstance(msg, str) else ""
+        if code in (-1003, 429) or status in (418, 429):
             triggered = True
-        elif msg:
-            triggered = "banned until" in msg.lower()
+        elif msg_lower:
+            if "banned until" in msg_lower or "too many requests" in msg_lower or "too frequent" in msg_lower or "frequency" in msg_lower:
+                triggered = True
         if not triggered:
             return None
         until = cls._extract_ban_until(msg)
@@ -267,8 +280,13 @@ class BinanceWrapper:
                 except Exception:
                     until = None
         if until is None:
-            until = time.time() + 60.0
+            until = time.time() + 8.0
         cls._register_ban_until(until)
+        remaining = max(0.0, until - time.time())
+        try:
+            cls._request_limiter.pause_for(remaining)
+        except Exception:
+            pass
         return until
     def _ensure_symbol_margin(self, symbol: str, want_mode: str | None, want_lev: int | None):
         sym = (symbol or "").upper()
@@ -567,7 +585,10 @@ class BinanceWrapper:
         self.futures_leverage = initial_leverage
         self._default_margin_mode = str((default_margin_mode or "ISOLATED")).upper()
         self.account_type = (account_type or "Spot").strip().upper()  # "SPOT" or "FUTURES"
-        self.indicator_source = "Binance futures"
+        if self.account_type.startswith("FUT"):
+            self.indicator_source = "Binance futures"
+        else:
+            self.indicator_source = "Binance spot"
         self.recv_window = 5000  # ms for futures calls
         self._futures_max_leverage_cache = {}
         self._leverage_cap_notified = set()
@@ -593,6 +614,7 @@ class BinanceWrapper:
         self._kline_cache_lock = threading.Lock()
         self._last_ban_log = 0.0
         self._last_network_error_log = 0.0
+        self._last_price_cache: dict[str, tuple[float, float]] = {}
         self._emergency_closer_lock = threading.Lock()
         self._emergency_closer_thread = None
         self._emergency_close_requested = False
@@ -791,6 +813,49 @@ class BinanceWrapper:
             pass
         return 0.0
 
+    def get_balances(self) -> list[dict]:
+        """Return normalized balance objects for the active account type."""
+        account_kind = str(getattr(self, "account_type", "") or "").upper()
+        rows: list[dict] = []
+        if account_kind.startswith("FUT"):
+            try:
+                balances = self.client.futures_account_balance() or []
+                for entry in balances:
+                    asset = entry.get("asset")
+                    if not asset:
+                        continue
+                    free = float(entry.get("availableBalance") or entry.get("balance") or entry.get("walletBalance") or 0.0)
+                    total = float(entry.get("walletBalance") or entry.get("balance") or entry.get("crossWalletBalance") or free)
+                    locked = max(0.0, total - free)
+                    rows.append({
+                        "asset": asset,
+                        "free": free,
+                        "locked": locked,
+                        "total": total,
+                    })
+            except Exception:
+                rows = []
+        else:
+            try:
+                info = self.client.get_account()
+                for b in info.get('balances', []):
+                    asset = b.get('asset')
+                    if not asset:
+                        continue
+                    free = float(b.get('free', 0.0))
+                    locked = float(b.get('locked', 0.0))
+                    total = free + locked
+                    if total <= 0.0:
+                        continue
+                    rows.append({
+                        "asset": asset,
+                        "free": free,
+                        "locked": locked,
+                        "total": total,
+                    })
+            except Exception:
+                rows = []
+        return rows
 
     # ---- spot positions helpers
     def list_spot_non_usdt_balances(self):
@@ -814,31 +879,82 @@ class BinanceWrapper:
         results = []
         balances = self.list_spot_non_usdt_balances()
         for bal in balances:
-            asset = bal['asset']; qty = float(bal['free'] or 0.0)
+            asset = bal['asset']
+            qty = float(bal.get('free') or 0.0)
+            if qty <= 0.0:
+                continue
             symbol = f"{asset}USDT"
+
+            # Ensure the symbol actually trades against USDT on the selected venue.
             try:
-                # Ensure symbol exists (raises if not found)
-                info = self.get_symbol_info_spot(symbol)
+                self.get_symbol_info_spot(symbol)
+            except Exception:
+                results.append({
+                    'symbol': symbol,
+                    'qty': qty,
+                    'ok': True,
+                    'skipped': True,
+                    'reason': 'Symbol not tradable against USDT on this venue',
+                })
+                continue
+
+            try:
                 filters = self.get_spot_symbol_filters(symbol)
                 price = float(self.get_last_price(symbol) or 0.0)
-                min_notional = filters.get('minNotional', 0.0) or 0.0
-                step = filters.get('stepSize', 0.0) or 0.0
+                min_notional = float(filters.get('minNotional', 0.0) or 0.0)
+                step = float(filters.get('stepSize', 0.0) or 0.0)
 
-                if price <= 0:
-                    raise ValueError("last price unavailable")
+                if price <= 0.0:
+                    results.append({
+                        'symbol': symbol,
+                        'qty': qty,
+                        'ok': True,
+                        'skipped': True,
+                        'reason': 'Last price unavailable, cannot compute notional',
+                    })
+                    continue
+
                 est_notional = qty * price
-                if est_notional < min_notional:
-                    # Skip tiny dust that doesn't meet notional requirements
-                    results.append({'symbol': symbol, 'qty': qty, 'ok': False, 'error': f'Notional {est_notional:.8f} < min {min_notional:.8f}'})
+                if min_notional > 0.0 and est_notional < min_notional:
+                    # Flag dust balances as skipped so the caller can hide them.
+                    results.append({
+                        'symbol': symbol,
+                        'qty': qty,
+                        'ok': True,
+                        'skipped': True,
+                        'reason': f'Dust position below min notional ({est_notional:.8f} < {min_notional:.8f})',
+                    })
                     continue
 
                 qty_adj = self._floor_to_step(qty, step) if step else qty
-                if qty_adj <= 0:
-                    results.append({'symbol': symbol, 'qty': qty, 'ok': False, 'error': 'Quantity too small after step rounding'})
+                if qty_adj <= 0.0:
+                    results.append({
+                        'symbol': symbol,
+                        'qty': qty,
+                        'ok': True,
+                        'skipped': True,
+                        'reason': 'Quantity too small after applying step size',
+                    })
                     continue
 
-                res = self.place_spot_market_order(symbol, 'SELL', qty_adj)
-                results.append({'symbol': symbol, 'qty': qty_adj, 'ok': True, 'res': res})
+                trade = self.place_spot_market_order(symbol, 'SELL', qty_adj)
+                if not trade.get('ok'):
+                    results.append({
+                        'symbol': symbol,
+                        'qty': qty_adj,
+                        'ok': False,
+                        'error': trade.get('error') or 'Spot market order failed',
+                        'details': trade,
+                    })
+                    continue
+
+                computed_qty = trade.get('computed', {}).get('qty', qty_adj)
+                results.append({
+                    'symbol': symbol,
+                    'qty': computed_qty,
+                    'ok': True,
+                    'res': trade,
+                })
             except Exception as e:
                 results.append({'symbol': symbol, 'qty': qty, 'ok': False, 'error': str(e)})
         return results
@@ -954,17 +1070,67 @@ class BinanceWrapper:
                 pass
         return float(val or 0.0)
 
-    # ---- prices & klines
-    def get_last_price(self, symbol: str) -> float:
+    def get_total_unrealized_pnl(self) -> float:
         try:
-            if self.account_type == "FUTURES":
-                t = self._futures_call('futures_symbol_ticker', allow_recv=True, symbol=symbol)
-                return float((t or {}).get('price', 0.0))
-            else:
-                t = self.client.get_symbol_ticker(symbol=symbol)
-                return float(t.get('price', 0.0))
+            positions = self.list_open_futures_positions() or []
+            total = 0.0
+            for pos in positions:
+                try:
+                    total += float(pos.get('unRealizedProfit') or 0.0)
+                except Exception:
+                    continue
+            return float(total)
+        except Exception:
+            try:
+                acct = self.client.futures_account()
+                if isinstance(acct, dict):
+                    val = acct.get('totalUnrealizedProfit')
+                    if val is None:
+                        val = acct.get('totalCrossUnPnl')
+                    if val is not None:
+                        return float(val)
+            except Exception:
+                pass
+        return 0.0
+
+    def get_total_wallet_balance(self) -> float:
+        try:
+            acct = self.client.futures_account()
+            if isinstance(acct, dict):
+                for key in ("totalWalletBalance", "totalMarginBalance", "totalInitialMargin"):
+                    val = acct.get(key)
+                    if val is not None:
+                        return float(val)
+        except Exception:
+            pass
+        try:
+            return float(self.get_total_usdt_value())
         except Exception:
             return 0.0
+
+    # ---- prices & klines
+    def get_last_price(self, symbol: str, *, max_age: float = 1.5) -> float:
+        sym = (symbol or "").upper()
+        cache = getattr(self, "_last_price_cache", None)
+        if cache is not None and sym:
+            cached = cache.get(sym)
+            if cached:
+                price, ts = cached
+                if price and (time.time() - ts) <= max_age:
+                    return price
+        price = 0.0
+        try:
+            if self.account_type == "FUTURES":
+                t = self._futures_call('futures_symbol_ticker', allow_recv=True, symbol=sym)
+                price = float((t or {}).get('price', 0.0))
+            else:
+                t = self.client.get_symbol_ticker(symbol=sym)
+                price = float(t.get('price', 0.0))
+        except Exception:
+            price = 0.0
+        if cache is not None and sym and price:
+            cache[sym] = (price, time.time())
+        return price
 
     def _handle_network_offline(self, context: str, exc: Exception) -> None:
         now = time.time()
@@ -1021,42 +1187,57 @@ class BinanceWrapper:
             raise RuntimeError(f"binance_rest_banned:{ban_remaining:.0f}s")
 
         raw = None
-        try:
-            if source in ("", "binance futures", "binance_futures", "futures"):
-                raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-            elif source in ("binance spot", "binance_spot", "spot"):
-                raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-            elif source == "bybit":
-                import pandas as pd  # local import to avoid optional dependency cost when unused
-                bybit_interval = self._bybit_interval(interval)
-                url = "https://api.bybit.com/v5/market/kline"
-                params = {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit}
-                r = requests.get(url, params=params, timeout=10)
-                r.raise_for_status()
-                j = r.json() or {}
-                lst = (j.get("result", {}) or {}).get("list", []) or []
-                lst = sorted(lst, key=lambda x: int(x[0]))
-                raw = [[int(x[0]), x[1], x[2], x[3], x[4], x[5], 0, 0, 0, 0, 0, 0] for x in lst]
-            elif source in ("tradingview", "trading view"):
-                raise NotImplementedError("TradingView data source is not implemented in this build.")
-            else:
-                if self.account_type == "FUTURES":
+        max_retries = 5
+        attempt = 0
+        while attempt < max_retries:
+            attempt += 1
+            try:
+                if source in ("", "binance futures", "binance_futures", "futures"):
                     raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-                else:
+                elif source in ("binance spot", "binance_spot", "spot"):
                     raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        except BinanceAPIException as exc:
-            ban_until = self._handle_potential_ban(exc)
-            if cached_df is not None and ban_until:
-                if (time.time() - getattr(self, "_last_ban_log", 0.0)) > 15.0:
-                    when = datetime.fromtimestamp(ban_until).strftime("%H:%M:%S")
-                    self._last_ban_log = time.time()
-                    self._log(f"Binance REST rate limit hit; serving cached klines for {symbol}@{interval} until {when}.", lvl="warn")
-                return cached_df
-            raise
-        except requests.exceptions.RequestException as exc:
-            context = f"fetching {symbol}@{interval}"
-            self._handle_network_offline(context, exc)
-            raise NetworkConnectivityError(f"network_offline:{symbol}@{interval}") from exc
+                elif source == "bybit":
+                    import pandas as pd  # local import to avoid optional dependency cost when unused
+                    bybit_interval = self._bybit_interval(interval)
+                    url = "https://api.bybit.com/v5/market/kline"
+                    params = {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit}
+                    r = requests.get(url, params=params, timeout=10)
+                    r.raise_for_status()
+                    j = r.json() or {}
+                    lst = (j.get("result", {}) or {}).get("list", []) or []
+                    lst = sorted(lst, key=lambda x: int(x[0]))
+                    raw = [[int(x[0]), x[1], x[2], x[3], x[4], x[5], 0, 0, 0, 0, 0, 0] for x in lst]
+                elif source in ("tradingview", "trading view"):
+                    raise NotImplementedError("TradingView data source is not implemented in this build.")
+                else:
+                    if self.account_type == "FUTURES":
+                        raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+                    else:
+                        raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+                break
+            except BinanceAPIException as exc:
+                ban_until = self._handle_potential_ban(exc)
+                if cached_df is not None and ban_until:
+                    if (time.time() - getattr(self, "_last_ban_log", 0.0)) > 15.0:
+                        when = datetime.fromtimestamp(ban_until).strftime("%H:%M:%S")
+                        self._last_ban_log = time.time()
+                        self._log(f"Binance REST rate limit hit; serving cached klines for {symbol}@{interval} until {when}.", lvl="warn")
+                    return cached_df
+                if ban_until:
+                    delay = max(1.0, ban_until - time.time())
+                    if (time.time() - getattr(self, "_last_ban_log", 0.0)) > 15.0:
+                        when = datetime.fromtimestamp(ban_until).strftime("%H:%M:%S")
+                        self._last_ban_log = time.time()
+                        self._log(f"Binance REST rate limiter activated; retrying {symbol}@{interval} after {when}.", lvl="warn")
+                    time.sleep(min(delay, 5.0))
+                    continue
+                if attempt >= max_retries:
+                    raise
+                time.sleep(min(0.5 * attempt, 2.0))
+            except requests.exceptions.RequestException as exc:
+                context = f"fetching {symbol}@{interval}"
+                self._handle_network_offline(context, exc)
+                raise NetworkConnectivityError(f"network_offline:{symbol}@{interval}") from exc
 
         if raw is None:
             raise RuntimeError("kline_fetch_failed: no data returned")
@@ -1134,7 +1315,16 @@ class BinanceWrapper:
                 except BinanceAPIException as exc:
                     ban_until = self._handle_potential_ban(exc)
                     if ban_until:
-                        raise RuntimeError(f"binance_rest_banned_until:{ban_until}") from exc
+                        delay = max(1.0, ban_until - time.time())
+                        if (time.time() - getattr(self, "_last_ban_log", 0.0)) > 15.0:
+                            when = datetime.fromtimestamp(ban_until).strftime("%H:%M:%S")
+                            self._last_ban_log = time.time()
+                            try:
+                                self._log(f"Rate limit hit while fetching {symbol}@{interval}; retrying after {when}.", lvl="warn")
+                            except Exception:
+                                pass
+                        time.sleep(min(delay, 5.0))
+                        continue
                     last_error = exc
                     break
                 except requests.exceptions.RequestException as req_err:

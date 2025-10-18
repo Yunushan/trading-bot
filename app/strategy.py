@@ -481,7 +481,40 @@ class StrategyEngine:
         apply_usdt_limit = stop_enabled and stop_mode in ("usdt", "both") and stop_usdt_limit > 0.0
         apply_percent_limit = stop_enabled and stop_mode in ("percent", "both") and stop_percent_limit > 0.0
         stop_enabled = apply_usdt_limit or apply_percent_limit
+        account_type = str((self.config.get("account_type") or self.binance.account_type)).upper()
         is_cumulative = stop_enabled and scope == "cumulative"
+        is_entire_account = stop_enabled and scope == "entire_account"
+        if is_entire_account and account_type == "FUTURES":
+            total_unrealized = 0.0
+            try:
+                total_unrealized = float(self.binance.get_total_unrealized_pnl())
+            except Exception:
+                total_unrealized = 0.0
+            triggered = False
+            reason = None
+            if apply_usdt_limit and total_unrealized <= -stop_usdt_limit:
+                triggered = True
+                reason = f"entire-account-usdt-limit ({total_unrealized:.2f})"
+            if not triggered and apply_percent_limit:
+                total_wallet = 0.0
+                try:
+                    total_wallet = float(self.binance.get_total_wallet_balance())
+                except Exception:
+                    total_wallet = 0.0
+                if total_wallet > 0.0 and total_unrealized < 0.0:
+                    loss_pct = (abs(total_unrealized) / total_wallet) * 100.0
+                    if loss_pct >= stop_percent_limit:
+                        triggered = True
+                        reason = f"entire-account-percent-limit ({loss_pct:.2f}%)"
+            if triggered:
+                try:
+                    self.log(f"{cw['symbol']}@{cw.get('interval')} entire account stop-loss triggered: {reason}.")
+                except Exception:
+                    pass
+                self._trigger_emergency_close(cw['symbol'], cw.get('interval'), reason or "entire_account_stop")
+                return
+        elif is_entire_account:
+            stop_enabled = False
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
         ind = self.compute_indicators(df)
         signal, trigger_desc, trigger_price = self.generate_signal(df, ind)
@@ -547,7 +580,6 @@ class StrategyEngine:
 
         last_price = float(df['close'].iloc[-1]) if not df.empty else None
 
-        account_type = str((self.config.get("account_type") or self.binance.account_type)).upper()
         dual_side = False
         if account_type == "FUTURES":
             try:

@@ -143,11 +143,17 @@ STOP_LOSS_MODE_LABELS = {
 STOP_LOSS_SCOPE_LABELS = {
     "per_trade": "Per Trade Stop Loss",
     "cumulative": "Cumulative Stop Loss",
+    "entire_account": "Entire Account Stop Loss",
 }
 
 CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
 
 CHART_MARKET_OPTIONS = ["Futures", "Spot"]
+
+ACCOUNT_MODE_OPTIONS = ["Classic Trading", "Portfolio Margin"]
+POS_STOP_LOSS_COLUMN = 12
+POS_STATUS_COLUMN = 13
+POS_CLOSE_COLUMN = 14
 
 DEFAULT_CHART_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
@@ -339,6 +345,7 @@ class _PositionsWorker(QtCore.QObject):
         self._last_err_ts = 0
         self._enabled = True
         self._interval_ms = 5000
+        self._spot_filter_cache: dict[str, dict] = {}
 
     @QtCore.pyqtSlot(int)
     def start_with_interval(self, interval_ms: int):
@@ -394,6 +401,7 @@ class _PositionsWorker(QtCore.QObject):
         self._symbols = set(symbols) if symbols else None
         # force wrapper rebuild on next tick
         self._wrapper = None
+        self._spot_filter_cache = {}
 
     def _ensure_wrapper(self):
         if self._wrapper is None:
@@ -476,6 +484,7 @@ class _PositionsWorker(QtCore.QObject):
                         mark = float(p.get('markPrice') or 0.0)
                         value = abs(amt) * mark if mark else 0.0
                         side_key = 'L' if amt > 0 else 'S'
+                        stop_loss_enabled = self._position_stop_loss_enabled(sym, side_key)
                         size_usdt, margin_usdt, pnl_roi, margin_ratio = self._compute_futures_metrics(p)
                         rows.append({
                             'symbol': sym,
@@ -510,7 +519,23 @@ class _PositionsWorker(QtCore.QObject):
                         if self._symbols and sym not in self._symbols:
                             continue
                         last = float(self._wrapper.get_last_price(sym) or 0.0)
+                        if last <= 0.0:
+                            continue
                         value = total * last
+                        filters = self._spot_filter_cache.get(sym)
+                        if filters is None:
+                            try:
+                                filters = self._wrapper.get_spot_symbol_filters(sym) or {}
+                            except Exception:
+                                filters = {}
+                            self._spot_filter_cache[sym] = filters
+                        min_notional = 0.0
+                        try:
+                            min_notional = float(filters.get('minNotional', 0.0) or 0.0)
+                        except Exception:
+                            min_notional = 0.0
+                        if min_notional > 0.0 and value < min_notional:
+                            continue
                         rows.append({
                             'symbol': sym,
                             'qty': total,
@@ -617,6 +642,7 @@ class MainWindow(QtWidgets.QWidget):
         self._previous_session_unclosed = bool(self._app_state.get("session_active", False))
         self._session_marker_active = False
         self._auto_close_on_restart_triggered = False
+        self._ui_initialized = False
         self.guard = IntervalPositionGuard(stale_ttl_sec=180)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
@@ -624,6 +650,7 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault('theme', 'Dark')
         self.config['close_on_exit'] = state_close_pref
         self.config.setdefault('close_on_exit', state_close_pref)
+        self.config.setdefault('account_mode', 'Classic Trading')
         self.strategy_threads = {}
         self.shared_binance = None
         self.stop_worker = None
@@ -669,6 +696,8 @@ class MainWindow(QtWidgets.QWidget):
             default_symbol = self._futures_display_symbol(default_symbol)
         self.chart_config.setdefault("symbol", default_symbol)
         self.chart_config.setdefault("interval", (default_intervals[0] if default_intervals else "1h"))
+        default_view_mode = "tradingview" if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None else "original"
+        self.chart_config.setdefault("view_mode", default_view_mode)
         try:
             if self._normalize_chart_market(self.chart_config.get("market")) == "Futures":
                 current_cfg_symbol = str(self.chart_config.get("symbol") or "").strip()
@@ -705,6 +734,7 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_config.setdefault("margin_mode", default_backtest.get("margin_mode", "Isolated"))
         self.backtest_config.setdefault("position_mode", default_backtest.get("position_mode", "Hedge"))
         self.backtest_config.setdefault("assets_mode", default_backtest.get("assets_mode", "Single-Asset"))
+        self.backtest_config.setdefault("account_mode", default_backtest.get("account_mode", "Classic Trading"))
         self.backtest_config.setdefault("leverage", int(default_backtest.get("leverage", 5)))
         self.backtest_config.setdefault("backtest_symbol_interval_pairs", list(self.config.get("backtest_symbol_interval_pairs", [])))
         default_stop_loss = normalize_stop_loss_dict(default_backtest.get("stop_loss"))
@@ -895,6 +925,230 @@ class MainWindow(QtWidgets.QWidget):
                 pass
         return lst
 
+    @staticmethod
+    def _normalize_loop_override(value) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        cleaned = re.sub(r"\s+", "", text.lower())
+        if re.match(r"^\d+(s|m|h|d|w)?$", cleaned):
+            return cleaned
+        return None
+
+    def _collect_strategy_controls(self, kind: str) -> dict:
+        try:
+            if kind == "runtime":
+                stop_cfg = normalize_stop_loss_dict(copy.deepcopy(self.config.get("stop_loss")))
+                controls = {
+                    "side": self._resolve_dashboard_side(),
+                    "position_pct": float(self.pospct_spin.value()) if hasattr(self, "pospct_spin") else None,
+                    "loop_interval_override": self.loop_edit.text() if hasattr(self, "loop_edit") else "",
+                    "add_only": bool(self.cb_add_only.isChecked()) if hasattr(self, "cb_add_only") else None,
+                    "stop_loss": stop_cfg,
+                }
+                account_mode_val = None
+                try:
+                    account_mode_val = self.account_mode_combo.currentData()
+                except Exception:
+                    account_mode_val = None
+                if not account_mode_val and hasattr(self, "account_mode_combo"):
+                    try:
+                        account_mode_val = self.account_mode_combo.currentText()
+                    except Exception:
+                        account_mode_val = None
+                if account_mode_val:
+                    controls["account_mode"] = self._normalize_account_mode(account_mode_val)
+                return self._normalize_strategy_controls("runtime", controls)
+            if kind == "backtest":
+                stop_cfg = normalize_stop_loss_dict(copy.deepcopy(self.backtest_config.get("stop_loss")))
+                assets_mode_val = None
+                try:
+                    assets_mode_val = self.backtest_assets_mode_combo.currentData()
+                except Exception:
+                    assets_mode_val = None
+                if not assets_mode_val and hasattr(self, "backtest_assets_mode_combo"):
+                    try:
+                        assets_mode_val = self.backtest_assets_mode_combo.currentText()
+                    except Exception:
+                        assets_mode_val = None
+                account_mode_val = None
+                try:
+                    account_mode_val = self.backtest_account_mode_combo.currentData()
+                except Exception:
+                    account_mode_val = None
+                if not account_mode_val and hasattr(self, "backtest_account_mode_combo"):
+                    try:
+                        account_mode_val = self.backtest_account_mode_combo.currentText()
+                    except Exception:
+                        account_mode_val = None
+                controls = {
+                    "logic": self.backtest_logic_combo.currentText() if hasattr(self, "backtest_logic_combo") else None,
+                    "capital": float(self.backtest_capital_spin.value()) if hasattr(self, "backtest_capital_spin") else None,
+                    "position_pct": float(self.backtest_pospct_spin.value()) if hasattr(self, "backtest_pospct_spin") else None,
+                    "side": self.backtest_side_combo.currentText() if hasattr(self, "backtest_side_combo") else None,
+                    "margin_mode": self.backtest_margin_mode_combo.currentText() if hasattr(self, "backtest_margin_mode_combo") else None,
+                    "position_mode": self.backtest_position_mode_combo.currentText() if hasattr(self, "backtest_position_mode_combo") else None,
+                    "assets_mode": assets_mode_val,
+                    "leverage": int(self.backtest_leverage_spin.value()) if hasattr(self, "backtest_leverage_spin") else None,
+                    "stop_loss": stop_cfg,
+                }
+                if account_mode_val:
+                    controls["account_mode"] = self._normalize_account_mode(account_mode_val)
+                return self._normalize_strategy_controls("backtest", controls)
+        except Exception:
+            pass
+        return {}
+
+    def _normalize_strategy_controls(self, kind: str, controls) -> dict:
+        if not isinstance(controls, dict):
+            return {}
+        normalized: dict[str, object] = {}
+        if kind == "runtime":
+            side_raw = str(controls.get("side") or "").upper()
+            if side_raw in SIDE_LABELS:
+                normalized["side"] = side_raw
+            pos_pct = controls.get("position_pct")
+            if pos_pct is not None:
+                try:
+                    normalized["position_pct"] = float(pos_pct)
+                except Exception:
+                    pass
+            loop_override = self._normalize_loop_override(controls.get("loop_interval_override"))
+            if loop_override:
+                normalized["loop_interval_override"] = loop_override
+            add_only = controls.get("add_only")
+            if add_only is not None:
+                normalized["add_only"] = bool(add_only)
+            account_mode = controls.get("account_mode")
+            if account_mode:
+                normalized["account_mode"] = self._normalize_account_mode(account_mode)
+            stop_loss_raw = controls.get("stop_loss")
+            if isinstance(stop_loss_raw, dict):
+                normalized["stop_loss"] = normalize_stop_loss_dict(stop_loss_raw)
+        elif kind == "backtest":
+            logic_raw = str(controls.get("logic") or "").upper()
+            if logic_raw in {"AND", "OR", "SEPARATE"}:
+                normalized["logic"] = logic_raw
+            capital = controls.get("capital")
+            if capital is not None:
+                try:
+                    normalized["capital"] = float(capital)
+                except Exception:
+                    pass
+            pos_pct = controls.get("position_pct")
+            if pos_pct is not None:
+                try:
+                    normalized["position_pct"] = float(pos_pct)
+                except Exception:
+                    pass
+            side_val = controls.get("side")
+            if side_val:
+                side_code = str(side_val).upper()
+                if side_code not in SIDE_LABELS:
+                    side_code = self._canonical_side_from_text(str(side_val))
+                if side_code in SIDE_LABELS:
+                    normalized["side"] = side_code
+            margin_mode = controls.get("margin_mode")
+            if margin_mode:
+                normalized["margin_mode"] = str(margin_mode)
+            position_mode = controls.get("position_mode")
+            if position_mode:
+                normalized["position_mode"] = str(position_mode)
+            assets_mode = controls.get("assets_mode")
+            if assets_mode:
+                normalized["assets_mode"] = self._normalize_assets_mode(assets_mode)
+            account_mode = controls.get("account_mode")
+            if account_mode:
+                normalized["account_mode"] = self._normalize_account_mode(account_mode)
+            leverage = controls.get("leverage")
+            if leverage is not None:
+                try:
+                    normalized["leverage"] = int(leverage)
+                except Exception:
+                    pass
+            stop_loss_raw = controls.get("stop_loss")
+            if isinstance(stop_loss_raw, dict):
+                normalized["stop_loss"] = normalize_stop_loss_dict(stop_loss_raw)
+        return normalized
+
+    def _format_strategy_controls_summary(self, kind: str, controls: dict) -> str:
+        if not controls:
+            return "-"
+        parts: list[str] = []
+        if kind == "runtime":
+            side = controls.get("side")
+            if side:
+                parts.append(f"Side={side}")
+            pos_pct = controls.get("position_pct")
+            if pos_pct is not None:
+                try:
+                    parts.append(f"Pos={float(pos_pct):.2f}%")
+                except Exception:
+                    pass
+            loop = controls.get("loop_interval_override") or "auto"
+            parts.append(f"Loop={loop}")
+            add_only = controls.get("add_only")
+            if add_only is not None:
+                parts.append(f"AddOnly={'Y' if add_only else 'N'}")
+            account_mode = controls.get("account_mode")
+            if account_mode:
+                parts.append(f"AcctMode={account_mode}")
+            stop_loss = controls.get("stop_loss")
+            if isinstance(stop_loss, dict):
+                if stop_loss.get("enabled"):
+                    mode = str(stop_loss.get("mode") or "usdt")
+                    summary_bits = []
+                    if mode == "usdt" and stop_loss.get("usdt"):
+                        summary_bits.append(f"U={float(stop_loss.get('usdt', 0.0)):.0f}")
+                    elif mode == "percent" and stop_loss.get("percent"):
+                        summary_bits.append(f"P={float(stop_loss.get('percent', 0.0)):.2f}%")
+                    elif mode == "both":
+                        if stop_loss.get("usdt") is not None:
+                            summary_bits.append(f"U={float(stop_loss.get('usdt', 0.0)):.0f}")
+                        if stop_loss.get("percent") is not None:
+                            summary_bits.append(f"P={float(stop_loss.get('percent', 0.0)):.2f}%")
+                    parts.append(f"SL=On({'; '.join(summary_bits) or mode})")
+                else:
+                    parts.append("SL=Off")
+        elif kind == "backtest":
+            logic = controls.get("logic")
+            if logic:
+                parts.append(f"Logic={logic}")
+            pos_pct = controls.get("position_pct")
+            if pos_pct is not None:
+                try:
+                    parts.append(f"Pos={float(pos_pct):.2f}%")
+                except Exception:
+                    pass
+            capital = controls.get("capital")
+            if capital is not None:
+                try:
+                    parts.append(f"Cap={float(capital):.0f}")
+                except Exception:
+                    pass
+            leverage = controls.get("leverage")
+            if leverage is not None:
+                try:
+                    parts.append(f"Lev={int(leverage)}")
+                except Exception:
+                    pass
+            side = controls.get("side")
+            if side:
+                parts.append(f"Side={side}")
+            margin_mode = controls.get("margin_mode")
+            if margin_mode:
+                parts.append(f"Margin={margin_mode}")
+            assets_mode = controls.get("assets_mode")
+            if assets_mode:
+                parts.append(f"Assets={assets_mode}")
+            account_mode = controls.get("account_mode")
+            if account_mode:
+                parts.append(f"AcctMode={account_mode}")
+            stop_loss = controls.get("stop_loss")
+            if isinstance(stop_loss, dict):
+                parts.append("SL=On" if stop_loss.get("enabled") else "SL=Off")
+        return ", ".join(parts) if parts else "-"
+
     def _runtime_stop_loss_update(self, **updates):
         current = normalize_stop_loss_dict(self.config.get("stop_loss"))
         current.update(updates)
@@ -1080,7 +1334,7 @@ class MainWindow(QtWidgets.QWidget):
             self._backtest_stop_loss_update(percent=max(0.0, float(value)))
         self._update_backtest_stop_loss_widgets()
 
-    def _backtest_add_selected_to_dashboard(self):
+    def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
         try:
             table = getattr(self, "backtest_results_table", None)
             results = list(getattr(self, "backtest_results", []) or [])
@@ -1090,16 +1344,25 @@ class MainWindow(QtWidgets.QWidget):
                 except Exception:
                     pass
                 return
-            selection = table.selectionModel()
-            if selection is None:
-                return
-            selected_rows = sorted({index.row() for index in selection.selectedRows()})
-            if not selected_rows:
-                try:
-                    self.backtest_status_label.setText("Select one or more backtest rows to add.")
-                except Exception:
-                    pass
-                return
+            if rows is None:
+                selection = table.selectionModel()
+                if selection is None:
+                    return
+                target_rows = sorted({index.row() for index in selection.selectedRows()})
+                if not target_rows:
+                    try:
+                        self.backtest_status_label.setText("Select one or more backtest rows to add.")
+                    except Exception:
+                        pass
+                    return
+            else:
+                target_rows = sorted({int(r) for r in rows if isinstance(r, int)})
+                if not target_rows:
+                    try:
+                        self.backtest_status_label.setText("No backtest rows available to add.")
+                    except Exception:
+                        pass
+                    return
             runtime_pairs = self._override_config_list("runtime")
             existing = {}
             for entry in runtime_pairs:
@@ -1112,7 +1375,7 @@ class MainWindow(QtWidgets.QWidget):
                     indicators = []
                 existing[(sym, iv, tuple(indicators))] = entry
             added_count = 0
-            for row_idx in selected_rows:
+            for row_idx in target_rows:
                 if row_idx < 0 or row_idx >= len(results):
                     continue
                 data = {}
@@ -1164,6 +1427,33 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 pass
 
+    def _backtest_add_all_to_dashboard(self):
+        try:
+            table = getattr(self, "backtest_results_table", None)
+            if table is None:
+                try:
+                    self.backtest_status_label.setText("No backtest results table available.")
+                except Exception:
+                    pass
+                return
+            all_rows = list(range(table.rowCount()))
+            if not all_rows:
+                try:
+                    self.backtest_status_label.setText("No backtest rows available to add.")
+                except Exception:
+                    pass
+                return
+            self._backtest_add_selected_to_dashboard(rows=all_rows)
+        except Exception as exc:
+            try:
+                self.backtest_status_label.setText(f"Add all failed: {exc}")
+            except Exception:
+                pass
+            try:
+                self.log(f"Add all backtest results to dashboard error: {exc}")
+            except Exception:
+                pass
+
     def _get_selected_indicator_keys(self, kind: str) -> list[str]:
         try:
             if kind == "runtime":
@@ -1191,6 +1481,23 @@ class MainWindow(QtWidgets.QWidget):
         table = ctx.get("table")
         if table is None:
             return
+        column_map = ctx.get("column_map") or {}
+        symbol_col = column_map.get("Symbol", 0)
+        interval_col = column_map.get("Interval", 1)
+        indicator_col = column_map.get("Indicators")
+        strategy_col = column_map.get("Strategy Controls")
+        stoploss_col = column_map.get("Stop-Loss")
+        header = table.horizontalHeader()
+        try:
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+            if sort_column is None or sort_column < 0:
+                sort_column = 0
+                sort_order = QtCore.Qt.SortOrder.AscendingOrder
+        except Exception:
+            sort_column = 0
+            sort_order = QtCore.Qt.SortOrder.AscendingOrder
+        table.setSortingEnabled(False)
         pairs_cfg = self._override_config_list(kind) or []
         table.setRowCount(0)
         seen = set()
@@ -1209,20 +1516,29 @@ class MainWindow(QtWidgets.QWidget):
             if key in seen:
                 continue
             seen.add(key)
+            controls = self._normalize_strategy_controls(kind, entry.get("strategy_controls"))
             entry_clean = {'symbol': sym, 'interval': iv}
             if indicator_values:
                 entry_clean['indicators'] = list(indicator_values)
+            if controls:
+                entry_clean['strategy_controls'] = controls
             cleaned.append(entry_clean)
             row = table.rowCount()
             table.insertRow(row)
-            table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
-            table.setItem(row, 1, QtWidgets.QTableWidgetItem(iv))
+            table.setItem(row, symbol_col, QtWidgets.QTableWidgetItem(sym))
+            table.setItem(row, interval_col, QtWidgets.QTableWidgetItem(iv))
             try:
-                table.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
+                table.item(row, symbol_col).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
             except Exception:
                 pass
-            if table.columnCount() >= 3:
-                table.setItem(row, 2, QtWidgets.QTableWidgetItem(_format_indicator_list(indicator_values)))
+            if indicator_col is not None:
+                table.setItem(row, indicator_col, QtWidgets.QTableWidgetItem(_format_indicator_list(indicator_values)))
+            if strategy_col is not None:
+                summary = self._format_strategy_controls_summary(kind, controls)
+                table.setItem(row, strategy_col, QtWidgets.QTableWidgetItem(summary))
+            if stoploss_col is not None:
+                stop_label = "Yes" if isinstance(controls, dict) and isinstance(controls.get("stop_loss"), dict) and controls["stop_loss"].get("enabled") else "No"
+                table.setItem(row, stoploss_col, QtWidgets.QTableWidgetItem(stop_label))
         cfg_key = ctx.get("config_key")
         if cfg_key:
             self.config[cfg_key] = cleaned
@@ -1231,6 +1547,12 @@ class MainWindow(QtWidgets.QWidget):
                     self.backtest_config[cfg_key] = list(cleaned)
                 except Exception:
                     pass
+        table.setSortingEnabled(True)
+        try:
+            if sort_column is not None and sort_column >= 0:
+                table.sortItems(sort_column, sort_order)
+        except Exception:
+            pass
 
     def _add_selected_symbol_interval_pairs(self, kind: str = "runtime"):
         ctx = self._override_ctx(kind)
@@ -1265,6 +1587,7 @@ class MainWindow(QtWidgets.QWidget):
                     indicators_existing = []
                 key = (sym_existing, iv_existing, tuple(indicators_existing))
                 existing_keys[key] = entry
+            controls_snapshot = self._collect_strategy_controls(kind)
             changed = False
             sel_indicators = self._get_selected_indicator_keys(kind)
             indicators_value = sorted({str(k).strip() for k in sel_indicators if str(k).strip()}) if sel_indicators else []
@@ -1277,10 +1600,22 @@ class MainWindow(QtWidgets.QWidget):
                         continue
                     key = (sym, iv, indicators_tuple)
                     if key in existing_keys:
+                        entry = existing_keys[key]
+                        if indicators_value:
+                            entry['indicators'] = list(indicators_value)
+                        else:
+                            entry.pop('indicators', None)
+                        if controls_snapshot:
+                            entry['strategy_controls'] = copy.deepcopy(controls_snapshot)
+                        else:
+                            entry.pop('strategy_controls', None)
+                        changed = True
                         continue
                     new_entry = {'symbol': sym, 'interval': iv}
                     if indicators_value:
                         new_entry['indicators'] = list(indicators_value)
+                    if controls_snapshot:
+                        new_entry['strategy_controls'] = copy.deepcopy(controls_snapshot)
                     pairs_cfg.append(new_entry)
                     existing_keys[key] = new_entry
                     changed = True
@@ -1302,6 +1637,9 @@ class MainWindow(QtWidgets.QWidget):
         table = ctx.get("table")
         if table is None:
             return
+        column_map = ctx.get("column_map") or {}
+        symbol_col = column_map.get("Symbol", 0)
+        interval_col = column_map.get("Interval", 1)
         try:
             rows = sorted({idx.row() for idx in table.selectionModel().selectedRows()}, reverse=True)
             if not rows:
@@ -1310,8 +1648,8 @@ class MainWindow(QtWidgets.QWidget):
             updated = []
             remove_set = set()
             for row in rows:
-                sym_item = table.item(row, 0)
-                iv_item = table.item(row, 1)
+                sym_item = table.item(row, symbol_col)
+                iv_item = table.item(row, interval_col)
                 sym = sym_item.text().strip().upper() if sym_item else ''
                 iv = iv_item.text().strip() if iv_item else ''
                 if not (sym and iv):
@@ -1381,10 +1719,14 @@ class MainWindow(QtWidgets.QWidget):
         group = QtWidgets.QGroupBox("Symbol / Interval Overrides")
         layout = QtWidgets.QVBoxLayout(group)
         columns = ["Symbol", "Interval"]
-        if kind in ("runtime", "backtest"):
+        show_indicators = kind in ("runtime", "backtest")
+        if show_indicators:
             columns.append("Indicators")
+        columns.append("Strategy Controls")
+        columns.append("Stop-Loss")
         table = QtWidgets.QTableWidget(0, len(columns))
         table.setHorizontalHeaderLabels(columns)
+        column_map = {name: idx for idx, name in enumerate(columns)}
         header = table.horizontalHeader()
         header.setStretchLastSection(False)
         try:
@@ -1405,6 +1747,7 @@ class MainWindow(QtWidgets.QWidget):
             table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QtWidgets.QTableWidget.SelectionBehavior.SelectRows)
         table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        table.setSortingEnabled(True)
         layout.addWidget(table)
 
         btn_layout = QtWidgets.QHBoxLayout()
@@ -1429,6 +1772,7 @@ class MainWindow(QtWidgets.QWidget):
             "add_btn": add_btn,
             "remove_btn": remove_btn,
             "clear_btn": clear_btn,
+            "column_map": column_map,
         }
         if kind == "runtime":
             self.symbol_interval_table = table
@@ -1614,8 +1958,16 @@ class MainWindow(QtWidgets.QWidget):
             _set_combo(self.backtest_margin_mode_combo, margin_mode_cfg)
             position_mode_cfg = (self.backtest_config.get("position_mode") or "Hedge")
             _set_combo(self.backtest_position_mode_combo, position_mode_cfg)
-            assets_mode_cfg = (self.backtest_config.get("assets_mode") or "Single-Asset")
-            _set_combo(self.backtest_assets_mode_combo, assets_mode_cfg)
+            assets_mode_cfg = self._normalize_assets_mode(self.backtest_config.get("assets_mode"))
+            idx_assets = self.backtest_assets_mode_combo.findData(assets_mode_cfg)
+            if idx_assets is not None and idx_assets >= 0:
+                with QtCore.QSignalBlocker(self.backtest_assets_mode_combo):
+                    self.backtest_assets_mode_combo.setCurrentIndex(idx_assets)
+            account_mode_cfg = self._normalize_account_mode(self.backtest_config.get("account_mode"))
+            idx_account_mode = self.backtest_account_mode_combo.findData(account_mode_cfg)
+            if idx_account_mode is not None and idx_account_mode >= 0:
+                with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
+                    self.backtest_account_mode_combo.setCurrentIndex(idx_account_mode)
             leverage_cfg = int(self.backtest_config.get("leverage", 5) or 1)
             self.backtest_leverage_spin.setValue(leverage_cfg)
             now_dt = QtCore.QDateTime.currentDateTime()
@@ -1924,6 +2276,10 @@ class MainWindow(QtWidgets.QWidget):
         try:
             if key == "side":
                 value = self._canonical_side_from_text(value)
+            if key == "assets_mode":
+                value = self._normalize_assets_mode(value)
+            if key == "account_mode":
+                value = self._normalize_account_mode(value)
             self.backtest_config[key] = value
             cfg = self.config.setdefault("backtest", {})
             cfg[key] = value
@@ -2051,7 +2407,12 @@ class MainWindow(QtWidgets.QWidget):
         side_value = self._canonical_side_from_text(self.backtest_side_combo.currentText())
         margin_mode = (self.backtest_margin_mode_combo.currentText() or "Isolated").strip()
         position_mode = (self.backtest_position_mode_combo.currentText() or "Hedge").strip()
-        assets_mode = (self.backtest_assets_mode_combo.currentText() or "Single-Asset").strip()
+        assets_mode = self._normalize_assets_mode(
+            self.backtest_assets_mode_combo.currentData() or self.backtest_assets_mode_combo.currentText()
+        )
+        account_mode = self._normalize_account_mode(
+            self.backtest_account_mode_combo.currentData() or self.backtest_account_mode_combo.currentText()
+        )
         leverage_value = int(self.backtest_leverage_spin.value() or 1)
 
         logic = (self.backtest_logic_combo.currentText() or "AND").upper()
@@ -2062,6 +2423,7 @@ class MainWindow(QtWidgets.QWidget):
         self._update_backtest_config("margin_mode", margin_mode)
         self._update_backtest_config("position_mode", position_mode)
         self._update_backtest_config("assets_mode", assets_mode)
+        self._update_backtest_config("account_mode", account_mode)
         self._update_backtest_config("leverage", leverage_value)
         indicator_keys_order = [ind.key for ind in indicators]
         combos_sequence = list(pairs_override) if pairs_override else [(sym, iv) for sym in symbols for iv in intervals]
@@ -2104,6 +2466,7 @@ class MainWindow(QtWidgets.QWidget):
             margin_mode=margin_mode,
             position_mode=position_mode,
             assets_mode=assets_mode,
+            account_mode=account_mode,
             stop_loss_enabled=bool(stop_cfg.get("enabled")),
             stop_loss_mode=str(stop_cfg.get("mode") or "usdt"),
             stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
@@ -2370,31 +2733,65 @@ class MainWindow(QtWidgets.QWidget):
             self.chart_interval_combo.addItem(iv)
         controls_layout.addWidget(self.chart_interval_combo)
 
+        controls_layout.addWidget(QtWidgets.QLabel("View:"))
+        self.chart_view_mode_combo = QtWidgets.QComboBox()
+        self.chart_view_mode_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        controls_layout.addWidget(self.chart_view_mode_combo)
+
         controls_layout.addStretch()
         self.bot_status_label_chart = QtWidgets.QLabel()
         self.bot_status_label_chart.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
         controls_layout.addWidget(self.bot_status_label_chart)
 
-        self.chart_view = None
+        self._chart_view_widgets = {}
+        self.chart_view_stack = QtWidgets.QStackedWidget()
+        layout.addWidget(self.chart_view_stack, stretch=1)
+
+        self.chart_tradingview = None
         if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None:
             try:
-                self.chart_view = TradingViewWidget(self)
+                self.chart_tradingview = TradingViewWidget(self)
+                self._chart_view_widgets["tradingview"] = self.chart_tradingview
+                self.chart_view_stack.addWidget(self.chart_tradingview)
             except Exception:
-                self.chart_view = None
-        if self.chart_view is not None:
-            layout.addWidget(self.chart_view, stretch=1)
-        elif QT_CHARTS_AVAILABLE:
+                self.chart_tradingview = None
+
+        self.chart_original_view = None
+        if QT_CHARTS_AVAILABLE:
             view = QChartView()
             try:
                 view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             except Exception:
                 pass
             view.setMinimumHeight(300)
-            layout.addWidget(view, stretch=1)
-            self.chart_view = view
+            self.chart_original_view = view
         else:
-            self.chart_view = SimpleCandlestickWidget()
-            layout.addWidget(self.chart_view, stretch=1)
+            self.chart_original_view = SimpleCandlestickWidget()
+        if self.chart_original_view is not None:
+            self._chart_view_widgets["original"] = self.chart_original_view
+            self.chart_view_stack.addWidget(self.chart_original_view)
+
+        self.chart_view_mode_combo.clear()
+        if self.chart_tradingview is not None:
+            self.chart_view_mode_combo.addItem("TradingView", "tradingview")
+        else:
+            self.chart_view_mode_combo.addItem("TradingView", "tradingview")
+            try:
+                idx = self.chart_view_mode_combo.findData("tradingview")
+                if idx >= 0:
+                    model = self.chart_view_mode_combo.model()
+                    model.setData(model.index(idx, 0), QtCore.Qt.ItemDataRole.EnabledRole, False)
+            except Exception:
+                pass
+        self.chart_view_mode_combo.addItem("Original", "original")
+
+        requested_mode = str(self.chart_config.get("view_mode") or "").strip().lower()
+        if requested_mode not in ("tradingview", "original"):
+            requested_mode = "tradingview" if self.chart_tradingview is not None else "original"
+        if requested_mode == "tradingview" and self.chart_tradingview is None:
+            requested_mode = "original"
+        self._apply_chart_view_mode(requested_mode, initial=True)
+        self.chart_view_mode_combo.currentIndexChanged.connect(self._on_chart_view_mode_changed)
 
         self.chart_symbol_combo.currentTextChanged.connect(self._on_chart_controls_changed)
         self.chart_interval_combo.currentTextChanged.connect(self._on_chart_controls_changed)
@@ -2415,6 +2812,54 @@ class MainWindow(QtWidgets.QWidget):
                 pass
 
         return tab
+
+    def _apply_chart_view_mode(self, mode: str, initial: bool = False):
+        if not getattr(self, "chart_enabled", False):
+            return
+        mode_norm = str(mode or "").strip().lower()
+        if mode_norm != "tradingview" or self.chart_tradingview is None:
+            mode_norm = "original"
+        widget = self._chart_view_widgets.get(mode_norm)
+        if widget is None:
+            return
+        self.chart_view = widget
+        try:
+            with QtCore.QSignalBlocker(self.chart_view_mode_combo):
+                idx = self.chart_view_mode_combo.findData(mode_norm)
+                if idx >= 0:
+                    self.chart_view_mode_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        try:
+            index = self.chart_view_stack.indexOf(widget)
+            if index >= 0:
+                self.chart_view_stack.setCurrentIndex(index)
+        except Exception:
+            pass
+        self.chart_config["view_mode"] = mode_norm
+        if mode_norm == "tradingview" and self.chart_tradingview is not None:
+            try:
+                self._on_chart_theme_changed()
+            except Exception:
+                pass
+        self._chart_needs_render = True
+        status_text = "Chart view ready."
+        if initial:
+            self._show_chart_status(status_text, color="#d1d4dc")
+            return
+        if self._is_chart_visible():
+            self.load_chart(auto=True)
+        else:
+            self._show_chart_status(status_text, color="#d1d4dc")
+
+    def _on_chart_view_mode_changed(self, index: int):
+        try:
+            mode = self.chart_view_mode_combo.itemData(index)
+        except Exception:
+            mode = None
+        if not mode:
+            mode = self.chart_view_mode_combo.currentText()
+        self._apply_chart_view_mode(mode)
 
     def _restore_chart_controls_from_config(self):
         if not getattr(self, "chart_enabled", False):
@@ -2447,6 +2892,9 @@ class MainWindow(QtWidgets.QWidget):
             self._set_chart_interval(interval_cfg)
         elif CHART_INTERVAL_OPTIONS:
             self._set_chart_interval(CHART_INTERVAL_OPTIONS[0])
+        view_mode_cfg = str(self.chart_config.get("view_mode") or "").strip().lower()
+        if view_mode_cfg:
+            self._apply_chart_view_mode(view_mode_cfg, initial=True)
 
     def _update_chart_symbol_options(self, symbols=None):
         if not getattr(self, "chart_enabled", False):
@@ -2521,6 +2969,75 @@ class MainWindow(QtWidgets.QWidget):
             if text.startswith(opt.lower()):
                 return opt
         return "Futures"
+
+    @staticmethod
+    def _normalize_assets_mode(value):
+        text = str(value or "").strip().lower()
+        if "multi" in text:
+            return "Multi-Assets"
+        return "Single-Asset"
+
+    @staticmethod
+    def _normalize_account_mode(value):
+        text = str(value or "").strip().lower()
+        if "portfolio" in text:
+            return "Portfolio Margin"
+        return "Classic Trading"
+
+    def _on_account_type_changed(self, value):
+        account_text = str(value or "").strip()
+        try:
+            if not account_text and hasattr(self, "account_combo"):
+                account_text = str(self.account_combo.currentText() or "Futures").strip()
+        except Exception:
+            account_text = "Futures"
+        if not account_text:
+            account_text = "Futures"
+        normalized = "Futures" if account_text.lower().startswith("fut") else "Spot"
+        self.config["account_type"] = normalized
+        try:
+            if hasattr(self, "shared_binance") and self.shared_binance is not None:
+                self.shared_binance.account_type = normalized.upper()
+        except Exception:
+            pass
+        desired_spot = "Binance spot"
+        desired_futures = "Binance futures"
+        try:
+            combo = getattr(self, "ind_source_combo", None)
+            if combo is not None:
+                current_source = (combo.currentText() or "").strip()
+                lowered = current_source.lower()
+                target_source = current_source
+                if normalized == "Spot" and "futures" in lowered:
+                    target_source = desired_spot
+                elif normalized == "Futures" and ("spot" in lowered and "futures" not in lowered):
+                    target_source = desired_futures
+                if target_source and target_source != current_source:
+                    blocker = None
+                    try:
+                        blocker = QtCore.QSignalBlocker(combo)
+                    except Exception:
+                        blocker = None
+                    combo.setCurrentText(target_source)
+                    if blocker is not None:
+                        del blocker
+                self.config["indicator_source"] = combo.currentText()
+                if hasattr(self, "shared_binance") and self.shared_binance is not None:
+                    try:
+                        self.shared_binance.indicator_source = combo.currentText()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            self._reconfigure_positions_worker()
+        except Exception:
+            pass
+        if getattr(self, "_ui_initialized", False):
+            try:
+                self.refresh_symbols()
+            except Exception:
+                pass
 
     def _futures_display_symbol(self, symbol: str) -> str:
         sym = (symbol or "").strip().upper()
@@ -2837,6 +3354,40 @@ class MainWindow(QtWidgets.QWidget):
                 if ind:
                     indicators.add(str(ind))
         return sorted(indicators)
+
+    def _position_stop_loss_enabled(self, symbol: str, side_key: str) -> bool:
+        metadata = getattr(self, "_engine_indicator_map", {}) or {}
+        symbol = str(symbol or "").strip().upper()
+        side_key = (side_key or "").upper()
+        for meta in metadata.values():
+            if not isinstance(meta, dict):
+                continue
+            if str(meta.get("symbol") or "").strip().upper() != symbol:
+                continue
+            side_cfg = str(meta.get("side") or "BOTH").upper()
+            if side_cfg == "BOTH":
+                pass
+            elif side_cfg == "BUY" and side_key != "L":
+                continue
+            elif side_cfg == "SELL" and side_key != "S":
+                continue
+            if meta.get("stop_loss_enabled"):
+                return True
+        return False
+
+    def _on_positions_view_changed(self, index: int):
+        try:
+            text = self.positions_view_combo.itemText(index)
+        except Exception:
+            text = ""
+        mode = "cumulative"
+        if isinstance(text, str) and text.lower().startswith("per"):
+            mode = "per_trade"
+        self._positions_view_mode = mode
+        try:
+            self._render_positions_table()
+        except Exception:
+            pass
 
     def _set_chart_symbol(self, symbol: str, ensure_option: bool = False, from_follow: bool = False) -> bool:
         if not getattr(self, "chart_enabled", False):
@@ -3332,7 +3883,7 @@ class MainWindow(QtWidgets.QWidget):
         self.api_key_edit = QtWidgets.QLineEdit(self.config['api_key'])
         grid.addWidget(self.api_key_edit, 0, 1)
 
-        grid.addWidget(QtWidgets.QLabel("API Secret:"), 1, 0)
+        grid.addWidget(QtWidgets.QLabel("API Secret Key:"), 1, 0)
         self.api_secret_edit = QtWidgets.QLineEdit(self.config['api_secret'])
         self.api_secret_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         grid.addWidget(self.api_secret_edit, 1, 1)
@@ -3365,7 +3916,21 @@ class MainWindow(QtWidgets.QWidget):
         self.account_combo.addItems(["Spot", "Futures"])
         self.account_combo.setCurrentText(self.config.get('account_type', 'Futures'))
         grid.addWidget(self.account_combo, 1, 3)
-        self.account_combo.currentTextChanged.connect(lambda _=None: self._reconfigure_positions_worker())
+        self.account_combo.currentTextChanged.connect(self._on_account_type_changed)
+
+        grid.addWidget(QtWidgets.QLabel("Account Mode:"), 1, 4)
+        self.account_mode_combo = QtWidgets.QComboBox()
+        for mode in ACCOUNT_MODE_OPTIONS:
+            self.account_mode_combo.addItem(mode, mode)
+        account_mode_cfg = self._normalize_account_mode(self.config.get("account_mode", ACCOUNT_MODE_OPTIONS[0]))
+        idx_account_mode = self.account_mode_combo.findData(account_mode_cfg)
+        if idx_account_mode < 0:
+            idx_account_mode = 0
+        self.account_mode_combo.setCurrentIndex(idx_account_mode)
+        self.account_mode_combo.currentTextChanged.connect(
+            lambda value: self.config.__setitem__("account_mode", self._normalize_account_mode(value))
+        )
+        grid.addWidget(self.account_mode_combo, 1, 5)
 
         grid.addWidget(QtWidgets.QLabel("Total USDT balance:"), 2, 0)
         self.balance_label = QtWidgets.QLabel("N/A")
@@ -3397,8 +3962,13 @@ class MainWindow(QtWidgets.QWidget):
 
         grid.addWidget(QtWidgets.QLabel("Assets Mode:"), 2, 9)
         self.assets_mode_combo = QtWidgets.QComboBox()
-        self.assets_mode_combo.addItems(["Single-Asset", "Multi-Assets"])
-        self.assets_mode_combo.setCurrentText(self.config.get("assets_mode", "Single-Asset"))
+        self.assets_mode_combo.addItem("Single-Asset Mode", "Single-Asset")
+        self.assets_mode_combo.addItem("Multi-Assets Mode", "Multi-Assets")
+        assets_mode_cfg = self._normalize_assets_mode(self.config.get("assets_mode", "Single-Asset"))
+        idx_assets = self.assets_mode_combo.findData(assets_mode_cfg)
+        if idx_assets < 0:
+            idx_assets = 0
+        self.assets_mode_combo.setCurrentIndex(idx_assets)
         grid.addWidget(self.assets_mode_combo, 2, 10)
 
         grid.addWidget(QtWidgets.QLabel("Time-in-Force:"), 3, 2)
@@ -3437,6 +4007,8 @@ class MainWindow(QtWidgets.QWidget):
         ])
         self.ind_source_combo.setCurrentText(self.config.get("indicator_source", "Binance futures"))
         grid.addWidget(self.ind_source_combo, 3, 1, 1, 2)
+
+        self._on_account_type_changed(self.account_combo.currentText())
 
         scroll_layout.addLayout(grid)
 
@@ -3489,14 +4061,9 @@ class MainWindow(QtWidgets.QWidget):
         self.add_interval_btn.clicked.connect(_add_custom_intervals)
         sgrid.addWidget(self.custom_interval_edit, 4, 2)
         sgrid.addWidget(self.add_interval_btn, 4, 3)
-        self.use_backtest_intervals_btn = QtWidgets.QPushButton("Use Backtest Intervals")
-        self.use_backtest_intervals_btn.clicked.connect(self._apply_backtest_intervals_to_dashboard)
-        sgrid.addWidget(self.use_backtest_intervals_btn, 5, 2, 1, 2)
-
         scroll_layout.addWidget(sym_group)
 
         runtime_override_group = self._create_override_group("runtime", self.symbol_list, self.interval_list)
-        scroll_layout.addWidget(runtime_override_group)
 
         # Strategy Controls
         strat_group = QtWidgets.QGroupBox("Strategy Controls")
@@ -3629,6 +4196,8 @@ class MainWindow(QtWidgets.QWidget):
 
         scroll_layout.addWidget(ind_group)
 
+        scroll_layout.addWidget(runtime_override_group)
+
         # Buttons
         btn_layout = QtWidgets.QHBoxLayout()
         self.start_btn = QtWidgets.QPushButton("Start")
@@ -3652,6 +4221,7 @@ class MainWindow(QtWidgets.QWidget):
             self.mode_combo,
             self.theme_combo,
             self.account_combo,
+            self.account_mode_combo,
             self.leverage_spin,
             self.margin_mode_combo,
             self.position_mode_combo,
@@ -3664,7 +4234,6 @@ class MainWindow(QtWidgets.QWidget):
             self.interval_list,
             self.custom_interval_edit,
             self.add_interval_btn,
-            self.use_backtest_intervals_btn,
             self.side_combo,
             self.pospct_spin,
             self.loop_edit,
@@ -3706,8 +4275,9 @@ class MainWindow(QtWidgets.QWidget):
                     self.chart_market_combo,
                     self.chart_symbol_combo,
                     self.chart_interval_combo,
+                    self.chart_view_mode_combo,
                 ])
-                for widget in (self.chart_market_combo, self.chart_symbol_combo, self.chart_interval_combo):
+                for widget in (self.chart_market_combo, self.chart_symbol_combo, self.chart_interval_combo, self.chart_view_mode_combo):
                     self._register_runtime_active_exemption(widget)
             except Exception:
                 pass
@@ -3721,6 +4291,9 @@ class MainWindow(QtWidgets.QWidget):
         else:
             self.chart_tab = None
             self.chart_view = None
+            self.chart_view_stack = None
+            self.chart_tradingview = None
+            self.chart_original_view = None
         # Map symbol -> {'L': set(), 'S': set()} for intervals shown in Positions tab
         self._entry_intervals = {}
         self._entry_times = {}  # (sym, 'L'/'S') -> last trade time string
@@ -3728,6 +4301,7 @@ class MainWindow(QtWidgets.QWidget):
         self._open_position_records = {}
         self._closed_position_records = []
         self._engine_indicator_map = {}
+        self._positions_view_mode = "cumulative"
 
 
         # ---------------- Positions tab ----------------
@@ -3741,6 +4315,12 @@ class MainWindow(QtWidgets.QWidget):
         self.close_all_btn = QtWidgets.QPushButton("Market Close ALL Positions")
         self.close_all_btn.clicked.connect(self.close_all_positions_async)
         ctrl_layout.addWidget(self.close_all_btn)
+        ctrl_layout.addWidget(QtWidgets.QLabel("Positions View:"))
+        self.positions_view_combo = QtWidgets.QComboBox()
+        self.positions_view_combo.addItems(["Cumulative View", "Per Trade View"])
+        self.positions_view_combo.setCurrentIndex(0)
+        self.positions_view_combo.currentIndexChanged.connect(self._on_positions_view_changed)
+        ctrl_layout.addWidget(self.positions_view_combo)
         ctrl_layout.addStretch()
         self.bot_status_label_tab2 = QtWidgets.QLabel()
         self.bot_status_label_tab2.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
@@ -3748,14 +4328,31 @@ class MainWindow(QtWidgets.QWidget):
         tab2_layout.addLayout(ctrl_layout)
         self._sync_runtime_state()
 
-        self.pos_table = QtWidgets.QTableWidget(0, 14, tab2)
-        self.pos_table.setHorizontalHeaderLabels(["Symbol","Balance/Position","Last Price (USDT)","Size (USDT)","Margin Ratio","Margin (USDT)","PNL (ROI%)","Interval","Indicator","Side","Open Time","Close Time","Status","Close"])
+        self.pos_table = QtWidgets.QTableWidget(0, POS_CLOSE_COLUMN + 1, tab2)
+        self.pos_table.setHorizontalHeaderLabels([
+            "Symbol",
+            "Balance/Position",
+            "Last Price (USDT)",
+            "Size (USDT)",
+            "Margin Ratio",
+            "Margin (USDT)",
+            "PNL (ROI%)",
+            "Interval",
+            "Indicator",
+            "Side",
+            "Open Time",
+            "Close Time",
+            "Stop-Loss",
+            "Status",
+            "Close",
+        ])
         self.pos_table.horizontalHeader().setStretchLastSection(True)
         self.pos_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         try:
             self.pos_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         except Exception:
             self.pos_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.pos_table.setSortingEnabled(True)
         tab2_layout.addWidget(self.pos_table)
 
         pos_btn_layout = QtWidgets.QHBoxLayout()
@@ -3826,8 +4423,40 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
         self.backtest_interval_list.itemSelectionChanged.connect(self._backtest_store_intervals)
         market_layout.addWidget(self.backtest_interval_list, 2, 3, 4, 2)
+
+        self.backtest_custom_interval_edit = QtWidgets.QLineEdit()
+        self.backtest_custom_interval_edit.setPlaceholderText("e.g., 45s or 7m or 90m, comma-separated")
+        market_layout.addWidget(self.backtest_custom_interval_edit, 6, 3)
+        self.backtest_add_interval_btn = QtWidgets.QPushButton("Add Custom Interval(s)")
+        market_layout.addWidget(self.backtest_add_interval_btn, 6, 4)
+
+        def _add_backtest_custom_intervals():
+            text = self.backtest_custom_interval_edit.text().strip()
+            if not text:
+                return
+            parts = [p.strip() for p in text.split(",") if p.strip()]
+            if not parts:
+                self.backtest_custom_interval_edit.clear()
+                return
+            existing = {self.backtest_interval_list.item(i).text() for i in range(self.backtest_interval_list.count())}
+            new_items = []
+            for part in parts:
+                norm = part.strip()
+                if not norm or norm in existing:
+                    continue
+                item = QtWidgets.QListWidgetItem(norm)
+                self.backtest_interval_list.addItem(item)
+                item.setSelected(True)
+                existing.add(norm)
+                new_items.append(item)
+            self.backtest_custom_interval_edit.clear()
+            if new_items:
+                self._backtest_store_intervals()
+
+        self.backtest_add_interval_btn.clicked.connect(_add_backtest_custom_intervals)
+
         pair_group = self._create_override_group("backtest", self.backtest_symbol_list, self.backtest_interval_list)
-        market_layout.addWidget(pair_group, 6, 0, 1, 5)
+        market_layout.addWidget(pair_group, 7, 0, 1, 5)
 
 
         market_layout.setColumnStretch(0, 2)
@@ -3949,9 +4578,38 @@ class MainWindow(QtWidgets.QWidget):
         param_form.addRow("Position Mode:", self.backtest_position_mode_combo)
 
         self.backtest_assets_mode_combo = QtWidgets.QComboBox()
-        self.backtest_assets_mode_combo.addItems(["Single-Asset", "Multi-Assets"])
-        self.backtest_assets_mode_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("assets_mode", v))
+        self.backtest_assets_mode_combo.addItem("Single-Asset Mode", "Single-Asset")
+        self.backtest_assets_mode_combo.addItem("Multi-Assets Mode", "Multi-Assets")
+        assets_mode_cfg_bt = self._normalize_assets_mode(self.backtest_config.get("assets_mode", "Single-Asset"))
+        idx_assets_bt = self.backtest_assets_mode_combo.findData(assets_mode_cfg_bt)
+        if idx_assets_bt < 0:
+            idx_assets_bt = 0
+        with QtCore.QSignalBlocker(self.backtest_assets_mode_combo):
+            self.backtest_assets_mode_combo.setCurrentIndex(idx_assets_bt)
+        self.backtest_assets_mode_combo.currentIndexChanged.connect(
+            lambda idx: self._update_backtest_config(
+                "assets_mode",
+                self._normalize_assets_mode(self.backtest_assets_mode_combo.itemData(idx)),
+            )
+        )
         param_form.addRow("Assets Mode:", self.backtest_assets_mode_combo)
+
+        self.backtest_account_mode_combo = QtWidgets.QComboBox()
+        for mode in ACCOUNT_MODE_OPTIONS:
+            self.backtest_account_mode_combo.addItem(mode, mode)
+        account_mode_cfg_bt = self._normalize_account_mode(self.backtest_config.get("account_mode", ACCOUNT_MODE_OPTIONS[0]))
+        idx_account_mode_bt = self.backtest_account_mode_combo.findData(account_mode_cfg_bt)
+        if idx_account_mode_bt < 0:
+            idx_account_mode_bt = 0
+        with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
+            self.backtest_account_mode_combo.setCurrentIndex(idx_account_mode_bt)
+        self.backtest_account_mode_combo.currentIndexChanged.connect(
+            lambda idx: self._update_backtest_config(
+                "account_mode",
+                self._normalize_account_mode(self.backtest_account_mode_combo.itemData(idx)),
+            )
+        )
+        param_form.addRow("Account Mode:", self.backtest_account_mode_combo)
 
         self.backtest_leverage_spin = QtWidgets.QSpinBox()
         self.backtest_leverage_spin.setRange(1, 150)
@@ -3965,6 +4623,8 @@ class MainWindow(QtWidgets.QWidget):
             param_form.labelForField(self.backtest_position_mode_combo),
             self.backtest_assets_mode_combo,
             param_form.labelForField(self.backtest_assets_mode_combo),
+            self.backtest_account_mode_combo,
+            param_form.labelForField(self.backtest_account_mode_combo),
             self.backtest_leverage_spin,
             param_form.labelForField(self.backtest_leverage_spin),
         ]
@@ -4004,6 +4664,9 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_add_to_dashboard_btn = QtWidgets.QPushButton("Add Selected to Dashboard")
         self.backtest_add_to_dashboard_btn.clicked.connect(self._backtest_add_selected_to_dashboard)
         controls_layout.addWidget(self.backtest_add_to_dashboard_btn)
+        self.backtest_add_all_to_dashboard_btn = QtWidgets.QPushButton("Add All to Dashboard")
+        self.backtest_add_all_to_dashboard_btn.clicked.connect(self._backtest_add_all_to_dashboard)
+        controls_layout.addWidget(self.backtest_add_all_to_dashboard_btn)
         controls_layout.addStretch()
         self.bot_status_label_tab3 = QtWidgets.QLabel()
         self.bot_status_label_tab3.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
@@ -4054,6 +4717,7 @@ class MainWindow(QtWidgets.QWidget):
         self.resize(1200, 900)
         self._apply_initial_geometry()
         self.apply_theme(self.theme_combo.currentText())
+        self._ui_initialized = True
         self._setup_log_buffer()
         try:
             self.ind_source_combo.currentTextChanged.connect(lambda v: self.config.__setitem__("indicator_source", v))
@@ -4074,10 +4738,16 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
         base_rows = rows or []
         for r in base_rows:
             try:
-                sym = r.get('symbol')
-                side_key = r.get('side_key') or 'SPOT'
+                sym = str(r.get('symbol') or '').strip().upper()
+                side_key = str(r.get('side_key') or 'SPOT').upper()
                 if not sym:
                     continue
+                stop_loss_enabled = False
+                if side_key in ('L', 'S'):
+                    stop_loss_enabled = self._position_stop_loss_enabled(sym, side_key)
+                data_entry = dict(r)
+                data_entry['symbol'] = sym
+                data_entry['side_key'] = side_key
                 positions_map[(sym, side_key)] = {
                     'symbol': sym,
                     'side_key': side_key,
@@ -4085,8 +4755,9 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'open_time': r.get('open_time'),
                     'close_time': '-',
                     'status': 'Active',
-                    'data': dict(r),
+                    'data': data_entry,
                     'indicators': self._collect_strategy_indicators(sym, side_key),
+                    'stop_loss_enabled': stop_loss_enabled,
                 }
             except Exception:
                 continue
@@ -4114,14 +4785,20 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                 raw = bw.list_open_futures_positions() or []
                 syms_filter = None
                 try:
-                    selected = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count()) if self.symbol_list.item(i).isSelected()]
+                    selected = [
+                        self.symbol_list.item(i).text()
+                        for i in range(self.symbol_list.count())
+                        if self.symbol_list.item(i).isSelected()
+                    ]
                     if selected:
-                        syms_filter = set(selected)
+                        syms_filter = {str(val).strip().upper() for val in selected if val}
                 except Exception:
                     syms_filter = None
                 for p in raw:
                     try:
-                        sym = str(p.get('symbol'))
+                        sym = str(p.get('symbol') or '').strip().upper()
+                        if not sym:
+                            continue
                         if syms_filter and sym not in syms_filter:
                             continue
                         amt = float(p.get('positionAmt') or 0.0)
@@ -4234,6 +4911,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             open_times.sort(key=lambda item: item[0])
                             rec['open_time'] = self._format_display_time(open_times[0][1])
                         rec['indicators'] = self._collect_strategy_indicators(sym, side_key)
+                        rec['stop_loss_enabled'] = stop_loss_enabled
                         positions_map[(sym, side_key)] = rec
                     except Exception:
                         continue
@@ -4264,6 +4942,8 @@ def _mw_update_position_history(self, positions_map: dict):
                 snap = copy.deepcopy(rec)
                 snap["status"] = "Closed"
                 snap["close_time"] = now_fmt
+                if "stop_loss_enabled" not in snap:
+                    snap["stop_loss_enabled"] = bool(rec.get("stop_loss_enabled"))
                 self._closed_position_records.insert(0, snap)
             if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
                 self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
@@ -4271,19 +4951,115 @@ def _mw_update_position_history(self, positions_map: dict):
     except Exception:
         pass
 
+def _mw_positions_records_per_trade(self, open_records: dict, closed_records: list) -> list:
+    records: list[dict] = []
+    metadata = getattr(self, "_engine_indicator_map", {}) or {}
+    meta_map: dict[tuple[str, str], list[dict]] = {}
+    for meta in metadata.values():
+        if not isinstance(meta, dict):
+            continue
+        sym = str(meta.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        interval = str(meta.get("interval") or "").strip()
+        side_cfg = str(meta.get("side") or "BOTH").upper()
+        stop_enabled = bool(meta.get("stop_loss_enabled"))
+        indicators = list(meta.get("indicators") or [])
+        sides = []
+        if side_cfg == "BUY":
+            sides = ["L"]
+        elif side_cfg == "SELL":
+            sides = ["S"]
+        else:
+            sides = ["L", "S"]
+        for side in sides:
+            meta_map.setdefault((sym, side), []).append(
+                {
+                    "interval": interval,
+                    "indicators": indicators,
+                    "stop_loss_enabled": stop_enabled,
+                }
+            )
+
+    for (sym, side_key), rec in open_records.items():
+        metas = meta_map.get((sym, side_key)) or [None]
+        for meta in metas:
+            entry = copy.deepcopy(rec)
+            if isinstance(meta, dict):
+                interval = meta.get("interval")
+                if interval:
+                    entry["entry_tf"] = interval
+                indicators = meta.get("indicators")
+                if indicators:
+                    entry["indicators"] = list(indicators)
+                if meta.get("stop_loss_enabled") is not None:
+                    entry["stop_loss_enabled"] = bool(meta.get("stop_loss_enabled"))
+            records.append(entry)
+
+    for rec in closed_records:
+        try:
+            entry_tf = rec.get("entry_tf")
+            if isinstance(entry_tf, str) and entry_tf.strip():
+                intervals = [part.strip() for part in entry_tf.split(",") if part.strip()]
+            else:
+                intervals = ["-"]
+        except Exception:
+            intervals = ["-"]
+        indicators_raw = rec.get("indicators")
+        if isinstance(indicators_raw, (list, tuple)):
+            indicators_list = list(indicators_raw)
+        elif isinstance(indicators_raw, str):
+            indicators_list = [indicators_raw]
+        else:
+            indicators_list = []
+        for interval in intervals:
+            entry = copy.deepcopy(rec)
+            entry["entry_tf"] = interval
+            if indicators_list:
+                entry["indicators"] = list(indicators_list)
+            entry["stop_loss_enabled"] = bool(rec.get("stop_loss_enabled"))
+            records.append(entry)
+
+    records.sort(key=lambda item: (
+        str(item.get("symbol") or ""),
+        str(item.get("side_key") or ""),
+        str(item.get("entry_tf") or ""),
+    ))
+    return records
+
 
 def _mw_render_positions_table(self):
     try:
         open_records = getattr(self, "_open_position_records", {}) or {}
         closed_records = getattr(self, "_closed_position_records", []) or []
-        display_records = sorted(open_records.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf'))) + list(closed_records)
+        view_mode = getattr(self, "_positions_view_mode", "cumulative")
+        if view_mode == "per_trade":
+            display_records = _mw_positions_records_per_trade(self, open_records, closed_records)
+        else:
+            display_records = (
+                sorted(open_records.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf')))
+                + list(closed_records)
+            )
+        header = self.pos_table.horizontalHeader()
+        try:
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+            if sort_column is None or sort_column < 0:
+                sort_column = 0
+                sort_order = QtCore.Qt.SortOrder.AscendingOrder
+        except Exception:
+            sort_column = 0
+            sort_order = QtCore.Qt.SortOrder.AscendingOrder
+        self.pos_table.setSortingEnabled(False)
         self.pos_table.setRowCount(0)
         for rec in display_records:
             try:
                 data = rec.get('data', {}) or {}
-                sym = rec.get('symbol')
-                side_key = rec.get('side_key')
-                interval = rec.get('entry_tf') or '-'
+                sym = str(rec.get('symbol') or data.get('symbol') or "").strip().upper()
+                if not sym:
+                    sym = "-"
+                side_key = str(rec.get('side_key') or data.get('side_key') or "").upper()
+                interval = rec.get('entry_tf') or "-"
                 row = self.pos_table.rowCount()
                 self.pos_table.insertRow(row)
 
@@ -4293,10 +5069,13 @@ def _mw_render_positions_table(self):
                 mr = normalize_margin_ratio(data.get('margin_ratio'))
                 margin_usdt = float(data.get('margin_usdt') or 0.0)
                 pnl_roi = data.get('pnl_roi')
+                pnl_value = float(data.get('pnl_value') or 0.0)
                 side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
                 open_time = rec.get('open_time') or '-'
-                close_time = rec.get('close_time') if rec.get('status') == 'Closed' else '-'
                 status_txt = rec.get('status', 'Active')
+                close_time = rec.get('close_time') if status_txt == 'Closed' else '-'
+                stop_loss_enabled = bool(rec.get('stop_loss_enabled'))
+                stop_loss_text = "Yes" if stop_loss_enabled else "No"
 
                 self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
 
@@ -4316,8 +5095,9 @@ def _mw_render_positions_table(self):
                 margin_item = _NumericItem(f"{margin_usdt:.2f} USDT" if margin_usdt else "-", margin_usdt)
                 self.pos_table.setItem(row, 5, margin_item)
 
-                pnl_item = _NumericItem(str(pnl_roi or "-"), float(data.get('pnl_value') or 0.0))
+                pnl_item = _NumericItem(str(pnl_roi or "-"), pnl_value)
                 self.pos_table.setItem(row, 6, pnl_item)
+
                 self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
                 indicators_raw = rec.get('indicators')
                 indicators_display = '-'
@@ -4329,11 +5109,13 @@ def _mw_render_positions_table(self):
                 self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(side_text))
                 self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(open_time or '-')))
                 self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(str(close_time or '-')))
-                self.pos_table.setItem(row, 12, QtWidgets.QTableWidgetItem(status_txt))
-                btn = self._make_close_btn(sym, side_key, interval, qty_show)
+                self.pos_table.setItem(row, POS_STOP_LOSS_COLUMN, QtWidgets.QTableWidgetItem(stop_loss_text))
+                self.pos_table.setItem(row, POS_STATUS_COLUMN, QtWidgets.QTableWidgetItem(status_txt))
+                btn_interval = interval if interval != "-" else None
+                btn = self._make_close_btn(sym, side_key, btn_interval, qty_show)
                 if status_txt != 'Active':
                     btn.setEnabled(False)
-                self.pos_table.setCellWidget(row, 13, btn)
+                self.pos_table.setCellWidget(row, POS_CLOSE_COLUMN, btn)
             except Exception:
                 pass
         try:
@@ -4344,6 +5126,13 @@ def _mw_render_positions_table(self):
     except Exception as exc:
         try:
             self.log(f"Positions table update failed: {exc}")
+        except Exception:
+            pass
+    finally:
+        try:
+            self.pos_table.setSortingEnabled(True)
+            if sort_column is not None and sort_column >= 0:
+                self.pos_table.sortItems(sort_column, sort_order)
         except Exception:
             pass
 
@@ -4363,7 +5152,7 @@ def _mw_clear_positions_selected(self):
         changed = False
         skipped_active = False
         for row in rows:
-            status_item = table.item(row, 12)
+            status_item = table.item(row, POS_STATUS_COLUMN)
             status = (status_item.text().strip().upper() if status_item else "")
             if status != "CLOSED":
                 skipped_active = True
@@ -4700,8 +5489,9 @@ def apply_futures_modes(self):
     mm = self.margin_mode_combo.currentText().upper()
     pos_mode = self.position_mode_combo.currentText()
     hedge = (pos_mode.strip().lower() == 'hedge')
-    assets_mode = self.assets_mode_combo.currentText()
-    multi = (assets_mode.strip().lower() == 'multi-assets')
+    assets_mode_value = self.assets_mode_combo.currentData() or self.assets_mode_combo.currentText()
+    assets_mode_norm = self._normalize_assets_mode(assets_mode_value)
+    multi = (assets_mode_norm == 'Multi-Assets')
     tif = self.tif_combo.currentText()
     gtdm = int(self.gtd_minutes_spin.value())
     def _do():
@@ -4735,15 +5525,10 @@ def apply_futures_modes(self):
 def start_strategy(self):
     started = 0
     try:
-        raw_override = (self.loop_edit.text().strip() if hasattr(self, 'loop_edit') else '')
-        loop_override = re.sub(r'\s+', '', raw_override.lower()) if raw_override else None
-        if loop_override and not re.match(r'^\d+(s|m|h|d|w)?$', loop_override):
-            self.log(f"Invalid loop interval override: {raw_override}. Use formats like '10s', '2m', '1h'. Ignoring.")
-            loop_override = None
-
+        default_loop_override = self._normalize_loop_override(self.loop_edit.text() if hasattr(self, "loop_edit") else None)
         runtime_ctx = self._override_ctx("runtime")
         account_type_text = (self.account_combo.currentText() or "Futures").strip()
-        pair_entries = []
+        pair_entries: list[dict] = []
         table = runtime_ctx.get("table") if runtime_ctx else None
         if table is not None:
             try:
@@ -4754,8 +5539,8 @@ def start_strategy(self):
                 for row in selected_rows:
                     sym_item = table.item(row, 0)
                     iv_item = table.item(row, 1)
-                    sym = sym_item.text().strip().upper() if sym_item else ''
-                    iv_raw = iv_item.text().strip() if iv_item else ''
+                    sym = sym_item.text().strip().upper() if sym_item else ""
+                    iv_raw = iv_item.text().strip() if iv_item else ""
                     iv_canonical = self._canonicalize_interval(iv_raw)
                     if sym and iv_canonical:
                         entry_obj = None
@@ -4764,8 +5549,10 @@ def start_strategy(self):
                         except Exception:
                             entry_obj = None
                         indicators = None
+                        controls = None
                         if isinstance(entry_obj, dict):
                             indicators = entry_obj.get("indicators")
+                            controls = entry_obj.get("strategy_controls")
                             if isinstance(indicators, (list, tuple)):
                                 indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
                             else:
@@ -4774,13 +5561,14 @@ def start_strategy(self):
                             "symbol": sym,
                             "interval": iv_canonical,
                             "indicators": list(indicators) if indicators else None,
+                            "strategy_controls": self._normalize_strategy_controls("runtime", controls),
                         })
                     elif sym and iv_raw:
                         self.log(f"Skipping unsupported interval '{iv_raw}' for {account_type_text} {sym}.")
         if not pair_entries:
             for entry in self.config.get("runtime_symbol_interval_pairs", []) or []:
-                sym = str((entry or {}).get('symbol') or '').strip().upper()
-                interval_val = str((entry or {}).get('interval') or '').strip()
+                sym = str((entry or {}).get("symbol") or "").strip().upper()
+                interval_val = str((entry or {}).get("interval") or "").strip()
                 iv_canonical = self._canonicalize_interval(interval_val)
                 if not (sym and iv_canonical):
                     if sym and interval_val:
@@ -4791,45 +5579,19 @@ def start_strategy(self):
                     indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
                 else:
                     indicators = None
+                controls = self._normalize_strategy_controls("runtime", entry.get("strategy_controls"))
                 pair_entries.append({
                     "symbol": sym,
                     "interval": iv_canonical,
                     "indicators": list(indicators) if indicators else None,
+                    "strategy_controls": controls,
                 })
-        syms = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count())
-                if self.symbol_list.item(i).isSelected()]
-        if not syms and self.symbol_list.count():
-            syms = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count())]
+        if not pair_entries:
+            self.log("No symbol/interval overrides configured. Add entries before starting.")
+            return
 
-        ivs = [self.interval_list.item(i).text() for i in range(self.interval_list.count())
-               if self.interval_list.item(i).isSelected()]
-        if not ivs:
-            ivs = ["1m"]
-
-        if pair_entries:
-            combos_source = pair_entries
-        else:
-            if not syms:
-                self.log("No symbols available. Click Refresh Symbols.")
-                return
-            current_indicators = self._get_selected_indicator_keys("runtime")
-            indicator_value = sorted({str(k).strip() for k in current_indicators if str(k).strip()}) if current_indicators else None
-            combos_source = []
-            for sym in syms:
-                for iv in ivs:
-                    iv_canonical = self._canonicalize_interval(iv)
-                    if not iv_canonical:
-                        self.log(f"Skipping unsupported interval '{iv}' for {account_type_text} {sym}.")
-                        continue
-                    combos_source.append({
-                        "symbol": sym,
-                        "interval": iv_canonical,
-                        "indicators": list(indicator_value) if indicator_value else None,
-                    })
-
-        combos = []
-        seen_combo = set()
-        for entry in combos_source:
+        combos_map: dict[tuple[str, str, tuple[str, ...]], dict] = {}
+        for entry in pair_entries:
             sym = str(entry.get("symbol") or "").strip().upper()
             iv_raw = str(entry.get("interval") or "").strip()
             iv = self._canonicalize_interval(iv_raw)
@@ -4842,14 +5604,20 @@ def start_strategy(self):
                 indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
             else:
                 indicators = []
+            controls = entry.get("strategy_controls")
             key = (sym, iv, tuple(indicators))
-            if key in seen_combo:
-                continue
-            seen_combo.add(key)
             item = {"symbol": sym, "interval": iv}
             if indicators:
                 item["indicators"] = indicators
-            combos.append(item)
+            if controls:
+                item["strategy_controls"] = controls
+            combos_map[key] = item
+
+        combos = list(combos_map.values())
+        if not combos:
+            self.log("No valid symbol/interval overrides found.")
+            return
+
         total_jobs = len(combos)
         concurrency = StrategyEngine.concurrent_limit()
         if total_jobs > concurrency:
@@ -4860,11 +5628,20 @@ def start_strategy(self):
                 self.api_key_edit.text().strip(), self.api_secret_edit.text().strip(),
                 mode=self.mode_combo.currentText(), account_type=self.account_combo.currentText(),
                 default_leverage=int(self.leverage_spin.value() or 1),
-                default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
+                default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
             )
 
         if not hasattr(self, "strategy_engines"):
             self.strategy_engines = {}
+
+        try:
+            if self.shared_binance is not None:
+                self.shared_binance.account_type = account_type_text.upper()
+                indicator_source_text = (self.ind_source_combo.currentText() or "").strip()
+                if indicator_source_text:
+                    self.shared_binance.indicator_source = indicator_source_text
+        except Exception:
+            pass
 
         for combo in combos:
             sym = combo.get("symbol")
@@ -4883,24 +5660,47 @@ def start_strategy(self):
                     self.log(f"Engine already running for {key}, skipping.")
                     continue
 
+                controls = dict(combo.get("strategy_controls") or {})
                 cfg = copy.deepcopy(self.config)
-                cfg.update({
-                    "symbol": sym,
-                    "interval": iv,
-                    "position_pct": float(self.pospct_spin.value() or self.config.get("position_pct", 100.0)),
-                    "side": self._resolve_dashboard_side(),
-                })
+                cfg["symbol"] = sym
+                cfg["interval"] = iv
+                position_pct_override = controls.get("position_pct")
+                if position_pct_override is not None:
+                    try:
+                        cfg["position_pct"] = float(position_pct_override)
+                    except Exception:
+                        cfg["position_pct"] = float(self.pospct_spin.value() or self.config.get("position_pct", 100.0))
+                else:
+                    cfg["position_pct"] = float(self.pospct_spin.value() or self.config.get("position_pct", 100.0))
+                side_override = controls.get("side") or self._resolve_dashboard_side()
+                cfg["side"] = side_override
+                stop_loss_override = controls.get("stop_loss")
+                if isinstance(stop_loss_override, dict):
+                    cfg["stop_loss"] = normalize_stop_loss_dict(copy.deepcopy(stop_loss_override))
+                else:
+                    cfg["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
+                account_mode_override = controls.get("account_mode")
+                if account_mode_override:
+                    cfg["account_mode"] = self._normalize_account_mode(account_mode_override)
+                cfg["add_only"] = bool(controls.get("add_only", self.config.get("add_only", False)))
+                loop_override_entry = controls.get("loop_interval_override") or default_loop_override
+                loop_override_entry = self._normalize_loop_override(loop_override_entry)
+                if loop_override_entry:
+                    cfg["loop_interval_override"] = loop_override_entry
+                else:
+                    cfg.pop("loop_interval_override", None)
+
                 indicators_cfg = cfg.get("indicators", {}) or {}
                 if indicator_list:
                     indicator_set = set(indicator_list)
                     if isinstance(indicators_cfg, dict):
                         for ind_key, params in indicators_cfg.items():
                             try:
-                                params['enabled'] = ind_key in indicator_set
+                                params["enabled"] = ind_key in indicator_set
                             except Exception:
                                 try:
                                     indicators_cfg[ind_key] = dict(params)
-                                    indicators_cfg[ind_key]['enabled'] = ind_key in indicator_set
+                                    indicators_cfg[ind_key]["enabled"] = ind_key in indicator_set
                                 except Exception:
                                     pass
                 active_indicators = []
@@ -4918,9 +5718,14 @@ def start_strategy(self):
                     else:
                         active_indicators = self._get_selected_indicator_keys("runtime")
                 active_indicators = sorted({str(k).strip() for k in (active_indicators or []) if str(k).strip()})
-                eng = StrategyEngine(self.shared_binance, cfg, log_callback=self.log,
-                                     trade_callback=self._on_trade_signal,
-                                     loop_interval_override=loop_override)
+
+                eng = StrategyEngine(
+                    self.shared_binance,
+                    cfg,
+                    log_callback=self.log,
+                    trade_callback=self._on_trade_signal,
+                    loop_interval_override=loop_override_entry,
+                )
                 eng.start()
                 self.strategy_engines[key] = eng
                 try:
@@ -4929,13 +5734,16 @@ def start_strategy(self):
                         "interval": iv,
                         "side": cfg.get("side", "BOTH"),
                         "indicators": active_indicators,
+                        "stop_loss_enabled": bool(cfg.get("stop_loss", {}).get("enabled")),
                     }
                 except Exception:
                     pass
                 indicator_note = ""
                 if active_indicators:
                     indicator_note = f" (Indicators: {_format_indicator_list(active_indicators)})"
-                self.log(f"Loop start for {key}{indicator_note}.")
+                strat_summary = self._format_strategy_controls_summary("runtime", controls)
+                summary_note = f" | {strat_summary}" if strat_summary and strat_summary != "-" else ""
+                self.log(f"Loop start for {key}{indicator_note}{summary_note}.")
                 started += 1
             except Exception as e:
                 self.log(f"Failed to start engine for {key}: {e}")
@@ -5045,6 +5853,8 @@ def load_config(self):
         if getattr(self, "chart_enabled", False):
             self.chart_config.setdefault("auto_follow", True)
             self.chart_auto_follow = bool(self.chart_config.get("auto_follow", True))
+            default_view_mode = "tradingview" if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None else "original"
+            self.chart_config.setdefault("view_mode", default_view_mode)
             self._restore_chart_controls_from_config()
             current_market_text = self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else "Futures"
             self._chart_needs_render = True
@@ -5067,9 +5877,28 @@ def load_config(self):
             self.leverage_spin.setValue(int(self.config.get("leverage", self.leverage_spin.value())))
             self.margin_mode_combo.setCurrentText(self.config.get("margin_mode", self.margin_mode_combo.currentText()))
             self.position_mode_combo.setCurrentText(self.config.get("position_mode", self.position_mode_combo.currentText()))
-            self.assets_mode_combo.setCurrentText(self.config.get("assets_mode", self.assets_mode_combo.currentText()))
+            assets_mode_loaded = self._normalize_assets_mode(self.config.get("assets_mode", self.assets_mode_combo.currentData()))
+            idx_assets_loaded = self.assets_mode_combo.findData(assets_mode_loaded)
+            if idx_assets_loaded is not None and idx_assets_loaded >= 0:
+                with QtCore.QSignalBlocker(self.assets_mode_combo):
+                    self.assets_mode_combo.setCurrentIndex(idx_assets_loaded)
+            account_mode_loaded = self._normalize_account_mode(self.config.get("account_mode", self.account_mode_combo.currentData()))
+            idx_account_loaded = self.account_mode_combo.findData(account_mode_loaded)
+            if idx_account_loaded is not None and idx_account_loaded >= 0:
+                with QtCore.QSignalBlocker(self.account_mode_combo):
+                    self.account_mode_combo.setCurrentIndex(idx_account_loaded)
             self.tif_combo.setCurrentText(self.config.get("tif", self.tif_combo.currentText()))
             self.gtd_minutes_spin.setValue(int(self.config.get("gtd_minutes", self.gtd_minutes_spin.value())))
+            backtest_assets_mode_loaded = self._normalize_assets_mode(self.backtest_config.get("assets_mode", self.backtest_assets_mode_combo.currentData()))
+            idx_backtest_assets = self.backtest_assets_mode_combo.findData(backtest_assets_mode_loaded)
+            if idx_backtest_assets is not None and idx_backtest_assets >= 0:
+                with QtCore.QSignalBlocker(self.backtest_assets_mode_combo):
+                    self.backtest_assets_mode_combo.setCurrentIndex(idx_backtest_assets)
+            backtest_account_mode_loaded = self._normalize_account_mode(self.backtest_config.get("account_mode", self.backtest_account_mode_combo.currentData()))
+            idx_backtest_account = self.backtest_account_mode_combo.findData(backtest_account_mode_loaded)
+            if idx_backtest_account is not None and idx_backtest_account >= 0:
+                with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
+                    self.backtest_account_mode_combo.setCurrentIndex(idx_backtest_account)
             self._update_runtime_stop_loss_widgets()
             self._update_backtest_stop_loss_widgets()
         except Exception:
@@ -5683,6 +6512,13 @@ try:
         MainWindow._on_trade_signal = _mw_on_trade_signal
 except Exception:
     pass
+
+
+
+
+
+
+
 
 
 

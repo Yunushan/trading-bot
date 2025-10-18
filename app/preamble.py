@@ -51,6 +51,22 @@ def _resolve_pandas_ta_version():
 _PANDAS_VER = _resolve_pandas_version()
 _PTA = _resolve_pandas_ta_version()
 
+def _resolve_module_version(primary: str, *alternates: str) -> str:
+    candidates = [primary, *alternates]
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            return _md.version(cand)
+        except Exception:
+            continue
+    module_name = primary.replace("-", "_")
+    try:
+        module = importlib.import_module(module_name)
+        return getattr(module, "__version__", "installed")
+    except Exception:
+        return "not-installed"
+
 _QT_LINE = "Qt=unknown"
 try:
     from PyQt6.QtCore import QT_VERSION_STR as _QT_VER, PYQT_VERSION_STR as _PYQT_VER
@@ -91,7 +107,15 @@ def _resolve_webengine_version():
 _WEBENGINE_VER = _resolve_webengine_version()
 _WEBENGINE = f"PyQt6-WebEngine={_WEBENGINE_VER}" if _WEBENGINE_VER else "PyQt6-WebEngine=not-installed"
 
-print(f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}, {_WEBENGINE}", flush=True)
+_PYBINANCE_VER = _resolve_module_version("python-binance", "python_binance", "binance")
+_NUMPY_VER = _resolve_module_version("numpy")
+_REQUESTS_VER = _resolve_module_version("requests")
+
+print(
+    f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}, {_WEBENGINE}, "
+    f"python-binance={_PYBINANCE_VER}, numpy={_NUMPY_VER}, requests={_REQUESTS_VER}",
+    flush=True,
+)
 
 PANDAS_VERSION = _PANDAS_VER
 PANDAS_TA_VERSION = _PTA

@@ -2,7 +2,7 @@ import os
 import copy
 
 STOP_LOSS_MODE_ORDER = ["usdt", "percent", "both"]
-STOP_LOSS_SCOPE_OPTIONS = ["per_trade", "cumulative"]
+STOP_LOSS_SCOPE_OPTIONS = ["per_trade", "cumulative", "entire_account"]
 STOP_LOSS_DEFAULT = {
     "enabled": False,
     "mode": "usdt",
@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "gtd_minutes": 30,           # Only used when tif == 'GTD'
     "position_mode": "Hedge",    # "One-way" or "Hedge"
     "assets_mode": "Single-Asset",
+    "account_mode": "Classic Trading",
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "indicators": {
         "ma":        {"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},
@@ -57,6 +58,7 @@ DEFAULT_CONFIG = {
         "margin_mode": "Isolated",
         "position_mode": "Hedge",
         "assets_mode": "Single-Asset",
+        "account_mode": "Classic Trading",
         "leverage": 5,
         "indicators": {},
         "stop_loss": copy.deepcopy(STOP_LOSS_DEFAULT),
