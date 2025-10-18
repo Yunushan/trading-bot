@@ -62,6 +62,18 @@ class BacktestRunResult:
     final_equity: float
     logic: str
     leverage: float
+    start: datetime | None = None
+    end: datetime | None = None
+    position_pct: float | None = None
+    stop_loss_enabled: bool | None = None
+    stop_loss_mode: str | None = None
+    stop_loss_usdt: float | None = None
+    stop_loss_percent: float | None = None
+    stop_loss_scope: str | None = None
+    margin_mode: str | None = None
+    position_mode: str | None = None
+    assets_mode: str | None = None
+    account_mode: str | None = None
 
 
 class BacktestEngine:
@@ -90,7 +102,7 @@ class BacktestEngine:
         indicator_cache: dict[tuple[str, str, str, Tuple[Tuple[str, object], ...]], pd.Series] = {}
 
         combos: List[tuple[str, str, Optional[Sequence[str]], Optional[int]]]
-        pair_override = getattr(request, "pair_overrides", None) or []
+        pair_override = getattr(request, "pair_overrides", None)
         if pair_override:
             combos = []
             seen: set[tuple[str, str, Tuple[str, ...]]] = set()
@@ -224,7 +236,11 @@ class BacktestEngine:
     def _load_klines(self, symbol: str, interval: str, start: datetime, end: datetime,
                      indicators: Iterable[IndicatorDefinition]) -> pd.DataFrame:
         warmup_bars = max(self._estimate_warmup(indicator) for indicator in indicators) or 100
-        warmup_seconds = warmup_bars * _coerce_interval_seconds(interval)
+        try:
+            interval_seconds = _coerce_interval_seconds(interval)
+        except Exception:
+            raise ValueError(f"Invalid backtest interval: {interval}")
+        warmup_seconds = warmup_bars * interval_seconds
         buffered_start = start - timedelta(seconds=warmup_seconds * 2)
         acct = str(getattr(self.wrapper, "account_type", "") or "").upper()
         limit = 1500 if acct.startswith("FUT") else 1000
@@ -497,6 +513,10 @@ class BacktestEngine:
         roi_value = equity - capital
         roi_percent = (roi_value / capital * 100.0) if capital else 0.0
 
+        position_mode_val = (request.position_mode or "").strip() if hasattr(request, "position_mode") else ""
+        assets_mode_val = (request.assets_mode or "").strip() if hasattr(request, "assets_mode") else ""
+        account_mode_val = (request.account_mode or "").strip() if hasattr(request, "account_mode") else ""
+
         return BacktestRunResult(
             symbol="",
             interval="",
@@ -507,6 +527,18 @@ class BacktestEngine:
             final_equity=float(equity),
             logic=logic,
             leverage=float(leverage),
+            start=request.start,
+            end=request.end,
+            position_pct=pct_fraction,
+            stop_loss_enabled=stop_enabled,
+            stop_loss_mode=stop_mode,
+            stop_loss_usdt=stop_usdt,
+            stop_loss_percent=stop_percent,
+            stop_loss_scope=scope,
+            margin_mode=margin_mode,
+            position_mode=position_mode_val,
+            assets_mode=assets_mode_val,
+            account_mode=account_mode_val,
         )
 
     @staticmethod

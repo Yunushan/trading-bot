@@ -49,7 +49,7 @@ def main():
     except Exception:
         icon = QtGui.QIcon()
     win = MainWindow()
-    try:
+    try: # Set window icon after it's created
         if not icon.isNull():
             win.setWindowIcon(icon)
     except Exception:

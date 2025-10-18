@@ -6,6 +6,7 @@ import json
 import re
 import threading
 import time
+import traceback
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -343,6 +344,40 @@ def _normalize_indicator_values(raw) -> list[str]:
         return []
     # Deduplicate while maintaining deterministic order.
     return sorted(dict.fromkeys(items))
+
+
+def _normalize_datetime_pair(value) -> tuple[str, str]:
+    """
+    Convert various datetime representations into (iso_string, display_string).
+    """
+    dt_obj = None
+    text_value = ""
+    if isinstance(value, datetime):
+        dt_obj = value
+    elif isinstance(value, (int, float)):
+        try:
+            dt_obj = datetime.fromtimestamp(float(value))
+        except Exception:
+            dt_obj = None
+    elif isinstance(value, str):
+        text_value = value.strip()
+        if text_value:
+            try:
+                dt_obj = datetime.fromisoformat(text_value)
+            except Exception:
+                try:
+                    dt_obj = datetime.strptime(text_value, "%Y-%m-%d %H:%M")
+                except Exception:
+                    dt_obj = None
+    if dt_obj is not None:
+        iso = dt_obj.isoformat()
+        display = dt_obj.strftime("%Y-%m-%d %H:%M")
+        return iso, display
+    return text_value, text_value or ""
+
+_DBG_BACKTEST_DASHBOARD = True
+_DBG_BACKTEST_RUN = True
+
 
 
 def _make_engine_key(symbol: str, interval: str, indicators: list[str] | None) -> str:
@@ -943,6 +978,14 @@ class MainWindow(QtWidgets.QWidget):
         if not cfg_key:
             return []
         lst = self.config.setdefault(cfg_key, [])
+        if not isinstance(lst, list):
+            if isinstance(lst, (tuple, set)):
+                lst = list(lst)
+            elif isinstance(lst, dict):
+                lst = [dict(lst)]
+            else:
+                lst = []
+            self.config[cfg_key] = lst
         if kind == "backtest":
             try:
                 self.backtest_config[cfg_key] = list(lst)
@@ -1014,6 +1057,7 @@ class MainWindow(QtWidgets.QWidget):
                     "margin_mode": self.backtest_margin_mode_combo.currentText() if hasattr(self, "backtest_margin_mode_combo") else None,
                     "position_mode": self.backtest_position_mode_combo.currentText() if hasattr(self, "backtest_position_mode_combo") else None,
                     "assets_mode": assets_mode_val,
+                    "loop_interval_override": self._normalize_loop_override(self.backtest_loop_edit.text() if hasattr(self, "backtest_loop_edit") else None),
                     "leverage": int(self.backtest_leverage_spin.value()) if hasattr(self, "backtest_leverage_spin") else None,
                     "stop_loss": stop_cfg,
                 }
@@ -1085,6 +1129,9 @@ class MainWindow(QtWidgets.QWidget):
             account_mode = controls.get("account_mode")
             if account_mode:
                 normalized["account_mode"] = self._normalize_account_mode(account_mode)
+            loop_override = self._normalize_loop_override(controls.get("loop_interval_override"))
+            if loop_override:
+                normalized["loop_interval_override"] = loop_override
             leverage = controls.get("leverage")
             if leverage is not None:
                 try:
@@ -1361,17 +1408,58 @@ class MainWindow(QtWidgets.QWidget):
 
     def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
         try:
+            def _dbg(msg: str) -> None:
+                if not _DBG_BACKTEST_DASHBOARD:
+                    return
+                try:
+                    self.log(f"[Backtest->Dashboard] {msg}")
+                except Exception:
+                    pass
+
+            if isinstance(rows, bool):
+                _dbg(f"Received rows bool={rows}; normalizing to None")
+                rows = None
             table = getattr(self, "backtest_results_table", None)
-            results = list(getattr(self, "backtest_results", []) or [])
+            raw_results = getattr(self, "backtest_results", [])
+            _dbg(f"Raw results type={type(raw_results).__name__}")
+            if isinstance(raw_results, list):
+                results = list(raw_results)
+            elif isinstance(raw_results, tuple):
+                results = list(raw_results)
+            elif isinstance(raw_results, dict):
+                results = [dict(raw_results)]
+            elif raw_results in (None, False, True):
+                results = []
+            else:
+                results = [raw_results]
+            normalized_results = []
+            for entry in results:
+                try:
+                    normalized_results.append(self._normalize_backtest_run(entry))
+                except Exception:
+                    try:
+                        dict_candidate = dict(entry)
+                        normalized_results.append(self._normalize_backtest_run(dict_candidate))
+                    except Exception:
+                        _dbg(f"Dropping non-normalizable entry type={type(entry).__name__}")
+                        continue
+            results = normalized_results
+            _dbg(f"Normalized results count={len(results)}")
+            try:
+                self.backtest_results = list(results)
+            except Exception:
+                pass
             if table is None or not results:
                 try:
                     self.backtest_status_label.setText("No backtest results available to import.")
                 except Exception:
                     pass
+                _dbg("No results or table; aborting.")
                 return
             if rows is None:
                 selection = table.selectionModel()
                 if selection is None:
+                    _dbg("Selection model missing; aborting.")
                     return
                 target_rows = sorted({index.row() for index in selection.selectedRows()})
                 if not target_rows:
@@ -1379,6 +1467,7 @@ class MainWindow(QtWidgets.QWidget):
                         self.backtest_status_label.setText("Select one or more backtest rows to add.")
                     except Exception:
                         pass
+                    _dbg("No rows selected via UI.")
                     return
             else:
                 target_rows = sorted({int(r) for r in rows if isinstance(r, int)})
@@ -1387,61 +1476,113 @@ class MainWindow(QtWidgets.QWidget):
                         self.backtest_status_label.setText("No backtest rows available to add.")
                     except Exception:
                         pass
+                    _dbg("Row indices arg empty after filtering.")
                     return
+            _dbg(f"Target row count={len(target_rows)}")
             runtime_pairs = self._override_config_list("runtime")
+            if not isinstance(runtime_pairs, list):
+                try:
+                    runtime_pairs = list(runtime_pairs)
+                except TypeError:
+                    runtime_pairs = []
+                try:
+                    ctx_runtime = self._override_ctx("runtime")
+                    cfg_key_runtime = ctx_runtime.get("config_key")
+                    if cfg_key_runtime:
+                        self.config[cfg_key_runtime] = runtime_pairs
+                except Exception:
+                    pass
+            _dbg(f"Existing runtime pairs before cleanup: type={type(runtime_pairs).__name__}, len={len(runtime_pairs or [])}")
             existing = {}
-            for entry in runtime_pairs:
+            clean_runtime_pairs: list[dict] = []
+            for entry in runtime_pairs or []:
+                if not isinstance(entry, dict):
+                    _dbg(f"Skipping non-dict runtime entry type={type(entry).__name__}")
+                    continue
                 sym = str((entry or {}).get("symbol") or "").strip().upper()
                 iv = str((entry or {}).get("interval") or "").strip()
                 indicators = _normalize_indicator_values((entry or {}).get("indicators"))
-                existing[(sym, iv, tuple(indicators))] = entry
+                key = (sym, iv, tuple(indicators))
+                existing[key] = entry
+                clean_runtime_pairs.append(entry)
+            if runtime_pairs is not None:
+                try:
+                    runtime_pairs.clear()
+                    runtime_pairs.extend(clean_runtime_pairs)
+                except Exception:
+                    pass
             added_count = 0
             for row_idx in target_rows:
                 if row_idx < 0 or row_idx >= len(results):
+                    _dbg(f"Row {row_idx} out of bounds (results len={len(results)})")
                     continue
-                data = {}
-                try:
-                    item_symbol = table.item(row_idx, 0)
-                    if item_symbol is not None:
-                        payload = item_symbol.data(QtCore.Qt.ItemDataRole.UserRole)
-                        if isinstance(payload, dict):
-                            data = dict(payload)
-                except Exception:
-                    data = {}
-                if not data and 0 <= row_idx < len(results):
-                    data = dict(results[row_idx] or {})
+                data = self._normalize_backtest_run(results[row_idx])
+                _dbg(f"Row {row_idx} normalized data: {data}")
                 sym = str(data.get("symbol") or "").strip().upper()
                 iv = str(data.get("interval") or "").strip()
                 if not sym or not iv:
+                    _dbg(f"Row {row_idx} missing sym/interval")
                     continue
                 indicators_clean = _normalize_indicator_values(data.get("indicator_keys"))
                 key = (sym, iv, tuple(indicators_clean))
                 if key in existing:
+                    _dbg(f"Row {row_idx} already exists; skipping")
                     continue
                 entry = {"symbol": sym, "interval": iv}
                 if indicators_clean:
                     entry["indicators"] = list(indicators_clean)
+                loop_value = self._normalize_loop_override(data.get("loop_interval_override"))
+                if loop_value:
+                    entry["loop_interval_override"] = loop_value
+                controls_snapshot = self._collect_strategy_controls("backtest")
+                if controls_snapshot:
+                    _dbg(f"Row {row_idx} using live controls snapshot")
+                    entry["strategy_controls"] = controls_snapshot
+                    stop_cfg = controls_snapshot.get("stop_loss")
+                    if isinstance(stop_cfg, dict):
+                        entry["stop_loss"] = stop_cfg
+                    loop_snapshot = self._normalize_loop_override(controls_snapshot.get("loop_interval_override"))
+                    if loop_snapshot:
+                        entry["loop_interval_override"] = loop_snapshot
+                else:
+                    stored_controls = data.get("strategy_controls")
+                    if isinstance(stored_controls, dict):
+                        _dbg(f"Row {row_idx} using stored controls from result")
+                        entry["strategy_controls"] = stored_controls
+                        stop_cfg = stored_controls.get("stop_loss")
+                        if isinstance(stop_cfg, dict):
+                            entry["stop_loss"] = stop_cfg
+                        loop_stored = self._normalize_loop_override(stored_controls.get("loop_interval_override"))
+                        if loop_stored:
+                            entry.setdefault("loop_interval_override", loop_stored)
                 runtime_pairs.append(entry)
                 existing[key] = entry
                 added_count += 1
+                _dbg(f"Row {row_idx} appended: indicators={indicators_clean}, has_controls={'strategy_controls' in entry}")
             if added_count:
                 self._refresh_symbol_interval_pairs("runtime")
                 try:
                     self.backtest_status_label.setText(f"Added {added_count} row(s) to dashboard overrides.")
                 except Exception:
                     pass
+                _dbg(f"Completed: appended {added_count} entries.")
             else:
                 try:
                     self.backtest_status_label.setText("Selected results already exist in dashboard overrides.")
                 except Exception:
                     pass
+                _dbg("No new entries were added (duplicates?).")
         except Exception as exc:
             try:
                 self.backtest_status_label.setText(f"Add to dashboard failed: {exc}")
             except Exception:
                 pass
             try:
-                self.log(f"Add backtest results to dashboard error: {exc}")
+                if _DBG_BACKTEST_DASHBOARD:
+                    tb = traceback.format_exc()
+                    self.log(f"[Backtest->Dashboard] error: {exc}\n{tb}")
+                else:
+                    self.log(f"Add backtest results to dashboard error: {exc}")
             except Exception:
                 pass
 
@@ -1503,6 +1644,7 @@ class MainWindow(QtWidgets.QWidget):
         symbol_col = column_map.get("Symbol", 0)
         interval_col = column_map.get("Interval", 1)
         indicator_col = column_map.get("Indicators")
+        loop_col = column_map.get("Loop")
         strategy_col = column_map.get("Strategy Controls")
         stoploss_col = column_map.get("Stop-Loss")
         header = table.horizontalHeader()
@@ -1535,6 +1677,12 @@ class MainWindow(QtWidgets.QWidget):
             entry_clean = {'symbol': sym, 'interval': iv}
             if indicator_values:
                 entry_clean['indicators'] = list(indicator_values)
+            loop_val = entry.get("loop_interval_override")
+            if not loop_val and isinstance(controls, dict):
+                loop_val = controls.get("loop_interval_override")
+            loop_val = self._normalize_loop_override(loop_val)
+            if loop_val:
+                entry_clean["loop_interval_override"] = loop_val
             if controls:
                 entry_clean['strategy_controls'] = controls
             cleaned.append(entry_clean)
@@ -1548,6 +1696,9 @@ class MainWindow(QtWidgets.QWidget):
                 pass
             if indicator_col is not None:
                 table.setItem(row, indicator_col, QtWidgets.QTableWidgetItem(_format_indicator_list(indicator_values)))
+            if loop_col is not None:
+                loop_display = entry_clean.get("loop_interval_override") or "-"
+                table.setItem(row, loop_col, QtWidgets.QTableWidgetItem(loop_display))
             if strategy_col is not None:
                 summary = self._format_strategy_controls_summary(kind, controls)
                 table.setItem(row, strategy_col, QtWidgets.QTableWidgetItem(summary))
@@ -1685,6 +1836,8 @@ class MainWindow(QtWidgets.QWidget):
                 else:
                     remove_set.add((sym, iv, None))
             for entry in pairs_cfg:
+                if not isinstance(entry, dict):
+                    continue
                 sym = str(entry.get('symbol') or '').strip().upper()
                 iv = str(entry.get('interval') or '').strip()
                 indicators_raw = entry.get('indicators')
@@ -1731,6 +1884,8 @@ class MainWindow(QtWidgets.QWidget):
         show_indicators = kind in ("runtime", "backtest")
         if show_indicators:
             columns.append("Indicators")
+        if kind in ("runtime", "backtest"):
+            columns.append("Loop")
         columns.append("Strategy Controls")
         columns.append("Stop-Loss")
         table = QtWidgets.QTableWidget(0, len(columns))
@@ -1979,6 +2134,11 @@ class MainWindow(QtWidgets.QWidget):
                     self.backtest_account_mode_combo.setCurrentIndex(idx_account_mode)
             leverage_cfg = int(self.backtest_config.get("leverage", 5) or 1)
             self.backtest_leverage_spin.setValue(leverage_cfg)
+            loop_cfg = self._normalize_loop_override(self.backtest_config.get("loop_interval_override"))
+            if hasattr(self, "backtest_loop_edit"):
+                with QtCore.QSignalBlocker(self.backtest_loop_edit):
+                    self.backtest_loop_edit.setText(loop_cfg or "")
+            self.backtest_config["loop_interval_override"] = loop_cfg or ""
             now_dt = QtCore.QDateTime.currentDateTime()
             start_cfg = self.backtest_config.get("start_date")
             end_cfg = self.backtest_config.get("end_date")
@@ -2318,218 +2478,267 @@ class MainWindow(QtWidgets.QWidget):
             pass
 
     def _run_backtest(self):
-        if self.backtest_worker and self.backtest_worker.isRunning():
-            self.backtest_status_label.setText("Backtest already running...")
-            return
-
-        self._backtest_expected_runs = []
-
-        ctx_backtest = self._override_ctx("backtest")
-        pair_table = ctx_backtest.get("table") if ctx_backtest else None
-        selected_pairs = []
-        if pair_table is not None:
+        def dbg(msg: str) -> None:
+            if not _DBG_BACKTEST_RUN:
+                return
             try:
-                rows = sorted({idx.row() for idx in pair_table.selectionModel().selectedRows()})
+                self.log(f"[Backtest] {msg}")
             except Exception:
-                rows = []
-            if rows:
-                for row in rows:
-                    sym_item = pair_table.item(row, 0)
-                    iv_item = pair_table.item(row, 1)
-                    sym = sym_item.text().strip().upper() if sym_item else ''
-                    iv = iv_item.text().strip() if iv_item else ''
-                    if sym and iv:
-                        selected_pairs.append((sym, iv))
-        if selected_pairs:
-            pairs_override_raw = selected_pairs
-        else:
-            pairs_override_raw = [(str((entry or {}).get('symbol') or '').strip().upper(), str((entry or {}).get('interval') or '').strip())
-                                for entry in self.config.get('backtest_symbol_interval_pairs', []) or []
-                                if str((entry or {}).get('symbol') or '').strip() and str((entry or {}).get('interval') or '').strip()]
-        pairs_override = []
-        seen_pairs = set()
-        for sym, iv in pairs_override_raw:
-            key = (sym, iv)
-            if key in seen_pairs:
-                continue
-            seen_pairs.add(key)
+                print(f"[Backtest] {msg}", flush=True)
 
-            pairs_override.append(key)
-        symbols = [s for s in (self.backtest_config.get("symbols") or []) if s]
-        intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv]
-        if pairs_override:
-            symbol_order = []
-            interval_order = []
-            for sym, iv in pairs_override:
-                if sym not in symbol_order:
-                    symbol_order.append(sym)
-                if iv not in interval_order:
-                    interval_order.append(iv)
-            if not symbol_order or not interval_order:
-                self.backtest_status_label.setText("Symbol/Interval overrides list is empty.")
+        try:
+            if self.backtest_worker and self.backtest_worker.isRunning():
+                self.backtest_status_label.setText("Backtest already running...")
+                dbg("Existing worker already running; aborting request.")
                 return
-            symbols = symbol_order
-            intervals = interval_order
-        if not symbols:
-            self.backtest_status_label.setText("Select at least one symbol.")
-            return
-        if not intervals:
-            self.backtest_status_label.setText("Select at least one interval.")
-            return
 
-        self.backtest_config["symbols"] = list(symbols)
-        self.backtest_config["intervals"] = list(intervals)
-        cfg_bt = self.config.setdefault("backtest", {})
-        cfg_bt["symbols"] = list(symbols)
-        cfg_bt["intervals"] = list(intervals)
+            dbg("Preparing parameter overrides.")
+            self._backtest_expected_runs = []
 
-        indicators_cfg = self.backtest_config.get("indicators", {}) or {}
-        indicators = []
-        for key, params in indicators_cfg.items():
-            if not params or not params.get("enabled"):
-                continue
-            clean_params = copy.deepcopy(params)
-            clean_params.pop("enabled", None)
-            indicators.append(IndicatorDefinition(key=key, params=clean_params))
-        if not indicators:
-            self.backtest_status_label.setText("Enable at least one indicator to backtest.")
-            return
+            ctx_backtest = self._override_ctx("backtest")
+            pair_table = ctx_backtest.get("table") if ctx_backtest else None
+            pair_overrides_from_ui: list[dict] = []
+            if pair_table is not None:
+                try:
+                    rows = sorted({idx.row() for idx in pair_table.selectionModel().selectedRows()})
+                except Exception:
+                    rows = []
+                if rows:
+                    dbg(f"Processing {len(rows)} selected override rows.")
+                    for row in rows:
+                        try:
+                            sym_item = pair_table.item(row, 0)
+                            entry_data = sym_item.data(QtCore.Qt.ItemDataRole.UserRole)
+                            if isinstance(entry_data, dict):
+                                pair_overrides_from_ui.append(entry_data)
+                        except Exception:
+                            continue
+                else:
+                    dbg("No rows selected in override table; using all entries from config.")
+                    all_pairs_from_config = self.config.get("backtest_symbol_interval_pairs", []) or []
+                    for entry in all_pairs_from_config:
+                        if isinstance(entry, dict):
+                            pair_overrides_from_ui.append(entry)
+            else:
+                dbg("No override table found.")
 
-        start_qdt = self.backtest_start_edit.dateTime()
-        end_qdt = self.backtest_end_edit.dateTime()
-        if start_qdt > end_qdt:
-            self.backtest_status_label.setText("Start date/time must be before end date/time.")
-            return
+            pairs_override_for_request: list[dict] | None = None
+            if pair_overrides_from_ui:
+                pairs_override_for_request = []
+                seen_keys = set()
+                for entry in pair_overrides_from_ui:
+                    sym = str(entry.get("symbol") or "").strip().upper()
+                    iv = str(entry.get("interval") or "").strip()
+                    if not (sym and iv):
+                        continue
+                    # Use a simple key for now; engine will handle indicator permutations
+                    key = (sym, iv)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    pairs_override_for_request.append(entry)
+                dbg(f"Prepared {len(pairs_override_for_request)} unique overrides for the backtest request.")
 
-        start_dt = start_qdt.toPyDateTime()
-        end_dt = end_qdt.toPyDateTime()
-        if start_dt >= end_dt:
-            self.backtest_status_label.setText("Backtest range must span a positive duration.")
-            return
-
-        capital = float(self.backtest_capital_spin.value())
-        if capital <= 0.0:
-            self.backtest_status_label.setText("Margin capital must be positive.")
-            return
-
-        position_pct = float(self.backtest_pospct_spin.value())
-        side_value = self._canonical_side_from_text(self.backtest_side_combo.currentText())
-        margin_mode = (self.backtest_margin_mode_combo.currentText() or "Isolated").strip()
-        position_mode = (self.backtest_position_mode_combo.currentText() or "Hedge").strip()
-        assets_mode = self._normalize_assets_mode(
-            self.backtest_assets_mode_combo.currentData() or self.backtest_assets_mode_combo.currentText()
-        )
-        account_mode = self._normalize_account_mode(
-            self.backtest_account_mode_combo.currentData() or self.backtest_account_mode_combo.currentText()
-        )
-        leverage_value = int(self.backtest_leverage_spin.value() or 1)
-
-        logic = (self.backtest_logic_combo.currentText() or "AND").upper()
-        self._update_backtest_config("logic", logic)
-        self._update_backtest_config("capital", capital)
-        self._update_backtest_config("position_pct", position_pct)
-        self._update_backtest_config("side", side_value)
-        self._update_backtest_config("margin_mode", margin_mode)
-        self._update_backtest_config("position_mode", position_mode)
-        self._update_backtest_config("assets_mode", assets_mode)
-        self._update_backtest_config("account_mode", account_mode)
-        self._update_backtest_config("leverage", leverage_value)
-        indicator_keys_order = [ind.key for ind in indicators]
-        combos_sequence = list(pairs_override) if pairs_override else [(sym, iv) for sym in symbols for iv in intervals]
-        expected_runs = []
-        if logic == "SEPARATE":
-            for sym, iv in combos_sequence:
-                for ind in indicators:
-                    expected_runs.append((sym, iv, [ind.key]))
-        else:
-            expected_indicator_list = list(indicator_keys_order)
-            for sym, iv in combos_sequence:
-                expected_runs.append((sym, iv, list(expected_indicator_list)))
-        self._backtest_expected_runs = expected_runs
-        self._backtest_dates_changed()
-
-        symbol_source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip()
-        self._update_backtest_config("symbol_source", symbol_source)
-        account_type = "Spot" if symbol_source.lower().startswith("spot") else "Futures"
-
-        api_key = self.api_key_edit.text().strip()
-        api_secret = self.api_secret_edit.text().strip()
-        mode = self.mode_combo.currentText()
-
-        stop_cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
-        self.backtest_config["stop_loss"] = stop_cfg
-        self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(stop_cfg)
-
-        request = BacktestRequest(
-            symbols=symbols,
-            intervals=intervals,
-            indicators=indicators,
-            logic=logic,
-            symbol_source=symbol_source,
-            start=start_dt,
-            end=end_dt,
-            capital=capital,
-            side=side_value,
-            position_pct=position_pct,
-            leverage=leverage_value,
-            margin_mode=margin_mode,
-            position_mode=position_mode,
-            assets_mode=assets_mode,
-            account_mode=account_mode,
-            stop_loss_enabled=bool(stop_cfg.get("enabled")),
-            stop_loss_mode=str(stop_cfg.get("mode") or "usdt"),
-            stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
-            stop_loss_percent=float(stop_cfg.get("percent", 0.0) or 0.0),
-            stop_loss_scope=str(stop_cfg.get("scope") or "per_trade"),
-            pair_overrides=pairs_override if pairs_override else None,
-        )
-
-        signature = (mode, api_key, api_secret)
-        wrapper_entry = self._backtest_wrappers.get(account_type)
-        wrapper = None
-        if isinstance(wrapper_entry, dict) and wrapper_entry.get("signature") == signature:
-            wrapper = wrapper_entry.get("wrapper")
-        if wrapper is None:
-            try:
-                wrapper = BinanceWrapper(
-                    api_key,
-                    api_secret,
-                    mode=mode,
-                    account_type=account_type,
-                )
-                self._backtest_wrappers[account_type] = {"signature": signature, "wrapper": wrapper}
-            except Exception as exc:
-                msg = f"Unable to initialize Binance wrapper: {exc}"
-                self.backtest_status_label.setText(msg)
-                self.log(msg)
+            symbols = [s for s in (self.backtest_config.get("symbols") or []) if s]
+            intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv]
+            if pairs_override_for_request:
+                symbol_order: list[str] = []
+                interval_order: list[str] = []
+                for entry in pairs_override_for_request:
+                    sym = str(entry.get("symbol") or "")
+                    iv = str(entry.get("interval") or "")
+                    if sym not in symbol_order:
+                        symbol_order.append(sym)
+                    if iv not in interval_order:
+                        interval_order.append(iv)
+                if not symbol_order or not interval_order:
+                    self.backtest_status_label.setText("Symbol/Interval overrides list is empty.")
+                    dbg("Overrides empty after filtering.")
+                    return
+                symbols = symbol_order
+                intervals = interval_order
+            if not symbols:
+                self.backtest_status_label.setText("Select at least one symbol.")
+                dbg("Missing symbols.")
                 return
-        else:
+            if not intervals:
+                self.backtest_status_label.setText("Select at least one interval.")
+                dbg("Missing intervals.")
+                return
+
+            dbg(f"Symbols={symbols}, intervals={intervals}")
+
+            self.backtest_config["symbols"] = list(symbols)
+            self.backtest_config["intervals"] = list(intervals)
+            cfg_bt = self.config.setdefault("backtest", {})
+            cfg_bt["symbols"] = list(symbols)
+            cfg_bt["intervals"] = list(intervals)
+
+            indicators_cfg = self.backtest_config.get("indicators", {}) or {}
+            indicators: list[IndicatorDefinition] = []
+            for key, params in indicators_cfg.items():
+                if not params or not params.get("enabled"):
+                    continue
+                clean_params = copy.deepcopy(params)
+                clean_params.pop("enabled", None)
+                indicators.append(IndicatorDefinition(key=key, params=clean_params))
+            if not indicators:
+                self.backtest_status_label.setText("Enable at least one indicator to backtest.")
+                dbg("No indicators enabled.")
+                return
+
+            start_qdt = self.backtest_start_edit.dateTime()
+            end_qdt = self.backtest_end_edit.dateTime()
+            if start_qdt > end_qdt:
+                self.backtest_status_label.setText("Start date/time must be before end date/time.")
+                dbg("Invalid date range (start > end).")
+                return
+
+            start_dt = start_qdt.toPyDateTime()
+            end_dt = end_qdt.toPyDateTime()
+            if start_dt >= end_dt:
+                self.backtest_status_label.setText("Backtest range must span a positive duration.")
+                dbg("Invalid date range (duration <= 0).")
+                return
+
+            capital = float(self.backtest_capital_spin.value())
+            if capital <= 0.0:
+                self.backtest_status_label.setText("Margin capital must be positive.")
+                dbg("Capital <= 0.")
+                return
+
+            position_pct = float(self.backtest_pospct_spin.value())
+            side_value = self._canonical_side_from_text(self.backtest_side_combo.currentText())
+            margin_mode = (self.backtest_margin_mode_combo.currentText() or "Isolated").strip()
+            position_mode = (self.backtest_position_mode_combo.currentText() or "Hedge").strip()
+            assets_mode = self._normalize_assets_mode(
+                self.backtest_assets_mode_combo.currentData() or self.backtest_assets_mode_combo.currentText()
+            )
+            account_mode = self._normalize_account_mode(
+                self.backtest_account_mode_combo.currentData() or self.backtest_account_mode_combo.currentText()
+            )
+            leverage_value = int(self.backtest_leverage_spin.value() or 1)
+
+            logic = (self.backtest_logic_combo.currentText() or "AND").upper()
+            self._update_backtest_config("logic", logic)
+            self._update_backtest_config("capital", capital)
+            self._update_backtest_config("position_pct", position_pct)
+            self._update_backtest_config("side", side_value)
+            self._update_backtest_config("margin_mode", margin_mode)
+            self._update_backtest_config("position_mode", position_mode)
+            self._update_backtest_config("assets_mode", assets_mode)
+            self._update_backtest_config("account_mode", account_mode)
+            self._update_backtest_config("leverage", leverage_value)
+            dbg(f"Logic={logic}, capital={capital}, pos%={position_pct}, side={side_value}, loop={self.backtest_config.get('loop_interval_override')}")
+
+            indicator_keys_order = [ind.key for ind in indicators]
+            combos_sequence = [(entry['symbol'], entry['interval']) for entry in pairs_override_for_request] if pairs_override_for_request else [(sym, iv) for sym in symbols for iv in intervals]
+            expected_runs = []
+            if logic == "SEPARATE":
+                for sym, iv in combos_sequence:
+                    for ind in indicators:
+                        expected_runs.append((sym, iv, [ind.key]))
+            else:
+                expected_indicator_list = list(indicator_keys_order)
+                for sym, iv in combos_sequence:
+                    expected_runs.append((sym, iv, list(expected_indicator_list)))
+            self._backtest_expected_runs = expected_runs
+            self._backtest_dates_changed()
+            dbg(f"Prepared {len(expected_runs)} expected run entries.")
+
+            symbol_source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip()
+            self._update_backtest_config("symbol_source", symbol_source)
+            account_type = "Spot" if symbol_source.lower().startswith("spot") else "Futures"
+
+            api_key = self.api_key_edit.text().strip()
+            api_secret = self.api_secret_edit.text().strip()
+            mode = self.mode_combo.currentText()
+
+            stop_cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
+            self.backtest_config["stop_loss"] = stop_cfg
+            self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(stop_cfg)
+
+            request = BacktestRequest(
+                symbols=symbols,
+                intervals=intervals,
+                indicators=indicators,
+                logic=logic,
+                symbol_source=symbol_source,
+                start=start_dt,
+                end=end_dt,
+                capital=capital,
+                side=side_value,
+                position_pct=position_pct,
+                leverage=leverage_value,
+                margin_mode=margin_mode,
+                position_mode=position_mode,
+                assets_mode=assets_mode,
+                account_mode=account_mode,
+                stop_loss_enabled=bool(stop_cfg.get("enabled")),
+                stop_loss_mode=str(stop_cfg.get("mode") or "usdt"),
+                stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
+                stop_loss_percent=float(stop_cfg.get("percent", 0.0) or 0.0),
+                stop_loss_scope=str(stop_cfg.get("scope") or "per_trade"),
+                pair_overrides=pairs_override_for_request,
+            )
+            dbg(f"BacktestRequest prepared: symbols={len(symbols)}, intervals={len(intervals)}, indicators={len(indicators)}")
+
+            signature = (mode, api_key, api_secret)
+            wrapper_entry = self._backtest_wrappers.get(account_type)
+            wrapper = None
+            if isinstance(wrapper_entry, dict) and wrapper_entry.get("signature") == signature:
+                wrapper = wrapper_entry.get("wrapper")
+                dbg("Reusing cached Binance wrapper.")
+            if wrapper is None:
+                try:
+                    wrapper = BinanceWrapper(
+                        api_key,
+                        api_secret,
+                        mode=mode,
+                        account_type=account_type,
+                    )
+                    self._backtest_wrappers[account_type] = {"signature": signature, "wrapper": wrapper}
+                    dbg("Created new Binance wrapper instance.")
+                except Exception as exc:
+                    msg = f"Unable to initialize Binance wrapper: {exc}"
+                    self.backtest_status_label.setText(msg)
+                    self.log(msg)
+                    return
+            else:
+                try:
+                    wrapper.account_type = account_type
+                except Exception:
+                    pass
+
             try:
-                wrapper.account_type = account_type
+                wrapper.indicator_source = self.ind_source_combo.currentText()
             except Exception:
                 pass
 
-        try:
-            wrapper.indicator_source = self.ind_source_combo.currentText()
-        except Exception:
-            pass
-
-        engine = BacktestEngine(wrapper)
-        self.backtest_worker = _BacktestWorker(engine, request, self)
-        self.backtest_worker.progress.connect(self._on_backtest_progress)
-        self.backtest_worker.finished.connect(self._on_backtest_finished)
-        self.backtest_results_table.setRowCount(0)
-        self.backtest_status_label.setText("Running backtest...")
-        self.backtest_run_btn.setEnabled(False)
-        try:
-            self.backtest_stop_btn.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            self.backtest_stop_btn.setEnabled(True)
-        except Exception:
-            pass
-        self.backtest_worker.start()
+            engine = BacktestEngine(wrapper)
+            self.backtest_worker = _BacktestWorker(engine, request, self)
+            self.backtest_worker.progress.connect(self._on_backtest_progress)
+            self.backtest_worker.finished.connect(self._on_backtest_finished)
+            self.backtest_results_table.setRowCount(0)
+            self.backtest_status_label.setText("Running backtest...")
+            self.backtest_run_btn.setEnabled(False)
+            try:
+                self.backtest_stop_btn.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self.backtest_stop_btn.setEnabled(True)
+            except Exception:
+                pass
+            dbg("Dispatching worker thread.")
+            self.backtest_worker.start()
+        except Exception as exc:
+            tb = traceback.format_exc()
+            try:
+                self.backtest_status_label.setText(f"Backtest failed: {exc}")
+                self.log(f"[Backtest] error: {exc}\n{tb}")
+            except Exception:
+                print(tb, flush=True)
 
     def _stop_backtest(self):
         try:
@@ -2585,6 +2794,87 @@ class MainWindow(QtWidgets.QWidget):
                 data[key] = float(data.get(key, 0.0) or 0.0)
             except Exception:
                 data[key] = 0.0
+        for pct_key in ("position_pct",):
+            try:
+                data[pct_key] = float(data.get(pct_key, 0.0) or 0.0)
+            except Exception:
+                data[pct_key] = 0.0
+        for lev_key in ("leverage",):
+            try:
+                data[lev_key] = float(data.get(lev_key, 0.0) or 0.0)
+            except Exception:
+                data[lev_key] = 0.0
+        for bool_key in ("stop_loss_enabled",):
+            data[bool_key] = bool(data.get(bool_key, False))
+        for str_key in ("symbol", "interval", "logic", "stop_loss_mode", "stop_loss_scope", "margin_mode", "position_mode", "assets_mode", "account_mode"):
+            val = data.get(str_key)
+            data[str_key] = str(val or "").strip()
+        loop_raw = data.get("loop_interval_override")
+        if loop_raw is None:
+            if isinstance(run, dict):
+                loop_raw = run.get("loop_interval_override")
+            else:
+                loop_raw = getattr(run, "loop_interval_override", None)
+        if loop_raw is None:
+            strategy_controls = data.get("strategy_controls")
+            if isinstance(strategy_controls, dict):
+                loop_raw = strategy_controls.get("loop_interval_override")
+        loop_normalized = MainWindow._normalize_loop_override(loop_raw)
+        data["loop_interval_override"] = loop_normalized or ""
+        start_iso, start_display = _normalize_datetime_pair(data.get("start"))
+        if not start_iso and hasattr(run, "start"):
+            start_iso, start_display = _normalize_datetime_pair(getattr(run, "start"))
+        data["start"] = start_iso
+        data["start_display"] = start_display or "-"
+        end_iso, end_display = _normalize_datetime_pair(data.get("end"))
+        if not end_iso and hasattr(run, "end"):
+            end_iso, end_display = _normalize_datetime_pair(getattr(run, "end"))
+        data["end"] = end_iso
+        data["end_display"] = end_display or "-"
+        pos_pct_fraction = data.get("position_pct", 0.0)
+        try:
+            pos_pct_fraction = float(pos_pct_fraction or 0.0)
+        except Exception:
+            pos_pct_fraction = 0.0
+        data["position_pct"] = pos_pct_fraction
+        data["position_pct_display"] = f"{max(pos_pct_fraction, 0.0) * 100.0:.2f}%"
+        stop_enabled = data.get("stop_loss_enabled", False)
+        stop_mode = data.get("stop_loss_mode", "")
+        stop_usdt = data.get("stop_loss_usdt", 0.0)
+        stop_percent = data.get("stop_loss_percent", 0.0)
+        stop_scope = data.get("stop_loss_scope", "")
+        try:
+            stop_usdt = float(stop_usdt or 0.0)
+        except Exception:
+            stop_usdt = 0.0
+        try:
+            stop_percent = float(stop_percent or 0.0)
+        except Exception:
+            stop_percent = 0.0
+        data["stop_loss_usdt"] = stop_usdt
+        data["stop_loss_percent"] = stop_percent
+        if stop_enabled:
+            parts = []
+            if stop_mode:
+                parts.append(stop_mode)
+            if stop_scope:
+                parts.append(stop_scope)
+            if stop_usdt > 0.0:
+                parts.append(f"{stop_usdt:.2f} USDT")
+            if stop_percent > 0.0:
+                parts.append(f"{stop_percent:.2f}%")
+            data["stop_loss_display"] = "Enabled" + (f" ({', '.join(parts)})" if parts else "")
+        else:
+            data["stop_loss_display"] = "Disabled"
+        if not data.get("margin_mode"):
+            data["margin_mode"] = ""
+        if not data.get("position_mode"):
+            data["position_mode"] = ""
+        if not data.get("assets_mode"):
+            data["assets_mode"] = ""
+        if not data.get("account_mode"):
+            data["account_mode"] = ""
+        data["leverage_display"] = f"{data.get('leverage', 0.0):.2f}x"
         data["symbol"] = str(data.get("symbol") or "")
         data["interval"] = str(data.get("interval") or "")
         data["logic"] = str(data.get("logic") or "")
@@ -2612,6 +2902,10 @@ class MainWindow(QtWidgets.QWidget):
         runs_raw = result.get("runs", []) if isinstance(result, dict) else []
         errors = result.get("errors", []) if isinstance(result, dict) else []
         run_dicts = [self._normalize_backtest_run(r) for r in (runs_raw or [])]
+        default_loop_override = MainWindow._normalize_loop_override(self.backtest_config.get("loop_interval_override"))
+        for rd in run_dicts:
+            if not rd.get("loop_interval_override"):
+                rd["loop_interval_override"] = default_loop_override or ""
         self.backtest_results = run_dicts
         expected_runs = getattr(self, "_backtest_expected_runs", []) or []
         for idx, rd in enumerate(run_dicts):
@@ -2661,7 +2955,7 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_results_table.setRowCount(len(rows_data))
             for row, run in enumerate(rows_data):
                 try:
-                    data = run if isinstance(run, dict) else self._normalize_backtest_run(run)
+                    data = self._normalize_backtest_run(run)
                     symbol = data.get("symbol") or "-"
                     interval = data.get("interval") or "-"
                     logic = data.get("logic") or "-"
@@ -2669,12 +2963,17 @@ class MainWindow(QtWidgets.QWidget):
                     trades = _safe_float(data.get("trades", 0.0), 0.0)
                     roi_value = _safe_float(data.get("roi_value", 0.0), 0.0)
                     roi_percent = _safe_float(data.get("roi_percent", 0.0), 0.0)
-                    try:
-                        self.log(f"Render row {row}: {symbol}@{interval}, trades={trades}, roi={roi_value}/{roi_percent}")
-                    except Exception:
-                        pass
+                    start_display = data.get("start_display") or "-"
+                    end_display = data.get("end_display") or "-"
+                    pos_pct_display = data.get("position_pct_display") or "0.00%"
+                    stop_loss_display = data.get("stop_loss_display") or "Disabled"
+                    margin_mode = data.get("margin_mode") or "-"
+                    position_mode = data.get("position_mode") or "-"
+                    assets_mode = data.get("assets_mode") or "-"
+                    account_mode = data.get("account_mode") or "-"
+                    leverage_display = data.get("leverage_display") or f"{data.get('leverage', 0.0):.2f}x"
 
-                    indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys)
+                    indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys) or "-"
                     item_symbol = QtWidgets.QTableWidgetItem(symbol or "-")
                     try:
                         item_symbol.setData(QtCore.Qt.ItemDataRole.UserRole, dict(data))
@@ -2683,25 +2982,32 @@ class MainWindow(QtWidgets.QWidget):
                     self.backtest_results_table.setItem(row, 0, item_symbol)
                     self.backtest_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(interval or "-"))
                     self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(logic or "-"))
-                    self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(indicators_display or "-"))
+                    self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(indicators_display))
                     trades_display = _safe_int(trades, 0)
                     trades_item = _NumericItem(str(trades_display), trades_display)
                     self.backtest_results_table.setItem(row, 4, trades_item)
+                    loop_display = data.get("loop_interval_override") or "-"
+                    self.backtest_results_table.setItem(row, 5, QtWidgets.QTableWidgetItem(loop_display))
+                    self.backtest_results_table.setItem(row, 6, QtWidgets.QTableWidgetItem(start_display or "-"))
+                    self.backtest_results_table.setItem(row, 7, QtWidgets.QTableWidgetItem(end_display or "-"))
+                    self.backtest_results_table.setItem(row, 8, QtWidgets.QTableWidgetItem(pos_pct_display))
+                    self.backtest_results_table.setItem(row, 9, QtWidgets.QTableWidgetItem(stop_loss_display))
+                    self.backtest_results_table.setItem(row, 10, QtWidgets.QTableWidgetItem(margin_mode or "-"))
+                    self.backtest_results_table.setItem(row, 11, QtWidgets.QTableWidgetItem(position_mode or "-"))
+                    self.backtest_results_table.setItem(row, 12, QtWidgets.QTableWidgetItem(assets_mode or "-"))
+                    self.backtest_results_table.setItem(row, 13, QtWidgets.QTableWidgetItem(account_mode or "-"))
+                    self.backtest_results_table.setItem(row, 14, QtWidgets.QTableWidgetItem(leverage_display))
                     roi_value_item = _NumericItem(f"{roi_value:+.2f}", roi_value)
-                    self.backtest_results_table.setItem(row, 5, roi_value_item)
+                    self.backtest_results_table.setItem(row, 15, roi_value_item)
                     roi_percent_item = _NumericItem(f"{roi_percent:+.2f}%", roi_percent)
-                    self.backtest_results_table.setItem(row, 6, roi_percent_item)
+                    self.backtest_results_table.setItem(row, 16, roi_percent_item)
                 except Exception as row_exc:
                     self.log(f"Backtest table row {row} error: {row_exc}")
                     err_item = QtWidgets.QTableWidgetItem(f"Error: {row_exc}")
                     err_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
                     self.backtest_results_table.setItem(row, 0, err_item)
-                    self.backtest_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem("-"))
-                    self.backtest_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem("-"))
-                    self.backtest_results_table.setItem(row, 3, QtWidgets.QTableWidgetItem("-"))
-                    self.backtest_results_table.setItem(row, 4, QtWidgets.QTableWidgetItem("0"))
-                    self.backtest_results_table.setItem(row, 5, QtWidgets.QTableWidgetItem("0.00"))
-                    self.backtest_results_table.setItem(row, 6, QtWidgets.QTableWidgetItem("0.00%"))
+                    for col in range(1, 17):
+                        self.backtest_results_table.setItem(row, col, QtWidgets.QTableWidgetItem("-"))
                     continue
             self.backtest_results_table.resizeRowsToContents()
         except Exception as exc:
@@ -4510,6 +4816,16 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_pospct_spin.valueChanged.connect(lambda v: self._update_backtest_config("position_pct", float(v)))
         param_form.addRow("Position % of Balance:", self.backtest_pospct_spin)
 
+        self.backtest_loop_edit = QtWidgets.QLineEdit()
+        self.backtest_loop_edit.setPlaceholderText("Leave blank to use strategy interval (e.g. 30s, 2m)")
+        loop_default = self._normalize_loop_override(self.backtest_config.get("loop_interval_override"))
+        with QtCore.QSignalBlocker(self.backtest_loop_edit):
+            self.backtest_loop_edit.setText(loop_default or "")
+        self.backtest_loop_edit.textChanged.connect(lambda v: self._update_backtest_config("loop_interval_override", self._normalize_loop_override(v) or ""))
+        self.backtest_config["loop_interval_override"] = loop_default or ""
+        self.config.setdefault("backtest", {})["loop_interval_override"] = loop_default or ""
+        param_form.addRow("Loop Interval Override:", self.backtest_loop_edit)
+
         backtest_stop_cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
         self.backtest_config["stop_loss"] = backtest_stop_cfg
         self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(backtest_stop_cfg)
@@ -4690,8 +5006,26 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        self.backtest_results_table = QtWidgets.QTableWidget(0, 7)
-        self.backtest_results_table.setHorizontalHeaderLabels(["Symbol", "Interval", "Logic", "Indicators", "Trades", "ROI (USDT)", "ROI (%)"])
+        self.backtest_results_table = QtWidgets.QTableWidget(0, 17)
+        self.backtest_results_table.setHorizontalHeaderLabels([
+            "Symbol",
+            "Interval",
+            "Logic",
+            "Indicators",
+            "Trades",
+            "Loop Interval",
+            "Start Date",
+            "End Date",
+            "Position % Of Balance",
+            "Stop-Loss Options",
+            "Margin Mode (Futures)",
+            "Position Mode",
+            "Assets Mode",
+            "Account Mode",
+            "Leverage (Futures)",
+            "ROI (USDT)",
+            "ROI (%)",
+        ])
         header = self.backtest_results_table.horizontalHeader()
         header.setStretchLastSection(False)
         try:
@@ -6516,15 +6850,3 @@ try:
         MainWindow._on_trade_signal = _mw_on_trade_signal
 except Exception:
     pass
-
-
-
-
-
-
-
-
-
-
-
-
