@@ -320,6 +320,31 @@ def _safe_int(value, default=0):
         return int(default)
 
 
+def _normalize_indicator_values(raw) -> list[str]:
+    """
+    Ensure indicator collections are always returned as a sorted list of strings.
+    Handles legacy booleans/strings gracefully.
+    """
+    items: list[str] = []
+    if isinstance(raw, (list, tuple, set)):
+        iterable = raw
+    elif raw in (None, "", False, True):
+        iterable = []
+    else:
+        iterable = [raw]
+    for item in iterable:
+        try:
+            text = str(item).strip()
+        except Exception:
+            text = ""
+        if text:
+            items.append(text)
+    if not items:
+        return []
+    # Deduplicate while maintaining deterministic order.
+    return sorted(dict.fromkeys(items))
+
+
 def _make_engine_key(symbol: str, interval: str, indicators: list[str] | None) -> str:
     base = f"{symbol}@{interval}"
     if indicators:
@@ -1368,11 +1393,7 @@ class MainWindow(QtWidgets.QWidget):
             for entry in runtime_pairs:
                 sym = str((entry or {}).get("symbol") or "").strip().upper()
                 iv = str((entry or {}).get("interval") or "").strip()
-                indicators = entry.get("indicators")
-                if isinstance(indicators, (list, tuple)):
-                    indicators = sorted({str(k).strip() for k in indicators if str(k).strip()})
-                else:
-                    indicators = []
+                indicators = _normalize_indicator_values((entry or {}).get("indicators"))
                 existing[(sym, iv, tuple(indicators))] = entry
             added_count = 0
             for row_idx in target_rows:
@@ -1393,10 +1414,7 @@ class MainWindow(QtWidgets.QWidget):
                 iv = str(data.get("interval") or "").strip()
                 if not sym or not iv:
                     continue
-                indicators = data.get("indicator_keys") or []
-                if not isinstance(indicators, (list, tuple)):
-                    indicators = [indicators]
-                indicators_clean = sorted({str(k).strip() for k in indicators if str(k).strip()})
+                indicators_clean = _normalize_indicator_values(data.get("indicator_keys"))
                 key = (sym, iv, tuple(indicators_clean))
                 if key in existing:
                     continue
@@ -1508,10 +1526,7 @@ class MainWindow(QtWidgets.QWidget):
             if not sym or not iv:
                 continue
             indicators_raw = entry.get('indicators')
-            if isinstance(indicators_raw, (list, tuple)):
-                indicator_values = sorted({str(k).strip() for k in indicators_raw if str(k).strip()})
-            else:
-                indicator_values = []
+            indicator_values = _normalize_indicator_values(indicators_raw)
             key = (sym, iv, tuple(indicator_values))
             if key in seen:
                 continue
@@ -1664,10 +1679,7 @@ class MainWindow(QtWidgets.QWidget):
                     indicators_raw = entry_data.get('indicators')
                 else:
                     exact_match = False
-                if isinstance(indicators_raw, (list, tuple)):
-                    indicators_norm = sorted({str(k).strip() for k in indicators_raw if str(k).strip()})
-                else:
-                    indicators_norm = []
+                indicators_norm = _normalize_indicator_values(indicators_raw)
                 if exact_match:
                     remove_set.add((sym, iv, tuple(indicators_norm)))
                 else:
@@ -1676,10 +1688,7 @@ class MainWindow(QtWidgets.QWidget):
                 sym = str(entry.get('symbol') or '').strip().upper()
                 iv = str(entry.get('interval') or '').strip()
                 indicators_raw = entry.get('indicators')
-                if isinstance(indicators_raw, (list, tuple)):
-                    indicators_norm = sorted({str(k).strip() for k in indicators_raw if str(k).strip()})
-                else:
-                    indicators_norm = []
+                indicators_norm = _normalize_indicator_values(indicators_raw)
                 key = (sym, iv, tuple(indicators_norm))
                 if key in remove_set or (sym, iv, None) in remove_set:
                     continue
@@ -5006,12 +5015,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         except Exception:
             intervals = ["-"]
         indicators_raw = rec.get("indicators")
-        if isinstance(indicators_raw, (list, tuple)):
-            indicators_list = list(indicators_raw)
-        elif isinstance(indicators_raw, str):
-            indicators_list = [indicators_raw]
-        else:
-            indicators_list = []
+        indicators_list = _normalize_indicator_values(indicators_raw)
         for interval in intervals:
             entry = copy.deepcopy(rec)
             entry["entry_tf"] = interval
@@ -5100,11 +5104,11 @@ def _mw_render_positions_table(self):
 
                 self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
                 indicators_raw = rec.get('indicators')
-                indicators_display = '-'
-                if isinstance(indicators_raw, (list, tuple)):
-                    indicators_display = _format_indicator_list(indicators_raw) or '-'
-                elif isinstance(indicators_raw, str) and indicators_raw.strip():
-                    indicators_display = indicators_raw.strip()
+                indicators_list = _normalize_indicator_values(indicators_raw)
+                if indicators_list:
+                    indicators_display = _format_indicator_list(indicators_list) or '-'
+                else:
+                    indicators_display = '-'
                 self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(indicators_display))
                 self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(side_text))
                 self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(open_time or '-')))
