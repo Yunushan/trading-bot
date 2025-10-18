@@ -16,8 +16,19 @@ try:
         flag_parts = [part for part in flags.split() if part]
         if "--no-sandbox" not in flag_parts:
             flag_parts.append("--no-sandbox")
+        if "--disable-gpu-sandbox" not in flag_parts:
+            flag_parts.append("--disable-gpu-sandbox")
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flag_parts).strip()
         os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+        os.environ.setdefault("QTWEBENGINE_USE_SANDBOX", "0")
+        # Some distros crash unless XDG_RUNTIME_DIR is defined; fallback to /tmp for headless runs.
+        if not os.environ.get("XDG_RUNTIME_DIR"):
+            tmp_runtime = "/tmp/qt-runtime-root"
+            try:
+                os.makedirs(tmp_runtime, exist_ok=True)
+            except Exception:
+                tmp_runtime = "/tmp"
+            os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
 except Exception:
     # Never allow env-setup failures to abort app startup.
     pass
