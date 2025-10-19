@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import sys
 from functools import lru_cache
 from importlib import resources as _resources
@@ -45,6 +46,23 @@ def _candidate_directories() -> list[Path]:
             meipass_path / "assets",
             meipass_path,
         ])
+
+    try:
+        exe_path = Path(sys.argv[0]).resolve()
+    except Exception:
+        exe_path = None
+    if exe_path:
+        exe_dir = exe_path.parent
+        candidates.extend([
+            exe_dir / "app" / "assets",
+            exe_dir / "assets",
+            exe_dir,
+            exe_dir.parent / "assets",
+        ])
+
+    env_assets = os.getenv("BINANCE_BOT_ASSETS")
+    if env_assets:
+        candidates.append(Path(env_assets))
 
     candidates.extend([
         app_dir / "assets",

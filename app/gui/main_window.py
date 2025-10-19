@@ -1548,7 +1548,18 @@ class MainWindow(QtWidgets.QWidget):
                 sym = str((entry or {}).get("symbol") or "").strip().upper()
                 iv = str((entry or {}).get("interval") or "").strip()
                 indicators = _normalize_indicator_values((entry or {}).get("indicators"))
-                key = (sym, iv, tuple(indicators))
+                lev_existing = None
+                controls_existing = entry.get("strategy_controls")
+                if isinstance(controls_existing, dict):
+                    lev_existing = controls_existing.get("leverage")
+                if lev_existing is None:
+                    lev_existing = entry.get("leverage")
+                try:
+                    if lev_existing is not None:
+                        lev_existing = max(1, int(float(lev_existing)))
+                except Exception:
+                    lev_existing = None
+                key = (sym, iv, tuple(indicators), lev_existing)
                 existing[key] = entry
                 clean_runtime_pairs.append(entry)
             if runtime_pairs is not None:
@@ -1557,12 +1568,31 @@ class MainWindow(QtWidgets.QWidget):
                     runtime_pairs.extend(clean_runtime_pairs)
                 except Exception:
                     pass
+            row_count = table.rowCount()
+
+            def _row_payload(row_idx: int) -> dict:
+                payload = None
+                try:
+                    item = table.item(row_idx, 0)
+                except Exception:
+                    item = None
+                if item is not None:
+                    try:
+                        payload = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                    except Exception:
+                        payload = None
+                if isinstance(payload, dict):
+                    return dict(payload)
+                if 0 <= row_idx < len(results):
+                    return dict(results[row_idx])
+                return {}
+
             added_count = 0
             for row_idx in target_rows:
-                if row_idx < 0 or row_idx >= len(results):
-                    _dbg(f"Row {row_idx} out of bounds (results len={len(results)})")
+                if row_idx < 0 or row_idx >= row_count:
+                    _dbg(f"Row {row_idx} out of bounds (table rows={row_count})")
                     continue
-                data = self._normalize_backtest_run(results[row_idx])
+                data = self._normalize_backtest_run(_row_payload(row_idx))
                 _dbg(f"Row {row_idx} normalized data: {data}")
                 sym = str(data.get("symbol") or "").strip().upper()
                 iv = str(data.get("interval") or "").strip()
@@ -1570,41 +1600,61 @@ class MainWindow(QtWidgets.QWidget):
                     _dbg(f"Row {row_idx} missing sym/interval")
                     continue
                 indicators_clean = _normalize_indicator_values(data.get("indicator_keys"))
-                key = (sym, iv, tuple(indicators_clean))
-                if key in existing:
-                    _dbg(f"Row {row_idx} already exists; skipping")
-                    continue
-                entry = {"symbol": sym, "interval": iv}
-                if indicators_clean:
-                    entry["indicators"] = list(indicators_clean)
-                loop_value = self._normalize_loop_override(data.get("loop_interval_override"))
-                if loop_value:
-                    entry["loop_interval_override"] = loop_value
+
+                # Determine strategy controls / leverage to use for deduping and persistence
                 controls_snapshot = self._collect_strategy_controls("backtest")
+                controls_to_apply = None
+                stop_cfg = None
+                loop_override_value = None
+                leverage_for_key = None
+
                 if controls_snapshot:
                     _dbg(f"Row {row_idx} using live controls snapshot")
-                    entry["strategy_controls"] = controls_snapshot
-                    stop_cfg = controls_snapshot.get("stop_loss")
-                    if isinstance(stop_cfg, dict):
-                        entry["stop_loss"] = stop_cfg
-                    loop_snapshot = self._normalize_loop_override(controls_snapshot.get("loop_interval_override"))
-                    if loop_snapshot:
-                        entry["loop_interval_override"] = loop_snapshot
+                    controls_to_apply = copy.deepcopy(controls_snapshot)
+                    stop_cfg = controls_to_apply.get("stop_loss")
+                    loop_override_value = self._normalize_loop_override(controls_to_apply.get("loop_interval_override"))
+                    leverage_for_key = controls_to_apply.get("leverage")
                 else:
                     stored_controls = data.get("strategy_controls")
                     if isinstance(stored_controls, dict):
                         _dbg(f"Row {row_idx} using stored controls from result")
-                        entry["strategy_controls"] = stored_controls
-                        stop_cfg = stored_controls.get("stop_loss")
-                        if isinstance(stop_cfg, dict):
-                            entry["stop_loss"] = stop_cfg
-                        loop_stored = self._normalize_loop_override(stored_controls.get("loop_interval_override"))
-                        if loop_stored:
-                            entry.setdefault("loop_interval_override", loop_stored)
+                        controls_to_apply = copy.deepcopy(stored_controls)
+                        stop_cfg = controls_to_apply.get("stop_loss")
+                        loop_override_value = self._normalize_loop_override(controls_to_apply.get("loop_interval_override"))
+                        leverage_for_key = controls_to_apply.get("leverage")
+
+                if leverage_for_key is None:
+                    leverage_for_key = data.get("leverage")
+                try:
+                    if leverage_for_key is not None:
+                        leverage_for_key = max(1, int(float(leverage_for_key)))
+                except Exception:
+                    leverage_for_key = None
+
+                key = (sym, iv, tuple(indicators_clean), leverage_for_key)
+                if key in existing:
+                    _dbg(f"Row {row_idx} already exists; skipping")
+                    continue
+
+                entry = {"symbol": sym, "interval": iv}
+                if indicators_clean:
+                    entry["indicators"] = list(indicators_clean)
+                base_loop_value = self._normalize_loop_override(data.get("loop_interval_override"))
+                if base_loop_value:
+                    entry["loop_interval_override"] = base_loop_value
+                if loop_override_value:
+                    entry["loop_interval_override"] = loop_override_value
+                if controls_to_apply:
+                    entry["strategy_controls"] = controls_to_apply
+                if isinstance(stop_cfg, dict):
+                    entry["stop_loss"] = stop_cfg
+                if leverage_for_key is not None:
+                    entry["leverage"] = leverage_for_key
+
                 runtime_pairs.append(entry)
                 existing[key] = entry
                 added_count += 1
-                _dbg(f"Row {row_idx} appended: indicators={indicators_clean}, has_controls={'strategy_controls' in entry}")
+                _dbg(f"Row {row_idx} appended: indicators={indicators_clean}, leverage={leverage_for_key}, has_controls={'strategy_controls' in entry}")
             if added_count:
                 self._refresh_symbol_interval_pairs("runtime")
                 try:
@@ -1716,7 +1766,22 @@ class MainWindow(QtWidgets.QWidget):
                 continue
             indicators_raw = entry.get('indicators')
             indicator_values = _normalize_indicator_values(indicators_raw)
-            key = (sym, iv, tuple(indicator_values))
+            leverage_val = None
+            if isinstance(entry.get('strategy_controls'), dict):
+                lev_ctrl = entry['strategy_controls'].get('leverage')
+                if lev_ctrl is not None:
+                    try:
+                        leverage_val = max(1, int(lev_ctrl))
+                    except Exception:
+                        leverage_val = None
+            if leverage_val is None:
+                lev_entry_raw = entry.get("leverage")
+                if lev_entry_raw is not None:
+                    try:
+                        leverage_val = max(1, int(lev_entry_raw))
+                    except Exception:
+                        leverage_val = None
+            key = (sym, iv, tuple(indicator_values), leverage_val)
             if key in seen:
                 continue
             seen.add(key)
@@ -1732,21 +1797,6 @@ class MainWindow(QtWidgets.QWidget):
                 entry_clean["loop_interval_override"] = loop_val
             if controls:
                 entry_clean['strategy_controls'] = controls
-            leverage_val = None
-            if isinstance(controls, dict):
-                lev_raw = controls.get("leverage")
-                if lev_raw is not None:
-                    try:
-                        leverage_val = max(1, int(lev_raw))
-                    except Exception:
-                        leverage_val = None
-            if leverage_val is None:
-                lev_entry_raw = entry.get("leverage")
-                if lev_entry_raw is not None:
-                    try:
-                        leverage_val = max(1, int(lev_entry_raw))
-                    except Exception:
-                        leverage_val = None
             if leverage_val is not None:
                 entry_clean["leverage"] = leverage_val
                 if isinstance(controls, dict):
@@ -3722,15 +3772,32 @@ class MainWindow(QtWidgets.QWidget):
         sel = self.side_combo.currentText() if hasattr(self, "side_combo") else ""
         return self._canonical_side_from_text(sel)
 
-    def _collect_strategy_indicators(self, symbol: str, side_key: str) -> list[str]:
+    def _collect_strategy_indicators(self, symbol: str, side_key: str, intervals: list[str] | set[str] | None = None) -> list[str]:
         indicators = set()
         metadata = getattr(self, "_engine_indicator_map", {}) or {}
         side_key = (side_key or "").upper()
+        normalized_intervals: set[str] | None = None
+        if intervals:
+            normalized_intervals = {
+                self._canonicalize_interval(iv) or str(iv).strip().lower()
+                for iv in intervals
+                if iv
+            }
         for meta in metadata.values():
             if not isinstance(meta, dict):
                 continue
             if meta.get("symbol") != symbol:
                 continue
+            meta_interval = self._canonicalize_interval(meta.get("interval"))
+            if normalized_intervals is not None:
+                if meta_interval and meta_interval in normalized_intervals:
+                    pass
+                elif meta_interval and meta_interval.replace(".", "") in normalized_intervals:
+                    pass
+                elif meta.get("interval") and str(meta.get("interval")).strip().lower() in normalized_intervals:
+                    pass
+                else:
+                    continue
             side_cfg = (meta.get("side") or "BOTH").upper()
             if side_key in ("", "SPOT") or side_cfg == "BOTH":
                 pass
@@ -3738,7 +3805,10 @@ class MainWindow(QtWidgets.QWidget):
                 continue
             elif side_key == "S" and side_cfg != "SELL":
                 continue
-            for ind in meta.get("indicators") or []:
+            override_inds = meta.get("override_indicators") or []
+            configured_inds = meta.get("configured_indicators") or meta.get("indicators") or []
+            selected = override_inds if override_inds else configured_inds
+            for ind in selected:
                 if ind:
                     indicators.add(str(ind))
         return sorted(indicators)
@@ -5172,7 +5242,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'close_time': '-',
                     'status': 'Active',
                     'data': data_entry,
-                    'indicators': self._collect_strategy_indicators(sym, side_key),
+                    'indicators': [],
                     'stop_loss_enabled': stop_loss_enabled,
                 }
             except Exception:
@@ -5347,7 +5417,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if open_times:
                             open_times.sort(key=lambda item: item[0])
                             rec['open_time'] = self._format_display_time(open_times[0][1])
-                        rec['indicators'] = self._collect_strategy_indicators(sym, side_key)
+                        interval_list = sorted(intervals) if intervals else []
+                        rec['indicators'] = self._collect_strategy_indicators(sym, side_key, intervals=interval_list)
                         rec['stop_loss_enabled'] = stop_loss_enabled
                         positions_map[(sym, side_key)] = rec
                     except Exception:
@@ -6155,7 +6226,9 @@ def start_strategy(self):
                         active_indicators = list(indicator_list)
                     else:
                         active_indicators = self._get_selected_indicator_keys("runtime")
+                # Track both configured indicator keys and any explicit overrides supplied
                 active_indicators = sorted({str(k).strip() for k in (active_indicators or []) if str(k).strip()})
+                override_indicators = sorted({str(k).strip() for k in (indicator_list or []) if str(k).strip()})
 
                 eng = StrategyEngine(
                     self.shared_binance,
@@ -6171,7 +6244,8 @@ def start_strategy(self):
                         "symbol": sym,
                         "interval": iv,
                         "side": cfg.get("side", "BOTH"),
-                        "indicators": active_indicators,
+                        "override_indicators": override_indicators,
+                        "configured_indicators": active_indicators,
                         "stop_loss_enabled": bool(cfg.get("stop_loss", {}).get("enabled")),
                     }
                 except Exception:
