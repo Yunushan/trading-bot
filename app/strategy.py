@@ -790,6 +790,32 @@ class StrategyEngine:
                     denom_long = entry_price_long * qty_long
                     loss_pct_long = (loss_usdt_long / denom_long * 100.0) if denom_long > 0 else 0.0
                     ratio_long = normalize_margin_ratio((pos_long or {}).get("marginRatio"))
+                    margin_long = None
+                    if pos_long:
+                        try:
+                            margin_long = float(pos_long.get("isolatedWallet") or 0.0)
+                        except Exception:
+                            margin_long = 0.0
+                        if not margin_long:
+                            try:
+                                margin_long = float(pos_long.get("initialMargin") or 0.0)
+                            except Exception:
+                                margin_long = 0.0
+                        if not margin_long:
+                            try:
+                                notional = abs(float(pos_long.get("notional") or 0.0))
+                                lev = float(pos_long.get("leverage") or 1.0) or 1.0
+                                if lev > 0.0:
+                                    margin_long = notional / lev
+                            except Exception:
+                                margin_long = 0.0
+                    if margin_long and margin_long > 0.0:
+                        try:
+                            margin_pct = (loss_usdt_long / margin_long) * 100.0
+                            if margin_pct > loss_pct_long:
+                                loss_pct_long = margin_pct
+                        except Exception:
+                            pass
                     triggered_long = False
                     if apply_usdt_limit and loss_usdt_long >= stop_usdt_limit:
                         triggered_long = True
@@ -841,6 +867,32 @@ class StrategyEngine:
                     denom_short = entry_price_short * qty_short
                     loss_pct_short = (loss_usdt_short / denom_short * 100.0) if denom_short > 0 else 0.0
                     ratio_short = normalize_margin_ratio((pos_short or {}).get("marginRatio"))
+                    margin_short = None
+                    if pos_short:
+                        try:
+                            margin_short = float(pos_short.get("isolatedWallet") or 0.0)
+                        except Exception:
+                            margin_short = 0.0
+                        if not margin_short:
+                            try:
+                                margin_short = float(pos_short.get("initialMargin") or 0.0)
+                            except Exception:
+                                margin_short = 0.0
+                        if not margin_short:
+                            try:
+                                notional = abs(float(pos_short.get("notional") or 0.0))
+                                lev = float(pos_short.get("leverage") or 1.0) or 1.0
+                                if lev > 0.0:
+                                    margin_short = notional / lev
+                            except Exception:
+                                margin_short = 0.0
+                    if margin_short and margin_short > 0.0:
+                        try:
+                            margin_pct = (loss_usdt_short / margin_short) * 100.0
+                            if margin_pct > loss_pct_short:
+                                loss_pct_short = margin_pct
+                        except Exception:
+                            pass
                     triggered_short = False
                     if apply_usdt_limit and loss_usdt_short >= stop_usdt_limit:
                         triggered_short = True

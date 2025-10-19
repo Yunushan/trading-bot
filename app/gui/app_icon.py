@@ -7,7 +7,7 @@ from functools import lru_cache
 from importlib import resources as _resources
 from pathlib import Path
 
-from PyQt6 import QtGui
+from PyQt6 import QtCore, QtGui
 
 _ICON_FILENAMES_WINDOWS = ("binance_icon.ico", "binance_icon.png")
 _ICON_FILENAMES_UNIX = ("binance_icon.png", "binance_icon.ico")
@@ -90,7 +90,8 @@ def _icon_filename_candidates() -> tuple[str, ...]:
 
 def _icon_from_path(path: Path) -> QtGui.QIcon:
     """Attempt to build an icon from the given path using multiple strategies."""
-    icon = QtGui.QIcon(str(path))
+    icon = QtGui.QIcon()
+    icon.addFile(str(path))
     if not icon.isNull():
         return icon
     suffix = path.suffix.lower()
@@ -134,12 +135,48 @@ def _load_from_package_resources() -> QtGui.QIcon | None:
     return None
 
 
+def _icon_from_base64(data: str) -> QtGui.QIcon | None:
+    try:
+        binary = base64.b64decode(data)
+    except Exception:
+        return None
+    pixmap = QtGui.QPixmap()
+    try:
+        if not pixmap.loadFromData(binary):
+            return None
+    except Exception:
+        return None
+    if pixmap.isNull():
+        return None
+    icon = QtGui.QIcon()
+    try:
+        for size in (16, 24, 32, 48, 64, 128, 256):
+            scaled = pixmap.scaled(size, size, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
+            icon.addPixmap(scaled, QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+    except Exception:
+        icon.addPixmap(pixmap)
+    return icon if not icon.isNull() else None
+
+
 @lru_cache(maxsize=1)
 def load_app_icon() -> QtGui.QIcon:
     """Load the Binance app icon with platform-aware fallbacks."""
+    env_icon_path = os.getenv("BINANCE_BOT_ICON")
+    if env_icon_path:
+        env_path = Path(env_icon_path)
+        candidate = _icon_from_path(env_path)
+        if not candidate.isNull():
+            return candidate
     icon = _load_from_package_resources()
     if icon and not icon.isNull():
         return icon
+    for env_var in ("APPDIR", "BINANCE_BOT_APPDIR"):
+        appdir = os.getenv(env_var)
+        if appdir:
+            icon_path = Path(appdir) / "binance_icon.png"
+            candidate = _icon_from_path(icon_path)
+            if not candidate.isNull():
+                return candidate
     for directory in _candidate_directories():
         for filename in _icon_filename_candidates():
             path = directory / filename
@@ -148,18 +185,13 @@ def load_app_icon() -> QtGui.QIcon:
             candidate = _icon_from_path(path)
             if not candidate.isNull():
                 return candidate
+
+    fallback = _icon_from_base64(FALLBACK_ICON_PNG)
+    if fallback and not fallback.isNull():
+        return fallback
     theme_icon = QtGui.QIcon.fromTheme("binance")
     if theme_icon and not theme_icon.isNull():
         return theme_icon
-    try:
-        data = base64.b64decode(FALLBACK_ICON_PNG)
-        pixmap = QtGui.QPixmap()
-        if pixmap.loadFromData(data):
-            icon = QtGui.QIcon(pixmap)
-            if not icon.isNull():
-                return icon
-    except Exception:
-        pass
     fallback_pixmap = QtGui.QPixmap(64, 64)
     fallback_pixmap.fill(QtGui.QColor("#F3BA2F"))
     painter = QtGui.QPainter(fallback_pixmap)
@@ -168,4 +200,6 @@ def load_app_icon() -> QtGui.QIcon:
         painter.drawEllipse(6, 6, 52, 52)
     finally:
         painter.end()
-    return QtGui.QIcon(fallback_pixmap)
+    icon = QtGui.QIcon()
+    icon.addPixmap(fallback_pixmap)
+    return icon

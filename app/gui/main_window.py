@@ -1216,6 +1216,9 @@ class MainWindow(QtWidgets.QWidget):
                 if stop_loss.get("enabled"):
                     mode = str(stop_loss.get("mode") or "usdt")
                     summary_bits = []
+                    scope_val = str(stop_loss.get("scope") or "per_trade")
+                    summary_bits.append(f"scope={scope_val}")
+                    summary_bits.append(f"mode={mode}")
                     if mode == "usdt" and stop_loss.get("usdt"):
                         summary_bits.append(f"U={float(stop_loss.get('usdt', 0.0)):.0f}")
                     elif mode == "percent" and stop_loss.get("percent"):
@@ -1225,7 +1228,7 @@ class MainWindow(QtWidgets.QWidget):
                             summary_bits.append(f"U={float(stop_loss.get('usdt', 0.0)):.0f}")
                         if stop_loss.get("percent") is not None:
                             summary_bits.append(f"P={float(stop_loss.get('percent', 0.0)):.2f}%")
-                    parts.append(f"SL=On({'; '.join(summary_bits) or mode})")
+                    parts.append(f"SL=On({'; '.join(summary_bits)})")
                 else:
                     parts.append("SL=Off")
         elif kind == "backtest":
@@ -1264,7 +1267,19 @@ class MainWindow(QtWidgets.QWidget):
                 parts.append(f"AcctMode={account_mode}")
             stop_loss = controls.get("stop_loss")
             if isinstance(stop_loss, dict):
-                parts.append("SL=On" if stop_loss.get("enabled") else "SL=Off")
+                if stop_loss.get("enabled"):
+                    mode = str(stop_loss.get("mode") or "usdt")
+                    scope_val = str(stop_loss.get("scope") or "per_trade")
+                    details = []
+                    details.append(f"mode={mode}")
+                    details.append(f"scope={scope_val}")
+                    if stop_loss.get("usdt") not in (None, ""):
+                        details.append(f"U={float(stop_loss.get('usdt', 0.0)):.0f}")
+                    if stop_loss.get("percent") not in (None, ""):
+                        details.append(f"P={float(stop_loss.get('percent', 0.0)):.2f}%")
+                    parts.append(f"SL=On({'; '.join(details)})")
+                else:
+                    parts.append("SL=Off")
         return ", ".join(parts) if parts else "-"
 
     def _runtime_stop_loss_update(self, **updates):
@@ -1647,7 +1662,17 @@ class MainWindow(QtWidgets.QWidget):
                 if controls_to_apply:
                     entry["strategy_controls"] = controls_to_apply
                 if isinstance(stop_cfg, dict):
+                    stop_cfg = normalize_stop_loss_dict(stop_cfg)
                     entry["stop_loss"] = stop_cfg
+                    if isinstance(controls_to_apply, dict):
+                        controls_to_apply["stop_loss"] = stop_cfg
+                else:
+                    data_stop_cfg = data.get("stop_loss")
+                    if isinstance(data_stop_cfg, dict):
+                        stop_cfg_norm = normalize_stop_loss_dict(data_stop_cfg)
+                        entry["stop_loss"] = stop_cfg_norm
+                        if isinstance(controls_to_apply, dict):
+                            controls_to_apply.setdefault("stop_loss", stop_cfg_norm)
                 if leverage_for_key is not None:
                     entry["leverage"] = leverage_for_key
 
@@ -1797,10 +1822,15 @@ class MainWindow(QtWidgets.QWidget):
                 entry_clean["loop_interval_override"] = loop_val
             if controls:
                 entry_clean['strategy_controls'] = controls
+                stop_cfg = controls.get("stop_loss")
+                if isinstance(stop_cfg, dict):
+                    entry_clean["stop_loss"] = normalize_stop_loss_dict(stop_cfg)
             if leverage_val is not None:
                 entry_clean["leverage"] = leverage_val
                 if isinstance(controls, dict):
                     controls["leverage"] = leverage_val
+            if "stop_loss" not in entry_clean and entry.get("stop_loss"):
+                entry_clean["stop_loss"] = normalize_stop_loss_dict(entry.get("stop_loss"))
             cleaned.append(entry_clean)
             row = table.rowCount()
             table.insertRow(row)
@@ -1818,7 +1848,15 @@ class MainWindow(QtWidgets.QWidget):
                 summary = self._format_strategy_controls_summary(kind, controls)
                 table.setItem(row, strategy_col, QtWidgets.QTableWidgetItem(summary))
             if stoploss_col is not None:
-                stop_label = "Yes" if isinstance(controls, dict) and isinstance(controls.get("stop_loss"), dict) and controls["stop_loss"].get("enabled") else "No"
+                stop_label = "No"
+                stop_cfg_display = None
+                if isinstance(controls, dict):
+                    stop_cfg_display = controls.get("stop_loss")
+                if stop_cfg_display is None:
+                    stop_cfg_display = entry_clean.get("stop_loss")
+                if isinstance(stop_cfg_display, dict) and stop_cfg_display.get("enabled"):
+                    scope_txt = str(stop_cfg_display.get("scope") or "").replace("_", "-")
+                    stop_label = f"Yes ({scope_txt or 'per-trade'})"
                 table.setItem(row, stoploss_col, QtWidgets.QTableWidgetItem(stop_label))
             try:
                 table.item(row, symbol_col).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
@@ -5251,17 +5289,6 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
         acct_upper = str(acct or '').upper()
         if acct_upper.startswith('FUT'):
             try:
-                syms_filter = None
-                try:
-                    selected = [
-                        self.symbol_list.item(i).text()
-                        for i in range(self.symbol_list.count())
-                        if self.symbol_list.item(i).isSelected()
-                    ]
-                    if selected:
-                        syms_filter = {str(val).strip().upper() for val in selected if val}
-                except Exception:
-                    syms_filter = None
                 raw_entries = []
                 for row in base_rows:
                     try:
@@ -5270,8 +5297,6 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         raw_entry = {}
                     sym_val = str(raw_entry.get('symbol') or row.get('symbol') or '').strip().upper()
                     if not sym_val:
-                        continue
-                    if syms_filter and sym_val not in syms_filter:
                         continue
                     if not raw_entry:
                         try:
@@ -5299,8 +5324,6 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     try:
                         sym = str(p.get('symbol') or '').strip().upper()
                         if not sym:
-                            continue
-                        if syms_filter and sym not in syms_filter:
                             continue
                         amt = float(p.get('positionAmt') or 0.0)
                         if abs(amt) <= 0.0:
