@@ -130,15 +130,26 @@ class StrategyEngine:
             if qty_to_close <= 0:
                 return True
             pos_side = 'SHORT' if opp == 'SELL' else 'LONG'
+            reduce_only_missing = False
+            res = None
             try:
                 res = self.binance.close_futures_leg_exact(symbol, qty_to_close, side=desired, position_side=pos_side)
-                self._notify_interval_closed(symbol, interval, opp)
             except Exception as exc:
-                self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
-                return False
-            if not (isinstance(res, dict) and res.get('ok')):
-                self.log(f"{symbol}@{interval} close-opposite failed: {res}")
-                return False
+                msg = str(exc)
+                if "-2022" in msg or "ReduceOnly" in msg or "reduceonly" in msg.lower():
+                    reduce_only_missing = True
+                else:
+                    self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
+                    return False
+            if isinstance(res, dict) and not res.get('ok', True):
+                err_msg = str(res.get('error') or "")
+                if "-2022" in err_msg or "reduceonly" in err_msg.lower():
+                    reduce_only_missing = True
+                else:
+                    self.log(f"{symbol}@{interval} close-opposite failed: {res}")
+                    return False
+            if not reduce_only_missing:
+                self._notify_interval_closed(symbol, interval, opp)
             self._leg_ledger.pop(opp_key, None)
             if hasattr(self, '_last_order_time'):
                 self._last_order_time.pop(opp_key, None)

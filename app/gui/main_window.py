@@ -5442,20 +5442,92 @@ def _mw_update_position_history(self, positions_map: dict):
         if not isinstance(missing_counts, dict):
             missing_counts = {}
         prev_records = getattr(self, "_open_position_records", {}) or {}
-        closed_candidates = []
-        for key in prev_records:
+        candidates: list[tuple[str, str]] = []
+        for key, prev in prev_records.items():
             if key in positions_map:
                 missing_counts.pop(key, None)
                 continue
             count = missing_counts.get(key, 0) + 1
             missing_counts[key] = count
             if count >= 3:
-                closed_candidates.append(key)
-        closed_keys = closed_candidates
-        if closed_keys:
+                candidates.append(key)
+
+        def _resolve_live_keys() -> set[tuple[str, str]] | None:
+            if not candidates:
+                return set()
+            try:
+                bw = getattr(self, "shared_binance", None)
+                if bw is None:
+                    api_key = ""
+                    api_secret = ""
+                    try:
+                        api_key = (self.api_key_edit.text() or "").strip()
+                        api_secret = (self.api_secret_edit.text() or "").strip()
+                    except Exception:
+                        pass
+                    if api_key and api_secret:
+                        try:
+                            bw = BinanceWrapper(
+                                api_key,
+                                api_secret,
+                                mode=self.mode_combo.currentText(),
+                                account_type=self.account_combo.currentText(),
+                                default_leverage=int(self.leverage_spin.value() or 1),
+                                default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
+                            )
+                            self.shared_binance = bw
+                        except Exception:
+                            bw = None
+                if bw is None:
+                    return None
+                live = set()
+                need_futures = any(side in ("L", "S") for _, side in candidates)
+                need_spot = any(side == "SPOT" for _, side in candidates)
+                if need_futures:
+                    try:
+                        for pos in bw.list_open_futures_positions() or []:
+                            sym = str(pos.get("symbol") or "").strip().upper()
+                            if not sym:
+                                continue
+                            amt = float(pos.get("positionAmt") or 0.0)
+                            if abs(amt) <= 0.0:
+                                continue
+                            side_key = "L" if amt > 0 else "S"
+                            live.add((sym, side_key))
+                    except Exception:
+                        return None
+                if need_spot:
+                    try:
+                        balances = bw.get_balances() or []
+                        for bal in balances:
+                            asset = bal.get("asset")
+                            free = float(bal.get("free") or 0.0)
+                            locked = float(bal.get("locked") or 0.0)
+                            total = free + locked
+                            if not asset or total <= 0:
+                                continue
+                            sym = f"{asset}USDT"
+                            live.add((sym.strip().upper(), "SPOT"))
+                    except Exception:
+                        pass
+                return live
+            except Exception:
+                return None
+
+        live_keys = _resolve_live_keys() if candidates else set()
+        confirmed_closed: list[tuple[str, str]] = []
+        for key in candidates:
+            if live_keys is None or key in live_keys:
+                if key in prev_records:
+                    positions_map.setdefault(key, prev_records[key])
+                missing_counts[key] = 0
+            else:
+                confirmed_closed.append(key)
+
+        if confirmed_closed:
             from datetime import datetime as _dt
             now_fmt = self._format_display_time(_dt.now().astimezone())
-            for key in closed_keys:
+            for key in confirmed_closed:
                 rec = prev_records.get(key)
                 if not rec:
                     continue
@@ -5465,15 +5537,10 @@ def _mw_update_position_history(self, positions_map: dict):
                 if "stop_loss_enabled" not in snap:
                     snap["stop_loss_enabled"] = bool(rec.get("stop_loss_enabled"))
                 self._closed_position_records.insert(0, snap)
+                missing_counts.pop(key, None)
             if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
                 self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
-            for key in closed_keys:
-                missing_counts.pop(key, None)
-        for key, count in list(missing_counts.items()):
-            if key in positions_map:
-                continue
-            if key in prev_records:
-                positions_map.setdefault(key, prev_records[key])
+
         self._open_position_records = positions_map
         self._position_missing_counts = missing_counts
     except Exception:
