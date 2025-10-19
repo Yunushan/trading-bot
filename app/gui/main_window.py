@@ -475,7 +475,7 @@ class _PositionsWorker(QtCore.QObject):
             except Exception:
                 self._wrapper = None
 
-    def _compute_futures_metrics(self, p:dict):
+    def _compute_futures_metrics(self, p: dict) -> dict:
         try:
             amt = float(p.get('positionAmt') or 0.0)
             mark = float(p.get('markPrice') or 0.0)
@@ -507,9 +507,31 @@ class _PositionsWorker(QtCore.QObject):
                 denom = margin_balance if margin_balance > 0.0 else float(p.get('isolatedWallet') or 0.0)
                 if denom > 0.0:
                     ratio = ((mm + unrealized_loss) / denom) * 100.0
-            return size_usdt, margin, pnl_roi_str, ratio
+            try:
+                update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
+            except Exception:
+                update_time = None
+            return {
+                'size_usdt': size_usdt,
+                'margin_usdt': margin,
+                'pnl_roi': pnl_roi_str,
+                'margin_ratio': ratio,
+                'pnl_value': pnl,
+                'roi_percent': roi,
+                'update_time': update_time,
+                'leverage': lev or None,
+            }
         except Exception:
-            return 0.0, 0.0, "-", 0.0
+            return {
+                'size_usdt': 0.0,
+                'margin_usdt': 0.0,
+                'pnl_roi': "-",
+                'margin_ratio': 0.0,
+                'pnl_value': 0.0,
+                'roi_percent': 0.0,
+                'update_time': None,
+                'leverage': None,
+            }
 
 
     def _tick(self):
@@ -545,18 +567,18 @@ class _PositionsWorker(QtCore.QObject):
                         value = abs(amt) * mark if mark else 0.0
                         side_key = 'L' if amt > 0 else 'S'
                         stop_loss_enabled = self._position_stop_loss_enabled(sym, side_key)
-                        size_usdt, margin_usdt, pnl_roi, margin_ratio = self._compute_futures_metrics(p)
-                        rows.append({
+                        metrics = self._compute_futures_metrics(p)
+                        data_row = {
                             'symbol': sym,
                             'qty': abs(amt),
                             'mark': mark,
                             'value': value,
-                            'size_usdt': size_usdt,
-                            'margin_usdt': margin_usdt,
-                            'margin_ratio': margin_ratio,
-                            'pnl_roi': pnl_roi,
                             'side_key': side_key,
-                        })
+                            'raw_position': dict(p),
+                        }
+                        data_row.update(metrics)
+                        data_row['stop_loss_enabled'] = stop_loss_enabled
+                        rows.append(data_row)
                     except Exception:
                         pass
             else:
@@ -605,6 +627,8 @@ class _PositionsWorker(QtCore.QObject):
                             'margin_usdt': 0.0,
                             'pnl_roi': "-",
                             'side_key': 'SPOT',
+                            'raw_position': None,
+                            'stop_loss_enabled': False,
                         })
                     except Exception:
                         pass
@@ -711,6 +735,7 @@ class MainWindow(QtWidgets.QWidget):
         self.config['close_on_exit'] = state_close_pref
         self.config.setdefault('close_on_exit', state_close_pref)
         self.config.setdefault('account_mode', 'Classic Trading')
+        self.config.setdefault('auto_bump_percent_multiplier', DEFAULT_CONFIG.get('auto_bump_percent_multiplier', 10.0))
         self.strategy_threads = {}
         self.shared_binance = None
         self.stop_worker = None
@@ -1014,6 +1039,14 @@ class MainWindow(QtWidgets.QWidget):
                     "add_only": bool(self.cb_add_only.isChecked()) if hasattr(self, "cb_add_only") else None,
                     "stop_loss": stop_cfg,
                 }
+                leverage_val = None
+                if hasattr(self, "leverage_spin"):
+                    try:
+                        leverage_val = int(self.leverage_spin.value())
+                    except Exception:
+                        leverage_val = None
+                if leverage_val is not None:
+                    controls["leverage"] = leverage_val
                 account_mode_val = None
                 try:
                     account_mode_val = self.account_mode_combo.currentData()
@@ -1080,6 +1113,14 @@ class MainWindow(QtWidgets.QWidget):
             if pos_pct is not None:
                 try:
                     normalized["position_pct"] = float(pos_pct)
+                except Exception:
+                    pass
+            leverage = controls.get("leverage")
+            if leverage is not None:
+                try:
+                    lev_val = int(leverage)
+                    if lev_val >= 1:
+                        normalized["leverage"] = lev_val
                 except Exception:
                     pass
             loop_override = self._normalize_loop_override(controls.get("loop_interval_override"))
@@ -1155,6 +1196,12 @@ class MainWindow(QtWidgets.QWidget):
             if pos_pct is not None:
                 try:
                     parts.append(f"Pos={float(pos_pct):.2f}%")
+                except Exception:
+                    pass
+            leverage = controls.get("leverage")
+            if leverage is not None:
+                try:
+                    parts.append(f"Lev={int(leverage)}x")
                 except Exception:
                     pass
             loop = controls.get("loop_interval_override") or "auto"
@@ -1645,6 +1692,7 @@ class MainWindow(QtWidgets.QWidget):
         interval_col = column_map.get("Interval", 1)
         indicator_col = column_map.get("Indicators")
         loop_col = column_map.get("Loop")
+        leverage_col = column_map.get("Leverage")
         strategy_col = column_map.get("Strategy Controls")
         stoploss_col = column_map.get("Stop-Loss")
         header = table.horizontalHeader()
@@ -1685,26 +1733,48 @@ class MainWindow(QtWidgets.QWidget):
                 entry_clean["loop_interval_override"] = loop_val
             if controls:
                 entry_clean['strategy_controls'] = controls
+            leverage_val = None
+            if isinstance(controls, dict):
+                lev_raw = controls.get("leverage")
+                if lev_raw is not None:
+                    try:
+                        leverage_val = max(1, int(lev_raw))
+                    except Exception:
+                        leverage_val = None
+            if leverage_val is None:
+                lev_entry_raw = entry.get("leverage")
+                if lev_entry_raw is not None:
+                    try:
+                        leverage_val = max(1, int(lev_entry_raw))
+                    except Exception:
+                        leverage_val = None
+            if leverage_val is not None:
+                entry_clean["leverage"] = leverage_val
+                if isinstance(controls, dict):
+                    controls["leverage"] = leverage_val
             cleaned.append(entry_clean)
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, symbol_col, QtWidgets.QTableWidgetItem(sym))
             table.setItem(row, interval_col, QtWidgets.QTableWidgetItem(iv))
-            try:
-                table.item(row, symbol_col).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
-            except Exception:
-                pass
             if indicator_col is not None:
                 table.setItem(row, indicator_col, QtWidgets.QTableWidgetItem(_format_indicator_list(indicator_values)))
             if loop_col is not None:
                 loop_display = entry_clean.get("loop_interval_override") or "-"
                 table.setItem(row, loop_col, QtWidgets.QTableWidgetItem(loop_display))
+            if leverage_col is not None:
+                leverage_display = f"{leverage_val}x" if leverage_val is not None else "-"
+                table.setItem(row, leverage_col, QtWidgets.QTableWidgetItem(leverage_display))
             if strategy_col is not None:
                 summary = self._format_strategy_controls_summary(kind, controls)
                 table.setItem(row, strategy_col, QtWidgets.QTableWidgetItem(summary))
             if stoploss_col is not None:
                 stop_label = "Yes" if isinstance(controls, dict) and isinstance(controls.get("stop_loss"), dict) and controls["stop_loss"].get("enabled") else "No"
                 table.setItem(row, stoploss_col, QtWidgets.QTableWidgetItem(stop_label))
+            try:
+                table.item(row, symbol_col).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
+            except Exception:
+                pass
         cfg_key = ctx.get("config_key")
         if cfg_key:
             self.config[cfg_key] = cleaned
@@ -1884,8 +1954,12 @@ class MainWindow(QtWidgets.QWidget):
         show_indicators = kind in ("runtime", "backtest")
         if show_indicators:
             columns.append("Indicators")
-        if kind in ("runtime", "backtest"):
+        include_loop = kind in ("runtime", "backtest")
+        include_leverage = kind in ("runtime", "backtest")
+        if include_loop:
             columns.append("Loop")
+        if include_leverage:
+            columns.append("Leverage")
         columns.append("Strategy Controls")
         columns.append("Stop-Loss")
         table = QtWidgets.QTableWidget(0, len(columns))
@@ -5108,24 +5182,6 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
         acct_upper = str(acct or '').upper()
         if acct_upper.startswith('FUT'):
             try:
-                worker = getattr(self, '_pos_worker', None)
-                bw = getattr(worker, '_wrapper', None) if worker else None
-                if worker and bw is None:
-                    try:
-                        worker._ensure_wrapper()
-                        bw = getattr(worker, '_wrapper', None)
-                    except Exception:
-                        bw = None
-                if bw is None:
-                    bw = getattr(self, 'shared_binance', None)
-                if bw is None:
-                    bw = BinanceWrapper(
-                        self.api_key_edit.text().strip(),
-                        self.api_secret_edit.text().strip(),
-                        mode=self.mode_combo.currentText(),
-                        account_type=self.account_combo.currentText(),
-                    )
-                raw = bw.list_open_futures_positions() or []
                 syms_filter = None
                 try:
                     selected = [
@@ -5137,7 +5193,40 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         syms_filter = {str(val).strip().upper() for val in selected if val}
                 except Exception:
                     syms_filter = None
-                for p in raw:
+                raw_entries = []
+                for row in base_rows:
+                    try:
+                        raw_entry = dict(row.get('raw_position') or {})
+                    except Exception:
+                        raw_entry = {}
+                    sym_val = str(raw_entry.get('symbol') or row.get('symbol') or '').strip().upper()
+                    if not sym_val:
+                        continue
+                    if syms_filter and sym_val not in syms_filter:
+                        continue
+                    if not raw_entry:
+                        try:
+                            qty_val = float(row.get('qty') or 0.0)
+                        except Exception:
+                            qty_val = 0.0
+                        side_key = str(row.get('side_key') or '').upper()
+                        qty_signed = -abs(qty_val) if side_key == 'S' else abs(qty_val)
+                        raw_entry = {
+                            'symbol': sym_val,
+                            'positionAmt': qty_signed,
+                            'markPrice': row.get('mark'),
+                            'isolatedWallet': row.get('margin_usdt'),
+                            'initialMargin': row.get('margin_usdt'),
+                            'marginRatio': row.get('margin_ratio'),
+                            'unRealizedProfit': row.get('pnl_value'),
+                            'updateTime': row.get('update_time'),
+                            'leverage': row.get('leverage'),
+                            'notional': row.get('size_usdt'),
+                        }
+                    else:
+                        raw_entry['symbol'] = sym_val
+                    raw_entries.append(raw_entry)
+                for p in raw_entries:
                     try:
                         sym = str(p.get('symbol') or '').strip().upper()
                         if not sym:
@@ -5176,6 +5265,12 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
                         except Exception:
                             update_time = 0
+                        stop_loss_enabled = False
+                        if side_key in ('L', 'S'):
+                            try:
+                                stop_loss_enabled = self._position_stop_loss_enabled(sym, side_key)
+                            except Exception:
+                                stop_loss_enabled = False
                         data = {
                             'symbol': sym,
                             'qty': abs(amt),
@@ -6012,6 +6107,12 @@ def start_strategy(self):
                     cfg["position_pct"] = float(self.pospct_spin.value() or self.config.get("position_pct", 100.0))
                 side_override = controls.get("side") or self._resolve_dashboard_side()
                 cfg["side"] = side_override
+                leverage_override = controls.get("leverage")
+                if leverage_override is not None:
+                    try:
+                        cfg["leverage"] = max(1, int(leverage_override))
+                    except Exception:
+                        pass
                 stop_loss_override = controls.get("stop_loss")
                 if isinstance(stop_loss_override, dict):
                     cfg["stop_loss"] = normalize_stop_loss_dict(copy.deepcopy(stop_loss_override))

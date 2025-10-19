@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "position_pct": 2.0,         # % of USDT to allocate (Futures: notional before leverage)
     "order_type": "MARKET",
     "max_auto_bump_percent": 5.0,
+    "auto_bump_percent_multiplier": 10.0,
     "stop_loss": copy.deepcopy(STOP_LOSS_DEFAULT),
 }
 

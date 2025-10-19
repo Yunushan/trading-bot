@@ -60,12 +60,25 @@ def _gather_positions(binance) -> List[Dict[str, Any]]:
 def close_all_futures_positions(binance) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     # detect hedge mode
+    def _coerce_dual_flag(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "y", "on"}
+        try:
+            return bool(int(value))
+        except Exception:
+            return bool(value)
+
     dual = False
     try:
-        m = binance.client.futures_get_position_mode() or {}
-        dual = bool(m.get('dualSidePosition', False))
+        mode_info = binance.client.futures_get_position_mode() or {}
+        dual = _coerce_dual_flag(mode_info.get("dualSidePosition", False))
     except Exception:
-        pass
+        try:
+            dual = bool(binance.get_futures_dual_side())
+        except Exception:
+            dual = False
 
     # up to 3 passes: handle partial fills / changes
     for _ in range(3):

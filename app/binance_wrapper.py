@@ -589,6 +589,8 @@ class BinanceWrapper:
             self.indicator_source = "Binance futures"
         else:
             self.indicator_source = "Binance spot"
+        self._max_auto_bump_percent = 5.0
+        self._auto_bump_percent_multiplier = 10.0
         self.recv_window = 5000  # ms for futures calls
         self._futures_max_leverage_cache = {}
         self._leverage_cap_notified = set()
@@ -2486,22 +2488,39 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
             # Auto-bump guard: do not exceed a configured absolute percent cap
             required_percent = (required_notional / max(avail * max(lev, 1), 1e-12)) * 100.0
             max_auto_bump_percent = float(kwargs.get('max_auto_bump_percent', getattr(self, '_max_auto_bump_percent', 5.0)))
+            percent_multiplier = float(kwargs.get('auto_bump_percent_multiplier', getattr(self, '_auto_bump_percent_multiplier', 10.0)))
+            if percent_multiplier <= 0:
+                percent_multiplier = 1.0
+            self._max_auto_bump_percent = max_auto_bump_percent
+            self._auto_bump_percent_multiplier = percent_multiplier
+            if max_auto_bump_percent <= 0:
+                allowed_percent = float('inf')
+            else:
+                allowed_percent = max(max_auto_bump_percent, pct * percent_multiplier)
             cushion = 1.01  # small buffer for fees/rounding
-            if (required_margin <= avail * cushion) and (required_percent <= max_auto_bump_percent) and (not reduce_only):
+            within_margin = (required_margin <= avail * cushion) and (not reduce_only)
+            percent_ok = (allowed_percent == float('inf')) or (required_percent <= (allowed_percent + 1e-9))
+            if within_margin and percent_ok:
                 qty = _ceil_to_step(required_notional / px, step)
                 mode = 'percent(bumped_to_min)'
             else:
                 # Not enough funds or bump exceeds cap
+                limit_pct = None if (allowed_percent == float('inf') or not within_margin) else allowed_percent
+                cap_note = ""
+                if limit_pct is not None and not percent_ok:
+                    cap_note = f" (cap {limit_pct:.2f}% / requested {pct:.2f}%)"
                 return {
                     'ok': False,
                     'symbol': sym,
-                    'error': f'insufficient funds for exchange minimum (~{required_percent:.2f}% needed)',
+                    'error': f'insufficient funds for exchange minimum (~{required_percent:.2f}% needed){cap_note}',
                     'computed': {
                         'px': px, 'step': step,
                         'minQty': minQty, 'minNotional': minNotional,
                         'need_qty': _ceil_to_step(required_notional / px, step),
                         'need_notional': required_notional,
-                        'lev': lev, 'avail': avail, 'margin_budget': margin_budget
+                        'lev': lev, 'avail': avail, 'margin_budget': margin_budget,
+                        'cap_percent': limit_pct,
+                        'requested_percent': pct,
                     },
                     'required_percent': required_percent,
                     'mode': 'percent(strict)'

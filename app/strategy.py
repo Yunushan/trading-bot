@@ -949,7 +949,8 @@ class StrategyEngine:
                         timeInForce=self.config.get('tif','GTC'),
                         gtd_minutes=int(self.config.get('gtd_minutes',30)),
                         interval=cw.get('interval'),
-                        max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0))
+                        max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0)),
+                        auto_bump_percent_multiplier=float(self.config.get('auto_bump_percent_multiplier', 10.0)),
                     )
                     # Emit trade callback (futures) for UI/guard
                     try:
