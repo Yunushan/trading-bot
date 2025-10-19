@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 from .config import STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS, normalize_stop_loss_dict
-from .binance_wrapper import NetworkConnectivityError
+from .binance_wrapper import NetworkConnectivityError, normalize_margin_ratio
 from .indicators import (
     sma,
     ema,
@@ -595,6 +595,7 @@ class StrategyEngine:
                 leg = self._leg_ledger.get(leg_key, {}) or {}
                 qty_val = float(leg.get("qty") or 0.0)
                 entry_px = float(leg.get("entry_price") or 0.0)
+                matched_pos = None
                 if qty_val > 0.0 and entry_px <= 0.0:
                     if positions_cache is None:
                         try:
@@ -616,6 +617,7 @@ class StrategyEngine:
                                 if qty_candidate <= 0.0:
                                     continue
                                 entry_px = float(pos.get("entryPrice") or 0.0)
+                                matched_pos = pos
                                 break
                             else:
                                 if expect_long and amt <= 0.0:
@@ -623,16 +625,32 @@ class StrategyEngine:
                                 if (not expect_long) and amt >= 0.0:
                                     continue
                                 entry_px = float(pos.get("entryPrice") or 0.0)
+                                matched_pos = pos
                                 break
                         except Exception:
                             continue
                     if entry_px > 0.0:
                         leg["entry_price"] = entry_px
                         self._leg_ledger[leg_key] = leg
-                return leg, qty_val, entry_px
+                if matched_pos is None and positions_cache:
+                    try:
+                        for pos in positions_cache:
+                            if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                                continue
+                            if dual_side:
+                                side_str = str(pos.get("positionSide") or "").upper()
+                                if expect_long and side_str != "LONG":
+                                    continue
+                                if (not expect_long) and side_str != "SHORT":
+                                    continue
+                            matched_pos = pos
+                            break
+                    except Exception:
+                        matched_pos = None
+                return leg, qty_val, entry_px, matched_pos
 
-            leg_long, qty_long, entry_price_long = _ensure_entry_price(key_long, True)
-            leg_short, qty_short, entry_price_short = _ensure_entry_price(key_short, False)
+            leg_long, qty_long, entry_price_long, pos_long = _ensure_entry_price(key_long, True)
+            leg_short, qty_short, entry_price_short, pos_short = _ensure_entry_price(key_short, False)
 
             if is_cumulative:
                 if positions_cache is None:
@@ -760,11 +778,16 @@ class StrategyEngine:
                     loss_usdt_long = max(0.0, (entry_price_long - last_price) * qty_long)
                     denom_long = entry_price_long * qty_long
                     loss_pct_long = (loss_usdt_long / denom_long * 100.0) if denom_long > 0 else 0.0
+                    ratio_long = normalize_margin_ratio((pos_long or {}).get("marginRatio"))
                     triggered_long = False
                     if apply_usdt_limit and loss_usdt_long >= stop_usdt_limit:
                         triggered_long = True
                     if not triggered_long and apply_percent_limit and loss_pct_long >= stop_percent_limit:
                         triggered_long = True
+                    if not triggered_long and apply_percent_limit and ratio_long >= stop_percent_limit:
+                        triggered_long = True
+                        if ratio_long > loss_pct_long:
+                            loss_pct_long = ratio_long
                     if triggered_long:
                         desired_ps = "LONG" if dual_side else None
                         try:
@@ -806,11 +829,16 @@ class StrategyEngine:
                     loss_usdt_short = max(0.0, (last_price - entry_price_short) * qty_short)
                     denom_short = entry_price_short * qty_short
                     loss_pct_short = (loss_usdt_short / denom_short * 100.0) if denom_short > 0 else 0.0
+                    ratio_short = normalize_margin_ratio((pos_short or {}).get("marginRatio"))
                     triggered_short = False
                     if apply_usdt_limit and loss_usdt_short >= stop_usdt_limit:
                         triggered_short = True
                     if not triggered_short and apply_percent_limit and loss_pct_short >= stop_percent_limit:
                         triggered_short = True
+                    if not triggered_short and apply_percent_limit and ratio_short >= stop_percent_limit:
+                        triggered_short = True
+                        if ratio_short > loss_pct_short:
+                            loss_pct_short = ratio_short
                     if triggered_short:
                         desired_ps = "SHORT" if dual_side else None
                         try:

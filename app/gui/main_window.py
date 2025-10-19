@@ -5438,8 +5438,20 @@ def _mw_update_position_history(self, positions_map: dict):
             self._open_position_records = {}
         if not hasattr(self, "_closed_position_records"):
             self._closed_position_records = []
+        missing_counts = getattr(self, "_position_missing_counts", {})
+        if not isinstance(missing_counts, dict):
+            missing_counts = {}
         prev_records = getattr(self, "_open_position_records", {}) or {}
-        closed_keys = [key for key in prev_records if key not in positions_map]
+        closed_candidates = []
+        for key in prev_records:
+            if key in positions_map:
+                missing_counts.pop(key, None)
+                continue
+            count = missing_counts.get(key, 0) + 1
+            missing_counts[key] = count
+            if count >= 3:
+                closed_candidates.append(key)
+        closed_keys = closed_candidates
         if closed_keys:
             from datetime import datetime as _dt
             now_fmt = self._format_display_time(_dt.now().astimezone())
@@ -5455,7 +5467,15 @@ def _mw_update_position_history(self, positions_map: dict):
                 self._closed_position_records.insert(0, snap)
             if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
                 self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
+            for key in closed_keys:
+                missing_counts.pop(key, None)
+        for key, count in list(missing_counts.items()):
+            if key in positions_map:
+                continue
+            if key in prev_records:
+                positions_map.setdefault(key, prev_records[key])
         self._open_position_records = positions_map
+        self._position_missing_counts = missing_counts
     except Exception:
         pass
 
