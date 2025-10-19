@@ -77,7 +77,7 @@ def _coerce_int(value):
 
 
 class _SimpleRateLimiter:
-    def __init__(self, max_per_minute: float = 1100.0, min_interval: float = 0.12, safety_margin: float = 0.85):
+    def __init__(self, max_per_minute: float = 600.0, min_interval: float = 0.25, safety_margin: float = 0.85):
         self.window = 60.0
         self.capacity = max(1.0, float(max_per_minute) * float(safety_margin))
         self.min_interval = max(0.0, float(min_interval))
@@ -284,7 +284,7 @@ class BinanceWrapper:
         cls._register_ban_until(until)
         remaining = max(0.0, until - time.time())
         try:
-            cls._request_limiter.pause_for(remaining)
+            cls._request_limiter.pause_for(remaining + 3.0)
         except Exception:
             pass
         return until

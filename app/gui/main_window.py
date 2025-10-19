@@ -566,7 +566,6 @@ class _PositionsWorker(QtCore.QObject):
                         mark = float(p.get('markPrice') or 0.0)
                         value = abs(amt) * mark if mark else 0.0
                         side_key = 'L' if amt > 0 else 'S'
-                        stop_loss_enabled = self._position_stop_loss_enabled(sym, side_key)
                         metrics = self._compute_futures_metrics(p)
                         data_row = {
                             'symbol': sym,
@@ -577,7 +576,7 @@ class _PositionsWorker(QtCore.QObject):
                             'raw_position': dict(p),
                         }
                         data_row.update(metrics)
-                        data_row['stop_loss_enabled'] = stop_loss_enabled
+                        data_row['stop_loss_enabled'] = False
                         rows.append(data_row)
                     except Exception:
                         pass

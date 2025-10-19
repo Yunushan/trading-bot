@@ -33,7 +33,7 @@ def _interval_to_seconds(iv:str)->int:
     return 60
 
 
-_MAX_PARALLEL_RUNS = max(2, min(8, (os.cpu_count() or 4)))
+_MAX_PARALLEL_RUNS = max(2, min(4, (os.cpu_count() or 4)))
 
 
 class StrategyEngine:
@@ -58,7 +58,8 @@ class StrategyEngine:
         self._stop = False
         key = f"{str(self.config.get('symbol') or '').upper()}@{str(self.config.get('interval') or '').lower()}"
         h = abs(hash(key)) if key.strip('@') else 0
-        self._phase_offset = (h % 1000) / 1000.0 * 5.0
+        self._phase_seed = (h % 997) / 997.0 if key.strip('@') else 0.0
+        self._phase_offset = self._phase_seed * 25.0
         self._thread = None
         self._offline_backoff = 0.0
         self._last_network_log = 0.0
@@ -1132,7 +1133,8 @@ class StrategyEngine:
             interval_seconds = max(1, int(self._interval_seconds(self.loop_override)))
         else:
             interval_seconds = max(1, int(self._interval_seconds(self.config['interval'])))
-        phase = min(self._phase_offset, max(0.0, interval_seconds * 0.5))
+        phase_span = max(5.0, min(interval_seconds * 0.85, 45.0))
+        phase = self._phase_seed * phase_span
         if phase > 0:
             waited = 0.0
             while waited < phase and not self.stopped():
@@ -1166,6 +1168,9 @@ class StrategyEngine:
                     except Exception:
                         pass
             sleep_remaining = interval_seconds if sleep_override is None else float(max(0.0, sleep_override))
+            if sleep_override is None and interval_seconds > 1:
+                jitter = self._phase_seed * min(3.0, max(0.5, interval_seconds * 0.2))
+                sleep_remaining += jitter
             while sleep_remaining > 0 and not self.stopped():
                 chunk = min(1.0, sleep_remaining)
                 time.sleep(chunk)
