@@ -6798,14 +6798,20 @@ def start_strategy(self):
             pass
 
 
-def stop_strategy_async(self, close_positions: bool = True, blocking: bool = False):
-    """Stop all StrategyEngine threads and then market-close ALL active positions asynchronously."""
+def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
+    """Synchronous helper to stop engines and optionally close all positions."""
+    result: dict = {"ok": True}
     try:
+        try:
+            self._is_stopping_engines = True
+        except Exception:
+            pass
         engines = {}
         if hasattr(self, "strategy_engines") and isinstance(self.strategy_engines, dict):
             engines = dict(self.strategy_engines)
 
         if engines:
+            self._is_stopping_engines = True
             for key, eng in engines.items():
                 try:
                     eng.stop()
@@ -6843,27 +6849,80 @@ def stop_strategy_async(self, close_positions: bool = True, blocking: bool = Fal
                 self.log("Stopped all strategy engines.")
         else:
             self.log("No engines to stop.")
-        try:
-            if close_positions:
-                if blocking:
-                    self._close_all_positions_blocking()
-                else:
-                    self.close_all_positions_async()
-        except Exception as e:
+
+        if close_positions:
             try:
-                self.log(f"Failed to trigger close-all: {e}")
-            except Exception:
-                pass
+                self._close_all_positions_blocking()
+            except Exception as exc:
+                result["ok"] = False
+                result["error"] = str(exc)
+                self.log(f"Failed to trigger close-all: {exc}")
     except Exception as e:
+        result["ok"] = False
+        result["error"] = str(e)
         try:
             self.log(f"Stop error: {e}")
         except Exception:
             pass
     finally:
         try:
+            self._is_stopping_engines = False
+        except Exception:
+            pass
+        try:
             self._sync_runtime_state()
         except Exception:
             pass
+    return result
+
+
+def stop_strategy_async(self, close_positions: bool = True, blocking: bool = False):
+    """Stop all StrategyEngine threads and then market-close ALL active positions."""
+    if blocking:
+        return _stop_strategy_sync(self, close_positions=close_positions)
+
+    try:
+        from ..workers import CallWorker as _CallWorker
+    except Exception:
+        # fallback to synchronous if worker import fails
+        return _stop_strategy_sync(self, close_positions=close_positions)
+
+    def _do():
+        return _stop_strategy_sync(self, close_positions=close_positions)
+
+    def _done(res, err):
+        if err:
+            try:
+                self.log(f"Stop error: {err}")
+            except Exception:
+                pass
+            return
+        if isinstance(res, dict) and not res.get("ok", True):
+            try:
+                self.log(f"Stop warning: {res.get('error')}")
+            except Exception:
+                pass
+
+    worker = _CallWorker(_do, parent=self)
+    try:
+        worker.progress.connect(self.log)
+    except Exception:
+        pass
+    worker.done.connect(_done)
+    worker.finished.connect(worker.deleteLater)
+
+    if not hasattr(self, "_bg_workers"):
+        self._bg_workers = []
+    self._bg_workers.append(worker)
+
+    def _cleanup():
+        try:
+            self._bg_workers.remove(worker)
+        except Exception:
+            pass
+
+    worker.finished.connect(_cleanup)
+    worker.start()
 
 
 def save_config(self):
@@ -7749,6 +7808,9 @@ def _mw_on_trade_signal(self, order_info: dict):
     if sym and interval and side_for_key:
         side_key_local = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
         self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
+        # ignore opens while engines are stopping
+        if getattr(self, "_is_stopping_engines", False) and status.lower() not in {"closed", "error"}:
+            is_success = False
         if is_success:
             self._entry_intervals[sym][side_key_local].add(interval)
             tstr = order_info.get('time')

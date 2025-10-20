@@ -2,6 +2,9 @@
 from __future__ import annotations
 from typing import List, Dict, Any
 import math
+from decimal import Decimal, ROUND_DOWN, getcontext
+
+getcontext().prec = 28
 
 def _floor_to_step(qty: float, step: float) -> float:
     if step <= 0:
@@ -92,15 +95,34 @@ def close_all_futures_positions(binance) -> List[Dict[str, Any]]:
                 if abs(amt) <= 0:
                     continue
                 side = 'SELL' if amt > 0 else 'BUY'
-                qty  = abs(amt)
-                qty  = _floor_to_step(qty, _get_lot_step(binance, sym))
-                if qty <= 0:
-                    results.append({'ok': True, 'symbol': sym, 'skipped': True, 'reason': 'zero qty after rounding'})
-                    continue
+                qty_raw = abs(amt)
+                step = _get_lot_step(binance, sym)
+                if step > 0:
+                    try:
+                        dec_qty = Decimal(str(qty_raw))
+                        dec_step = Decimal(str(step))
+                        quantized = (dec_qty // dec_step) * dec_step
+                        if quantized > 0:
+                            qty_str = format(quantized.normalize(), 'f')
+                        else:
+                            qty_str = format(dec_qty.normalize(), 'f')
+                    except Exception:
+                        qty_str = f"{qty_raw:.8f}"
+                else:
+                    qty_str = f"{qty_raw:.8f}"
+                try:
+                    qty_float = float(qty_str)
+                except Exception:
+                    qty_float = qty_raw
+                if qty_float <= 0:
+                    qty_str = f"{qty_raw:.8f}"
+                    qty_float = qty_raw
                 _cancel_all(binance, sym)
-                params = dict(symbol=sym, side=side, type='MARKET', quantity=str(qty))
+                params = dict(symbol=sym, side=side, type='MARKET', quantity=str(qty_str))
                 if dual:
                     params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                else:
+                    params['reduceOnly'] = True
                 try:
                     od = binance.client.futures_create_order(**params)
                     results.append({'ok': True, 'symbol': sym, 'info': od})
