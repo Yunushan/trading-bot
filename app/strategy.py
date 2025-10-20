@@ -384,6 +384,7 @@ class StrategyEngine:
 
         signal = None
         trigger_desc = []
+        trigger_sources: list[str] = []
 
         # --- RSI thresholds as primary triggers ---
         rsi_cfg = cfg['indicators'].get('rsi', {})
@@ -396,9 +397,9 @@ class StrategyEngine:
                     buy_th = float(rsi_cfg.get('buy_value', 30) or 30)
                     sell_th = float(rsi_cfg.get('sell_value', 70) or 70)
                     if r <= buy_th and cfg['side'] in ('BUY','BOTH'):
-                        signal = 'BUY'; trigger_desc.append(f"RSI <= {buy_th:.2f} → BUY")
+                        signal = 'BUY'; trigger_desc.append(f"RSI <= {buy_th:.2f} → BUY"); trigger_sources.append("rsi")
                     elif r >= sell_th and cfg['side'] in ('SELL','BOTH'):
-                        signal = 'SELL'; trigger_desc.append(f"RSI >= {sell_th:.2f} → SELL")
+                        signal = 'SELL'; trigger_desc.append(f"RSI >= {sell_th:.2f} → SELL"); trigger_sources.append("rsi")
                 else:
                     trigger_desc.append("RSI=NaN/inf skipped")
             except Exception as e:
@@ -418,9 +419,9 @@ class StrategyEngine:
                     buy_limit = float(buy_th if buy_th is not None else 20.0)
                     sell_limit = float(sell_th if sell_th is not None else 80.0)
                     if signal is None and cfg['side'] in ('BUY', 'BOTH') and srsi_val <= buy_limit:
-                        signal = 'BUY'; trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} → BUY")
+                        signal = 'BUY'; trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} → BUY"); trigger_sources.append("stoch_rsi")
                     elif signal is None and cfg['side'] in ('SELL', 'BOTH') and srsi_val >= sell_limit:
-                        signal = 'SELL'; trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} → SELL")
+                        signal = 'SELL'; trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} → SELL"); trigger_sources.append("stoch_rsi")
             except Exception as e:
                 trigger_desc.append(f"StochRSI error:{e!r}")
 
@@ -441,9 +442,9 @@ class StrategyEngine:
                     sell_lower = max(-100.0, min(0.0, sell_th))
                     sell_upper = 0.0
                     if signal is None and cfg['side'] in ('BUY','BOTH') and buy_lower <= wr <= buy_upper:
-                        signal = 'BUY'; trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] → BUY")
+                        signal = 'BUY'; trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] → BUY"); trigger_sources.append("willr")
                     elif signal is None and cfg['side'] in ('SELL','BOTH') and sell_lower <= wr <= sell_upper:
-                        signal = 'SELL'; trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] → SELL")
+                        signal = 'SELL'; trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] → SELL"); trigger_sources.append("willr")
                 else:
                     trigger_desc.append("Williams %R=NaN/inf skipped")
             except Exception as e:
@@ -460,9 +461,9 @@ class StrategyEngine:
                 trigger_desc.append(f"MA_prev={prev_ma:.8f},MA_last={last_ma:.8f}")
                 if signal is None:
                     if prev_close < prev_ma and last_close > last_ma and cfg['side'] in ('BUY','BOTH'):
-                        signal = 'BUY'; trigger_desc.append("MA crossover → BUY")
+                        signal = 'BUY'; trigger_desc.append("MA crossover → BUY"); trigger_sources.append("ma")
                     elif prev_close > prev_ma and last_close < last_ma and cfg['side'] in ('SELL','BOTH'):
-                        signal = 'SELL'; trigger_desc.append("MA crossover → SELL")
+                        signal = 'SELL'; trigger_desc.append("MA crossover → SELL"); trigger_sources.append("ma")
 
         # --- BB context (informational)
         if cfg['indicators'].get('bb', {}).get('enabled', False) and 'bb_upper' in ind and not ind['bb_upper'].isnull().all():
@@ -476,7 +477,8 @@ class StrategyEngine:
             trigger_desc = ["No triggers evaluated"]
 
         trigger_price = last_close if signal else None
-        return signal, " | ".join(trigger_desc), trigger_price
+        trigger_sources = list(dict.fromkeys(trigger_sources))
+        return signal, " | ".join(trigger_desc), trigger_price, trigger_sources
 
     def run_once(self):
         cw = self.config
@@ -529,7 +531,7 @@ class StrategyEngine:
             stop_enabled = False
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
         ind = self.compute_indicators(df)
-        signal, trigger_desc, trigger_price = self.generate_signal(df, ind)
+        signal, trigger_desc, trigger_price, trigger_sources = self.generate_signal(df, ind)
         
         # --- RSI guard-close (interval-scoped) ---
         try:
@@ -1154,11 +1156,43 @@ class StrategyEngine:
                         )
                         qty_display = order_res.get('executedQty') or order_res.get('origQty') or qty_to_sell
 
+                try:
+                    avg_price = float((order_res.get('info', {}) or {}).get('avgPrice') or 0.0)
+                except Exception:
+                    avg_price = 0.0
+                try:
+                    executed_qty = float(
+                        (order_res.get('info', {}) or {}).get('executedQty')
+                        or (order_res.get('info', {}) or {}).get('origQty')
+                        or (order_res.get('computed', {}) or {}).get('qty')
+                        or qty_display
+                        or 0.0
+                    )
+                except Exception:
+                    try:
+                        executed_qty = float(qty_display or 0.0)
+                    except Exception:
+                        executed_qty = 0.0
+                qty_numeric = executed_qty if executed_qty else float(qty_display or 0.0)
+                leverage_used = None
+                if 'lev' in locals():
+                    try:
+                        leverage_used = int(lev)
+                    except Exception:
+                        leverage_used = lev
                 order_info = {
-                    "symbol": cw['symbol'], "interval": cw['interval'], "side": signal,
-                    "qty": float(qty_display) if qty_display else 0.0, "price": price,
+                    "symbol": cw['symbol'],
+                    "interval": cw['interval'],
+                    "side": signal,
+                    "qty": qty_numeric,
+                    "executed_qty": qty_numeric,
+                    "price": price,
+                    "avg_price": avg_price if avg_price > 0 else price,
+                    "leverage": leverage_used,
+                    "trigger_indicators": list(trigger_sources),
+                    "trigger_desc": trigger_desc,
                     "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": "placed"
+                    "status": "placed",
                 }
                 if self.trade_cb:
                     self.trade_cb(order_info)

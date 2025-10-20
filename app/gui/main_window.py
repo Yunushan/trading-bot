@@ -485,12 +485,22 @@ class _PositionsWorker(QtCore.QObject):
             if notional == 0.0 and mark and amt:
                 notional = abs(amt) * mark
             size_usdt = abs(notional)
+            entry_price = float(p.get('entryPrice') or 0.0)
             iso_wallet = float(p.get('isolatedWallet') or 0.0)
-            margin = iso_wallet
-            if margin <= 0.0:
-                margin = float(p.get('initialMargin') or 0.0)
-            if margin <= 0.0 and lev > 0:
-                margin = size_usdt / lev
+            initial_margin = float(p.get('initialMargin') or 0.0)
+            margin = initial_margin
+            if margin <= 0.0 and iso_wallet > 0.0:
+                try:
+                    margin = iso_wallet - pnl
+                except Exception:
+                    margin = iso_wallet
+                if margin <= 0.0:
+                    margin = iso_wallet
+            if margin <= 0.0 and entry_price > 0.0 and lev > 0:
+                margin = abs(amt) * entry_price / max(lev, 1)
+            if margin <= 0.0 and lev > 0 and size_usdt > 0.0:
+                margin = size_usdt / max(lev, 1)
+            margin = max(margin, 0.0)
             roi = (pnl / margin * 100.0) if margin > 0 else 0.0
             pnl_roi_str = f"{pnl:+.2f} USDT ({roi:+.2f}%)"
 
@@ -520,6 +530,7 @@ class _PositionsWorker(QtCore.QObject):
                 'roi_percent': roi,
                 'update_time': update_time,
                 'leverage': lev or None,
+                'entry_price': entry_price or None,
             }
         except Exception:
             return {
@@ -4824,6 +4835,8 @@ class MainWindow(QtWidgets.QWidget):
         self._entry_intervals = {}
         self._entry_times = {}  # (sym, 'L'/'S') -> last trade time string
         self._entry_times_by_iv = {}
+        self._entry_allocations = {}
+        self._pending_close_times = {}
         self._open_position_records = {}
         self._closed_position_records = []
         self._engine_indicator_map = {}
@@ -5320,6 +5333,19 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
 
         positions_map: dict[tuple, dict] = {}
         base_rows = rows or []
+        alloc_map_global = getattr(self, "_entry_allocations", {}) or {}
+
+        def _collect_allocations(symbol: str, side_key: str) -> list[dict]:
+            try:
+                entries = alloc_map_global.get((symbol, side_key), [])
+                if isinstance(entries, dict):
+                    entries = list(entries.values())
+                if not isinstance(entries, list):
+                    return []
+                return [copy.deepcopy(entry) for entry in entries if isinstance(entry, dict)]
+            except Exception:
+                return []
+
         for r in base_rows:
             try:
                 sym = str(r.get('symbol') or '').strip().upper()
@@ -5343,6 +5369,26 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'indicators': [],
                     'stop_loss_enabled': stop_loss_enabled,
                 }
+                allocations_seed = _collect_allocations(sym, side_key)
+                if allocations_seed:
+                    positions_map[(sym, side_key)]['allocations'] = allocations_seed
+                    trigger_set = []
+                    for alloc in allocations_seed:
+                        trig = alloc.get("trigger_indicators")
+                        if isinstance(trig, (list, tuple, set)):
+                            trigger_set.extend([str(t).strip() for t in trig if str(t).strip()])
+                    if trigger_set:
+                        trigger_set = list(dict.fromkeys(trigger_set))
+                        positions_map[(sym, side_key)]['indicators'] = trigger_set
+                        data_entry['trigger_indicators'] = trigger_set
+                elif isinstance(data_entry.get('trigger_indicators'), (list, tuple, set)):
+                    trig_list = [str(t).strip() for t in data_entry.get('trigger_indicators') if str(t).strip()]
+                    if trig_list:
+                        positions_map[(sym, side_key)]['indicators'] = list(dict.fromkeys(trig_list))
+                try:
+                    getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
+                except Exception:
+                    pass
             except Exception:
                 continue
 
@@ -5391,8 +5437,24 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         mark = float(p.get('markPrice') or 0.0)
                         value = abs(amt) * mark if mark else 0.0
                         side_key = 'L' if amt > 0 else 'S'
-                        margin_usdt = float(p.get('isolatedWallet') or p.get('initialMargin') or 0.0)
+                        entry_price = float(p.get('entryPrice') or 0.0)
+                        iso_wallet = float(p.get('isolatedWallet') or 0.0)
+                        margin_usdt = float(p.get('initialMargin') or 0.0)
                         pnl = float(p.get('unRealizedProfit') or 0.0)
+                        lev_val_raw = float(p.get('leverage') or 0.0)
+                        leverage = int(lev_val_raw) if lev_val_raw else None
+                        if margin_usdt <= 0.0 and iso_wallet > 0.0:
+                            try:
+                                margin_usdt = iso_wallet - pnl
+                            except Exception:
+                                margin_usdt = iso_wallet
+                            if margin_usdt <= 0.0:
+                                margin_usdt = iso_wallet
+                        if margin_usdt <= 0.0 and entry_price > 0.0 and leverage:
+                            margin_usdt = abs(amt) * entry_price / max(leverage, 1)
+                        if margin_usdt <= 0.0 and leverage and leverage > 0 and value > 0.0:
+                            margin_usdt = value / max(leverage, 1)
+                        margin_usdt = max(margin_usdt, 0.0)
                         margin_ratio = normalize_margin_ratio(p.get('marginRatio') or p.get('margin_ratio'))
                         if margin_ratio <= 0.0 and margin_usdt > 0:
                             try:
@@ -5435,6 +5497,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'roi_percent': roi_pct,
                             'side_key': side_key,
                             'update_time': update_time,
+                            'entry_price': entry_price if entry_price > 0 else None,
+                            'leverage': leverage,
                         }
                         rec = positions_map.get((sym, side_key))
                         if rec is None:
@@ -5451,6 +5515,26 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         rec['data'] = data
                         rec['status'] = 'Active'
                         rec['close_time'] = '-'
+                        allocations_existing = _collect_allocations(sym, side_key)
+                        if allocations_existing:
+                            rec['allocations'] = allocations_existing
+                            trigger_set = []
+                            for alloc in allocations_existing:
+                                trig = alloc.get("trigger_indicators")
+                                if isinstance(trig, (list, tuple, set)):
+                                    trigger_set.extend([str(t).strip() for t in trig if str(t).strip()])
+                            if trigger_set:
+                                trigger_set = list(dict.fromkeys(trigger_set))
+                                rec['indicators'] = trigger_set
+                                data['trigger_indicators'] = trigger_set
+                        elif data.get("trigger_indicators"):
+                            trig_list = [str(t).strip() for t in data.get("trigger_indicators") if str(t).strip()]
+                            if trig_list:
+                                rec['indicators'] = list(dict.fromkeys(trig_list))
+                        try:
+                            getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
+                        except Exception:
+                            pass
                         entry_times_map = getattr(self, '_entry_times_by_iv', {}) or {}
                         intervals = set()
                         try:
@@ -5501,7 +5585,10 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             open_times.sort(key=lambda item: item[0])
                             rec['open_time'] = self._format_display_time(open_times[0][1])
                         interval_list = sorted(intervals) if intervals else []
-                        rec['indicators'] = self._collect_strategy_indicators(sym, side_key, intervals=interval_list)
+                        if not rec.get('indicators'):
+                            rec['indicators'] = self._collect_strategy_indicators(sym, side_key, intervals=interval_list)
+                        if rec.get('data') and not rec['data'].get('trigger_indicators'):
+                            rec['data']['trigger_indicators'] = rec.get('indicators') or []
                         rec['stop_loss_enabled'] = stop_loss_enabled
                         positions_map[(sym, side_key)] = rec
                     except Exception:
@@ -5526,13 +5613,20 @@ def _mw_update_position_history(self, positions_map: dict):
             missing_counts = {}
         prev_records = getattr(self, "_open_position_records", {}) or {}
         candidates: list[tuple[str, str]] = []
+        pending_close_map = getattr(self, "_pending_close_times", {})
         for key, prev in prev_records.items():
             if key in positions_map:
                 missing_counts.pop(key, None)
                 continue
             count = missing_counts.get(key, 0) + 1
             missing_counts[key] = count
-            if count >= 3:
+            threshold = 3
+            try:
+                if isinstance(pending_close_map, dict) and key in pending_close_map:
+                    threshold = 1
+            except Exception:
+                threshold = 3
+            if count >= threshold:
                 candidates.append(key)
 
         def _resolve_live_keys() -> set[tuple[str, str]] | None:
@@ -5609,18 +5703,76 @@ def _mw_update_position_history(self, positions_map: dict):
 
         if confirmed_closed:
             from datetime import datetime as _dt
-            now_fmt = self._format_display_time(_dt.now().astimezone())
+            close_time_map = getattr(self, "_pending_close_times", {})
             for key in confirmed_closed:
                 rec = prev_records.get(key)
                 if not rec:
                     continue
                 snap = copy.deepcopy(rec)
                 snap["status"] = "Closed"
-                snap["close_time"] = now_fmt
+                close_fmt = None
+                close_raw = close_time_map.pop(key, None) if isinstance(close_time_map, dict) else None
+                if close_raw:
+                    dt_obj = self._parse_any_datetime(close_raw)
+                    if dt_obj:
+                        close_fmt = self._format_display_time(dt_obj)
+                if close_fmt is None:
+                    close_fmt = self._format_display_time(_dt.now().astimezone())
+                snap["close_time"] = close_fmt
                 if "stop_loss_enabled" not in snap:
                     snap["stop_loss_enabled"] = bool(rec.get("stop_loss_enabled"))
+                try:
+                    alloc_entries = copy.deepcopy(getattr(self, "_entry_allocations", {}).get(key, [])) or []
+                except Exception:
+                    alloc_entries = []
+                if alloc_entries:
+                    base_data = rec.get("data", {}) or {}
+                    base_qty = float(base_data.get("qty") or 0.0)
+                    base_margin = float(base_data.get("margin_usdt") or 0.0)
+                    base_pnl = float(base_data.get("pnl_value") or 0.0)
+                    base_size = float(base_data.get("size_usdt") or 0.0)
+                    total_qty = 0.0
+                    for entry in alloc_entries:
+                        try:
+                            total_qty += abs(float(entry.get("qty") or 0.0))
+                        except Exception:
+                            continue
+                    if total_qty <= 0 and base_qty > 0:
+                        total_qty = base_qty
+                    count_entries = len([entry for entry in alloc_entries if isinstance(entry, dict)])
+                    for entry in alloc_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        entry["status"] = "Closed"
+                        entry["close_time"] = close_fmt
+                        try:
+                            qty_val = abs(float(entry.get("qty") or 0.0))
+                        except Exception:
+                            qty_val = 0.0
+                        ratio = (qty_val / total_qty) if total_qty > 0 else (1.0 / count_entries if count_entries else 0.0)
+                        if ratio <= 0 and count_entries:
+                            ratio = 1.0 / count_entries
+                        if float(entry.get("margin_usdt") or 0.0) <= 0 and base_margin > 0:
+                            entry["margin_usdt"] = base_margin * ratio
+                        if float(entry.get("notional") or 0.0) <= 0 and base_size > 0:
+                            entry["notional"] = base_size * ratio
+                        if entry.get("pnl_value") is None:
+                            if base_pnl and base_qty > 0 and qty_val > 0:
+                                entry["pnl_value"] = base_pnl * (qty_val / base_qty)
+                            elif base_pnl and ratio > 0:
+                                entry["pnl_value"] = base_pnl * ratio
+                            else:
+                                entry["pnl_value"] = base_pnl
+                else:
+                    alloc_entries = []
+                if alloc_entries:
+                    snap["allocations"] = alloc_entries
                 self._closed_position_records.insert(0, snap)
                 missing_counts.pop(key, None)
+                try:
+                    getattr(self, "_entry_allocations", {}).pop(key, None)
+                except Exception:
+                    pass
             if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
                 self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
 
@@ -5659,39 +5811,241 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                 }
             )
 
-    for (sym, side_key), rec in open_records.items():
-        metas = meta_map.get((sym, side_key)) or [None]
-        for meta in metas:
-            entry = copy.deepcopy(rec)
+    def _normalize_interval(value):
+        try:
+            canon = self._canonicalize_interval(value)
+        except Exception:
+            canon = None
+        if canon:
+            return canon
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            return lowered or None
+        return None
+
+    def _collect_allocations(rec: dict) -> list[dict]:
+        allocs = rec.get("allocations") or []
+        out: list[dict] = []
+        if isinstance(allocs, dict):
+            allocs = list(allocs.values())
+        if not isinstance(allocs, list):
+            return out
+        for payload in allocs:
+            if not isinstance(payload, dict):
+                continue
+            entry = copy.deepcopy(payload)
+            interval = entry.get("interval")
+            if interval is None and entry.get("interval_display"):
+                interval = entry.get("interval_display")
+            entry["interval"] = interval
+            out.append(entry)
+        return out
+
+    def _compute_trade_data(base_data: dict, allocation: dict | None, side_key: str, status: str) -> dict:
+        data = dict(base_data)
+        base_qty = float(base_data.get("qty") or 0.0)
+        base_margin = float(base_data.get("margin_usdt") or 0.0)
+        base_pnl = float(base_data.get("pnl_value") or 0.0)
+        base_roi = float(base_data.get("roi_percent") or 0.0)
+        base_size = float(base_data.get("size_usdt") or 0.0)
+        mark = float(base_data.get("mark") or 0.0)
+        entry_price = float(base_data.get("entry_price") or 0.0)
+        leverage = int(base_data.get("leverage") or 0) if base_data.get("leverage") else 0
+
+        qty = base_qty
+        margin = base_margin
+        notional = base_size
+        status_lower = str(status or "").strip().lower()
+        pnl = base_pnl
+
+        if allocation:
+            try:
+                qty = abs(float(allocation.get("qty") or 0.0))
+            except Exception:
+                qty = max(base_qty, 0.0)
+            try:
+                entry_price_alloc = float(allocation.get("entry_price") or 0.0)
+                if entry_price_alloc > 0:
+                    entry_price = entry_price_alloc
+            except Exception:
+                pass
+            try:
+                leverage_alloc = int(allocation.get("leverage") or 0)
+                if leverage_alloc:
+                    leverage = leverage_alloc
+            except Exception:
+                pass
+            try:
+                margin = float(allocation.get("margin_usdt") or 0.0)
+            except Exception:
+                margin = 0.0
+            try:
+                notional = float(allocation.get("notional") or 0.0)
+            except Exception:
+                notional = 0.0
+            alloc_pnl = allocation.get("pnl_value")
+            if alloc_pnl is not None:
+                try:
+                    pnl = float(alloc_pnl)
+                except Exception:
+                    pnl = base_pnl
+            if allocation.get("status"):
+                status_lower = str(allocation.get("status")).strip().lower()
+
+        qty = max(qty, 0.0)
+        if notional <= 0:
+            if entry_price > 0 and qty > 0:
+                notional = entry_price * qty
+            elif mark > 0 and qty > 0:
+                notional = mark * qty
+            elif base_size > 0 and base_qty > 0:
+                notional = base_size * (qty / base_qty)
+            else:
+                notional = 0.0
+
+        if margin <= 0:
+            if leverage and leverage > 0 and entry_price > 0 and qty > 0:
+                margin = (entry_price * qty) / leverage
+            elif base_margin > 0 and base_qty > 0:
+                margin = base_margin * (qty / base_qty)
+            else:
+                margin = 0.0
+        margin = max(margin, 0.0)
+
+        if status_lower == "active":
+            if allocation is None or allocation.get("pnl_value") is None:
+                direction = 1.0 if side_key == "L" else -1.0 if side_key == "S" else 0.0
+                if direction != 0.0 and entry_price > 0 and mark > 0 and qty > 0:
+                    pnl = direction * (mark - entry_price) * qty
+                elif base_pnl and base_qty > 0:
+                    pnl = base_pnl * (qty / base_qty)
+        else:
+            if allocation is None or allocation.get("pnl_value") is None:
+                if base_pnl and base_qty > 0:
+                    pnl = base_pnl * (qty / base_qty)
+                else:
+                    pnl = base_pnl
+
+        roi_percent = (pnl / margin * 100.0) if margin > 0 else base_roi
+        pnl_roi = f"{pnl:+.2f} USDT ({roi_percent:+.2f}%)" if margin > 0 else f"{pnl:+.2f} USDT"
+
+        data.update({
+            "qty": qty,
+            "margin_usdt": margin,
+            "pnl_value": pnl,
+            "roi_percent": roi_percent,
+            "pnl_roi": pnl_roi,
+            "size_usdt": max(notional, 0.0),
+        })
+        trigger_inds = []
+        if allocation and isinstance(allocation.get("trigger_indicators"), (list, tuple, set)):
+            trigger_inds = [str(ind).strip() for ind in allocation.get("trigger_indicators") if str(ind).strip()]
+        elif isinstance(base_data.get("trigger_indicators"), (list, tuple, set)):
+            trigger_inds = [str(ind).strip() for ind in base_data.get("trigger_indicators") if str(ind).strip()]
+        if trigger_inds:
+            trigger_inds = list(dict.fromkeys(trigger_inds))
+            data["trigger_indicators"] = trigger_inds
+        if entry_price > 0:
+            data["entry_price"] = entry_price
+        if leverage:
+            data["leverage"] = leverage
+        return data
+
+    def _emit_entries(base_rec: dict, sym: str, side_key: str, meta_items: list[dict | None]) -> None:
+        allocations = _collect_allocations(base_rec)
+        base_data = dict(base_rec.get("data") or {})
+        status_text = str(base_rec.get("status") or "Active")
+
+        meta_items = meta_items or [None]
+        meta_by_interval: dict[str | None, list[dict | None]] = {}
+        for meta in meta_items:
             if isinstance(meta, dict):
-                interval = meta.get("interval")
-                if interval:
-                    entry["entry_tf"] = interval
-                indicators = meta.get("indicators")
-                if indicators:
-                    entry["indicators"] = list(indicators)
-                if meta.get("stop_loss_enabled") is not None:
-                    entry["stop_loss_enabled"] = bool(meta.get("stop_loss_enabled"))
-            records.append(entry)
+                key = _normalize_interval(meta.get("interval"))
+                meta_by_interval.setdefault(key, []).append(meta)
+            else:
+                meta_by_interval.setdefault(None, []).append(meta)
+
+        used_meta_keys: set[str | None] = set()
+
+        if allocations:
+            for alloc in allocations:
+                norm_iv = _normalize_interval(alloc.get("interval"))
+                matching_meta = (
+                    meta_by_interval.get(norm_iv)
+                    or meta_by_interval.get(None)
+                    or []
+                )
+                meta = matching_meta[0] if matching_meta else None
+                entry = copy.deepcopy(base_rec)
+                entry_status = str(alloc.get("status") or status_text)
+                entry["status"] = entry_status
+                interval_label = alloc.get("interval_display") or alloc.get("interval")
+                if not interval_label and isinstance(meta, dict):
+                    interval_label = meta.get("interval")
+                entry["entry_tf"] = interval_label or "-"
+                if isinstance(meta, dict):
+                    if meta.get("stop_loss_enabled") is not None:
+                        entry["stop_loss_enabled"] = bool(meta.get("stop_loss_enabled"))
+                alloc_data = _compute_trade_data(base_data, alloc, side_key, entry_status)
+                entry["data"] = alloc_data
+                trig_inds = alloc_data.get("trigger_indicators")
+                if trig_inds:
+                    entry["indicators"] = list(trig_inds)
+                elif isinstance(meta, dict):
+                    indicators = meta.get("indicators")
+                    if indicators:
+                        entry["indicators"] = list(indicators)
+                if alloc.get("open_time"):
+                    entry["open_time"] = alloc.get("open_time")
+                if alloc.get("close_time"):
+                    entry["close_time"] = alloc.get("close_time")
+                records.append(entry)
+                used_meta_keys.add(norm_iv)
+
+        remaining_meta: list[dict | None] = []
+        for key, metas in meta_by_interval.items():
+            if key in used_meta_keys:
+                continue
+            remaining_meta.extend(metas)
+
+        if not allocations or remaining_meta:
+            fallback_items = remaining_meta if remaining_meta else meta_items
+            for meta in fallback_items:
+                entry = copy.deepcopy(base_rec)
+                interval = None
+                if isinstance(meta, dict):
+                    interval = meta.get("interval")
+                    indicators = meta.get("indicators")
+                    if indicators:
+                        entry["indicators"] = list(indicators)
+                    if meta.get("stop_loss_enabled") is not None:
+                        entry["stop_loss_enabled"] = bool(meta.get("stop_loss_enabled"))
+                else:
+                    interval = entry.get("entry_tf")
+                entry["entry_tf"] = interval or "-"
+                fallback_data = _compute_trade_data(base_data, None, side_key, status_text)
+                entry["data"] = fallback_data
+                trig_inds = fallback_data.get("trigger_indicators")
+                if trig_inds:
+                    entry["indicators"] = list(trig_inds)
+                records.append(entry)
+
+    for (sym, side_key), rec in open_records.items():
+        meta_items = meta_map.get((sym, side_key)) or [None]
+        _emit_entries(rec, sym, side_key, meta_items)
 
     for rec in closed_records:
-        try:
-            entry_tf = rec.get("entry_tf")
-            if isinstance(entry_tf, str) and entry_tf.strip():
-                intervals = [part.strip() for part in entry_tf.split(",") if part.strip()]
-            else:
-                intervals = ["-"]
-        except Exception:
-            intervals = ["-"]
-        indicators_raw = rec.get("indicators")
-        indicators_list = _normalize_indicator_values(indicators_raw)
-        for interval in intervals:
-            entry = copy.deepcopy(rec)
-            entry["entry_tf"] = interval
-            if indicators_list:
-                entry["indicators"] = list(indicators_list)
-            entry["stop_loss_enabled"] = bool(rec.get("stop_loss_enabled"))
-            records.append(entry)
+        sym = str(rec.get("symbol") or "").strip().upper()
+        side_key = str(rec.get("side_key") or "").strip().upper()
+        entry_tf = rec.get("entry_tf")
+        meta_items: list[dict | None] = []
+        if isinstance(entry_tf, str) and entry_tf.strip():
+            parts = [part.strip() for part in entry_tf.split(",") if part.strip()]
+            if parts:
+                meta_items = [{"interval": part} for part in parts]
+        if not meta_items:
+            meta_items = [None]
+        _emit_entries(rec, sym, side_key, meta_items)
 
     records.sort(key=lambda item: (
         str(item.get("symbol") or ""),
@@ -5786,7 +6140,7 @@ def _mw_render_positions_table(self):
                 self.pos_table.setItem(row, POS_STATUS_COLUMN, QtWidgets.QTableWidgetItem(status_txt))
                 btn_interval = interval if interval != "-" else None
                 btn = self._make_close_btn(sym, side_key, btn_interval, qty_show)
-                if status_txt != 'Active':
+                if str(status_txt).strip().lower() != 'active':
                     btn.setEnabled(False)
                 self.pos_table.setCellWidget(row, POS_CLOSE_COLUMN, btn)
             except Exception:
@@ -7212,9 +7566,31 @@ def _mw_on_trade_signal(self, order_info: dict):
     event_type = str(order_info.get("event") or "").lower()
     status = str(order_info.get("status") or "").lower()
     ok_flag = order_info.get("ok")
-    interval = order_info.get("interval")
     side_for_key = position_side or side
     side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
+    sym_upper = str(sym or "").strip().upper()
+
+    alloc_map = getattr(self, "_entry_allocations", None)
+    if alloc_map is None:
+        self._entry_allocations = {}
+        alloc_map = self._entry_allocations
+    pending_close = getattr(self, "_pending_close_times", None)
+    if pending_close is None:
+        self._pending_close_times = {}
+        pending_close = self._pending_close_times
+
+    def _norm_interval(value):
+        try:
+            canon = self._canonicalize_interval(value)
+        except Exception:
+            canon = None
+        if canon:
+            return canon
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            return lowered or None
+        return None
+
     if event_type == "close_interval":
         try:
             self._entry_intervals.setdefault(sym, {"L": set(), "S": set()}).setdefault(side_key, set()).discard(interval)
@@ -7224,29 +7600,251 @@ def _mw_on_trade_signal(self, order_info: dict):
             self._entry_times_by_iv.pop((sym, side_key, interval), None)
         except Exception:
             pass
+        norm_iv = _norm_interval(interval)
+        entries = alloc_map.get((sym_upper, side_key), [])
+        if isinstance(entries, dict):
+            entries = list(entries.values())
+            alloc_map[(sym_upper, side_key)] = entries
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                entry_iv = _norm_interval(entry.get("interval") or entry.get("interval_display"))
+                if norm_iv is None or entry_iv == norm_iv:
+                    entry["status"] = "Closed"
+                    close_time_val = order_info.get("time")
+                    if close_time_val:
+                        dt_obj = self._parse_any_datetime(close_time_val)
+                        entry["close_time"] = self._format_display_time(dt_obj) if dt_obj else close_time_val
+                    else:
+                        entry["close_time"] = entry.get("close_time")
+        if sym_upper:
+            from datetime import datetime as _dt
+            close_time_val = order_info.get("time")
+            dt_obj = self._parse_any_datetime(close_time_val)
+            if dt_obj is None:
+                dt_obj = _dt.now().astimezone()
+            close_time_fmt = self._format_display_time(dt_obj)
+            if close_time_val:
+                pending_close[(sym_upper, side_key)] = close_time_fmt
+            alloc_entries_snapshot = []
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        entry_snap = copy.deepcopy(entry)
+                        if not entry_snap.get("close_time"):
+                            entry_snap["close_time"] = close_time_fmt
+                        alloc_entries_snapshot.append(entry_snap)
+            open_records = getattr(self, "_open_position_records", {}) or {}
+            base_record = copy.deepcopy(open_records.get((sym_upper, side_key)))
+            if not base_record:
+                base_record = {
+                    "symbol": sym_upper,
+                    "side_key": side_key,
+                    "entry_tf": "-",
+                    "open_time": "-",
+                    "close_time": close_time_fmt,
+                    "status": "Closed",
+                    "data": {},
+                    "indicators": [],
+                    "stop_loss_enabled": False,
+                }
+            else:
+                base_record["status"] = "Closed"
+                base_record["close_time"] = close_time_fmt
+            base_data_snap = dict(base_record.get("data") or {})
+            if alloc_entries_snapshot:
+                qty_total = 0.0
+                margin_total = 0.0
+                pnl_total = 0.0
+                pnl_has_value = False
+                notional_total = 0.0
+                trigger_list = []
+                base_qty_curr = float(base_data_snap.get("qty") or 0.0)
+                base_margin_curr = float(base_data_snap.get("margin_usdt") or 0.0)
+                base_pnl_curr = float(base_data_snap.get("pnl_value") or 0.0)
+                base_notional_curr = float(base_data_snap.get("size_usdt") or 0.0)
+                alloc_count = len(alloc_entries_snapshot)
+                for entry_snap in alloc_entries_snapshot:
+                    try:
+                        qty_val = abs(float(entry_snap.get("qty") or 0.0))
+                    except Exception:
+                        qty_val = 0.0
+                    qty_total += qty_val
+                    margin_val = entry_snap.get("margin_usdt")
+                    if (margin_val is None or float(margin_val or 0.0) == 0.0) and base_margin_curr > 0:
+                        share = (qty_val / base_qty_curr) if base_qty_curr > 0 else (1.0 / alloc_count if alloc_count else 0.0)
+                        entry_snap["margin_usdt"] = base_margin_curr * share if share else base_margin_curr
+                    try:
+                        margin_total += max(float(entry_snap.get("margin_usdt") or 0.0), 0.0)
+                    except Exception:
+                        pass
+                    pnl_val = entry_snap.get("pnl_value")
+                    if pnl_val is not None:
+                        try:
+                            pnl_total += float(pnl_val)
+                            pnl_has_value = True
+                        except Exception:
+                            pass
+                    elif base_pnl_curr:
+                        share = (qty_val / base_qty_curr) if base_qty_curr > 0 else (1.0 / alloc_count if alloc_count else 0.0)
+                        approx_pnl = base_pnl_curr * share if share else base_pnl_curr
+                        entry_snap["pnl_value"] = approx_pnl
+                        pnl_total += approx_pnl
+                        pnl_has_value = True
+                    try:
+                        notional_total += max(float(entry_snap.get("notional") or 0.0), 0.0)
+                    except Exception:
+                        pass
+                    if entry_snap.get("notional") in (None, 0.0) and base_notional_curr > 0:
+                        share = (qty_val / base_qty_curr) if base_qty_curr > 0 else (1.0 / alloc_count if alloc_count else 0.0)
+                        entry_snap["notional"] = base_notional_curr * share if share else base_notional_curr
+                    trig = entry_snap.get("trigger_indicators")
+                    if isinstance(trig, (list, tuple, set)):
+                        trigger_list.extend([str(t).strip() for t in trig if str(t).strip()])
+                if qty_total > 0:
+                    base_data_snap["qty"] = qty_total
+                if margin_total > 0:
+                    base_data_snap["margin_usdt"] = margin_total
+                if pnl_has_value:
+                    base_data_snap["pnl_value"] = pnl_total
+                if notional_total > 0:
+                    base_data_snap["size_usdt"] = notional_total
+                if margin_total > 0 and pnl_has_value:
+                    roi_percent = (pnl_total / margin_total) * 100.0 if margin_total else 0.0
+                    base_data_snap["roi_percent"] = roi_percent
+                    base_data_snap["pnl_roi"] = f"{pnl_total:+.2f} USDT ({roi_percent:+.2f}%)"
+                if trigger_list:
+                    trigger_list = list(dict.fromkeys(trigger_list))
+                    base_record["indicators"] = trigger_list
+                    base_data_snap["trigger_indicators"] = trigger_list
+            base_record["data"] = base_data_snap
+            base_record["allocations"] = alloc_entries_snapshot
+            try:
+                closed_records = getattr(self, "_closed_position_records", [])
+                closed_records.insert(0, base_record)
+                self._closed_position_records = closed_records
+            except Exception:
+                pass
+        try:
+            pending_close.pop((sym_upper, side_key), None)
+        except Exception:
+            pass
         if sym:
             self.traded_symbols.add(sym)
+        if sym_upper:
+            try:
+                getattr(self, "_open_position_records", {}).pop((sym_upper, side_key), None)
+            except Exception:
+                pass
+            try:
+                getattr(self, "_position_missing_counts", {}).pop((sym_upper, side_key), None)
+            except Exception:
+                pass
         self.update_balance_label()
         self.refresh_positions(symbols=[sym] if sym else None)
         return
+
     is_success = (status != "error") and (ok_flag is None or ok_flag is True)
     if sym and interval and side_for_key:
-        side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
+        side_key_local = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
         self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
         if is_success:
-            self._entry_intervals[sym][side_key].add(interval)
+            self._entry_intervals[sym][side_key_local].add(interval)
             tstr = order_info.get('time')
             if tstr:
-                self._entry_times[(sym, side_key)] = tstr
+                self._entry_times[(sym, side_key_local)] = tstr
             else:
                 from datetime import datetime
                 tstr = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                self._entry_times[(sym, side_key)] = tstr
-            self._entry_times_by_iv[(sym, side_key, interval)] = tstr
+                self._entry_times[(sym, side_key_local)] = tstr
+            self._entry_times_by_iv[(sym, side_key_local, interval)] = tstr
+
+            norm_iv = _norm_interval(interval) or "-"
+            try:
+                qty_val = abs(float(order_info.get("executed_qty") or order_info.get("qty") or 0.0))
+            except Exception:
+                qty_val = 0.0
+            try:
+                price_val = float(order_info.get("avg_price") or order_info.get("price") or 0.0)
+            except Exception:
+                price_val = 0.0
+            try:
+                leverage_val = int(float(order_info.get("leverage") or 0.0))
+            except Exception:
+                leverage_val = 0
+            if leverage_val <= 0 and getattr(self, "leverage_spin", None):
+                try:
+                    leverage_val = int(self.leverage_spin.value())
+                except Exception:
+                    leverage_val = 0
+            entry_price_val = price_val if price_val > 0 else float(order_info.get("price") or 0.0)
+            if entry_price_val <= 0:
+                entry_price_val = price_val
+            if entry_price_val <= 0:
+                try:
+                    entry_price_val = float(order_info.get("mark_price") or 0.0)
+                except Exception:
+                    entry_price_val = 0.0
+            notional_val = entry_price_val * qty_val if entry_price_val > 0 and qty_val > 0 else 0.0
+            if leverage_val > 0 and notional_val > 0:
+                margin_val = notional_val / leverage_val
+            else:
+                margin_val = notional_val
+            open_time_val = order_info.get("time")
+            if open_time_val:
+                dt_obj = self._parse_any_datetime(open_time_val)
+                open_time_fmt = self._format_display_time(dt_obj) if dt_obj else open_time_val
+            else:
+                open_time_fmt = None
+            trigger_inds = order_info.get("trigger_indicators") or []
+            trade_entry = {
+                "interval": norm_iv,
+                "interval_display": interval,
+                "qty": qty_val,
+                "entry_price": entry_price_val if entry_price_val > 0 else None,
+                "leverage": leverage_val if leverage_val > 0 else None,
+                "margin_usdt": margin_val,
+                "notional": notional_val,
+                "symbol": sym_upper,
+                "side_key": side_key_local,
+                "open_time": open_time_fmt,
+                "status": "Active",
+                "pnl_value": None,
+                "trigger_indicators": list(trigger_inds) if trigger_inds else [],
+                "trigger_desc": order_info.get("trigger_desc"),
+            }
+            try:
+                import time as _time
+                existing_list = alloc_map.get((sym_upper, side_key_local), [])
+                if isinstance(existing_list, list):
+                    seq_len = len(existing_list)
+                elif isinstance(existing_list, dict):
+                    seq_len = len(existing_list)
+                else:
+                    seq_len = 0
+                trade_entry["trade_id"] = f"{sym_upper}-{side_key_local}-{int(_time.time()*1000)}-{seq_len + 1}"
+            except Exception:
+                existing_list = alloc_map.get((sym_upper, side_key_local), [])
+                if isinstance(existing_list, list):
+                    seq_len = len(existing_list)
+                elif isinstance(existing_list, dict):
+                    seq_len = len(existing_list)
+                else:
+                    seq_len = 0
+                trade_entry["trade_id"] = f"{sym_upper}-{side_key_local}-{seq_len + 1}"
+            alloc_list = alloc_map.get((sym_upper, side_key_local))
+            if isinstance(alloc_list, dict):
+                alloc_list = list(alloc_list.values())
+            if not isinstance(alloc_list, list):
+                alloc_list = []
+            alloc_list.append(trade_entry)
+            alloc_map[(sym_upper, side_key_local)] = alloc_list
+            pending_close.pop((sym_upper, side_key_local), None)
         else:
             try:
-                self._entry_intervals[sym][side_key].discard(interval)
-                self._entry_times_by_iv.pop((sym, side_key, interval), None)
+                self._entry_intervals[sym][side_key_local].discard(interval)
+                self._entry_times_by_iv.pop((sym, side_key_local, interval), None)
             except Exception:
                 pass
     if sym:
