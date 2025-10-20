@@ -665,6 +665,23 @@ class StrategyEngine:
             leg_long, qty_long, entry_price_long, pos_long = _ensure_entry_price(key_long, True)
             leg_short, qty_short, entry_price_short, pos_short = _ensure_entry_price(key_short, False)
 
+            if qty_long <= 0.0 and pos_long:
+                try:
+                    qty_long = max(0.0, float(pos_long.get("positionAmt") or 0.0))
+                except Exception:
+                    qty_long = 0.0
+                if qty_long > 0.0 and leg_long is not None:
+                    leg_long["qty"] = qty_long
+                    self._leg_ledger[key_long] = leg_long
+            if qty_short <= 0.0 and pos_short:
+                try:
+                    qty_short = abs(float(pos_short.get("positionAmt") or 0.0))
+                except Exception:
+                    qty_short = 0.0
+                if qty_short > 0.0 and leg_short is not None:
+                    leg_short["qty"] = qty_short
+                    self._leg_ledger[key_short] = leg_short
+
             if is_cumulative:
                 if positions_cache is None:
                     try:
