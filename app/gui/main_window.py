@@ -2940,6 +2940,8 @@ class MainWindow(QtWidgets.QWidget):
                 "trades": getattr(run, "trades", 0),
                 "roi_value": getattr(run, "roi_value", 0.0),
                 "roi_percent": getattr(run, "roi_percent", 0.0),
+                "max_drawdown_value": getattr(run, "max_drawdown_value", 0.0),
+                "max_drawdown_percent": getattr(run, "max_drawdown_percent", 0.0),
             }
         data.setdefault("indicator_keys", [])
         keys = data.get("indicator_keys") or []
@@ -2950,7 +2952,7 @@ class MainWindow(QtWidgets.QWidget):
             data["trades"] = int(data.get("trades", 0) or 0)
         except Exception:
             data["trades"] = 0
-        for key in ("roi_value", "roi_percent"):
+        for key in ("roi_value", "roi_percent", "max_drawdown_value", "max_drawdown_percent"):
             try:
                 data[key] = float(data.get(key, 0.0) or 0.0)
             except Exception:
@@ -3036,6 +3038,22 @@ class MainWindow(QtWidgets.QWidget):
         if not data.get("account_mode"):
             data["account_mode"] = ""
         data["leverage_display"] = f"{data.get('leverage', 0.0):.2f}x"
+        max_dd_pct = data.get("max_drawdown_percent", 0.0)
+        try:
+            max_dd_pct = float(max_dd_pct or 0.0)
+        except Exception:
+            max_dd_pct = 0.0
+        max_dd_val = data.get("max_drawdown_value", 0.0)
+        try:
+            max_dd_val = float(max_dd_val or 0.0)
+        except Exception:
+            max_dd_val = 0.0
+        data["max_drawdown_percent"] = max_dd_pct
+        data["max_drawdown_value"] = max_dd_val
+        if max_dd_pct > 0.0:
+            data["max_drawdown_display"] = f"{-abs(max_dd_pct):.2f}%"
+        else:
+            data["max_drawdown_display"] = "0.00%"
         data["symbol"] = str(data.get("symbol") or "")
         data["interval"] = str(data.get("interval") or "")
         data["logic"] = str(data.get("logic") or "")
@@ -3133,6 +3151,8 @@ class MainWindow(QtWidgets.QWidget):
                     assets_mode = data.get("assets_mode") or "-"
                     account_mode = data.get("account_mode") or "-"
                     leverage_display = data.get("leverage_display") or f"{data.get('leverage', 0.0):.2f}x"
+                    max_drawdown_percent = _safe_float(data.get("max_drawdown_percent", 0.0), 0.0)
+                    max_drawdown_value = _safe_float(data.get("max_drawdown_value", 0.0), 0.0)
 
                     indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys) or "-"
                     item_symbol = QtWidgets.QTableWidgetItem(symbol or "-")
@@ -3162,12 +3182,22 @@ class MainWindow(QtWidgets.QWidget):
                     self.backtest_results_table.setItem(row, 15, roi_value_item)
                     roi_percent_item = _NumericItem(f"{roi_percent:+.2f}%", roi_percent)
                     self.backtest_results_table.setItem(row, 16, roi_percent_item)
+                    if max_drawdown_percent > 0.0:
+                        dd_value_for_sort = -abs(max_drawdown_percent)
+                        dd_text = f"{dd_value_for_sort:.2f}%"
+                    else:
+                        dd_value_for_sort = 0.0
+                        dd_text = "0.00%"
+                    dd_item = _NumericItem(dd_text, dd_value_for_sort)
+                    if max_drawdown_value > 0.0:
+                        dd_item.setToolTip(f"Peak-to-trough drop: {max_drawdown_value:.2f} USDT")
+                    self.backtest_results_table.setItem(row, 17, dd_item)
                 except Exception as row_exc:
                     self.log(f"Backtest table row {row} error: {row_exc}")
                     err_item = QtWidgets.QTableWidgetItem(f"Error: {row_exc}")
                     err_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
                     self.backtest_results_table.setItem(row, 0, err_item)
-                    for col in range(1, 17):
+                    for col in range(1, self.backtest_results_table.columnCount()):
                         self.backtest_results_table.setItem(row, col, QtWidgets.QTableWidgetItem("-"))
                     continue
             self.backtest_results_table.resizeRowsToContents()
@@ -4893,6 +4923,12 @@ class MainWindow(QtWidgets.QWidget):
         # ---------------- Backtest tab ----------------
         tab3 = QtWidgets.QWidget()
         tab3_layout = QtWidgets.QVBoxLayout(tab3)
+        tab3_scroll_area = QtWidgets.QScrollArea(tab3)
+        tab3_scroll_area.setWidgetResizable(True)
+        tab3_layout.addWidget(tab3_scroll_area)
+        tab3_scroll_widget = QtWidgets.QWidget()
+        tab3_scroll_area.setWidget(tab3_scroll_widget)
+        tab3_content_layout = QtWidgets.QVBoxLayout(tab3_scroll_widget)
 
         top_layout = QtWidgets.QHBoxLayout()
 
@@ -5155,7 +5191,7 @@ class MainWindow(QtWidgets.QWidget):
             row += 1
         top_layout.addWidget(indicator_group, stretch=1)
 
-        tab3_layout.addLayout(top_layout)
+        tab3_content_layout.addLayout(top_layout)
 
         controls_layout = QtWidgets.QHBoxLayout()
         self.backtest_run_btn = QtWidgets.QPushButton("Run Backtest")
@@ -5177,7 +5213,7 @@ class MainWindow(QtWidgets.QWidget):
         self.bot_status_label_tab3 = QtWidgets.QLabel()
         self.bot_status_label_tab3.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
         controls_layout.addWidget(self.bot_status_label_tab3)
-        tab3_layout.addLayout(controls_layout)
+        tab3_content_layout.addLayout(controls_layout)
         self._update_bot_status()
         try:
             for widget in (self.backtest_run_btn, self.backtest_stop_btn, self.backtest_add_to_dashboard_btn):
@@ -5187,7 +5223,7 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        self.backtest_results_table = QtWidgets.QTableWidget(0, 17)
+        self.backtest_results_table = QtWidgets.QTableWidget(0, 18)
         self.backtest_results_table.setHorizontalHeaderLabels([
             "Symbol",
             "Interval",
@@ -5206,16 +5242,40 @@ class MainWindow(QtWidgets.QWidget):
             "Leverage (Futures)",
             "ROI (USDT)",
             "ROI (%)",
+            "Max Drawdown (%)",
         ])
         header = self.backtest_results_table.horizontalHeader()
         header.setStretchLastSection(False)
         try:
-            header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
         except Exception:
             try:
-                header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+                header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
             except Exception:
                 pass
+        try:
+            font_metrics = header.fontMetrics()
+            style = header.style()
+            opt = QtWidgets.QStyleOptionHeader()
+            opt.initFrom(header)
+            base_padding = style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_HeaderMargin, opt, header)
+            arrow_padding = style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_HeaderMarkSize, opt, header)
+        except Exception:
+            font_metrics = None
+            base_padding = 12
+            arrow_padding = 12
+        if font_metrics is None:
+            font_metrics = self.fontMetrics()
+        total_padding = (base_padding or 12) * 2 + (arrow_padding or 12)
+        for col in range(self.backtest_results_table.columnCount()):
+            try:
+                header_item = self.backtest_results_table.horizontalHeaderItem(col)
+                text = header_item.text() if header_item is not None else ""
+                text_width = font_metrics.horizontalAdvance(text) if font_metrics is not None else 0
+                target_width = max(text_width + total_padding, 80)
+                header.resizeSection(col, target_width)
+            except Exception:
+                continue
         self.backtest_results_table.setSortingEnabled(True)
         try:
             self.backtest_results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -5228,7 +5288,7 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_results_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.backtest_results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.backtest_results_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
-        tab3_layout.addWidget(self.backtest_results_table)
+        tab3_content_layout.addWidget(self.backtest_results_table)
 
         self.tabs.addTab(tab3, "Backtest")
         self._refresh_symbol_interval_pairs("runtime")
@@ -6387,22 +6447,46 @@ def start_strategy(self):
 def stop_strategy_async(self, close_positions: bool = True, blocking: bool = False):
     """Stop all StrategyEngine threads and then market-close ALL active positions asynchronously."""
     try:
-        if hasattr(self, "strategy_engines") and self.strategy_engines:
-            for key, eng in list(self.strategy_engines.items()):
+        engines = {}
+        if hasattr(self, "strategy_engines") and isinstance(self.strategy_engines, dict):
+            engines = dict(self.strategy_engines)
+
+        if engines:
+            for key, eng in engines.items():
                 try:
                     eng.stop()
                 except Exception:
-                    pass
+                    continue
             try:
-                import time as _t; _t.sleep(0.05)
+                import time as _t
+                _t.sleep(0.05)
             except Exception:
                 pass
-            self.strategy_engines.clear()
+            still_alive: list[str] = []
+            for key, eng in engines.items():
+                try:
+                    if hasattr(eng, "join"):
+                        eng.join(timeout=2.5)
+                except Exception:
+                    pass
+                try:
+                    alive = bool(getattr(eng, "is_alive", lambda: False)())
+                except Exception:
+                    alive = False
+                if alive:
+                    still_alive.append(str(key))
+            try:
+                self.strategy_engines.clear()
+            except Exception:
+                pass
             try:
                 self._engine_indicator_map.clear()
             except Exception:
                 pass
-            self.log("Stopped all strategy engines.")
+            if still_alive:
+                self.log(f"Signaled loops to stop but {len(still_alive)} engine(s) are still shutting down: {', '.join(still_alive)}")
+            else:
+                self.log("Stopped all strategy engines.")
         else:
             self.log("No engines to stop.")
         try:
@@ -6642,6 +6726,18 @@ def close_all_positions_async(self):
         except Exception:
             pass
         w.done.connect(_done)
+        if not hasattr(self, "_bg_workers"):
+            self._bg_workers = []
+        self._bg_workers.append(w)
+        def _cleanup():
+            try:
+                self._bg_workers.remove(w)
+            except Exception:
+                pass
+        try:
+            w.finished.connect(_cleanup)
+        except Exception:
+            pass
         w.start()
     except Exception as e:
         try:
@@ -6865,18 +6961,51 @@ def _mw_reconfigure_positions_worker(self, symbols=None):
         worker = getattr(self, '_pos_worker', None)
         if worker is None:
             return
-        if symbols is None:
-            try:
-                symbols = [self.symbol_list.item(i).text() for i in range(self.symbol_list.count()) if self.symbol_list.item(i).isSelected()]
-            except Exception:
-                symbols = None
+
+        selected_symbols: list[str] = []
+        try:
+            symbol_list = getattr(self, "symbol_list", None)
+            if symbol_list is not None:
+                for idx in range(symbol_list.count()):
+                    item = symbol_list.item(idx)
+                    if item is None or not item.isSelected():
+                        continue
+                    text = str(item.text() or "").strip().upper()
+                    if text:
+                        selected_symbols.append(text)
+        except Exception:
+            selected_symbols = []
+
+        extra_symbols: list[str] = []
+        if symbols:
+            for sym in symbols:
+                try:
+                    text = str(sym or "").strip().upper()
+                except Exception:
+                    text = ""
+                if text:
+                    extra_symbols.append(text)
+
+        def _dedupe(seq: list[str]) -> list[str]:
+            return list(dict.fromkeys(seq))
+
+        selected_symbols = _dedupe(selected_symbols)
+        extra_symbols = _dedupe(extra_symbols)
+
+        if selected_symbols:
+            target_symbols = _dedupe(selected_symbols + extra_symbols)
+        else:
+            # No explicit selection: never narrow the worker just because a caller passed hint symbols.
+            target_symbols = None
+
         worker.configure(
             api_key=self.api_key_edit.text().strip(),
             api_secret=self.api_secret_edit.text().strip(),
             mode=self.mode_combo.currentText(),
             account_type=self.account_combo.currentText(),
-            symbols=symbols or None,
+            symbols=target_symbols or None,
         )
+        setattr(self, "_pos_symbol_filter", target_symbols)
     except Exception:
         pass
 

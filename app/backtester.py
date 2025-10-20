@@ -60,6 +60,8 @@ class BacktestRunResult:
     roi_value: float
     roi_percent: float
     final_equity: float
+    max_drawdown_value: float
+    max_drawdown_percent: float
     logic: str
     leverage: float
     start: datetime | None = None
@@ -344,6 +346,31 @@ class BacktestEngine:
         direction = ""
         equity = float(capital)
         trades = 0
+        peak_equity = equity
+        max_drawdown_value = 0.0
+        max_drawdown_pct = 0.0
+
+        def _record_equity(current_equity: float) -> None:
+            nonlocal peak_equity, max_drawdown_value, max_drawdown_pct
+            try:
+                current = float(current_equity)
+            except Exception:
+                current = 0.0
+            if current > peak_equity:
+                peak_equity = current
+                return
+            if peak_equity <= 0.0:
+                return
+            drawdown_value = peak_equity - current
+            if drawdown_value <= 0.0:
+                return
+            if drawdown_value > max_drawdown_value:
+                max_drawdown_value = drawdown_value
+            drawdown_pct = (drawdown_value / peak_equity * 100.0) if peak_equity else 0.0
+            if drawdown_pct > max_drawdown_pct:
+                max_drawdown_pct = drawdown_pct
+
+        _record_equity(equity)
 
         can_long = side_pref in ("BUY", "BOTH")
         can_short = side_pref in ("SELL", "BOTH")
@@ -411,6 +438,7 @@ class BacktestEngine:
                     if low_price_val <= liq_price:
                         loss = min(equity, position_margin)
                         equity = max(0.0, equity - loss)
+                        _record_equity(equity)
                         position_open = False
                         units = 0.0
                         position_margin = 0.0
@@ -421,6 +449,7 @@ class BacktestEngine:
                     if high_price_val >= liq_price:
                         loss = min(equity, position_margin)
                         equity = max(0.0, equity - loss)
+                        _record_equity(equity)
                         position_open = False
                         units = 0.0
                         position_margin = 0.0
@@ -445,6 +474,7 @@ class BacktestEngine:
                         exit_price = worst_price
                         pnl = (exit_price - entry_price) * units if direction == "LONG" else (entry_price - exit_price) * units
                         equity = max(0.0, equity + pnl)
+                        _record_equity(equity)
                         position_open = False
                         units = 0.0
                         position_margin = 0.0
@@ -455,6 +485,7 @@ class BacktestEngine:
                 if direction == "LONG" and aggregated_sell:
                     pnl = (price - entry_price) * units
                     equity = max(0.0, equity + pnl)
+                    _record_equity(equity)
                     position_open = False
                     units = 0.0
                     position_margin = 0.0
@@ -467,6 +498,7 @@ class BacktestEngine:
                 elif direction == "SHORT" and aggregated_buy:
                     pnl = (entry_price - price) * units
                     equity = max(0.0, equity + pnl)
+                    _record_equity(equity)
                     position_open = False
                     units = 0.0
                     position_margin = 0.0
@@ -505,6 +537,7 @@ class BacktestEngine:
             else:
                 pnl = (entry_price - last_price) * units
             equity = max(0.0, equity + pnl)
+            _record_equity(equity)
             position_open = False
             units = 0.0
             position_margin = 0.0
@@ -525,6 +558,8 @@ class BacktestEngine:
             roi_value=float(roi_value),
             roi_percent=float(roi_percent),
             final_equity=float(equity),
+            max_drawdown_value=float(max_drawdown_value),
+            max_drawdown_percent=float(max_drawdown_pct),
             logic=logic,
             leverage=float(leverage),
             start=request.start,
