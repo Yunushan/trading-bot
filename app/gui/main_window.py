@@ -5516,10 +5516,31 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         rec['status'] = 'Active'
                         rec['close_time'] = '-'
                         allocations_existing = _collect_allocations(sym, side_key)
+                        interval_display: dict[str, str] = {}
+                        interval_lookup: dict[str, str] = {}
+                        entry_times_map = getattr(self, '_entry_times_by_iv', {}) or {}
                         if allocations_existing:
                             rec['allocations'] = allocations_existing
                             trigger_set = []
                             for alloc in allocations_existing:
+                                if not isinstance(alloc, dict):
+                                    continue
+                                iv_disp = alloc.get("interval_display") or alloc.get("interval")
+                                iv_raw = alloc.get("interval")
+                                status_flag = str(alloc.get("status") or "Active").strip().lower()
+                                if iv_disp and status_flag not in {"closed", "error"}:
+                                    iv_text = str(iv_disp).strip()
+                                    if iv_text:
+                                        try:
+                                            canon_iv = self._canonicalize_interval(iv_text)
+                                        except Exception:
+                                            canon_iv = None
+                                        key_iv = (canon_iv or iv_text).strip().lower()
+                                        if key_iv:
+                                            interval_display.setdefault(key_iv, canon_iv or iv_text)
+                                            lookup_val = str(iv_raw or iv_text).strip()
+                                            if lookup_val:
+                                                interval_lookup.setdefault(key_iv, lookup_val)
                                 trig = alloc.get("trigger_indicators")
                                 if isinstance(trig, (list, tuple, set)):
                                     trigger_set.extend([str(t).strip() for t in trig if str(t).strip()])
@@ -5535,24 +5556,76 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
                         except Exception:
                             pass
-                        entry_times_map = getattr(self, '_entry_times_by_iv', {}) or {}
-                        intervals = set()
-                        try:
-                            for (sym_key, side_key_key, iv_key), ts in entry_times_map.items():
-                                if sym_key == sym and side_key_key == side_key and ts and iv_key:
-                                    iv_norm = str(iv_key).strip().lower()
-                                    if iv_norm:
-                                        intervals.add(iv_norm)
-                        except Exception:
-                            pass
-                        if not intervals:
-                            intervals = {str(iv).strip().lower() for iv in (self._entry_intervals.get(sym, {}) or {}).get(side_key, set()) if str(iv).strip()}
-                        if intervals:
-                            rec['entry_tf'] = ', '.join(sorted(intervals, key=_mw_interval_sort_key))
+                        if not interval_display:
+                            try:
+                                for (sym_key, side_key_key, iv_key), ts in entry_times_map.items():
+                                    if sym_key == sym and side_key_key == side_key and ts and iv_key:
+                                        iv_text = str(iv_key).strip()
+                                        if not iv_text:
+                                            continue
+                                        try:
+                                            canon_iv = self._canonicalize_interval(iv_text)
+                                        except Exception:
+                                            canon_iv = None
+                                        key_iv = (canon_iv or iv_text).strip().lower()
+                                        if key_iv:
+                                            interval_display.setdefault(key_iv, canon_iv or iv_text)
+                                            interval_lookup.setdefault(key_iv, iv_text)
+                            except Exception:
+                                pass
+                        if not interval_display:
+                            stored_intervals = (self._entry_intervals.get(sym, {}) or {}).get(side_key, set())
+                            for iv in stored_intervals:
+                                iv_text = str(iv).strip()
+                                if not iv_text:
+                                    continue
+                                try:
+                                    canon_iv = self._canonicalize_interval(iv_text)
+                                except Exception:
+                                    canon_iv = None
+                                key_iv = (canon_iv or iv_text).strip().lower()
+                                if key_iv:
+                                    interval_display.setdefault(key_iv, canon_iv or iv_text)
+                                    interval_lookup.setdefault(key_iv, iv_text)
+                        if not interval_display:
+                            metadata = getattr(self, "_engine_indicator_map", {}) or {}
+                            for meta in metadata.values():
+                                if not isinstance(meta, dict):
+                                    continue
+                                if str(meta.get("symbol") or "").strip().upper() != sym:
+                                    continue
+                                allowed_side = str(meta.get("side") or "BOTH").upper()
+                                if side_key == "L" and allowed_side == "SELL":
+                                    continue
+                                if side_key == "S" and allowed_side == "BUY":
+                                    continue
+                                iv_text = str(meta.get("interval") or "").strip()
+                                if not iv_text:
+                                    continue
+                                try:
+                                    canon_iv = self._canonicalize_interval(iv_text)
+                                except Exception:
+                                    canon_iv = None
+                                key_iv = (canon_iv or iv_text).strip().lower()
+                                if key_iv:
+                                    interval_display.setdefault(key_iv, canon_iv or iv_text)
+                                    interval_lookup.setdefault(key_iv, iv_text)
+                        ordered_keys: list[str] = []
+                        if interval_display:
+                            ordered_keys = sorted(interval_display.keys(), key=_mw_interval_sort_key)
+                            rec['entry_tf'] = ', '.join(
+                                interval_display[key] for key in ordered_keys if interval_display[key]
+                            )
                         else:
                             rec['entry_tf'] = '-'
                         open_times = []
-                        for iv in intervals:
+                        ordered_lookup = [
+                            interval_lookup.get(key) or interval_display.get(key)
+                            for key in (ordered_keys if interval_display else [])
+                        ]
+                        for iv in ordered_lookup:
+                            if not iv:
+                                continue
                             ts = entry_times_map.get((sym, side_key, iv))
                             dt_obj = self._parse_any_datetime(ts)
                             if dt_obj:
@@ -5584,7 +5657,11 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if open_times:
                             open_times.sort(key=lambda item: item[0])
                             rec['open_time'] = self._format_display_time(open_times[0][1])
-                        interval_list = sorted(intervals) if intervals else []
+                        interval_list = [
+                            interval_lookup.get(key) or interval_display.get(key)
+                            for key in (ordered_keys if interval_display else [])
+                            if (interval_lookup.get(key) or interval_display.get(key))
+                        ]
                         if not rec.get('indicators'):
                             rec['indicators'] = self._collect_strategy_indicators(sym, side_key, intervals=interval_list)
                         if rec.get('data') and not rec['data'].get('trigger_indicators'):

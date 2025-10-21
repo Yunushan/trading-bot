@@ -118,16 +118,30 @@ def close_all_futures_positions(binance) -> List[Dict[str, Any]]:
                     qty_str = f"{qty_raw:.8f}"
                     qty_float = qty_raw
                 _cancel_all(binance, sym)
-                params = dict(symbol=sym, side=side, type='MARKET', quantity=str(qty_str))
+                params = dict(symbol=sym, side=side, type='MARKET')
                 if dual:
                     params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                    params['quantity'] = str(qty_str)
                 else:
                     params['reduceOnly'] = True
+                    params['quantity'] = str(qty_str)
                 try:
                     od = binance.client.futures_create_order(**params)
                     results.append({'ok': True, 'symbol': sym, 'info': od})
+                    continue
                 except Exception as e:
-                    results.append({'ok': False, 'symbol': sym, 'error': str(e), 'params': params})
+                    err_msg = str(e)
+                    if (not dual) and ("-2022" in err_msg or "ReduceOnly" in err_msg):
+                        fallback_params = dict(symbol=sym, side=side, type='MARKET', closePosition=True)
+                        try:
+                            od = binance.client.futures_create_order(**fallback_params)
+                            results.append({'ok': True, 'symbol': sym, 'info': od, 'method': 'closePosition'})
+                            continue
+                        except Exception as e2:
+                            err_msg = f"{err_msg} | fallback error: {e2}"
+                            results.append({'ok': False, 'symbol': sym, 'error': err_msg, 'params': fallback_params})
+                    else:
+                        results.append({'ok': False, 'symbol': sym, 'error': err_msg, 'params': params})
             except Exception as e:
                 results.append({'ok': False, 'symbol': sym, 'error': str(e)})
     return results

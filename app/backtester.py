@@ -463,7 +463,10 @@ class BacktestEngine:
                     else:
                         worst_price = max(price, high_price_val)
                         loss_usdt = max(0.0, (worst_price - entry_price) * units)
-                    denom = entry_price * units
+                    if scope == "per_trade" and position_margin > 0.0:
+                        denom = position_margin
+                    else:
+                        denom = entry_price * units
                     loss_pct = (loss_usdt / denom * 100.0) if denom > 0 else 0.0
                     triggered = False
                     if stop_mode in ("usdt", "both") and stop_usdt > 0.0 and loss_usdt >= stop_usdt:
