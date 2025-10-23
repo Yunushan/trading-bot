@@ -11,6 +11,11 @@ STOP_LOSS_DEFAULT = {
     "scope": "per_trade",
 }
 
+MDD_LOGIC_OPTIONS = ["per_trade", "cumulative", "entire_account"]
+MDD_LOGIC_DEFAULT = MDD_LOGIC_OPTIONS[0]
+
+BACKTEST_TEMPLATE_DEFAULT = {"enabled": False, "name": None}
+
 
 DEFAULT_CONFIG = {
     "api_key": os.getenv("BINANCE_API_KEY", ""),
@@ -60,6 +65,8 @@ DEFAULT_CONFIG = {
         "assets_mode": "Single-Asset",
         "account_mode": "Classic Trading",
         "leverage": 5,
+        "mdd_logic": MDD_LOGIC_DEFAULT,
+        "template": copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT),
         "indicators": {},
         "stop_loss": copy.deepcopy(STOP_LOSS_DEFAULT),
     },

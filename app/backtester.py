@@ -9,7 +9,12 @@ import pandas as pd
 
 from . import indicators as ind
 from .binance_wrapper import _coerce_interval_seconds
-from .config import STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS
+from .config import (
+    MDD_LOGIC_DEFAULT,
+    MDD_LOGIC_OPTIONS,
+    STOP_LOSS_MODE_ORDER,
+    STOP_LOSS_SCOPE_OPTIONS,
+)
 
 
 @dataclass
@@ -43,6 +48,7 @@ class BacktestRequest:
     position_mode: str = "Hedge"
     assets_mode: str = "Single-Asset"
     account_mode: str = "Classic Trading"
+    mdd_logic: str = MDD_LOGIC_DEFAULT
     stop_loss_enabled: bool = False
     stop_loss_mode: str = "usdt"
     stop_loss_usdt: float = 0.0
@@ -64,6 +70,7 @@ class BacktestRunResult:
     max_drawdown_percent: float
     logic: str
     leverage: float
+    mdd_logic: str | None = None
     start: datetime | None = None
     end: datetime | None = None
     position_pct: float | None = None
@@ -346,31 +353,113 @@ class BacktestEngine:
         direction = ""
         equity = float(capital)
         trades = 0
-        peak_equity = equity
-        max_drawdown_value = 0.0
-        max_drawdown_pct = 0.0
 
-        def _record_equity(current_equity: float) -> None:
-            nonlocal peak_equity, max_drawdown_value, max_drawdown_pct
+        mdd_logic_raw = getattr(request, "mdd_logic", MDD_LOGIC_DEFAULT)
+        mdd_logic = str(mdd_logic_raw or MDD_LOGIC_DEFAULT).lower()
+        if mdd_logic not in MDD_LOGIC_OPTIONS:
+            mdd_logic = MDD_LOGIC_OPTIONS[0]
+
+        drawdown_state_cumulative = {"peak": equity, "max_value": 0.0, "max_pct": 0.0}
+        drawdown_state_account = {"peak": equity, "max_value": 0.0, "max_pct": 0.0}
+        per_trade_state = {"max_value": 0.0, "max_pct": 0.0}
+        trade_state = {
+            "active": False,
+            "direction": "",
+            "entry_price": 0.0,
+            "peak_price": 0.0,
+            "trough_price": 0.0,
+            "max_value": 0.0,
+            "max_pct": 0.0,
+            "notional": 0.0,
+        }
+
+        def _update_drawdown(state: dict, current_equity: float) -> None:
             try:
                 current = float(current_equity)
             except Exception:
                 current = 0.0
-            if current > peak_equity:
-                peak_equity = current
+            peak = state.get("peak", 0.0)
+            if current > peak:
+                state["peak"] = current
                 return
-            if peak_equity <= 0.0:
+            if peak <= 0.0:
                 return
-            drawdown_value = peak_equity - current
+            drawdown_value = peak - current
             if drawdown_value <= 0.0:
                 return
-            if drawdown_value > max_drawdown_value:
-                max_drawdown_value = drawdown_value
-            drawdown_pct = (drawdown_value / peak_equity * 100.0) if peak_equity else 0.0
-            if drawdown_pct > max_drawdown_pct:
-                max_drawdown_pct = drawdown_pct
+            if drawdown_value > state.get("max_value", 0.0):
+                state["max_value"] = drawdown_value
+            drawdown_pct = (drawdown_value / peak * 100.0) if peak else 0.0
+            if drawdown_pct > state.get("max_pct", 0.0):
+                state["max_pct"] = drawdown_pct
 
-        _record_equity(equity)
+        def _record_realized_equity(value: float) -> None:
+            _update_drawdown(drawdown_state_cumulative, value)
+            if mdd_logic == "entire_account":
+                _update_drawdown(drawdown_state_account, value)
+
+        def _reset_trade_state() -> None:
+            trade_state["active"] = False
+            trade_state["direction"] = ""
+            trade_state["entry_price"] = 0.0
+            trade_state["peak_price"] = 0.0
+            trade_state["trough_price"] = 0.0
+            trade_state["max_value"] = 0.0
+            trade_state["max_pct"] = 0.0
+            trade_state["notional"] = 0.0
+
+        def _start_trade(dir_text: str) -> None:
+            if mdd_logic != "per_trade":
+                return
+            if units <= 0.0 or entry_price <= 0.0:
+                return
+            trade_state["active"] = True
+            trade_state["direction"] = dir_text
+            trade_state["entry_price"] = entry_price
+            trade_state["peak_price"] = entry_price
+            trade_state["trough_price"] = entry_price
+            trade_state["max_value"] = 0.0
+            trade_state["max_pct"] = 0.0
+            trade_state["notional"] = abs(entry_price * units)
+
+        def _update_trade_drawdown(price_val: float, high_val: float, low_val: float) -> None:
+            if mdd_logic != "per_trade":
+                return
+            if not trade_state["active"] or units <= 0.0:
+                return
+            if trade_state["direction"] == "LONG":
+                trade_state["peak_price"] = max(trade_state["peak_price"], high_val)
+                worst_price = min(low_val, price_val)
+                drawdown_price = max(0.0, trade_state["peak_price"] - worst_price)
+            else:
+                trade_state["trough_price"] = min(trade_state["trough_price"], low_val)
+                worst_price = max(high_val, price_val)
+                drawdown_price = max(0.0, worst_price - trade_state["trough_price"])
+            drawdown_value = drawdown_price * units
+            notional = trade_state["notional"]
+            if notional <= 0.0:
+                notional = abs(trade_state["entry_price"] * units)
+                trade_state["notional"] = notional
+            drawdown_pct = (drawdown_value / notional * 100.0) if notional else 0.0
+            if drawdown_value > trade_state["max_value"]:
+                trade_state["max_value"] = drawdown_value
+            if drawdown_pct > trade_state["max_pct"]:
+                trade_state["max_pct"] = drawdown_pct
+
+        def _finalize_trade() -> None:
+            if mdd_logic != "per_trade":
+                return
+            if not trade_state["active"]:
+                return
+            value = trade_state["max_value"]
+            pct = trade_state["max_pct"]
+            if value > per_trade_state["max_value"]:
+                per_trade_state["max_value"] = value
+                per_trade_state["max_pct"] = pct
+            _reset_trade_state()
+
+        _reset_trade_state()
+        _record_realized_equity(equity)
 
         can_long = side_pref in ("BUY", "BOTH")
         can_short = side_pref in ("SELL", "BOTH")
@@ -426,8 +515,27 @@ class BacktestEngine:
 
             aggregated_buy = bool(aggregated_buy_array[idx])
             aggregated_sell = bool(aggregated_sell_array[idx])
+            if not position_open and mdd_logic == "entire_account":
+                _update_drawdown(drawdown_state_account, equity)
 
             if position_open:
+                _update_trade_drawdown(price, high_price_val, low_price_val)
+                if mdd_logic == "entire_account":
+                    if units > 0.0:
+                        if direction == "LONG":
+                            best_price = max(high_price_val, price)
+                            worst_price = min(low_price_val, price)
+                            best_equity = equity + (best_price - entry_price) * units
+                            worst_equity = equity + (worst_price - entry_price) * units
+                        else:
+                            best_price = min(low_price_val, price)
+                            worst_price = max(high_price_val, price)
+                            best_equity = equity + (entry_price - best_price) * units
+                            worst_equity = equity + (entry_price - worst_price) * units
+                        _update_drawdown(drawdown_state_account, best_equity)
+                        _update_drawdown(drawdown_state_account, worst_equity)
+                    else:
+                        _update_drawdown(drawdown_state_account, equity)
                 effective_leverage = leverage
                 if margin_mode == "CROSS":
                     effective_leverage = max(1.0, leverage * pct_fraction)
@@ -438,22 +546,24 @@ class BacktestEngine:
                     if low_price_val <= liq_price:
                         loss = min(equity, position_margin)
                         equity = max(0.0, equity - loss)
-                        _record_equity(equity)
+                        _record_realized_equity(equity)
                         position_open = False
                         units = 0.0
                         position_margin = 0.0
                         direction = ""
+                        _finalize_trade()
                         continue
                 if direction == "SHORT" and effective_leverage > 1.0:
                     liq_price = entry_price * (1.0 + (1.0 / effective_leverage))
                     if high_price_val >= liq_price:
                         loss = min(equity, position_margin)
                         equity = max(0.0, equity - loss)
-                        _record_equity(equity)
+                        _record_realized_equity(equity)
                         position_open = False
                         units = 0.0
                         position_margin = 0.0
                         direction = ""
+                        _finalize_trade()
                         continue
 
                 if stop_enabled and units > 0.0 and entry_price > 0.0:
@@ -477,22 +587,24 @@ class BacktestEngine:
                         exit_price = worst_price
                         pnl = (exit_price - entry_price) * units if direction == "LONG" else (entry_price - exit_price) * units
                         equity = max(0.0, equity + pnl)
-                        _record_equity(equity)
+                        _record_realized_equity(equity)
                         position_open = False
                         units = 0.0
                         position_margin = 0.0
                         direction = ""
+                        _finalize_trade()
                         trades += 1
                         continue
 
                 if direction == "LONG" and aggregated_sell:
                     pnl = (price - entry_price) * units
                     equity = max(0.0, equity + pnl)
-                    _record_equity(equity)
+                    _record_realized_equity(equity)
                     position_open = False
                     units = 0.0
                     position_margin = 0.0
                     direction = ""
+                    _finalize_trade()
                     if can_short and aggregated_sell and equity > 0.0:
                         # allow immediate flip to short if permitted
                         aggregated_sell = True
@@ -501,11 +613,12 @@ class BacktestEngine:
                 elif direction == "SHORT" and aggregated_buy:
                     pnl = (entry_price - price) * units
                     equity = max(0.0, equity + pnl)
-                    _record_equity(equity)
+                    _record_realized_equity(equity)
                     position_open = False
                     units = 0.0
                     position_margin = 0.0
                     direction = ""
+                    _finalize_trade()
                     if can_long and aggregated_buy and equity > 0.0:
                         aggregated_buy = True
                     else:
@@ -521,6 +634,7 @@ class BacktestEngine:
                         continue
                     position_open = True
                     direction = "LONG"
+                    _start_trade(direction)
                     trades += 1
                 elif aggregated_sell and can_short:
                     entry_price = price
@@ -531,6 +645,7 @@ class BacktestEngine:
                         continue
                     position_open = True
                     direction = "SHORT"
+                    _start_trade(direction)
                     trades += 1
 
         if position_open and units > 0.0:
@@ -540,11 +655,12 @@ class BacktestEngine:
             else:
                 pnl = (entry_price - last_price) * units
             equity = max(0.0, equity + pnl)
-            _record_equity(equity)
+            _record_realized_equity(equity)
             position_open = False
             units = 0.0
             position_margin = 0.0
             direction = ""
+            _finalize_trade()
 
         roi_value = equity - capital
         roi_percent = (roi_value / capital * 100.0) if capital else 0.0
@@ -552,6 +668,23 @@ class BacktestEngine:
         position_mode_val = (request.position_mode or "").strip() if hasattr(request, "position_mode") else ""
         assets_mode_val = (request.assets_mode or "").strip() if hasattr(request, "assets_mode") else ""
         account_mode_val = (request.account_mode or "").strip() if hasattr(request, "account_mode") else ""
+
+        cumulative_dd_value = float(drawdown_state_cumulative.get("max_value", 0.0))
+        cumulative_dd_pct = float(drawdown_state_cumulative.get("max_pct", 0.0))
+        account_dd_value = float(drawdown_state_account.get("max_value", 0.0))
+        account_dd_pct = float(drawdown_state_account.get("max_pct", 0.0))
+        per_trade_dd_value = float(per_trade_state.get("max_value", 0.0))
+        per_trade_dd_pct = float(per_trade_state.get("max_pct", 0.0))
+
+        if mdd_logic == "per_trade":
+            selected_dd_value = per_trade_dd_value
+            selected_dd_pct = per_trade_dd_pct
+        elif mdd_logic == "entire_account":
+            selected_dd_value = account_dd_value
+            selected_dd_pct = account_dd_pct
+        else:
+            selected_dd_value = cumulative_dd_value
+            selected_dd_pct = cumulative_dd_pct
 
         return BacktestRunResult(
             symbol="",
@@ -561,10 +694,11 @@ class BacktestEngine:
             roi_value=float(roi_value),
             roi_percent=float(roi_percent),
             final_equity=float(equity),
-            max_drawdown_value=float(max_drawdown_value),
-            max_drawdown_percent=float(max_drawdown_pct),
+            max_drawdown_value=float(selected_dd_value),
+            max_drawdown_percent=float(selected_dd_pct),
             logic=logic,
             leverage=float(leverage),
+            mdd_logic=mdd_logic,
             start=request.start,
             end=request.end,
             position_pct=pct_fraction,

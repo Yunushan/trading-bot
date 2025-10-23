@@ -35,8 +35,11 @@ if __package__ in (None, ""):
 from app.config import (
     DEFAULT_CONFIG,
     INDICATOR_DISPLAY_NAMES,
+    MDD_LOGIC_DEFAULT,
+    MDD_LOGIC_OPTIONS,
     STOP_LOSS_MODE_ORDER,
     STOP_LOSS_SCOPE_OPTIONS,
+    BACKTEST_TEMPLATE_DEFAULT,
     normalize_stop_loss_dict,
 )
 from app.binance_wrapper import BinanceWrapper, normalize_margin_ratio
@@ -145,6 +148,74 @@ STOP_LOSS_SCOPE_LABELS = {
     "per_trade": "Per Trade Stop Loss",
     "cumulative": "Cumulative Stop Loss",
     "entire_account": "Entire Account Stop Loss",
+}
+
+MDD_LOGIC_LABELS = {
+    "per_trade": "Per Trade MDD",
+    "cumulative": "Cumulative MDD",
+    "entire_account": "Entire Account MDD",
+}
+
+BACKTEST_TEMPLATE_DEFINITIONS = {
+    "volume_top50": {
+        "label": "First 50 Highest Volume",
+        "intervals": [
+            "1m",
+            "3m",
+            "5m",
+            "10m",
+            "15m",
+            "20m",
+            "30m",
+            "1h",
+            "2h",
+            "3h",
+            "4h",
+            "5h",
+            "6h",
+            "7h",
+            "8h",
+            "9h",
+            "10h",
+            "11h",
+            "12h",
+            "1d",
+            "3d",
+            "2d",
+            "4d",
+            "5d",
+            "6d",
+            "1w",
+        ],
+        "logic": "SEPARATE",
+        "position_pct": 2.0,
+        "side": "BOTH",
+        "stop_loss": {
+            "enabled": True,
+            "mode": "percent",
+            "percent": 30.0,
+            "usdt": 0.0,
+            "scope": "per_trade",
+        },
+        "date_range": {"months": 1},
+        "indicators": {
+            "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
+            "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
+            "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
+        },
+        "margin_mode": "Isolated",
+        "position_mode": "Hedge",
+        "assets_mode": "Single-Asset",
+        "account_mode": "Classic Trading",
+        "leverage": 20,
+        "mdd_logic": "per_trade",
+        "loop_interval_override": "30s",
+        "symbol_selection": {
+            "type": "top_volume",
+            "count": 50,
+            "source": "Futures",
+        },
+    },
 }
 
 CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
@@ -809,6 +880,7 @@ class MainWindow(QtWidgets.QWidget):
         self._backtest_symbol_worker = None
         self.backtest_symbols_all = []
         self._backtest_wrappers = {}
+        self._backtest_pending_symbol_selection: dict | None = None
         self.backtest_config = copy.deepcopy(self.config.get("backtest", {}))
         if not self.backtest_config:
             self.backtest_config = copy.deepcopy(DEFAULT_CONFIG.get("backtest", {}))
@@ -831,6 +903,31 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_config.setdefault("assets_mode", default_backtest.get("assets_mode", "Single-Asset"))
         self.backtest_config.setdefault("account_mode", default_backtest.get("account_mode", "Classic Trading"))
         self.backtest_config.setdefault("leverage", int(default_backtest.get("leverage", 5)))
+        mdd_logic_cfg = str(
+            self.backtest_config.get("mdd_logic")
+            or default_backtest.get("mdd_logic")
+            or MDD_LOGIC_DEFAULT
+        ).lower()
+        if mdd_logic_cfg not in MDD_LOGIC_OPTIONS:
+            mdd_logic_cfg = MDD_LOGIC_DEFAULT
+        self.backtest_config["mdd_logic"] = mdd_logic_cfg
+        self.config.setdefault("backtest", {})["mdd_logic"] = mdd_logic_cfg
+        template_cfg_bt = self.backtest_config.get("template")
+        if not isinstance(template_cfg_bt, dict):
+            template_cfg_bt = copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT)
+        template_enabled = bool(template_cfg_bt.get("enabled", False))
+        template_name = template_cfg_bt.get("name")
+        if template_name not in BACKTEST_TEMPLATE_DEFINITIONS:
+            template_name = (
+                next(iter(BACKTEST_TEMPLATE_DEFINITIONS))
+                if BACKTEST_TEMPLATE_DEFINITIONS
+                else None
+            )
+        self.backtest_config["template"] = {
+            "enabled": template_enabled,
+            "name": template_name,
+        }
+        self.config.setdefault("backtest", {})["template"] = copy.deepcopy(self.backtest_config["template"])
         self.backtest_config.setdefault("backtest_symbol_interval_pairs", list(self.config.get("backtest_symbol_interval_pairs", [])))
         default_stop_loss = normalize_stop_loss_dict(default_backtest.get("stop_loss"))
         self.backtest_config["stop_loss"] = normalize_stop_loss_dict(self.backtest_config.get("stop_loss", default_stop_loss))
@@ -2413,6 +2510,33 @@ class MainWindow(QtWidgets.QWidget):
                 item.setSelected(item.text().upper() in symbols_upper)
         self._backtest_store_symbols()
 
+    def _apply_backtest_symbol_selection_rule(self, rule: dict | None) -> bool:
+        if not rule:
+            return True
+        rule_type = str(rule.get("type") or "").lower()
+        if rule_type == "top_volume":
+            try:
+                count = int(rule.get("count", 0) or 0)
+            except Exception:
+                count = 0
+            if count <= 0:
+                return True
+            symbols_pool = list(self.backtest_symbols_all or [])
+            if len(symbols_pool) < count:
+                return False
+            selection = [sym.upper() for sym in symbols_pool[:count]]
+            self._set_backtest_symbol_selection(selection)
+            try:
+                self.backtest_symbol_list.scrollToTop()
+            except Exception:
+                pass
+            try:
+                self.backtest_status_label.setText(f"Template applied: selected top {count} volume symbols.")
+            except Exception:
+                pass
+            return True
+        return False
+
     def _set_backtest_interval_selection(self, intervals):
         intervals_norm = {str(iv) for iv in (intervals or []) if iv}
         with QtCore.QSignalBlocker(self.backtest_interval_list):
@@ -2594,6 +2718,9 @@ class MainWindow(QtWidgets.QWidget):
         symbols = [str(sym).upper() for sym in (result or []) if sym]
         self.backtest_symbols_all = symbols
         self._update_backtest_symbol_list(symbols)
+        if self._backtest_pending_symbol_selection:
+            if self._apply_backtest_symbol_selection_rule(self._backtest_pending_symbol_selection):
+                self._backtest_pending_symbol_selection = None
         msg = f"Loaded {len(symbols)} {source_label.upper()} symbols for backtest."
         self.log(msg)
         try:
@@ -2610,6 +2737,289 @@ class MainWindow(QtWidgets.QWidget):
             cfg = self.config.setdefault("backtest", {})
             cfg["start_date"] = start_dt
             cfg["end_date"] = end_dt
+        except Exception:
+            pass
+
+    def _get_selected_mdd_logic(self) -> str:
+        try:
+            combo = getattr(self, "backtest_mdd_combo", None)
+            if combo is not None and combo.count():
+                value = combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+                if value in MDD_LOGIC_OPTIONS:
+                    return str(value)
+        except Exception:
+            pass
+        value = str(self.backtest_config.get("mdd_logic", MDD_LOGIC_DEFAULT) or "").lower()
+        return value if value in MDD_LOGIC_OPTIONS else MDD_LOGIC_DEFAULT
+
+    def _set_backtest_mdd_selection(self, logic: str | None, *, update_config: bool = False) -> str:
+        logic_norm = str(logic or MDD_LOGIC_DEFAULT).lower()
+        if logic_norm not in MDD_LOGIC_OPTIONS:
+            logic_norm = MDD_LOGIC_DEFAULT
+        try:
+            combo = getattr(self, "backtest_mdd_combo", None)
+            if combo is not None and combo.count():
+                with QtCore.QSignalBlocker(combo):
+                    idx = combo.findData(logic_norm)
+                    if idx < 0:
+                        idx = 0
+                    combo.setCurrentIndex(idx)
+                    data = combo.itemData(combo.currentIndex(), QtCore.Qt.ItemDataRole.UserRole)
+                    if data in MDD_LOGIC_OPTIONS:
+                        logic_norm = str(data)
+        except Exception:
+            pass
+        if update_config:
+            self._update_backtest_config("mdd_logic", logic_norm)
+        return logic_norm
+
+    def _on_backtest_mdd_logic_changed(self, _index: int = -1):
+        try:
+            logic = self._get_selected_mdd_logic()
+            self._update_backtest_config("mdd_logic", logic)
+        except Exception:
+            pass
+
+    def _get_selected_template_key(self) -> str | None:
+        try:
+            combo = getattr(self, "backtest_template_combo", None)
+            if combo is not None and combo.count():
+                value = combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+                if value in BACKTEST_TEMPLATE_DEFINITIONS:
+                    return value
+        except Exception:
+            pass
+        template_cfg = self.backtest_config.get("template", {})
+        name = template_cfg.get("name")
+        return name if name in BACKTEST_TEMPLATE_DEFINITIONS else None
+
+    def _select_backtest_template(self, key: str | None, *, update_config: bool = False) -> str | None:
+        try:
+            combo = getattr(self, "backtest_template_combo", None)
+            if combo is None or combo.count() == 0:
+                return None
+            target = key if key in BACKTEST_TEMPLATE_DEFINITIONS else None
+            if target is None and BACKTEST_TEMPLATE_DEFINITIONS:
+                target = next(iter(BACKTEST_TEMPLATE_DEFINITIONS))
+            selected = target
+            with QtCore.QSignalBlocker(combo):
+                idx = combo.findData(target)
+                if idx < 0:
+                    idx = 0 if combo.count() else -1
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                    selected = combo.itemData(idx)
+        except Exception:
+            selected = target
+        if update_config and selected:
+            template_cfg = self.backtest_config.setdefault("template", copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT))
+            template_cfg["name"] = selected
+            self.config.setdefault("backtest", {})["template"] = copy.deepcopy(template_cfg)
+        return selected
+
+    def _on_backtest_template_enabled(self, checked: bool):
+        try:
+            template_cfg = self.backtest_config.setdefault("template", copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT))
+            template_cfg["enabled"] = bool(checked)
+            selected = self._get_selected_template_key()
+            if checked:
+                selected = self._select_backtest_template(template_cfg.get("name") or selected, update_config=False)
+                if selected:
+                    template_cfg["name"] = selected
+            self.config.setdefault("backtest", {})["template"] = copy.deepcopy(template_cfg)
+            combo = getattr(self, "backtest_template_combo", None)
+            if combo is not None:
+                combo.setEnabled(bool(checked) and combo.count() > 0)
+            if checked:
+                self._apply_backtest_template(template_cfg.get("name"))
+            else:
+                self._backtest_pending_symbol_selection = None
+        except Exception:
+            pass
+
+    def _on_backtest_template_selected(self, _index: int = -1):
+        try:
+            key = self._get_selected_template_key()
+            if not key:
+                return
+            template_cfg = self.backtest_config.setdefault("template", copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT))
+            template_cfg["name"] = key
+            self.config.setdefault("backtest", {})["template"] = copy.deepcopy(template_cfg)
+            if template_cfg.get("enabled"):
+                self._apply_backtest_template(key)
+        except Exception:
+            pass
+
+    def _apply_backtest_template(self, template_key: str | None) -> None:
+        if not template_key or template_key not in BACKTEST_TEMPLATE_DEFINITIONS:
+            return
+        template = BACKTEST_TEMPLATE_DEFINITIONS.get(template_key)
+        if not isinstance(template, dict):
+            return
+        try:
+            template_cfg = self.backtest_config.setdefault("template", copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT))
+            template_cfg["name"] = template_key
+            self.config.setdefault("backtest", {})["template"] = copy.deepcopy(template_cfg)
+            symbol_selection_rule = template.get("symbol_selection")
+            if isinstance(symbol_selection_rule, dict):
+                source_changed = False
+                desired_source = symbol_selection_rule.get("source")
+                if desired_source:
+                    idx_source = self.backtest_symbol_source_combo.findText(
+                        desired_source,
+                        QtCore.Qt.MatchFlag.MatchFixedString,
+                    )
+                    if idx_source < 0:
+                        idx_source = self.backtest_symbol_source_combo.findText(desired_source)
+                    if idx_source >= 0 and self.backtest_symbol_source_combo.currentIndex() != idx_source:
+                        self.backtest_symbol_source_combo.setCurrentIndex(idx_source)
+                        source_changed = True
+                self._backtest_pending_symbol_selection = dict(symbol_selection_rule)
+                applied = False
+                if not source_changed:
+                    applied = self._apply_backtest_symbol_selection_rule(symbol_selection_rule)
+                if applied:
+                    self._backtest_pending_symbol_selection = None
+                else:
+                    worker = getattr(self, "_backtest_symbol_worker", None)
+                    needs_refresh = not source_changed
+                    try:
+                        if worker is not None and worker.isRunning():
+                            needs_refresh = False
+                    except Exception:
+                        pass
+                    if needs_refresh:
+                        try:
+                            self._refresh_backtest_symbols()
+                        except Exception:
+                            pass
+            else:
+                self._backtest_pending_symbol_selection = None
+            intervals = template.get("intervals")
+            if intervals:
+                existing = {self.backtest_interval_list.item(i).text() for i in range(self.backtest_interval_list.count())}
+                missing = [iv for iv in intervals if iv not in existing]
+                if missing:
+                    with QtCore.QSignalBlocker(self.backtest_interval_list):
+                        for iv in missing:
+                            self.backtest_interval_list.addItem(QtWidgets.QListWidgetItem(iv))
+                self._set_backtest_interval_selection(intervals)
+            logic_value = str(template.get("logic") or "").upper()
+            if logic_value:
+                with QtCore.QSignalBlocker(self.backtest_logic_combo):
+                    idx_logic = self.backtest_logic_combo.findText(logic_value, QtCore.Qt.MatchFlag.MatchFixedString)
+                    if idx_logic < 0:
+                        idx_logic = self.backtest_logic_combo.findText(logic_value)
+                    if idx_logic >= 0:
+                        self.backtest_logic_combo.setCurrentIndex(idx_logic)
+                self._update_backtest_config("logic", logic_value)
+            pct_value = float(template.get("position_pct", self.backtest_config.get("position_pct", 2.0)))
+            with QtCore.QSignalBlocker(self.backtest_pospct_spin):
+                self.backtest_pospct_spin.setValue(pct_value)
+            self._update_backtest_config("position_pct", float(pct_value))
+            side_value = str(template.get("side") or "BOTH").upper()
+            side_label = SIDE_LABELS.get(side_value, side_value.title())
+            with QtCore.QSignalBlocker(self.backtest_side_combo):
+                idx_side = self.backtest_side_combo.findText(side_label, QtCore.Qt.MatchFlag.MatchFixedString)
+                if idx_side < 0:
+                    idx_side = self.backtest_side_combo.findText(side_label)
+                if idx_side >= 0:
+                    self.backtest_side_combo.setCurrentIndex(idx_side)
+            self._update_backtest_config("side", side_label)
+            stop_loss_template = template.get("stop_loss")
+            if isinstance(stop_loss_template, dict):
+                updates = {
+                    "enabled": bool(stop_loss_template.get("enabled", True)),
+                    "mode": stop_loss_template.get("mode", "percent"),
+                    "percent": float(stop_loss_template.get("percent", 0.0) or 0.0),
+                    "usdt": float(stop_loss_template.get("usdt", 0.0) or 0.0),
+                    "scope": stop_loss_template.get("scope", "per_trade"),
+                }
+                self._backtest_stop_loss_update(**updates)
+                self._update_backtest_stop_loss_widgets()
+            date_range = template.get("date_range")
+            if isinstance(date_range, dict):
+                months = int(date_range.get("months", 0) or 0)
+                now_dt = QtCore.QDateTime.currentDateTime()
+                start_dt = now_dt.addMonths(-months) if months else now_dt
+                with QtCore.QSignalBlocker(self.backtest_end_edit):
+                    self.backtest_end_edit.setDateTime(now_dt)
+                with QtCore.QSignalBlocker(self.backtest_start_edit):
+                    self.backtest_start_edit.setDateTime(start_dt)
+                self._backtest_dates_changed()
+            indicators_template = template.get("indicators", {})
+            if isinstance(indicators_template, dict):
+                indicators_cfg = self.backtest_config.setdefault("indicators", {})
+                cfg_parent = self.config.setdefault("backtest", {}).setdefault("indicators", {})
+                for key, (cb, _btn) in self.backtest_indicator_widgets.items():
+                    params = indicators_cfg.setdefault(key, {})
+                    target_params = indicators_template.get(key)
+                    enabled = bool(target_params)
+                    params["enabled"] = enabled
+                    if enabled and isinstance(target_params, dict):
+                        params.update({k: v for k, v in target_params.items() if k != "enabled"})
+                    cb.blockSignals(True)
+                    cb.setChecked(enabled)
+                    cb.blockSignals(False)
+                    cfg_parent[key] = copy.deepcopy(params)
+                for key, target_params in indicators_template.items():
+                    if key in self.backtest_indicator_widgets:
+                        continue
+                    if not isinstance(target_params, dict):
+                        continue
+                    params = indicators_cfg.setdefault(key, {})
+                    params.update({k: v for k, v in target_params.items() if k != "enabled"})
+                    params["enabled"] = bool(target_params.get("enabled", True))
+                    cfg_parent[key] = copy.deepcopy(params)
+            margin_mode = str(template.get("margin_mode") or "")
+            if margin_mode:
+                with QtCore.QSignalBlocker(self.backtest_margin_mode_combo):
+                    idx_margin = self.backtest_margin_mode_combo.findText(margin_mode, QtCore.Qt.MatchFlag.MatchFixedString)
+                    if idx_margin < 0:
+                        idx_margin = self.backtest_margin_mode_combo.findText(margin_mode)
+                    if idx_margin >= 0:
+                        self.backtest_margin_mode_combo.setCurrentIndex(idx_margin)
+                self._update_backtest_config("margin_mode", margin_mode)
+            position_mode = str(template.get("position_mode") or "")
+            if position_mode:
+                with QtCore.QSignalBlocker(self.backtest_position_mode_combo):
+                    idx_position = self.backtest_position_mode_combo.findText(position_mode, QtCore.Qt.MatchFlag.MatchFixedString)
+                    if idx_position < 0:
+                        idx_position = self.backtest_position_mode_combo.findText(position_mode)
+                    if idx_position >= 0:
+                        self.backtest_position_mode_combo.setCurrentIndex(idx_position)
+                self._update_backtest_config("position_mode", position_mode)
+            assets_mode = str(template.get("assets_mode") or "")
+            if assets_mode:
+                normalized_assets = self._normalize_assets_mode(assets_mode)
+                with QtCore.QSignalBlocker(self.backtest_assets_mode_combo):
+                    idx_assets = self.backtest_assets_mode_combo.findData(normalized_assets)
+                    if idx_assets < 0:
+                        idx_assets = 0
+                    self.backtest_assets_mode_combo.setCurrentIndex(idx_assets)
+                self._update_backtest_config("assets_mode", normalized_assets)
+            account_mode = str(template.get("account_mode") or "")
+            if account_mode:
+                normalized_account = self._normalize_account_mode(account_mode)
+                with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
+                    idx_account = self.backtest_account_mode_combo.findData(normalized_account)
+                    if idx_account < 0:
+                        idx_account = 0
+                    self.backtest_account_mode_combo.setCurrentIndex(idx_account)
+                self._update_backtest_config("account_mode", normalized_account)
+            leverage_value = int(template.get("leverage", self.backtest_config.get("leverage", 5) or 1))
+            with QtCore.QSignalBlocker(self.backtest_leverage_spin):
+                self.backtest_leverage_spin.setValue(leverage_value)
+            self._update_backtest_config("leverage", leverage_value)
+            template_mdd = template.get("mdd_logic")
+            if template_mdd:
+                self._set_backtest_mdd_selection(template_mdd, update_config=True)
+            loop_override_value = template.get("loop_interval_override")
+            if loop_override_value is not None:
+                normalized_loop = self._normalize_loop_override(loop_override_value)
+                with QtCore.QSignalBlocker(self.backtest_loop_edit):
+                    self.backtest_loop_edit.setText(normalized_loop or "")
+                self._update_backtest_config("loop_interval_override", normalized_loop or "")
         except Exception:
             pass
 
@@ -2830,6 +3240,8 @@ class MainWindow(QtWidgets.QWidget):
             self.backtest_config["stop_loss"] = stop_cfg
             self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(stop_cfg)
 
+            mdd_logic_value = self._get_selected_mdd_logic()
+
             request = BacktestRequest(
                 symbols=symbols,
                 intervals=intervals,
@@ -2846,6 +3258,7 @@ class MainWindow(QtWidgets.QWidget):
                 position_mode=position_mode,
                 assets_mode=assets_mode,
                 account_mode=account_mode,
+                mdd_logic=mdd_logic_value,
                 stop_loss_enabled=bool(stop_cfg.get("enabled")),
                 stop_loss_mode=str(stop_cfg.get("mode") or "usdt"),
                 stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
@@ -2953,6 +3366,7 @@ class MainWindow(QtWidgets.QWidget):
                 "roi_percent": getattr(run, "roi_percent", 0.0),
                 "max_drawdown_value": getattr(run, "max_drawdown_value", 0.0),
                 "max_drawdown_percent": getattr(run, "max_drawdown_percent", 0.0),
+                "mdd_logic": getattr(run, "mdd_logic", None),
             }
         data.setdefault("indicator_keys", [])
         keys = data.get("indicator_keys") or []
@@ -2983,6 +3397,14 @@ class MainWindow(QtWidgets.QWidget):
         for str_key in ("symbol", "interval", "logic", "stop_loss_mode", "stop_loss_scope", "margin_mode", "position_mode", "assets_mode", "account_mode"):
             val = data.get(str_key)
             data[str_key] = str(val or "").strip()
+        mdd_logic_val = str(data.get("mdd_logic", "") or "").lower()
+        if mdd_logic_val not in MDD_LOGIC_OPTIONS:
+            mdd_logic_val = MDD_LOGIC_DEFAULT
+        data["mdd_logic"] = mdd_logic_val
+        data["mdd_logic_display"] = MDD_LOGIC_LABELS.get(
+            mdd_logic_val,
+            mdd_logic_val.replace("_", " ").title(),
+        )
         loop_raw = data.get("loop_interval_override")
         if loop_raw is None:
             if isinstance(run, dict):
@@ -4938,14 +5360,24 @@ class MainWindow(QtWidgets.QWidget):
         tab3_layout = QtWidgets.QVBoxLayout(tab3)
         tab3_scroll_area = QtWidgets.QScrollArea(tab3)
         tab3_scroll_area.setWidgetResizable(True)
+        tab3_scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         tab3_layout.addWidget(tab3_scroll_area)
         tab3_scroll_widget = QtWidgets.QWidget()
         tab3_scroll_area.setWidget(tab3_scroll_widget)
         tab3_content_layout = QtWidgets.QVBoxLayout(tab3_scroll_widget)
+        tab3_content_layout.setContentsMargins(12, 12, 12, 12)
+        tab3_content_layout.setSpacing(16)
 
         top_layout = QtWidgets.QHBoxLayout()
+        top_layout.setSpacing(16)
 
         market_group = QtWidgets.QGroupBox("Markets")
+        market_group.setMinimumWidth(320)
+        market_group.setMaximumWidth(620)
+        market_group.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         market_layout = QtWidgets.QGridLayout(market_group)
 
         market_layout.addWidget(QtWidgets.QLabel("Symbol Source:"), 0, 0)
@@ -4960,17 +5392,30 @@ class MainWindow(QtWidgets.QWidget):
         market_layout.addWidget(QtWidgets.QLabel("Symbols (select 1 or more):"), 1, 0, 1, 3)
         self.backtest_symbol_list = QtWidgets.QListWidget()
         self.backtest_symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        size_policy_symbols = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Expanding)
+        size_policy_symbols.setHorizontalStretch(0)
+        size_policy_symbols.setVerticalStretch(1)
+        self.backtest_symbol_list.setSizePolicy(size_policy_symbols)
+        self.backtest_symbol_list.setMinimumWidth(200)
+        self.backtest_symbol_list.setMaximumWidth(260)
         self.backtest_symbol_list.itemSelectionChanged.connect(self._backtest_store_symbols)
         market_layout.addWidget(self.backtest_symbol_list, 2, 0, 4, 3)
 
         market_layout.addWidget(QtWidgets.QLabel("Intervals (select 1 or more):"), 1, 3)
         self.backtest_interval_list = QtWidgets.QListWidget()
         self.backtest_interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        size_policy_intervals = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Expanding)
+        size_policy_intervals.setHorizontalStretch(0)
+        size_policy_intervals.setVerticalStretch(1)
+        self.backtest_interval_list.setSizePolicy(size_policy_intervals)
+        self.backtest_interval_list.setMinimumWidth(160)
+        self.backtest_interval_list.setMaximumWidth(240)
         self.backtest_interval_list.itemSelectionChanged.connect(self._backtest_store_intervals)
         market_layout.addWidget(self.backtest_interval_list, 2, 3, 4, 2)
 
         self.backtest_custom_interval_edit = QtWidgets.QLineEdit()
         self.backtest_custom_interval_edit.setPlaceholderText("e.g., 45s or 7m or 90m, comma-separated")
+        self.backtest_custom_interval_edit.setMaximumWidth(240)
         market_layout.addWidget(self.backtest_custom_interval_edit, 6, 3)
         self.backtest_add_interval_btn = QtWidgets.QPushButton("Add Custom Interval(s)")
         market_layout.addWidget(self.backtest_add_interval_btn, 6, 4)
@@ -5010,10 +5455,18 @@ class MainWindow(QtWidgets.QWidget):
         market_layout.setColumnStretch(3, 1)
         market_layout.setColumnStretch(4, 1)
 
-        top_layout.addWidget(market_group)
+        top_layout.addWidget(market_group, 3)
 
         param_group = QtWidgets.QGroupBox("Backtest Parameters")
+        param_group.setMinimumWidth(520)
+        param_group.setMaximumWidth(820)
+        param_group.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         param_form = QtWidgets.QFormLayout(param_group)
+        param_form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        param_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
 
         self.backtest_start_edit = QtWidgets.QDateTimeEdit()
         self.backtest_start_edit.setCalendarPopup(True)
@@ -5031,6 +5484,13 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_logic_combo.addItems(["AND", "OR", "SEPARATE"])
         self.backtest_logic_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("logic", v))
         param_form.addRow("Signal Logic:", self.backtest_logic_combo)
+
+        self.backtest_mdd_combo = QtWidgets.QComboBox()
+        for key in MDD_LOGIC_OPTIONS:
+            label = MDD_LOGIC_LABELS.get(key, key.replace("_", " ").title())
+            self.backtest_mdd_combo.addItem(label, key)
+        self.backtest_mdd_combo.currentIndexChanged.connect(self._on_backtest_mdd_logic_changed)
+        param_form.addRow("MDD Logic:", self.backtest_mdd_combo)
 
         self.backtest_capital_spin = QtWidgets.QDoubleSpinBox()
         self.backtest_capital_spin.setDecimals(2)
@@ -5117,6 +5577,25 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_stop_loss_percent_spin.valueChanged.connect(lambda v: self._on_backtest_stop_loss_value_changed("percent", v))
         self._update_backtest_stop_loss_widgets()
 
+        template_row = QtWidgets.QWidget()
+        template_layout = QtWidgets.QHBoxLayout(template_row)
+        template_layout.setContentsMargins(0, 0, 0, 0)
+        template_layout.setSpacing(6)
+
+        self.backtest_template_enable_cb = QtWidgets.QCheckBox("Enable")
+        template_layout.addWidget(self.backtest_template_enable_cb)
+
+        self.backtest_template_combo = QtWidgets.QComboBox()
+        for key, definition in BACKTEST_TEMPLATE_DEFINITIONS.items():
+            label = definition.get("label", key.replace("_", " ").title())
+            self.backtest_template_combo.addItem(label, key)
+        template_layout.addWidget(self.backtest_template_combo, stretch=1)
+
+        param_form.addRow("Template:", template_row)
+
+        self.backtest_template_enable_cb.toggled.connect(self._on_backtest_template_enabled)
+        self.backtest_template_combo.currentIndexChanged.connect(self._on_backtest_template_selected)
+
         self.backtest_side_combo = QtWidgets.QComboBox()
         self.backtest_side_combo.addItems([SIDE_LABELS["BUY"], SIDE_LABELS["SELL"], SIDE_LABELS["BOTH"]])
         self.backtest_side_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("side", v))
@@ -5184,9 +5663,29 @@ class MainWindow(QtWidgets.QWidget):
             param_form.labelForField(self.backtest_leverage_spin),
         ]
 
-        top_layout.addWidget(param_group)
+        self._set_backtest_mdd_selection(self.backtest_config.get("mdd_logic", MDD_LOGIC_DEFAULT))
+        template_cfg_bt = self.backtest_config.get("template", copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT))
+        selected_template = self._select_backtest_template(template_cfg_bt.get("name"), update_config=False)
+        template_enabled = bool(template_cfg_bt.get("enabled", False))
+        with QtCore.QSignalBlocker(self.backtest_template_enable_cb):
+            self.backtest_template_enable_cb.setChecked(template_enabled)
+        combo = getattr(self, "backtest_template_combo", None)
+        if combo is not None:
+            combo.setEnabled(template_enabled and combo.count() > 0)
+        template_cfg_bt["name"] = selected_template
+        self.backtest_config["template"] = template_cfg_bt
+        self.config.setdefault("backtest", {})["template"] = copy.deepcopy(template_cfg_bt)
+        self._backtest_template_pending_apply = selected_template if template_enabled else None
+
+        top_layout.addWidget(param_group, 5)
 
         indicator_group = QtWidgets.QGroupBox("Indicators")
+        indicator_group.setMinimumWidth(280)
+        indicator_group.setMaximumWidth(340)
+        indicator_group.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         ind_layout = QtWidgets.QGridLayout(indicator_group)
         self.backtest_indicator_widgets.clear()
         row = 0
@@ -5202,7 +5701,12 @@ class MainWindow(QtWidgets.QWidget):
             ind_layout.addWidget(btn, row, 1)
             self.backtest_indicator_widgets[key] = (cb, btn)
             row += 1
-        top_layout.addWidget(indicator_group, stretch=1)
+        top_layout.addWidget(indicator_group, stretch=3)
+
+        pending_template = getattr(self, "_backtest_template_pending_apply", None)
+        if pending_template:
+            self._apply_backtest_template(pending_template)
+        self._backtest_template_pending_apply = None
 
         tab3_content_layout.addLayout(top_layout)
 
