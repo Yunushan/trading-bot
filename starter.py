@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -263,11 +264,24 @@ class StarterWindow(QtWidgets.QWidget):
 
         self.crypto_exchange_group = QtWidgets.QGroupBox("Crypto exchanges")
         self.crypto_exchange_group.setVisible(False)
-        self.crypto_exchange_group.setStyleSheet(
-            f"QGroupBox {{ background-color: {PANEL_BG}; border: 1px solid #202635;"
-            "border-radius: 14px; margin-top: 12px; font-size: 16px; }}\n"
-            "QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 4px 8px; color: #cbd5f5; }"
-        )
+        crypto_group_style = textwrap.dedent(
+            f"""
+            QGroupBox {{
+                background-color: {PANEL_BG};
+                border: 1px solid #202635;
+                border-radius: 14px;
+                margin-top: 12px;
+                font-size: 16px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 14px;
+                padding: 4px 8px;
+                color: #cbd5f5;
+            }}
+            """
+        ).strip()
+        self.crypto_exchange_group.setStyleSheet(crypto_group_style)
 
         exch_layout = QtWidgets.QVBoxLayout(self.crypto_exchange_group)
         exch_layout.setContentsMargins(16, 20, 16, 16)

@@ -42,7 +42,7 @@ This repository provides a desktop assistant for building and exercising trading
    python -m pip install --upgrade pip
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
+   pip install -r ..\..\..\..\requirements.txt
    ```
 3. Run:
    ```powershell
@@ -54,7 +54,7 @@ This repository provides a desktop assistant for building and exercising trading
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r ../../../../requirements.txt
 python3 main.py
 ```
 
@@ -63,7 +63,7 @@ python3 main.py
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r ../../../../requirements.txt
 python3 main.py
 ```
 
@@ -78,7 +78,7 @@ pkg install python3 py39-pip  # or pkg install python311 py311-pip
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r ../../../../requirements.txt
 python3 main.py
 ```
 

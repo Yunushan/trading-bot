@@ -22,7 +22,7 @@ Languages/
 cd Languages/Python/Crypto-Exchanges/Binance
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ..\..\..\..\requirements.txt
 python main.py
 ```
 
