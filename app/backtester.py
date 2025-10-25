@@ -43,6 +43,7 @@ class BacktestRequest:
     capital: float
     side: str = "BOTH"
     position_pct: float = 1.0
+    position_pct_units: str = ""
     leverage: float = 1.0
     margin_mode: str = "Isolated"
     position_mode: str = "Hedge"
@@ -289,7 +290,13 @@ class BacktestEngine:
             return None
 
         pct_raw = float(request.position_pct or 0.0)
-        pct_fraction = pct_raw / 100.0 if pct_raw > 1.0 else pct_raw
+        pct_units_raw = str(getattr(request, "position_pct_units", "") or "").strip().lower()
+        if pct_units_raw in {"percent", "%", "perc"}:
+            pct_fraction = pct_raw / 100.0
+        elif pct_units_raw in {"fraction", "decimal", "ratio"}:
+            pct_fraction = pct_raw
+        else:
+            pct_fraction = pct_raw / 100.0 if pct_raw > 1.0 else pct_raw
         pct_fraction = max(0.0001, min(1.0, pct_fraction))
         leverage = max(1.0, float(leverage_override if leverage_override is not None else (request.leverage or 1.0)))
         margin_mode = (request.margin_mode or "Isolated").strip().upper()

@@ -11,6 +11,15 @@ import requests
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
+try:
+    from binance.spot import Spot as _OfficialSpotClient
+    from binance.api import API as _OfficialAPIBase
+    from binance.error import ClientError as _OfficialClientError, ServerError as _OfficialServerError
+except Exception:
+    _OfficialSpotClient = None
+    _OfficialAPIBase = None
+    _OfficialClientError = None
+    _OfficialServerError = None
 
 
 class NetworkConnectivityError(RuntimeError):
@@ -125,6 +134,137 @@ class _SimpleRateLimiter:
             until = time.time() + seconds
             if until > self._pause_until:
                 self._pause_until = until
+
+
+def _normalize_connector_choice(value) -> str:
+    text = str(value or "").strip().lower()
+    if "connector" in text or "official" in text:
+        return "binance-connector"
+    return "python-binance"
+
+
+class OfficialConnectorError(Exception):
+    def __init__(self, code=None, status_code=None, message=""):
+        self.code = code if code is not None else 0
+        self.status_code = status_code if status_code is not None else 0
+        self.message = message or ""
+        super().__init__(self.message)
+
+
+if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
+    class _OfficialFuturesHTTP(_OfficialAPIBase):  # type: ignore[misc]
+        def __init__(self, api_key, api_secret, base_url):
+            super().__init__(api_key, api_secret, base_url=base_url)
+
+
+    class OfficialConnectorAdapter:
+        def __init__(self, api_key, api_secret, *, mode="Live"):
+            mode_text = (mode or "Live").strip().lower()
+            is_testnet = any(tag in mode_text for tag in ("test", "demo"))
+            spot_base = "https://testnet.binance.vision" if is_testnet else "https://api.binance.com"
+            futures_base = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
+            self._spot = _OfficialSpotClient(api_key, api_secret, base_url=spot_base)
+            self._futures = _OfficialFuturesHTTP(api_key, api_secret, base_url=futures_base)
+            self._bw_throttled = True  # signals wrapper not to install extra throttler
+
+        def _call(self, func, *args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:
+                if _OfficialClientError is not None and isinstance(exc, _OfficialClientError):
+                    raise OfficialConnectorError(exc.error_code, exc.status_code, exc.error_message) from exc
+                if _OfficialServerError is not None and isinstance(exc, _OfficialServerError):
+                    raise OfficialConnectorError(None, exc.status_code, exc.message) from exc
+                raise
+
+        def _call_futures(self, method: str, path: str, params=None, *, signed=False):
+            payload = dict(params or {})
+            http_method = (method or "GET").upper()
+            if signed:
+                return self._call(self._futures.sign_request, http_method, path, payload)
+            return self._call(self._futures.send_request, http_method, path, payload)
+
+        # Spot methods
+        def get_account(self, **params):
+            return self._call(self._spot.account, **params)
+
+        def get_symbol_info(self, symbol: str):
+            data = self._call(self._spot.exchange_info, symbol=symbol)
+            symbols = (data or {}).get("symbols") if isinstance(data, dict) else None
+            if symbols:
+                return symbols[0]
+            return None
+
+        def get_exchange_info(self, **params):
+            return self._call(self._spot.exchange_info, **params)
+
+        def get_symbol_ticker(self, **params):
+            return self._call(self._spot.ticker_price, **params)
+
+        def get_klines(self, **params):
+            return self._call(self._spot.klines, **params)
+
+        def create_order(self, **params):
+            payload = dict(params or {})
+            return self._call(self._spot.new_order, **payload)
+
+        # Futures helpers
+        def futures_klines(self, **params):
+            return self._call_futures("GET", "/fapi/v1/klines", params, signed=False)
+
+        def futures_exchange_info(self, **params):
+            return self._call_futures("GET", "/fapi/v1/exchangeInfo", params, signed=False)
+
+        def futures_leverage_bracket(self, **params):
+            return self._call_futures("GET", "/fapi/v1/leverageBracket", params, signed=False)
+
+        def futures_account(self, **params):
+            return self._call_futures("GET", "/fapi/v2/account", params, signed=True)
+
+        def futures_account_balance(self, **params):
+            return self._call_futures("GET", "/fapi/v2/balance", params, signed=True)
+
+        def futures_position_information(self, **params):
+            return self._call_futures("GET", "/fapi/v2/positionRisk", params, signed=True)
+
+        def futures_position_risk(self, **params):
+            return self._call_futures("GET", "/fapi/v2/positionRisk", params, signed=True)
+
+        def futures_create_order(self, **params):
+            return self._call_futures("POST", "/fapi/v1/order", params, signed=True)
+
+        def futures_symbol_ticker(self, **params):
+            return self._call_futures("GET", "/fapi/v1/ticker/price", params, signed=False)
+
+        def futures_get_position_mode(self, **params):
+            return self._call_futures("GET", "/fapi/v1/positionSide/dual", params, signed=True)
+
+        def futures_change_position_mode(self, **params):
+            return self._call_futures("POST", "/fapi/v1/positionSide/dual", params, signed=True)
+
+        def futures_cancel_all_open_orders(self, **params):
+            return self._call_futures("DELETE", "/fapi/v1/allOpenOrders", params, signed=True)
+
+        def futures_get_open_orders(self, **params):
+            return self._call_futures("GET", "/fapi/v1/openOrders", params, signed=True)
+
+        def futures_change_margin_type(self, **params):
+            return self._call_futures("POST", "/fapi/v1/marginType", params, signed=True)
+
+        def futures_change_leverage(self, **params):
+            return self._call_futures("POST", "/fapi/v1/leverage", params, signed=True)
+
+        def futures_book_ticker(self, **params):
+            return self._call_futures("GET", "/fapi/v1/ticker/bookTicker", params, signed=False)
+
+        def _request_futures_api(self, method, path, signed=False, version=1, **kwargs):
+            payload = dict(kwargs.get("data") or kwargs.get("params") or {})
+            url_path = f"/fapi/v{int(version)}/{path}"
+            return self._call_futures(method, url_path, payload, signed=signed)
+else:
+    class OfficialConnectorAdapter:
+        def __init__(self, *_, **__):
+            raise RuntimeError("binance-connector library is not available")
 
 class BinanceWrapper:
 
@@ -571,7 +711,17 @@ class BinanceWrapper:
         # Public REST base for FUTURES depending on testnet/production
         return "https://testnet.binancefuture.com/fapi" if ("demo" in self.mode.lower() or "test" in self.mode.lower()) else "https://fapi.binance.com/fapi"
 
-    def __init__(self, api_key="", api_secret="", mode="Demo/Testnet", account_type="Spot", *, default_leverage: int | None = None, default_margin_mode: str | None = None):
+    def _build_client(self):
+        backend = _normalize_connector_choice(getattr(self, "_connector_backend", "python-binance"))
+        if backend == "binance-connector" and _OfficialSpotClient is not None and _OfficialAPIBase is not None:
+            try:
+                return OfficialConnectorAdapter(self.api_key, self.api_secret, mode=self.mode)
+            except Exception as exc:
+                self._log(f"Official connector unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._connector_backend = "python-binance"
+        return Client(self.api_key, self.api_secret)
+
+    def __init__(self, api_key="", api_secret="", mode="Demo/Testnet", account_type="Spot", *, default_leverage: int | None = None, default_margin_mode: str | None = None, connector_backend: str | None = None):
         self.api_key = api_key or ""
         self.api_secret = api_secret or ""
         self.mode = (mode or "Demo/Testnet").strip()
@@ -594,6 +744,7 @@ class BinanceWrapper:
         self.recv_window = 5000  # ms for futures calls
         self._futures_max_leverage_cache = {}
         self._leverage_cap_notified = set()
+        self._connector_backend = _normalize_connector_choice(connector_backend)
 
         # Set base URLs BEFORE creating Client
         if "demo" in self.mode.lower() or "test" in self.mode.lower():
@@ -607,7 +758,7 @@ class BinanceWrapper:
             else:
                 Client.API_URL = "https://api.binance.com/api"
 
-        self.client = Client(self.api_key, self.api_secret)
+        self.client = self._build_client()
         self._install_request_throttler()
         self._symbol_info_cache_spot = {}
         self._symbol_info_cache_futures = None
@@ -1047,14 +1198,46 @@ class BinanceWrapper:
             return True
 
     def get_futures_balance_usdt(self) -> float:
+        preferred_assets = ("USDT", "BUSD", "USD")
         try:
             bals = self._futures_call('futures_account_balance', allow_recv=True)
             for b in bals or []:
-                if b.get('asset') == 'USDT':
-                    val = b.get('availableBalance', None)
-                    if val is None:
-                        val = b.get('balance', b.get('walletBalance', 0.0))
-                    return float(val)
+                asset = str(b.get('asset') or "").upper()
+                if asset not in preferred_assets:
+                    continue
+                for key in ('availableBalance', 'crossWalletBalance', 'balance', 'walletBalance'):
+                    val = b.get(key)
+                    if val is not None:
+                        try:
+                            return float(val)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+        try:
+            acct = self._futures_call('futures_account', allow_recv=True)
+            if isinstance(acct, dict):
+                for key in ('availableBalance', 'maxWithdrawAmount', 'totalWalletBalance', 'totalMarginBalance'):
+                    val = acct.get(key)
+                    if val is not None:
+                        try:
+                            return float(val)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+        return 0.0
+
+    def get_futures_available_balance(self) -> float:
+        val = self.get_futures_balance_usdt()
+        if val:
+            return val
+        try:
+            for row in self.get_balances():
+                if (row.get('asset') or '').upper() == 'USDT':
+                    free = row.get('free')
+                    if free is not None:
+                        return float(free)
         except Exception:
             pass
         return 0.0
@@ -1217,7 +1400,7 @@ class BinanceWrapper:
                     else:
                         raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
                 break
-            except BinanceAPIException as exc:
+            except (BinanceAPIException, OfficialConnectorError) as exc:
                 ban_until = self._handle_potential_ban(exc)
                 if cached_df is not None and ban_until:
                     if (time.time() - getattr(self, "_last_ban_log", 0.0)) > 15.0:
@@ -1314,7 +1497,7 @@ class BinanceWrapper:
                     else:
                         raw = self.client.get_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
                     break
-                except BinanceAPIException as exc:
+                except (BinanceAPIException, OfficialConnectorError) as exc:
                     ban_until = self._handle_potential_ban(exc)
                     if ban_until:
                         delay = max(1.0, ban_until - time.time())

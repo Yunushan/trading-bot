@@ -1000,7 +1000,17 @@ class StrategyEngine:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
                 usdt_bal = self.binance.get_total_usdt_value()
                 pct_raw = float(cw.get('position_pct', 100.0))
-                pct = pct_raw/100.0 if pct_raw > 1.0 else pct_raw
+                pct_units_raw = str(
+                    cw.get('position_pct_units')
+                    or cw.get('_position_pct_units')
+                    or ""
+                ).strip().lower()
+                if pct_units_raw in {"percent", "%", "perc"}:
+                    pct = pct_raw / 100.0
+                elif pct_units_raw in {"fraction", "decimal", "ratio"}:
+                    pct = pct_raw
+                else:
+                    pct = pct_raw / 100.0 if pct_raw > 1.0 else pct_raw
                 pct = max(0.0001, min(1.0, pct))
                 use_usdt = usdt_bal * pct
                 price = last_price or 0.0

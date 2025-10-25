@@ -156,6 +156,20 @@ MDD_LOGIC_LABELS = {
     "entire_account": "Entire Account MDD",
 }
 
+CONNECTOR_OPTIONS = [
+    ("Binance Connector Python (Official)", "binance-connector"),
+    ("Python Binance (Unofficial)", "python-binance"),
+]
+DEFAULT_CONNECTOR_BACKEND = CONNECTOR_OPTIONS[0][1]
+
+def _normalize_connector_backend(value) -> str:
+    text = str(value or "").strip().lower()
+    if "connector" in text or "official" in text or text == "binance-connector":
+        return "binance-connector"
+    if "python" in text and "binance" in text:
+        return "python-binance"
+    return DEFAULT_CONNECTOR_BACKEND
+
 BACKTEST_TEMPLATE_DEFINITIONS = {
     "volume_top50": {
         "label": "First 50 Highest Volume",
@@ -463,7 +477,7 @@ class _PositionsWorker(QtCore.QObject):
     positions_ready = QtCore.pyqtSignal(list, str)  # rows, account_type
     error = QtCore.pyqtSignal(str)
 
-    def __init__(self, api_key:str, api_secret:str, mode:str, account_type:str, parent=None):
+    def __init__(self, api_key:str, api_secret:str, mode:str, account_type:str, connector_backend: str | None = None, parent=None):
         super().__init__(parent)
         self._api_key = api_key
         self._api_secret = api_secret
@@ -477,6 +491,7 @@ class _PositionsWorker(QtCore.QObject):
         self._enabled = True
         self._interval_ms = 5000
         self._spot_filter_cache: dict[str, dict] = {}
+        self._connector_backend = _normalize_connector_backend(connector_backend)
 
     @QtCore.pyqtSlot(int)
     def start_with_interval(self, interval_ms: int):
@@ -524,11 +539,13 @@ class _PositionsWorker(QtCore.QObject):
         except Exception:
             pass
 
-    def configure(self, api_key=None, api_secret=None, mode=None, account_type=None, symbols=None):
+    def configure(self, api_key=None, api_secret=None, mode=None, account_type=None, symbols=None, connector_backend=None):
         if api_key is not None: self._api_key = api_key
         if api_secret is not None: self._api_secret = api_secret
         if mode is not None: self._mode = mode
         if account_type is not None: self._acct = account_type
+        if connector_backend is not None:
+            self._connector_backend = _normalize_connector_backend(connector_backend)
         self._symbols = set(symbols) if symbols else None
         # force wrapper rebuild on next tick
         self._wrapper = None
@@ -542,6 +559,7 @@ class _PositionsWorker(QtCore.QObject):
                     self._api_secret or "",
                     mode=self._mode or "Live",
                     account_type=self._acct or "Futures",
+                    connector_backend=self._connector_backend,
                 )
             except Exception:
                 self._wrapper = None
@@ -750,6 +768,9 @@ class MainWindow(QtWidgets.QWidget):
     req_pos_stop = QtCore.pyqtSignal()
     req_pos_set_interval = QtCore.pyqtSignal(int)
 
+    def _on_trade_signal(self, order_info: dict):
+        return _mw_on_trade_signal(self, order_info)
+
     LIGHT_THEME = """
     QWidget { background-color: #FFFFFF; color: #000000; font-family: Arial; }
     QGroupBox { border: 1px solid #C0C0C0; margin-top: 6px; }
@@ -766,6 +787,20 @@ class MainWindow(QtWidgets.QWidget):
     QPlainTextEdit:disabled { background-color: #E6E6E6; color: #7A7A7A; }
     QCheckBox:disabled,
     QRadioButton:disabled { color: #7A7A7A; }
+    QCheckBox::indicator {
+        width: 16px;
+        height: 16px;
+        border: 1px solid #7A7A7A;
+        border-radius: 3px;
+        background-color: #FFFFFF;
+    }
+    QCheckBox::indicator:checked {
+        background-color: #0A84FF;
+        border-color: #0A84FF;
+    }
+    QCheckBox::indicator:hover {
+        border-color: #0A84FF;
+    }
     QComboBox { background-color: #FFFFFF; color: #000000; }
     QListWidget { background-color: #FFFFFF; color: #000000; }
     QLabel { color: #000000; }
@@ -788,6 +823,20 @@ class MainWindow(QtWidgets.QWidget):
     QPlainTextEdit:disabled { background-color: #1A1A1A; color: #7E7E7E; }
     QCheckBox:disabled,
     QRadioButton:disabled { color: #7E7E7E; }
+    QCheckBox::indicator {
+        width: 16px;
+        height: 16px;
+        border: 1px solid #5A5A5A;
+        border-radius: 3px;
+        background-color: #1A1A1A;
+    }
+    QCheckBox::indicator:checked {
+        background-color: #3FB950;
+        border-color: #3FB950;
+    }
+    QCheckBox::indicator:hover {
+        border-color: #3FB950;
+    }
     QComboBox { background-color: #1E1E1E; color: #E0E0E0; }
     QListWidget { background-color: #0E0E0E; color: #E0E0E0; }
     QLabel { color: #E0E0E0; }
@@ -817,6 +866,7 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault('close_on_exit', state_close_pref)
         self.config.setdefault('account_mode', 'Classic Trading')
         self.config.setdefault('auto_bump_percent_multiplier', DEFAULT_CONFIG.get('auto_bump_percent_multiplier', 10.0))
+        self.config["connector_backend"] = _normalize_connector_backend(self.config.get("connector_backend"))
         self.strategy_threads = {}
         self.shared_binance = None
         self.stop_worker = None
@@ -902,6 +952,9 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_config.setdefault("position_mode", default_backtest.get("position_mode", "Hedge"))
         self.backtest_config.setdefault("assets_mode", default_backtest.get("assets_mode", "Single-Asset"))
         self.backtest_config.setdefault("account_mode", default_backtest.get("account_mode", "Classic Trading"))
+        self.backtest_config.setdefault("connector_backend", DEFAULT_CONFIG.get("backtest", {}).get("connector_backend", DEFAULT_CONNECTOR_BACKEND))
+        self.backtest_config["connector_backend"] = _normalize_connector_backend(self.backtest_config.get("connector_backend"))
+        self.config.setdefault("backtest", {})["connector_backend"] = self.backtest_config["connector_backend"]
         self.backtest_config.setdefault("leverage", int(default_backtest.get("leverage", 5)))
         mdd_logic_cfg = str(
             self.backtest_config.get("mdd_logic")
@@ -946,11 +999,18 @@ class MainWindow(QtWidgets.QWidget):
         self.bot_status_label_tab2 = None
         self.bot_status_label_tab3 = None
         self.bot_status_label_chart = None
+        self.bot_time_label_tab1 = None
+        self.bot_time_label_tab2 = None
+        self.bot_time_label_tab3 = None
+        self.bot_time_label_chart = None
         self._bot_active = False
+        self._bot_active_since = None
+        self._bot_time_timer = None
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
         QtCore.QTimer.singleShot(0, self._handle_post_init_state)
+        QtCore.QTimer.singleShot(0, self._update_connector_labels)
 
     def _on_close_on_exit_changed(self, state):
         enabled = bool(state)
@@ -1033,13 +1093,13 @@ class MainWindow(QtWidgets.QWidget):
                                 pass
                             wrapper = getattr(self, "shared_binance", None)
                             if wrapper is None:
-                                wrapper = BinanceWrapper(
-                                    self.api_key_edit.text().strip(),
-                                    self.api_secret_edit.text().strip(),
+                                wrapper = self._create_binance_wrapper(
+                                    api_key=self.api_key_edit.text().strip(),
+                                    api_secret=self.api_secret_edit.text().strip(),
                                     mode=self.mode_combo.currentText(),
                                     account_type=self.account_combo.currentText(),
                                     default_leverage=int(self.leverage_spin.value() or 1),
-                                    default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
+                                    default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
                                 )
                                 self.shared_binance = wrapper
                             else:
@@ -1142,6 +1202,7 @@ class MainWindow(QtWidgets.QWidget):
                 controls = {
                     "side": self._resolve_dashboard_side(),
                     "position_pct": float(self.pospct_spin.value()) if hasattr(self, "pospct_spin") else None,
+                    "position_pct_units": "percent" if hasattr(self, "pospct_spin") else None,
                     "loop_interval_override": self.loop_edit.text() if hasattr(self, "loop_edit") else "",
                     "add_only": bool(self.cb_add_only.isChecked()) if hasattr(self, "cb_add_only") else None,
                     "stop_loss": stop_cfg,
@@ -1193,6 +1254,7 @@ class MainWindow(QtWidgets.QWidget):
                     "logic": self.backtest_logic_combo.currentText() if hasattr(self, "backtest_logic_combo") else None,
                     "capital": float(self.backtest_capital_spin.value()) if hasattr(self, "backtest_capital_spin") else None,
                     "position_pct": float(self.backtest_pospct_spin.value()) if hasattr(self, "backtest_pospct_spin") else None,
+                    "position_pct_units": "percent" if hasattr(self, "backtest_pospct_spin") else None,
                     "side": self.backtest_side_combo.currentText() if hasattr(self, "backtest_side_combo") else None,
                     "margin_mode": self.backtest_margin_mode_combo.currentText() if hasattr(self, "backtest_margin_mode_combo") else None,
                     "position_mode": self.backtest_position_mode_combo.currentText() if hasattr(self, "backtest_position_mode_combo") else None,
@@ -1200,6 +1262,7 @@ class MainWindow(QtWidgets.QWidget):
                     "loop_interval_override": self._normalize_loop_override(self.backtest_loop_edit.text() if hasattr(self, "backtest_loop_edit") else None),
                     "leverage": int(self.backtest_leverage_spin.value()) if hasattr(self, "backtest_leverage_spin") else None,
                     "stop_loss": stop_cfg,
+                    "connector_backend": self._connector_label_text(self._backtest_connector_backend()),
                 }
                 if account_mode_val:
                     controls["account_mode"] = self._normalize_account_mode(account_mode_val)
@@ -1207,6 +1270,15 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _normalize_position_pct_units(value) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"percent", "%", "perc", "percentage"}:
+            return "percent"
+        if text in {"fraction", "decimal", "ratio"}:
+            return "fraction"
+        return ""
 
     def _normalize_strategy_controls(self, kind: str, controls) -> dict:
         if not isinstance(controls, dict):
@@ -1222,6 +1294,10 @@ class MainWindow(QtWidgets.QWidget):
                     normalized["position_pct"] = float(pos_pct)
                 except Exception:
                     pass
+            units_val = controls.get("position_pct_units") or controls.get("_position_pct_units")
+            units_norm = self._normalize_position_pct_units(units_val)
+            if units_norm:
+                normalized["position_pct_units"] = units_norm
             leverage = controls.get("leverage")
             if leverage is not None:
                 try:
@@ -1258,6 +1334,10 @@ class MainWindow(QtWidgets.QWidget):
                     normalized["position_pct"] = float(pos_pct)
                 except Exception:
                     pass
+            units_val = controls.get("position_pct_units") or controls.get("_position_pct_units")
+            units_norm = self._normalize_position_pct_units(units_val)
+            if units_norm:
+                normalized["position_pct_units"] = units_norm
             side_val = controls.get("side")
             if side_val:
                 side_code = str(side_val).upper()
@@ -1302,7 +1382,11 @@ class MainWindow(QtWidgets.QWidget):
             pos_pct = controls.get("position_pct")
             if pos_pct is not None:
                 try:
-                    parts.append(f"Pos={float(pos_pct):.2f}%")
+                    pct_value = float(pos_pct)
+                    units_norm = self._normalize_position_pct_units(controls.get("position_pct_units"))
+                    if units_norm == "fraction":
+                        pct_value *= 100.0
+                    parts.append(f"Pos={pct_value:.2f}%")
                 except Exception:
                     pass
             leverage = controls.get("leverage")
@@ -1346,7 +1430,11 @@ class MainWindow(QtWidgets.QWidget):
             pos_pct = controls.get("position_pct")
             if pos_pct is not None:
                 try:
-                    parts.append(f"Pos={float(pos_pct):.2f}%")
+                    pct_value = float(pos_pct)
+                    units_norm = self._normalize_position_pct_units(controls.get("position_pct_units"))
+                    if units_norm == "fraction":
+                        pct_value *= 100.0
+                    parts.append(f"Pos={pct_value:.2f}%")
                 except Exception:
                     pass
             capital = controls.get("capital")
@@ -2235,8 +2323,18 @@ class MainWindow(QtWidgets.QWidget):
         try:
             if active is not None:
                 self._bot_active = bool(active)
-            text = "Bot Status: ON" if getattr(self, '_bot_active', False) else "Bot Status: OFF"
-            color = "#3FB950" if self._bot_active else "#F97068"
+            current_active = bool(getattr(self, "_bot_active", False))
+            if current_active and not self._bot_active_since:
+                self._bot_active_since = time.time()
+                self._ensure_bot_time_timer()
+                if self._bot_time_timer:
+                    self._bot_time_timer.start()
+            elif not current_active:
+                self._bot_active_since = None
+                if self._bot_time_timer:
+                    self._bot_time_timer.stop()
+            text = "Bot Status: ON" if current_active else "Bot Status: OFF"
+            color = "#3FB950" if current_active else "#F97068"
             for label in (
                 getattr(self, 'bot_status_label_tab1', None),
                 getattr(self, 'bot_status_label_tab2', None),
@@ -2247,6 +2345,59 @@ class MainWindow(QtWidgets.QWidget):
                     continue
                 label.setText(text)
                 label.setStyleSheet(f"font-weight: bold; color: {color};")
+            self._update_bot_time_labels()
+        except Exception:
+            pass
+
+    def _ensure_bot_time_timer(self):
+        if getattr(self, "_bot_time_timer", None) is None:
+            try:
+                timer = QtCore.QTimer(self)
+                timer.setInterval(1000)
+                timer.timeout.connect(self._update_bot_time_labels)
+                self._bot_time_timer = timer
+            except Exception:
+                self._bot_time_timer = None
+
+    @staticmethod
+    def _format_bot_duration(seconds: float) -> str:
+        remaining = int(max(seconds, 0))
+        units = []
+        spans = [
+            ("mo", 30 * 24 * 3600),
+            ("d", 24 * 3600),
+            ("h", 3600),
+            ("m", 60),
+            ("s", 1),
+        ]
+        for suffix, size in spans:
+            if remaining >= size:
+                value, remaining = divmod(remaining, size)
+                units.append(f"{value}{suffix}")
+            if len(units) >= 3:
+                break
+        if not units:
+            return "0s"
+        return " ".join(units)
+
+    def _update_bot_time_labels(self):
+        try:
+            labels = [
+                getattr(self, 'bot_time_label_tab1', None),
+                getattr(self, 'bot_time_label_tab2', None),
+                getattr(self, 'bot_time_label_tab3', None),
+                getattr(self, 'bot_time_label_chart', None),
+            ]
+            if not labels:
+                return
+            if self._bot_active and self._bot_active_since:
+                elapsed = max(0.0, time.time() - float(self._bot_active_since))
+                text = f"Bot Active Time: {self._format_bot_duration(elapsed)}"
+            else:
+                text = "Bot Active Time: --"
+            for label in labels:
+                if label is not None:
+                    label.setText(text)
         except Exception:
             pass
 
@@ -2679,11 +2830,12 @@ class MainWindow(QtWidgets.QWidget):
         mode = self.mode_combo.currentText()
 
         def _do():
-            wrapper = BinanceWrapper(
-                api_key,
-                api_secret,
+            wrapper = self._create_binance_wrapper(
+                api_key=api_key,
+                api_secret=api_secret,
                 mode=mode,
                 account_type=acct,
+                connector_backend=self._backtest_connector_backend(),
             )
             return wrapper.fetch_symbols(sort_by_volume=True)
 
@@ -3190,6 +3342,7 @@ class MainWindow(QtWidgets.QWidget):
                 return
 
             position_pct = float(self.backtest_pospct_spin.value())
+            position_pct_units = "percent"
             side_value = self._canonical_side_from_text(self.backtest_side_combo.currentText())
             margin_mode = (self.backtest_margin_mode_combo.currentText() or "Isolated").strip()
             position_mode = (self.backtest_position_mode_combo.currentText() or "Hedge").strip()
@@ -3205,6 +3358,7 @@ class MainWindow(QtWidgets.QWidget):
             self._update_backtest_config("logic", logic)
             self._update_backtest_config("capital", capital)
             self._update_backtest_config("position_pct", position_pct)
+            self._update_backtest_config("position_pct_units", position_pct_units)
             self._update_backtest_config("side", side_value)
             self._update_backtest_config("margin_mode", margin_mode)
             self._update_backtest_config("position_mode", position_mode)
@@ -3253,6 +3407,7 @@ class MainWindow(QtWidgets.QWidget):
                 capital=capital,
                 side=side_value,
                 position_pct=position_pct,
+                position_pct_units=position_pct_units,
                 leverage=leverage_value,
                 margin_mode=margin_mode,
                 position_mode=position_mode,
@@ -3276,11 +3431,12 @@ class MainWindow(QtWidgets.QWidget):
                 dbg("Reusing cached Binance wrapper.")
             if wrapper is None:
                 try:
-                    wrapper = BinanceWrapper(
-                        api_key,
-                        api_secret,
+                    wrapper = self._create_binance_wrapper(
+                        api_key=api_key,
+                        api_secret=api_secret,
                         mode=mode,
                         account_type=account_type,
+                        connector_backend=self._backtest_connector_backend(),
                     )
                     self._backtest_wrappers[account_type] = {"signature": signature, "wrapper": wrapper}
                     dbg("Created new Binance wrapper instance.")
@@ -3678,9 +3834,16 @@ class MainWindow(QtWidgets.QWidget):
         controls_layout.addWidget(self.chart_view_mode_combo)
 
         controls_layout.addStretch()
+        chart_status_widget = QtWidgets.QWidget()
+        chart_status_layout = QtWidgets.QHBoxLayout(chart_status_widget)
+        chart_status_layout.setContentsMargins(0, 0, 0, 0)
+        chart_status_layout.setSpacing(8)
         self.bot_status_label_chart = QtWidgets.QLabel()
-        self.bot_status_label_chart.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        controls_layout.addWidget(self.bot_status_label_chart)
+        self.bot_time_label_chart = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.bot_status_label_chart, self.bot_time_label_chart):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            chart_status_layout.addWidget(lbl)
+        controls_layout.addWidget(chart_status_widget)
 
         self._chart_view_widgets = {}
         self.chart_view_stack = QtWidgets.QStackedWidget()
@@ -3923,6 +4086,49 @@ class MainWindow(QtWidgets.QWidget):
             return "Portfolio Margin"
         return "Classic Trading"
 
+    def _runtime_connector_backend(self) -> str:
+        backend = _normalize_connector_backend(self.config.get("connector_backend"))
+        self.config["connector_backend"] = backend
+        return backend
+
+    def _backtest_connector_backend(self) -> str:
+        backend = _normalize_connector_backend(self.backtest_config.get("connector_backend"))
+        self.backtest_config["connector_backend"] = backend
+        self.config.setdefault("backtest", {})["connector_backend"] = backend
+        return backend
+
+    def _create_binance_wrapper(self, *, api_key: str, api_secret: str, mode: str, account_type: str, connector_backend: str | None = None, **kwargs) -> BinanceWrapper:
+        backend = connector_backend or self._runtime_connector_backend()
+        return BinanceWrapper(
+            api_key,
+            api_secret,
+            mode=mode,
+            account_type=account_type,
+            connector_backend=backend,
+            **kwargs,
+        )
+
+    def _connector_label_text(self, backend: str) -> str:
+        backend = _normalize_connector_backend(backend)
+        for label, value in CONNECTOR_OPTIONS:
+            if value == backend:
+                return label
+        return backend.title()
+
+    def _update_connector_labels(self):
+        try:
+            runtime_label = getattr(self, "runtime_connector_label", None)
+            if runtime_label is not None:
+                runtime_label.setText(f"Runtime Connector: {self._connector_label_text(self._runtime_connector_backend())}")
+        except Exception:
+            pass
+        try:
+            backtest_label = getattr(self, "backtest_connector_label", None)
+            if backtest_label is not None:
+                backtest_label.setText(f"Backtest Connector: {self._connector_label_text(self._backtest_connector_backend())}")
+        except Exception:
+            pass
+
     def _on_account_type_changed(self, value):
         account_text = str(value or "").strip()
         try:
@@ -3977,6 +4183,37 @@ class MainWindow(QtWidgets.QWidget):
                 self.refresh_symbols()
             except Exception:
                 pass
+
+    def _on_runtime_connector_changed(self, *_args):
+        try:
+            data = None
+            if hasattr(self, "connector_combo") and self.connector_combo is not None:
+                data = self.connector_combo.currentData()
+                if data is None:
+                    data = self.connector_combo.currentText()
+            backend = _normalize_connector_backend(data)
+        except Exception:
+            backend = DEFAULT_CONNECTOR_BACKEND
+        self.config["connector_backend"] = backend
+        self._update_connector_labels()
+        try:
+            self._reconfigure_positions_worker()
+        except Exception:
+            pass
+
+    def _on_backtest_connector_changed(self, *_args):
+        try:
+            data = None
+            if hasattr(self, "backtest_connector_combo") and self.backtest_connector_combo is not None:
+                data = self.backtest_connector_combo.currentData()
+                if data is None:
+                    data = self.backtest_connector_combo.currentText()
+            backend = _normalize_connector_backend(data)
+        except Exception:
+            backend = DEFAULT_CONNECTOR_BACKEND
+        self.backtest_config["connector_backend"] = backend
+        self.config.setdefault("backtest", {})["connector_backend"] = backend
+        self._update_connector_labels()
 
     def _futures_display_symbol(self, symbol: str) -> str:
         sym = (symbol or "").strip().upper()
@@ -4100,7 +4337,12 @@ class MainWindow(QtWidgets.QWidget):
         account_type = self._chart_account_type(market_key)
 
         def _do():
-            tmp_wrapper = BinanceWrapper(api_key, api_secret, mode=mode, account_type=account_type)
+            tmp_wrapper = self._create_binance_wrapper(
+                api_key=api_key,
+                api_secret=api_secret,
+                mode=mode,
+                account_type=account_type,
+            )
             syms = tmp_wrapper.fetch_symbols(sort_by_volume=True)
             cleaned = []
             seen_local = set()
@@ -4738,7 +4980,12 @@ class MainWindow(QtWidgets.QWidget):
             thread = QtCore.QThread.currentThread()
             if thread.isInterruptionRequested():
                 return None
-            wrapper = BinanceWrapper(api_key, api_secret, mode=mode, account_type=account_type)
+            wrapper = self._create_binance_wrapper(
+                api_key=api_key,
+                api_secret=api_secret,
+                mode=mode,
+                account_type=account_type,
+            )
             try:
                 wrapper.indicator_source = self.ind_source_combo.currentText()
             except Exception:
@@ -4866,9 +5113,25 @@ class MainWindow(QtWidgets.QWidget):
         self.theme_combo.currentTextChanged.connect(self.apply_theme)
         grid.addWidget(self.theme_combo, 0, 5)
 
+        status_widget = QtWidgets.QWidget()
+        status_layout = QtWidgets.QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(10)
         self.bot_status_label_tab1 = QtWidgets.QLabel()
-        self.bot_status_label_tab1.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(self.bot_status_label_tab1, 0, 6, 1, 4)
+        self.bot_time_label_tab1 = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.bot_status_label_tab1, self.bot_time_label_tab1):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            status_layout.addWidget(lbl)
+        grid.addWidget(status_widget, 0, 6, 1, 3)
+
+        status_connector = QtWidgets.QWidget()
+        status_connector_layout = QtWidgets.QHBoxLayout(status_connector)
+        status_connector_layout.setContentsMargins(0, 0, 0, 0)
+        status_connector_layout.setSpacing(6)
+        self.runtime_connector_label = QtWidgets.QLabel()
+        self.runtime_connector_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        status_connector_layout.addWidget(self.runtime_connector_label)
+        grid.addWidget(status_connector, 0, 9, 1, 2)
 
         grid.addWidget(QtWidgets.QLabel("Account Type:"), 1, 2)
         self.account_combo = QtWidgets.QComboBox()
@@ -4890,6 +5153,18 @@ class MainWindow(QtWidgets.QWidget):
             lambda value: self.config.__setitem__("account_mode", self._normalize_account_mode(value))
         )
         grid.addWidget(self.account_mode_combo, 1, 5)
+
+        grid.addWidget(QtWidgets.QLabel("Connector:"), 1, 6)
+        self.connector_combo = QtWidgets.QComboBox()
+        for label, value in CONNECTOR_OPTIONS:
+            self.connector_combo.addItem(label, value)
+        runtime_backend = self._runtime_connector_backend()
+        idx_connector = self.connector_combo.findData(runtime_backend)
+        if idx_connector < 0:
+            idx_connector = 0
+        self.connector_combo.setCurrentIndex(idx_connector)
+        self.connector_combo.currentIndexChanged.connect(self._on_runtime_connector_changed)
+        grid.addWidget(self.connector_combo, 1, 7, 1, 3)
 
         grid.addWidget(QtWidgets.QLabel("Total USDT balance:"), 2, 0)
         self.balance_label = QtWidgets.QLabel("N/A")
@@ -5181,6 +5456,7 @@ class MainWindow(QtWidgets.QWidget):
             self.theme_combo,
             self.account_combo,
             self.account_mode_combo,
+            self.connector_combo,
             self.leverage_spin,
             self.margin_mode_combo,
             self.position_mode_combo,
@@ -5283,9 +5559,16 @@ class MainWindow(QtWidgets.QWidget):
         self.positions_view_combo.currentIndexChanged.connect(self._on_positions_view_changed)
         ctrl_layout.addWidget(self.positions_view_combo)
         ctrl_layout.addStretch()
+        tab2_status_widget = QtWidgets.QWidget()
+        tab2_status_layout = QtWidgets.QHBoxLayout(tab2_status_widget)
+        tab2_status_layout.setContentsMargins(0, 0, 0, 0)
+        tab2_status_layout.setSpacing(8)
         self.bot_status_label_tab2 = QtWidgets.QLabel()
-        self.bot_status_label_tab2.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        ctrl_layout.addWidget(self.bot_status_label_tab2)
+        self.bot_time_label_tab2 = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.bot_status_label_tab2, self.bot_time_label_tab2):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            tab2_status_layout.addWidget(lbl)
+        ctrl_layout.addWidget(tab2_status_widget)
         tab2_layout.addLayout(ctrl_layout)
         self._sync_runtime_state()
 
@@ -5335,6 +5618,7 @@ class MainWindow(QtWidgets.QWidget):
             self.api_secret_edit.text().strip(),
             self.mode_combo.currentText(),
             self.account_combo.currentText(),
+            connector_backend=self._runtime_connector_backend(),
         )
         # Wire thread-safe control signals
         self.req_pos_start.connect(self._pos_worker.start_with_interval)
@@ -5645,6 +5929,23 @@ class MainWindow(QtWidgets.QWidget):
         )
         param_form.addRow("Account Mode:", self.backtest_account_mode_combo)
 
+        connector_note = QtWidgets.QLabel()
+        connector_note.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        param_form.addRow("Connector Selected:", connector_note)
+        self.backtest_connector_label = connector_note
+
+        self.backtest_connector_combo = QtWidgets.QComboBox()
+        for label, value in CONNECTOR_OPTIONS:
+            self.backtest_connector_combo.addItem(label, value)
+        backtest_backend = self._backtest_connector_backend()
+        idx_bt_connector = self.backtest_connector_combo.findData(backtest_backend)
+        if idx_bt_connector < 0:
+            idx_bt_connector = 0
+        with QtCore.QSignalBlocker(self.backtest_connector_combo):
+            self.backtest_connector_combo.setCurrentIndex(idx_bt_connector)
+        self.backtest_connector_combo.currentIndexChanged.connect(self._on_backtest_connector_changed)
+        param_form.addRow("Connector:", self.backtest_connector_combo)
+
         self.backtest_leverage_spin = QtWidgets.QSpinBox()
         self.backtest_leverage_spin.setRange(1, 150)
         self.backtest_leverage_spin.valueChanged.connect(lambda v: self._update_backtest_config("leverage", int(v)))
@@ -5727,9 +6028,16 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_add_all_to_dashboard_btn.clicked.connect(self._backtest_add_all_to_dashboard)
         controls_layout.addWidget(self.backtest_add_all_to_dashboard_btn)
         controls_layout.addStretch()
+        tab3_status_widget = QtWidgets.QWidget()
+        tab3_status_layout = QtWidgets.QHBoxLayout(tab3_status_widget)
+        tab3_status_layout.setContentsMargins(0, 0, 0, 0)
+        tab3_status_layout.setSpacing(8)
         self.bot_status_label_tab3 = QtWidgets.QLabel()
-        self.bot_status_label_tab3.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        controls_layout.addWidget(self.bot_status_label_tab3)
+        self.bot_time_label_tab3 = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.bot_status_label_tab3, self.bot_time_label_tab3):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            tab3_status_layout.addWidget(lbl)
+        controls_layout.addWidget(tab3_status_widget)
         tab3_content_layout.addLayout(controls_layout)
         self._update_bot_status()
         try:
@@ -6225,9 +6533,9 @@ def _mw_update_position_history(self, positions_map: dict):
                         pass
                     if api_key and api_secret:
                         try:
-                            bw = BinanceWrapper(
-                                api_key,
-                                api_secret,
+                            bw = self._create_binance_wrapper(
+                                api_key=api_key,
+                                api_secret=api_secret,
                                 mode=self.mode_combo.currentText(),
                                 account_type=self.account_combo.currentText(),
                                 default_leverage=int(self.leverage_spin.value() or 1),
@@ -6933,13 +7241,13 @@ def _mw_close_position_single(self, symbol: str, side_key: str | None, interval:
         return
     if getattr(self, "shared_binance", None) is None:
         try:
-            self.shared_binance = BinanceWrapper(
-                self.api_key_edit.text().strip(),
-                self.api_secret_edit.text().strip(),
+            self.shared_binance = self._create_binance_wrapper(
+                api_key=self.api_key_edit.text().strip(),
+                api_secret=self.api_secret_edit.text().strip(),
                 mode=self.mode_combo.currentText(),
                 account_type=self.account_combo.currentText(),
                 default_leverage=int(self.leverage_spin.value() or 1),
-                default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
+                default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
             )
         except Exception as exc:
             try:
@@ -7046,9 +7354,12 @@ def refresh_symbols(self):
     self.refresh_symbols_btn.setEnabled(False)
     self.refresh_symbols_btn.setText("Refreshing...")
     def _do():
-        tmp_wrapper = BinanceWrapper(self.api_key_edit.text().strip(), self.api_secret_edit.text().strip(),
-                                     mode=self.mode_combo.currentText(),
-                                     account_type=self.account_combo.currentText())
+        tmp_wrapper = self._create_binance_wrapper(
+            api_key=self.api_key_edit.text().strip(),
+            api_secret=self.api_secret_edit.text().strip(),
+            mode=self.mode_combo.currentText(),
+            account_type=self.account_combo.currentText(),
+        )
         syms = tmp_wrapper.fetch_symbols(sort_by_volume=True)
         return syms
     def _done(res, err):
@@ -7226,15 +7537,25 @@ def start_strategy(self):
             self.log("No valid symbol/interval overrides found.")
             return
 
+        connector_name = self._connector_label_text(self._runtime_connector_backend())
+        self.log(f"Starting strategy with {len(combos)} symbol/interval loops. Connector: {connector_name}.")
+
+        try:
+            self.config["position_pct_units"] = "percent"
+        except Exception:
+            pass
+
         total_jobs = len(combos)
         concurrency = StrategyEngine.concurrent_limit()
         if total_jobs > concurrency:
             self.log(f"{total_jobs} symbol/interval loops requested; limiting concurrent execution to {concurrency} to keep the UI responsive.")
 
         if getattr(self, "shared_binance", None) is None:
-            self.shared_binance = BinanceWrapper(
-                self.api_key_edit.text().strip(), self.api_secret_edit.text().strip(),
-                mode=self.mode_combo.currentText(), account_type=self.account_combo.currentText(),
+            self.shared_binance = self._create_binance_wrapper(
+                api_key=self.api_key_edit.text().strip(),
+                api_secret=self.api_secret_edit.text().strip(),
+                mode=self.mode_combo.currentText(),
+                account_type=self.account_combo.currentText(),
                 default_leverage=int(self.leverage_spin.value() or 1),
                 default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
             )
@@ -7269,6 +7590,7 @@ def start_strategy(self):
                     continue
 
                 controls = dict(combo.get("strategy_controls") or {})
+                units_override = self._normalize_position_pct_units(controls.get("position_pct_units"))
                 cfg = copy.deepcopy(self.config)
                 cfg["symbol"] = sym
                 cfg["interval"] = iv
@@ -7276,10 +7598,16 @@ def start_strategy(self):
                 if position_pct_override is not None:
                     try:
                         cfg["position_pct"] = float(position_pct_override)
+                        if units_override:
+                            cfg["position_pct_units"] = units_override
+                        else:
+                            cfg.pop("position_pct_units", None)
                     except Exception:
                         cfg["position_pct"] = float(self.pospct_spin.value() or self.config.get("position_pct", 100.0))
+                        cfg["position_pct_units"] = "percent"
                 else:
                     cfg["position_pct"] = float(self.pospct_spin.value() or self.config.get("position_pct", 100.0))
+                    cfg["position_pct_units"] = "percent"
                 side_override = controls.get("side") or self._resolve_dashboard_side()
                 cfg["side"] = side_override
                 leverage_override = controls.get("leverage")
@@ -7599,6 +7927,18 @@ def load_config(self):
             if idx_backtest_account is not None and idx_backtest_account >= 0:
                 with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
                     self.backtest_account_mode_combo.setCurrentIndex(idx_backtest_account)
+            runtime_backend = self._runtime_connector_backend()
+            if hasattr(self, "connector_combo") and self.connector_combo is not None:
+                idx_runtime_connector = self.connector_combo.findData(runtime_backend)
+                if idx_runtime_connector is not None and idx_runtime_connector >= 0:
+                    with QtCore.QSignalBlocker(self.connector_combo):
+                        self.connector_combo.setCurrentIndex(idx_runtime_connector)
+            backtest_backend = self._backtest_connector_backend()
+            if hasattr(self, "backtest_connector_combo") and self.backtest_connector_combo is not None:
+                idx_backtest_connector = self.backtest_connector_combo.findData(backtest_backend)
+                if idx_backtest_connector is not None and idx_backtest_connector >= 0:
+                    with QtCore.QSignalBlocker(self.backtest_connector_combo):
+                        self.backtest_connector_combo.setCurrentIndex(idx_backtest_connector)
             self._update_runtime_stop_loss_widgets()
             self._update_backtest_stop_loss_widgets()
         except Exception:
@@ -7660,11 +8000,13 @@ except Exception:
 def _close_all_positions_sync(self):
     from ..close_all import close_all_futures_positions as _close_all_futures
     if getattr(self, "shared_binance", None) is None:
-        self.shared_binance = BinanceWrapper(
-            self.api_key_edit.text().strip(), self.api_secret_edit.text().strip(),
-            mode=self.mode_combo.currentText(), account_type=self.account_combo.currentText(),
+        self.shared_binance = self._create_binance_wrapper(
+            api_key=self.api_key_edit.text().strip(),
+            api_secret=self.api_secret_edit.text().strip(),
+            mode=self.mode_combo.currentText(),
+            account_type=self.account_combo.currentText(),
             default_leverage=int(self.leverage_spin.value() or 1),
-            default_margin_mode=self.margin_mode_combo.currentText() or "Isolated"
+            default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
         )
     acct_text = (self.account_combo.currentText() or '').upper()
     if acct_text.startswith('FUT'):
@@ -7796,11 +8138,13 @@ def update_balance_label(self):
             except Exception:
                 pass
             try:
-                self.shared_binance = BinanceWrapper(
-                    api_key,
-                    api_secret,
-                    mode=getattr(self.mode_combo, "currentText", lambda: "Live")(),
-                    account_type=getattr(self.account_combo, "currentText", lambda: "Futures")(),
+                mode_value = getattr(self.mode_combo, "currentText", lambda: "Live")()
+                account_value = getattr(self.account_combo, "currentText", lambda: "Futures")()
+                self.shared_binance = self._create_binance_wrapper(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    mode=mode_value,
+                    account_type=account_value,
                     default_leverage=default_leverage,
                     default_margin_mode=default_margin_mode,
                 )
@@ -7998,6 +8342,7 @@ def _mw_reconfigure_positions_worker(self, symbols=None):
             mode=self.mode_combo.currentText(),
             account_type=self.account_combo.currentText(),
             symbols=target_symbols or None,
+            connector_backend=self._runtime_connector_backend(),
         )
         setattr(self, "_pos_symbol_filter", target_symbols)
     except Exception:
@@ -8197,18 +8542,24 @@ def _mw_trade_mux(self, evt: dict):
     except Exception:
         pass
 
-def _mw_on_trade_signal(self, order_info: dict):
-    self.log(f"TRADE UPDATE: {order_info}")
-    sym = order_info.get("symbol")
-    interval = order_info.get("interval")
-    side = order_info.get("side")
-    position_side = order_info.get("position_side") or side
-    event_type = str(order_info.get("event") or "").lower()
-    status = str(order_info.get("status") or "").lower()
-    ok_flag = order_info.get("ok")
-    side_for_key = position_side or side
-    side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
-    sym_upper = str(sym or "").strip().upper()
+    def _mw_on_trade_signal(self, order_info: dict):
+        try:
+            connector_name = self._connector_label_text(self._runtime_connector_backend())
+        except Exception:
+            connector_name = "Unknown"
+        info_with_connector = dict(order_info or {})
+        info_with_connector.setdefault("connector", connector_name)
+        self.log(f"TRADE UPDATE [{connector_name}]: {info_with_connector}")
+        sym = order_info.get("symbol")
+        interval = order_info.get("interval")
+        side = order_info.get("side")
+        position_side = order_info.get("position_side") or side
+        event_type = str(order_info.get("event") or "").lower()
+        status = str(order_info.get("status") or "").lower()
+        ok_flag = order_info.get("ok")
+        side_for_key = position_side or side
+        side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
+        sym_upper = str(sym or "").strip().upper()
 
     alloc_map = getattr(self, "_entry_allocations", None)
     if alloc_map is None:

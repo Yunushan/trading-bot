@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
     "position_mode": "Hedge",    # "One-way" or "Hedge"
     "assets_mode": "Single-Asset",
     "account_mode": "Classic Trading",
+    "connector_backend": "binance-connector",
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "indicators": {
         "ma":        {"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},
@@ -64,6 +65,7 @@ DEFAULT_CONFIG = {
         "position_mode": "Hedge",
         "assets_mode": "Single-Asset",
         "account_mode": "Classic Trading",
+        "connector_backend": "binance-connector",
         "leverage": 5,
         "mdd_logic": MDD_LOGIC_DEFAULT,
         "template": copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT),

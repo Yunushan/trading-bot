@@ -101,10 +101,10 @@ def _resolve_module_version(primary: str, *alternates: str) -> str:
     except Exception:
         return "not-installed"
 
-_QT_LINE = "Qt=unknown"
+_QT_LINE = "PyQt6=unknown"
 try:
     from PyQt6.QtCore import QT_VERSION_STR as _QT_VER, PYQT_VERSION_STR as _PYQT_VER
-    _QT_LINE = f"Qt={_QT_VER} (PyQt={_PYQT_VER})"
+    _QT_LINE = f"PyQt6={_PYQT_VER} (Qt={_QT_VER})"
 except Exception:
     pass
 
@@ -142,12 +142,14 @@ _WEBENGINE_VER = _resolve_webengine_version()
 _WEBENGINE = f"PyQt6-WebEngine={_WEBENGINE_VER}" if _WEBENGINE_VER else "PyQt6-WebEngine=not-installed"
 
 _PYBINANCE_VER = _resolve_module_version("python-binance", "python_binance", "binance")
+_BINANCE_CONNECTOR_VER = _resolve_module_version("binance-connector", "binance_connector")
 _NUMPY_VER = _resolve_module_version("numpy")
 _REQUESTS_VER = _resolve_module_version("requests")
 
 print(
     f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}, {_WEBENGINE}, "
-    f"python-binance={_PYBINANCE_VER}, numpy={_NUMPY_VER}, requests={_REQUESTS_VER}",
+    f"python-binance={_PYBINANCE_VER}, binance-connector={_BINANCE_CONNECTOR_VER}, "
+    f"numpy={_NUMPY_VER}, requests={_REQUESTS_VER}",
     flush=True,
 )
 
