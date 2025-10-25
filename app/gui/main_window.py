@@ -1206,6 +1206,7 @@ class MainWindow(QtWidgets.QWidget):
                     "loop_interval_override": self.loop_edit.text() if hasattr(self, "loop_edit") else "",
                     "add_only": bool(self.cb_add_only.isChecked()) if hasattr(self, "cb_add_only") else None,
                     "stop_loss": stop_cfg,
+                    "connector_backend": self._runtime_connector_backend(),
                 }
                 leverage_val = None
                 if hasattr(self, "leverage_spin"):
@@ -1262,7 +1263,7 @@ class MainWindow(QtWidgets.QWidget):
                     "loop_interval_override": self._normalize_loop_override(self.backtest_loop_edit.text() if hasattr(self, "backtest_loop_edit") else None),
                     "leverage": int(self.backtest_leverage_spin.value()) if hasattr(self, "backtest_leverage_spin") else None,
                     "stop_loss": stop_cfg,
-                    "connector_backend": self._connector_label_text(self._backtest_connector_backend()),
+                    "connector_backend": self._backtest_connector_backend(),
                 }
                 if account_mode_val:
                     controls["account_mode"] = self._normalize_account_mode(account_mode_val)
@@ -1318,6 +1319,9 @@ class MainWindow(QtWidgets.QWidget):
             stop_loss_raw = controls.get("stop_loss")
             if isinstance(stop_loss_raw, dict):
                 normalized["stop_loss"] = normalize_stop_loss_dict(stop_loss_raw)
+            backend_val = controls.get("connector_backend")
+            if backend_val:
+                normalized["connector_backend"] = _normalize_connector_backend(backend_val)
         elif kind == "backtest":
             logic_raw = str(controls.get("logic") or "").upper()
             if logic_raw in {"AND", "OR", "SEPARATE"}:
@@ -1369,6 +1373,9 @@ class MainWindow(QtWidgets.QWidget):
             stop_loss_raw = controls.get("stop_loss")
             if isinstance(stop_loss_raw, dict):
                 normalized["stop_loss"] = normalize_stop_loss_dict(stop_loss_raw)
+            backend_val = controls.get("connector_backend")
+            if backend_val:
+                normalized["connector_backend"] = _normalize_connector_backend(backend_val)
         return normalized
 
     def _format_strategy_controls_summary(self, kind: str, controls: dict) -> str:
@@ -1964,6 +1971,7 @@ class MainWindow(QtWidgets.QWidget):
         loop_col = column_map.get("Loop")
         leverage_col = column_map.get("Leverage")
         strategy_col = column_map.get("Strategy Controls")
+        connector_col = column_map.get("Connector")
         stoploss_col = column_map.get("Stop-Loss")
         header = table.horizontalHeader()
         try:
@@ -2021,6 +2029,9 @@ class MainWindow(QtWidgets.QWidget):
                 stop_cfg = controls.get("stop_loss")
                 if isinstance(stop_cfg, dict):
                     entry_clean["stop_loss"] = normalize_stop_loss_dict(stop_cfg)
+                backend_ctrl = controls.get("connector_backend")
+                if backend_ctrl:
+                    entry_clean["connector_backend"] = backend_ctrl
             if leverage_val is not None:
                 entry_clean["leverage"] = leverage_val
                 if isinstance(controls, dict):
@@ -2043,6 +2054,14 @@ class MainWindow(QtWidgets.QWidget):
             if strategy_col is not None:
                 summary = self._format_strategy_controls_summary(kind, controls)
                 table.setItem(row, strategy_col, QtWidgets.QTableWidgetItem(summary))
+            if connector_col is not None:
+                backend_val = None
+                if isinstance(controls, dict):
+                    backend_val = controls.get("connector_backend")
+                if not backend_val:
+                    backend_val = self._runtime_connector_backend() if kind == "runtime" else self._backtest_connector_backend()
+                connector_display = self._connector_label_text(backend_val) if backend_val else "-"
+                table.setItem(row, connector_col, QtWidgets.QTableWidgetItem(connector_display))
             if stoploss_col is not None:
                 stop_label = "No"
                 stop_cfg_display = None
@@ -2243,6 +2262,7 @@ class MainWindow(QtWidgets.QWidget):
             columns.append("Loop")
         if include_leverage:
             columns.append("Leverage")
+        columns.append("Connector")
         columns.append("Strategy Controls")
         columns.append("Stop-Loss")
         table = QtWidgets.QTableWidget(0, len(columns))
@@ -2283,7 +2303,6 @@ class MainWindow(QtWidgets.QWidget):
         btn_layout.addWidget(clear_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-
         config_key = "runtime_symbol_interval_pairs" if kind == "runtime" else "backtest_symbol_interval_pairs"
         self.override_contexts[kind] = {
             "table": table,
@@ -2295,11 +2314,6 @@ class MainWindow(QtWidgets.QWidget):
             "clear_btn": clear_btn,
             "column_map": column_map,
         }
-        if kind == "runtime":
-            self.symbol_interval_table = table
-            self.pair_add_btn = add_btn
-            self.pair_remove_btn = remove_btn
-            self.pair_clear_btn = clear_btn
         lock_widgets = getattr(self, '_runtime_lock_widgets', None)
         if isinstance(lock_widgets, list):
             for widget in (table, add_btn, remove_btn, clear_btn):
@@ -4117,15 +4131,11 @@ class MainWindow(QtWidgets.QWidget):
 
     def _update_connector_labels(self):
         try:
-            runtime_label = getattr(self, "runtime_connector_label", None)
-            if runtime_label is not None:
-                runtime_label.setText(f"Runtime Connector: {self._connector_label_text(self._runtime_connector_backend())}")
+            self._refresh_symbol_interval_pairs("runtime")
         except Exception:
             pass
         try:
-            backtest_label = getattr(self, "backtest_connector_label", None)
-            if backtest_label is not None:
-                backtest_label.setText(f"Backtest Connector: {self._connector_label_text(self._backtest_connector_backend())}")
+            self._refresh_symbol_interval_pairs("backtest")
         except Exception:
             pass
 
@@ -5122,16 +5132,7 @@ class MainWindow(QtWidgets.QWidget):
         for lbl in (self.bot_status_label_tab1, self.bot_time_label_tab1):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             status_layout.addWidget(lbl)
-        grid.addWidget(status_widget, 0, 6, 1, 3)
-
-        status_connector = QtWidgets.QWidget()
-        status_connector_layout = QtWidgets.QHBoxLayout(status_connector)
-        status_connector_layout.setContentsMargins(0, 0, 0, 0)
-        status_connector_layout.setSpacing(6)
-        self.runtime_connector_label = QtWidgets.QLabel()
-        self.runtime_connector_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        status_connector_layout.addWidget(self.runtime_connector_label)
-        grid.addWidget(status_connector, 0, 9, 1, 2)
+        grid.addWidget(status_widget, 0, 6, 1, 4)
 
         grid.addWidget(QtWidgets.QLabel("Account Type:"), 1, 2)
         self.account_combo = QtWidgets.QComboBox()
@@ -5928,11 +5929,6 @@ class MainWindow(QtWidgets.QWidget):
             )
         )
         param_form.addRow("Account Mode:", self.backtest_account_mode_combo)
-
-        connector_note = QtWidgets.QLabel()
-        connector_note.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        param_form.addRow("Connector Selected:", connector_note)
-        self.backtest_connector_label = connector_note
 
         self.backtest_connector_combo = QtWidgets.QComboBox()
         for label, value in CONNECTOR_OPTIONS:
@@ -7941,6 +7937,7 @@ def load_config(self):
                         self.backtest_connector_combo.setCurrentIndex(idx_backtest_connector)
             self._update_runtime_stop_loss_widgets()
             self._update_backtest_stop_loss_widgets()
+            self._update_connector_labels()
         except Exception:
             pass
     except Exception as e:
