@@ -28,9 +28,11 @@ from PyQt6.QtCore import pyqtSignal
 
 ENABLE_CHART_TAB = True
 
+_THIS_FILE = Path(__file__).resolve()
+
 if __package__ in (None, ""):
     import sys
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    sys.path.append(str(_THIS_FILE.parents[2]))
 
 from app.config import (
     DEFAULT_CONFIG,
@@ -169,6 +171,42 @@ def _normalize_connector_backend(value) -> str:
     if "python" in text and "binance" in text:
         return "python-binance"
     return DEFAULT_CONNECTOR_BACKEND
+
+for _parent in _THIS_FILE.parents:
+    if (_parent / "Languages").exists():
+        _BASE_PROJECT_PATH = _parent
+        break
+else:
+    _BASE_PROJECT_PATH = _THIS_FILE.parents[2]
+
+LANGUAGE_PATHS = {
+    "Python (PyQt)": "Languages/Python",
+    "C++ (Qt/C++23)": "Languages/C++23",
+    "C": "Languages/C",
+    "Rust": "Languages/Rust",
+}
+
+EXCHANGE_PATHS = {
+    "Binance": "Crypto-Exchanges/Binance",
+    "Bybit": "Crypto-Exchanges/Bybit",
+    "OKX": "Crypto-Exchanges/OKX",
+    "Bitget": "Crypto-Exchanges/Bitget",
+    "Gate": "Crypto-Exchanges/Gate",
+    "MEXC": "Crypto-Exchanges/MEXC",
+    "KuCoin": "Crypto-Exchanges/KuCoin",
+    "HTX": "Crypto-Exchanges/HTX",
+    "Crypto.com Exchange": "Crypto-Exchanges/Crypto.com Exchange",
+    "Kraken": "Crypto-Exchanges/Kraken",
+    "Bitfinex": "Crypto-Exchanges/Bitfinex",
+}
+
+FOREX_BROKER_PATHS = {
+    "FXCM": "ForexBrokers/FXCM",
+    "XM": "ForexBrokers/XM",
+    "IC Markets Global": "ForexBrokers/IC Markets Global",
+    "IG": "ForexBrokers/IG",
+    "Forex.com": "ForexBrokers/Forex.com",
+}
 
 BACKTEST_TEMPLATE_DEFINITIONS = {
     "volume_top50": {
@@ -867,6 +905,9 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault('account_mode', 'Classic Trading')
         self.config.setdefault('auto_bump_percent_multiplier', DEFAULT_CONFIG.get('auto_bump_percent_multiplier', 10.0))
         self.config["connector_backend"] = _normalize_connector_backend(self.config.get("connector_backend"))
+        self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
+        self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
+        self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
         self.strategy_threads = {}
         self.shared_binance = None
         self.stop_worker = None
@@ -999,13 +1040,18 @@ class MainWindow(QtWidgets.QWidget):
         self.bot_status_label_tab2 = None
         self.bot_status_label_tab3 = None
         self.bot_status_label_chart = None
+        self.bot_status_label_code_tab = None
         self.bot_time_label_tab1 = None
         self.bot_time_label_tab2 = None
         self.bot_time_label_tab3 = None
         self.bot_time_label_chart = None
+        self.bot_time_label_code_tab = None
         self._bot_active = False
         self._bot_active_since = None
         self._bot_time_timer = None
+        self.language_combo = None
+        self.exchange_combo = None
+        self.forex_combo = None
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
@@ -2354,6 +2400,7 @@ class MainWindow(QtWidgets.QWidget):
                 getattr(self, 'bot_status_label_tab2', None),
                 getattr(self, 'bot_status_label_tab3', None),
                 getattr(self, 'bot_status_label_chart', None),
+                getattr(self, 'bot_status_label_code_tab', None),
             ):
                 if label is None:
                     continue
@@ -2401,6 +2448,7 @@ class MainWindow(QtWidgets.QWidget):
                 getattr(self, 'bot_time_label_tab2', None),
                 getattr(self, 'bot_time_label_tab3', None),
                 getattr(self, 'bot_time_label_chart', None),
+                getattr(self, 'bot_time_label_code_tab', None),
             ]
             if not labels:
                 return
@@ -6112,6 +6160,11 @@ class MainWindow(QtWidgets.QWidget):
         tab3_content_layout.addWidget(self.backtest_results_table)
 
         self.tabs.addTab(tab3, "Backtest")
+
+        code_tab = self._init_code_language_tab()
+        if code_tab is not None:
+            self.tabs.addTab(code_tab, "Code Languages And Exchanges")
+
         self._refresh_symbol_interval_pairs("runtime")
         self._refresh_symbol_interval_pairs("backtest")
         self._initialize_backtest_ui_defaults()
@@ -6129,8 +6182,156 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-    
-    
+
+def _init_code_language_tab(self):
+    tab = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(tab)
+    layout.setContentsMargins(10, 10, 10, 10)
+    layout.setSpacing(12)
+
+    description = QtWidgets.QLabel(
+        "Select your preferred code language, crypto exchange, and forex broker. "
+        "Folders for each selection are created automatically inside the project so you can keep related assets organized."
+    )
+    description.setWordWrap(True)
+    layout.addWidget(description)
+
+    lists_layout = QtWidgets.QHBoxLayout()
+    lists_layout.setSpacing(12)
+    layout.addLayout(lists_layout)
+
+    language_group = QtWidgets.QGroupBox("Code Languages")
+    lang_layout = QtWidgets.QVBoxLayout(language_group)
+    self.language_combo = QtWidgets.QComboBox()
+    self.language_combo.addItems(list(LANGUAGE_PATHS.keys()))
+    self.language_combo.currentTextChanged.connect(self._on_code_language_changed)
+    lang_layout.addWidget(self.language_combo)
+    lists_layout.addWidget(language_group)
+
+    exchange_group = QtWidgets.QGroupBox("Crypto Exchanges")
+    exchange_layout = QtWidgets.QVBoxLayout(exchange_group)
+    self.exchange_combo = QtWidgets.QComboBox()
+    self.exchange_combo.addItems(list(EXCHANGE_PATHS.keys()))
+    self.exchange_combo.currentTextChanged.connect(self._on_exchange_selection_changed)
+    exchange_layout.addWidget(self.exchange_combo)
+    lists_layout.addWidget(exchange_group)
+
+    forex_group = QtWidgets.QGroupBox("Forex Brokers")
+    forex_layout = QtWidgets.QVBoxLayout(forex_group)
+    self.forex_combo = QtWidgets.QComboBox()
+    self.forex_combo.addItems(list(FOREX_BROKER_PATHS.keys()))
+    self.forex_combo.currentTextChanged.connect(self._on_forex_selection_changed)
+    forex_layout.addWidget(self.forex_combo)
+    lists_layout.addWidget(forex_group)
+
+    status_widget = QtWidgets.QWidget()
+    status_layout = QtWidgets.QHBoxLayout(status_widget)
+    status_layout.setContentsMargins(0, 0, 0, 0)
+    status_layout.setSpacing(12)
+    self.bot_status_label_code_tab = QtWidgets.QLabel()
+    self.bot_time_label_code_tab = QtWidgets.QLabel("Bot Active Time: --")
+    for lbl in (self.bot_status_label_code_tab, self.bot_time_label_code_tab):
+        if lbl is not None:
+            lbl.setStyleSheet("font-weight: 600;")
+            status_layout.addWidget(lbl)
+    status_layout.addStretch()
+    layout.addWidget(status_widget)
+
+    layout.addStretch()
+
+    try:
+        self._runtime_lock_widgets.extend([self.language_combo, self.exchange_combo, self.forex_combo])
+    except Exception:
+        pass
+
+    self._sync_language_exchange_lists_from_config()
+    self._update_bot_status()
+    return tab
+
+
+def _sync_language_exchange_lists_from_config(self):
+    selections = [
+        ("code_language", self.language_combo, LANGUAGE_PATHS),
+        ("selected_exchange", self.exchange_combo, EXCHANGE_PATHS),
+        ("selected_forex_broker", self.forex_combo, FOREX_BROKER_PATHS),
+    ]
+    for key, widget, options_map in selections:
+        if widget is None:
+            continue
+        desired = self.config.get(key)
+        if desired not in options_map:
+            desired = next(iter(options_map))
+            self.config[key] = desired
+        with QtCore.QSignalBlocker(widget):
+            idx = widget.findText(desired, QtCore.Qt.MatchFlag.MatchExactly)
+            if idx < 0 and widget.count() > 0:
+                idx = 0
+                desired = widget.itemText(0)
+                self.config[key] = desired
+            if idx >= 0:
+                widget.setCurrentIndex(idx)
+    self._ensure_language_exchange_paths()
+
+
+def _ensure_language_exchange_paths(self):
+    created_paths = []
+
+    def _prepare_path(path: Path | None):
+        if path is None:
+            return
+        try:
+            is_new = not path.exists()
+            path.mkdir(parents=True, exist_ok=True)
+            if is_new:
+                created_paths.append(path)
+        except Exception as exc:
+            try:
+                self.log(f"Failed to prepare {path}: {exc}")
+            except Exception:
+                pass
+
+    language_rel = LANGUAGE_PATHS.get(self.config.get("code_language"))
+    language_root = (_BASE_PROJECT_PATH / language_rel).resolve() if language_rel else None
+    _prepare_path(language_root)
+
+    if language_root is None:
+        base_path = _BASE_PROJECT_PATH
+    else:
+        base_path = language_root
+
+    exchange_rel = EXCHANGE_PATHS.get(self.config.get("selected_exchange"))
+    forex_rel = FOREX_BROKER_PATHS.get(self.config.get("selected_forex_broker"))
+    _prepare_path((base_path / exchange_rel).resolve() if exchange_rel else None)
+    _prepare_path((base_path / forex_rel).resolve() if forex_rel else None)
+
+    if created_paths:
+        try:
+            created_text = ", ".join(str(p) for p in created_paths)
+            self.log(f"Ensured directories: {created_text}")
+        except Exception:
+            pass
+
+
+def _on_code_language_changed(self, text: str):
+    if not text or text not in LANGUAGE_PATHS:
+        return
+    self.config["code_language"] = text
+    self._ensure_language_exchange_paths()
+
+
+def _on_exchange_selection_changed(self, text: str):
+    if not text or text not in EXCHANGE_PATHS:
+        return
+    self.config["selected_exchange"] = text
+    self._ensure_language_exchange_paths()
+
+
+def _on_forex_selection_changed(self, text: str):
+    if not text or text not in FOREX_BROKER_PATHS:
+        return
+    self.config["selected_forex_broker"] = text
+    self._ensure_language_exchange_paths()
+
 
 def _gui_on_positions_ready(self, rows: list, acct: str):
     try:
@@ -7896,6 +8097,10 @@ def load_config(self):
         self.backtest_config.setdefault('backtest_symbol_interval_pairs', list(self.config.get('backtest_symbol_interval_pairs', [])))
         self._refresh_symbol_interval_pairs("runtime")
         self._refresh_symbol_interval_pairs("backtest")
+        self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
+        self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
+        self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
+        self._sync_language_exchange_lists_from_config()
         self.log(f"Loaded config from {fn}")
         try:
             self.leverage_spin.setValue(int(self.config.get("leverage", self.leverage_spin.value())))
@@ -7975,6 +8180,15 @@ except Exception:
 try:
     MainWindow.save_config = save_config
     MainWindow.load_config = load_config
+except Exception:
+    pass
+try:
+    MainWindow._init_code_language_tab = _init_code_language_tab
+    MainWindow._sync_language_exchange_lists_from_config = _sync_language_exchange_lists_from_config
+    MainWindow._ensure_language_exchange_paths = _ensure_language_exchange_paths
+    MainWindow._on_code_language_changed = _on_code_language_changed
+    MainWindow._on_exchange_selection_changed = _on_exchange_selection_changed
+    MainWindow._on_forex_selection_changed = _on_forex_selection_changed
 except Exception:
     pass
 try:

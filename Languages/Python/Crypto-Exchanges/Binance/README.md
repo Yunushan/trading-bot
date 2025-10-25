@@ -5,7 +5,7 @@
   Neither the author nor this bot accepts any legal responsibility for trading outcomes. Use it at your own risk.
 </p>
 
-# Binance Trading Bot
+# Binance Trading Bot (Python → Languages/Python/Crypto-Exchanges/Binance)
 
 A PyQt6 desktop GUI for spot and futures trading on Binance.
 
@@ -24,6 +24,11 @@ This repository provides a desktop assistant for building and exercising trading
 ---
 
 ## Install Python + dependencies
+
+> All commands below assume you already switched to the Python/Crypto-Exchanges/Binance workspace:
+> ```bash
+> cd Languages/Python/Crypto-Exchanges/Binance
+> ```
 
 ### For Easy Windows Install (If Python 3.10,3.11,3.12,3.13 Installed)
 ### Windows

@@ -33,6 +33,9 @@ DEFAULT_CONFIG = {
     "assets_mode": "Single-Asset",
     "account_mode": "Classic Trading",
     "connector_backend": "binance-connector",
+    "code_language": "Python (PyQt)",
+    "selected_exchange": "Binance",
+    "selected_forex_broker": "FXCM",
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "indicators": {
         "ma":        {"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},

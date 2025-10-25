@@ -532,6 +532,7 @@ class StrategyEngine:
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
         ind = self.compute_indicators(df)
         signal, trigger_desc, trigger_price, trigger_sources = self.generate_signal(df, ind)
+        signal_timestamp = time.time() if signal else None
         
         # --- RSI guard-close (interval-scoped) ---
         try:
@@ -993,6 +994,7 @@ class StrategyEngine:
                 else:
                     self.log(f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active).")
                     signal = None
+                    signal_timestamp = None
         except Exception:
             pass
         if signal and cw.get('trade_on_signal', True):
@@ -1012,10 +1014,29 @@ class StrategyEngine:
                 else:
                     pct = pct_raw / 100.0 if pct_raw > 1.0 else pct_raw
                 pct = max(0.0001, min(1.0, pct))
-                use_usdt = usdt_bal * pct
+                free_usdt = max(float(usdt_bal or 0.0), 0.0)
                 price = last_price or 0.0
 
                 if account_type == "FUTURES":
+                    try:
+                        wallet_total = float(self.binance.get_total_wallet_balance())
+                    except Exception:
+                        wallet_total = 0.0
+                    if wallet_total <= 0.0:
+                        wallet_total = free_usdt
+                    target_margin = wallet_total * pct
+                    capital_epsilon = max(0.1, wallet_total * 0.001)
+                    if target_margin <= 0.0 or free_usdt <= 0.0:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} capital guard: no free USDT available for {pct*100:.2f}% allocation.")
+                        return
+                    if free_usdt + capital_epsilon < target_margin:
+                        used_pct = 1.0 - (free_usdt / wallet_total if wallet_total > 0 else 0.0)
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} capital guard: requested {target_margin:.2f} USDT "
+                            f"({pct*100:.2f}%) but only {free_usdt:.2f} USDT free ({used_pct*100:.2f}% already allocated)."
+                        )
+                        return
+                    use_usdt = min(free_usdt, target_margin)
                     lev = max(1, int(cw.get('leverage', 1)))
                     qty_est = (use_usdt * lev / price) if price > 0 else 0.0
                     # FLIP_GUARD (optional via add_only): in one-way mode, avoid crossing zero and block opposite opens
@@ -1223,6 +1244,14 @@ class StrategyEngine:
                 }
                 if self.trade_cb:
                     self.trade_cb(order_info)
+                order_ok = True
+                if isinstance(order_res, dict):
+                    order_ok = bool(order_res.get('ok', True))
+                if signal_timestamp is not None and order_ok:
+                    latency = max(0.0, time.time() - signal_timestamp)
+                    self.log(
+                        f"{cw['symbol']}@{cw['interval']} signal→order latency: {latency*1000:.0f} ms ({latency:.3f}s)."
+                    )
                 self.log(f"{cw['symbol']}@{cw['interval']} Order placed: {order_res}")
             except Exception as e:
                 self.log(f"{cw['symbol']}@{cw['interval']} Order failed: {e}")
