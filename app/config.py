@@ -126,7 +126,7 @@ if "rsi" in DEFAULT_CONFIG["backtest"]["indicators"]:
 def normalize_stop_loss_dict(value):
     data = copy.deepcopy(STOP_LOSS_DEFAULT)
     if isinstance(value, dict):
-        for key in ("enabled", "mode", "usdt", "percent"):
+        for key in ("enabled", "mode", "usdt", "percent", "scope"):
             if key in value:
                 data[key] = value[key]
     data["enabled"] = bool(data.get("enabled", False))

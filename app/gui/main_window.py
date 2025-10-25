@@ -5393,7 +5393,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_mode_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_mode_changed)
         self.stop_loss_usdt_spin.valueChanged.connect(lambda v: self._on_runtime_stop_loss_value_changed("usdt", v))
         self.stop_loss_percent_spin.valueChanged.connect(lambda v: self._on_runtime_stop_loss_value_changed("percent", v))
-        self.stop_loss_scope_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_scope_changed)
+        self.stop_loss_scope_combo.currentTextChanged.connect(lambda _: self._on_runtime_stop_loss_scope_changed())
         self._update_runtime_stop_loss_widgets()
 
         scroll_layout.addWidget(strat_group)
@@ -5857,7 +5857,7 @@ class MainWindow(QtWidgets.QWidget):
 
         self.backtest_stop_loss_enable_cb.toggled.connect(self._on_backtest_stop_loss_enabled)
         self.backtest_stop_loss_mode_combo.currentIndexChanged.connect(self._on_backtest_stop_loss_mode_changed)
-        self.backtest_stop_loss_scope_combo.currentIndexChanged.connect(self._on_backtest_stop_loss_scope_changed)
+        self.backtest_stop_loss_scope_combo.currentTextChanged.connect(lambda _: self._on_backtest_stop_loss_scope_changed())
         self.backtest_stop_loss_usdt_spin.valueChanged.connect(lambda v: self._on_backtest_stop_loss_value_changed("usdt", v))
         self.backtest_stop_loss_percent_spin.valueChanged.connect(lambda v: self._on_backtest_stop_loss_value_changed("percent", v))
         self._update_backtest_stop_loss_widgets()
