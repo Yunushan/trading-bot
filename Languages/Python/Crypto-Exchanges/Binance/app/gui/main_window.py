@@ -310,6 +310,54 @@ BACKTEST_TEMPLATE_DEFINITIONS = {
             "source": "Futures",
         },
     },
+    "volume_last_week": {
+        "label": "Last 1 week · 2% per trade · 50 highest volume",
+        "intervals": [
+            "1m",
+            "3m",
+            "5m",
+            "10m",
+            "15m",
+            "20m",
+            "30m",
+            "1h",
+            "2h",
+            "3h",
+            "4h",
+            "6h",
+            "8h",
+            "12h",
+            "1d",
+        ],
+        "logic": "SEPARATE",
+        "position_pct": 2.0,
+        "side": "BOTH",
+        "loop_interval_override": "30s",
+        "stop_loss": {
+            "enabled": True,
+            "mode": "percent",
+            "percent": 20.0,
+            "scope": "per_trade",
+        },
+        "date_range": {"days": 7},
+        "indicators": {
+            "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
+            "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
+            "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
+        },
+        "margin_mode": "Isolated",
+        "position_mode": "Hedge",
+        "assets_mode": "Single-Asset",
+        "account_mode": "Classic Trading",
+        "leverage": 20,
+        "mdd_logic": "entire_account",
+        "connector_backend": "binance-connector",
+        "symbol_selection": {
+            "type": "top_volume",
+            "count": 50,
+            "source": "Futures",
+        },
+    },
 }
 
 CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
@@ -3074,8 +3122,8 @@ class MainWindow(QtWidgets.QWidget):
 
     def _backtest_dates_changed(self):
         try:
-            start_dt = self.backtest_start_edit.dateTime().toString("yyyy-MM-dd HH:mm")
-            end_dt = self.backtest_end_edit.dateTime().toString("yyyy-MM-dd HH:mm")
+            start_dt = self.backtest_start_edit.dateTime().toString("dd.MM.yyyy HH:mm:ss")
+            end_dt = self.backtest_end_edit.dateTime().toString("dd.MM.yyyy HH:mm:ss")
             self.backtest_config["start_date"] = start_dt
             self.backtest_config["end_date"] = end_dt
             cfg = self.config.setdefault("backtest", {})
@@ -3283,9 +3331,14 @@ class MainWindow(QtWidgets.QWidget):
                 self._update_backtest_stop_loss_widgets()
             date_range = template.get("date_range")
             if isinstance(date_range, dict):
-                months = int(date_range.get("months", 0) or 0)
                 now_dt = QtCore.QDateTime.currentDateTime()
-                start_dt = now_dt.addMonths(-months) if months else now_dt
+                start_dt = QtCore.QDateTime(now_dt)
+                months = int(date_range.get("months", 0) or 0)
+                days = int(date_range.get("days", 0) or 0)
+                if months:
+                    start_dt = start_dt.addMonths(-months)
+                if days:
+                    start_dt = start_dt.addDays(-days)
                 with QtCore.QSignalBlocker(self.backtest_end_edit):
                     self.backtest_end_edit.setDateTime(now_dt)
                 with QtCore.QSignalBlocker(self.backtest_start_edit):
@@ -3355,6 +3408,21 @@ class MainWindow(QtWidgets.QWidget):
             with QtCore.QSignalBlocker(self.backtest_leverage_spin):
                 self.backtest_leverage_spin.setValue(leverage_value)
             self._update_backtest_config("leverage", leverage_value)
+            connector_backend = template.get("connector_backend")
+            if connector_backend:
+                normalized_connector = _normalize_connector_backend(connector_backend)
+                combo = getattr(self, "backtest_connector_combo", None)
+                if combo is not None:
+                    idx_conn = combo.findData(normalized_connector)
+                    if idx_conn < 0:
+                        idx_conn = combo.findText(normalized_connector, QtCore.Qt.MatchFlag.MatchFixedString)
+                    if idx_conn < 0:
+                        idx_conn = combo.findText(normalized_connector)
+                    if idx_conn >= 0:
+                        with QtCore.QSignalBlocker(combo):
+                            combo.setCurrentIndex(idx_conn)
+                self.backtest_config["connector_backend"] = normalized_connector
+                self.config.setdefault("backtest", {})["connector_backend"] = normalized_connector
             template_mdd = template.get("mdd_logic")
             if template_mdd:
                 self._set_backtest_mdd_selection(template_mdd, update_config=True)
@@ -5937,10 +6005,10 @@ class MainWindow(QtWidgets.QWidget):
 
         self.backtest_start_edit = QtWidgets.QDateTimeEdit()
         self.backtest_start_edit.setCalendarPopup(True)
-        self.backtest_start_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.backtest_start_edit.setDisplayFormat("dd.MM.yyyy HH:mm:ss")
         self.backtest_end_edit = QtWidgets.QDateTimeEdit()
         self.backtest_end_edit.setCalendarPopup(True)
-        self.backtest_end_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.backtest_end_edit.setDisplayFormat("dd.MM.yyyy HH:mm:ss")
         self.backtest_start_edit.dateTimeChanged.connect(self._backtest_dates_changed)
         self.backtest_end_edit.dateTimeChanged.connect(self._backtest_dates_changed)
 
