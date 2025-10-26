@@ -166,6 +166,15 @@ if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
             self._spot = _OfficialSpotClient(api_key, api_secret, base_url=spot_base)
             self._futures = _OfficialFuturesHTTP(api_key, api_secret, base_url=futures_base)
             self._bw_throttled = True  # signals wrapper not to install extra throttler
+            self._bw_throttle = None
+
+        def _throttle(self, path: str | None) -> None:
+            cb = getattr(self, "_bw_throttle", None)
+            if callable(cb):
+                try:
+                    cb(path)
+                except Exception:
+                    pass
 
         def _call(self, func, *args, **kwargs):
             try:
@@ -180,15 +189,18 @@ if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
         def _call_futures(self, method: str, path: str, params=None, *, signed=False):
             payload = dict(params or {})
             http_method = (method or "GET").upper()
+            self._throttle(path)
             if signed:
                 return self._call(self._futures.sign_request, http_method, path, payload)
             return self._call(self._futures.send_request, http_method, path, payload)
 
         # Spot methods
         def get_account(self, **params):
+            self._throttle("/api/v3/account")
             return self._call(self._spot.account, **params)
 
         def get_symbol_info(self, symbol: str):
+            self._throttle("/api/v3/exchangeInfo")
             data = self._call(self._spot.exchange_info, symbol=symbol)
             symbols = (data or {}).get("symbols") if isinstance(data, dict) else None
             if symbols:
@@ -196,16 +208,20 @@ if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
             return None
 
         def get_exchange_info(self, **params):
+            self._throttle("/api/v3/exchangeInfo")
             return self._call(self._spot.exchange_info, **params)
 
         def get_symbol_ticker(self, **params):
+            self._throttle("/api/v3/ticker/price")
             return self._call(self._spot.ticker_price, **params)
 
         def get_klines(self, **params):
+            self._throttle("/api/v3/klines")
             return self._call(self._spot.klines, **params)
 
         def create_order(self, **params):
             payload = dict(params or {})
+            self._throttle("/api/v3/order")
             return self._call(self._spot.new_order, **payload)
 
         # Futures helpers
@@ -312,6 +328,19 @@ class BinanceWrapper:
             return 1.0
         return 2.0
 
+    def _throttle_request(self, path: str | None) -> None:
+        limiter = getattr(self, "_request_limiter", None)
+        if limiter is None:
+            return
+        try:
+            weight = self._estimate_request_weight(path)
+        except Exception:
+            weight = 1.0
+        try:
+            limiter.acquire(weight)
+        except Exception:
+            pass
+
     @staticmethod
     def _format_quantity_for_order(value: float, step: float | None = None) -> str:
         try:
@@ -374,19 +403,13 @@ class BinanceWrapper:
         client = getattr(self, "client", None)
         if not client or getattr(client, "_bw_throttled", False):
             return
-        limiter = self._request_limiter
-        estimate = self._estimate_request_weight
         try:
             original = client._request
         except AttributeError:
             return
 
         def throttled(_self, method, path, signed=False, force_params=False, **kwargs):
-            try:
-                weight = estimate(path)
-            except Exception:
-                weight = 1.0
-            limiter.acquire(weight)
+            self._throttle_request(path)
             return original(method, path, signed=signed, force_params=force_params, **kwargs)
 
         try:
@@ -807,6 +830,11 @@ class BinanceWrapper:
                 Client.API_URL = "https://api.binance.com/api"
 
         self.client = self._build_client()
+        try:
+            if hasattr(self.client, "_bw_throttled"):
+                setattr(self.client, "_bw_throttle", self._throttle_request)
+        except Exception:
+            pass
         self._install_request_throttler()
         self._symbol_info_cache_spot = {}
         self._symbol_info_cache_futures = None
