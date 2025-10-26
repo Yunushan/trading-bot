@@ -7242,12 +7242,14 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         mark = float(base_data.get("mark") or 0.0)
         entry_price = float(base_data.get("entry_price") or 0.0)
         leverage = int(base_data.get("leverage") or 0) if base_data.get("leverage") else 0
+        base_margin_ratio = normalize_margin_ratio(base_data.get("margin_ratio"))
 
         qty = base_qty
         margin = base_margin
         notional = base_size
         status_lower = str(status or "").strip().lower()
         pnl = base_pnl
+        margin_ratio = 0.0
 
         if allocation:
             try:
@@ -7282,6 +7284,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                     pnl = base_pnl
             if allocation.get("status"):
                 status_lower = str(allocation.get("status")).strip().lower()
+            margin_ratio = normalize_margin_ratio(allocation.get("margin_ratio"))
 
         qty = max(qty, 0.0)
         if notional <= 0:
@@ -7320,6 +7323,14 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         roi_percent = (pnl / margin * 100.0) if margin > 0 else base_roi
         pnl_roi = f"{pnl:+.2f} USDT ({roi_percent:+.2f}%)" if margin > 0 else f"{pnl:+.2f} USDT"
 
+        if margin_ratio <= 0.0:
+            margin_ratio = base_margin_ratio
+        if margin_ratio <= 0.0 and margin > 0:
+            margin_balance = margin + (pnl if pnl > 0 else 0.0)
+            if margin_balance > 0:
+                approx_ratio = (max(0.0, -pnl) / margin_balance) * 100.0
+                margin_ratio = approx_ratio
+
         data.update({
             "qty": qty,
             "margin_usdt": margin,
@@ -7327,6 +7338,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             "roi_percent": roi_percent,
             "pnl_roi": pnl_roi,
             "size_usdt": max(notional, 0.0),
+            "margin_ratio": max(margin_ratio, 0.0),
         })
         trigger_inds = []
         if allocation and isinstance(allocation.get("trigger_indicators"), (list, tuple, set)):
