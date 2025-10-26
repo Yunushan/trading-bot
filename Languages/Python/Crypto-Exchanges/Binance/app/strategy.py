@@ -563,7 +563,7 @@ class StrategyEngine:
                     qty = float(leg.get('qty', 0)) if leg else 0.0
                     if qty > 0:
                         desired_ps = ('LONG' if self.binance.get_futures_dual_side() else None)
-                        res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='BUY', position_side=desired_ps)
+                        res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='SELL', position_side=desired_ps)
                         if isinstance(res, dict) and res.get('ok'):
                             self._leg_ledger.pop(key_long, None)
                             try:
@@ -581,7 +581,7 @@ class StrategyEngine:
                     qty = float(leg.get('qty', 0)) if leg else 0.0
                     if qty > 0:
                         desired_ps = ('SHORT' if self.binance.get_futures_dual_side() else None)
-                        res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='SELL', position_side=desired_ps)
+                        res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='BUY', position_side=desired_ps)
                         if isinstance(res, dict) and res.get('ok'):
                             self._leg_ledger.pop(key_short, None)
                             try:
@@ -771,7 +771,7 @@ class StrategyEngine:
                     if not triggered:
                         continue
                     cumulative_triggered = True
-                    close_side = "BUY" if side_key == "LONG" else "SELL"
+                    close_side = "SELL" if side_key == "LONG" else "BUY"
                     position_side = side_key if dual_side else None
                     try:
                         res = self.binance.close_futures_leg_exact(
@@ -885,7 +885,7 @@ class StrategyEngine:
                         desired_ps = "LONG" if dual_side else None
                         try:
                             res = self.binance.close_futures_leg_exact(
-                                cw["symbol"], qty_long, side="BUY", position_side=desired_ps
+                                cw["symbol"], qty_long, side="SELL", position_side=desired_ps
                             )
                             if isinstance(res, dict) and res.get("ok"):
                                 self._leg_ledger.pop(key_long, None)
@@ -984,7 +984,7 @@ class StrategyEngine:
                         desired_ps = "SHORT" if dual_side else None
                         try:
                             res = self.binance.close_futures_leg_exact(
-                                cw["symbol"], qty_short, side="SELL", position_side=desired_ps
+                                cw["symbol"], qty_short, side="BUY", position_side=desired_ps
                             )
                             if isinstance(res, dict) and res.get("ok"):
                                 self._leg_ledger.pop(key_short, None)
