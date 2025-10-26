@@ -1138,20 +1138,32 @@ class StrategyEngine:
                         if not self.can_open_cb(cw['symbol'], cw.get('interval'), signal.upper()):
                             self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {signal.upper()} already open - skipping.")
                             return
-                    order_res = self.binance.place_futures_market_order(
-                        cw['symbol'], signal,
-                        percent_balance=(pct*100.0),
-                        leverage=lev,
-                        reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
-                        position_side=desired_ps,
-                        price=cw.get('price'),
-                        strict=True,
-                        timeInForce=self.config.get('tif','GTC'),
-                        gtd_minutes=int(self.config.get('gtd_minutes',30)),
-                        interval=cw.get('interval'),
-                        max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0)),
-                        auto_bump_percent_multiplier=float(self.config.get('auto_bump_percent_multiplier', 10.0)),
-                    )
+                    order_res = {}
+                    guard_side = signal.upper()
+                    order_success = False
+                    try:
+                        order_res = self.binance.place_futures_market_order(
+                            cw['symbol'], signal,
+                            percent_balance=(pct*100.0),
+                            leverage=lev,
+                            reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
+                            position_side=desired_ps,
+                            price=cw.get('price'),
+                            strict=True,
+                            timeInForce=self.config.get('tif','GTC'),
+                            gtd_minutes=int(self.config.get('gtd_minutes',30)),
+                            interval=cw.get('interval'),
+                            max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0)),
+                            auto_bump_percent_multiplier=float(self.config.get('auto_bump_percent_multiplier', 10.0)),
+                        )
+                        order_success = bool(order_res.get('ok', True))
+                    finally:
+                        guard_obj = getattr(self, "guard", None)
+                        if guard_obj and hasattr(guard_obj, "end_open"):
+                            try:
+                                guard_obj.end_open(cw['symbol'], cw.get('interval'), guard_side, order_success)
+                            except Exception:
+                                pass
                     # Emit trade callback (futures) for UI/guard
                     try:
                         qty_emit = float(order_res.get('computed',{}).get('qty') or 0.0)
