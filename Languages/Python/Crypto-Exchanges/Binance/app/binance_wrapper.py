@@ -446,7 +446,7 @@ class BinanceWrapper:
                 triggered = True
         if not triggered:
             return None
-        until = cls._extract_ban_until(msg)
+        until = self._extract_ban_until(msg)
         if until is None:
             retry_after = None
             try:

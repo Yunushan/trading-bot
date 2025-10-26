@@ -8794,24 +8794,25 @@ def _mw_trade_mux(self, evt: dict):
     except Exception:
         pass
 
-    def _mw_on_trade_signal(self, order_info: dict):
-        try:
-            connector_name = self._connector_label_text(self._runtime_connector_backend())
-        except Exception:
-            connector_name = "Unknown"
-        info_with_connector = dict(order_info or {})
-        info_with_connector.setdefault("connector", connector_name)
-        self.log(f"TRADE UPDATE [{connector_name}]: {info_with_connector}")
-        sym = order_info.get("symbol")
-        interval = order_info.get("interval")
-        side = order_info.get("side")
-        position_side = order_info.get("position_side") or side
-        event_type = str(order_info.get("event") or "").lower()
-        status = str(order_info.get("status") or "").lower()
-        ok_flag = order_info.get("ok")
-        side_for_key = position_side or side
-        side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
-        sym_upper = str(sym or "").strip().upper()
+
+def _mw_on_trade_signal(self, order_info: dict):
+    try:
+        connector_name = self._connector_label_text(self._runtime_connector_backend())
+    except Exception:
+        connector_name = "Unknown"
+    info_with_connector = dict(order_info or {})
+    info_with_connector.setdefault("connector", connector_name)
+    self.log(f"TRADE UPDATE [{connector_name}]: {info_with_connector}")
+    sym = order_info.get("symbol")
+    interval = order_info.get("interval")
+    side = order_info.get("side")
+    position_side = order_info.get("position_side") or side
+    event_type = str(order_info.get("event") or "").lower()
+    status = str(order_info.get("status") or "").lower()
+    ok_flag = order_info.get("ok")
+    side_for_key = position_side or side
+    side_key = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
+    sym_upper = str(sym or "").strip().upper()
 
     alloc_map = getattr(self, "_entry_allocations", None)
     if alloc_map is None:
