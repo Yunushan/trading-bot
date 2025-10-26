@@ -207,6 +207,48 @@ FOREX_BROKER_PATHS = {
     "IG": "Forex-Brokers/IG",
     "Forex.com": "Forex-Brokers/Forex.com",
 }
+MUTED_TEXT = "#94a3b8"
+
+STARTER_LANGUAGE_OPTIONS = [
+    {
+        "config_key": "Python (PyQt)",
+        "title": "Python",
+        "subtitle": "Fast to build - Huge ecosystem",
+        "accent": "#3b82f6",
+        "badge": "Recommended",
+    },
+    {
+        "config_key": "C++ (Qt/C++23)",
+        "title": "C++",
+        "subtitle": "Qt native - Max performance",
+        "accent": "#38bdf8",
+    },
+    {
+        "config_key": "Rust",
+        "title": "Rust",
+        "subtitle": "Memory safe - Near-C speed",
+        "accent": "#fb923c",
+    },
+]
+
+STARTER_MARKET_OPTIONS = [
+    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin...", "accent": "#34d399"},
+    {"key": "forex", "title": "Forex Exchange", "subtitle": "OANDA, FXCM, MetaTrader...", "accent": "#93c5fd"},
+]
+
+STARTER_CRYPTO_EXCHANGES = [
+    {"key": "Binance", "title": "Binance", "subtitle": "Advanced desktop bot ready to launch", "accent": "#fbbf24"},
+    {"key": "Bybit", "title": "Bybit", "subtitle": "Derivatives-focused - coming soon", "accent": "#fb7185"},
+    {"key": "OKX", "title": "OKX", "subtitle": "Options + spot - coming soon", "accent": "#a78bfa"},
+]
+
+STARTER_FOREX_BROKERS = [
+    {"key": "FXCM", "title": "FXCM", "subtitle": "Institutional-grade APIs and MT4 bridge", "accent": "#60a5fa"},
+    {"key": "Forex.com", "title": "Forex.com", "subtitle": "US-regulated CFD + FX access", "accent": "#f472b6"},
+    {"key": "IC Markets Global", "title": "IC Markets", "subtitle": "Tight spreads - multi-asset", "accent": "#f59e0b"},
+    {"key": "XM", "title": "XM", "subtitle": "MetaTrader specialist - micro lots", "accent": "#f97316"},
+    {"key": "IG", "title": "IG", "subtitle": "Global CFD giant - pro tooling", "accent": "#a3e635"},
+]
 
 BACKTEST_TEMPLATE_DEFINITIONS = {
     "volume_top50": {
@@ -469,6 +511,86 @@ def _normalize_indicator_values(raw) -> list[str]:
     return sorted(dict.fromkeys(items))
 
 
+class _StarterCard(QtWidgets.QFrame):
+    clicked = QtCore.pyqtSignal(str)
+
+    def __init__(
+        self,
+        option_key: str,
+        title: str,
+        subtitle: str,
+        accent_color: str,
+        badge_text: str | None = None,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.option_key = option_key
+        self._accent = accent_color
+        self._selected = False
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setObjectName(f"starter_card_{option_key.replace(' ', '_')}")
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.accent_bar = QtWidgets.QFrame()
+        self.accent_bar.setFixedHeight(4)
+        root.addWidget(self.accent_bar)
+
+        body = QtWidgets.QWidget()
+        body_layout = QtWidgets.QVBoxLayout(body)
+        body_layout.setContentsMargins(16, 16, 16, 16)
+        body_layout.setSpacing(8)
+        root.addWidget(body)
+
+        self.badge_label = QtWidgets.QLabel(badge_text or "")
+        self.badge_label.setStyleSheet(
+            "padding: 2px 8px; border-radius: 7px; font-size: 10px; font-weight: 600;"
+            "background-color: rgba(59, 130, 246, 0.15); color: #93c5fd;"
+        )
+        self.badge_label.setVisible(bool(badge_text))
+        body_layout.addWidget(self.badge_label, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+
+        self.title_label = QtWidgets.QLabel(title)
+        self.title_label.setStyleSheet("font-size: 20px; font-weight: 600;")
+        body_layout.addWidget(self.title_label)
+
+        self.subtitle_label = QtWidgets.QLabel(subtitle)
+        self.subtitle_label.setWordWrap(True)
+        self.subtitle_label.setStyleSheet(f"color: {MUTED_TEXT}; font-size: 12px;")
+        body_layout.addWidget(self.subtitle_label)
+        body_layout.addStretch()
+
+        self._refresh_style()
+
+    def setSelected(self, selected: bool) -> None:
+        self._selected = bool(selected)
+        self._refresh_style()
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.option_key)
+        super().mouseReleaseEvent(event)
+
+    def _refresh_style(self) -> None:
+        bg = "#1b2231" if self._selected else "#151926"
+        border = self._accent if self._selected else "#242b3d"
+        self.setStyleSheet(
+            f"""
+            QFrame#{self.objectName()} {{
+                background-color: {bg};
+                border: 2px solid {border};
+                border-radius: 16px;
+            }}
+            """
+        )
+        bar_color = self._accent if self._selected else "#1f2433"
+        self.accent_bar.setStyleSheet(
+            f"background-color: {bar_color}; border-top-left-radius: 16px; border-top-right-radius: 16px;"
+        )
+
+
 def _normalize_datetime_pair(value) -> tuple[str, str]:
     """
     Convert various datetime representations into (iso_string, display_string).
@@ -616,9 +738,9 @@ class _PositionsWorker(QtCore.QObject):
             iso_wallet = float(p.get('isolatedWallet') or 0.0)
             isolated_margin = float(p.get('isolatedMargin') or 0.0)
             initial_margin = float(p.get('initialMargin') or 0.0)
-            margin = isolated_margin if isolated_margin > 0.0 else initial_margin
+            margin = isolated_margin
             if margin <= 0.0:
-                margin = iso_wallet if iso_wallet > 0.0 else initial_margin
+                margin = iso_wallet
             if margin <= 0.0 and entry_price > 0.0 and lev > 0:
                 margin = abs(amt) * entry_price / max(lev, 1)
             if margin <= 0.0 and lev > 0 and size_usdt > 0.0:
@@ -907,7 +1029,10 @@ class MainWindow(QtWidgets.QWidget):
         self.config["connector_backend"] = _normalize_connector_backend(self.config.get("connector_backend"))
         self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
         self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
+        self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
+        self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
         self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
+        self.config.setdefault("code_market", "crypto")
         self.strategy_threads = {}
         self.shared_binance = None
         self.stop_worker = None
@@ -1052,6 +1177,11 @@ class MainWindow(QtWidgets.QWidget):
         self.language_combo = None
         self.exchange_combo = None
         self.forex_combo = None
+        self._starter_language_cards = {}
+        self._starter_market_cards = {}
+        self._starter_crypto_cards = {}
+        self._starter_forex_cards = {}
+        self._code_tab_selected_market = self.config.get("code_market") or "crypto"
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
@@ -6200,33 +6330,74 @@ def _init_code_language_tab(self):
     description.setWordWrap(True)
     layout.addWidget(description)
 
-    lists_layout = QtWidgets.QHBoxLayout()
-    lists_layout.setSpacing(12)
-    layout.addLayout(lists_layout)
+    self._starter_language_cards: dict[str, _StarterCard] = {}
+    self._starter_market_cards: dict[str, _StarterCard] = {}
+    self._starter_crypto_cards: dict[str, _StarterCard] = {}
+    self._starter_forex_cards: dict[str, _StarterCard] = {}
 
-    language_group = QtWidgets.QGroupBox("Code Languages")
-    lang_layout = QtWidgets.QVBoxLayout(language_group)
-    self.language_combo = QtWidgets.QComboBox()
-    self.language_combo.addItems(list(LANGUAGE_PATHS.keys()))
-    self.language_combo.currentTextChanged.connect(self._on_code_language_changed)
-    lang_layout.addWidget(self.language_combo)
-    lists_layout.addWidget(language_group)
+    lang_label = QtWidgets.QLabel("Choose your language")
+    lang_label.setStyleSheet("font-size: 20px; font-weight: 600;")
+    layout.addWidget(lang_label)
+    lang_row = QtWidgets.QHBoxLayout()
+    lang_row.setSpacing(12)
+    for opt in STARTER_LANGUAGE_OPTIONS:
+        card = _StarterCard(
+            opt["config_key"], opt["title"], opt["subtitle"], opt["accent"], opt.get("badge")
+        )
+        card.clicked.connect(self._code_tab_select_language)
+        card.setMinimumWidth(180)
+        lang_row.addWidget(card, 1)
+        self._starter_language_cards[opt["config_key"]] = card
+    lang_row.addStretch()
+    layout.addLayout(lang_row)
 
-    exchange_group = QtWidgets.QGroupBox("Crypto Exchanges")
-    exchange_layout = QtWidgets.QVBoxLayout(exchange_group)
-    self.exchange_combo = QtWidgets.QComboBox()
-    self.exchange_combo.addItems(list(EXCHANGE_PATHS.keys()))
-    self.exchange_combo.currentTextChanged.connect(self._on_exchange_selection_changed)
-    exchange_layout.addWidget(self.exchange_combo)
-    lists_layout.addWidget(exchange_group)
+    market_label = QtWidgets.QLabel("Choose your market")
+    market_label.setStyleSheet("font-size: 20px; font-weight: 600;")
+    layout.addWidget(market_label)
+    market_row = QtWidgets.QHBoxLayout()
+    market_row.setSpacing(12)
+    for opt in STARTER_MARKET_OPTIONS:
+        card = _StarterCard(opt["key"], opt["title"], opt["subtitle"], opt["accent"])
+        card.clicked.connect(self._code_tab_select_market)
+        card.setMinimumWidth(220)
+        market_row.addWidget(card, 1)
+        self._starter_market_cards[opt["key"]] = card
+    market_row.addStretch()
+    layout.addLayout(market_row)
 
-    forex_group = QtWidgets.QGroupBox("Forex Brokers")
-    forex_layout = QtWidgets.QVBoxLayout(forex_group)
-    self.forex_combo = QtWidgets.QComboBox()
-    self.forex_combo.addItems(list(FOREX_BROKER_PATHS.keys()))
-    self.forex_combo.currentTextChanged.connect(self._on_forex_selection_changed)
-    forex_layout.addWidget(self.forex_combo)
-    lists_layout.addWidget(forex_group)
+    self._crypto_section_label = QtWidgets.QLabel("Crypto exchanges")
+    self._crypto_section_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+    layout.addWidget(self._crypto_section_label)
+    self._crypto_cards_widget = QtWidgets.QWidget()
+    crypto_layout = QtWidgets.QHBoxLayout(self._crypto_cards_widget)
+    crypto_layout.setSpacing(12)
+    for opt in STARTER_CRYPTO_EXCHANGES:
+        if opt["key"] not in EXCHANGE_PATHS:
+            continue
+        card = _StarterCard(opt["key"], opt["title"], opt["subtitle"], opt["accent"])
+        card.clicked.connect(self._code_tab_select_exchange)
+        card.setMinimumWidth(200)
+        crypto_layout.addWidget(card, 1)
+        self._starter_crypto_cards[opt["key"]] = card
+    crypto_layout.addStretch()
+    layout.addWidget(self._crypto_cards_widget)
+
+    self._forex_section_label = QtWidgets.QLabel("Forex brokers")
+    self._forex_section_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+    layout.addWidget(self._forex_section_label)
+    self._forex_cards_widget = QtWidgets.QWidget()
+    forex_cards_layout = QtWidgets.QHBoxLayout(self._forex_cards_widget)
+    forex_cards_layout.setSpacing(12)
+    for opt in STARTER_FOREX_BROKERS:
+        if opt["key"] not in FOREX_BROKER_PATHS:
+            continue
+        card = _StarterCard(opt["key"], opt["title"], opt["subtitle"], opt["accent"])
+        card.clicked.connect(self._code_tab_select_forex)
+        card.setMinimumWidth(200)
+        forex_cards_layout.addWidget(card, 1)
+        self._starter_forex_cards[opt["key"]] = card
+    forex_cards_layout.addStretch()
+    layout.addWidget(self._forex_cards_widget)
 
     status_widget = QtWidgets.QWidget()
     status_layout = QtWidgets.QHBoxLayout(status_widget)
@@ -6243,14 +6414,73 @@ def _init_code_language_tab(self):
 
     layout.addStretch()
 
-    try:
-        self._runtime_lock_widgets.extend([self.language_combo, self.exchange_combo, self.forex_combo])
-    except Exception:
-        pass
-
     self._sync_language_exchange_lists_from_config()
     self._update_bot_status()
+    self._refresh_code_tab_from_config()
     return tab
+
+def _code_tab_select_language(self, config_key: str) -> None:
+    if config_key not in LANGUAGE_PATHS:
+        return
+    self.config["code_language"] = config_key
+    self._refresh_code_tab_from_config()
+    self._ensure_language_exchange_paths()
+
+
+def _code_tab_select_market(self, market_key: str) -> None:
+    if market_key not in {"crypto", "forex"}:
+        return
+    self.config["code_market"] = market_key
+    self._code_tab_selected_market = market_key
+    self._refresh_code_tab_from_config()
+    self._ensure_language_exchange_paths()
+
+
+def _code_tab_select_exchange(self, exchange_key: str) -> None:
+    if exchange_key not in EXCHANGE_PATHS:
+        return
+    self.config["selected_exchange"] = exchange_key
+    self._refresh_code_tab_from_config()
+    self._ensure_language_exchange_paths()
+
+
+def _code_tab_select_forex(self, broker_key: str) -> None:
+    if broker_key not in FOREX_BROKER_PATHS:
+        return
+    self.config["selected_forex_broker"] = broker_key
+    self._code_tab_selected_market = "forex"
+    self.config["code_market"] = "forex"
+    self._refresh_code_tab_from_config()
+    self._ensure_language_exchange_paths()
+
+
+def _refresh_code_tab_from_config(self) -> None:
+    lang_key = self.config.get("code_language")
+    for key, card in getattr(self, "_starter_language_cards", {}).items():
+        card.setSelected(key == lang_key)
+    market = self.config.get("code_market") or "crypto"
+    self._code_tab_selected_market = market
+    for key, card in getattr(self, "_starter_market_cards", {}).items():
+        card.setSelected(key == market)
+    selected_exchange = self.config.get("selected_exchange")
+    for key, card in getattr(self, "_starter_crypto_cards", {}).items():
+        card.setSelected(key == selected_exchange)
+    selected_forex = self.config.get("selected_forex_broker")
+    for key, card in getattr(self, "_starter_forex_cards", {}).items():
+        card.setSelected(key == selected_forex)
+    self._update_code_tab_market_sections()
+
+
+def _update_code_tab_market_sections(self) -> None:
+    market = getattr(self, "_code_tab_selected_market", "crypto")
+    show_crypto = market == "crypto"
+    show_forex = market == "forex"
+    for widget in (getattr(self, "_crypto_section_label", None), getattr(self, "_crypto_cards_widget", None)):
+        if widget is not None:
+            widget.setVisible(show_crypto)
+    for widget in (getattr(self, "_forex_section_label", None), getattr(self, "_forex_cards_widget", None)):
+        if widget is not None:
+            widget.setVisible(show_forex)
 
 
 def _sync_language_exchange_lists_from_config(self):
@@ -6275,6 +6505,7 @@ def _sync_language_exchange_lists_from_config(self):
             if idx >= 0:
                 widget.setCurrentIndex(idx)
     self._ensure_language_exchange_paths()
+    self._refresh_code_tab_from_config()
 
 
 def _ensure_language_exchange_paths(self):
@@ -8225,6 +8456,12 @@ try:
     MainWindow._on_code_language_changed = _on_code_language_changed
     MainWindow._on_exchange_selection_changed = _on_exchange_selection_changed
     MainWindow._on_forex_selection_changed = _on_forex_selection_changed
+    MainWindow._code_tab_select_language = _code_tab_select_language
+    MainWindow._code_tab_select_market = _code_tab_select_market
+    MainWindow._code_tab_select_exchange = _code_tab_select_exchange
+    MainWindow._code_tab_select_forex = _code_tab_select_forex
+    MainWindow._refresh_code_tab_from_config = _refresh_code_tab_from_config
+    MainWindow._update_code_tab_market_sections = _update_code_tab_market_sections
 except Exception:
     pass
 try:

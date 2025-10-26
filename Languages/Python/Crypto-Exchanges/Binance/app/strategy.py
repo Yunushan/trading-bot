@@ -665,6 +665,8 @@ class StrategyEngine:
 
             leg_long, qty_long, entry_price_long, pos_long = _ensure_entry_price(key_long, True)
             leg_short, qty_short, entry_price_short, pos_short = _ensure_entry_price(key_short, False)
+            pos_long_qty_total = 0.0
+            pos_short_qty_total = 0.0
 
             if qty_long <= 0.0 and pos_long:
                 try:
@@ -674,6 +676,12 @@ class StrategyEngine:
                 if qty_long > 0.0 and leg_long is not None:
                     leg_long["qty"] = qty_long
                     self._leg_ledger[key_long] = leg_long
+            if pos_long:
+                try:
+                    amt_val = float(pos_long.get("positionAmt") or 0.0)
+                    pos_long_qty_total = abs(amt_val)
+                except Exception:
+                    pos_long_qty_total = 0.0
             if qty_short <= 0.0 and pos_short:
                 try:
                     qty_short = abs(float(pos_short.get("positionAmt") or 0.0))
@@ -682,6 +690,12 @@ class StrategyEngine:
                 if qty_short > 0.0 and leg_short is not None:
                     leg_short["qty"] = qty_short
                     self._leg_ledger[key_short] = leg_short
+            if pos_short:
+                try:
+                    amt_val = float(pos_short.get("positionAmt") or 0.0)
+                    pos_short_qty_total = abs(amt_val)
+                except Exception:
+                    pos_short_qty_total = 0.0
 
             if is_cumulative:
                 if positions_cache is None:
@@ -810,10 +824,28 @@ class StrategyEngine:
                     denom_long = entry_price_long * qty_long
                     loss_pct_long = (loss_usdt_long / denom_long * 100.0) if denom_long > 0 else 0.0
                     ratio_long = normalize_margin_ratio((pos_long or {}).get("marginRatio"))
+                    if ratio_long <= 0.0 and pos_long:
+                        try:
+                            margin_balance_long = float(pos_long.get("marginBalance") or 0.0)
+                        except Exception:
+                            margin_balance_long = 0.0
+                        if margin_balance_long <= 0.0 and margin_long:
+                            margin_balance_long = margin_long + float(pos_long.get("unRealizedProfit") or 0.0)
+                        try:
+                            mm_long = float(pos_long.get("maintMargin") or pos_long.get("maintenanceMargin") or 0.0)
+                        except Exception:
+                            mm_long = 0.0
+                        unrealized_loss_long = max(0.0, -float(pos_long.get("unRealizedProfit") or 0.0))
+                        if margin_balance_long > 0.0:
+                            ratio_long = ((mm_long + unrealized_loss_long) / margin_balance_long) * 100.0
                     margin_long = None
                     if pos_long:
                         try:
-                            margin_long = float(pos_long.get("isolatedWallet") or 0.0)
+                            margin_long = float(
+                                pos_long.get("isolatedMargin")
+                                or pos_long.get("isolatedWallet")
+                                or 0.0
+                            )
                         except Exception:
                             margin_long = 0.0
                         if not margin_long:
@@ -831,7 +863,11 @@ class StrategyEngine:
                                 margin_long = 0.0
                     if margin_long and margin_long > 0.0:
                         try:
-                            margin_pct = (loss_usdt_long / margin_long) * 100.0
+                            margin_share = margin_long
+                            if pos_long_qty_total > 0.0 and qty_long > 0.0:
+                                share = min(1.0, qty_long / pos_long_qty_total)
+                                margin_share = max(margin_long * share, 1e-12)
+                            margin_pct = (loss_usdt_long / margin_share) * 100.0
                             if margin_pct > loss_pct_long:
                                 loss_pct_long = margin_pct
                         except Exception:
@@ -887,10 +923,28 @@ class StrategyEngine:
                     denom_short = entry_price_short * qty_short
                     loss_pct_short = (loss_usdt_short / denom_short * 100.0) if denom_short > 0 else 0.0
                     ratio_short = normalize_margin_ratio((pos_short or {}).get("marginRatio"))
+                    if ratio_short <= 0.0 and pos_short:
+                        try:
+                            margin_balance_short = float(pos_short.get("marginBalance") or 0.0)
+                        except Exception:
+                            margin_balance_short = 0.0
+                        if margin_balance_short <= 0.0 and margin_short:
+                            margin_balance_short = margin_short + float(pos_short.get("unRealizedProfit") or 0.0)
+                        try:
+                            mm_short = float(pos_short.get("maintMargin") or pos_short.get("maintenanceMargin") or 0.0)
+                        except Exception:
+                            mm_short = 0.0
+                        unrealized_loss_short_val = max(0.0, -float(pos_short.get("unRealizedProfit") or 0.0))
+                        if margin_balance_short > 0.0:
+                            ratio_short = ((mm_short + unrealized_loss_short_val) / margin_balance_short) * 100.0
                     margin_short = None
                     if pos_short:
                         try:
-                            margin_short = float(pos_short.get("isolatedWallet") or 0.0)
+                            margin_short = float(
+                                pos_short.get("isolatedMargin")
+                                or pos_short.get("isolatedWallet")
+                                or 0.0
+                            )
                         except Exception:
                             margin_short = 0.0
                         if not margin_short:
@@ -908,7 +962,11 @@ class StrategyEngine:
                                 margin_short = 0.0
                     if margin_short and margin_short > 0.0:
                         try:
-                            margin_pct = (loss_usdt_short / margin_short) * 100.0
+                            margin_share = margin_short
+                            if pos_short_qty_total > 0.0 and qty_short > 0.0:
+                                share = min(1.0, qty_short / pos_short_qty_total)
+                                margin_share = max(margin_short * share, 1e-12)
+                            margin_pct = (loss_usdt_short / margin_share) * 100.0
                             if margin_pct > loss_pct_short:
                                 loss_pct_short = margin_pct
                         except Exception:

@@ -215,7 +215,9 @@ class StarterWindow(QtWidgets.QWidget):
         self.status_label.setStyleSheet(f"color: {MUTED_TEXT}; font-size: 13px;")
         outer.addWidget(self.status_label)
 
+        self._allow_language_auto_advance = False
         self._update_language_selection("python")
+        self._allow_language_auto_advance = True
         self._update_nav_state()
 
     @staticmethod
@@ -343,7 +345,8 @@ class StarterWindow(QtWidgets.QWidget):
     def _update_language_selection(self, key: str) -> None:
         if key not in self.language_cards:
             return
-        auto_advance = self.stack.currentIndex() == 0
+        allow_auto = getattr(self, "_allow_language_auto_advance", True)
+        auto_advance = (self.stack.currentIndex() == 0) and allow_auto
         self.selected_language = key
         for card_key, card in self.language_cards.items():
             card.setSelected(card_key == key)
