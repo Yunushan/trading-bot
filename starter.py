@@ -9,6 +9,28 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 BASE_DIR = Path(__file__).resolve().parent
 BINANCE_MAIN = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance" / "main.py"
+APP_ICON_BASENAME = "crypto_forex_logo"
+APP_ICON_PATH = BASE_DIR / "assets" / f"{APP_ICON_BASENAME}.ico"
+APP_ICON_FALLBACK = BASE_DIR / "assets" / f"{APP_ICON_BASENAME}.png"
+WINDOWS_APP_ID = "com.tradingbot.starter"
+
+
+def _load_app_icon() -> QtGui.QIcon | None:
+    for path in (APP_ICON_PATH, APP_ICON_FALLBACK):
+        if path.is_file():
+            return QtGui.QIcon(str(path))
+    return None
+
+
+def _ensure_windows_app_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:  # pragma: no cover - Windows only
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+    except Exception:
+        pass
 
 LANGUAGE_OPTIONS = [
     {
@@ -129,7 +151,7 @@ class SelectableCard(QtWidgets.QFrame):
 
 
 class StarterWindow(QtWidgets.QWidget):
-    def __init__(self) -> None:
+    def __init__(self, app_icon: QtGui.QIcon | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Trading Bot Starter")
         self.resize(1100, 720)
@@ -137,10 +159,21 @@ class StarterWindow(QtWidgets.QWidget):
             f"background-color: {WINDOW_BG}; color: {TEXT_COLOR};"
             "font-family: 'Segoe UI', 'Inter', 'Helvetica Neue', sans-serif;"
         )
+        if app_icon is not None:
+            self.setWindowIcon(app_icon)
 
         self.selected_language = "python"
         self.selected_market: str | None = None
         self.selected_exchange: str | None = None
+        self._is_launching = False
+        self._bot_ready = False
+        self._active_bot_process: subprocess.Popen[str] | None = None
+        self._launch_status_timer = QtCore.QTimer(self)
+        self._launch_status_timer.setSingleShot(True)
+        self._launch_status_timer.timeout.connect(self._mark_bot_ready)
+        self._process_watch_timer = QtCore.QTimer(self)
+        self._process_watch_timer.setInterval(1000)
+        self._process_watch_timer.timeout.connect(self._monitor_bot_process)
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(40, 32, 40, 32)
@@ -310,11 +343,15 @@ class StarterWindow(QtWidgets.QWidget):
     def _update_language_selection(self, key: str) -> None:
         if key not in self.language_cards:
             return
+        auto_advance = self.stack.currentIndex() == 0
         self.selected_language = key
         for card_key, card in self.language_cards.items():
             card.setSelected(card_key == key)
-        self._update_status_message()
-        self._update_nav_state()
+        if auto_advance:
+            self._show_market_page()
+        else:
+            self._update_status_message()
+            self._update_nav_state()
 
     def _update_market_selection(self, key: str) -> None:
         if key not in self.market_cards:
@@ -338,17 +375,23 @@ class StarterWindow(QtWidgets.QWidget):
             card.setSelected(card_key == key)
         self._update_status_message()
         self._update_nav_state()
+        if self._can_launch_selected() and not self._is_launching:
+            QtCore.QTimer.singleShot(100, self.launch_selected_bot)
+
+    def _show_market_page(self) -> None:
+        self.stack.setCurrentIndex(1)
+        self._update_nav_state()
+        self._update_status_message()
 
     def _go_back(self) -> None:
         if self.stack.currentIndex() == 1:
             self.stack.setCurrentIndex(0)
             self._update_nav_state()
+            self._update_status_message()
 
     def _on_primary_clicked(self) -> None:
         if self.stack.currentIndex() == 0:
-            self.stack.setCurrentIndex(1)
-            self._update_nav_state()
-            self._update_status_message()
+            self._show_market_page()
             return
         if self._can_launch_selected():
             self.launch_selected_bot()
@@ -362,12 +405,48 @@ class StarterWindow(QtWidgets.QWidget):
             self.primary_button.setText("Next")
             self.primary_button.setEnabled(True)
         else:
-            self.primary_button.setText("Launch Selected Bot")
-            self.primary_button.setEnabled(self._can_launch_selected())
+            if self._is_launching:
+                if self._bot_ready:
+                    self.primary_button.setText("Bot running (close to relaunch)")
+                else:
+                    self.primary_button.setText("Bot is starting...")
+                self.primary_button.setEnabled(False)
+            else:
+                self.primary_button.setText("Launch Selected Bot")
+                self.primary_button.setEnabled(self._can_launch_selected())
+
+    def _set_launch_in_progress(self, launching: bool) -> None:
+        self._is_launching = launching
+        if not launching:
+            self._bot_ready = False
+        self._update_nav_state()
+
+    def _mark_bot_ready(self) -> None:
+        if self._active_bot_process and self._active_bot_process.poll() is None:
+            self._bot_ready = True
+            self.status_label.setText("Binance bot is running. Close it to launch again.")
+            self._update_nav_state()
+
+    def _monitor_bot_process(self) -> None:
+        if not self._active_bot_process:
+            self._process_watch_timer.stop()
+            return
+        if self._active_bot_process.poll() is not None:
+            self._reset_launch_tracking()
+            self.status_label.setText("Binance bot closed. Launch it again anytime.")
+
+    def _reset_launch_tracking(self) -> None:
+        self._launch_status_timer.stop()
+        self._process_watch_timer.stop()
+        self._active_bot_process = None
+        self._bot_ready = False
+        self._set_launch_in_progress(False)
 
     def _update_status_message(self) -> None:
         if self.stack.currentIndex() == 0:
             self.status_label.setText("Python stays selected by default. Pick another language if needed.")
+            return
+        if self._is_launching:
             return
         if self.selected_market != "crypto":
             self.status_label.setText("Select 'Crypto Exchange' to reveal supported exchanges (Forex coming soon).")
@@ -394,6 +473,9 @@ class StarterWindow(QtWidgets.QWidget):
     def launch_selected_bot(self) -> None:
         if not self._can_launch_selected():
             return
+        if self._active_bot_process and self._active_bot_process.poll() is None:
+            self.status_label.setText("Binance bot is already running. Close it to relaunch.")
+            return
         if not BINANCE_MAIN.is_file():
             QtWidgets.QMessageBox.critical(
                 self,
@@ -401,17 +483,32 @@ class StarterWindow(QtWidgets.QWidget):
                 f"Could not find {BINANCE_MAIN}. Make sure the repository is intact.",
             )
             return
+        self._launch_status_timer.stop()
+        self._bot_ready = False
+        self._set_launch_in_progress(True)
+        self.status_label.setText("Bot is starting... Opening the Binance workspace.")
         try:
-            subprocess.Popen([sys.executable, str(BINANCE_MAIN)], cwd=str(BINANCE_MAIN.parent))
-            self.status_label.setText("Binance bot launched. Check the new window to continue.")
+            self._active_bot_process = subprocess.Popen(
+                [sys.executable, str(BINANCE_MAIN)],
+                cwd=str(BINANCE_MAIN.parent),
+            )
         except Exception as exc:  # pragma: no cover - UI only
+            self._reset_launch_tracking()
             QtWidgets.QMessageBox.critical(self, "Launch failed", str(exc))
+            self._update_status_message()
+            return
+        self._process_watch_timer.start()
+        self._launch_status_timer.start(2000)
 
 
 def main() -> None:
+    _ensure_windows_app_id()
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Trading Bot Starter")
-    window = StarterWindow()
+    app_icon = _load_app_icon()
+    if app_icon is not None:
+        app.setWindowIcon(app_icon)
+    window = StarterWindow(app_icon=app_icon)
     window.show()
     sys.exit(app.exec())
 

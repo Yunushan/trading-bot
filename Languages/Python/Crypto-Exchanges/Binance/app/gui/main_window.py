@@ -181,7 +181,7 @@ else:
 
 LANGUAGE_PATHS = {
     "Python (PyQt)": "Languages/Python",
-    "C++ (Qt/C++23)": "Languages/C++23",
+    "C++ (Qt/C++23)": "Languages/C++",
     "C": "Languages/C",
     "Rust": "Languages/Rust",
 }
@@ -201,11 +201,11 @@ EXCHANGE_PATHS = {
 }
 
 FOREX_BROKER_PATHS = {
-    "FXCM": "ForexBrokers/FXCM",
-    "XM": "ForexBrokers/XM",
-    "IC Markets Global": "ForexBrokers/IC Markets Global",
-    "IG": "ForexBrokers/IG",
-    "Forex.com": "ForexBrokers/Forex.com",
+    "FXCM": "Forex-Brokers/FXCM",
+    "XM": "Forex-Brokers/XM",
+    "IC Markets Global": "Forex-Brokers/IC Markets Global",
+    "IG": "Forex-Brokers/IG",
+    "Forex.com": "Forex-Brokers/Forex.com",
 }
 
 BACKTEST_TEMPLATE_DEFINITIONS = {
