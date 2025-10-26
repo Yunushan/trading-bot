@@ -268,9 +268,10 @@ else:
 
 class BinanceWrapper:
 
-    _request_limiter = _SimpleRateLimiter()
+    _limiter_lock = threading.Lock()
+    _limiter_pool = {}
     _ban_state_lock = threading.Lock()
-    _ban_until_epoch = 0.0
+    _ban_until_epoch = {}
 
     def _log(self, msg: str, lvl: str = "info"):
         """
@@ -330,6 +331,45 @@ class BinanceWrapper:
                 return f"{float(value):.8f}".rstrip("0").rstrip(".")
             except Exception:
                 return "0"
+
+    @staticmethod
+    def _environment_tag(mode_value: str | None) -> str:
+        text = str(mode_value or "").lower()
+        return "testnet" if any(tag in text for tag in ("test", "demo")) else "live"
+
+    @staticmethod
+    def _account_tag(account_value: str | None) -> str:
+        text = str(account_value or "").upper()
+        return "spot" if text.startswith("SPOT") else "futures"
+
+    @classmethod
+    def _limiter_settings_for(cls, env_tag: str, acct_tag: str) -> dict:
+        if env_tag == "testnet":
+            # Binance testnet enforces much lower throughput; stay very conservative.
+            return {"max_per_minute": 180.0, "min_interval": 0.65, "safety_margin": 0.8}
+        if acct_tag == "spot":
+            return {"max_per_minute": 900.0, "min_interval": 0.25, "safety_margin": 0.85}
+        # Live futures default
+        return {"max_per_minute": 1100.0, "min_interval": 0.2, "safety_margin": 0.9}
+
+    @classmethod
+    def _acquire_rate_limiter(cls, key: str, settings: dict) -> _SimpleRateLimiter:
+        with cls._limiter_lock:
+            limiter = cls._limiter_pool.get(key)
+            if limiter is None:
+                limiter = _SimpleRateLimiter(
+                    max_per_minute=settings.get("max_per_minute", 600.0),
+                    min_interval=settings.get("min_interval", 0.25),
+                    safety_margin=settings.get("safety_margin", 0.85),
+                )
+                cls._limiter_pool[key] = limiter
+            return limiter
+
+    def _ban_key(self) -> str:
+        try:
+            return getattr(self, "_limiter_key", None) or "global"
+        except Exception:
+            return "global"
     def _install_request_throttler(self) -> None:
         client = getattr(self, "client", None)
         if not client or getattr(client, "_bw_throttled", False):
@@ -355,18 +395,20 @@ class BinanceWrapper:
         except Exception as exc:
             self._log(f"Failed to attach rate limiter: {exc}", lvl="warn")
 
-    @classmethod
-    def _register_ban_until(cls, until_epoch: float | None) -> None:
+    def _register_ban_until(self, until_epoch: float | None) -> None:
         if not until_epoch or until_epoch != until_epoch:
             return
-        with cls._ban_state_lock:
-            if until_epoch > cls._ban_until_epoch:
-                cls._ban_until_epoch = until_epoch
+        key = self._ban_key()
+        with self._ban_state_lock:
+            current = self._ban_until_epoch.get(key, 0.0)
+            if until_epoch > current:
+                self._ban_until_epoch[key] = until_epoch
 
-    @classmethod
-    def _seconds_until_unban(cls) -> float:
-        with cls._ban_state_lock:
-            remaining = cls._ban_until_epoch - time.time()
+    def _seconds_until_unban(self) -> float:
+        key = self._ban_key()
+        with self._ban_state_lock:
+            until = self._ban_until_epoch.get(key, 0.0)
+        remaining = until - time.time()
         return remaining if remaining > 0 else 0.0
 
     @staticmethod
@@ -388,8 +430,7 @@ class BinanceWrapper:
             return time.time() + max(float(match.group(1)), 0.0)
         return None
 
-    @classmethod
-    def _handle_potential_ban(cls, exc) -> float | None:
+    def _handle_potential_ban(self, exc) -> float | None:
         try:
             code = getattr(exc, "code", None)
             status = getattr(exc, "status_code", None)
@@ -421,10 +462,12 @@ class BinanceWrapper:
                     until = None
         if until is None:
             until = time.time() + 8.0
-        cls._register_ban_until(until)
+        self._register_ban_until(until)
         remaining = max(0.0, until - time.time())
         try:
-            cls._request_limiter.pause_for(remaining + 3.0)
+            limiter = getattr(self, "_request_limiter", None)
+            if limiter is not None:
+                limiter.pause_for(remaining + 3.0)
         except Exception:
             pass
         return until
@@ -745,6 +788,11 @@ class BinanceWrapper:
         self._futures_max_leverage_cache = {}
         self._leverage_cap_notified = set()
         self._connector_backend = _normalize_connector_choice(connector_backend)
+        env_tag = self._environment_tag(self.mode)
+        acct_tag = self._account_tag(self.account_type)
+        self._limiter_key = f"{env_tag}:{acct_tag}"
+        limiter_settings = self._limiter_settings_for(env_tag, acct_tag)
+        self._request_limiter = self._acquire_rate_limiter(self._limiter_key, limiter_settings)
 
         # Set base URLs BEFORE creating Client
         if "demo" in self.mode.lower() or "test" in self.mode.lower():

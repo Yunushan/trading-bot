@@ -737,7 +737,7 @@ class _PositionsWorker(QtCore.QObject):
                         sym = f"{asset}{base}"
                         if self._symbols and sym not in self._symbols:
                             continue
-                        last = float(self._wrapper.get_last_price(sym) or 0.0)
+                        last = float(self._wrapper.get_last_price(sym, max_age=8.0) or 0.0)
                         if last <= 0.0:
                             continue
                         value = total * last
@@ -5588,6 +5588,10 @@ class MainWindow(QtWidgets.QWidget):
         self._closed_position_records = []
         self._engine_indicator_map = {}
         self._positions_view_mode = "cumulative"
+        try:
+            self._pos_refresh_interval_ms = int(self.config.get("positions_refresh_interval_ms", 5000) or 5000)
+        except Exception:
+            self._pos_refresh_interval_ms = 5000
 
 
         # ---------------- Positions tab ----------------
@@ -8159,7 +8163,7 @@ def refresh_positions(self, symbols=None, *args, **kwargs):
         except Exception:
             pass
         try:
-            self.req_pos_start.emit(5000)
+            self.trigger_positions_refresh()
         except Exception:
             pass
         self.log("Positions refresh requested.")
@@ -8168,6 +8172,38 @@ def refresh_positions(self, symbols=None, *args, **kwargs):
             self.log(f"Refresh positions error: {e}")
         except Exception:
             pass
+
+
+def _apply_positions_refresh_settings(self):
+    try:
+        raw_val = self.config.get("positions_refresh_interval_ms", getattr(self, "_pos_refresh_interval_ms", 5000))
+        try:
+            interval = int(raw_val)
+        except Exception:
+            interval = getattr(self, "_pos_refresh_interval_ms", 5000)
+        interval = max(2000, min(interval, 60000))
+        self._pos_refresh_interval_ms = interval
+        self.config["positions_refresh_interval_ms"] = interval
+        self.req_pos_start.emit(interval)
+    except Exception:
+        pass
+
+
+def trigger_positions_refresh(self, interval_ms: int | None = None):
+    try:
+        if interval_ms is None:
+            interval = getattr(self, "_pos_refresh_interval_ms", 5000)
+        else:
+            interval = int(interval_ms)
+    except Exception:
+        interval = getattr(self, "_pos_refresh_interval_ms", 5000)
+    if interval <= 0:
+        interval = 5000
+    self._pos_refresh_interval_ms = interval
+    try:
+        self.req_pos_start.emit(interval)
+    except Exception:
+        pass
 
 try:
     MainWindow.start_strategy = start_strategy
@@ -8205,6 +8241,11 @@ except Exception:
     pass
 try:
     MainWindow.refresh_positions = refresh_positions
+except Exception:
+    pass
+try:
+    MainWindow._apply_positions_refresh_settings = _apply_positions_refresh_settings
+    MainWindow.trigger_positions_refresh = trigger_positions_refresh
 except Exception:
     pass
 
