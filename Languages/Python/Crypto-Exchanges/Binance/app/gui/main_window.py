@@ -614,15 +614,11 @@ class _PositionsWorker(QtCore.QObject):
             size_usdt = abs(notional)
             entry_price = float(p.get('entryPrice') or 0.0)
             iso_wallet = float(p.get('isolatedWallet') or 0.0)
+            isolated_margin = float(p.get('isolatedMargin') or 0.0)
             initial_margin = float(p.get('initialMargin') or 0.0)
-            margin = initial_margin
-            if margin <= 0.0 and iso_wallet > 0.0:
-                try:
-                    margin = iso_wallet - pnl
-                except Exception:
-                    margin = iso_wallet
-                if margin <= 0.0:
-                    margin = iso_wallet
+            margin = isolated_margin if isolated_margin > 0.0 else initial_margin
+            if margin <= 0.0:
+                margin = iso_wallet if iso_wallet > 0.0 else initial_margin
             if margin <= 0.0 and entry_price > 0.0 and lev > 0:
                 margin = abs(amt) * entry_price / max(lev, 1)
             if margin <= 0.0 and lev > 0 and size_usdt > 0.0:
@@ -634,16 +630,20 @@ class _PositionsWorker(QtCore.QObject):
             # Prefer Binance-provided marginRatio when available, otherwise approximate.
             ratio = normalize_margin_ratio(p.get('marginRatio'))
             if ratio <= 0.0:
-                # Margin Ratio (isolated) ~= (maintMargin + unrealizedLoss) / isolatedWallet
+                margin_balance = float(p.get('marginBalance') or 0.0)
+                if margin_balance <= 0.0:
+                    margin_balance = iso_wallet if iso_wallet > 0.0 else margin
+                if margin_balance <= 0.0:
+                    margin_balance = margin + pnl
+                if margin_balance <= 0.0:
+                    margin_balance = abs(margin) if margin > 0.0 else abs(size_usdt / max(lev or 1, 1))
                 try:
                     mm = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
                 except Exception:
                     mm = 0.0
                 unrealized_loss = abs(pnl) if pnl < 0 else 0.0
-                margin_balance = iso_wallet + (pnl if pnl > 0 else 0.0)
-                denom = margin_balance if margin_balance > 0.0 else float(p.get('isolatedWallet') or 0.0)
-                if denom > 0.0:
-                    ratio = ((mm + unrealized_loss) / denom) * 100.0
+                if margin_balance > 0.0:
+                    ratio = ((mm + unrealized_loss) / margin_balance) * 100.0
             try:
                 update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
             except Exception:
