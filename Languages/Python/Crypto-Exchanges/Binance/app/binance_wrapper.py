@@ -1,5 +1,6 @@
 
 from collections import deque
+import copy
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 from datetime import datetime
 import re
@@ -321,7 +322,7 @@ class BinanceWrapper:
         if "position" in lower:
             return 5.0
         if "klines" in lower:
-            return 1.0
+            return 4.0
         if "ticker" in lower:
             return 1.0 if "price" in lower else 2.0
         if "margin" in lower or "leverage" in lower or "order" in lower:
@@ -340,6 +341,28 @@ class BinanceWrapper:
             limiter.acquire(weight)
         except Exception:
             pass
+
+    def _get_cached_futures_positions(self, max_age: float) -> list | None:
+        if max_age is None or max_age <= 0:
+            return None
+        with self._positions_cache_lock:
+            data = self._positions_cache
+            ts = self._positions_cache_ts
+        if data is None:
+            return None
+        if (time.time() - ts) > max_age:
+            return None
+        return copy.deepcopy(data)
+
+    def _store_futures_positions_cache(self, entries: list | None) -> None:
+        with self._positions_cache_lock:
+            self._positions_cache = copy.deepcopy(entries) if entries is not None else None
+            self._positions_cache_ts = time.time() if entries is not None else 0.0
+
+    def _invalidate_futures_positions_cache(self) -> None:
+        with self._positions_cache_lock:
+            self._positions_cache = None
+            self._positions_cache_ts = 0.0
 
     @staticmethod
     def _format_quantity_for_order(value: float, step: float | None = None) -> str:
@@ -839,8 +862,12 @@ class BinanceWrapper:
         self._symbol_info_cache_spot = {}
         self._symbol_info_cache_futures = None
         self._futures_dual_side_cache = None
+        self._futures_dual_side_cache_ts = 0.0
         self._kline_cache = {}
         self._kline_cache_lock = threading.Lock()
+        self._positions_cache = None
+        self._positions_cache_ts = 0.0
+        self._positions_cache_lock = threading.Lock()
         self._last_ban_log = 0.0
         self._last_network_error_log = 0.0
         self._last_price_cache: dict[str, tuple[float, float]] = {}
@@ -1744,6 +1771,14 @@ class BinanceWrapper:
         Returns True if dual-side (hedge) mode is enabled on Futures; False if one-way.
         Tries multiple client methods; normalizes string/array responses.
         """
+        try:
+            cached = self._futures_dual_side_cache
+            ts = self._futures_dual_side_cache_ts
+        except Exception:
+            cached = None
+            ts = 0.0
+        if cached is not None and (time.time() - ts) < 300.0:
+            return bool(cached)
         methods = [
             "futures_get_position_mode",
             "futures_get_position_side_dual",
@@ -1768,9 +1803,14 @@ class BinanceWrapper:
                     val = res
                 if isinstance(val, str):
                     val = val.strip().lower() in ("true","1","yes","y")
-                return bool(val)
+                result = bool(val)
+                self._futures_dual_side_cache = result
+                self._futures_dual_side_cache_ts = time.time()
+                return result
             except Exception:
                 continue
+        self._futures_dual_side_cache = False
+        self._futures_dual_side_cache_ts = time.time()
         return False
     
     
@@ -1885,6 +1925,7 @@ class BinanceWrapper:
                 params['positionSide'] = pos_side
 
             order = self.client.futures_create_order(**params)
+            self._invalidate_futures_positions_cache()
             return {'ok': True, 'info': order, 'computed': {'qty': qty, 'px': px, 'step': step, 'minQty': minQty, 'minNotional': minNotional, 'lev': lev}, 'mode': mode}
         except Exception as e:
             return {'ok': False, 'error': str(e), 'computed': {'qty': qty, 'px': px, 'step': step, 'minQty': minQty, 'minNotional': minNotional, 'lev': lev}, 'mode': mode}
@@ -1915,6 +1956,7 @@ class BinanceWrapper:
             except Exception:
                 pass
             info = self.client.futures_create_order(**params)
+            self._invalidate_futures_positions_cache()
             return {'ok': True, 'info': info}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
@@ -1931,7 +1973,7 @@ class BinanceWrapper:
             except Exception:
                 step = 0.0
             dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
-            rows = self.list_open_futures_positions() or []
+            rows = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
             closed = 0
             failed = 0
             errors = []
@@ -1949,6 +1991,7 @@ class BinanceWrapper:
                     params['reduceOnly'] = True
                 try:
                     self.client.futures_create_order(**params)
+                    self._invalidate_futures_positions_cache()
                     closed += 1
                 except Exception as e:
                     failed += 1
@@ -1966,7 +2009,7 @@ class BinanceWrapper:
                 dual = bool(mode_info.get('dualSidePosition'))
             except Exception:
                 pass
-            positions = self.list_open_futures_positions() or []
+            positions = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
             if not positions:
                 return results
             try:
@@ -1995,6 +2038,7 @@ class BinanceWrapper:
                     if dual:
                         params['positionSide'] = 'LONG' if amt > 0 else 'SHORT'
                     info = self.client.futures_create_order(**params)
+                    self._invalidate_futures_positions_cache()
                     results.append({'symbol': sym, 'ok': True, 'info': info})
                 except Exception as e:
                     results.append({'symbol': p.get('symbol'), 'ok': False, 'error': str(e)})
@@ -2002,7 +2046,11 @@ class BinanceWrapper:
             results.append({'ok': False, 'error': str(e)})
         return results
 
-    def list_open_futures_positions(self):
+    def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bool = False):
+        if not force_refresh:
+            cached = self._get_cached_futures_positions(max_age)
+            if cached is not None:
+                return cached
         infos = None
         try:
             infos = self.client.futures_position_information()
@@ -2064,7 +2112,9 @@ class BinanceWrapper:
                     })
                 except Exception:
                     continue
-        return out
+        snapshot = copy.deepcopy(out)
+        self._store_futures_positions_cache(snapshot)
+        return copy.deepcopy(snapshot)
 
     def get_net_futures_position_amt(self, symbol: str) -> float:
         """
@@ -2409,6 +2459,7 @@ def _bw_place_futures_market_order(self, symbol: str, side: str, percent_balance
             params['positionSide'] = (position_side or ('LONG' if side.upper()=='BUY' else 'SHORT'))
         try:
             info = self.client.futures_create_order(**params)
+            self._invalidate_futures_positions_cache()
             return {'ok': True, 'info': info, 'computed': {'qty': qty, 'price': px}}
         except Exception as e:
             return {'ok': False, 'error': str(e), 'computed': {'qty': qty, 'price': px}}
@@ -2479,6 +2530,7 @@ def _bw_close_futures_position(self, symbol: str):
             params['reduceOnly'] = True
         try:
             self.client.futures_create_order(**params)
+            self._invalidate_futures_positions_cache()
             closed += 1
             continue
         except Exception as e:
@@ -2497,6 +2549,7 @@ def _bw_close_futures_position(self, symbol: str):
                     else:
                         alt['reduceOnly'] = True
                     self.client.futures_create_order(**alt)
+                    self._invalidate_futures_positions_cache()
                     closed += 1
                     continue
                 except Exception as e2:
@@ -2640,6 +2693,7 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
     # Place order
     try:
         info = self.client.futures_create_order(**params)
+        self._invalidate_futures_positions_cache()
         return {'ok': True,
                 'info': info,
                 'computed': {'qty': qty, 'px': px, 'step': step, 'minQty': minQty, 'minNotional': minNotional},
@@ -2803,6 +2857,7 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
 
     try:
         order = self.client.futures_create_order(**params)
+        self._invalidate_futures_positions_cache()
         return {'ok': True, 'info': order, 'computed': {'qty': qty, 'px': px, 'step': step, 'minQty': minQty, 'minNotional': minNotional}, 'mode': mode}
     except Exception as e:
         return {'ok': False, 'symbol': sym, 'error': str(e), 'computed': {'qty': qty, 'px': px, 'step': step}, 'mode': mode}
