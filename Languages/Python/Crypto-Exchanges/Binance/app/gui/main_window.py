@@ -786,14 +786,18 @@ class _PositionsWorker(QtCore.QObject):
             iso_wallet = float(p.get('isolatedWallet') or 0.0)
             isolated_margin = float(p.get('isolatedMargin') or 0.0)
             initial_margin = float(p.get('initialMargin') or 0.0)
-            margin = isolated_margin
-            if margin <= 0.0:
-                margin = iso_wallet
-            if margin <= 0.0 and entry_price > 0.0 and lev > 0:
-                margin = abs(amt) * entry_price / max(lev, 1)
-            if margin <= 0.0 and lev > 0 and size_usdt > 0.0:
-                margin = size_usdt / max(lev, 1)
-            margin = max(margin, 0.0)
+            computed_margin = 0.0
+            if entry_price > 0.0 and lev > 0:
+                computed_margin = abs(amt) * entry_price / max(lev, 1)
+            margin_candidates = [
+                isolated_margin,
+                iso_wallet,
+                initial_margin,
+                computed_margin,
+                size_usdt / max(lev, 1) if lev > 0 and size_usdt > 0.0 else 0.0,
+            ]
+            margin_candidates = [m for m in margin_candidates if m and m > 0.0]
+            margin = max(margin_candidates) if margin_candidates else 0.0
             roi = (pnl / margin * 100.0) if margin > 0 else 0.0
             pnl_roi_str = f"{pnl:+.2f} USDT ({roi:+.2f}%)"
 
@@ -802,16 +806,14 @@ class _PositionsWorker(QtCore.QObject):
             if ratio <= 0.0:
                 margin_balance = float(p.get('marginBalance') or 0.0)
                 if margin_balance <= 0.0:
-                    margin_balance = iso_wallet if iso_wallet > 0.0 else margin
-                if margin_balance <= 0.0:
-                    margin_balance = margin + pnl
+                    margin_balance = margin + (pnl if pnl > 0 else 0.0)
                 if margin_balance <= 0.0:
                     margin_balance = abs(margin) if margin > 0.0 else abs(size_usdt / max(lev or 1, 1))
                 try:
                     mm = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
                 except Exception:
                     mm = 0.0
-                unrealized_loss = abs(pnl) if pnl < 0 else 0.0
+                unrealized_loss = max(0.0, -pnl)
                 if margin_balance > 0.0:
                     ratio = ((mm + unrealized_loss) / margin_balance) * 100.0
             try:
