@@ -33,7 +33,8 @@ def _interval_to_seconds(iv:str)->int:
     return 60
 
 
-_MAX_PARALLEL_RUNS = max(2, min(4, (os.cpu_count() or 4)))
+_CPU_COUNT = os.cpu_count() or 4
+_MAX_PARALLEL_RUNS = max(6, min(24, _CPU_COUNT * 2))
 
 
 class StrategyEngine:
@@ -65,7 +66,7 @@ class StrategyEngine:
         self._last_network_log = 0.0
         self._emergency_close_triggered = False
 
-    def _notify_interval_closed(self, symbol: str, interval: str, position_side: str):
+    def _notify_interval_closed(self, symbol: str, interval: str, position_side: str, **extra):
         if not self.trade_cb:
             return
         try:
@@ -79,7 +80,22 @@ class StrategyEngine:
                 'ok': True,
                 'time': datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')
             }
+            if extra:
+                info.update({k: v for k, v in extra.items() if v is not None})
             self.trade_cb(info)
+        except Exception:
+            pass
+
+    def _log_latency_metric(self, symbol: str, interval: str, label: str, latency_seconds: float) -> None:
+        try:
+            latency_seconds = max(0.0, float(latency_seconds))
+        except Exception:
+            latency_seconds = 0.0
+        try:
+            self.log(
+                f"{symbol}@{interval} {label} signal→order latency: "
+                f"{latency_seconds * 1000.0:.0f} ms ({latency_seconds:.3f}s)."
+            )
         except Exception:
             pass
 
@@ -759,6 +775,7 @@ class StrategyEngine:
                     cumulative_triggered = True
                     close_side = "SELL" if side_key == "LONG" else "BUY"
                     position_side = side_key if dual_side else None
+                    start_ts = time.time()
                     try:
                         res = self.binance.close_futures_leg_exact(
                             cw["symbol"], data["qty"], side=close_side, position_side=position_side
@@ -770,6 +787,7 @@ class StrategyEngine:
                             pass
                         continue
                     if isinstance(res, dict) and res.get("ok"):
+                        latency_s = max(0.0, time.time() - start_ts)
                         target_side_label = "BUY" if side_key == "LONG" else "SELL"
                         for leg_key in list(self._leg_ledger.keys()):
                             if leg_key[0] == cw["symbol"] and leg_key[2] == target_side_label:
@@ -780,10 +798,23 @@ class StrategyEngine:
                                 self.guard.mark_closed(cw["symbol"], cw.get("interval"), target_side_label)
                         except Exception:
                             pass
-                        self._notify_interval_closed(cw["symbol"], cw.get("interval"), target_side_label)
+                        self._notify_interval_closed(
+                            cw["symbol"],
+                            cw.get("interval"),
+                            target_side_label,
+                            latency_seconds=latency_s,
+                            latency_ms=latency_s * 1000.0,
+                            reason="cumulative_stop_loss",
+                        )
                         try:
                             margin_val = data["margin"] or 0.0
                             pct_loss = (data["loss"] / margin_val * 100.0) if margin_val > 0.0 else 0.0
+                            self._log_latency_metric(
+                                cw["symbol"],
+                                cw.get("interval"),
+                                f"cumulative stop-loss {target_side_label}",
+                                latency_s,
+                            )
                             self.log(
                                 f"Cumulative stop-loss closed {target_side_label} for {cw['symbol']}@{cw.get('interval')} "
                                 f"(loss {data['loss']:.4f} USDT / {pct_loss:.2f}%)."
@@ -870,10 +901,12 @@ class StrategyEngine:
                     if triggered_long:
                         desired_ps = "LONG" if dual_side else None
                         try:
+                            start_ts = time.time()
                             res = self.binance.close_futures_leg_exact(
                                 cw["symbol"], qty_long, side="SELL", position_side=desired_ps
                             )
                             if isinstance(res, dict) and res.get("ok"):
+                                latency_s = max(0.0, time.time() - start_ts)
                                 self._leg_ledger.pop(key_long, None)
                                 self._last_order_time.pop(key_long, None)
                                 long_open = False
@@ -882,7 +915,20 @@ class StrategyEngine:
                                         self.guard.mark_closed(cw["symbol"], cw.get("interval"), "BUY")
                                 except Exception:
                                     pass
-                                self._notify_interval_closed(cw["symbol"], cw.get("interval"), "BUY")
+                                self._log_latency_metric(
+                                    cw["symbol"],
+                                    cw.get("interval"),
+                                    "stop-loss BUY leg",
+                                    latency_s,
+                                )
+                                self._notify_interval_closed(
+                                    cw["symbol"],
+                                    cw.get("interval"),
+                                    "BUY",
+                                    latency_seconds=latency_s,
+                                    latency_ms=latency_s * 1000.0,
+                                    reason="stop_loss_long",
+                                )
                                 try:
                                     self.log(
                                         f"Stop-loss closed BUY for {cw['symbol']}@{cw.get('interval')} "
@@ -969,10 +1015,12 @@ class StrategyEngine:
                     if triggered_short:
                         desired_ps = "SHORT" if dual_side else None
                         try:
+                            start_ts = time.time()
                             res = self.binance.close_futures_leg_exact(
                                 cw["symbol"], qty_short, side="BUY", position_side=desired_ps
                             )
                             if isinstance(res, dict) and res.get("ok"):
+                                latency_s = max(0.0, time.time() - start_ts)
                                 self._leg_ledger.pop(key_short, None)
                                 self._last_order_time.pop(key_short, None)
                                 short_open = False
@@ -981,7 +1029,20 @@ class StrategyEngine:
                                         self.guard.mark_closed(cw["symbol"], cw.get("interval"), "SELL")
                                 except Exception:
                                     pass
-                                self._notify_interval_closed(cw["symbol"], cw.get("interval"), "SELL")
+                                self._log_latency_metric(
+                                    cw["symbol"],
+                                    cw.get("interval"),
+                                    "stop-loss SELL leg",
+                                    latency_s,
+                                )
+                                self._notify_interval_closed(
+                                    cw["symbol"],
+                                    cw.get("interval"),
+                                    "SELL",
+                                    latency_seconds=latency_s,
+                                    latency_ms=latency_s * 1000.0,
+                                    reason="stop_loss_short",
+                                )
                                 try:
                                     self.log(
                                         f"Stop-loss closed SELL for {cw['symbol']}@{cw.get('interval')} "
@@ -1370,7 +1431,7 @@ class StrategyEngine:
             interval_seconds = max(1, int(self._interval_seconds(self.loop_override)))
         else:
             interval_seconds = max(1, int(self._interval_seconds(self.config['interval'])))
-        phase_span = max(5.0, min(interval_seconds * 0.85, 45.0))
+        phase_span = max(2.0, min(interval_seconds * 0.35, 10.0))
         phase = self._phase_seed * phase_span
         if phase > 0:
             waited = 0.0
@@ -1379,12 +1440,13 @@ class StrategyEngine:
                 time.sleep(chunk)
                 waited += chunk
         while not self.stopped():
+            loop_started = time.time()
             got_gate = False
             sleep_override = None
             try:
                 if self.stopped():
                     break
-                got_gate = StrategyEngine._RUN_GATE.acquire(timeout=1.0)
+                got_gate = StrategyEngine._RUN_GATE.acquire(timeout=0.25)
                 if not got_gate:
                     continue
                 self.run_once()
@@ -1404,12 +1466,16 @@ class StrategyEngine:
                         StrategyEngine._RUN_GATE.release()
                     except Exception:
                         pass
-            sleep_remaining = interval_seconds if sleep_override is None else float(max(0.0, sleep_override))
-            if sleep_override is None and interval_seconds > 1:
-                jitter = self._phase_seed * min(3.0, max(0.5, interval_seconds * 0.2))
-                sleep_remaining += jitter
+            loop_elapsed = max(0.0, time.time() - loop_started)
+            if sleep_override is None:
+                sleep_remaining = max(0.0, interval_seconds - loop_elapsed)
+                if interval_seconds > 1 and sleep_remaining > 0.0:
+                    jitter = self._phase_seed * min(0.75, max(0.1, interval_seconds * 0.05))
+                    sleep_remaining = max(0.0, sleep_remaining + jitter)
+            else:
+                sleep_remaining = float(max(0.0, sleep_override))
             while sleep_remaining > 0 and not self.stopped():
-                chunk = min(1.0, sleep_remaining)
+                chunk = min(0.5, sleep_remaining)
                 time.sleep(chunk)
                 sleep_remaining -= chunk
         self.log(f"Loop stopped for {sym} @ {interval}.")

@@ -1225,6 +1225,16 @@ class MainWindow(QtWidgets.QWidget):
         self.bot_status_label_tab3 = None
         self.bot_status_label_chart = None
         self.bot_status_label_code_tab = None
+        self.pnl_active_label_tab1 = None
+        self.pnl_closed_label_tab1 = None
+        self.pnl_active_label_tab2 = None
+        self.pnl_closed_label_tab2 = None
+        self.pnl_active_label_tab3 = None
+        self.pnl_closed_label_tab3 = None
+        self.pnl_active_label_chart = None
+        self.pnl_closed_label_chart = None
+        self.pnl_active_label_code_tab = None
+        self.pnl_closed_label_code_tab = None
         self.bot_time_label_tab1 = None
         self.bot_time_label_tab2 = None
         self.bot_time_label_tab3 = None
@@ -1233,6 +1243,11 @@ class MainWindow(QtWidgets.QWidget):
         self._bot_active = False
         self._bot_active_since = None
         self._bot_time_timer = None
+        self._pnl_label_sets: list[tuple[QtWidgets.QLabel | None, QtWidgets.QLabel | None]] = []
+        self._last_pnl_snapshot = {
+            "active": {"pnl": None, "roi": None},
+            "closed": {"pnl": None, "roi": None},
+        }
         self.language_combo = None
         self.exchange_combo = None
         self.forex_combo = None
@@ -2649,6 +2664,83 @@ class MainWindow(QtWidgets.QWidget):
             for label in labels:
                 if label is not None:
                     label.setText(text)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _format_total_pnl_text(prefix: str, pnl_value: float | None, roi_value: float | None) -> str:
+        if pnl_value is None:
+            return f"{prefix}: --"
+        text = f"{prefix}: {pnl_value:+.2f} USDT"
+        if roi_value is not None:
+            text += f" ({roi_value:+.2f}%)"
+        return text
+
+    def _apply_pnl_snapshot_to_labels(
+        self,
+        active_label: QtWidgets.QLabel | None,
+        closed_label: QtWidgets.QLabel | None,
+    ) -> None:
+        snapshot = getattr(self, "_last_pnl_snapshot", None) or {}
+        active_snapshot = snapshot.get("active", {})
+        closed_snapshot = snapshot.get("closed", {})
+        if active_label is not None:
+            active_label.setText(
+                self._format_total_pnl_text(
+                    "Total PNL Active Positions",
+                    active_snapshot.get("pnl"),
+                    active_snapshot.get("roi"),
+                )
+            )
+        if closed_label is not None:
+            closed_label.setText(
+                self._format_total_pnl_text(
+                    "Total PNL Closed Positions",
+                    closed_snapshot.get("pnl"),
+                    closed_snapshot.get("roi"),
+                )
+            )
+
+    def _register_pnl_summary_labels(
+        self,
+        active_label: QtWidgets.QLabel | None,
+        closed_label: QtWidgets.QLabel | None,
+    ) -> None:
+        if not hasattr(self, "_pnl_label_sets") or self._pnl_label_sets is None:
+            self._pnl_label_sets = []
+        self._pnl_label_sets.append((active_label, closed_label))
+        self._apply_pnl_snapshot_to_labels(active_label, closed_label)
+
+    def _update_global_pnl_display(
+        self,
+        active_pnl: float | None,
+        active_margin: float | None,
+        closed_pnl: float | None,
+        closed_margin: float | None,
+    ) -> None:
+        try:
+            snapshot = getattr(self, "_last_pnl_snapshot", None)
+            if snapshot is None:
+                snapshot = {"active": {"pnl": None, "roi": None}, "closed": {"pnl": None, "roi": None}}
+                self._last_pnl_snapshot = snapshot
+            def _roi(pnl_value: float | None, margin_value: float | None) -> float | None:
+                try:
+                    if pnl_value is None or margin_value is None or margin_value <= 0.0:
+                        return None
+                    return (float(pnl_value) / float(margin_value)) * 100.0
+                except Exception:
+                    return None
+
+            snapshot["active"] = {
+                "pnl": active_pnl if active_pnl is not None else None,
+                "roi": _roi(active_pnl, active_margin),
+            }
+            snapshot["closed"] = {
+                "pnl": closed_pnl if closed_pnl is not None else None,
+                "roi": _roi(closed_pnl, closed_margin),
+            }
+            for active_label, closed_label in getattr(self, "_pnl_label_sets", []) or []:
+                self._apply_pnl_snapshot_to_labels(active_label, closed_label)
         except Exception:
             pass
 
@@ -4153,11 +4245,18 @@ class MainWindow(QtWidgets.QWidget):
         chart_status_layout = QtWidgets.QHBoxLayout(chart_status_widget)
         chart_status_layout.setContentsMargins(0, 0, 0, 0)
         chart_status_layout.setSpacing(8)
+        self.pnl_active_label_chart = QtWidgets.QLabel()
+        self.pnl_closed_label_chart = QtWidgets.QLabel()
         self.bot_status_label_chart = QtWidgets.QLabel()
         self.bot_time_label_chart = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.pnl_active_label_chart, self.pnl_closed_label_chart):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            chart_status_layout.addWidget(lbl)
+        chart_status_layout.addStretch()
         for lbl in (self.bot_status_label_chart, self.bot_time_label_chart):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             chart_status_layout.addWidget(lbl)
+        self._register_pnl_summary_labels(self.pnl_active_label_chart, self.pnl_closed_label_chart)
         controls_layout.addWidget(chart_status_widget)
 
         self._chart_view_widgets = {}
@@ -5428,11 +5527,18 @@ class MainWindow(QtWidgets.QWidget):
         status_layout = QtWidgets.QHBoxLayout(status_widget)
         status_layout.setContentsMargins(0, 0, 0, 0)
         status_layout.setSpacing(10)
+        self.pnl_active_label_tab1 = QtWidgets.QLabel()
+        self.pnl_closed_label_tab1 = QtWidgets.QLabel()
         self.bot_status_label_tab1 = QtWidgets.QLabel()
         self.bot_time_label_tab1 = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.pnl_active_label_tab1, self.pnl_closed_label_tab1):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            status_layout.addWidget(lbl)
+        status_layout.addStretch()
         for lbl in (self.bot_status_label_tab1, self.bot_time_label_tab1):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             status_layout.addWidget(lbl)
+        self._register_pnl_summary_labels(self.pnl_active_label_tab1, self.pnl_closed_label_tab1)
         grid.addWidget(status_widget, 0, 6, 1, 4)
 
         grid.addWidget(QtWidgets.QLabel("Account Type:"), 1, 2)
@@ -5872,11 +5978,18 @@ class MainWindow(QtWidgets.QWidget):
         tab2_status_layout = QtWidgets.QHBoxLayout(tab2_status_widget)
         tab2_status_layout.setContentsMargins(0, 0, 0, 0)
         tab2_status_layout.setSpacing(8)
+        self.pnl_active_label_tab2 = QtWidgets.QLabel()
+        self.pnl_closed_label_tab2 = QtWidgets.QLabel()
         self.bot_status_label_tab2 = QtWidgets.QLabel()
         self.bot_time_label_tab2 = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.pnl_active_label_tab2, self.pnl_closed_label_tab2):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            tab2_status_layout.addWidget(lbl)
+        tab2_status_layout.addStretch()
         for lbl in (self.bot_status_label_tab2, self.bot_time_label_tab2):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             tab2_status_layout.addWidget(lbl)
+        self._register_pnl_summary_labels(self.pnl_active_label_tab2, self.pnl_closed_label_tab2)
         ctrl_layout.addWidget(tab2_status_widget)
         tab2_layout.addLayout(ctrl_layout)
         self._sync_runtime_state()
@@ -6341,11 +6454,18 @@ class MainWindow(QtWidgets.QWidget):
         tab3_status_layout = QtWidgets.QHBoxLayout(tab3_status_widget)
         tab3_status_layout.setContentsMargins(0, 0, 0, 0)
         tab3_status_layout.setSpacing(8)
+        self.pnl_active_label_tab3 = QtWidgets.QLabel()
+        self.pnl_closed_label_tab3 = QtWidgets.QLabel()
         self.bot_status_label_tab3 = QtWidgets.QLabel()
         self.bot_time_label_tab3 = QtWidgets.QLabel("Bot Active Time: --")
+        for lbl in (self.pnl_active_label_tab3, self.pnl_closed_label_tab3):
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            tab3_status_layout.addWidget(lbl)
+        tab3_status_layout.addStretch()
         for lbl in (self.bot_status_label_tab3, self.bot_time_label_tab3):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             tab3_status_layout.addWidget(lbl)
+        self._register_pnl_summary_labels(self.pnl_active_label_tab3, self.pnl_closed_label_tab3)
         controls_layout.addWidget(tab3_status_widget)
         output_group_layout.addLayout(controls_layout)
         self._update_bot_status()
@@ -6537,13 +6657,21 @@ def _init_code_language_tab(self):
     status_layout = QtWidgets.QHBoxLayout(status_widget)
     status_layout.setContentsMargins(0, 0, 0, 0)
     status_layout.setSpacing(12)
+    self.pnl_active_label_code_tab = QtWidgets.QLabel()
+    self.pnl_closed_label_code_tab = QtWidgets.QLabel()
     self.bot_status_label_code_tab = QtWidgets.QLabel()
     self.bot_time_label_code_tab = QtWidgets.QLabel("Bot Active Time: --")
+    for lbl in (self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab):
+        if lbl is not None:
+            lbl.setStyleSheet("font-weight: 600;")
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            status_layout.addWidget(lbl)
+    status_layout.addStretch()
     for lbl in (self.bot_status_label_code_tab, self.bot_time_label_code_tab):
         if lbl is not None:
             lbl.setStyleSheet("font-weight: 600;")
             status_layout.addWidget(lbl)
-    status_layout.addStretch()
+    self._register_pnl_summary_labels(self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab)
     layout.addWidget(status_widget)
 
     layout.addStretch()
@@ -7588,6 +7716,12 @@ def _mw_render_positions_table(self):
         total_pnl = 0.0
         total_margin = 0.0
         pnl_has_value = False
+        active_pnl_total = 0.0
+        active_margin_total = 0.0
+        active_has_value = False
+        closed_pnl_total = 0.0
+        closed_margin_total = 0.0
+        closed_has_value = False
         for rec in display_records:
             try:
                 data = rec.get('data', {}) or {}
@@ -7642,6 +7776,20 @@ def _mw_render_positions_table(self):
                 if pnl_raw_value is not None:
                     total_pnl += pnl_value
                     pnl_has_value = True
+                status_lower = str(status_txt).strip().lower()
+                pnl_valid = pnl_raw_value is not None or abs(pnl_value) > 0.0
+                if status_lower == "closed":
+                    if pnl_valid:
+                        closed_pnl_total += pnl_value
+                        closed_has_value = True
+                    if margin_usdt > 0.0:
+                        closed_margin_total += margin_usdt
+                else:
+                    if pnl_valid:
+                        active_pnl_total += pnl_value
+                        active_has_value = True
+                    if margin_usdt > 0.0:
+                        active_margin_total += margin_usdt
 
                 self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
                 indicators_raw = rec.get('indicators')
@@ -7665,6 +7813,12 @@ def _mw_render_positions_table(self):
                 pass
         summary_margin = total_margin if total_margin > 0.0 else None
         self._update_positions_pnl_summary(total_pnl if pnl_has_value else None, summary_margin)
+        self._update_global_pnl_display(
+            active_pnl_total if active_has_value else None,
+            active_margin_total if active_margin_total > 0.0 else None,
+            closed_pnl_total if closed_has_value else None,
+            closed_margin_total if closed_margin_total > 0.0 else None,
+        )
         try:
             if getattr(self, "chart_enabled", False) and getattr(self, "chart_auto_follow", False) and not getattr(self, "_chart_manual_override", False):
                 self._sync_chart_to_active_positions()

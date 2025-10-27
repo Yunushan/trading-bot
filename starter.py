@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -9,6 +11,11 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 BASE_DIR = Path(__file__).resolve().parent
 BINANCE_MAIN = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance" / "main.py"
+BINANCE_CPP_PROJECT = (
+    BASE_DIR / "Languages" / "C++" / "Crypto-Exchanges" / "Binance" / "backtest_tab"
+)
+BINANCE_CPP_BUILD_ROOT = BASE_DIR / "build" / "backtest_tab"
+BINANCE_CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
 APP_ICON_BASENAME = "crypto_forex_logo"
 APP_ICON_PATH = BASE_DIR / "assets" / f"{APP_ICON_BASENAME}.ico"
 APP_ICON_FALLBACK = BASE_DIR / "assets" / f"{APP_ICON_BASENAME}.png"
@@ -167,6 +174,10 @@ class StarterWindow(QtWidgets.QWidget):
         self.selected_exchange: str | None = None
         self._is_launching = False
         self._bot_ready = False
+        self._cpp_binance_executable: Path | None = None
+        self._active_launch_label = "Selected bot"
+        self._running_ready_message = "Selected bot is running. Close it to relaunch."
+        self._closed_message = "Selected bot closed. Launch it again anytime."
         self._active_bot_process: subprocess.Popen[str] | None = None
         self._launch_status_timer = QtCore.QTimer(self)
         self._launch_status_timer.setSingleShot(True)
@@ -238,6 +249,122 @@ class StarterWindow(QtWidgets.QWidget):
             "QPushButton:hover {background-color: #1d4ed8;}"
             "QPushButton:disabled {background-color: #1f2a44; color: #6b7280;}"
         )
+
+    def _resolve_cpp_binance_executable(self, refresh: bool = False) -> Path | None:
+        if not refresh and self._cpp_binance_executable and self._cpp_binance_executable.is_file():
+            return self._cpp_binance_executable
+        self._cpp_binance_executable = self._find_cpp_binance_executable()
+        return self._cpp_binance_executable
+
+    def _find_cpp_binance_executable(self) -> Path | None:
+        candidate_names = {BINANCE_CPP_EXECUTABLE_BASENAME}
+        if sys.platform == "win32":
+            candidate_names.add(f"{BINANCE_CPP_EXECUTABLE_BASENAME}.exe")
+        else:
+            candidate_names.add(BINANCE_CPP_EXECUTABLE_BASENAME)
+
+        search_roots = [
+            BINANCE_CPP_PROJECT,
+            BINANCE_CPP_PROJECT / "build",
+            BINANCE_CPP_PROJECT / "Release",
+            BINANCE_CPP_PROJECT / "Debug",
+            BINANCE_CPP_PROJECT / "bin",
+            BINANCE_CPP_PROJECT / "out",
+            BINANCE_CPP_BUILD_ROOT,
+            BINANCE_CPP_BUILD_ROOT / "Release",
+            BINANCE_CPP_BUILD_ROOT / "Debug",
+            BINANCE_CPP_BUILD_ROOT / "bin",
+            BINANCE_CPP_BUILD_ROOT / "out",
+        ]
+
+        seen: set[Path] = set()
+        # Fast path: direct file checks in the most common directories.
+        for root in search_roots:
+            if root is None or root in seen:
+                continue
+            seen.add(root)
+            for name in candidate_names:
+                candidate = root / name
+                if candidate.is_file():
+                    return candidate
+
+        # Fallback: walk limited roots to discover generator-specific subfolders.
+        for root in search_roots:
+            if not root.is_dir():
+                continue
+            try:
+                for path in root.rglob("*"):
+                    if not path.is_file():
+                        continue
+                    if path.name in candidate_names or path.stem == BINANCE_CPP_EXECUTABLE_BASENAME:
+                        return path
+            except (PermissionError, OSError):
+                continue
+        return None
+
+    def _ensure_cpp_binance_executable(self) -> tuple[Path | None, str | None]:
+        exe_path = self._resolve_cpp_binance_executable(refresh=True)
+        if exe_path and exe_path.is_file():
+            return exe_path, None
+        exe_path, error = self._build_cpp_binance_project()
+        if exe_path and exe_path.is_file():
+            return exe_path, None
+        return None, error
+
+    def _build_cpp_binance_project(self) -> tuple[Path | None, str | None]:
+        if not BINANCE_CPP_PROJECT.is_dir():
+            return None, "C++ Binance project directory is missing."
+        if shutil.which("cmake") is None:
+            return None, "CMake was not found in PATH. Install CMake and try again."
+        build_dir = BINANCE_CPP_BUILD_ROOT
+        try:
+            build_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return None, f"Could not create build directory '{build_dir}': {exc}"
+
+        prefix_env = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
+        configure_cmd = ["cmake", "-S", str(BINANCE_CPP_PROJECT), "-B", str(build_dir)]
+        if prefix_env:
+            configure_cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
+
+        ok, error = self._run_command_capture(configure_cmd)
+        if not ok:
+            return None, error
+
+        build_cmd = ["cmake", "--build", str(build_dir)]
+        build_configs = []
+        if sys.platform == "win32":
+            preferred = os.environ.get("CMAKE_BUILD_CONFIG") or "Release"
+            build_configs = [preferred, "Debug"] if preferred.lower() != "debug" else ["Debug", "Release"]
+        else:
+            build_configs = [None]
+
+        ok = False
+        error: str | None = None
+        for config in build_configs:
+            cmd = list(build_cmd)
+            if config:
+                cmd.extend(["--config", config])
+            ok, error = self._run_command_capture(cmd)
+            if ok:
+                break
+        if not ok:
+            return None, error
+        exe_path = self._resolve_cpp_binance_executable(refresh=True)
+        if exe_path and exe_path.is_file():
+            return exe_path, None
+        return None, "Build finished but the Qt executable was not found. Check your CMake install paths."
+
+    def _run_command_capture(self, command: list[str]) -> tuple[bool, str | None]:
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except FileNotFoundError:
+            return False, f"Command not found: {command[0]}"
+        except subprocess.CalledProcessError as exc:
+            output = (exc.stdout or "") + (exc.stderr or "")
+            snippet = output.strip() or f"{command[0]} exited with code {exc.returncode}"
+            return False, snippet
+        return True, None
 
     def _build_language_step(self) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget()
@@ -427,7 +554,8 @@ class StarterWindow(QtWidgets.QWidget):
     def _mark_bot_ready(self) -> None:
         if self._active_bot_process and self._active_bot_process.poll() is None:
             self._bot_ready = True
-            self.status_label.setText("Binance bot is running. Close it to launch again.")
+            message = self._running_ready_message or "Selected bot is running. Close it to relaunch."
+            self.status_label.setText(message)
             self._update_nav_state()
 
     def _monitor_bot_process(self) -> None:
@@ -435,14 +563,18 @@ class StarterWindow(QtWidgets.QWidget):
             self._process_watch_timer.stop()
             return
         if self._active_bot_process.poll() is not None:
+            message = self._closed_message or "Selected bot closed. Launch it again anytime."
             self._reset_launch_tracking()
-            self.status_label.setText("Binance bot closed. Launch it again anytime.")
+            self.status_label.setText(message)
 
     def _reset_launch_tracking(self) -> None:
         self._launch_status_timer.stop()
         self._process_watch_timer.stop()
         self._active_bot_process = None
         self._bot_ready = False
+        self._active_launch_label = "Selected bot"
+        self._running_ready_message = "Selected bot is running. Close it to relaunch."
+        self._closed_message = "Selected bot closed. Launch it again anytime."
         self._set_launch_in_progress(False)
 
     def _update_status_message(self) -> None:
@@ -454,46 +586,136 @@ class StarterWindow(QtWidgets.QWidget):
         if self.selected_market != "crypto":
             self.status_label.setText("Select 'Crypto Exchange' to reveal supported exchanges (Forex coming soon).")
             return
-        if self.selected_language != "python":
-            self.status_label.setText("C++ and Rust launchers are on the roadmap. Choose Python to run today.")
+        language = self.selected_language
+        exchange = self.selected_exchange
+        if language == "python":
+            if exchange == "binance":
+                self.status_label.setText("Binance is ready. Press 'Launch Selected Bot' to open the PyQt app.")
+                return
+            if exchange in {"bybit", "okx"}:
+                self.status_label.setText(f"{exchange.title()} workspace is being scaffolded.")
+                return
+            self.status_label.setText("Pick Binance, Bybit, or OKX to prepare their workspace.")
             return
-        if self.selected_exchange == "binance":
-            self.status_label.setText("Binance is ready. Press 'Launch Selected Bot' to open the PyQt app.")
+
+        if language == "cpp":
+            exe_path = self._resolve_cpp_binance_executable(refresh=True)
+            if exchange == "binance":
+                if exe_path:
+                    self.status_label.setText(
+                        "Qt C++ Binance backtest tab is ready. Press 'Launch Selected Bot' to open it."
+                    )
+                else:
+                    self.status_label.setText(
+                        "Qt C++ Binance backtest tab needs to be built. Press 'Launch Selected Bot' to build and run "
+                        "(requires Qt + CMake in PATH)."
+                    )
+                return
+            if exchange in {"bybit", "okx"}:
+                self.status_label.setText(
+                    "Only the Binance Qt C++ preview is available today. Select Binance to launch it."
+                )
+                return
+            self.status_label.setText("Pick Binance to launch the Qt C++ backtest tab preview.")
             return
-        if self.selected_exchange in {"bybit", "okx"}:
-            self.status_label.setText(f"{self.selected_exchange.title()} workspace is being scaffolded.")
-            return
-        self.status_label.setText("Pick Binance, Bybit, or OKX to prepare their workspace.")
+
+        self.status_label.setText(
+            "This language launcher is still under construction. Select Python or C++ Binance to launch an app."
+        )
 
     def _can_launch_selected(self) -> bool:
-        return (
-            self.stack.currentIndex() == 1
-            and self.selected_language == "python"
-            and self.selected_market == "crypto"
-            and self.selected_exchange == "binance"
-        )
+        if self.stack.currentIndex() != 1:
+            return False
+        if self.selected_market != "crypto" or self.selected_exchange != "binance":
+            return False
+        language = self.selected_language
+        if language == "python":
+            return BINANCE_MAIN.is_file()
+        if language == "cpp":
+            return BINANCE_CPP_PROJECT.is_dir()
+        return False
 
     def launch_selected_bot(self) -> None:
         if not self._can_launch_selected():
+            self._update_status_message()
             return
         if self._active_bot_process and self._active_bot_process.poll() is None:
-            self.status_label.setText("Binance bot is already running. Close it to relaunch.")
+            label = self._active_launch_label or "Selected bot"
+            self.status_label.setText(f"{label} is already running. Close it to relaunch.")
             return
-        if not BINANCE_MAIN.is_file():
-            QtWidgets.QMessageBox.critical(
-                self,
-                "Binance bot missing",
-                f"Could not find {BINANCE_MAIN}. Make sure the repository is intact.",
+
+        command: list[str]
+        cwd: Path
+        start_message: str
+        running_label: str
+        ready_message: str
+        closed_message: str
+
+        if self.selected_language == "python":
+            if not BINANCE_MAIN.is_file():
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Binance bot missing",
+                    f"Could not find {BINANCE_MAIN}. Make sure the repository is intact.",
+                )
+                return
+            command = [sys.executable, str(BINANCE_MAIN)]
+            cwd = BINANCE_MAIN.parent
+            start_message = "Bot is starting... Opening the Binance workspace."
+            running_label = "Binance Python bot"
+            ready_message = "Binance Python bot is running. Close it to relaunch."
+            closed_message = "Binance Python bot closed. Launch it again anytime."
+        elif self.selected_language == "cpp":
+            exe_path = self._resolve_cpp_binance_executable(refresh=True)
+            if exe_path is None or not exe_path.is_file():
+                self.status_label.setText(
+                    "Building Qt C++ Binance backtest tab (this may take a minute—requires Qt + CMake)..."
+                )
+                QtWidgets.QApplication.processEvents()
+                self.primary_button.setEnabled(False)
+                exe_path, error = self._ensure_cpp_binance_executable()
+                self.primary_button.setEnabled(True)
+                self._update_nav_state()
+                if exe_path is None or not exe_path.is_file():
+                    detail = error or "Automatic build failed. Check that Qt 6 and CMake are installed."
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "Qt build required",
+                        textwrap.dedent(
+                            f"""\
+                            Could not build the Qt/C++ Binance backtest tab automatically.
+
+                            {detail}
+
+                            Make sure Qt (with Widgets) and CMake are installed. If Qt lives outside the default
+                            install path, set QT_CMAKE_PREFIX_PATH or CMAKE_PREFIX_PATH before launching."""
+                        ),
+                    )
+                    self._update_status_message()
+                    return
+            command = [str(exe_path)]
+            cwd = exe_path.parent
+            start_message = "Launching the Qt C++ Binance backtest tab..."
+            running_label = "Qt C++ Binance backtest tab"
+            ready_message = "Qt C++ Binance backtest tab is running. Close it to relaunch."
+            closed_message = "Qt C++ Binance backtest tab closed. Launch it again anytime."
+        else:
+            self.status_label.setText(
+                "Selected language does not have a launcher yet. Choose Python or C++ Binance."
             )
             return
+
         self._launch_status_timer.stop()
         self._bot_ready = False
         self._set_launch_in_progress(True)
-        self.status_label.setText("Bot is starting... Opening the Binance workspace.")
+        self._active_launch_label = running_label
+        self._running_ready_message = ready_message
+        self._closed_message = closed_message
+        self.status_label.setText(start_message)
         try:
             self._active_bot_process = subprocess.Popen(
-                [sys.executable, str(BINANCE_MAIN)],
-                cwd=str(BINANCE_MAIN.parent),
+                command,
+                cwd=str(cwd),
             )
         except Exception as exc:  # pragma: no cover - UI only
             self._reset_launch_tracking()
