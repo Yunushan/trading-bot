@@ -125,6 +125,87 @@ class StrategyEngine:
         except Exception:
             pass
 
+    @staticmethod
+    def _order_field(order_res, *names):
+        """Extract the first available field from order response dictionaries."""
+        if not isinstance(order_res, dict):
+            return None
+        sources = [order_res]
+        info = order_res.get("info")
+        if isinstance(info, dict):
+            sources.append(info)
+        computed = order_res.get("computed")
+        if isinstance(computed, dict):
+            sources.append(computed)
+        for source in sources:
+            for name in names:
+                if name in source and source[name] is not None:
+                    return source[name]
+        return None
+
+    def _build_close_event_payload(
+        self,
+        symbol: str,
+        interval: str,
+        side_label: str,
+        qty_hint: float,
+        order_res: dict | None,
+    ) -> dict:
+        """Prepare metadata describing a closed leg so the UI can compute realized PnL."""
+        def _safe_float(value):
+            try:
+                return float(value)
+            except Exception:
+                return 0.0
+
+        qty_val = _safe_float(self._order_field(order_res or {}, "executedQty", "cumQty", "cumQuantity", "origQty"))
+        if qty_val <= 0.0:
+            qty_val = abs(_safe_float(qty_hint))
+
+        price_val = _safe_float(
+            self._order_field(order_res or {}, "avgPrice", "price", "stopPrice", "markPrice", "px")
+        )
+
+        leg_key = (symbol, interval, side_label.upper())
+        leg_info = self._leg_ledger.get(leg_key, {}) or {}
+
+        entry_price = _safe_float(leg_info.get("entry_price"))
+        leverage = int(_safe_float(leg_info.get("leverage")))
+        if leverage <= 0:
+            try:
+                leverage = int(self.config.get("leverage") or 0)
+            except Exception:
+                leverage = 0
+        margin_usdt = _safe_float(leg_info.get("margin_usdt"))
+        if margin_usdt <= 0.0 and entry_price > 0.0 and qty_val > 0.0:
+            margin_usdt = (entry_price * qty_val) / leverage if leverage > 0 else entry_price * qty_val
+
+        pnl_value = None
+        if entry_price > 0.0 and price_val > 0.0 and qty_val > 0.0:
+            direction = 1.0 if side_label.upper() in ("BUY", "LONG") else -1.0
+            pnl_value = (price_val - entry_price) * qty_val * direction
+
+        roi_percent = None
+        if pnl_value is not None and margin_usdt > 0.0:
+            roi_percent = (pnl_value / margin_usdt) * 100.0
+
+        payload: dict[str, float] = {}
+        if qty_val > 0.0:
+            payload["qty"] = abs(qty_val)
+        if price_val > 0.0:
+            payload["close_price"] = price_val
+        if entry_price > 0.0:
+            payload["entry_price"] = entry_price
+        if pnl_value is not None:
+            payload["pnl_value"] = pnl_value
+        if margin_usdt > 0.0:
+            payload["margin_usdt"] = margin_usdt
+        if leverage > 0:
+            payload["leverage"] = leverage
+        if roi_percent is not None:
+            payload["roi_percent"] = roi_percent
+        return payload
+
     def stop(self):
         self._stop = True
 
@@ -191,7 +272,8 @@ class StrategyEngine:
                     self.log(f"{symbol}@{interval} close-opposite failed: {res}")
                     return False
             if not reduce_only_missing:
-                self._notify_interval_closed(symbol, interval, opp)
+                payload = self._build_close_event_payload(symbol, interval, opp, qty_to_close, res)
+                self._notify_interval_closed(symbol, interval, opp, **payload)
             self._leg_ledger.pop(opp_key, None)
             if hasattr(self, '_last_order_time'):
                 self._last_order_time.pop(opp_key, None)
@@ -206,18 +288,20 @@ class StrategyEngine:
                 if desired == 'BUY' and amt < 0:
                     qty = abs(amt)
                     res = self.binance.close_futures_leg_exact(symbol, qty, side='BUY', position_side=None)
-                    self._notify_interval_closed(symbol, interval, 'SELL')
                     if not (isinstance(res, dict) and res.get('ok')):
                         self.log(f"{symbol}@{interval} close-short failed: {res}")
                         return False
+                    payload = self._build_close_event_payload(symbol, interval, 'SELL', qty, res)
+                    self._notify_interval_closed(symbol, interval, 'SELL', **payload)
                     closed_any = True
                 elif desired == 'SELL' and amt > 0:
                     qty = abs(amt)
                     res = self.binance.close_futures_leg_exact(symbol, qty, side='SELL', position_side=None)
-                    self._notify_interval_closed(symbol, interval, 'BUY')
                     if not (isinstance(res, dict) and res.get('ok')):
                         self.log(f"{symbol}@{interval} close-long failed: {res}")
                         return False
+                    payload = self._build_close_event_payload(symbol, interval, 'BUY', qty, res)
+                    self._notify_interval_closed(symbol, interval, 'BUY', **payload)
                     closed_any = True
             except Exception as exc:
                 self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
@@ -607,12 +691,13 @@ class StrategyEngine:
                         desired_ps = ('LONG' if self.binance.get_futures_dual_side() else None)
                         res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='SELL', position_side=desired_ps)
                         if isinstance(res, dict) and res.get('ok'):
+                            payload = self._build_close_event_payload(cw['symbol'], cw.get('interval'), 'BUY', qty, res)
                             self._leg_ledger.pop(key_long, None)
                             try:
                                 if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'BUY')
                             except Exception:
                                 pass
-                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'BUY')
+                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'BUY', **payload)
                             self.log(f"Closed LONG for {cw['symbol']}@{cw.get('interval')} (RSI ≥ {exit_up}).")
                 except Exception:
                     pass
@@ -625,12 +710,13 @@ class StrategyEngine:
                         desired_ps = ('SHORT' if self.binance.get_futures_dual_side() else None)
                         res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='BUY', position_side=desired_ps)
                         if isinstance(res, dict) and res.get('ok'):
+                            payload = self._build_close_event_payload(cw['symbol'], cw.get('interval'), 'SELL', qty, res)
                             self._leg_ledger.pop(key_short, None)
                             try:
                                 if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'SELL')
                             except Exception:
                                 pass
-                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'SELL')
+                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'SELL', **payload)
                             self.log(f"Closed SHORT for {cw['symbol']}@{cw.get('interval')} (RSI ≤ {exit_dn}).")
                 except Exception:
                     pass
@@ -815,6 +901,9 @@ class StrategyEngine:
                     if isinstance(res, dict) and res.get("ok"):
                         latency_s = max(0.0, time.time() - start_ts)
                         target_side_label = "BUY" if side_key == "LONG" else "SELL"
+                        payload = self._build_close_event_payload(
+                            cw["symbol"], cw.get("interval"), target_side_label, data["qty"], res
+                        )
                         for leg_key in list(self._leg_ledger.keys()):
                             if leg_key[0] == cw["symbol"] and leg_key[2] == target_side_label:
                                 self._leg_ledger.pop(leg_key, None)
@@ -828,6 +917,7 @@ class StrategyEngine:
                             cw["symbol"],
                             cw.get("interval"),
                             target_side_label,
+                            **payload,
                             latency_seconds=latency_s,
                             latency_ms=latency_s * 1000.0,
                             reason="cumulative_stop_loss",
@@ -933,6 +1023,9 @@ class StrategyEngine:
                             )
                             if isinstance(res, dict) and res.get("ok"):
                                 latency_s = max(0.0, time.time() - start_ts)
+                                payload = self._build_close_event_payload(
+                                    cw["symbol"], cw.get("interval"), "BUY", qty_long, res
+                                )
                                 self._leg_ledger.pop(key_long, None)
                                 self._last_order_time.pop(key_long, None)
                                 long_open = False
@@ -951,6 +1044,7 @@ class StrategyEngine:
                                     cw["symbol"],
                                     cw.get("interval"),
                                     "BUY",
+                                    **payload,
                                     latency_seconds=latency_s,
                                     latency_ms=latency_s * 1000.0,
                                     reason="stop_loss_long",
@@ -1047,6 +1141,9 @@ class StrategyEngine:
                             )
                             if isinstance(res, dict) and res.get("ok"):
                                 latency_s = max(0.0, time.time() - start_ts)
+                                payload = self._build_close_event_payload(
+                                    cw["symbol"], cw.get("interval"), "SELL", qty_short, res
+                                )
                                 self._leg_ledger.pop(key_short, None)
                                 self._last_order_time.pop(key_short, None)
                                 short_open = False
@@ -1065,6 +1162,7 @@ class StrategyEngine:
                                     cw["symbol"],
                                     cw.get("interval"),
                                     "SELL",
+                                    **payload,
                                     latency_seconds=latency_s,
                                     latency_ms=latency_s * 1000.0,
                                     reason="stop_loss_short",
@@ -1111,21 +1209,60 @@ class StrategyEngine:
         try:
             key_dup = (cw['symbol'], cw.get('interval'), str(signal).upper())
             leg_dup = self._leg_ledger.get(key_dup)
-            if signal and leg_dup and float(leg_dup.get('qty',0))>0:
-                position_amt = 0.0
+            if signal and leg_dup:
                 try:
-                    position_amt = float(self.binance.get_net_futures_position_amt(cw['symbol']))
+                    existing_qty = float(leg_dup.get('qty') or 0.0)
                 except Exception:
-                    position_amt = 0.0
-                if abs(position_amt) <= 0.0:
-                    try:
-                        self._leg_ledger.pop(key_dup, None)
-                    except Exception:
-                        pass
-                else:
-                    self.log(f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active).")
-                    signal = None
-                    signal_timestamp = None
+                    existing_qty = 0.0
+                if existing_qty > 0.0:
+                    cache = _load_positions_cache()
+                    side_is_long = key_dup[2] == "BUY"
+                    position_active = False
+                    for pos in cache:
+                        try:
+                            if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                                continue
+                            amt = float(pos.get("positionAmt") or 0.0)
+                            if dual_side:
+                                pos_side = str(pos.get("positionSide") or "").upper()
+                                if side_is_long and pos_side == "LONG" and amt > 1e-9:
+                                    position_active = True
+                                    break
+                                if (not side_is_long) and pos_side == "SHORT" and abs(amt) > 1e-9:
+                                    position_active = True
+                                    break
+                            else:
+                                if side_is_long and amt > 1e-9:
+                                    position_active = True
+                                    break
+                                if (not side_is_long) and amt < -1e-9:
+                                    position_active = True
+                                    break
+                        except Exception:
+                            continue
+                    if position_active:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active)."
+                        )
+                        signal = None
+                        signal_timestamp = None
+                    else:
+                        elapsed = time.time() - float(leg_dup.get("timestamp") or 0.0)
+                        if elapsed < 5.0:
+                            self.log(
+                                f"{cw['symbol']}@{cw.get('interval')} awaiting exchange update; suppressing duplicate {str(signal).upper()} open (last fill {elapsed:.1f}s ago)."
+                            )
+                            signal = None
+                            signal_timestamp = None
+                        else:
+                            try:
+                                self._leg_ledger.pop(key_dup, None)
+                            except Exception:
+                                pass
+                            try:
+                                self._last_order_time.pop(key_dup, None)
+                            except Exception:
+                                pass
         except Exception:
             pass
         if signal and cw.get('trade_on_signal', True):
@@ -1291,6 +1428,12 @@ class StrategyEngine:
                         if order_res.get('ok'):
                             key = (cw['symbol'], cw.get('interval'), signal.upper())
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
+                            exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
+                            if exec_qty is not None:
+                                try:
+                                    qty = float(exec_qty)
+                                except Exception:
+                                    pass
                             if qty > 0:
                                 entry_price_est = price
                                 try:
@@ -1303,10 +1446,30 @@ class StrategyEngine:
                                             entry_price_est = float(computed_px)
                                 except Exception:
                                     entry_price_est = price
+                                try:
+                                    leverage_val = int(order_res.get('info', {}).get('leverage') or 0)
+                                except Exception:
+                                    leverage_val = 0
+                                if leverage_val <= 0:
+                                    try:
+                                        leverage_val = int(order_res.get('computed', {}).get('lev') or 0)
+                                    except Exception:
+                                        leverage_val = 0
+                                if leverage_val <= 0:
+                                    try:
+                                        leverage_val = int(self.config.get('leverage') or 0)
+                                    except Exception:
+                                        leverage_val = 0
+                                try:
+                                    margin_est = (entry_price_est * qty) / leverage_val if leverage_val > 0 else entry_price_est * qty
+                                except Exception:
+                                    margin_est = 0.0
                                 self._leg_ledger[key] = {
                                     'qty': qty,
                                     'timestamp': time.time(),
                                     'entry_price': float(entry_price_est or price),
+                                    'leverage': leverage_val,
+                                    'margin_usdt': float(margin_est or 0.0),
                                 }
                                 self._last_order_time[key] = time.time()
                     except Exception:

@@ -6973,6 +6973,13 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             maint = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
                         except Exception:
                             maint = 0.0
+                        try:
+                            initial_margin_val = float(p.get('initialMargin') or 0.0)
+                        except Exception:
+                            initial_margin_val = 0.0
+                        baseline_margin = maint if maint > 0.0 else initial_margin_val
+                        if baseline_margin <= 0.0:
+                            baseline_margin = margin_usdt
                         margin_balance_val = float(p.get('marginBalance') or 0.0)
                         if margin_balance_val <= 0.0 and iso_wallet > 0.0:
                             margin_balance_val = iso_wallet
@@ -6981,10 +6988,11 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if margin_balance_val <= 0.0:
                             margin_balance_val = margin_usdt
                         margin_balance_val = max(margin_balance_val, 0.0)
-                        margin_ratio = normalize_margin_ratio(p.get('marginRatio') or p.get('margin_ratio'))
+                        raw_margin_ratio = normalize_margin_ratio(p.get('marginRatio') or p.get('margin_ratio'))
+                        margin_ratio = raw_margin_ratio
                         if margin_ratio <= 0.0 and margin_balance_val > 0:
                             unrealized_loss = abs(pnl) if pnl < 0 else 0.0
-                            margin_ratio = ((maint + unrealized_loss) / margin_balance_val) * 100.0
+                            margin_ratio = ((baseline_margin + unrealized_loss) / margin_balance_val) * 100.0
                         roi_pct = 0.0
                         if margin_usdt > 0:
                             try:
@@ -7361,6 +7369,37 @@ def _mw_update_position_history(self, positions_map: dict):
                                 entry["pnl_value"] = base_pnl * ratio
                             else:
                                 entry["pnl_value"] = base_pnl
+                    qty_dist_sum = 0.0
+                    try:
+                        qty_dist_sum = sum(abs(float(e.get("qty") or 0.0)) for e in alloc_entries if isinstance(e, dict))
+                    except Exception:
+                        qty_dist_sum = 0.0
+                    if qty_dist_sum <= 0.0 and qty_reported is not None and qty_reported > 0:
+                        qty_dist_sum = qty_reported
+                    entries_count = len([entry for entry in alloc_entries if isinstance(entry, dict)])
+                    for entry in alloc_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        share = 0.0
+                        try:
+                            if qty_dist_sum and qty_dist_sum > 0:
+                                share = abs(float(entry.get("qty") or 0.0)) / qty_dist_sum
+                        except Exception:
+                            share = 0.0
+                        if share <= 0.0 and entries_count:
+                            share = 1.0 / entries_count
+                        if qty_reported is not None and qty_reported > 0 and share > 0:
+                            entry["qty"] = qty_reported * share
+                        if margin_reported is not None and margin_reported > 0 and share > 0:
+                            entry["margin_usdt"] = margin_reported * share
+                        if pnl_reported is not None and share > 0:
+                            entry["pnl_value"] = pnl_reported * share
+                        if close_price_reported is not None and close_price_reported > 0:
+                            entry["close_price"] = close_price_reported
+                        if entry_price_reported is not None and entry_price_reported > 0:
+                            entry.setdefault("entry_price", entry_price_reported)
+                        if leverage_reported:
+                            entry["leverage"] = leverage_reported
                 else:
                     alloc_entries = []
                 if alloc_entries:
@@ -7495,15 +7534,15 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                     pnl = base_pnl
             if allocation.get("status"):
                 status_lower = str(allocation.get("status")).strip().lower()
-            margin_ratio = normalize_margin_ratio(allocation.get("margin_ratio"))
-            try:
-                margin_balance_val = float(allocation.get("margin_balance") or 0.0)
-            except Exception:
-                margin_balance_val = 0.0
-            try:
-                maint_margin_val = float(allocation.get("maint_margin") or 0.0)
-            except Exception:
-                maint_margin_val = 0.0
+        margin_ratio = normalize_margin_ratio(allocation.get("margin_ratio"))
+        try:
+            margin_balance_val = float(allocation.get("margin_balance") or 0.0)
+        except Exception:
+            margin_balance_val = 0.0
+        try:
+            maint_margin_val = float(allocation.get("maint_margin") or 0.0)
+        except Exception:
+            maint_margin_val = 0.0
 
         qty = max(qty, 0.0)
         if notional <= 0:
@@ -7544,6 +7583,11 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
 
         if margin_ratio <= 0.0:
             margin_ratio = base_margin_ratio
+        baseline_margin_for_ratio = max(0.0, maint_margin_val)
+        if baseline_margin_for_ratio <= 0.0:
+            baseline_margin_for_ratio = margin
+        if baseline_margin_for_ratio <= 0.0:
+            baseline_margin_for_ratio = base_margin
         if margin_balance_val <= 0.0:
             margin_balance_val = base_margin_balance
         if maint_margin_val <= 0.0:
@@ -7555,7 +7599,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         margin_balance_val = max(margin_balance_val, 0.0)
         if margin_ratio <= 0.0 and margin_balance_val > 0:
             unrealized_loss = max(0.0, -pnl) if status_lower == "active" else 0.0
-            margin_ratio = ((max(0.0, maint_margin_val) + unrealized_loss) / margin_balance_val) * 100.0
+            margin_ratio = ((baseline_margin_for_ratio + unrealized_loss) / margin_balance_val) * 100.0
 
         data.update({
             "qty": qty,
@@ -9484,6 +9528,36 @@ def _mw_on_trade_signal(self, order_info: dict):
                         if not entry_snap.get("close_time"):
                             entry_snap["close_time"] = close_time_fmt
                         alloc_entries_snapshot.append(entry_snap)
+            def _safe_float_event(value):
+                try:
+                    if value is None:
+                        return None
+                    if isinstance(value, str):
+                        stripped = value.strip()
+                        if not stripped:
+                            return None
+                        return float(stripped)
+                    return float(value)
+                except Exception:
+                    return None
+
+            qty_reported = _safe_float_event(order_info.get("qty") or order_info.get("executed_qty"))
+            if qty_reported is not None:
+                qty_reported = abs(qty_reported)
+            close_price_reported = _safe_float_event(
+                order_info.get("close_price") or order_info.get("avg_price") or order_info.get("price") or order_info.get("mark_price")
+            )
+            entry_price_reported = _safe_float_event(order_info.get("entry_price"))
+            pnl_reported = _safe_float_event(order_info.get("pnl_value"))
+            margin_reported = _safe_float_event(order_info.get("margin_usdt"))
+            roi_reported = _safe_float_event(order_info.get("roi_percent"))
+            leverage_reported = None
+            lev_tmp = _safe_float_event(order_info.get("leverage"))
+            if lev_tmp is not None and lev_tmp > 0:
+                try:
+                    leverage_reported = int(round(lev_tmp))
+                except Exception:
+                    leverage_reported = None
             open_records = getattr(self, "_open_position_records", {}) or {}
             base_record = copy.deepcopy(open_records.get((sym_upper, side_key)))
             if not base_record:
@@ -9551,6 +9625,19 @@ def _mw_on_trade_signal(self, order_info: dict):
                     trig = entry_snap.get("trigger_indicators")
                     if isinstance(trig, (list, tuple, set)):
                         trigger_list.extend([str(t).strip() for t in trig if str(t).strip()])
+                    if close_price_reported is not None and close_price_reported > 0:
+                        entry_snap["close_price"] = close_price_reported
+                    if entry_price_reported is not None and entry_price_reported > 0:
+                        entry_snap.setdefault("entry_price", entry_price_reported)
+                    if leverage_reported:
+                        entry_snap["leverage"] = leverage_reported
+                if qty_reported is not None and qty_reported > 0:
+                    qty_total = qty_reported
+                if margin_reported is not None and margin_reported > 0:
+                    margin_total = margin_reported
+                if pnl_reported is not None:
+                    pnl_total = pnl_reported
+                    pnl_has_value = True
                 if qty_total > 0:
                     base_data_snap["qty"] = qty_total
                 if margin_total > 0:
@@ -9563,10 +9650,36 @@ def _mw_on_trade_signal(self, order_info: dict):
                     roi_percent = (pnl_total / margin_total) * 100.0 if margin_total else 0.0
                     base_data_snap["roi_percent"] = roi_percent
                     base_data_snap["pnl_roi"] = f"{pnl_total:+.2f} USDT ({roi_percent:+.2f}%)"
+                if (
+                    pnl_reported is not None
+                    and roi_reported is not None
+                    and margin_reported is not None
+                    and margin_reported > 0
+                ):
+                    base_data_snap["roi_percent"] = roi_reported
+                    base_data_snap["pnl_roi"] = f"{pnl_reported:+.2f} USDT ({roi_reported:+.2f}%)"
                 if trigger_list:
                     trigger_list = list(dict.fromkeys(trigger_list))
                     base_record["indicators"] = trigger_list
                     base_data_snap["trigger_indicators"] = trigger_list
+            if qty_reported is not None and qty_reported > 0:
+                base_data_snap["qty"] = qty_reported
+            if margin_reported is not None and margin_reported > 0:
+                base_data_snap["margin_usdt"] = margin_reported
+            if pnl_reported is not None:
+                base_data_snap["pnl_value"] = pnl_reported
+                if margin_reported and margin_reported > 0:
+                    roi_val = roi_reported if roi_reported is not None else (pnl_reported / margin_reported) * 100.0
+                    base_data_snap["roi_percent"] = roi_val
+                    base_data_snap["pnl_roi"] = f"{pnl_reported:+.2f} USDT ({roi_val:+.2f}%)"
+                else:
+                    base_data_snap["pnl_roi"] = f"{pnl_reported:+.2f} USDT"
+            if close_price_reported is not None and close_price_reported > 0:
+                base_data_snap["close_price"] = close_price_reported
+            if entry_price_reported is not None and entry_price_reported > 0:
+                base_data_snap.setdefault("entry_price", entry_price_reported)
+            if leverage_reported:
+                base_data_snap["leverage"] = leverage_reported
             base_record["data"] = base_data_snap
             base_record["allocations"] = alloc_entries_snapshot
             try:
