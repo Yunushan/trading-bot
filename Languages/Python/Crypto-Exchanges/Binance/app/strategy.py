@@ -34,7 +34,27 @@ def _interval_to_seconds(iv:str)->int:
 
 
 _CPU_COUNT = os.cpu_count() or 4
-_MAX_PARALLEL_RUNS = max(6, min(24, _CPU_COUNT * 2))
+
+
+def _default_parallel_limit(cpu_count: int) -> int:
+    """Heuristic to balance strategy loop concurrency with available CPU cores.
+
+    Too many concurrent loops on low core-count hosts starves the Qt GUI thread,
+    so we keep the limit tight for <=4 cores and scale gently afterwards.
+    """
+    cpu = max(1, int(cpu_count))
+    if cpu == 1:
+        return 1
+    if cpu == 2:
+        return 2
+    if cpu <= 4:
+        return cpu
+    if cpu <= 8:
+        return int(round(cpu * 1.25))
+    return min(16, int(round(cpu * 1.5)))
+
+
+_MAX_PARALLEL_RUNS = max(1, min(16, _default_parallel_limit(_CPU_COUNT)))
 
 
 class StrategyEngine:
@@ -42,8 +62,14 @@ class StrategyEngine:
     _MAX_ACTIVE = _MAX_PARALLEL_RUNS
 
     @classmethod
-    def concurrent_limit(cls):
-        return cls._MAX_ACTIVE
+    def concurrent_limit(cls, job_count: int | None = None) -> int:
+        limit = cls._MAX_ACTIVE
+        if job_count is not None:
+            try:
+                limit = min(limit, max(1, int(job_count)))
+            except Exception:
+                pass
+        return limit
 
     def __init__(self, binance_wrapper, config, log_callback, trade_callback=None, loop_interval_override=None, can_open_callback=None):
         self.config = copy.deepcopy(config)

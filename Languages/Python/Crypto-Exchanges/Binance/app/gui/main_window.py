@@ -5971,9 +5971,6 @@ class MainWindow(QtWidgets.QWidget):
         self.positions_view_combo.currentIndexChanged.connect(self._on_positions_view_changed)
         ctrl_layout.addWidget(self.positions_view_combo)
         ctrl_layout.addStretch()
-        self.positions_pnl_label = QtWidgets.QLabel("Total PNL: --")
-        self.positions_pnl_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        ctrl_layout.addWidget(self.positions_pnl_label)
         tab2_status_widget = QtWidgets.QWidget()
         tab2_status_layout = QtWidgets.QHBoxLayout(tab2_status_widget)
         tab2_status_layout.setContentsMargins(0, 0, 0, 0)
@@ -8348,7 +8345,7 @@ def start_strategy(self):
             pass
 
         total_jobs = len(combos)
-        concurrency = StrategyEngine.concurrent_limit()
+        concurrency = StrategyEngine.concurrent_limit(total_jobs)
         if total_jobs > concurrency:
             self.log(f"{total_jobs} symbol/interval loops requested; limiting concurrent execution to {concurrency} to keep the UI responsive.")
 
