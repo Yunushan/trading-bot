@@ -204,6 +204,11 @@ class StrategyEngine:
             payload["leverage"] = leverage
         if roi_percent is not None:
             payload["roi_percent"] = roi_percent
+        ledger_id = leg_info.get("ledger_id") if isinstance(leg_info, dict) else None
+        if ledger_id:
+            payload["ledger_id"] = ledger_id
+        import time as _time  # local import to avoid circular references in tests
+        payload["event_id"] = f"{ledger_id or symbol}-{int(_time.time() * 1000)}"
         return payload
 
     def stop(self):
@@ -1464,12 +1469,14 @@ class StrategyEngine:
                                     margin_est = (entry_price_est * qty) / leverage_val if leverage_val > 0 else entry_price_est * qty
                                 except Exception:
                                     margin_est = 0.0
+                                ledger_id = f"{key[0]}-{key[1]}-{key[2]}-{int(time.time()*1000)}"
                                 self._leg_ledger[key] = {
                                     'qty': qty,
                                     'timestamp': time.time(),
                                     'entry_price': float(entry_price_est or price),
                                     'leverage': leverage_val,
                                     'margin_usdt': float(margin_est or 0.0),
+                                    'ledger_id': ledger_id,
                                 }
                                 self._last_order_time[key] = time.time()
                     except Exception:

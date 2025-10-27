@@ -786,18 +786,20 @@ class _PositionsWorker(QtCore.QObject):
             iso_wallet = float(p.get('isolatedWallet') or 0.0)
             isolated_margin = float(p.get('isolatedMargin') or 0.0)
             initial_margin = float(p.get('initialMargin') or 0.0)
-            computed_margin = 0.0
             if entry_price > 0.0 and lev > 0:
                 computed_margin = abs(amt) * entry_price / max(lev, 1)
-            margin_candidates = [
-                isolated_margin,
-                iso_wallet,
-                initial_margin,
-                computed_margin,
-                size_usdt / max(lev, 1) if lev > 0 and size_usdt > 0.0 else 0.0,
-            ]
-            margin_candidates = [m for m in margin_candidates if m and m > 0.0]
-            margin = max(margin_candidates) if margin_candidates else 0.0
+            else:
+                computed_margin = 0.0
+            margin = 0.0
+            for candidate in (isolated_margin, initial_margin, computed_margin):
+                if candidate and candidate > 0.0:
+                    margin = candidate
+                    break
+            if margin <= 0.0 and size_usdt > 0.0 and lev > 0:
+                margin = size_usdt / max(lev, 1)
+            if margin <= 0.0 and iso_wallet > 0.0:
+                margin = iso_wallet
+            margin = max(margin, 0.0)
             margin_balance = float(p.get('marginBalance') or 0.0)
             if margin_balance <= 0.0 and iso_wallet > 0.0:
                 margin_balance = iso_wallet
@@ -819,8 +821,9 @@ class _PositionsWorker(QtCore.QObject):
             # Prefer Binance-provided marginRatio when available, otherwise approximate.
             ratio = normalize_margin_ratio(p.get('marginRatio'))
             if ratio <= 0.0 and margin_balance > 0.0:
+                baseline_margin = maint_margin if maint_margin > 0.0 else margin
                 unrealized_loss = max(0.0, -pnl)
-                ratio = ((maint_margin + unrealized_loss) / margin_balance) * 100.0
+                ratio = ((baseline_margin + unrealized_loss) / margin_balance) * 100.0
             try:
                 update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
             except Exception:
@@ -1248,6 +1251,7 @@ class MainWindow(QtWidgets.QWidget):
             "active": {"pnl": None, "roi": None},
             "closed": {"pnl": None, "roi": None},
         }
+        self._processed_close_events: set[str] = set()
         self.language_combo = None
         self.exchange_combo = None
         self.forex_combo = None
@@ -9528,6 +9532,7 @@ def _mw_on_trade_signal(self, order_info: dict):
                         if not entry_snap.get("close_time"):
                             entry_snap["close_time"] = close_time_fmt
                         alloc_entries_snapshot.append(entry_snap)
+            ledger_id = order_info.get("ledger_id")
             def _safe_float_event(value):
                 try:
                     if value is None:
@@ -9558,6 +9563,18 @@ def _mw_on_trade_signal(self, order_info: dict):
                     leverage_reported = int(round(lev_tmp))
                 except Exception:
                     leverage_reported = None
+            processed = getattr(self, "_processed_close_events", None)
+            if processed is None:
+                processed = set()
+                self._processed_close_events = processed
+            unique_key = order_info.get("event_id")
+            if not unique_key:
+                identifier = ledger_id or sym_upper or ""
+                qty_token = f"{qty_reported:.8f}" if qty_reported is not None else "0"
+                unique_key = f"{identifier}|{close_time_fmt}|{qty_token}|{side_key}"
+            if unique_key in processed:
+                return
+            processed.add(unique_key)
             open_records = getattr(self, "_open_position_records", {}) or {}
             base_record = copy.deepcopy(open_records.get((sym_upper, side_key)))
             if not base_record:
@@ -9575,6 +9592,8 @@ def _mw_on_trade_signal(self, order_info: dict):
             else:
                 base_record["status"] = "Closed"
                 base_record["close_time"] = close_time_fmt
+            if ledger_id:
+                base_record["ledger_id"] = ledger_id
             base_data_snap = dict(base_record.get("data") or {})
             if alloc_entries_snapshot:
                 qty_total = 0.0
@@ -9684,7 +9703,17 @@ def _mw_on_trade_signal(self, order_info: dict):
             base_record["allocations"] = alloc_entries_snapshot
             try:
                 closed_records = getattr(self, "_closed_position_records", [])
-                closed_records.insert(0, base_record)
+                if ledger_id:
+                    replaced = False
+                    for idx, rec in enumerate(closed_records):
+                        if isinstance(rec, dict) and rec.get("ledger_id") == ledger_id:
+                            closed_records[idx] = base_record
+                            replaced = True
+                            break
+                    if not replaced:
+                        closed_records.insert(0, base_record)
+                else:
+                    closed_records.insert(0, base_record)
                 self._closed_position_records = closed_records
             except Exception:
                 pass
