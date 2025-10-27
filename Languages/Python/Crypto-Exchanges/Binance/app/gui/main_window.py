@@ -798,24 +798,29 @@ class _PositionsWorker(QtCore.QObject):
             ]
             margin_candidates = [m for m in margin_candidates if m and m > 0.0]
             margin = max(margin_candidates) if margin_candidates else 0.0
+            margin_balance = float(p.get('marginBalance') or 0.0)
+            if margin_balance <= 0.0 and iso_wallet > 0.0:
+                margin_balance = iso_wallet
+            if margin_balance <= 0.0:
+                margin_balance = margin + pnl
+            if margin_balance <= 0.0 and size_usdt > 0.0:
+                try:
+                    margin_balance = size_usdt / max(lev or 1, 1)
+                except Exception:
+                    margin_balance = 0.0
+            margin_balance = max(margin_balance, 0.0)
             roi = (pnl / margin * 100.0) if margin > 0 else 0.0
             pnl_roi_str = f"{pnl:+.2f} USDT ({roi:+.2f}%)"
+            try:
+                maint_margin = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
+            except Exception:
+                maint_margin = 0.0
 
             # Prefer Binance-provided marginRatio when available, otherwise approximate.
             ratio = normalize_margin_ratio(p.get('marginRatio'))
-            if ratio <= 0.0:
-                margin_balance = float(p.get('marginBalance') or 0.0)
-                if margin_balance <= 0.0:
-                    margin_balance = margin + (pnl if pnl > 0 else 0.0)
-                if margin_balance <= 0.0:
-                    margin_balance = abs(margin) if margin > 0.0 else abs(size_usdt / max(lev or 1, 1))
-                try:
-                    mm = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
-                except Exception:
-                    mm = 0.0
+            if ratio <= 0.0 and margin_balance > 0.0:
                 unrealized_loss = max(0.0, -pnl)
-                if margin_balance > 0.0:
-                    ratio = ((mm + unrealized_loss) / margin_balance) * 100.0
+                ratio = ((maint_margin + unrealized_loss) / margin_balance) * 100.0
             try:
                 update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
             except Exception:
@@ -823,6 +828,8 @@ class _PositionsWorker(QtCore.QObject):
             return {
                 'size_usdt': size_usdt,
                 'margin_usdt': margin,
+                'margin_balance': margin_balance,
+                'maint_margin': maint_margin,
                 'pnl_roi': pnl_roi_str,
                 'margin_ratio': ratio,
                 'pnl_value': pnl,
@@ -835,6 +842,8 @@ class _PositionsWorker(QtCore.QObject):
             return {
                 'size_usdt': 0.0,
                 'margin_usdt': 0.0,
+                'margin_balance': 0.0,
+                'maint_margin': 0.0,
                 'pnl_roi': "-",
                 'margin_ratio': 0.0,
                 'pnl_value': 0.0,
@@ -3784,6 +3793,10 @@ class MainWindow(QtWidgets.QWidget):
                 "roi_percent": getattr(run, "roi_percent", 0.0),
                 "max_drawdown_value": getattr(run, "max_drawdown_value", 0.0),
                 "max_drawdown_percent": getattr(run, "max_drawdown_percent", 0.0),
+                "max_drawdown_during_value": getattr(run, "max_drawdown_during_value", getattr(run, "max_drawdown_value", 0.0)),
+                "max_drawdown_during_percent": getattr(run, "max_drawdown_during_percent", getattr(run, "max_drawdown_percent", 0.0)),
+                "max_drawdown_result_value": getattr(run, "max_drawdown_result_value", 0.0),
+                "max_drawdown_result_percent": getattr(run, "max_drawdown_result_percent", 0.0),
                 "mdd_logic": getattr(run, "mdd_logic", None),
             }
         data.setdefault("indicator_keys", [])
@@ -3795,7 +3808,16 @@ class MainWindow(QtWidgets.QWidget):
             data["trades"] = int(data.get("trades", 0) or 0)
         except Exception:
             data["trades"] = 0
-        for key in ("roi_value", "roi_percent", "max_drawdown_value", "max_drawdown_percent"):
+        for key in (
+            "roi_value",
+            "roi_percent",
+            "max_drawdown_value",
+            "max_drawdown_percent",
+            "max_drawdown_during_value",
+            "max_drawdown_during_percent",
+            "max_drawdown_result_value",
+            "max_drawdown_result_percent",
+        ):
             try:
                 data[key] = float(data.get(key, 0.0) or 0.0)
             except Exception:
@@ -3889,22 +3911,40 @@ class MainWindow(QtWidgets.QWidget):
         if not data.get("account_mode"):
             data["account_mode"] = ""
         data["leverage_display"] = f"{data.get('leverage', 0.0):.2f}x"
-        max_dd_pct = data.get("max_drawdown_percent", 0.0)
+        max_dd_during_pct = data.get("max_drawdown_during_percent", data.get("max_drawdown_percent", 0.0))
         try:
-            max_dd_pct = float(max_dd_pct or 0.0)
+            max_dd_during_pct = float(max_dd_during_pct or 0.0)
         except Exception:
-            max_dd_pct = 0.0
-        max_dd_val = data.get("max_drawdown_value", 0.0)
+            max_dd_during_pct = 0.0
+        max_dd_during_val = data.get("max_drawdown_during_value", data.get("max_drawdown_value", 0.0))
         try:
-            max_dd_val = float(max_dd_val or 0.0)
+            max_dd_during_val = float(max_dd_during_val or 0.0)
         except Exception:
-            max_dd_val = 0.0
-        data["max_drawdown_percent"] = max_dd_pct
-        data["max_drawdown_value"] = max_dd_val
-        if max_dd_pct > 0.0:
-            data["max_drawdown_display"] = f"{-abs(max_dd_pct):.2f}%"
+            max_dd_during_val = 0.0
+        max_dd_result_pct = data.get("max_drawdown_result_percent", 0.0)
+        try:
+            max_dd_result_pct = float(max_dd_result_pct or 0.0)
+        except Exception:
+            max_dd_result_pct = 0.0
+        max_dd_result_val = data.get("max_drawdown_result_value", 0.0)
+        try:
+            max_dd_result_val = float(max_dd_result_val or 0.0)
+        except Exception:
+            max_dd_result_val = 0.0
+        data["max_drawdown_percent"] = max_dd_during_pct
+        data["max_drawdown_value"] = max_dd_during_val
+        data["max_drawdown_during_percent"] = max_dd_during_pct
+        data["max_drawdown_during_value"] = max_dd_during_val
+        data["max_drawdown_result_percent"] = max_dd_result_pct
+        data["max_drawdown_result_value"] = max_dd_result_val
+        if max_dd_during_pct > 0.0:
+            data["max_drawdown_during_display"] = f"{-abs(max_dd_during_pct):.2f}%"
         else:
-            data["max_drawdown_display"] = "0.00%"
+            data["max_drawdown_during_display"] = "0.00%"
+        if max_dd_result_pct > 0.0:
+            data["max_drawdown_result_display"] = f"{-abs(max_dd_result_pct):.2f}%"
+        else:
+            data["max_drawdown_result_display"] = "0.00%"
         data["symbol"] = str(data.get("symbol") or "")
         data["interval"] = str(data.get("interval") or "")
         data["logic"] = str(data.get("logic") or "")
@@ -4002,8 +4042,10 @@ class MainWindow(QtWidgets.QWidget):
                     assets_mode = data.get("assets_mode") or "-"
                     account_mode = data.get("account_mode") or "-"
                     leverage_display = data.get("leverage_display") or f"{data.get('leverage', 0.0):.2f}x"
-                    max_drawdown_percent = _safe_float(data.get("max_drawdown_percent", 0.0), 0.0)
-                    max_drawdown_value = _safe_float(data.get("max_drawdown_value", 0.0), 0.0)
+                    max_drawdown_during_percent = _safe_float(data.get("max_drawdown_during_percent", data.get("max_drawdown_percent", 0.0)), 0.0)
+                    max_drawdown_during_value = _safe_float(data.get("max_drawdown_during_value", data.get("max_drawdown_value", 0.0)), 0.0)
+                    max_drawdown_result_percent = _safe_float(data.get("max_drawdown_result_percent", 0.0), 0.0)
+                    max_drawdown_result_value = _safe_float(data.get("max_drawdown_result_value", 0.0), 0.0)
 
                     indicators_display = ", ".join(INDICATOR_DISPLAY_NAMES.get(k, k) for k in indicator_keys) or "-"
                     item_symbol = QtWidgets.QTableWidgetItem(symbol or "-")
@@ -4033,16 +4075,27 @@ class MainWindow(QtWidgets.QWidget):
                     self.backtest_results_table.setItem(row, 15, roi_value_item)
                     roi_percent_item = _NumericItem(f"{roi_percent:+.2f}%", roi_percent)
                     self.backtest_results_table.setItem(row, 16, roi_percent_item)
-                    if max_drawdown_percent > 0.0:
-                        dd_value_for_sort = -abs(max_drawdown_percent)
-                        dd_text = f"{dd_value_for_sort:.2f}%"
+                    if max_drawdown_during_percent > 0.0:
+                        dd_during_for_sort = -abs(max_drawdown_during_percent)
+                        dd_during_text = f"{dd_during_for_sort:.2f}%"
                     else:
-                        dd_value_for_sort = 0.0
-                        dd_text = "0.00%"
-                    dd_item = _NumericItem(dd_text, dd_value_for_sort)
-                    if max_drawdown_value > 0.0:
-                        dd_item.setToolTip(f"Peak-to-trough drop: {max_drawdown_value:.2f} USDT")
-                    self.backtest_results_table.setItem(row, 17, dd_item)
+                        dd_during_for_sort = 0.0
+                        dd_during_text = "0.00%"
+                    dd_during_item = _NumericItem(dd_during_text, dd_during_for_sort)
+                    if max_drawdown_during_value > 0.0:
+                        dd_during_item.setToolTip(f"Peak-to-trough drop while open: {max_drawdown_during_value:.2f} USDT")
+                    self.backtest_results_table.setItem(row, 17, dd_during_item)
+
+                    if max_drawdown_result_percent > 0.0:
+                        dd_result_for_sort = -abs(max_drawdown_result_percent)
+                        dd_result_text = f"{dd_result_for_sort:.2f}%"
+                    else:
+                        dd_result_for_sort = 0.0
+                        dd_result_text = "0.00%"
+                    dd_result_item = _NumericItem(dd_result_text, dd_result_for_sort)
+                    if max_drawdown_result_value > 0.0:
+                        dd_result_item.setToolTip(f"Max loss on closed position: {max_drawdown_result_value:.2f} USDT")
+                    self.backtest_results_table.setItem(row, 18, dd_result_item)
                 except Exception as row_exc:
                     self.log(f"Backtest table row {row} error: {row_exc}")
                     err_item = QtWidgets.QTableWidgetItem(f"Error: {row_exc}")
@@ -5812,6 +5865,9 @@ class MainWindow(QtWidgets.QWidget):
         self.positions_view_combo.currentIndexChanged.connect(self._on_positions_view_changed)
         ctrl_layout.addWidget(self.positions_view_combo)
         ctrl_layout.addStretch()
+        self.positions_pnl_label = QtWidgets.QLabel("Total PNL: --")
+        self.positions_pnl_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        ctrl_layout.addWidget(self.positions_pnl_label)
         tab2_status_widget = QtWidgets.QWidget()
         tab2_status_layout = QtWidgets.QHBoxLayout(tab2_status_widget)
         tab2_status_layout.setContentsMargins(0, 0, 0, 0)
@@ -6259,6 +6315,11 @@ class MainWindow(QtWidgets.QWidget):
 
         tab3_content_layout.addLayout(top_layout)
 
+        output_group = QtWidgets.QGroupBox("Backtest Output")
+        output_group_layout = QtWidgets.QVBoxLayout(output_group)
+        output_group_layout.setContentsMargins(12, 12, 12, 12)
+        output_group_layout.setSpacing(12)
+
         controls_layout = QtWidgets.QHBoxLayout()
         self.backtest_run_btn = QtWidgets.QPushButton("Run Backtest")
         self.backtest_run_btn.clicked.connect(self._run_backtest)
@@ -6286,7 +6347,7 @@ class MainWindow(QtWidgets.QWidget):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             tab3_status_layout.addWidget(lbl)
         controls_layout.addWidget(tab3_status_widget)
-        tab3_content_layout.addLayout(controls_layout)
+        output_group_layout.addLayout(controls_layout)
         self._update_bot_status()
         try:
             for widget in (self.backtest_run_btn, self.backtest_stop_btn, self.backtest_add_to_dashboard_btn):
@@ -6296,7 +6357,7 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        self.backtest_results_table = QtWidgets.QTableWidget(0, 18)
+        self.backtest_results_table = QtWidgets.QTableWidget(0, 19)
         self.backtest_results_table.setHorizontalHeaderLabels([
             "Symbol",
             "Interval",
@@ -6315,7 +6376,8 @@ class MainWindow(QtWidgets.QWidget):
             "Leverage (Futures)",
             "ROI (USDT)",
             "ROI (%)",
-            "Max Drawdown (%)",
+            "Max Drawdown During Position (%)",
+            "Max Drawdown Results (%)",
         ])
         header = self.backtest_results_table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -6361,7 +6423,9 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_results_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.backtest_results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.backtest_results_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
-        tab3_content_layout.addWidget(self.backtest_results_table)
+        self.backtest_results_table.setMinimumHeight(420)
+        output_group_layout.addWidget(self.backtest_results_table, 1)
+        tab3_content_layout.addWidget(output_group)
 
         self.tabs.addTab(tab3, "Backtest")
 
@@ -6725,12 +6789,23 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             qty_val = 0.0
                         side_key = str(row.get('side_key') or '').upper()
                         qty_signed = -abs(qty_val) if side_key == 'S' else abs(qty_val)
+                        try:
+                            margin_balance_fallback = float(row.get('margin_balance') or 0.0)
+                        except Exception:
+                            margin_balance_fallback = 0.0
+                        if margin_balance_fallback <= 0.0:
+                            try:
+                                margin_balance_fallback = float(row.get('margin_usdt') or 0.0) + float(row.get('pnl_value') or 0.0)
+                            except Exception:
+                                margin_balance_fallback = float(row.get('margin_usdt') or 0.0)
                         raw_entry = {
                             'symbol': sym_val,
                             'positionAmt': qty_signed,
                             'markPrice': row.get('mark'),
-                            'isolatedWallet': row.get('margin_usdt'),
+                            'isolatedWallet': margin_balance_fallback if margin_balance_fallback > 0.0 else row.get('margin_usdt'),
                             'initialMargin': row.get('margin_usdt'),
+                            'marginBalance': margin_balance_fallback,
+                            'maintMargin': row.get('maint_margin'),
                             'marginRatio': row.get('margin_ratio'),
                             'unRealizedProfit': row.get('pnl_value'),
                             'updateTime': row.get('update_time'),
@@ -6769,17 +6844,22 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if margin_usdt <= 0.0 and leverage and leverage > 0 and value > 0.0:
                             margin_usdt = value / max(leverage, 1)
                         margin_usdt = max(margin_usdt, 0.0)
+                        try:
+                            maint = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
+                        except Exception:
+                            maint = 0.0
+                        margin_balance_val = float(p.get('marginBalance') or 0.0)
+                        if margin_balance_val <= 0.0 and iso_wallet > 0.0:
+                            margin_balance_val = iso_wallet
+                        if margin_balance_val <= 0.0:
+                            margin_balance_val = margin_usdt + pnl
+                        if margin_balance_val <= 0.0:
+                            margin_balance_val = margin_usdt
+                        margin_balance_val = max(margin_balance_val, 0.0)
                         margin_ratio = normalize_margin_ratio(p.get('marginRatio') or p.get('margin_ratio'))
-                        if margin_ratio <= 0.0 and margin_usdt > 0:
-                            try:
-                                maint = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
-                            except Exception:
-                                maint = 0.0
+                        if margin_ratio <= 0.0 and margin_balance_val > 0:
                             unrealized_loss = abs(pnl) if pnl < 0 else 0.0
-                            margin_balance = margin_usdt + (pnl if pnl > 0 else 0.0)
-                            denom = margin_balance if margin_balance > 0.0 else margin_usdt
-                            if denom > 0.0:
-                                margin_ratio = ((maint + unrealized_loss) / denom) * 100.0
+                            margin_ratio = ((maint + unrealized_loss) / margin_balance_val) * 100.0
                         roi_pct = 0.0
                         if margin_usdt > 0:
                             try:
@@ -6805,6 +6885,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'mark': mark,
                             'size_usdt': value,
                             'margin_usdt': margin_usdt,
+                            'margin_balance': margin_balance_val,
+                            'maint_margin': maint,
                             'margin_ratio': margin_ratio,
                             'pnl_roi': pnl_roi,
                             'pnl_value': pnl,
@@ -7243,6 +7325,8 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         entry_price = float(base_data.get("entry_price") or 0.0)
         leverage = int(base_data.get("leverage") or 0) if base_data.get("leverage") else 0
         base_margin_ratio = normalize_margin_ratio(base_data.get("margin_ratio"))
+        base_margin_balance = float(base_data.get("margin_balance") or 0.0)
+        base_maint_margin = float(base_data.get("maint_margin") or 0.0)
 
         qty = base_qty
         margin = base_margin
@@ -7250,6 +7334,8 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         status_lower = str(status or "").strip().lower()
         pnl = base_pnl
         margin_ratio = 0.0
+        margin_balance_val = 0.0
+        maint_margin_val = 0.0
 
         if allocation:
             try:
@@ -7285,6 +7371,14 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             if allocation.get("status"):
                 status_lower = str(allocation.get("status")).strip().lower()
             margin_ratio = normalize_margin_ratio(allocation.get("margin_ratio"))
+            try:
+                margin_balance_val = float(allocation.get("margin_balance") or 0.0)
+            except Exception:
+                margin_balance_val = 0.0
+            try:
+                maint_margin_val = float(allocation.get("maint_margin") or 0.0)
+            except Exception:
+                maint_margin_val = 0.0
 
         qty = max(qty, 0.0)
         if notional <= 0:
@@ -7325,11 +7419,18 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
 
         if margin_ratio <= 0.0:
             margin_ratio = base_margin_ratio
-        if margin_ratio <= 0.0 and margin > 0:
-            margin_balance = margin + (pnl if pnl > 0 else 0.0)
-            if margin_balance > 0:
-                approx_ratio = (max(0.0, -pnl) / margin_balance) * 100.0
-                margin_ratio = approx_ratio
+        if margin_balance_val <= 0.0:
+            margin_balance_val = base_margin_balance
+        if maint_margin_val <= 0.0:
+            maint_margin_val = base_maint_margin
+        if margin_balance_val <= 0.0:
+            margin_balance_val = margin + pnl
+        if margin_balance_val <= 0.0:
+            margin_balance_val = margin
+        margin_balance_val = max(margin_balance_val, 0.0)
+        if margin_ratio <= 0.0 and margin_balance_val > 0:
+            unrealized_loss = max(0.0, -pnl) if status_lower == "active" else 0.0
+            margin_ratio = ((max(0.0, maint_margin_val) + unrealized_loss) / margin_balance_val) * 100.0
 
         data.update({
             "qty": qty,
@@ -7338,6 +7439,8 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             "roi_percent": roi_percent,
             "pnl_roi": pnl_roi,
             "size_usdt": max(notional, 0.0),
+            "margin_balance": max(margin_balance_val, 0.0),
+            "maint_margin": max(0.0, maint_margin_val),
             "margin_ratio": max(margin_ratio, 0.0),
         })
         trigger_inds = []
@@ -7482,6 +7585,9 @@ def _mw_render_positions_table(self):
             sort_order = QtCore.Qt.SortOrder.AscendingOrder
         self.pos_table.setSortingEnabled(False)
         self.pos_table.setRowCount(0)
+        total_pnl = 0.0
+        total_margin = 0.0
+        pnl_has_value = False
         for rec in display_records:
             try:
                 data = rec.get('data', {}) or {}
@@ -7499,7 +7605,11 @@ def _mw_render_positions_table(self):
                 mr = normalize_margin_ratio(data.get('margin_ratio'))
                 margin_usdt = float(data.get('margin_usdt') or 0.0)
                 pnl_roi = data.get('pnl_roi')
-                pnl_value = float(data.get('pnl_value') or 0.0)
+                pnl_raw_value = data.get('pnl_value')
+                try:
+                    pnl_value = float(pnl_raw_value or 0.0)
+                except Exception:
+                    pnl_value = 0.0
                 side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
                 open_time = rec.get('open_time') or '-'
                 status_txt = rec.get('status', 'Active')
@@ -7524,9 +7634,14 @@ def _mw_render_positions_table(self):
 
                 margin_item = _NumericItem(f"{margin_usdt:.2f} USDT" if margin_usdt else "-", margin_usdt)
                 self.pos_table.setItem(row, 5, margin_item)
+                if margin_usdt > 0.0:
+                    total_margin += margin_usdt
 
                 pnl_item = _NumericItem(str(pnl_roi or "-"), pnl_value)
                 self.pos_table.setItem(row, 6, pnl_item)
+                if pnl_raw_value is not None:
+                    total_pnl += pnl_value
+                    pnl_has_value = True
 
                 self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
                 indicators_raw = rec.get('indicators')
@@ -7548,6 +7663,8 @@ def _mw_render_positions_table(self):
                 self.pos_table.setCellWidget(row, POS_CLOSE_COLUMN, btn)
             except Exception:
                 pass
+        summary_margin = total_margin if total_margin > 0.0 else None
+        self._update_positions_pnl_summary(total_pnl if pnl_has_value else None, summary_margin)
         try:
             if getattr(self, "chart_enabled", False) and getattr(self, "chart_auto_follow", False) and not getattr(self, "_chart_manual_override", False):
                 self._sync_chart_to_active_positions()
@@ -7565,6 +7682,23 @@ def _mw_render_positions_table(self):
                 self.pos_table.sortItems(sort_column, sort_order)
         except Exception:
             pass
+
+
+def _update_positions_pnl_summary(self, total_pnl: float | None, total_margin: float | None) -> None:
+    label = getattr(self, "positions_pnl_label", None)
+    if label is None:
+        return
+    if total_pnl is None:
+        label.setText("Total PNL: --")
+        return
+    text = f"Total PNL: {total_pnl:+.2f} USDT"
+    if total_margin is not None and total_margin > 0.0:
+        try:
+            roi = (total_pnl / total_margin) * 100.0
+        except Exception:
+            roi = 0.0
+        text += f" ({roi:+.2f}%)"
+    label.setText(text)
 
 
 def _mw_clear_positions_selected(self):
@@ -8837,6 +8971,7 @@ except Exception:
 try:
     MainWindow._update_position_history = _mw_update_position_history
     MainWindow._render_positions_table = _mw_render_positions_table
+    MainWindow._update_positions_pnl_summary = _update_positions_pnl_summary
     MainWindow._snapshot_closed_position = _mw_snapshot_closed_position
     MainWindow._make_close_btn = _mw_make_close_btn
     MainWindow._close_position_single = _mw_close_position_single
@@ -9371,6 +9506,7 @@ def _mw_on_trade_signal(self, order_info: dict):
                 "entry_price": entry_price_val if entry_price_val > 0 else None,
                 "leverage": leverage_val if leverage_val > 0 else None,
                 "margin_usdt": margin_val,
+                "margin_balance": margin_val,
                 "notional": notional_val,
                 "symbol": sym_upper,
                 "side_key": side_key_local,

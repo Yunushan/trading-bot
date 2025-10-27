@@ -603,64 +603,54 @@ class StrategyEngine:
                 dual_side = False
         positions_cache = None
 
+        def _load_positions_cache():
+            nonlocal positions_cache
+            if positions_cache is None:
+                try:
+                    positions_cache = self.binance.list_open_futures_positions() or []
+                except Exception:
+                    positions_cache = []
+            return positions_cache or []
+
         if stop_enabled and last_price is not None and account_type == "FUTURES":
             def _ensure_entry_price(leg_key, expect_long: bool):
-                nonlocal positions_cache
                 leg = self._leg_ledger.get(leg_key, {}) or {}
                 qty_val = float(leg.get("qty") or 0.0)
                 entry_px = float(leg.get("entry_price") or 0.0)
                 matched_pos = None
-                if qty_val > 0.0 and entry_px <= 0.0:
-                    if positions_cache is None:
-                        try:
-                            positions_cache = self.binance.list_open_futures_positions() or []
-                        except Exception:
-                            positions_cache = []
-                    for pos in positions_cache or []:
-                        try:
-                            if str(pos.get("symbol") or "").upper() != cw["symbol"]:
-                                continue
-                            pos_side = str(pos.get("positionSide") or "").upper()
-                            amt = float(pos.get("positionAmt") or 0.0)
-                            if dual_side:
-                                if expect_long and pos_side != "LONG":
-                                    continue
-                                if (not expect_long) and pos_side != "SHORT":
-                                    continue
-                                qty_candidate = abs(float(pos.get("positionAmt") or 0.0))
-                                if qty_candidate <= 0.0:
-                                    continue
-                                entry_px = float(pos.get("entryPrice") or 0.0)
-                                matched_pos = pos
-                                break
-                            else:
-                                if expect_long and amt <= 0.0:
-                                    continue
-                                if (not expect_long) and amt >= 0.0:
-                                    continue
-                                entry_px = float(pos.get("entryPrice") or 0.0)
-                                matched_pos = pos
-                                break
-                        except Exception:
-                            continue
-                    if entry_px > 0.0:
-                        leg["entry_price"] = entry_px
-                        self._leg_ledger[leg_key] = leg
-                if matched_pos is None and positions_cache:
+                cache = _load_positions_cache()
+                for pos in cache:
                     try:
-                        for pos in positions_cache:
-                            if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                        if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                            continue
+                        amt = float(pos.get("positionAmt") or 0.0)
+                        if dual_side:
+                            pos_side = str(pos.get("positionSide") or "").upper()
+                            if expect_long and pos_side != "LONG":
                                 continue
-                            if dual_side:
-                                side_str = str(pos.get("positionSide") or "").upper()
-                                if expect_long and side_str != "LONG":
-                                    continue
-                                if (not expect_long) and side_str != "SHORT":
-                                    continue
-                            matched_pos = pos
-                            break
+                            if (not expect_long) and pos_side != "SHORT":
+                                continue
+                            qty_candidate = abs(amt)
+                        else:
+                            if expect_long and amt <= 0.0:
+                                continue
+                            if (not expect_long) and amt >= 0.0:
+                                continue
+                            qty_candidate = abs(amt)
+                        if qty_candidate <= 0.0:
+                            continue
+                        matched_pos = pos
+                        if entry_px <= 0.0:
+                            try:
+                                entry_px = float(pos.get("entryPrice") or entry_px)
+                            except Exception:
+                                pass
+                        break
                     except Exception:
-                        matched_pos = None
+                        continue
+                if matched_pos and entry_px > 0.0:
+                    leg["entry_price"] = entry_px
+                    self._leg_ledger[leg_key] = leg
                 return leg, qty_val, entry_px, matched_pos
 
             leg_long, qty_long, entry_price_long, pos_long = _ensure_entry_price(key_long, True)
@@ -698,16 +688,12 @@ class StrategyEngine:
                     pos_short_qty_total = 0.0
 
             if is_cumulative:
-                if positions_cache is None:
-                    try:
-                        positions_cache = self.binance.list_open_futures_positions() or []
-                    except Exception:
-                        positions_cache = []
+                cache = _load_positions_cache()
                 totals = {
                     "LONG": {"qty": 0.0, "loss": 0.0, "margin": 0.0},
                     "SHORT": {"qty": 0.0, "loss": 0.0, "margin": 0.0},
                 }
-                for pos in positions_cache or []:
+                for pos in cache:
                     try:
                         if str(pos.get("symbol") or "").upper() != cw["symbol"]:
                             continue
