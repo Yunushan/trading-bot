@@ -150,6 +150,8 @@ class StrategyEngine:
         side_label: str,
         qty_hint: float,
         order_res: dict | None,
+        *,
+        leg_info_override: dict | None = None,
     ) -> dict:
         """Prepare metadata describing a closed leg so the UI can compute realized PnL."""
         def _safe_float(value):
@@ -167,7 +169,10 @@ class StrategyEngine:
         )
 
         leg_key = (symbol, interval, side_label.upper())
-        leg_info = self._leg_ledger.get(leg_key, {}) or {}
+        if isinstance(leg_info_override, dict):
+            leg_info = leg_info_override
+        else:
+            leg_info = self._leg_ledger.get(leg_key, {}) or {}
 
         entry_price = _safe_float(leg_info.get("entry_price"))
         leverage = int(_safe_float(leg_info.get("leverage")))
@@ -210,6 +215,244 @@ class StrategyEngine:
         import time as _time  # local import to avoid circular references in tests
         payload["event_id"] = f"{ledger_id or symbol}-{int(_time.time() * 1000)}"
         return payload
+
+    def _leg_entries(self, leg_key) -> list[dict]:
+        leg = self._leg_ledger.get(leg_key)
+        if not isinstance(leg, dict):
+            return []
+        entries = leg.get("entries")
+        if not isinstance(entries, list):
+            return []
+        filtered = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                filtered.append(entry)
+        return filtered
+
+    def _update_leg_snapshot(self, leg_key, leg: dict | None) -> None:
+        if not isinstance(leg, dict):
+            self._leg_ledger.pop(leg_key, None)
+            return
+        entries = self._leg_entries(leg_key)
+        total_qty = 0.0
+        weighted_notional = 0.0
+        total_margin = 0.0
+        last_entry: dict | None = None
+        for entry in entries:
+            qty = max(0.0, float(entry.get("qty") or 0.0))
+            price = max(0.0, float(entry.get("entry_price") or 0.0))
+            margin = max(0.0, float(entry.get("margin_usdt") or 0.0))
+            total_qty += qty
+            weighted_notional += qty * price
+            total_margin += margin
+            last_entry = entry
+        if total_qty > 0.0:
+            leg["qty"] = total_qty
+            leg["entry_price"] = weighted_notional / total_qty if weighted_notional > 0.0 else leg.get("entry_price", 0.0)
+        else:
+            leg["qty"] = 0.0
+            leg["entry_price"] = 0.0
+        leg["margin_usdt"] = total_margin
+        if last_entry:
+            if "ledger_id" in last_entry:
+                leg["ledger_id"] = last_entry.get("ledger_id")
+            if last_entry.get("leverage") is not None:
+                leg["leverage"] = last_entry.get("leverage")
+        leg["entries"] = entries
+        leg["timestamp"] = time.time()
+        self._leg_ledger[leg_key] = leg
+
+    def _append_leg_entry(self, leg_key, entry: dict) -> None:
+        leg = self._leg_ledger.get(leg_key, {})
+        entries = self._leg_entries(leg_key)
+        entries.append(entry)
+        leg["entries"] = entries
+        self._update_leg_snapshot(leg_key, leg)
+        self._last_order_time[leg_key] = time.time()
+
+    def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
+        if ledger_id is None:
+            self._leg_ledger.pop(leg_key, None)
+            self._last_order_time.pop(leg_key, None)
+            return
+        leg = self._leg_ledger.get(leg_key)
+        if not isinstance(leg, dict):
+            return
+        entries = [entry for entry in self._leg_entries(leg_key) if entry.get("ledger_id") != ledger_id]
+        if not entries:
+            self._leg_ledger.pop(leg_key, None)
+            self._last_order_time.pop(leg_key, None)
+            return
+        leg["entries"] = entries
+        self._update_leg_snapshot(leg_key, leg)
+
+    def _sync_leg_entry_totals(self, leg_key, actual_qty: float) -> None:
+        leg = self._leg_ledger.get(leg_key)
+        if not isinstance(leg, dict):
+            return
+        entries = self._leg_entries(leg_key)
+        if not entries:
+            leg["qty"] = max(0.0, float(actual_qty))
+            self._update_leg_snapshot(leg_key, leg)
+            return
+        recorded_qty = sum(max(0.0, float(entry.get("qty") or 0.0)) for entry in entries)
+        if recorded_qty <= 0.0:
+            per_entry_qty = max(0.0, float(actual_qty)) / len(entries) if entries else 0.0
+            for entry in entries:
+                entry["qty"] = per_entry_qty
+        else:
+            scale = max(0.0, float(actual_qty)) / recorded_qty if recorded_qty > 0.0 else 0.0
+            for entry in entries:
+                qty = max(0.0, float(entry.get("qty") or 0.0)) * scale
+                entry["qty"] = qty
+                margin = max(0.0, float(entry.get("margin_usdt") or 0.0))
+                entry["margin_usdt"] = margin * scale if margin > 0.0 else margin
+        leg["entries"] = entries
+        self._update_leg_snapshot(leg_key, leg)
+
+    def _close_leg_entry(
+        self,
+        cw: dict,
+        leg_key: tuple[str, str, str],
+        entry: dict,
+        side_label: str,
+        close_side: str,
+        position_side: str | None,
+        *,
+        loss_usdt: float,
+        price_pct: float,
+        margin_pct: float,
+    ) -> bool:
+        symbol, interval, _ = leg_key
+        qty = max(0.0, float(entry.get("qty") or 0.0))
+        if qty <= 0.0:
+            return False
+        start_ts = time.time()
+        try:
+            res = self.binance.close_futures_leg_exact(
+                symbol,
+                qty,
+                side=close_side,
+                position_side=position_side,
+            )
+        except Exception as exc:
+            try:
+                self.log(f"Per-trade stop-loss close error for {symbol}@{interval} ({side_label}): {exc}")
+            except Exception:
+                pass
+            return False
+        if not (isinstance(res, dict) and res.get("ok")):
+            try:
+                self.log(f"Per-trade stop-loss close failed for {symbol}@{interval} ({side_label}): {res}")
+            except Exception:
+                pass
+            return False
+        latency_s = max(0.0, time.time() - start_ts)
+        payload = self._build_close_event_payload(
+            symbol,
+            interval,
+            side_label,
+            qty,
+            res,
+            leg_info_override=entry,
+        )
+        self._remove_leg_entry(leg_key, entry.get("ledger_id"))
+        try:
+            if hasattr(self.guard, "mark_closed"):
+                self.guard.mark_closed(symbol, interval, side_label)
+        except Exception:
+            pass
+        self._notify_interval_closed(
+            symbol,
+            interval,
+            side_label,
+            **payload,
+            latency_seconds=latency_s,
+            latency_ms=latency_s * 1000.0,
+            reason="per_trade_stop_loss",
+        )
+        self._log_latency_metric(symbol, interval, f"stop-loss {side_label.lower()} leg", latency_s)
+        try:
+            pct_display = max(price_pct, margin_pct)
+            self.log(
+                f"Per-trade stop-loss closed {side_label} for {symbol}@{interval} "
+                f"(loss {loss_usdt:.4f} USDT / {pct_display:.2f}%)."
+            )
+        except Exception:
+            pass
+        return True
+
+    def _evaluate_per_trade_stop(
+        self,
+        cw: dict,
+        leg_key: tuple[str, str, str],
+        entries: list[dict],
+        *,
+        side_label: str,
+        last_price: float | None,
+        apply_usdt_limit: bool,
+        apply_percent_limit: bool,
+        stop_usdt_limit: float,
+        stop_percent_limit: float,
+        dual_side: bool,
+    ) -> bool:
+        if last_price is None:
+            return False
+        symbol, interval, _ = leg_key
+        desired_position_side = None
+        if dual_side:
+            desired_position_side = "LONG" if side_label.upper() == "BUY" else "SHORT"
+        close_side = "SELL" if side_label.upper() == "BUY" else "BUY"
+        triggered_any = False
+        for entry in list(entries):
+            qty = max(0.0, float(entry.get("qty") or 0.0))
+            entry_price = max(0.0, float(entry.get("entry_price") or 0.0))
+            if qty <= 0.0 or entry_price <= 0.0:
+                continue
+            if side_label.upper() == "BUY":
+                loss_usdt = max(0.0, (entry_price - last_price) * qty)
+            else:
+                loss_usdt = max(0.0, (last_price - entry_price) * qty)
+            denom = entry_price * qty
+            price_pct = (loss_usdt / denom * 100.0) if denom > 0.0 else 0.0
+            leverage_val = float(entry.get("leverage") or 0.0)
+            margin_entry = float(entry.get("margin_usdt") or 0.0)
+            if margin_entry <= 0.0:
+                if leverage_val > 0.0:
+                    margin_entry = denom / leverage_val if leverage_val != 0.0 else denom
+                else:
+                    margin_entry = denom
+            margin_pct = (loss_usdt / margin_entry * 100.0) if margin_entry > 0.0 else 0.0
+            effective_pct = max(price_pct, margin_pct)
+            triggered = False
+            if apply_usdt_limit and loss_usdt >= stop_usdt_limit:
+                triggered = True
+            if not triggered and apply_percent_limit and effective_pct >= stop_percent_limit:
+                triggered = True
+            if triggered:
+                if self._close_leg_entry(
+                    cw,
+                    leg_key,
+                    entry,
+                    side_label.upper(),
+                    close_side,
+                    desired_position_side,
+                    loss_usdt=loss_usdt,
+                    price_pct=price_pct,
+                    margin_pct=margin_pct,
+                ):
+                    triggered_any = True
+        if triggered_any:
+            # ensure ledger snapshot reflects any removals
+            leg = self._leg_ledger.get(leg_key)
+            if isinstance(leg, dict):
+                self._update_leg_snapshot(leg_key, leg)
+        else:
+            # ensure we keep consistent timestamps even if no trigger
+            leg = self._leg_ledger.get(leg_key)
+            if isinstance(leg, dict):
+                leg["timestamp"] = time.time()
+        return triggered_any
 
     @staticmethod
     def _compute_position_margin_fields(
@@ -882,9 +1125,8 @@ class StrategyEngine:
                     qty_long = max(0.0, float(pos_long.get("positionAmt") or 0.0))
                 except Exception:
                     qty_long = 0.0
-                if qty_long > 0.0 and leg_long is not None:
-                    leg_long["qty"] = qty_long
-                    self._leg_ledger[key_long] = leg_long
+                if qty_long > 0.0:
+                    self._sync_leg_entry_totals(key_long, qty_long)
             if pos_long:
                 try:
                     amt_val = float(pos_long.get("positionAmt") or 0.0)
@@ -896,9 +1138,8 @@ class StrategyEngine:
                     qty_short = abs(float(pos_short.get("positionAmt") or 0.0))
                 except Exception:
                     qty_short = 0.0
-                if qty_short > 0.0 and leg_short is not None:
-                    leg_short["qty"] = qty_short
-                    self._leg_ledger[key_short] = leg_short
+                if qty_short > 0.0:
+                    self._sync_leg_entry_totals(key_short, qty_short)
             if pos_short:
                 try:
                     amt_val = float(pos_short.get("positionAmt") or 0.0)
@@ -906,7 +1147,43 @@ class StrategyEngine:
                 except Exception:
                     pos_short_qty_total = 0.0
 
-            if is_cumulative:
+            entries_long = self._leg_entries(key_long)
+            entries_short = self._leg_entries(key_short)
+
+            if scope == "per_trade":
+                if entries_long:
+                    self._evaluate_per_trade_stop(
+                        cw,
+                        key_long,
+                        entries_long,
+                        side_label="BUY",
+                        last_price=last_price,
+                        apply_usdt_limit=apply_usdt_limit,
+                        apply_percent_limit=apply_percent_limit,
+                        stop_usdt_limit=stop_usdt_limit,
+                        stop_percent_limit=stop_percent_limit,
+                        dual_side=dual_side,
+                    )
+                if entries_short:
+                    self._evaluate_per_trade_stop(
+                        cw,
+                        key_short,
+                        entries_short,
+                        side_label="SELL",
+                        last_price=last_price,
+                        apply_usdt_limit=apply_usdt_limit,
+                        apply_percent_limit=apply_percent_limit,
+                        stop_usdt_limit=stop_usdt_limit,
+                        stop_percent_limit=stop_percent_limit,
+                        dual_side=dual_side,
+                    )
+                leg_long = self._leg_ledger.get(key_long, {}) or {}
+                leg_short = self._leg_ledger.get(key_short, {}) or {}
+                qty_long = float(leg_long.get("qty") or 0.0)
+                qty_short = float(leg_short.get("qty") or 0.0)
+                entry_price_long = float(leg_long.get("entry_price") or 0.0)
+                entry_price_short = float(leg_short.get("entry_price") or 0.0)
+            elif is_cumulative:
                 cache = _load_positions_cache()
                 totals = {
                     "LONG": {"qty": 0.0, "loss": 0.0, "margin": 0.0},
@@ -1214,11 +1491,19 @@ class StrategyEngine:
                                     pass
                         except Exception as exc:
                             try:
-                                self.log(
-                                    f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (SELL): {exc}"
-                                )
+                                    self.log(
+                                        f"Stop-loss close error for {cw['symbol']}@{cw.get('interval')} (SELL): {exc}"
+                                    )
                             except Exception:
                                 pass
+            leg_long_state = self._leg_ledger.get(key_long, {}) or {}
+            leg_short_state = self._leg_ledger.get(key_short, {}) or {}
+            qty_long = float(leg_long_state.get("qty") or 0.0)
+            qty_short = float(leg_short_state.get("qty") or 0.0)
+            entry_price_long = float(leg_long_state.get("entry_price") or 0.0)
+            entry_price_short = float(leg_short_state.get("entry_price") or 0.0)
+            long_open = qty_long > 0.0
+            short_open = qty_short > 0.0
 
         thresholds = []
         try:
@@ -1496,15 +1781,17 @@ class StrategyEngine:
                                 except Exception:
                                     margin_est = 0.0
                                 ledger_id = f"{key[0]}-{key[1]}-{key[2]}-{int(time.time()*1000)}"
-                                self._leg_ledger[key] = {
-                                    'qty': qty,
-                                    'timestamp': time.time(),
-                                    'entry_price': float(entry_price_est or price),
-                                    'leverage': leverage_val,
-                                    'margin_usdt': float(margin_est or 0.0),
-                                    'ledger_id': ledger_id,
-                                }
-                                self._last_order_time[key] = time.time()
+                                self._append_leg_entry(
+                                    key,
+                                    {
+                                        'qty': float(qty),
+                                        'timestamp': time.time(),
+                                        'entry_price': float(entry_price_est or price),
+                                        'leverage': leverage_val,
+                                        'margin_usdt': float(margin_est or 0.0),
+                                        'ledger_id': ledger_id,
+                                    },
+                                )
                     except Exception:
                         pass
                     qty_display = order_res.get('executedQty') or order_res.get('origQty') or qty_est
