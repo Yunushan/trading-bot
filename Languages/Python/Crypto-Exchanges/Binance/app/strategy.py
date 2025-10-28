@@ -280,6 +280,20 @@ class StrategyEngine:
             maint_margin = float(position.get("maintMargin") or position.get("maintenanceMargin") or 0.0)
         except Exception:
             maint_margin = 0.0
+        try:
+            maint_margin_rate = float(
+                position.get("maintMarginRate")
+                or position.get("maintenanceMarginRate")
+                or position.get("maintMarginRatio")
+                or position.get("maintenanceMarginRatio")
+                or 0.0
+            )
+        except Exception:
+            maint_margin_rate = 0.0
+        if maint_margin <= 0.0 and maint_margin_rate > 0.0 and notional_val > 0.0:
+            maint_margin = notional_val * maint_margin_rate
+        if margin_balance > 0.0 and maint_margin > margin_balance:
+            maint_margin = margin_balance
         unrealized_loss = max(0.0, -unrealized_profit)
         return margin, margin_balance, maint_margin, unrealized_loss
 
@@ -1039,10 +1053,8 @@ class StrategyEngine:
                         entry_price_hint=entry_price_long,
                     )
                     ratio_long = normalize_margin_ratio((pos_long or {}).get("marginRatio"))
-                    if ratio_long <= 0.0 and margin_balance_long > 0.0:
-                        baseline_long = mm_long if mm_long > 0.0 else margin_long
-                        if baseline_long > 0.0:
-                            ratio_long = ((baseline_long + unrealized_loss_long) / margin_balance_long) * 100.0
+                    if ratio_long <= 0.0 and mm_long > 0.0 and margin_balance_long > 0.0:
+                        ratio_long = ((mm_long + unrealized_loss_long) / margin_balance_long) * 100.0
                     if margin_long > 0.0:
                         try:
                             margin_share = margin_long
@@ -1129,10 +1141,8 @@ class StrategyEngine:
                         entry_price_hint=entry_price_short,
                     )
                     ratio_short = normalize_margin_ratio((pos_short or {}).get("marginRatio"))
-                    if ratio_short <= 0.0 and margin_balance_short > 0.0:
-                        baseline_short = mm_short if mm_short > 0.0 else margin_short
-                        if baseline_short > 0.0:
-                            ratio_short = ((baseline_short + unrealized_loss_short_val) / margin_balance_short) * 100.0
+                    if ratio_short <= 0.0 and mm_short > 0.0 and margin_balance_short > 0.0:
+                        ratio_short = ((mm_short + unrealized_loss_short_val) / margin_balance_short) * 100.0
                     if margin_short > 0.0:
                         try:
                             margin_share = margin_short

@@ -783,47 +783,20 @@ class _PositionsWorker(QtCore.QObject):
                 notional = abs(amt) * mark
             size_usdt = abs(notional)
             entry_price = float(p.get('entryPrice') or 0.0)
-            iso_wallet = float(p.get('isolatedWallet') or 0.0)
-            isolated_margin = float(p.get('isolatedMargin') or 0.0)
-            initial_margin = float(p.get('initialMargin') or 0.0)
-            if entry_price > 0.0 and lev > 0:
-                computed_margin = abs(amt) * entry_price / max(lev, 1)
-            else:
-                computed_margin = 0.0
-            margin = 0.0
-            for candidate in (isolated_margin, initial_margin, computed_margin):
-                if candidate and candidate > 0.0:
-                    margin = candidate
-                    break
+            margin, margin_balance, maint_margin, unrealized_loss = _derive_margin_snapshot(
+                p, qty_hint=abs(amt), entry_price_hint=entry_price
+            )
             if margin <= 0.0 and size_usdt > 0.0 and lev > 0:
                 margin = size_usdt / max(lev, 1)
-            if margin <= 0.0 and iso_wallet > 0.0:
-                margin = iso_wallet
             margin = max(margin, 0.0)
-            margin_balance = float(p.get('marginBalance') or 0.0)
-            if margin_balance <= 0.0 and iso_wallet > 0.0:
-                margin_balance = iso_wallet
-            if margin_balance <= 0.0:
-                margin_balance = margin + pnl
-            if margin_balance <= 0.0 and size_usdt > 0.0:
-                try:
-                    margin_balance = size_usdt / max(lev or 1, 1)
-                except Exception:
-                    margin_balance = 0.0
             margin_balance = max(margin_balance, 0.0)
             roi = (pnl / margin * 100.0) if margin > 0 else 0.0
             pnl_roi_str = f"{pnl:+.2f} USDT ({roi:+.2f}%)"
-            try:
-                maint_margin = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
-            except Exception:
-                maint_margin = 0.0
 
             # Prefer Binance-provided marginRatio when available, otherwise approximate.
             ratio = normalize_margin_ratio(p.get('marginRatio'))
-            if ratio <= 0.0 and margin_balance > 0.0:
-                baseline_margin = maint_margin if maint_margin > 0.0 else margin
-                unrealized_loss = max(0.0, -pnl)
-                ratio = ((baseline_margin + unrealized_loss) / margin_balance) * 100.0
+            if ratio <= 0.0 and margin_balance > 0.0 and maint_margin > 0.0:
+                ratio = ((maint_margin + unrealized_loss) / margin_balance) * 100.0
             try:
                 update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
             except Exception:
@@ -832,7 +805,7 @@ class _PositionsWorker(QtCore.QObject):
                 'size_usdt': size_usdt,
                 'margin_usdt': margin,
                 'margin_balance': margin_balance,
-                'maint_margin': maint_margin,
+                'maint_margin': max(maint_margin, 0.0),
                 'pnl_roi': pnl_roi_str,
                 'margin_ratio': ratio,
                 'pnl_value': pnl,
@@ -7585,25 +7558,33 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         roi_percent = (pnl / margin * 100.0) if margin > 0 else base_roi
         pnl_roi = f"{pnl:+.2f} USDT ({roi_percent:+.2f}%)" if margin > 0 else f"{pnl:+.2f} USDT"
 
+        raw_position = base_data.get("raw_position") if isinstance(base_data.get("raw_position"), dict) else None
         if margin_ratio <= 0.0:
             margin_ratio = base_margin_ratio
-        baseline_margin_for_ratio = max(0.0, maint_margin_val)
-        if baseline_margin_for_ratio <= 0.0:
-            baseline_margin_for_ratio = margin
-        if baseline_margin_for_ratio <= 0.0:
-            baseline_margin_for_ratio = base_margin
         if margin_balance_val <= 0.0:
             margin_balance_val = base_margin_balance
         if maint_margin_val <= 0.0:
             maint_margin_val = base_maint_margin
+        if margin_ratio <= 0.0 and raw_position is not None:
+            snap_margin, snap_balance, snap_maint, snap_unreal_loss = _derive_margin_snapshot(
+                raw_position,
+                qty_hint=qty if qty > 0 else base_qty,
+                entry_price_hint=entry_price if entry_price > 0 else base_data.get("entry_price") or 0.0,
+            )
+            if margin <= 0.0 and snap_margin > 0.0:
+                margin = snap_margin
+            if margin_balance_val <= 0.0 and snap_balance > 0.0:
+                margin_balance_val = snap_balance
+            if maint_margin_val <= 0.0 and snap_maint > 0.0:
+                maint_margin_val = snap_maint
+            if margin_ratio <= 0.0 and snap_balance > 0.0 and snap_maint > 0.0:
+                margin_ratio = ((snap_maint + snap_unreal_loss) / snap_balance) * 100.0
         if margin_balance_val <= 0.0:
-            margin_balance_val = margin + pnl
-        if margin_balance_val <= 0.0:
-            margin_balance_val = margin
+            margin_balance_val = margin + max(pnl, 0.0)
         margin_balance_val = max(margin_balance_val, 0.0)
-        if margin_ratio <= 0.0 and margin_balance_val > 0:
+        if margin_ratio <= 0.0 and margin_balance_val > 0 and maint_margin_val > 0.0:
             unrealized_loss = max(0.0, -pnl) if status_lower == "active" else 0.0
-            margin_ratio = ((baseline_margin_for_ratio + unrealized_loss) / margin_balance_val) * 100.0
+            margin_ratio = ((maint_margin_val + unrealized_loss) / margin_balance_val) * 100.0
 
         data.update({
             "qty": qty,
@@ -9864,3 +9845,82 @@ try:
         MainWindow._on_trade_signal = _mw_on_trade_signal
 except Exception:
     pass
+def _derive_margin_snapshot(position: dict | None, qty_hint: float = 0.0, entry_price_hint: float = 0.0) -> tuple[float, float, float, float]:
+    """Return margin, balance, maintenance requirement, and unrealized loss for a futures position."""
+    if not isinstance(position, dict):
+        return 0.0, 0.0, 0.0, 0.0
+    try:
+        margin = float(
+            position.get("isolatedMargin")
+            or position.get("isolatedWallet")
+            or position.get("initialMargin")
+            or 0.0
+        )
+    except Exception:
+        margin = 0.0
+    try:
+        leverage = float(position.get("leverage") or 0.0)
+    except Exception:
+        leverage = 0.0
+    try:
+        entry_price = float(position.get("entryPrice") or 0.0)
+    except Exception:
+        entry_price = 0.0
+    if entry_price <= 0.0:
+        entry_price = max(0.0, float(entry_price_hint or 0.0))
+    try:
+        notional_val = abs(float(position.get("notional") or 0.0))
+    except Exception:
+        notional_val = 0.0
+    if notional_val <= 0.0 and entry_price > 0.0 and qty_hint > 0.0:
+        notional_val = entry_price * qty_hint
+    if margin <= 0.0:
+        if leverage > 0.0 and notional_val > 0.0:
+            margin = notional_val / leverage
+        elif notional_val > 0.0:
+            margin = notional_val
+    if margin <= 0.0 and entry_price > 0.0 and qty_hint > 0.0:
+        if leverage > 0.0:
+            margin = (entry_price * qty_hint) / leverage
+        else:
+            margin = entry_price * qty_hint
+    margin = max(margin, 0.0)
+    try:
+        margin_balance = float(position.get("marginBalance") or 0.0)
+    except Exception:
+        margin_balance = 0.0
+    try:
+        iso_wallet = float(position.get("isolatedWallet") or 0.0)
+    except Exception:
+        iso_wallet = 0.0
+    if margin_balance <= 0.0 and iso_wallet > 0.0:
+        margin_balance = iso_wallet
+    try:
+        unrealized_profit = float(position.get("unRealizedProfit") or 0.0)
+    except Exception:
+        unrealized_profit = 0.0
+    if margin_balance <= 0.0 and margin > 0.0:
+        margin_balance = margin + unrealized_profit
+    if margin_balance <= 0.0 and margin > 0.0:
+        margin_balance = margin
+    margin_balance = max(margin_balance, 0.0)
+    try:
+        maint_margin = float(position.get("maintMargin") or position.get("maintenanceMargin") or 0.0)
+    except Exception:
+        maint_margin = 0.0
+    try:
+        maint_rate = float(
+            position.get("maintMarginRate")
+            or position.get("maintenanceMarginRate")
+            or position.get("maintMarginRatio")
+            or position.get("maintenanceMarginRatio")
+            or 0.0
+        )
+    except Exception:
+        maint_rate = 0.0
+    if maint_margin <= 0.0 and maint_rate > 0.0 and notional_val > 0.0:
+        maint_margin = notional_val * maint_rate
+    if margin_balance > 0.0 and maint_margin > margin_balance:
+        maint_margin = margin_balance
+    unrealized_loss = max(0.0, -unrealized_profit)
+    return margin, margin_balance, maint_margin, unrealized_loss
