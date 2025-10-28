@@ -846,7 +846,7 @@ class StrategyEngine:
     def generate_signal(self, df, ind):
         cfg = self.config
         if df.empty or len(df) < 2:
-            return None, "no data", None
+            return None, "no data", None, [], {}
 
         last_close = float(df['close'].iloc[-1])
         prev_close = float(df['close'].iloc[-2])
@@ -854,6 +854,7 @@ class StrategyEngine:
         signal = None
         trigger_desc = []
         trigger_sources: list[str] = []
+        trigger_actions: dict[str, str] = {}
 
         # --- RSI thresholds as primary triggers ---
         rsi_cfg = cfg['indicators'].get('rsi', {})
@@ -986,7 +987,7 @@ class StrategyEngine:
 
         trigger_price = last_close if signal else None
         trigger_sources = list(dict.fromkeys(trigger_sources))
-        return signal, " | ".join(trigger_desc), trigger_price, trigger_sources
+        return signal, " | ".join(trigger_desc), trigger_price, trigger_sources, trigger_actions
 
     def run_once(self):
         cw = self.config
@@ -1039,7 +1040,7 @@ class StrategyEngine:
             stop_enabled = False
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
         ind = self.compute_indicators(df)
-        signal, trigger_desc, trigger_price, trigger_sources = self.generate_signal(df, ind)
+        signal, trigger_desc, trigger_price, trigger_sources, trigger_actions = self.generate_signal(df, ind)
         signal_timestamp = time.time() if signal else None
         
         # --- RSI guard-close (interval-scoped) ---
@@ -1552,6 +1553,80 @@ class StrategyEngine:
             entry_price_short = float(leg_short_state.get("entry_price") or 0.0)
             long_open = qty_long > 0.0
             short_open = qty_short > 0.0
+
+        indicator_orders: list[tuple[str, list[str]]] = []
+        if trigger_actions:
+            desired_ps_long = "LONG" if dual_side else None
+            desired_ps_short = "SHORT" if dual_side else None
+            for indicator_name, indicator_action in trigger_actions.items():
+                indicator_label = str(indicator_name or "").strip()
+                if not indicator_label:
+                    continue
+                action_norm = str(indicator_action or "").strip().lower()
+                long_entries = [
+                    entry
+                    for entry in self._leg_entries(key_long)
+                    if indicator_label.lower() in [
+                        str(t).strip().lower()
+                        for t in (entry.get("trigger_indicators") or [])
+                    ]
+                ]
+                short_entries = [
+                    entry
+                    for entry in self._leg_entries(key_short)
+                    if indicator_label.lower() in [
+                        str(t).strip().lower()
+                        for t in (entry.get("trigger_indicators") or [])
+                    ]
+                ]
+                if action_norm == "buy":
+                    for entry in list(short_entries):
+                        self._close_leg_entry(
+                            cw,
+                            key_short,
+                            entry,
+                            "SELL",
+                            "BUY",
+                            desired_ps_short,
+                            loss_usdt=0.0,
+                            price_pct=0.0,
+                            margin_pct=0.0,
+                        )
+                    long_entries = [
+                        entry
+                        for entry in self._leg_entries(key_long)
+                        if indicator_label.lower()
+                        in [
+                            str(t).strip().lower()
+                            for t in (entry.get("trigger_indicators") or [])
+                        ]
+                    ]
+                    if not long_entries:
+                        indicator_orders.append(("BUY", [indicator_label]))
+                elif action_norm == "sell":
+                    for entry in list(long_entries):
+                        self._close_leg_entry(
+                            cw,
+                            key_long,
+                            entry,
+                            "BUY",
+                            "SELL",
+                            desired_ps_long,
+                            loss_usdt=0.0,
+                            price_pct=0.0,
+                            margin_pct=0.0,
+                        )
+                    short_entries = [
+                        entry
+                        for entry in self._leg_entries(key_short)
+                        if indicator_label.lower()
+                        in [
+                            str(t).strip().lower()
+                            for t in (entry.get("trigger_indicators") or [])
+                        ]
+                    ]
+                    if not short_entries:
+                        indicator_orders.append(("SELL", [indicator_label]))
 
         thresholds = []
         try:
