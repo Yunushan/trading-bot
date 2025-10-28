@@ -1764,9 +1764,11 @@ class StrategyEngine:
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
                             if exec_qty is not None:
                                 try:
-                                    qty = float(exec_qty)
+                                    exec_qty_val = float(exec_qty)
                                 except Exception:
-                                    pass
+                                    exec_qty_val = 0.0
+                                if exec_qty_val > 0.0:
+                                    qty = exec_qty_val
                             if qty > 0:
                                 entry_price_est = price
                                 try:
