@@ -579,38 +579,47 @@ class StrategyEngine:
         opp_key = (symbol, interval, opp)
 
         if dual:
-            entry = self._leg_ledger.get(opp_key) if hasattr(self, '_leg_ledger') else None
-            try:
-                qty_to_close = float(entry.get('qty', 0.0)) if entry else 0.0
-            except Exception:
-                qty_to_close = 0.0
-            if qty_to_close <= 0:
+            entries = self._leg_entries(opp_key)
+            if not entries:
+                entry = self._leg_ledger.get(opp_key) if hasattr(self, '_leg_ledger') else None
+                if isinstance(entry, dict) and entry.get("qty", 0.0):
+                    entries = [entry]
+            if not entries:
                 return True
             pos_side = 'SHORT' if opp == 'SELL' else 'LONG'
-            reduce_only_missing = False
-            res = None
-            try:
-                res = self.binance.close_futures_leg_exact(symbol, qty_to_close, side=desired, position_side=pos_side)
-            except Exception as exc:
-                msg = str(exc)
-                if "-2022" in msg or "ReduceOnly" in msg or "reduceonly" in msg.lower():
-                    reduce_only_missing = True
+            for entry in list(entries):
+                qty_to_close = max(0.0, float(entry.get('qty') or 0.0))
+                if qty_to_close <= 0.0:
+                    self._remove_leg_entry(opp_key, entry.get("ledger_id"))
+                    continue
+                reduce_only_missing = False
+                res = None
+                try:
+                    res = self.binance.close_futures_leg_exact(symbol, qty_to_close, side=desired, position_side=pos_side)
+                except Exception as exc:
+                    msg = str(exc)
+                    if "-2022" in msg or "ReduceOnly" in msg or "reduceonly" in msg.lower():
+                        reduce_only_missing = True
+                    else:
+                        self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
+                        return False
+                if isinstance(res, dict) and not res.get('ok', True):
+                    err_msg = str(res.get('error') or "")
+                    if "-2022" in err_msg or "reduceonly" in err_msg.lower():
+                        reduce_only_missing = True
+                    else:
+                        self.log(f"{symbol}@{interval} close-opposite failed: {res}")
+                        return False
+                if reduce_only_missing:
+                    try:
+                        self.binance.close_futures_position(symbol)
+                    except Exception as exc:
+                        self.log(f"{symbol}@{interval} close-opposite reduceOnly fallback failed: {exc}")
+                        return False
                 else:
-                    self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
-                    return False
-            if isinstance(res, dict) and not res.get('ok', True):
-                err_msg = str(res.get('error') or "")
-                if "-2022" in err_msg or "reduceonly" in err_msg.lower():
-                    reduce_only_missing = True
-                else:
-                    self.log(f"{symbol}@{interval} close-opposite failed: {res}")
-                    return False
-            if not reduce_only_missing:
-                payload = self._build_close_event_payload(symbol, interval, opp, qty_to_close, res)
-                self._notify_interval_closed(symbol, interval, opp, **payload)
-            self._leg_ledger.pop(opp_key, None)
-            if hasattr(self, '_last_order_time'):
-                self._last_order_time.pop(opp_key, None)
+                    payload = self._build_close_event_payload(symbol, interval, opp, qty_to_close, res, leg_info_override=entry)
+                    self._notify_interval_closed(symbol, interval, opp, **payload)
+                self._remove_leg_entry(opp_key, entry.get("ledger_id"))
             return True
 
         closed_any = False
