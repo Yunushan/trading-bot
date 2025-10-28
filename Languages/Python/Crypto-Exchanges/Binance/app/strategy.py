@@ -211,6 +211,78 @@ class StrategyEngine:
         payload["event_id"] = f"{ledger_id or symbol}-{int(_time.time() * 1000)}"
         return payload
 
+    @staticmethod
+    def _compute_position_margin_fields(
+        position: dict | None,
+        *,
+        qty_hint: float = 0.0,
+        entry_price_hint: float = 0.0,
+    ) -> tuple[float, float, float, float]:
+        """Derive margin, balance, maintenance margin, and unrealized loss for a futures leg."""
+        if not isinstance(position, dict):
+            return 0.0, 0.0, 0.0, 0.0
+        try:
+            margin = float(
+                position.get("isolatedMargin")
+                or position.get("isolatedWallet")
+                or position.get("initialMargin")
+                or 0.0
+            )
+        except Exception:
+            margin = 0.0
+        try:
+            leverage = float(position.get("leverage") or 0.0)
+        except Exception:
+            leverage = 0.0
+        try:
+            entry_price = float(position.get("entryPrice") or 0.0)
+        except Exception:
+            entry_price = 0.0
+        if entry_price <= 0.0:
+            entry_price = max(0.0, float(entry_price_hint or 0.0))
+        try:
+            notional_val = abs(float(position.get("notional") or 0.0))
+        except Exception:
+            notional_val = 0.0
+        if notional_val <= 0.0 and entry_price > 0.0 and qty_hint > 0.0:
+            notional_val = entry_price * qty_hint
+        if margin <= 0.0:
+            if leverage > 0.0 and notional_val > 0.0:
+                margin = notional_val / leverage
+            elif notional_val > 0.0:
+                margin = notional_val
+        if margin <= 0.0 and entry_price > 0.0 and qty_hint > 0.0:
+            if leverage > 0.0:
+                margin = (entry_price * qty_hint) / leverage
+            else:
+                margin = entry_price * qty_hint
+        margin = max(margin, 0.0)
+        try:
+            margin_balance = float(position.get("marginBalance") or 0.0)
+        except Exception:
+            margin_balance = 0.0
+        try:
+            iso_wallet = float(position.get("isolatedWallet") or 0.0)
+        except Exception:
+            iso_wallet = 0.0
+        if margin_balance <= 0.0 and iso_wallet > 0.0:
+            margin_balance = iso_wallet
+        try:
+            unrealized_profit = float(position.get("unRealizedProfit") or 0.0)
+        except Exception:
+            unrealized_profit = 0.0
+        if margin_balance <= 0.0 and margin > 0.0:
+            margin_balance = margin + unrealized_profit
+        if margin_balance <= 0.0 and margin > 0.0:
+            margin_balance = margin
+        margin_balance = max(margin_balance, 0.0)
+        try:
+            maint_margin = float(position.get("maintMargin") or position.get("maintenanceMargin") or 0.0)
+        except Exception:
+            maint_margin = 0.0
+        unrealized_loss = max(0.0, -unrealized_profit)
+        return margin, margin_balance, maint_margin, unrealized_loss
+
     def stop(self):
         self._stop = True
 
@@ -961,45 +1033,17 @@ class StrategyEngine:
                     loss_usdt_long = max(0.0, (entry_price_long - last_price) * qty_long)
                     denom_long = entry_price_long * qty_long
                     loss_pct_long = (loss_usdt_long / denom_long * 100.0) if denom_long > 0 else 0.0
+                    margin_long, margin_balance_long, mm_long, unrealized_loss_long = self._compute_position_margin_fields(
+                        pos_long,
+                        qty_hint=qty_long,
+                        entry_price_hint=entry_price_long,
+                    )
                     ratio_long = normalize_margin_ratio((pos_long or {}).get("marginRatio"))
-                    if ratio_long <= 0.0 and pos_long:
-                        try:
-                            margin_balance_long = float(pos_long.get("marginBalance") or 0.0)
-                        except Exception:
-                            margin_balance_long = 0.0
-                        if margin_balance_long <= 0.0 and margin_long:
-                            margin_balance_long = margin_long + float(pos_long.get("unRealizedProfit") or 0.0)
-                        try:
-                            mm_long = float(pos_long.get("maintMargin") or pos_long.get("maintenanceMargin") or 0.0)
-                        except Exception:
-                            mm_long = 0.0
-                        unrealized_loss_long = max(0.0, -float(pos_long.get("unRealizedProfit") or 0.0))
-                        if margin_balance_long > 0.0:
-                            ratio_long = ((mm_long + unrealized_loss_long) / margin_balance_long) * 100.0
-                    margin_long = None
-                    if pos_long:
-                        try:
-                            margin_long = float(
-                                pos_long.get("isolatedMargin")
-                                or pos_long.get("isolatedWallet")
-                                or 0.0
-                            )
-                        except Exception:
-                            margin_long = 0.0
-                        if not margin_long:
-                            try:
-                                margin_long = float(pos_long.get("initialMargin") or 0.0)
-                            except Exception:
-                                margin_long = 0.0
-                        if not margin_long:
-                            try:
-                                notional = abs(float(pos_long.get("notional") or 0.0))
-                                lev = float(pos_long.get("leverage") or 1.0) or 1.0
-                                if lev > 0.0:
-                                    margin_long = notional / lev
-                            except Exception:
-                                margin_long = 0.0
-                    if margin_long and margin_long > 0.0:
+                    if ratio_long <= 0.0 and margin_balance_long > 0.0:
+                        baseline_long = mm_long if mm_long > 0.0 else margin_long
+                        if baseline_long > 0.0:
+                            ratio_long = ((baseline_long + unrealized_loss_long) / margin_balance_long) * 100.0
+                    if margin_long > 0.0:
                         try:
                             margin_share = margin_long
                             if pos_long_qty_total > 0.0 and qty_long > 0.0:
@@ -1079,45 +1123,17 @@ class StrategyEngine:
                     loss_usdt_short = max(0.0, (last_price - entry_price_short) * qty_short)
                     denom_short = entry_price_short * qty_short
                     loss_pct_short = (loss_usdt_short / denom_short * 100.0) if denom_short > 0 else 0.0
+                    margin_short, margin_balance_short, mm_short, unrealized_loss_short_val = self._compute_position_margin_fields(
+                        pos_short,
+                        qty_hint=qty_short,
+                        entry_price_hint=entry_price_short,
+                    )
                     ratio_short = normalize_margin_ratio((pos_short or {}).get("marginRatio"))
-                    if ratio_short <= 0.0 and pos_short:
-                        try:
-                            margin_balance_short = float(pos_short.get("marginBalance") or 0.0)
-                        except Exception:
-                            margin_balance_short = 0.0
-                        if margin_balance_short <= 0.0 and margin_short:
-                            margin_balance_short = margin_short + float(pos_short.get("unRealizedProfit") or 0.0)
-                        try:
-                            mm_short = float(pos_short.get("maintMargin") or pos_short.get("maintenanceMargin") or 0.0)
-                        except Exception:
-                            mm_short = 0.0
-                        unrealized_loss_short_val = max(0.0, -float(pos_short.get("unRealizedProfit") or 0.0))
-                        if margin_balance_short > 0.0:
-                            ratio_short = ((mm_short + unrealized_loss_short_val) / margin_balance_short) * 100.0
-                    margin_short = None
-                    if pos_short:
-                        try:
-                            margin_short = float(
-                                pos_short.get("isolatedMargin")
-                                or pos_short.get("isolatedWallet")
-                                or 0.0
-                            )
-                        except Exception:
-                            margin_short = 0.0
-                        if not margin_short:
-                            try:
-                                margin_short = float(pos_short.get("initialMargin") or 0.0)
-                            except Exception:
-                                margin_short = 0.0
-                        if not margin_short:
-                            try:
-                                notional = abs(float(pos_short.get("notional") or 0.0))
-                                lev = float(pos_short.get("leverage") or 1.0) or 1.0
-                                if lev > 0.0:
-                                    margin_short = notional / lev
-                            except Exception:
-                                margin_short = 0.0
-                    if margin_short and margin_short > 0.0:
+                    if ratio_short <= 0.0 and margin_balance_short > 0.0:
+                        baseline_short = mm_short if mm_short > 0.0 else margin_short
+                        if baseline_short > 0.0:
+                            ratio_short = ((baseline_short + unrealized_loss_short_val) / margin_balance_short) * 100.0
+                    if margin_short > 0.0:
                         try:
                             margin_share = margin_short
                             if pos_short_qty_total > 0.0 and qty_short > 0.0:

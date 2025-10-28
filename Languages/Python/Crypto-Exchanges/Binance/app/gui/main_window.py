@@ -7746,6 +7746,7 @@ def _mw_render_positions_table(self):
                 sorted(open_records.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf')))
                 + list(closed_records)
             )
+        display_records = [rec for rec in (display_records or []) if isinstance(rec, dict)]
         header = self.pos_table.horizontalHeader()
         try:
             sort_column = header.sortIndicatorSection()
@@ -7818,11 +7819,18 @@ def _mw_render_positions_table(self):
 
                 pnl_item = _NumericItem(str(pnl_roi or "-"), pnl_value)
                 self.pos_table.setItem(row, 6, pnl_item)
+                added_to_total = False
                 if pnl_raw_value is not None:
                     total_pnl += pnl_value
                     pnl_has_value = True
+                    added_to_total = True
                 status_lower = str(status_txt).strip().lower()
-                pnl_valid = pnl_raw_value is not None or abs(pnl_value) > 0.0
+                pnl_valid = (pnl_raw_value is not None) or (abs(pnl_value) > 0.0)
+                if not pnl_valid and status_lower == "closed":
+                    pnl_valid = True
+                if status_lower == "closed" and not added_to_total and pnl_valid:
+                    total_pnl += pnl_value
+                    pnl_has_value = True
                 if status_lower == "closed":
                     if pnl_valid:
                         closed_pnl_total += pnl_value
