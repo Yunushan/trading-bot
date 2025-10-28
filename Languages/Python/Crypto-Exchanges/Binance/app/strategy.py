@@ -992,6 +992,7 @@ class StrategyEngine:
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
         ind = self.compute_indicators(df)
         signal, trigger_desc, trigger_price, trigger_sources = self.generate_signal(df, ind)
+        signal_signature = tuple(sorted(trigger_sources or []))
         signal_timestamp = time.time() if signal else None
         
         # --- RSI guard-close (interval-scoped) ---
@@ -1526,59 +1527,75 @@ class StrategyEngine:
             key_dup = (cw['symbol'], cw.get('interval'), str(signal).upper())
             leg_dup = self._leg_ledger.get(key_dup)
             if signal and leg_dup:
-                try:
-                    existing_qty = float(leg_dup.get('qty') or 0.0)
-                except Exception:
-                    existing_qty = 0.0
-                if existing_qty > 0.0:
-                    cache = _load_positions_cache()
-                    side_is_long = key_dup[2] == "BUY"
-                    position_active = False
-                    for pos in cache:
-                        try:
-                            if str(pos.get("symbol") or "").upper() != cw["symbol"]:
-                                continue
-                            amt = float(pos.get("positionAmt") or 0.0)
-                            if dual_side:
-                                pos_side = str(pos.get("positionSide") or "").upper()
-                                if side_is_long and pos_side == "LONG" and amt > 1e-9:
-                                    position_active = True
-                                    break
-                                if (not side_is_long) and pos_side == "SHORT" and abs(amt) > 1e-9:
-                                    position_active = True
-                                    break
-                            else:
-                                if side_is_long and amt > 1e-9:
-                                    position_active = True
-                                    break
-                                if (not side_is_long) and amt < -1e-9:
-                                    position_active = True
-                                    break
-                        except Exception:
-                            continue
-                    if position_active:
-                        self.log(
-                            f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active)."
-                        )
-                        signal = None
-                        signal_timestamp = None
-                    else:
-                        elapsed = time.time() - float(leg_dup.get("timestamp") or 0.0)
-                        if elapsed < 5.0:
+                entries_dup = self._leg_entries(key_dup)
+                duplicate_active = False
+                if entries_dup:
+                    for entry in entries_dup:
+                        entry_sig = tuple(sorted(entry.get("trigger_signature") or []))
+                        entry_qty = max(0.0, float(entry.get("qty") or 0.0))
+                        if entry_qty > 0.0 and (not signal_signature or entry_sig == signal_signature):
+                            duplicate_active = True
                             self.log(
-                                f"{cw['symbol']}@{cw.get('interval')} awaiting exchange update; suppressing duplicate {str(signal).upper()} open (last fill {elapsed:.1f}s ago)."
+                                f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (active entry for trigger {entry_sig or ('<none>',)})."
+                            )
+                            break
+                if duplicate_active:
+                    signal = None
+                    signal_timestamp = None
+                else:
+                    try:
+                        existing_qty = float(leg_dup.get('qty') or 0.0)
+                    except Exception:
+                        existing_qty = 0.0
+                    if existing_qty > 0.0:
+                        cache = _load_positions_cache()
+                        side_is_long = key_dup[2] == "BUY"
+                        position_active = False
+                        for pos in cache:
+                            try:
+                                if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                                    continue
+                                amt = float(pos.get("positionAmt") or 0.0)
+                                if dual_side:
+                                    pos_side = str(pos.get("positionSide") or "").upper()
+                                    if side_is_long and pos_side == "LONG" and amt > 1e-9:
+                                        position_active = True
+                                        break
+                                    if (not side_is_long) and pos_side == "SHORT" and abs(amt) > 1e-9:
+                                        position_active = True
+                                        break
+                                else:
+                                    if side_is_long and amt > 1e-9:
+                                        position_active = True
+                                        break
+                                    if (not side_is_long) and amt < -1e-9:
+                                        position_active = True
+                                        break
+                            except Exception:
+                                continue
+                        if position_active:
+                            self.log(
+                                f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active)."
                             )
                             signal = None
                             signal_timestamp = None
                         else:
-                            try:
-                                self._leg_ledger.pop(key_dup, None)
-                            except Exception:
-                                pass
-                            try:
-                                self._last_order_time.pop(key_dup, None)
-                            except Exception:
-                                pass
+                            elapsed = time.time() - float(leg_dup.get("timestamp") or 0.0)
+                            if elapsed < 5.0:
+                                self.log(
+                                    f"{cw['symbol']}@{cw.get('interval')} awaiting exchange update; suppressing duplicate {str(signal).upper()} open (last fill {elapsed:.1f}s ago)."
+                                )
+                                signal = None
+                                signal_timestamp = None
+                            else:
+                                try:
+                                    self._leg_ledger.pop(key_dup, None)
+                                except Exception:
+                                    pass
+                                try:
+                                    self._last_order_time.pop(key_dup, None)
+                                except Exception:
+                                    pass
         except Exception:
             pass
         if signal and cw.get('trade_on_signal', True):
@@ -1790,6 +1807,8 @@ class StrategyEngine:
                                         'leverage': leverage_val,
                                         'margin_usdt': float(margin_est or 0.0),
                                         'ledger_id': ledger_id,
+                                        'trigger_signature': list(signal_signature),
+                                        'trigger_desc': trigger_desc,
                                     },
                                 )
                     except Exception:
