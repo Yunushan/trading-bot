@@ -7439,20 +7439,19 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
 
     def _collect_allocations(rec: dict) -> list[dict]:
         allocs = rec.get("allocations") or []
-        out: list[dict] = []
         if isinstance(allocs, dict):
             allocs = list(allocs.values())
         if not isinstance(allocs, list):
-            return out
+            return []
+        out: list[dict] = []
         for payload in allocs:
-            if not isinstance(payload, dict):
-                continue
-            entry = copy.deepcopy(payload)
-            interval = entry.get("interval")
-            if interval is None and entry.get("interval_display"):
-                interval = entry.get("interval_display")
-            entry["interval"] = interval
-            out.append(entry)
+            if isinstance(payload, dict):
+                entry = copy.deepcopy(payload)
+                interval = entry.get("interval")
+                if interval is None and entry.get("interval_display"):
+                    interval = entry.get("interval_display")
+                entry["interval"] = interval
+                out.append(entry)
         return out
 
     def _compute_trade_data(base_data: dict, allocation: dict | None, side_key: str, status: str) -> dict:
@@ -7615,80 +7614,85 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         allocations = _collect_allocations(base_rec)
         base_data = dict(base_rec.get("data") or {})
         status_text = str(base_rec.get("status") or "Active")
-
+        stop_loss_flag = bool(base_rec.get("stop_loss_enabled"))
+        default_open = base_rec.get("open_time") or "-"
+        default_close = base_rec.get("close_time") or "-"
         meta_items = meta_items or [None]
-        meta_by_interval: dict[str | None, list[dict | None]] = {}
-        for meta in meta_items:
-            if isinstance(meta, dict):
-                key = _normalize_interval(meta.get("interval"))
-                meta_by_interval.setdefault(key, []).append(meta)
-            else:
-                meta_by_interval.setdefault(None, []).append(meta)
 
-        used_meta_keys: set[str | None] = set()
+        def _interval_from_meta(meta: dict | None, fallback: str | None = None) -> str:
+            if isinstance(meta, dict):
+                label = meta.get("interval") or meta.get("interval_display")
+                if label:
+                    return str(label)
+            if fallback:
+                return str(fallback)
+            return "-"
+
+        def _build_entry(allocation: dict | None, interval_hint: str | None, meta: dict | None = None) -> None:
+            entry = copy.deepcopy(base_rec)
+            interval_label = interval_hint or entry.get("entry_tf") or "-"
+            entry["entry_tf"] = interval_label or "-"
+            alloc_status = str((allocation or {}).get("status") or status_text)
+            entry["status"] = alloc_status
+            if isinstance(meta, dict) and meta.get("stop_loss_enabled") is not None:
+                entry["stop_loss_enabled"] = bool(meta.get("stop_loss_enabled"))
+            else:
+                entry["stop_loss_enabled"] = bool((allocation or {}).get("stop_loss_enabled", stop_loss_flag))
+            alloc_data = _compute_trade_data(base_data, allocation, side_key, alloc_status)
+            entry["data"] = alloc_data
+            indicators = allocation.get("trigger_indicators") if isinstance(allocation, dict) else None
+            if isinstance(indicators, (list, tuple, set)):
+                entry["indicators"] = list(dict.fromkeys(str(t).strip() for t in indicators if str(t).strip()))
+            elif isinstance(meta, dict):
+                meta_inds = meta.get("indicators")
+                if meta_inds:
+                    entry["indicators"] = list(meta_inds)
+            trig_inds = alloc_data.get("trigger_indicators")
+            if trig_inds:
+                entry["indicators"] = list(dict.fromkeys(trig_inds))
+            open_hint = None
+            close_hint = None
+            if isinstance(allocation, dict):
+                open_hint = allocation.get("open_time")
+                close_hint = allocation.get("close_time")
+            entry["open_time"] = open_hint or default_open
+            entry["close_time"] = close_hint or default_close
+            entry["stop_loss_enabled"] = bool(entry.get("stop_loss_enabled"))
+            records.append(entry)
 
         if allocations:
             for alloc in allocations:
-                norm_iv = _normalize_interval(alloc.get("interval"))
-                matching_meta = (
-                    meta_by_interval.get(norm_iv)
-                    or meta_by_interval.get(None)
-                    or []
-                )
-                meta = matching_meta[0] if matching_meta else None
-                entry = copy.deepcopy(base_rec)
-                entry_status = str(alloc.get("status") or status_text)
-                entry["status"] = entry_status
                 interval_label = alloc.get("interval_display") or alloc.get("interval")
-                if not interval_label and isinstance(meta, dict):
-                    interval_label = meta.get("interval")
-                entry["entry_tf"] = interval_label or "-"
-                if isinstance(meta, dict):
-                    if meta.get("stop_loss_enabled") is not None:
-                        entry["stop_loss_enabled"] = bool(meta.get("stop_loss_enabled"))
-                alloc_data = _compute_trade_data(base_data, alloc, side_key, entry_status)
-                entry["data"] = alloc_data
-                trig_inds = alloc_data.get("trigger_indicators")
-                if trig_inds:
-                    entry["indicators"] = list(trig_inds)
-                elif isinstance(meta, dict):
-                    indicators = meta.get("indicators")
-                    if indicators:
-                        entry["indicators"] = list(indicators)
-                if alloc.get("open_time"):
-                    entry["open_time"] = alloc.get("open_time")
-                if alloc.get("close_time"):
-                    entry["close_time"] = alloc.get("close_time")
-                records.append(entry)
-                used_meta_keys.add(norm_iv)
-
-        remaining_meta: list[dict | None] = []
-        for key, metas in meta_by_interval.items():
-            if key in used_meta_keys:
-                continue
-            remaining_meta.extend(metas)
-
-        if not allocations or remaining_meta:
-            fallback_items = remaining_meta if remaining_meta else meta_items
-            for meta in fallback_items:
-                entry = copy.deepcopy(base_rec)
-                interval = None
-                if isinstance(meta, dict):
-                    interval = meta.get("interval")
-                    indicators = meta.get("indicators")
-                    if indicators:
-                        entry["indicators"] = list(indicators)
-                    if meta.get("stop_loss_enabled") is not None:
-                        entry["stop_loss_enabled"] = bool(meta.get("stop_loss_enabled"))
-                else:
-                    interval = entry.get("entry_tf")
-                entry["entry_tf"] = interval or "-"
-                fallback_data = _compute_trade_data(base_data, None, side_key, status_text)
-                entry["data"] = fallback_data
-                trig_inds = fallback_data.get("trigger_indicators")
-                if trig_inds:
-                    entry["indicators"] = list(trig_inds)
-                records.append(entry)
+                norm_iv = _normalize_interval(interval_label)
+                matching_meta = None
+                if norm_iv is not None:
+                    for meta in meta_items:
+                        if isinstance(meta, dict) and _normalize_interval(meta.get("interval")) == norm_iv:
+                            matching_meta = meta
+                            break
+                if matching_meta is None:
+                    for meta in meta_items:
+                        if meta is None:
+                            matching_meta = None
+                            break
+                _build_entry(alloc, interval_label or norm_iv, matching_meta)
+        else:
+            # Fallback: synthesise entries based on metadata or the base record itself.
+            fallback_intervals: list[str] = []
+            for meta in meta_items:
+                if isinstance(meta, dict) and meta.get("interval"):
+                    fallback_intervals.append(_interval_from_meta(meta))
+            if not fallback_intervals:
+                entry_tf = base_rec.get("entry_tf")
+                if isinstance(entry_tf, str) and entry_tf.strip():
+                    fallback_intervals = [part.strip() for part in entry_tf.split(",") if part.strip()]
+            if not fallback_intervals:
+                fallback_intervals = ["-"]
+            for idx, interval_label in enumerate(fallback_intervals):
+                meta = None
+                if idx < len(meta_items) and isinstance(meta_items[idx], dict):
+                    meta = meta_items[idx]
+                _build_entry(None, interval_label, meta)
 
     for (sym, side_key), rec in open_records.items():
         meta_items = meta_map.get((sym, side_key)) or [None]
@@ -7711,6 +7715,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         str(item.get("symbol") or ""),
         str(item.get("side_key") or ""),
         str(item.get("entry_tf") or ""),
+        -float(item.get("data", {}).get("qty") or item.get("data", {}).get("margin_usdt") or 0.0),
     ))
     return records
 
