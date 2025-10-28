@@ -1239,6 +1239,104 @@ class MainWindow(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._handle_post_init_state)
         QtCore.QTimer.singleShot(0, self._update_connector_labels)
 
+    def _update_positions_balance_labels(
+        self,
+        total_balance: float | None,
+        available_balance: float | None,
+    ) -> None:
+        try:
+            snapshot = getattr(self, "_positions_balance_snapshot", None)
+        except Exception:
+            snapshot = None
+        if total_balance is None and available_balance is None and isinstance(snapshot, dict):
+            total_balance = snapshot.get("total")
+            available_balance = snapshot.get("available")
+        else:
+            try:
+                self._positions_balance_snapshot = {"total": total_balance, "available": available_balance}
+            except Exception:
+                pass
+
+        def _set_label(label: QtWidgets.QLabel | None, prefix: str, value: float | None) -> None:
+            if label is None:
+                return
+            if value is None:
+                label.setText(f"{prefix}: --")
+            else:
+                try:
+                    label.setText(f"{prefix}: {float(value):.3f} USDT")
+                except Exception:
+                    label.setText(f"{prefix}: --")
+
+        _set_label(getattr(self, "positions_total_balance_label", None), "Total Balance", total_balance)
+        _set_label(getattr(self, "positions_available_balance_label", None), "Available Balance", available_balance)
+
+    def _compute_global_pnl_totals(
+        self,
+    ) -> tuple[float | None, float | None, float | None, float | None]:
+        def _safe_float(value) -> float | None:
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
+        def _extract_margin(record: dict) -> float | None:
+            data = record.get("data") if isinstance(record, dict) else None
+            if isinstance(data, dict):
+                margin_val = _safe_float(data.get("margin_usdt"))
+                if margin_val and margin_val > 0.0:
+                    return margin_val
+            allocs = None
+            if isinstance(record, dict):
+                allocs = record.get("allocations")
+            if allocs is None and isinstance(data, dict):
+                allocs = data.get("allocations")
+            total_alloc_margin = 0.0
+            alloc_found = False
+            if isinstance(allocs, list):
+                for alloc in allocs:
+                    margin_val = _safe_float((alloc or {}).get("margin_usdt"))
+                    if margin_val and margin_val > 0.0:
+                        total_alloc_margin += margin_val
+                        alloc_found = True
+            if alloc_found:
+                return total_alloc_margin
+            return None
+
+        def _aggregate(records) -> tuple[float | None, float | None]:
+            total_pnl = 0.0
+            total_margin = 0.0
+            pnl_found = False
+            margin_found = False
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                data = rec.get("data") if isinstance(rec, dict) else None
+                pnl_val = None
+                if isinstance(data, dict):
+                    pnl_val = _safe_float(data.get("pnl_value"))
+                if pnl_val is None:
+                    pnl_val = _safe_float(rec.get("pnl_value"))
+                if pnl_val is not None:
+                    total_pnl += pnl_val
+                    pnl_found = True
+                margin_val = _extract_margin(rec)
+                if margin_val is not None and margin_val > 0.0:
+                    total_margin += margin_val
+                    margin_found = True
+            return (
+                total_pnl if pnl_found else None,
+                total_margin if margin_found and total_margin > 0.0 else None,
+            )
+
+        open_records = getattr(self, "_open_position_records", {}) or {}
+        closed_records = getattr(self, "_closed_position_records", []) or []
+        active_pnl, active_margin = _aggregate(open_records.values())
+        closed_pnl, closed_margin = _aggregate(closed_records)
+        return active_pnl, active_margin, closed_pnl, closed_margin
+
     def _on_close_on_exit_changed(self, state):
         enabled = bool(state)
         self.config['close_on_exit'] = enabled
@@ -5954,9 +6052,16 @@ class MainWindow(QtWidgets.QWidget):
         tab2_status_layout.setSpacing(8)
         self.pnl_active_label_tab2 = QtWidgets.QLabel()
         self.pnl_closed_label_tab2 = QtWidgets.QLabel()
+        self.positions_total_balance_label = QtWidgets.QLabel("Total Balance: --")
+        self.positions_available_balance_label = QtWidgets.QLabel("Available Balance: --")
         self.bot_status_label_tab2 = QtWidgets.QLabel()
         self.bot_time_label_tab2 = QtWidgets.QLabel("Bot Active Time: --")
-        for lbl in (self.pnl_active_label_tab2, self.pnl_closed_label_tab2):
+        for lbl in (
+            self.pnl_active_label_tab2,
+            self.pnl_closed_label_tab2,
+            self.positions_total_balance_label,
+            self.positions_available_balance_label,
+        ):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
             tab2_status_layout.addWidget(lbl)
         tab2_status_layout.addStretch()
@@ -5964,6 +6069,7 @@ class MainWindow(QtWidgets.QWidget):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             tab2_status_layout.addWidget(lbl)
         self._register_pnl_summary_labels(self.pnl_active_label_tab2, self.pnl_closed_label_tab2)
+        self._update_positions_balance_labels(None, None)
         ctrl_layout.addWidget(tab2_status_widget)
         tab2_layout.addLayout(ctrl_layout)
         self._sync_runtime_state()
@@ -7748,12 +7854,6 @@ def _mw_render_positions_table(self):
         total_pnl = 0.0
         total_margin = 0.0
         pnl_has_value = False
-        active_pnl_total = 0.0
-        active_margin_total = 0.0
-        active_has_value = False
-        closed_pnl_total = 0.0
-        closed_margin_total = 0.0
-        closed_has_value = False
         for rec in display_records:
             try:
                 data = rec.get('data', {}) or {}
@@ -7817,18 +7917,6 @@ def _mw_render_positions_table(self):
                 if status_lower == "closed" and not added_to_total and pnl_valid:
                     total_pnl += pnl_value
                     pnl_has_value = True
-                if status_lower == "closed":
-                    if pnl_valid:
-                        closed_pnl_total += pnl_value
-                        closed_has_value = True
-                    if margin_usdt > 0.0:
-                        closed_margin_total += margin_usdt
-                else:
-                    if pnl_valid:
-                        active_pnl_total += pnl_value
-                        active_has_value = True
-                    if margin_usdt > 0.0:
-                        active_margin_total += margin_usdt
 
                 self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
                 indicators_raw = rec.get('indicators')
@@ -7852,12 +7940,7 @@ def _mw_render_positions_table(self):
                 pass
         summary_margin = total_margin if total_margin > 0.0 else None
         self._update_positions_pnl_summary(total_pnl if pnl_has_value else None, summary_margin)
-        self._update_global_pnl_display(
-            active_pnl_total if active_has_value else None,
-            active_margin_total if active_margin_total > 0.0 else None,
-            closed_pnl_total if closed_has_value else None,
-            closed_margin_total if closed_margin_total > 0.0 else None,
-        )
+        self._update_global_pnl_display(*self._compute_global_pnl_totals())
         try:
             if getattr(self, "chart_enabled", False) and getattr(self, "chart_auto_follow", False) and not getattr(self, "_chart_manual_override", False):
                 self._sync_chart_to_active_positions()
@@ -8992,6 +9075,8 @@ def update_balance_label(self):
     """Refresh the 'Total USDT balance' label safely after an order."""
     btn = getattr(self, "refresh_balance_btn", None)
     old_btn_text = btn.text() if btn else None
+    total_balance_value = None
+    available_balance_value = None
     try:
         if btn:
             btn.setEnabled(False)
@@ -9024,6 +9109,7 @@ def update_balance_label(self):
                         self.balance_label.setText("API credentials missing")
                 except Exception:
                     pass
+                self._update_positions_balance_labels(None, None)
                 return
 
             try:
@@ -9053,6 +9139,7 @@ def update_balance_label(self):
                     self.log(f"Balance setup error: {exc}")
                 except Exception:
                     pass
+                self._update_positions_balance_labels(None, None)
                 return
 
         bal = 0.0
@@ -9061,10 +9148,24 @@ def update_balance_label(self):
         except Exception:
             account_text = ""
         try:
+            wrapper = getattr(self, "shared_binance", None)
             if account_text.startswith("FUT"):
-                bal = float(self.shared_binance.get_futures_balance_usdt() or 0.0)
+                bal = float(wrapper.get_futures_balance_usdt() or 0.0)
+                try:
+                    total_balance_value = float(wrapper.get_total_usdt_value() or bal)
+                except Exception:
+                    total_balance_value = bal
+                try:
+                    available_balance_value = float(wrapper.get_futures_available_balance() or bal)
+                except Exception:
+                    available_balance_value = bal
             else:
-                bal = float(self.shared_binance.get_spot_balance("USDT") or 0.0)
+                bal = float(wrapper.get_spot_balance("USDT") or 0.0)
+                try:
+                    total_balance_value = float(wrapper.get_total_usdt_value() or bal)
+                except Exception:
+                    total_balance_value = bal
+                available_balance_value = bal
         except Exception as exc:
             try:
                 self.log(f"Balance fetch error: {exc}")
@@ -9074,6 +9175,7 @@ def update_balance_label(self):
         try:
             if getattr(self, "balance_label", None):
                 self.balance_label.setText(f"{bal:.3f} USDT")
+            self._update_positions_balance_labels(total_balance_value, available_balance_value)
         except Exception:
             # Fallback: log only
             try:
@@ -9086,6 +9188,8 @@ def update_balance_label(self):
         except Exception:
             pass
     finally:
+        if total_balance_value is None and available_balance_value is None:
+            self._update_positions_balance_labels(None, None)
         if btn:
             btn.setEnabled(True)
             if old_btn_text is not None:
