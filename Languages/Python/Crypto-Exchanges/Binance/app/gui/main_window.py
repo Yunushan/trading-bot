@@ -9898,12 +9898,14 @@ def _derive_margin_snapshot(position: dict | None, qty_hint: float = 0.0, entry_
         iso_wallet = float(position.get("isolatedWallet") or 0.0)
     except Exception:
         iso_wallet = 0.0
-    if margin_balance <= 0.0 and iso_wallet > 0.0:
-        margin_balance = iso_wallet
     try:
         unrealized_profit = float(position.get("unRealizedProfit") or 0.0)
     except Exception:
         unrealized_profit = 0.0
+    if margin_balance <= 0.0 and iso_wallet > 0.0:
+        margin_balance = iso_wallet + unrealized_profit
+    if margin_balance <= 0.0 and iso_wallet > 0.0:
+        margin_balance = iso_wallet
     if margin_balance <= 0.0 and margin > 0.0:
         margin_balance = margin + unrealized_profit
     if margin_balance <= 0.0 and margin > 0.0:
@@ -9923,6 +9925,8 @@ def _derive_margin_snapshot(position: dict | None, qty_hint: float = 0.0, entry_
         )
     except Exception:
         maint_rate = 0.0
+    if maint_rate > 1.0:
+        maint_rate = maint_rate / 100.0
     if maint_margin <= 0.0 and maint_rate > 0.0 and notional_val > 0.0:
         maint_margin = notional_val * maint_rate
     if margin_balance > 0.0 and maint_margin > margin_balance:

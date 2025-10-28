@@ -1896,23 +1896,6 @@ class StrategyEngine:
                     except Exception:
                         pass
                     try:
-                        qty_emit = float(order_res.get('computed',{}).get('qty') or 0.0)
-                        if qty_emit <= 0:
-                            qty_emit = float(order_res.get('info',{}).get('origQty') or 0.0)
-                        if self.trade_cb:
-                            self.trade_cb({
-                                "symbol": cw['symbol'],
-                                "interval": cw.get('interval'),
-                                "side": side,
-                                "qty": qty_emit,
-                                "price": cw.get('price'),
-                                "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-                                "status": "placed",
-                                "ok": bool(order_res.get('ok', True))
-                            })
-                    except Exception:
-                        pass
-                    try:
                         try:
                             if (not order_res.get('ok')) and callable(self.trade_cb):
                                 self.trade_cb({
