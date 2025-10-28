@@ -865,10 +865,20 @@ class StrategyEngine:
                     trigger_desc.append(f"RSI={r:.2f}")
                     buy_th = float(rsi_cfg.get('buy_value', 30) or 30)
                     sell_th = float(rsi_cfg.get('sell_value', 70) or 70)
-                    if r <= buy_th and cfg['side'] in ('BUY','BOTH'):
-                        signal = 'BUY'; trigger_desc.append(f"RSI <= {buy_th:.2f} → BUY"); trigger_sources.append("rsi")
-                    elif r >= sell_th and cfg['side'] in ('SELL','BOTH'):
-                        signal = 'SELL'; trigger_desc.append(f"RSI >= {sell_th:.2f} → SELL"); trigger_sources.append("rsi")
+                    buy_allowed = cfg['side'] in ('BUY', 'BOTH')
+                    sell_allowed = cfg['side'] in ('SELL', 'BOTH')
+                    if buy_allowed and r <= buy_th:
+                        trigger_actions["rsi"] = "buy"
+                        trigger_desc.append(f"RSI <= {buy_th:.2f} ΓåÆ BUY")
+                        trigger_sources.append("rsi")
+                        if signal is None:
+                            signal = 'BUY'
+                    elif sell_allowed and r >= sell_th:
+                        trigger_actions["rsi"] = "sell"
+                        trigger_desc.append(f"RSI >= {sell_th:.2f} ΓåÆ SELL")
+                        trigger_sources.append("rsi")
+                        if signal is None:
+                            signal = 'SELL'
                 else:
                     trigger_desc.append("RSI=NaN/inf skipped")
             except Exception as e:
@@ -887,10 +897,20 @@ class StrategyEngine:
                     sell_th = stoch_rsi_cfg.get('sell_value')
                     buy_limit = float(buy_th if buy_th is not None else 20.0)
                     sell_limit = float(sell_th if sell_th is not None else 80.0)
-                    if signal is None and cfg['side'] in ('BUY', 'BOTH') and srsi_val <= buy_limit:
-                        signal = 'BUY'; trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} → BUY"); trigger_sources.append("stoch_rsi")
-                    elif signal is None and cfg['side'] in ('SELL', 'BOTH') and srsi_val >= sell_limit:
-                        signal = 'SELL'; trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} → SELL"); trigger_sources.append("stoch_rsi")
+                    buy_allowed = cfg['side'] in ('BUY', 'BOTH')
+                    sell_allowed = cfg['side'] in ('SELL', 'BOTH')
+                    if buy_allowed and srsi_val <= buy_limit:
+                        trigger_actions["stoch_rsi"] = "buy"
+                        trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} ΓåÆ BUY")
+                        trigger_sources.append("stoch_rsi")
+                        if signal is None:
+                            signal = 'BUY'
+                    elif sell_allowed and srsi_val >= sell_limit:
+                        trigger_actions["stoch_rsi"] = "sell"
+                        trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} ΓåÆ SELL")
+                        trigger_sources.append("stoch_rsi")
+                        if signal is None:
+                            signal = 'SELL'
             except Exception as e:
                 trigger_desc.append(f"StochRSI error:{e!r}")
 
@@ -910,10 +930,20 @@ class StrategyEngine:
                     buy_lower = -100.0
                     sell_lower = max(-100.0, min(0.0, sell_th))
                     sell_upper = 0.0
-                    if signal is None and cfg['side'] in ('BUY','BOTH') and buy_lower <= wr <= buy_upper:
-                        signal = 'BUY'; trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] → BUY"); trigger_sources.append("willr")
-                    elif signal is None and cfg['side'] in ('SELL','BOTH') and sell_lower <= wr <= sell_upper:
-                        signal = 'SELL'; trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] → SELL"); trigger_sources.append("willr")
+                    buy_allowed = cfg['side'] in ('BUY', 'BOTH')
+                    sell_allowed = cfg['side'] in ('SELL', 'BOTH')
+                    if buy_allowed and buy_lower <= wr <= buy_upper:
+                        trigger_actions["willr"] = "buy"
+                        trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] ΓåÆ BUY")
+                        trigger_sources.append("willr")
+                        if signal is None:
+                            signal = 'BUY'
+                    elif sell_allowed and sell_lower <= wr <= sell_upper:
+                        trigger_actions["willr"] = "sell"
+                        trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] ΓåÆ SELL")
+                        trigger_sources.append("willr")
+                        if signal is None:
+                            signal = 'SELL'
                 else:
                     trigger_desc.append("Williams %R=NaN/inf skipped")
             except Exception as e:
@@ -928,11 +958,20 @@ class StrategyEngine:
             if ma_valid:
                 last_ma = float(ma.iloc[-1]); prev_ma = float(ma.iloc[-2])
                 trigger_desc.append(f"MA_prev={prev_ma:.8f},MA_last={last_ma:.8f}")
-                if signal is None:
-                    if prev_close < prev_ma and last_close > last_ma and cfg['side'] in ('BUY','BOTH'):
-                        signal = 'BUY'; trigger_desc.append("MA crossover → BUY"); trigger_sources.append("ma")
-                    elif prev_close > prev_ma and last_close < last_ma and cfg['side'] in ('SELL','BOTH'):
-                        signal = 'SELL'; trigger_desc.append("MA crossover → SELL"); trigger_sources.append("ma")
+                buy_allowed = cfg['side'] in ('BUY', 'BOTH')
+                sell_allowed = cfg['side'] in ('SELL', 'BOTH')
+                if buy_allowed and prev_close < prev_ma and last_close > last_ma:
+                    trigger_actions["ma"] = "buy"
+                    trigger_desc.append("MA crossover ΓåÆ BUY")
+                    trigger_sources.append("ma")
+                    if signal is None:
+                        signal = 'BUY'
+                elif sell_allowed and prev_close > prev_ma and last_close < last_ma:
+                    trigger_actions["ma"] = "sell"
+                    trigger_desc.append("MA crossover ΓåÆ SELL")
+                    trigger_sources.append("ma")
+                    if signal is None:
+                        signal = 'SELL'
 
         # --- BB context (informational)
         if cfg['indicators'].get('bb', {}).get('enabled', False) and 'bb_upper' in ind and not ind['bb_upper'].isnull().all():
@@ -1001,7 +1040,6 @@ class StrategyEngine:
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
         ind = self.compute_indicators(df)
         signal, trigger_desc, trigger_price, trigger_sources = self.generate_signal(df, ind)
-        signal_signature = tuple(sorted(trigger_sources or []))
         signal_timestamp = time.time() if signal else None
         
         # --- RSI guard-close (interval-scoped) ---
@@ -1042,7 +1080,7 @@ class StrategyEngine:
                             except Exception:
                                 pass
                             self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'BUY', **payload)
-                            self.log(f"Closed LONG for {cw['symbol']}@{cw.get('interval')} (RSI ≥ {exit_up}).")
+                            self.log(f"Closed LONG for {cw['symbol']}@{cw.get('interval')} (RSI ΓëÑ {exit_up}).")
                 except Exception:
                     pass
             # Close SHORT when RSI <= buy threshold (e.g., 30)
@@ -1061,7 +1099,7 @@ class StrategyEngine:
                             except Exception:
                                 pass
                             self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'SELL', **payload)
-                            self.log(f"Closed SHORT for {cw['symbol']}@{cw.get('interval')} (RSI ≤ {exit_dn}).")
+                            self.log(f"Closed SHORT for {cw['symbol']}@{cw.get('interval')} (RSI Γëñ {exit_dn}).")
                 except Exception:
                     pass
 
@@ -1531,26 +1569,60 @@ class StrategyEngine:
         parts.append("Details:" + trigger_desc)
         self.log(" | ".join(parts))
 
-        # Duplicate-open guard: skip if the same side is already open for this symbol@interval
-        try:
-            key_dup = (cw['symbol'], cw.get('interval'), str(signal).upper())
+        base_trigger_labels = list(dict.fromkeys(trigger_sources or []))
+        base_signature = tuple(sorted(base_trigger_labels))
+        orders_to_execute: list[dict[str, object]] = []
+        if indicator_orders:
+            order_ts = signal_timestamp or time.time()
+            for side_value, labels in indicator_orders:
+                label_list = [
+                    str(lbl).strip()
+                    for lbl in (labels or [])
+                    if str(lbl or "").strip()
+                ]
+                signature = tuple(sorted(label_list)) if label_list else base_signature
+                orders_to_execute.append(
+                    {
+                        "side": str(side_value or "").upper(),
+                        "labels": label_list,
+                        "signature": signature,
+                        "timestamp": order_ts,
+                    }
+                )
+        elif signal:
+            orders_to_execute.append(
+                {
+                    "side": str(signal).upper(),
+                    "labels": base_trigger_labels,
+                    "signature": base_signature,
+                    "timestamp": signal_timestamp,
+                }
+            )
+
+        filtered_orders: list[dict[str, object]] = []
+        for order in orders_to_execute:
+            side_upper = str(order.get("side") or "").upper()
+            if side_upper not in ("BUY", "SELL"):
+                continue
+            key_dup = (cw['symbol'], cw.get('interval'), side_upper)
             leg_dup = self._leg_ledger.get(key_dup)
-            if signal and leg_dup:
+            signature = tuple(order.get("signature") or ())
+            allow_order = True
+            if leg_dup:
                 entries_dup = self._leg_entries(key_dup)
                 duplicate_active = False
                 if entries_dup:
                     for entry in entries_dup:
                         entry_sig = tuple(sorted(entry.get("trigger_signature") or []))
                         entry_qty = max(0.0, float(entry.get("qty") or 0.0))
-                        if entry_qty > 0.0 and (not signal_signature or entry_sig == signal_signature):
+                        if entry_qty > 0.0 and (not signature or entry_sig == signature):
                             duplicate_active = True
                             self.log(
-                                f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (active entry for trigger {entry_sig or ('<none>',)})."
+                                f"{cw['symbol']}@{cw.get('interval')} duplicate {side_upper} open prevented (active entry for trigger {entry_sig or ('<none>',)})."
                             )
                             break
                 if duplicate_active:
-                    signal = None
-                    signal_timestamp = None
+                    allow_order = False
                 else:
                     try:
                         existing_qty = float(leg_dup.get('qty') or 0.0)
@@ -1558,7 +1630,7 @@ class StrategyEngine:
                         existing_qty = 0.0
                     if existing_qty > 0.0:
                         cache = _load_positions_cache()
-                        side_is_long = key_dup[2] == "BUY"
+                        side_is_long = side_upper == "BUY"
                         position_active = False
                         for pos in cache:
                             try:
@@ -1584,18 +1656,16 @@ class StrategyEngine:
                                 continue
                         if position_active:
                             self.log(
-                                f"{cw['symbol']}@{cw.get('interval')} duplicate {str(signal).upper()} open prevented (position still active)."
+                                f"{cw['symbol']}@{cw.get('interval')} duplicate {side_upper} open prevented (position still active)."
                             )
-                            signal = None
-                            signal_timestamp = None
+                            allow_order = False
                         else:
                             elapsed = time.time() - float(leg_dup.get("timestamp") or 0.0)
                             if elapsed < 5.0:
                                 self.log(
-                                    f"{cw['symbol']}@{cw.get('interval')} awaiting exchange update; suppressing duplicate {str(signal).upper()} open (last fill {elapsed:.1f}s ago)."
+                                    f"{cw['symbol']}@{cw.get('interval')} awaiting exchange update; suppressing duplicate {side_upper} open (last fill {elapsed:.1f}s ago)."
                                 )
-                                signal = None
-                                signal_timestamp = None
+                                allow_order = False
                             else:
                                 try:
                                     self._leg_ledger.pop(key_dup, None)
@@ -1605,9 +1675,28 @@ class StrategyEngine:
                                     self._last_order_time.pop(key_dup, None)
                                 except Exception:
                                     pass
-        except Exception:
-            pass
-        if signal and cw.get('trade_on_signal', True):
+            if allow_order:
+                filtered_orders.append(
+                    {
+                        "side": side_upper,
+                        "labels": list(order.get("labels") or []),
+                        "signature": signature,
+                        "timestamp": order.get("timestamp"),
+                    }
+                )
+        
+        orders_to_execute = filtered_orders
+        if not cw.get('trade_on_signal', True):
+            orders_to_execute = []
+
+        def _execute_signal_order(order_side: str, indicator_labels: list[str], order_signature: tuple[str, ...], origin_timestamp: float | None) -> None:
+            side = str(order_side or "").upper()
+            if side not in ("BUY", "SELL"):
+                return
+            trigger_labels = list(dict.fromkeys(indicator_labels or base_trigger_labels))
+            if not trigger_labels:
+                trigger_labels = [side.lower()]
+            signature = tuple(order_signature or tuple(sorted(trigger_labels)))
             try:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
                 usdt_bal = self.binance.get_total_usdt_value()
@@ -1649,7 +1738,6 @@ class StrategyEngine:
                     use_usdt = min(free_usdt, target_margin)
                     lev = max(1, int(cw.get('leverage', 1)))
                     qty_est = (use_usdt * lev / price) if price > 0 else 0.0
-                    # FLIP_GUARD (optional via add_only): in one-way mode, avoid crossing zero and block opposite opens
                     reduce_only = False
                     if bool(self.config.get('add_only', False)):
                         dual = self.binance.get_futures_dual_side()
@@ -1658,9 +1746,9 @@ class StrategyEngine:
                                 net_amt = float(self.binance.get_net_futures_position_amt(cw['symbol']))
                             except Exception:
                                 net_amt = 0.0
-                            if (net_amt > 0 and signal.upper() == 'SELL'):
+                            if (net_amt > 0 and side == 'SELL'):
                                 qty_est = min(qty_est, abs(net_amt)); reduce_only = True
-                            elif (net_amt < 0 and signal.upper() == 'BUY'):
+                            elif (net_amt < 0 and side == 'BUY'):
                                 qty_est = min(qty_est, abs(net_amt)); reduce_only = True
                             if qty_est <= 0:
                                 self.log(f"{cw['symbol']}@{cw['interval']} Opposite open blocked (one-way add-only). net={net_amt}")
@@ -1668,34 +1756,33 @@ class StrategyEngine:
 
                     desired_ps = None
                     if self.binance.get_futures_dual_side():
-                        desired_ps = 'LONG' if signal.upper() == 'BUY' else 'SHORT'
-                        # HEDGE_ADD_GUARD removed: allow stacking adds across intervals
+                        desired_ps = 'LONG' if side == 'BUY' else 'SHORT'
 
-                    # Prevent stacking entries within the same candle: debounce by interval length
                     try:
-                        key_bar = (cw['symbol'], cw.get('interval'), signal.upper())
+                        key_bar = (cw['symbol'], cw.get('interval'), side)
                         now_ts = time.time()
                         secs = _interval_to_seconds(str(cw.get('interval') or '1m'))
                         last_ts = self._last_order_time.get(key_bar, 0)
                         if now_ts - last_ts < max(5, secs * 0.9):
-                            return  # wait for bar close (no re-entry within same candle)
+                            existing_entries = self._leg_entries(key_bar)
+                            if any(tuple(sorted(entry.get("trigger_signature") or [])) == signature for entry in existing_entries):
+                                return
                     except Exception:
                         pass
 
-                    # Close prior leg for the same (symbol, interval) on opposite signal
-                    if not self._close_opposite_position(cw['symbol'], cw.get('interval'), signal.upper()):
+                    if not self._close_opposite_position(cw['symbol'], cw.get('interval'), side):
                         return
 
                     if callable(self.can_open_cb):
-                        if not self.can_open_cb(cw['symbol'], cw.get('interval'), signal.upper()):
-                            self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {signal.upper()} already open - skipping.")
+                        if not self.can_open_cb(cw['symbol'], cw.get('interval'), side):
+                            self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {side} already open - skipping.")
                             return
                     order_res = {}
-                    guard_side = signal.upper()
+                    guard_side = side
                     order_success = False
                     try:
                         order_res = self.binance.place_futures_market_order(
-                            cw['symbol'], signal,
+                            cw['symbol'], side,
                             percent_balance=(pct*100.0),
                             leverage=lev,
                             reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
@@ -1716,7 +1803,6 @@ class StrategyEngine:
                                 guard_obj.end_open(cw['symbol'], cw.get('interval'), guard_side, order_success)
                             except Exception:
                                 pass
-                    # Emit trade callback (futures) for UI/guard
                     try:
                         qty_emit = float(order_res.get('computed',{}).get('qty') or 0.0)
                         if qty_emit <= 0:
@@ -1725,7 +1811,7 @@ class StrategyEngine:
                             self.trade_cb({
                                 'symbol': cw['symbol'],
                                 'interval': cw.get('interval'),
-                                'side': signal,
+                                'side': side,
                                 'qty': qty_emit,
                                 'price': cw.get('price'),
                                 'time': datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S'),
@@ -1734,7 +1820,6 @@ class StrategyEngine:
                             })
                     except Exception:
                         pass
-                    # Emit trade callback (futures) so UI can show Entry TF
                     try:
                         qty_emit = float(order_res.get('computed',{}).get('qty') or 0.0)
                         if qty_emit <= 0:
@@ -1743,7 +1828,7 @@ class StrategyEngine:
                             self.trade_cb({
                                 "symbol": cw['symbol'],
                                 "interval": cw.get('interval'),
-                                "side": signal,
+                                "side": side,
                                 "qty": qty_emit,
                                 "price": cw.get('price'),
                                 "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1758,7 +1843,7 @@ class StrategyEngine:
                                 self.trade_cb({
                                     'symbol': cw['symbol'],
                                     'interval': cw.get('interval'),
-                                    'side': signal,
+                                    'side': side,
                                     'qty': float(order_res.get('computed',{}).get('qty') or 0.0),
                                     'price': cw.get('price'),
                                     'time': datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1768,7 +1853,7 @@ class StrategyEngine:
                         except Exception:
                             pass
                         if order_res.get('ok'):
-                            key = (cw['symbol'], cw.get('interval'), signal.upper())
+                            key = (cw['symbol'], cw.get('interval'), side)
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
                             if exec_qty is not None:
@@ -1808,6 +1893,7 @@ class StrategyEngine:
                                     margin_est = (entry_price_est * qty) / leverage_val if leverage_val > 0 else entry_price_est * qty
                                 except Exception:
                                     margin_est = 0.0
+                                signature_list = list(signature or tuple(sorted(trigger_labels)))
                                 ledger_id = f"{key[0]}-{key[1]}-{key[2]}-{int(time.time()*1000)}"
                                 self._append_leg_entry(
                                     key,
@@ -1818,7 +1904,7 @@ class StrategyEngine:
                                         'leverage': leverage_val,
                                         'margin_usdt': float(margin_est or 0.0),
                                         'ledger_id': ledger_id,
-                                        'trigger_signature': list(signal_signature),
+                                        'trigger_signature': signature_list,
                                         'trigger_desc': trigger_desc,
                                     },
                                 )
@@ -1827,16 +1913,13 @@ class StrategyEngine:
                     qty_display = order_res.get('executedQty') or order_res.get('origQty') or qty_est
 
                 else:
-                    # SPOT logic: BUY uses quote amount (USDT); SELL requires existing base balance
                     filters = self.binance.get_spot_symbol_filters(cw['symbol'])
                     min_notional = float(filters.get('minNotional', 0.0) or 0.0)
                     price = float(last_price or 0.0)
-                    if signal.upper() == 'BUY':
-                        # Spend pct of total USDT, but ensure >= minNotional when possible
+                    if side == 'BUY':
                         total_usdt = float(self.binance.get_spot_balance('USDT') or 0.0)
                         use_usdt = total_usdt * pct
                         if min_notional > 0 and use_usdt < min_notional:
-                            # try to bump to min_notional if funds allow
                             if total_usdt >= min_notional:
                                 use_usdt = min_notional
                         order_res = self.binance.place_spot_market_order(
@@ -1844,7 +1927,6 @@ class StrategyEngine:
                         )
                         qty_display = order_res.get('executedQty') or order_res.get('origQty')
                     else:
-                        # SELL only if we hold the base asset
                         base_asset, _ = self.binance.get_base_quote_assets(cw['symbol'])
                         base_free = float(self.binance.get_spot_balance(base_asset) or 0.0)
                         if base_free <= 0:
@@ -1887,13 +1969,13 @@ class StrategyEngine:
                 order_info = {
                     "symbol": cw['symbol'],
                     "interval": cw['interval'],
-                    "side": signal,
+                    "side": side,
                     "qty": qty_numeric,
                     "executed_qty": qty_numeric,
                     "price": price,
                     "avg_price": avg_price if avg_price > 0 else price,
                     "leverage": leverage_used,
-                    "trigger_indicators": list(trigger_sources),
+                    "trigger_indicators": trigger_labels,
                     "trigger_desc": trigger_desc,
                     "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                     "status": "placed",
@@ -1903,14 +1985,29 @@ class StrategyEngine:
                 order_ok = True
                 if isinstance(order_res, dict):
                     order_ok = bool(order_res.get('ok', True))
-                if signal_timestamp is not None and order_ok:
-                    latency = max(0.0, time.time() - signal_timestamp)
+                if origin_timestamp is not None and order_ok:
+                    latency = max(0.0, time.time() - float(origin_timestamp))
                     self.log(
                         f"{cw['symbol']}@{cw['interval']} signal→order latency: {latency*1000:.0f} ms ({latency:.3f}s)."
                     )
                 self.log(f"{cw['symbol']}@{cw['interval']} Order placed: {order_res}")
             except Exception as e:
                 self.log(f"{cw['symbol']}@{cw['interval']} Order failed: {e}")
+
+        for order in orders_to_execute:
+            order_ts = order.get("timestamp")
+            ts_float = None
+            try:
+                if order_ts is not None:
+                    ts_float = float(order_ts)
+            except Exception:
+                ts_float = None
+            _execute_signal_order(
+                order.get("side"),
+                list(order.get("labels") or []),
+                tuple(order.get("signature") or ()),
+                ts_float,
+            )
 
     def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
         if self._emergency_close_triggered:
