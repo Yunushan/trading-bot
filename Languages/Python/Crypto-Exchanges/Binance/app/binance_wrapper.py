@@ -1,8 +1,8 @@
 
 from collections import deque
-import copy
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
-from datetime import datetime
+import copy
+from datetime import datetime, timezone
 from enum import Enum
 import re
 import time
@@ -125,6 +125,42 @@ class NetworkConnectivityError(RuntimeError):
     pass
 
 MAX_FUTURES_LEVERAGE = 150
+
+FUTURES_NATIVE_INTERVALS = {
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M",
+}
+
+SPOT_NATIVE_INTERVALS = {
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M",
+}
 
 def _coerce_interval_seconds(interval: str | None) -> float:
     try:
@@ -2326,7 +2362,16 @@ class BinanceWrapper:
 
     def get_klines(self, symbol, interval, limit=500):
         source = (getattr(self, "indicator_source", "") or "").strip().lower()
+        acct = str(getattr(self, "account_type", "") or "").upper()
+        if source in ("binance spot", "binance_spot", "spot"):
+            native_intervals = SPOT_NATIVE_INTERVALS
+        else:
+            native_intervals = FUTURES_NATIVE_INTERVALS
+        binance_source = source in ('', 'binance futures', 'binance_futures', 'futures', 'binance spot', 'binance_spot', 'spot')
+        interval_key = str(interval or '').strip()
+        custom_interval_requested = binance_source and interval_key not in native_intervals
         cache_key = (source or "binance", str(symbol or "").upper(), str(interval or ""), int(limit or 0))
+        import pandas as pd
         interval_seconds = _coerce_interval_seconds(interval)
         ttl = max(1.0, min(interval_seconds * 0.9, 3600.0))
         cached_df = None
@@ -2349,6 +2394,24 @@ class BinanceWrapper:
                     self._log(f"REST ban active (~{ban_remaining:.0f}s). Serving cached klines for {symbol}@{interval} until {eta}.", lvl="warn")
                 return cached_df
             raise RuntimeError(f"binance_rest_banned:{ban_remaining:.0f}s")
+
+        if custom_interval_requested:
+            end_dt = pd.Timestamp.utcnow()
+            if end_dt.tzinfo is not None:
+                end_dt = end_dt.tz_localize(None)
+            span_seconds = _coerce_interval_seconds(interval_key or interval) * max(int(limit or 1), 1)
+            start_dt = end_dt - pd.Timedelta(seconds=span_seconds * 2)
+            fetch_limit = max(int(limit or 1) * 2, int(limit or 1))
+            df_custom = self.get_klines_range(symbol, interval_key or interval, start_dt, end_dt, fetch_limit)
+            if df_custom is None or df_custom.empty:
+                if cached_df is not None:
+                    return cached_df
+                raise RuntimeError(f"No kline data returned for interval '{interval}'")
+            trimmed = df_custom.tail(int(limit or 1)).copy()
+            with self._kline_cache_lock:
+                self._kline_cache[cache_key] = {'df': trimmed.copy(deep=True), 'ts': time.time()}
+            return trimmed
+
 
         raw = None
         max_retries = 5
@@ -2420,50 +2483,54 @@ class BinanceWrapper:
         self._handle_network_recovered()
         return trimmed
 
-    def get_klines_range(self, symbol, interval, start_time, end_time, limit=1000):
-        """
-        Fetch historical klines between start_time and end_time (inclusive) and return a DataFrame.
-        start_time/end_time may be datetime, int milliseconds, or string accepted by pandas.to_datetime.
-        """
-        from datetime import datetime
+    @staticmethod
+    def _klines_raw_to_df(raw):
+        import pandas as pd
+        cols = ['open_time','open','high','low','close','volume','close_time','qav','num_trades','taker_base','taker_quote','ignore']
+        if not raw:
+            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume']).astype(float)
+        df = pd.DataFrame(raw, columns=cols)
+        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+        df.set_index('open_time', inplace=True)
+        for c in ['open','high','low','close','volume']:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        return df[['open','high','low','close','volume']].copy(deep=True)
 
-        try:
-            if isinstance(start_time, str):
-                start_dt = pd.to_datetime(start_time)
-            elif isinstance(start_time, datetime):
-                start_dt = start_time
-            else:
-                start_dt = pd.to_datetime(int(start_time), unit='ms')
-        except Exception as exc:
-            raise ValueError(f"Invalid start_time: {start_time}") from exc
+    @staticmethod
+    def _interval_seconds_to_freq(seconds: float) -> str:
+        seconds = float(seconds or 0.0)
+        if seconds <= 0.0:
+            raise ValueError("Interval must be positive")
+        if seconds % 86400 == 0:
+            return f"{int(seconds // 86400)}D"
+        if seconds % 3600 == 0:
+            return f"{int(seconds // 3600)}H"
+        if seconds % 60 == 0:
+            return f"{int(seconds // 60)}min"
+        return f"{int(seconds)}S"
 
-        try:
-            if isinstance(end_time, str):
-                end_dt = pd.to_datetime(end_time)
-            elif isinstance(end_time, datetime):
-                end_dt = end_time
-            else:
-                end_dt = pd.to_datetime(int(end_time), unit='ms')
-        except Exception as exc:
-            raise ValueError(f"Invalid end_time: {end_time}") from exc
-
-        if end_dt <= start_dt:
-            raise ValueError("end_time must be greater than start_time")
-
-        source = (getattr(self, "indicator_source", "") or "").strip().lower()
-        acct = str(getattr(self, "account_type", "") or "").upper()
-        if source not in ("", "binance futures", "binance_futures", "futures", "binance spot", "binance_spot", "spot"):
-            raise NotImplementedError(f"Historical klines not supported for source '{source}' in backtester.")
-
-        start_ms = int(start_dt.timestamp() * 1000)
-        end_ms = int(end_dt.timestamp() * 1000)
+    def _get_klines_range_native(self, symbol: str, interval: str, start_dt, end_dt, limit: int, acct: str, source: str):
+        start_ts = pd.Timestamp(start_dt)
+        end_ts = pd.Timestamp(end_dt)
+        if start_ts.tzinfo is None:
+            start_utc = start_ts.tz_localize('UTC')
+        else:
+            start_utc = start_ts.tz_convert('UTC')
+        if end_ts.tzinfo is None:
+            end_utc = end_ts.tz_localize('UTC')
+        else:
+            end_utc = end_ts.tz_convert('UTC')
+        start_filter = start_utc.tz_localize(None)
+        end_filter = end_utc.tz_localize(None)
+        start_ms = int(start_utc.timestamp() * 1000)
+        end_ms = int(end_utc.timestamp() * 1000)
         interval_ms = max(int(_coerce_interval_seconds(interval) * 1000), 1)
         all_frames = []
         current = start_ms
         max_limit = 1500 if acct.startswith("FUT") else 1000
-        limit = max(1, min(int(limit), max_limit))
+        limit = max(1, int(limit or max_limit))
+        limit = min(limit, max_limit)
         guard = 0
-
         max_network_retries = 4
         while current < end_ms and guard < 10000:
             guard += 1
@@ -2517,13 +2584,8 @@ class BinanceWrapper:
             if not raw:
                 break
 
-            cols = ['open_time','open','high','low','close','volume','close_time','qav','num_trades','taker_base','taker_quote','ignore']
-            df = pd.DataFrame(raw, columns=cols)
-            df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
-            df.set_index('open_time', inplace=True)
-            for c in ['open','high','low','close','volume']:
-                df[c] = pd.to_numeric(df[c], errors='coerce')
-            all_frames.append(df[['open', 'high', 'low', 'close', 'volume']])
+            frame = self._klines_raw_to_df(raw)
+            all_frames.append(frame)
 
             last_open = int(raw[-1][0])
             next_open = last_open + interval_ms
@@ -2532,12 +2594,96 @@ class BinanceWrapper:
             current = next_open
 
         if not all_frames:
-            raise RuntimeError("No kline data returned for requested range.")
+            return self._klines_raw_to_df([])
 
         full = pd.concat(all_frames).sort_index()
         full = full[~full.index.duplicated(keep='first')]
-        mask = (full.index >= start_dt) & (full.index <= end_dt)
-        return full.loc[mask].copy()
+        mask = (full.index >= start_filter) & (full.index <= end_filter)
+        return full.loc[start_filter:end_filter].copy()
+
+    def _get_klines_range_custom(self, symbol: str, interval: str, start_dt, end_dt, limit: int, acct: str, source: str):
+        interval_seconds = _coerce_interval_seconds(interval)
+        if interval_seconds < 60:
+            raise NotImplementedError(f"Custom interval '{interval}' below 1 minute is not supported.")
+        if interval_seconds < 3600:
+            base_interval = "1m"
+        elif interval_seconds < 86400:
+            base_interval = "1h"
+        else:
+            base_interval = "1d"
+        base_seconds = _coerce_interval_seconds(base_interval)
+        if interval_seconds % base_seconds != 0:
+            raise NotImplementedError(f"Custom interval '{interval}' is not a multiple of {base_interval}.")
+        factor = int(interval_seconds / base_seconds)
+        base_limit = max(int(limit or 1000) * factor, factor)
+        fetch_end = end_dt + pd.Timedelta(seconds=base_seconds * factor)
+        base_df = self._get_klines_range_native(symbol, base_interval, start_dt, fetch_end, base_limit, acct, source)
+        if base_df.empty:
+            return base_df
+        freq = self._interval_seconds_to_freq(interval_seconds)
+        agg = base_df.resample(freq, label='left', closed='left').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum',
+        })
+        agg = agg.dropna()
+        return agg.loc[start_dt:end_dt].copy()
+
+    def get_klines_range(self, symbol, interval, start_time, end_time, limit=1000):
+        """
+        Fetch historical klines between start_time and end_time (inclusive) and return a DataFrame.
+        start_time/end_time may be datetime, int milliseconds, or string accepted by pandas.to_datetime.
+        """
+        from datetime import datetime
+        import pandas as pd
+
+        try:
+            if isinstance(start_time, str):
+                start_dt = pd.to_datetime(start_time)
+            elif isinstance(start_time, datetime):
+                start_dt = start_time
+            else:
+                start_dt = pd.to_datetime(int(start_time), unit='ms')
+        except Exception as exc:
+            raise ValueError(f"Invalid start_time: {start_time}") from exc
+        if isinstance(start_dt, pd.Timestamp) and start_dt.tzinfo is not None:
+            start_dt = start_dt.tz_localize(None)
+        elif getattr(start_dt, "tzinfo", None) is not None:
+            start_dt = start_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+        try:
+            if isinstance(end_time, str):
+                end_dt = pd.to_datetime(end_time)
+            elif isinstance(end_time, datetime):
+                end_dt = end_time
+            else:
+                end_dt = pd.to_datetime(int(end_time), unit='ms')
+        except Exception as exc:
+            raise ValueError(f"Invalid end_time: {end_time}") from exc
+        if isinstance(end_dt, pd.Timestamp) and end_dt.tzinfo is not None:
+            end_dt = end_dt.tz_localize(None)
+        elif getattr(end_dt, "tzinfo", None) is not None:
+            end_dt = end_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+        if end_dt <= start_dt:
+            raise ValueError("end_time must be greater than start_time")
+
+        source = (getattr(self, "indicator_source", "") or "").strip().lower()
+        acct = str(getattr(self, "account_type", "") or "").upper()
+        if source not in ("", "binance futures", "binance_futures", "futures", "binance spot", "binance_spot", "spot"):
+            raise NotImplementedError(f"Historical klines not supported for source '{source}' in backtester.")
+
+        native_intervals = FUTURES_NATIVE_INTERVALS if acct.startswith("FUT") else SPOT_NATIVE_INTERVALS
+        if interval in native_intervals:
+            df = self._get_klines_range_native(symbol, interval, start_dt, end_dt, limit, acct, source)
+        else:
+            df = self._get_klines_range_custom(symbol, interval, start_dt, end_dt, limit, acct, source)
+
+        if df.empty:
+            raise RuntimeError("No kline data returned for requested range.")
+        return df
 
     # ---- order placement helpers
     @staticmethod
