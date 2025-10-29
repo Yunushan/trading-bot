@@ -7053,6 +7053,10 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             position_initial = float(p.get('positionInitialMargin') or 0.0)
                         except Exception:
                             position_initial = 0.0
+                        try:
+                            open_order_margin = float(p.get('openOrderMargin') or p.get('openOrderInitialMargin') or 0.0)
+                        except Exception:
+                            open_order_margin = 0.0
                         pnl = float(p.get('unRealizedProfit') or 0.0)
                         lev_val_raw = float(p.get('leverage') or 0.0)
                         leverage = int(lev_val_raw) if lev_val_raw else None
@@ -7082,10 +7086,6 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             maint_rate_val = float(p.get('maintMarginRate') or p.get('maintenanceMarginRate') or 0.0)
                         except Exception:
                             maint_rate_val = 0.0
-                        try:
-                            open_order_margin = float(p.get('openOrderMargin') or p.get('openOrderInitialMargin') or 0.0)
-                        except Exception:
-                            open_order_margin = 0.0
                         if maint <= 0.0 and maint_rate_val > 0.0 and value > 0.0:
                             maint = abs(value) * maint_rate_val
                         baseline_margin = maint if maint > 0.0 else initial_margin_val
@@ -7115,9 +7115,18 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if wallet_balance_val <= 0.0 and iso_wallet > 0.0:
                             wallet_balance_val = iso_wallet
                         wallet_balance_val = max(wallet_balance_val, 0.0)
-                        raw_margin_ratio = normalize_margin_ratio(p.get('marginRatioRaw') or p.get('marginRatio') or p.get('margin_ratio'))
+                        raw_margin_ratio_val = None
+                        for ratio_key in ('marginRatioRaw', 'marginRatio', 'margin_ratio'):
+                            val = p.get(ratio_key)
+                            if val in (None, '', 0, 0.0):
+                                continue
+                            try:
+                                raw_margin_ratio_val = float(val)
+                                break
+                            except Exception:
+                                continue
                         calc_ratio = normalize_margin_ratio(p.get('marginRatioCalc')) if p.get('marginRatioCalc') is not None else 0.0
-                        margin_ratio = raw_margin_ratio
+                        margin_ratio = normalize_margin_ratio(raw_margin_ratio_val)
                         if margin_ratio <= 0.0:
                             margin_ratio = calc_ratio
                         if (margin_ratio <= 0.0 or not margin_ratio) and wallet_balance_val > 0:
@@ -7153,7 +7162,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'maint_margin': maint,
                             'open_order_margin': open_order_margin,
                             'margin_ratio': margin_ratio,
-                            'margin_ratio_raw': raw_margin_ratio,
+                            'margin_ratio_raw': normalize_margin_ratio(raw_margin_ratio_val),
                             'margin_ratio_calc': calc_ratio,
                             'pnl_roi': pnl_roi,
                             'pnl_value': pnl,
@@ -7181,6 +7190,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         rec['data'] = data
                         rec['status'] = 'Active'
                         rec['close_time'] = '-'
+                        if (not rec.get('entry_tf') or rec['entry_tf'] == '-') and data.get('interval_display'):
+                            rec['entry_tf'] = data['interval_display']
                         allocations_existing = _collect_allocations(sym, side_key)
                         interval_display: dict[str, str] = {}
                         interval_lookup: dict[str, str] = {}
@@ -7305,6 +7316,11 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                                         data['interval'] = intervals_active[0]
                             except Exception:
                                 pass
+                        if not data.get('interval_display') and rec.get('entry_tf') and rec['entry_tf'] != '-':
+                            first_iv = rec['entry_tf'].split(',')[0].strip()
+                            if first_iv:
+                                data['interval_display'] = first_iv
+                                data['interval'] = first_iv
                         open_times = []
                         ordered_lookup = [
                             interval_lookup.get(key) or interval_display.get(key)
