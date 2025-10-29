@@ -7095,7 +7095,10 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             baseline_margin = margin_usdt
                         if position_initial > 0.0:
                             baseline_margin = position_initial
-                        margin_balance_val = float(p.get('walletBalance') or p.get('marginBalance') or 0.0)
+                        try:
+                            margin_balance_val = float(p.get('marginBalance') or 0.0)
+                        except Exception:
+                            margin_balance_val = 0.0
                         if margin_balance_val <= 0.0 and iso_wallet > 0.0:
                             margin_balance_val = iso_wallet
                         if margin_balance_val <= 0.0:
@@ -7103,14 +7106,23 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if margin_balance_val <= 0.0:
                             margin_balance_val = margin_usdt
                         margin_balance_val = max(margin_balance_val, 0.0)
+                        try:
+                            wallet_balance_val = float(p.get('walletBalance') or 0.0)
+                        except Exception:
+                            wallet_balance_val = 0.0
+                        if wallet_balance_val <= 0.0:
+                            wallet_balance_val = margin_balance_val if margin_balance_val > 0.0 else margin_usdt + pnl
+                        if wallet_balance_val <= 0.0 and iso_wallet > 0.0:
+                            wallet_balance_val = iso_wallet
+                        wallet_balance_val = max(wallet_balance_val, 0.0)
                         raw_margin_ratio = normalize_margin_ratio(p.get('marginRatioRaw') or p.get('marginRatio') or p.get('margin_ratio'))
                         calc_ratio = normalize_margin_ratio(p.get('marginRatioCalc')) if p.get('marginRatioCalc') is not None else 0.0
                         margin_ratio = raw_margin_ratio
                         if margin_ratio <= 0.0:
                             margin_ratio = calc_ratio
-                        if (margin_ratio <= 0.0 or not margin_ratio) and margin_balance_val > 0:
+                        if (margin_ratio <= 0.0 or not margin_ratio) and wallet_balance_val > 0:
                             unrealized_loss = abs(pnl) if pnl < 0 else 0.0
-                            margin_ratio = ((baseline_margin + open_order_margin + unrealized_loss) / margin_balance_val) * 100.0
+                            margin_ratio = ((baseline_margin + open_order_margin + unrealized_loss) / wallet_balance_val) * 100.0
                         roi_pct = 0.0
                         if margin_usdt > 0:
                             try:
@@ -7137,7 +7149,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'size_usdt': value,
                             'margin_usdt': margin_usdt,
                             'margin_balance': margin_balance_val,
-                            'wallet_balance': margin_balance_val,
+                            'wallet_balance': wallet_balance_val,
                             'maint_margin': maint,
                             'open_order_margin': open_order_margin,
                             'margin_ratio': margin_ratio,
@@ -7150,6 +7162,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'update_time': update_time,
                             'entry_price': entry_price if entry_price > 0 else None,
                             'leverage': leverage,
+                            'interval': None,
+                            'interval_display': None,
                         }
                         rec = positions_map.get((sym, side_key))
                         if rec is None:
@@ -7262,13 +7276,22 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                                     interval_display.setdefault(key_iv, canon_iv or iv_text)
                                     interval_lookup.setdefault(key_iv, iv_text)
                         ordered_keys: list[str] = []
+                        primary_interval_key = None
                         if interval_display:
                             ordered_keys = sorted(interval_display.keys(), key=_mw_interval_sort_key)
                             rec['entry_tf'] = ', '.join(
                                 interval_display[key] for key in ordered_keys if interval_display[key]
                             )
+                            if ordered_keys:
+                                primary_interval_key = ordered_keys[0]
                         else:
                             rec['entry_tf'] = '-'
+                        if primary_interval_key:
+                            data['interval_display'] = interval_display.get(primary_interval_key)
+                            data['interval'] = interval_lookup.get(primary_interval_key) or interval_display.get(primary_interval_key)
+                        else:
+                            data.setdefault('interval_display', rec.get('entry_tf') if rec.get('entry_tf') and rec.get('entry_tf') != '-' else None)
+                            data.setdefault('interval', None)
                         open_times = []
                         ordered_lookup = [
                             interval_lookup.get(key) or interval_display.get(key)
@@ -7900,7 +7923,7 @@ def _mw_render_positions_table(self):
                 if not sym:
                     sym = "-"
                 side_key = str(rec.get('side_key') or data.get('side_key') or "").upper()
-                interval = rec.get('entry_tf') or "-"
+                interval = data.get('interval_display') or rec.get('entry_tf') or "-"
                 row = self.pos_table.rowCount()
                 self.pos_table.insertRow(row)
 
