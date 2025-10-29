@@ -159,18 +159,58 @@ MDD_LOGIC_LABELS = {
 }
 
 CONNECTOR_OPTIONS = [
-    ("Binance Connector Python (Official)", "binance-connector"),
-    ("Python Binance (Unofficial)", "python-binance"),
+    ("Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)", "binance-sdk-derivatives-trading-usds-futures"),
+    ("Binance SDK Derivatives Trading COIN-M Futures", "binance-sdk-derivatives-trading-coin-futures"),
+    ("Binance SDK Spot (Official Recommended)", "binance-sdk-spot"),
+    ("Binance Connector Python", "binance-connector"),
+    ("python-binance (Community)", "python-binance"),
 ]
 DEFAULT_CONNECTOR_BACKEND = CONNECTOR_OPTIONS[0][1]
 
+FUTURES_CONNECTOR_KEYS = {
+    "binance-sdk-derivatives-trading-usds-futures",
+    "binance-sdk-derivatives-trading-coin-futures",
+    "binance-connector",
+    "python-binance",
+}
+
+SPOT_CONNECTOR_KEYS = {
+    "binance-sdk-spot",
+    "binance-connector",
+    "python-binance",
+}
+
+RECOMMENDED_CONNECTOR_BY_ACCOUNT = {
+    "FUTURES": "binance-sdk-derivatives-trading-usds-futures",
+    "SPOT": "binance-sdk-spot",
+}
+
 def _normalize_connector_backend(value) -> str:
-    text = str(value or "").strip().lower()
+    text_raw = str(value or "").strip()
+    if not text_raw:
+        return DEFAULT_CONNECTOR_BACKEND
+    text = text_raw.lower()
+    if text in {
+        "binance-sdk-derivatives-trading-usds-futures",
+        "binance_sdk_derivatives_trading_usds_futures",
+    } or ("sdk" in text and "future" in text and ("usd" in text or "usds" in text)):
+        return "binance-sdk-derivatives-trading-usds-futures"
+    if text in {
+        "binance-sdk-derivatives-trading-coin-futures",
+        "binance_sdk_derivatives_trading_coin_futures",
+    } or ("sdk" in text and "coin" in text and "future" in text):
+        return "binance-sdk-derivatives-trading-coin-futures"
+    if text in {"binance-sdk-spot", "binance_sdk_spot"} or ("sdk" in text and "spot" in text):
+        return "binance-sdk-spot"
     if "connector" in text or "official" in text or text == "binance-connector":
         return "binance-connector"
     if "python" in text and "binance" in text:
         return "python-binance"
     return DEFAULT_CONNECTOR_BACKEND
+
+def _recommended_connector_for_key(account_key: str) -> str:
+    key = (account_key or "").strip().upper()
+    return RECOMMENDED_CONNECTOR_BY_ACCOUNT.get(key, DEFAULT_CONNECTOR_BACKEND)
 
 for _parent in _THIS_FILE.parents:
     if (_parent / "Languages").exists():
@@ -1234,6 +1274,7 @@ class MainWindow(QtWidgets.QWidget):
         self._starter_crypto_cards = {}
         self._starter_forex_cards = {}
         self._code_tab_selected_market = self.config.get("code_market") or "crypto"
+        self._ensure_runtime_connector_for_account(self.config.get("account_type") or "Futures", force_default=False)
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
@@ -3226,6 +3267,7 @@ class MainWindow(QtWidgets.QWidget):
     def _backtest_symbol_source_changed(self, text: str):
         self._update_backtest_config("symbol_source", text)
         self._update_backtest_futures_controls()
+        self._refresh_backtest_connector_options(text, force_default=True)
         self._refresh_backtest_symbols()
 
     def _refresh_backtest_symbols(self):
@@ -4574,13 +4616,51 @@ class MainWindow(QtWidgets.QWidget):
             return "Portfolio Margin"
         return "Classic Trading"
 
+    def _ensure_runtime_connector_for_account(self, account_type: str, *, force_default: bool = False) -> str:
+        account_key = "FUTURES" if str(account_type or "Futures").upper().startswith("FUT") else "SPOT"
+        allowed = FUTURES_CONNECTOR_KEYS if account_key == "FUTURES" else SPOT_CONNECTOR_KEYS
+        recommended = _recommended_connector_for_key(account_key)
+        current_backend = _normalize_connector_backend(self.config.get("connector_backend"))
+        if force_default or current_backend not in allowed:
+            current_backend = recommended
+            self.config["connector_backend"] = current_backend
+        if hasattr(self, "connector_combo") and self.connector_combo is not None:
+            idx = self.connector_combo.findData(current_backend)
+            if idx < 0:
+                idx = self.connector_combo.findData(recommended)
+            if idx < 0 and self.connector_combo.count():
+                idx = 0
+                current_backend = _normalize_connector_backend(self.connector_combo.itemData(idx))
+                self.config["connector_backend"] = current_backend
+            if idx >= 0:
+                blocker = None
+                try:
+                    blocker = QtCore.QSignalBlocker(self.connector_combo)
+                except Exception:
+                    blocker = None
+                self.connector_combo.setCurrentIndex(idx)
+                if blocker is not None:
+                    del blocker
+        self._update_connector_labels()
+        return self.config.get("connector_backend", current_backend)
+
     def _runtime_connector_backend(self) -> str:
-        backend = _normalize_connector_backend(self.config.get("connector_backend"))
-        self.config["connector_backend"] = backend
-        return backend
+        account_type = str(self.config.get("account_type", "Futures") or "Futures")
+        return self._ensure_runtime_connector_for_account(account_type, force_default=False)
 
     def _backtest_connector_backend(self) -> str:
+        source_text = ""
+        if hasattr(self, "backtest_symbol_source_combo") and self.backtest_symbol_source_combo is not None:
+            try:
+                source_text = self.backtest_symbol_source_combo.currentText()
+            except Exception:
+                source_text = ""
+        source_key = "SPOT" if str(source_text or "Futures").strip().lower().startswith("spot") else "FUTURES"
+        allowed = FUTURES_CONNECTOR_KEYS if source_key == "FUTURES" else SPOT_CONNECTOR_KEYS
+        recommended = _recommended_connector_for_key(source_key)
         backend = _normalize_connector_backend(self.backtest_config.get("connector_backend"))
+        if backend not in allowed:
+            backend = recommended
         self.backtest_config["connector_backend"] = backend
         self.config.setdefault("backtest", {})["connector_backend"] = backend
         return backend
@@ -4629,6 +4709,7 @@ class MainWindow(QtWidgets.QWidget):
                 self.shared_binance.account_type = normalized.upper()
         except Exception:
             pass
+        self._ensure_runtime_connector_for_account(normalized, force_default=False)
         desired_spot = "Binance spot"
         desired_futures = "Binance futures"
         try:
@@ -4658,6 +4739,45 @@ class MainWindow(QtWidgets.QWidget):
                         pass
         except Exception:
             pass
+
+    def _refresh_backtest_connector_options(self, symbol_source: str | None = None, *, force_default: bool = False) -> None:
+        if not hasattr(self, "backtest_connector_combo") or self.backtest_connector_combo is None:
+            return
+        source_text = (symbol_source or "")
+        if not source_text and hasattr(self, "backtest_symbol_source_combo") and self.backtest_symbol_source_combo is not None:
+            try:
+                source_text = self.backtest_symbol_source_combo.currentText()
+            except Exception:
+                source_text = ""
+        source_key = "SPOT" if str(source_text or "Futures").strip().lower().startswith("spot") else "FUTURES"
+        allowed = FUTURES_CONNECTOR_KEYS if source_key == "FUTURES" else SPOT_CONNECTOR_KEYS
+        recommended = _recommended_connector_for_key(source_key)
+        current_backend = _normalize_connector_backend(self.backtest_config.get("connector_backend"))
+        if force_default or current_backend not in allowed:
+            current_backend = recommended
+        blocker = None
+        try:
+            blocker = QtCore.QSignalBlocker(self.backtest_connector_combo)
+        except Exception:
+            blocker = None
+        self.backtest_connector_combo.clear()
+        for label, value in CONNECTOR_OPTIONS:
+            if value in allowed:
+                self.backtest_connector_combo.addItem(label, value)
+        idx = self.backtest_connector_combo.findData(current_backend)
+        if idx < 0:
+            idx = self.backtest_connector_combo.findData(recommended)
+        if idx < 0 and self.backtest_connector_combo.count():
+            idx = 0
+        if idx >= 0 and self.backtest_connector_combo.count():
+            self.backtest_connector_combo.setCurrentIndex(idx)
+            current_backend = _normalize_connector_backend(self.backtest_connector_combo.currentData())
+        if blocker is not None:
+            del blocker
+        self.backtest_config["connector_backend"] = current_backend
+        self.config.setdefault("backtest", {})["connector_backend"] = current_backend
+        self._update_backtest_config("connector_backend", current_backend)
+        self._update_connector_labels()
         try:
             self._reconfigure_positions_worker()
         except Exception:
@@ -5638,13 +5758,18 @@ class MainWindow(QtWidgets.QWidget):
 
         grid.addWidget(QtWidgets.QLabel("Connector:"), 1, 6)
         self.connector_combo = QtWidgets.QComboBox()
+        current_account_type = self.config.get("account_type", "Futures")
+        account_key = "FUTURES" if str(current_account_type or "Futures").strip().lower().startswith("fut") else "SPOT"
+        allowed_backends = FUTURES_CONNECTOR_KEYS if account_key == "FUTURES" else SPOT_CONNECTOR_KEYS
         for label, value in CONNECTOR_OPTIONS:
-            self.connector_combo.addItem(label, value)
-        runtime_backend = self._runtime_connector_backend()
+            if value in allowed_backends:
+                self.connector_combo.addItem(label, value)
+        runtime_backend = self._ensure_runtime_connector_for_account(current_account_type, force_default=False)
         idx_connector = self.connector_combo.findData(runtime_backend)
-        if idx_connector < 0:
+        if idx_connector < 0 and self.connector_combo.count():
             idx_connector = 0
-        self.connector_combo.setCurrentIndex(idx_connector)
+        if self.connector_combo.count():
+            self.connector_combo.setCurrentIndex(idx_connector)
         self.connector_combo.currentIndexChanged.connect(self._on_runtime_connector_changed)
         grid.addWidget(self.connector_combo, 1, 7, 1, 3)
 
@@ -6444,14 +6569,7 @@ class MainWindow(QtWidgets.QWidget):
         param_form.addRow("Account Mode:", self.backtest_account_mode_combo)
 
         self.backtest_connector_combo = QtWidgets.QComboBox()
-        for label, value in CONNECTOR_OPTIONS:
-            self.backtest_connector_combo.addItem(label, value)
-        backtest_backend = self._backtest_connector_backend()
-        idx_bt_connector = self.backtest_connector_combo.findData(backtest_backend)
-        if idx_bt_connector < 0:
-            idx_bt_connector = 0
-        with QtCore.QSignalBlocker(self.backtest_connector_combo):
-            self.backtest_connector_combo.setCurrentIndex(idx_bt_connector)
+        self._refresh_backtest_connector_options(force_default=False)
         self.backtest_connector_combo.currentIndexChanged.connect(self._on_backtest_connector_changed)
         param_form.addRow("Connector:", self.backtest_connector_combo)
 

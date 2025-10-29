@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
     "position_mode": "Hedge",    # "One-way" or "Hedge"
     "assets_mode": "Single-Asset",
     "account_mode": "Classic Trading",
-    "connector_backend": "binance-connector",
+    "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
     "code_language": "Python (PyQt)",
     "selected_exchange": "Binance",
     "selected_forex_broker": "FXCM",
@@ -68,7 +68,7 @@ DEFAULT_CONFIG = {
         "position_mode": "Hedge",
         "assets_mode": "Single-Asset",
         "account_mode": "Classic Trading",
-        "connector_backend": "binance-connector",
+        "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
         "leverage": 5,
         "mdd_logic": MDD_LOGIC_DEFAULT,
         "template": copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT),

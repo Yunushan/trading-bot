@@ -3,10 +3,12 @@ from collections import deque
 import copy
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 from datetime import datetime
+from enum import Enum
 import re
 import time
 import threading
 import types
+from typing import Any
 import requests
 
 import pandas as pd
@@ -21,6 +23,101 @@ except Exception:
     _OfficialAPIBase = None
     _OfficialClientError = None
     _OfficialServerError = None
+
+try:
+    from binance_sdk_derivatives_trading_usds_futures import (
+        DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL as _USDS_REST_PROD,
+        DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL as _USDS_REST_TESTNET,
+    )
+    from binance_sdk_derivatives_trading_usds_futures.rest_api import (
+        DerivativesTradingUsdsFuturesRestAPI as _UsdsRestAPI,
+    )
+    from binance_sdk_derivatives_trading_usds_futures.rest_api.rest_api import (
+        ConfigurationRestAPI as _UsdsConfig,
+    )
+    from binance_sdk_derivatives_trading_usds_futures.rest_api.models.enums import (
+        ChangeMarginTypeMarginTypeEnum as _UsdsMarginTypeEnum,
+        NewOrderSideEnum as _UsdsOrderSideEnum,
+        NewOrderPositionSideEnum as _UsdsPositionSideEnum,
+        NewOrderTimeInForceEnum as _UsdsTimeInForceEnum,
+        NewOrderWorkingTypeEnum as _UsdsWorkingTypeEnum,
+        NewOrderNewOrderRespTypeEnum as _UsdsOrderRespEnum,
+        NewOrderPriceMatchEnum as _UsdsPriceMatchEnum,
+        NewOrderSelfTradePreventionModeEnum as _UsdsStpEnum,
+    )
+except Exception:
+    _USDS_REST_PROD = None
+    _USDS_REST_TESTNET = None
+    _UsdsRestAPI = None
+    _UsdsConfig = None
+    _UsdsMarginTypeEnum = None
+    _UsdsOrderSideEnum = None
+    _UsdsPositionSideEnum = None
+    _UsdsTimeInForceEnum = None
+    _UsdsWorkingTypeEnum = None
+    _UsdsOrderRespEnum = None
+    _UsdsPriceMatchEnum = None
+    _UsdsStpEnum = None
+
+try:
+    from binance_sdk_derivatives_trading_coin_futures import (
+        DERIVATIVES_TRADING_COIN_FUTURES_REST_API_PROD_URL as _COIN_REST_PROD,
+        DERIVATIVES_TRADING_COIN_FUTURES_REST_API_TESTNET_URL as _COIN_REST_TESTNET,
+    )
+    from binance_sdk_derivatives_trading_coin_futures.rest_api import (
+        DerivativesTradingCoinFuturesRestAPI as _CoinRestAPI,
+    )
+    from binance_sdk_derivatives_trading_coin_futures.rest_api.rest_api import (
+        ConfigurationRestAPI as _CoinConfig,
+    )
+    from binance_sdk_derivatives_trading_coin_futures.rest_api.models.enums import (
+        ChangeMarginTypeMarginTypeEnum as _CoinMarginTypeEnum,
+        NewOrderSideEnum as _CoinOrderSideEnum,
+        NewOrderPositionSideEnum as _CoinPositionSideEnum,
+        NewOrderTimeInForceEnum as _CoinTimeInForceEnum,
+        NewOrderWorkingTypeEnum as _CoinWorkingTypeEnum,
+        NewOrderNewOrderRespTypeEnum as _CoinOrderRespEnum,
+        NewOrderPriceMatchEnum as _CoinPriceMatchEnum,
+        NewOrderSelfTradePreventionModeEnum as _CoinStpEnum,
+    )
+except Exception:
+    _COIN_REST_PROD = None
+    _COIN_REST_TESTNET = None
+    _CoinRestAPI = None
+    _CoinConfig = None
+    _CoinMarginTypeEnum = None
+    _CoinOrderSideEnum = None
+    _CoinPositionSideEnum = None
+    _CoinTimeInForceEnum = None
+    _CoinWorkingTypeEnum = None
+    _CoinOrderRespEnum = None
+    _CoinPriceMatchEnum = None
+    _CoinStpEnum = None
+
+try:
+    from binance_sdk_spot import (
+        SPOT_REST_API_PROD_URL as _SPOT_REST_PROD,
+        SPOT_REST_API_TESTNET_URL as _SPOT_REST_TESTNET,
+    )
+    from binance_sdk_spot.rest_api import SpotRestAPI as _SpotRestAPI
+    from binance_sdk_spot.rest_api.rest_api import ConfigurationRestAPI as _SpotConfig
+    from binance_sdk_spot.rest_api.models.enums import (
+        NewOrderSideEnum as _SpotOrderSideEnum,
+        NewOrderTypeEnum as _SpotOrderTypeEnum,
+        NewOrderTimeInForceEnum as _SpotTimeInForceEnum,
+        NewOrderNewOrderRespTypeEnum as _SpotOrderRespEnum,
+        NewOrderSelfTradePreventionModeEnum as _SpotStpEnum,
+    )
+except Exception:
+    _SPOT_REST_PROD = None
+    _SPOT_REST_TESTNET = None
+    _SpotRestAPI = None
+    _SpotConfig = None
+    _SpotOrderSideEnum = None
+    _SpotOrderTypeEnum = None
+    _SpotTimeInForceEnum = None
+    _SpotOrderRespEnum = None
+    _SpotStpEnum = None
 
 
 class NetworkConnectivityError(RuntimeError):
@@ -84,6 +181,100 @@ def _coerce_int(value):
         return 0
 
 
+def _is_testnet_mode(mode: str | None) -> bool:
+    text = str(mode or "").lower()
+    return any(tag in text for tag in ("demo", "test", "sandbox"))
+
+
+def _bool_to_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        txt = value.strip().lower()
+        if txt in {"true", "false"}:
+            return txt
+        if txt in {"1", "yes", "y"}:
+            return "true"
+        if txt in {"0", "no", "n"}:
+            return "false"
+    return "true" if bool(value) else "false"
+
+
+def _maybe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _maybe_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+
+def _enum_value(enum_cls: Any, value: Any):
+    if value is None or enum_cls is None:
+        return None
+    if isinstance(value, enum_cls):
+        return value
+    text = str(value)
+    for candidate in (text, text.upper(), text.lower()):
+        try:
+            return enum_cls(candidate)
+        except Exception:
+            pass
+    try:
+        return enum_cls[text.upper()]
+    except Exception:
+        pass
+    return None
+
+
+def _sdk_to_plain(obj: Any) -> Any:
+    if obj is None:
+        return None
+    if hasattr(obj, "data") and callable(obj.data):
+        try:
+            obj = obj.data()
+        except Exception:
+            pass
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, list):
+        return [_sdk_to_plain(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_sdk_to_plain(item) for item in obj)
+    if isinstance(obj, dict):
+        return {
+            key: _sdk_to_plain(val)
+            for key, val in obj.items()
+            if key != "additional_properties"
+        }
+    actual = getattr(obj, "actual_instance", None)
+    if actual is not None:
+        return _sdk_to_plain(actual)
+    if hasattr(obj, "to_dict"):
+        try:
+            return _sdk_to_plain(obj.to_dict())
+        except Exception:
+            pass
+    if hasattr(obj, "model_dump"):
+        try:
+            return _sdk_to_plain(obj.model_dump(by_alias=True, exclude_none=True))
+        except Exception:
+            pass
+    return obj
+
+
 
 
 class _SimpleRateLimiter:
@@ -137,11 +328,31 @@ class _SimpleRateLimiter:
                 self._pause_until = until
 
 
+DEFAULT_CONNECTOR_BACKEND = "binance-sdk-derivatives-trading-usds-futures"
+
+
 def _normalize_connector_choice(value) -> str:
-    text = str(value or "").strip().lower()
-    if "connector" in text or "official" in text:
+    text_raw = str(value or "").strip()
+    if not text_raw:
+        return DEFAULT_CONNECTOR_BACKEND
+    text = text_raw.lower()
+    if text in {
+        "binance-sdk-derivatives-trading-usds-futures",
+        "binance_sdk_derivatives_trading_usds_futures",
+    } or ("sdk" in text and "future" in text and ("usd" in text or "usds" in text)):
+        return "binance-sdk-derivatives-trading-usds-futures"
+    if text in {
+        "binance-sdk-derivatives-trading-coin-futures",
+        "binance_sdk_derivatives_trading_coin_futures",
+    } or ("sdk" in text and "coin" in text and "future" in text):
+        return "binance-sdk-derivatives-trading-coin-futures"
+    if text in {"binance-sdk-spot", "binance_sdk_spot"} or ("sdk" in text and "spot" in text):
+        return "binance-sdk-spot"
+    if "connector" in text or "official" in text or text == "binance-connector":
         return "binance-connector"
-    return "python-binance"
+    if "python" in text and "binance" in text:
+        return "python-binance"
+    return DEFAULT_CONNECTOR_BACKEND
 
 
 class OfficialConnectorError(Exception):
@@ -282,6 +493,514 @@ else:
     class OfficialConnectorAdapter:
         def __init__(self, *_, **__):
             raise RuntimeError("binance-connector library is not available")
+
+
+class _SDKBaseClient:
+    def __init__(self, api_key: str | None):
+        self.API_KEY = api_key or ""
+        self._bw_throttled = True
+        self._bw_throttle = None
+
+    def _call(self, func, **kwargs):
+        response = func(**kwargs)
+        return _sdk_to_plain(response)
+
+    def _http_get(self, url: str, params: dict[str, Any] | None = None, timeout: float = 10.0):
+        resp = requests.get(url, params=params, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+
+class BinanceSDKUsdsFuturesClient(_SDKBaseClient):
+    def __init__(self, api_key, api_secret, *, mode="Live"):
+        if _UsdsRestAPI is None or _UsdsConfig is None or _USDS_REST_PROD is None:
+            raise RuntimeError("binance-sdk-derivatives-trading-usds-futures library is not available")
+        super().__init__(api_key)
+        self.mode = mode
+        base = _USDS_REST_TESTNET if _is_testnet_mode(mode) else _USDS_REST_PROD
+        self._base_rest_url = base.rstrip("/")
+        self._api_prefix = "/fapi"
+        configuration = _UsdsConfig(
+            api_key=api_key or "",
+            api_secret=api_secret or "",
+            base_path=self._base_rest_url,
+            timeout=5000,
+        )
+        self._rest = _UsdsRestAPI(configuration)
+
+    def futures_account_trades(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.account_trade_list,
+            symbol=symbol or params.get("symbol"),
+            order_id=params.get("orderId"),
+            start_time=params.get("startTime"),
+            end_time=params.get("endTime"),
+            from_id=params.get("fromId"),
+            limit=params.get("limit"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_position_information(self, symbol: str | None = None, **params):
+        data = self._call(
+            self._rest.position_information_v3,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+        return data or []
+
+    def futures_position_risk(self, symbol: str | None = None, **params):
+        return self.futures_position_information(symbol=symbol, **params)
+
+    def futures_change_leverage(self, symbol: str, leverage: int | None = None, **params):
+        lev = _maybe_int(params.get("leverage", leverage))
+        return self._call(
+            self._rest.change_initial_leverage,
+            symbol=symbol,
+            leverage=lev,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_change_margin_type(self, symbol: str, marginType: str | None = None, **params):
+        margin_value = params.get("marginType", marginType)
+        margin_enum = _enum_value(_UsdsMarginTypeEnum, margin_value)
+        if margin_enum is None and margin_value is not None:
+            try:
+                margin_enum = _UsdsMarginTypeEnum[str(margin_value).upper()]
+            except Exception:
+                margin_enum = None
+        return self._call(
+            self._rest.change_margin_type,
+            symbol=symbol,
+            margin_type=margin_enum,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_change_position_mode(self, dualSidePosition: bool | str | None = None, **params):
+        flag = params.get("dualSidePosition", dualSidePosition)
+        return self._call(
+            self._rest.change_position_mode,
+            dual_side_position=_bool_to_str(flag),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_get_position_mode(self, **params):
+        data = self._call(self._rest.get_current_position_mode, recv_window=params.get("recvWindow"))
+        if isinstance(data, dict) and "dualSidePosition" in data:
+            val = data["dualSidePosition"]
+            if isinstance(val, str):
+                data["dualSidePosition"] = val.lower() == "true"
+        return data
+
+    def futures_cancel_all_open_orders(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.cancel_all_open_orders,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_get_open_orders(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.current_all_open_orders,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_exchange_info(self, **params):
+        return self._call(self._rest.exchange_information, **params)
+
+    def futures_leverage_bracket(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.notional_and_leverage_brackets,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_account_balance(self, **params):
+        return self._call(
+            self._rest.futures_account_balance_v3,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_account(self, **params):
+        return self._call(
+            self._rest.account_information_v3,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_symbol_ticker(self, symbol: str | None = None, **params):
+        data = self._call(
+            self._rest.symbol_price_ticker,
+            symbol=symbol or params.get("symbol"),
+        )
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        return data
+
+    def futures_book_ticker(self, symbol: str | None = None, **params):
+        data = self._call(
+            self._rest.symbol_order_book_ticker,
+            symbol=symbol or params.get("symbol"),
+        )
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        return data
+
+    def futures_change_multi_assets_margin(self, **params):
+        flag = params.get("multiAssetsMargin")
+        return self._call(
+            self._rest.change_multi_assets_mode,
+            multi_assets_margin=_bool_to_str(flag),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_multi_assets_margin(self, **params):
+        return self.futures_change_multi_assets_margin(**params)
+
+    def futures_set_multi_assets_margin(self, **params):
+        return self.futures_change_multi_assets_margin(**params)
+
+    def futures_klines(self, symbol: str, interval: str, limit: int = 500, **params):
+        payload = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+        }
+        if params.get("startTime") is not None:
+            payload["startTime"] = params.get("startTime")
+        if params.get("endTime") is not None:
+            payload["endTime"] = params.get("endTime")
+        url = f"{self._base_rest_url}{self._api_prefix}/v1/klines"
+        return self._http_get(url, params=payload)
+
+    def _request_futures_api(self, method, path, signed=False, version=1, **kwargs):
+        key = path.lower().strip()
+        if key == "multiassetsmargin" and method.upper() == "POST":
+            data = dict(kwargs.get("data") or kwargs.get("params") or {})
+            return self.futures_change_multi_assets_margin(**data)
+        raise NotImplementedError(f"Raw futures API path '{path}' not supported for SDK adapter")
+
+    def futures_create_order(self, **params):
+        symbol = params.get("symbol")
+        side = _enum_value(_UsdsOrderSideEnum, params.get("side"))
+        position_side = _enum_value(_UsdsPositionSideEnum, params.get("positionSide"))
+        time_in_force = _enum_value(_UsdsTimeInForceEnum, params.get("timeInForce"))
+        working_type = _enum_value(_UsdsWorkingTypeEnum, params.get("workingType"))
+        price_match = _enum_value(_UsdsPriceMatchEnum, params.get("priceMatch"))
+        resp_type = _enum_value(_UsdsOrderRespEnum, params.get("newOrderRespType"))
+        stp_mode = _enum_value(_UsdsStpEnum, params.get("selfTradePreventionMode"))
+        reduce_only = _bool_to_str(params.get("reduceOnly"))
+        close_position = _bool_to_str(params.get("closePosition"))
+        price_protect = _bool_to_str(params.get("priceProtect"))
+        return self._call(
+            self._rest.new_order,
+            symbol=symbol,
+            side=side,
+            type=params.get("type"),
+            position_side=position_side,
+            time_in_force=time_in_force,
+            quantity=_maybe_float(params.get("quantity")),
+            reduce_only=reduce_only,
+            price=_maybe_float(params.get("price")),
+            new_client_order_id=params.get("newClientOrderId"),
+            stop_price=_maybe_float(params.get("stopPrice")),
+            close_position=close_position,
+            activation_price=_maybe_float(params.get("activationPrice")),
+            callback_rate=_maybe_float(params.get("callbackRate")),
+            working_type=working_type,
+            price_protect=price_protect,
+            new_order_resp_type=resp_type,
+            price_match=price_match,
+            self_trade_prevention_mode=stp_mode,
+            recv_window=params.get("recvWindow"),
+            good_till_date=_maybe_int(params.get("goodTillDate")),
+        )
+
+
+class BinanceSDKCoinFuturesClient(_SDKBaseClient):
+    def __init__(self, api_key, api_secret, *, mode="Live"):
+        if _CoinRestAPI is None or _CoinConfig is None or _COIN_REST_PROD is None:
+            raise RuntimeError("binance-sdk-derivatives-trading-coin-futures library is not available")
+        super().__init__(api_key)
+        self.mode = mode
+        base = _COIN_REST_TESTNET if _is_testnet_mode(mode) else _COIN_REST_PROD
+        self._base_rest_url = base.rstrip("/")
+        self._api_prefix = "/dapi"
+        configuration = _CoinConfig(
+            api_key=api_key or "",
+            api_secret=api_secret or "",
+            base_path=self._base_rest_url,
+            timeout=5000,
+        )
+        self._rest = _CoinRestAPI(configuration)
+
+    def futures_account_trades(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.account_trade_list,
+            symbol=symbol or params.get("symbol"),
+            order_id=params.get("orderId"),
+            start_time=params.get("startTime"),
+            end_time=params.get("endTime"),
+            from_id=params.get("fromId"),
+            limit=params.get("limit"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_position_information(self, symbol: str | None = None, **params):
+        data = self._call(
+            self._rest.position_information_v3,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+        return data or []
+
+    def futures_position_risk(self, symbol: str | None = None, **params):
+        return self.futures_position_information(symbol=symbol, **params)
+
+    def futures_change_leverage(self, symbol: str, leverage: int | None = None, **params):
+        lev = _maybe_int(params.get("leverage", leverage))
+        return self._call(
+            self._rest.change_initial_leverage,
+            symbol=symbol,
+            leverage=lev,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_change_margin_type(self, symbol: str, marginType: str | None = None, **params):
+        margin_value = params.get("marginType", marginType)
+        margin_enum = _enum_value(_CoinMarginTypeEnum, margin_value)
+        if margin_enum is None and margin_value is not None:
+            try:
+                margin_enum = _CoinMarginTypeEnum[str(margin_value).upper()]
+            except Exception:
+                margin_enum = None
+        return self._call(
+            self._rest.change_margin_type,
+            symbol=symbol,
+            margin_type=margin_enum,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_change_position_mode(self, dualSidePosition: bool | str | None = None, **params):
+        flag = params.get("dualSidePosition", dualSidePosition)
+        return self._call(
+            self._rest.change_position_mode,
+            dual_side_position=_bool_to_str(flag),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_get_position_mode(self, **params):
+        data = self._call(self._rest.get_current_position_mode, recv_window=params.get("recvWindow"))
+        if isinstance(data, dict) and "dualSidePosition" in data:
+            val = data["dualSidePosition"]
+            if isinstance(val, str):
+                data["dualSidePosition"] = val.lower() == "true"
+        return data
+
+    def futures_cancel_all_open_orders(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.cancel_all_open_orders,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_get_open_orders(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.current_all_open_orders,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_exchange_info(self, **params):
+        return self._call(self._rest.exchange_information, **params)
+
+    def futures_leverage_bracket(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.notional_and_leverage_brackets,
+            symbol=symbol or params.get("symbol"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_account_balance(self, **params):
+        return self._call(
+            self._rest.futures_account_balance_v3,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_account(self, **params):
+        return self._call(
+            self._rest.account_information_v3,
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_symbol_ticker(self, symbol: str | None = None, **params):
+        data = self._call(
+            self._rest.symbol_price_ticker,
+            symbol=symbol or params.get("symbol"),
+        )
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        return data
+
+    def futures_book_ticker(self, symbol: str | None = None, **params):
+        data = self._call(
+            self._rest.symbol_order_book_ticker,
+            symbol=symbol or params.get("symbol"),
+        )
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        return data
+
+    def futures_change_multi_assets_margin(self, **params):
+        flag = params.get("multiAssetsMargin")
+        return self._call(
+            self._rest.change_multi_assets_mode,
+            multi_assets_margin=_bool_to_str(flag),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def futures_multi_assets_margin(self, **params):
+        return self.futures_change_multi_assets_margin(**params)
+
+    def futures_set_multi_assets_margin(self, **params):
+        return self.futures_change_multi_assets_margin(**params)
+
+    def futures_klines(self, symbol: str, interval: str, limit: int = 500, **params):
+        payload = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+        }
+        if params.get("startTime") is not None:
+            payload["startTime"] = params.get("startTime")
+        if params.get("endTime") is not None:
+            payload["endTime"] = params.get("endTime")
+        url = f"{self._base_rest_url}{self._api_prefix}/v1/klines"
+        return self._http_get(url, params=payload)
+
+    def _request_futures_api(self, method, path, signed=False, version=1, **kwargs):
+        key = path.lower().strip()
+        if key == "multiassetsmargin" and method.upper() == "POST":
+            data = dict(kwargs.get("data") or kwargs.get("params") or {})
+            return self.futures_change_multi_assets_margin(**data)
+        raise NotImplementedError(f"Raw futures API path '{path}' not supported for SDK adapter")
+
+    def futures_create_order(self, **params):
+        symbol = params.get("symbol")
+        side = _enum_value(_CoinOrderSideEnum, params.get("side"))
+        position_side = _enum_value(_CoinPositionSideEnum, params.get("positionSide"))
+        time_in_force = _enum_value(_CoinTimeInForceEnum, params.get("timeInForce"))
+        working_type = _enum_value(_CoinWorkingTypeEnum, params.get("workingType"))
+        price_match = _enum_value(_CoinPriceMatchEnum, params.get("priceMatch"))
+        resp_type = _enum_value(_CoinOrderRespEnum, params.get("newOrderRespType"))
+        stp_mode = _enum_value(_CoinStpEnum, params.get("selfTradePreventionMode"))
+        reduce_only = _bool_to_str(params.get("reduceOnly"))
+        close_position = _bool_to_str(params.get("closePosition"))
+        price_protect = _bool_to_str(params.get("priceProtect"))
+        return self._call(
+            self._rest.new_order,
+            symbol=symbol,
+            side=side,
+            type=params.get("type"),
+            position_side=position_side,
+            time_in_force=time_in_force,
+            quantity=_maybe_float(params.get("quantity")),
+            reduce_only=reduce_only,
+            price=_maybe_float(params.get("price")),
+            new_client_order_id=params.get("newClientOrderId"),
+            stop_price=_maybe_float(params.get("stopPrice")),
+            close_position=close_position,
+            activation_price=_maybe_float(params.get("activationPrice")),
+            callback_rate=_maybe_float(params.get("callbackRate")),
+            working_type=working_type,
+            price_protect=price_protect,
+            new_order_resp_type=resp_type,
+            price_match=price_match,
+            self_trade_prevention_mode=stp_mode,
+            recv_window=params.get("recvWindow"),
+            good_till_date=_maybe_int(params.get("goodTillDate")),
+        )
+
+
+class BinanceSDKSpotClient(_SDKBaseClient):
+    def __init__(self, api_key, api_secret, *, mode="Live"):
+        if _SpotRestAPI is None or _SpotConfig is None or _SPOT_REST_PROD is None:
+            raise RuntimeError("binance-sdk-spot library is not available")
+        super().__init__(api_key)
+        self.mode = mode
+        base = _SPOT_REST_TESTNET if _is_testnet_mode(mode) else _SPOT_REST_PROD
+        self._base_rest_url = base.rstrip("/")
+        configuration = _SpotConfig(
+            api_key=api_key or "",
+            api_secret=api_secret or "",
+            base_path=self._base_rest_url,
+            timeout=5000,
+        )
+        self._rest = _SpotRestAPI(configuration)
+
+    def get_exchange_info(self, **params):
+        return self._call(self._rest.exchange_info, **params)
+
+    def get_symbol_info(self, symbol: str):
+        data = self._call(self._rest.exchange_info, symbol=symbol)
+        if isinstance(data, dict):
+            symbols = data.get("symbols") or []
+            if symbols:
+                return symbols[0]
+        return None
+
+    def get_account(self, **params):
+        return self._call(
+            self._rest.get_account,
+            omit_zero_balances=params.get("omitZeroBalances"),
+            recv_window=params.get("recvWindow"),
+        )
+
+    def get_symbol_ticker(self, symbol: str | None = None, **params):
+        return self._call(
+            self._rest.ticker_price,
+            symbol=symbol or params.get("symbol"),
+        )
+
+    def get_klines(self, symbol: str, interval: str, limit: int = 500, **params):
+        payload = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+        }
+        if params.get("startTime") is not None:
+            payload["startTime"] = params.get("startTime")
+        if params.get("endTime") is not None:
+            payload["endTime"] = params.get("endTime")
+        url = f"{self._base_rest_url}/api/v3/klines"
+        return self._http_get(url, params=payload)
+
+    def create_order(self, **params):
+        side = _enum_value(_SpotOrderSideEnum, params.get("side"))
+        order_type = _enum_value(_SpotOrderTypeEnum, params.get("type"))
+        time_in_force = _enum_value(_SpotTimeInForceEnum, params.get("timeInForce"))
+        resp_type = _enum_value(_SpotOrderRespEnum, params.get("newOrderRespType"))
+        stp_mode = _enum_value(_SpotStpEnum, params.get("selfTradePreventionMode"))
+        return self._call(
+            self._rest.new_order,
+            symbol=params.get("symbol"),
+            side=side,
+            type=order_type,
+            time_in_force=time_in_force,
+            quantity=_maybe_float(params.get("quantity")),
+            quote_order_qty=_maybe_float(params.get("quoteOrderQty")),
+            price=_maybe_float(params.get("price")),
+            new_client_order_id=params.get("newClientOrderId"),
+            stop_price=_maybe_float(params.get("stopPrice")),
+            trailing_delta=_maybe_int(params.get("trailingDelta")),
+            iceberg_qty=_maybe_float(params.get("icebergQty")),
+            new_order_resp_type=resp_type,
+            self_trade_prevention_mode=stp_mode,
+            recv_window=params.get("recvWindow"),
+        )
+
+    # Aliases used within the wrapper
+    def ticker_price(self, **params):
+        return self.get_symbol_ticker(**params)
 
 class BinanceWrapper:
 
@@ -898,12 +1617,30 @@ class BinanceWrapper:
         return "https://testnet.binancefuture.com/fapi" if ("demo" in self.mode.lower() or "test" in self.mode.lower()) else "https://fapi.binance.com/fapi"
 
     def _build_client(self):
-        backend = _normalize_connector_choice(getattr(self, "_connector_backend", "python-binance"))
+        backend = _normalize_connector_choice(getattr(self, "_connector_backend", DEFAULT_CONNECTOR_BACKEND))
         if backend == "binance-connector" and _OfficialSpotClient is not None and _OfficialAPIBase is not None:
             try:
                 return OfficialConnectorAdapter(self.api_key, self.api_secret, mode=self.mode)
             except Exception as exc:
                 self._log(f"Official connector unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._connector_backend = "python-binance"
+        if backend == "binance-sdk-derivatives-trading-usds-futures":
+            try:
+                return BinanceSDKUsdsFuturesClient(self.api_key, self.api_secret, mode=self.mode)
+            except Exception as exc:
+                self._log(f"USDⓈ futures SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._connector_backend = "python-binance"
+        elif backend == "binance-sdk-derivatives-trading-coin-futures":
+            try:
+                return BinanceSDKCoinFuturesClient(self.api_key, self.api_secret, mode=self.mode)
+            except Exception as exc:
+                self._log(f"COIN-M futures SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._connector_backend = "python-binance"
+        elif backend == "binance-sdk-spot":
+            try:
+                return BinanceSDKSpotClient(self.api_key, self.api_secret, mode=self.mode)
+            except Exception as exc:
+                self._log(f"Spot SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
                 self._connector_backend = "python-binance"
         return Client(self.api_key, self.api_secret)
 
