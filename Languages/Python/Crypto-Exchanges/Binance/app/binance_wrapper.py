@@ -311,6 +311,24 @@ def _sdk_to_plain(obj: Any) -> Any:
     return obj
 
 
+def _as_futures_balance_entries(data: Any):
+    if isinstance(data, dict):
+        for key in ("balances", "accountBalance", "data"):
+            entries = data.get(key)
+            if entries is not None:
+                return entries
+        return []
+    return data or []
+
+
+def _as_futures_account_dict(data: Any) -> dict:
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            return first
+    return {}
 
 
 class _SimpleRateLimiter:
@@ -2173,35 +2191,35 @@ class BinanceWrapper:
     def get_futures_balance_usdt(self) -> float:
         """Return the withdrawable/available balance for the primary futures asset."""
         preferred_assets = ("USDT", "BUSD", "USD")
+        entries = []
         try:
             bals = self._futures_call('futures_account_balance', allow_recv=True)
-            for b in bals or []:
-                asset = str(b.get('asset') or "").upper()
-                if asset not in preferred_assets:
-                    continue
-                for key in ('availableBalance', 'crossWalletBalance', 'balance', 'walletBalance'):
-                    val = b.get(key)
-                    if val is not None:
-                        try:
-                            return float(val)
-                        except Exception:
-                            continue
+            entries = list(_as_futures_balance_entries(bals))
         except Exception:
-            pass
+            entries = []
+        for b in entries:
+            if not isinstance(b, dict):
+                continue
+            asset = str(b.get('asset') or "").upper()
+            if asset not in preferred_assets:
+                continue
+            for key in ('availableBalance', 'crossWalletBalance', 'balance', 'walletBalance'):
+                val = b.get(key)
+                if val is not None:
+                    try:
+                        return float(val)
+                    except Exception:
+                        continue
         try:
             acct = self._futures_call('futures_account', allow_recv=True)
-            if isinstance(acct, dict):
-                for key in ('availableBalance', 'maxWithdrawAmount', 'totalWalletBalance', 'totalMarginBalance'):
-                    val = acct.get(key)
-                    if val is not None:
-                        try:
-                            return float(val)
-                        except Exception:
-                            continue
+            acct_dict = _as_futures_account_dict(acct)
+            for key in ('availableBalance', 'maxWithdrawAmount', 'totalWalletBalance', 'totalMarginBalance'):
+                val = acct_dict.get(key)
+                if val is not None:
+                    return float(val)
         except Exception:
             pass
         return 0.0
-
     def get_futures_available_balance(self) -> float:
         val = self.get_futures_balance_usdt()
         if val:
@@ -2221,7 +2239,9 @@ class BinanceWrapper:
         preferred_assets = ("USDT", "BUSD", "USD")
         try:
             bals = self._futures_call("futures_account_balance", allow_recv=True)
-            for entry in bals or []:
+            for entry in _as_futures_balance_entries(bals):
+                if not isinstance(entry, dict):
+                    continue
                 asset = str(entry.get("asset") or "").upper()
                 if asset not in preferred_assets:
                     continue
@@ -2236,27 +2256,23 @@ class BinanceWrapper:
             pass
         try:
             acct = self._futures_call("futures_account", allow_recv=True)
-            if isinstance(acct, dict):
-                for key in (
-                    "totalWalletBalance",
-                    "totalMarginBalance",
-                    "totalCrossWalletBalance",
-                    "totalCrossBalance",
-                    "totalInitialMargin",
-                ):
-                    val = acct.get(key)
-                    if val is not None:
-                        try:
-                            return float(val)
-                        except Exception:
-                            continue
+            acct_dict = _as_futures_account_dict(acct)
+            for key in (
+                "totalWalletBalance",
+                "totalMarginBalance",
+                "totalCrossWalletBalance",
+                "totalCrossBalance",
+                "totalInitialMargin",
+            ):
+                val = acct_dict.get(key)
+                if val is not None:
+                    return float(val)
         except Exception:
             pass
         try:
             return float(self.get_futures_balance_usdt())
         except Exception:
             return 0.0
-
     def get_total_usdt_value(self) -> float:
         # Prefer total futures wallet balance; fall back to spot if unavailable
         try:
@@ -2283,10 +2299,11 @@ class BinanceWrapper:
         except Exception:
             try:
                 acct = self.client.futures_account()
-                if isinstance(acct, dict):
-                    val = acct.get('totalUnrealizedProfit')
+                acct_dict = acct if isinstance(acct, dict) else _as_futures_account_dict(acct)
+                if isinstance(acct_dict, dict):
+                    val = acct_dict.get('totalUnrealizedProfit')
                     if val is None:
-                        val = acct.get('totalCrossUnPnl')
+                        val = acct_dict.get('totalCrossUnPnl')
                     if val is not None:
                         return float(val)
             except Exception:
@@ -2296,9 +2313,10 @@ class BinanceWrapper:
     def get_total_wallet_balance(self) -> float:
         try:
             acct = self.client.futures_account()
-            if isinstance(acct, dict):
-                for key in ("totalWalletBalance", "totalMarginBalance", "totalInitialMargin"):
-                    val = acct.get(key)
+            acct_dict = acct if isinstance(acct, dict) else _as_futures_account_dict(acct)
+            if isinstance(acct_dict, dict):
+                for key in ("totalWalletBalance", "totalMarginBalance", "totalInitialMargin", "totalCrossWalletBalance", "totalCrossBalance"):
+                    val = acct_dict.get(key)
                     if val is not None:
                         return float(val)
         except Exception:
@@ -2307,8 +2325,6 @@ class BinanceWrapper:
             return float(self.get_total_usdt_value())
         except Exception:
             return 0.0
-
-    # ---- prices & klines
     def get_last_price(self, symbol: str, *, max_age: float = 1.5) -> float:
         sym = (symbol or "").upper()
         cache = getattr(self, "_last_price_cache", None)
