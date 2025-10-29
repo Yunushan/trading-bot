@@ -7164,6 +7164,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'leverage': leverage,
                             'interval': None,
                             'interval_display': None,
+                            'open_time': None,
                         }
                         rec = positions_map.get((sym, side_key))
                         if rec is None:
@@ -7290,8 +7291,20 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             data['interval_display'] = interval_display.get(primary_interval_key)
                             data['interval'] = interval_lookup.get(primary_interval_key) or interval_display.get(primary_interval_key)
                         else:
-                            data.setdefault('interval_display', rec.get('entry_tf') if rec.get('entry_tf') and rec.get('entry_tf') != '-' else None)
-                            data.setdefault('interval', None)
+                            if not data.get('interval_display') and rec.get('entry_tf') and rec.get('entry_tf') != '-':
+                                data['interval_display'] = rec.get('entry_tf')
+                                data['interval'] = rec.get('entry_tf')
+
+                        if (not rec.get('entry_tf') or rec['entry_tf'] == '-') and self._entry_intervals.get(sym):
+                            try:
+                                intervals_active = sorted(self._entry_intervals.get(sym, {}).get(side_key, []), key=_mw_interval_sort_key)
+                                if intervals_active:
+                                    rec['entry_tf'] = ', '.join(intervals_active)
+                                    if not data.get('interval_display'):
+                                        data['interval_display'] = intervals_active[0]
+                                        data['interval'] = intervals_active[0]
+                            except Exception:
+                                pass
                         open_times = []
                         ordered_lookup = [
                             interval_lookup.get(key) or interval_display.get(key)
@@ -7331,6 +7344,14 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if open_times:
                             open_times.sort(key=lambda item: item[0])
                             rec['open_time'] = self._format_display_time(open_times[0][1])
+                            data['open_time'] = rec['open_time']
+                        else:
+                            base_open = getattr(self, '_entry_times', {}).get((sym, side_key))
+                            dt_obj = self._parse_any_datetime(base_open)
+                            if dt_obj:
+                                formatted = self._format_display_time(dt_obj)
+                                rec['open_time'] = formatted
+                                data['open_time'] = formatted
                         interval_list = [
                             interval_lookup.get(key) or interval_display.get(key)
                             for key in (ordered_keys if interval_display else [])
@@ -7939,7 +7960,7 @@ def _mw_render_positions_table(self):
                 except Exception:
                     pnl_value = 0.0
                 side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
-                open_time = rec.get('open_time') or '-'
+                open_time = data.get('open_time') or rec.get('open_time') or '-'
                 status_txt = rec.get('status', 'Active')
                 close_time = rec.get('close_time') if status_txt == 'Closed' else '-'
                 stop_loss_enabled = bool(rec.get('stop_loss_enabled'))
@@ -8525,7 +8546,7 @@ def start_strategy(self):
             self.log("No symbol/interval overrides configured. Add entries before starting.")
             return
 
-        combos_map: dict[tuple[str, str, tuple[str, ...]], dict] = {}
+        combos_map: dict[tuple[str, str], dict] = {}
         for entry in pair_entries:
             sym = str(entry.get("symbol") or "").strip().upper()
             iv_raw = str(entry.get("interval") or "").strip()
@@ -8540,13 +8561,23 @@ def start_strategy(self):
             else:
                 indicators = []
             controls = entry.get("strategy_controls")
-            key = (sym, iv, tuple(indicators))
-            item = {"symbol": sym, "interval": iv}
+            key = (sym, iv)
+            item = combos_map.setdefault(key, {"symbol": sym, "interval": iv, "indicators": [], "strategy_controls": {}})
             if indicators:
-                item["indicators"] = indicators
-            if controls:
-                item["strategy_controls"] = controls
-            combos_map[key] = item
+                try:
+                    ind_set = set(item.get("indicators") or [])
+                    ind_set.update(indicators)
+                    item["indicators"] = sorted(ind_set)
+                except Exception:
+                    item["indicators"] = indicators
+            if isinstance(controls, dict):
+                try:
+                    ctrl = item.setdefault("strategy_controls", {})
+                    for k, v in controls.items():
+                        if v is not None:
+                            ctrl[k] = v
+                except Exception:
+                    item["strategy_controls"] = controls
 
         combos = list(combos_map.values())
         if not combos:

@@ -942,13 +942,13 @@ class StrategyEngine:
                     sell_allowed = cfg['side'] in ('SELL', 'BOTH')
                     if buy_allowed and r <= buy_th:
                         trigger_actions["rsi"] = "buy"
-                        trigger_desc.append(f"RSI <= {buy_th:.2f} ΓåÆ BUY")
+                        trigger_desc.append(f"RSI <= {buy_th:.2f} -> BUY")
                         trigger_sources.append("rsi")
                         if signal is None:
                             signal = 'BUY'
                     elif sell_allowed and r >= sell_th:
                         trigger_actions["rsi"] = "sell"
-                        trigger_desc.append(f"RSI >= {sell_th:.2f} ΓåÆ SELL")
+                        trigger_desc.append(f"RSI >= {sell_th:.2f} -> SELL")
                         trigger_sources.append("rsi")
                         if signal is None:
                             signal = 'SELL'
@@ -974,13 +974,13 @@ class StrategyEngine:
                     sell_allowed = cfg['side'] in ('SELL', 'BOTH')
                     if buy_allowed and srsi_val <= buy_limit:
                         trigger_actions["stoch_rsi"] = "buy"
-                        trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} ΓåÆ BUY")
+                        trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} -> BUY")
                         trigger_sources.append("stoch_rsi")
                         if signal is None:
                             signal = 'BUY'
                     elif sell_allowed and srsi_val >= sell_limit:
                         trigger_actions["stoch_rsi"] = "sell"
-                        trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} ΓåÆ SELL")
+                        trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} -> SELL")
                         trigger_sources.append("stoch_rsi")
                         if signal is None:
                             signal = 'SELL'
@@ -1007,13 +1007,13 @@ class StrategyEngine:
                     sell_allowed = cfg['side'] in ('SELL', 'BOTH')
                     if buy_allowed and buy_lower <= wr <= buy_upper:
                         trigger_actions["willr"] = "buy"
-                        trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] ΓåÆ BUY")
+                        trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] -> BUY")
                         trigger_sources.append("willr")
                         if signal is None:
                             signal = 'BUY'
                     elif sell_allowed and sell_lower <= wr <= sell_upper:
                         trigger_actions["willr"] = "sell"
-                        trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] ΓåÆ SELL")
+                        trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] -> SELL")
                         trigger_sources.append("willr")
                         if signal is None:
                             signal = 'SELL'
@@ -1035,13 +1035,13 @@ class StrategyEngine:
                 sell_allowed = cfg['side'] in ('SELL', 'BOTH')
                 if buy_allowed and prev_close < prev_ma and last_close > last_ma:
                     trigger_actions["ma"] = "buy"
-                    trigger_desc.append("MA crossover ΓåÆ BUY")
+                    trigger_desc.append("MA crossover -> BUY")
                     trigger_sources.append("ma")
                     if signal is None:
                         signal = 'BUY'
                 elif sell_allowed and prev_close > prev_ma and last_close < last_ma:
                     trigger_actions["ma"] = "sell"
-                    trigger_desc.append("MA crossover ΓåÆ SELL")
+                    trigger_desc.append("MA crossover -> SELL")
                     trigger_sources.append("ma")
                     if signal is None:
                         signal = 'SELL'
@@ -1153,7 +1153,7 @@ class StrategyEngine:
                             except Exception:
                                 pass
                             self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'BUY', **payload)
-                            self.log(f"Closed LONG for {cw['symbol']}@{cw.get('interval')} (RSI ΓëÑ {exit_up}).")
+                            self.log(f"Closed LONG for {cw['symbol']}@{cw.get('interval')} (RSI >= {exit_up}).")
                 except Exception:
                     pass
             # Close SHORT when RSI <= buy threshold (e.g., 30)
@@ -1172,7 +1172,7 @@ class StrategyEngine:
                             except Exception:
                                 pass
                             self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'SELL', **payload)
-                            self.log(f"Closed SHORT for {cw['symbol']}@{cw.get('interval')} (RSI Γëñ {exit_dn}).")
+                            self.log(f"Closed SHORT for {cw['symbol']}@{cw.get('interval')} (RSI <= {exit_dn}).")
                 except Exception:
                     pass
 
