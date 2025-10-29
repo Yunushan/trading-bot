@@ -2464,17 +2464,55 @@ class MainWindow(QtWidgets.QWidget):
         if symbol_list is None or interval_list is None:
             return
         try:
+            symbol_items = []
+            try:
+                symbol_items = [item for item in symbol_list.selectedItems() if item]
+            except Exception:
+                symbol_items = []
+            if not symbol_items:
+                for i in range(symbol_list.count()):
+                    item = symbol_list.item(i)
+                    if item and item.isSelected():
+                        symbol_items.append(item)
             symbols = []
-            for i in range(symbol_list.count()):
-                item = symbol_list.item(i)
-                if item and item.isSelected():
-                    symbols.append(item.text().strip().upper())
+            for item in symbol_items:
+                try:
+                    text = item.text()
+                except Exception:
+                    text = ""
+                text_norm = str(text or "").strip().upper()
+                if text_norm:
+                    symbols.append(text_norm)
+
+            interval_items = []
+            try:
+                interval_items = [item for item in interval_list.selectedItems() if item]
+            except Exception:
+                interval_items = []
+            if not interval_items:
+                for i in range(interval_list.count()):
+                    item = interval_list.item(i)
+                    if item and item.isSelected():
+                        interval_items.append(item)
             intervals = []
-            for i in range(interval_list.count()):
-                item = interval_list.item(i)
-                if item and item.isSelected():
-                    intervals.append(item.text().strip())
+            for item in interval_items:
+                try:
+                    text = item.text()
+                except Exception:
+                    text = ""
+                text_norm = str(text or "").strip()
+                if text_norm:
+                    intervals.append(text_norm)
+
+            if symbols:
+                symbols = list(dict.fromkeys(symbols))
+            if intervals:
+                intervals = list(dict.fromkeys(intervals))
             if not symbols or not intervals:
+                try:
+                    self.log("Select at least one symbol and interval before adding overrides.")
+                except Exception:
+                    pass
                 return
             pairs_cfg = self._override_config_list(kind)
             existing_keys = {}
