@@ -159,6 +159,15 @@ class StrategyEngine:
                 return float(value)
             except Exception:
                 return 0.0
+        def _maybe_float(value):
+            try:
+                if value is None:
+                    return None
+                if isinstance(value, str) and not value.strip():
+                    return None
+                return float(value)
+            except Exception:
+                return None
 
         qty_val = _safe_float(self._order_field(order_res or {}, "executedQty", "cumQty", "cumQuantity", "origQty"))
         if qty_val <= 0.0:
@@ -213,6 +222,41 @@ class StrategyEngine:
         if ledger_id:
             payload["ledger_id"] = ledger_id
         import time as _time  # local import to avoid circular references in tests
+
+        fills_info = order_res.get("fills") if isinstance(order_res, dict) else None
+        entry_fee_value = None
+        if isinstance(leg_info, dict):
+            entry_fee_value = _maybe_float(leg_info.get("fees_usdt") or leg_info.get("entry_fee_usdt"))
+        close_fee_value = _maybe_float(fills_info.get("commission_usdt")) if isinstance(fills_info, dict) else None
+        net_realized_value = _maybe_float(fills_info.get("net_realized")) if isinstance(fills_info, dict) else None
+        realized_raw_value = _maybe_float(fills_info.get("realized_pnl")) if isinstance(fills_info, dict) else None
+
+        if entry_fee_value not in (None, 0.0):
+            payload["entry_fee_usdt"] = entry_fee_value
+        if close_fee_value not in (None, 0.0):
+            payload["close_fee_usdt"] = close_fee_value
+        if realized_raw_value not in (None, 0.0):
+            payload["realized_pnl_usdt"] = realized_raw_value
+
+        if net_realized_value is not None:
+            pnl_adj = net_realized_value - (entry_fee_value or 0.0)
+            payload["pnl_value"] = pnl_adj
+        elif "pnl_value" in payload:
+            total_fee = (entry_fee_value or 0.0) + (close_fee_value or 0.0)
+            if total_fee:
+                pnl_adj = float(payload["pnl_value"]) - total_fee
+                payload["pnl_value"] = pnl_adj
+
+        if "pnl_value" in payload and margin_usdt > 0.0:
+            payload["roi_percent"] = (float(payload["pnl_value"]) / margin_usdt) * 100.0
+
+        if isinstance(fills_info, dict) and fills_info:
+            payload.setdefault("fills_meta", {})
+            payload["fills_meta"].update({
+                "trade_count": fills_info.get("trade_count"),
+                "order_id": fills_info.get("order_id"),
+            })
+
         payload["event_id"] = f"{ledger_id or symbol}-{int(_time.time() * 1000)}"
         return payload
 
@@ -1922,6 +1966,14 @@ class StrategyEngine:
                                 if exec_qty_val > 0.0:
                                     qty = exec_qty_val
                             if qty > 0:
+                                fills_info = order_res.get('fills') or {}
+
+                                def _float_or(value, default=0.0):
+                                    try:
+                                        return float(value)
+                                    except Exception:
+                                        return default
+
                                 entry_price_est = price
                                 try:
                                     avg_px = (order_res.get('info', {}) or {}).get('avgPrice')
@@ -1933,6 +1985,13 @@ class StrategyEngine:
                                             entry_price_est = float(computed_px)
                                 except Exception:
                                     entry_price_est = price
+                                qty_from_fills = _float_or(fills_info.get('filled_qty'))
+                                if qty_from_fills > 0:
+                                    qty = qty_from_fills
+                                avg_from_fills = _float_or(fills_info.get('avg_price'))
+                                if avg_from_fills > 0:
+                                    entry_price_est = avg_from_fills
+
                                 try:
                                     leverage_val = int(order_res.get('info', {}).get('leverage') or 0)
                                 except Exception:
@@ -1951,21 +2010,28 @@ class StrategyEngine:
                                     margin_est = (entry_price_est * qty) / leverage_val if leverage_val > 0 else entry_price_est * qty
                                 except Exception:
                                     margin_est = 0.0
+
+                                entry_fee_usdt = _float_or(fills_info.get('commission_usdt'))
+                                entry_net_realized = _float_or(fills_info.get('net_realized'))
+
                                 signature_list = list(signature or tuple(sorted(trigger_labels)))
                                 ledger_id = f"{key[0]}-{key[1]}-{key[2]}-{int(time.time()*1000)}"
-                                self._append_leg_entry(
-                                    key,
-                                    {
-                                        'qty': float(qty),
-                                        'timestamp': time.time(),
-                                        'entry_price': float(entry_price_est or price),
-                                        'leverage': leverage_val,
-                                        'margin_usdt': float(margin_est or 0.0),
-                                        'ledger_id': ledger_id,
-                                        'trigger_signature': signature_list,
-                                        'trigger_desc': trigger_desc,
-                                    },
-                                )
+                                entry_payload = {
+                                    'qty': float(qty),
+                                    'timestamp': time.time(),
+                                    'entry_price': float(entry_price_est or price),
+                                    'leverage': leverage_val,
+                                    'margin_usdt': float(margin_est or 0.0),
+                                    'ledger_id': ledger_id,
+                                    'trigger_signature': signature_list,
+                                    'trigger_desc': trigger_desc,
+                                }
+                                if entry_fee_usdt:
+                                    entry_payload['fees_usdt'] = float(entry_fee_usdt)
+                                    entry_payload['entry_fee_usdt'] = float(entry_fee_usdt)
+                                if entry_net_realized:
+                                    entry_payload['entry_realized_usdt'] = float(entry_net_realized)
+                                self._append_leg_entry(key, entry_payload)
                     except Exception:
                         pass
                     qty_display = order_res.get('executedQty') or order_res.get('origQty') or qty_est
@@ -2004,6 +2070,14 @@ class StrategyEngine:
                     avg_price = float((order_res.get('info', {}) or {}).get('avgPrice') or 0.0)
                 except Exception:
                     avg_price = 0.0
+                fills_info = order_res.get('fills') or {}
+                if fills_info:
+                    try:
+                        avg_from_fills = float(fills_info.get('avg_price') or 0.0)
+                        if avg_from_fills > 0.0:
+                            avg_price = avg_from_fills
+                    except Exception:
+                        pass
                 try:
                     executed_qty = float(
                         (order_res.get('info', {}) or {}).get('executedQty')
@@ -2017,6 +2091,13 @@ class StrategyEngine:
                         executed_qty = float(qty_display or 0.0)
                     except Exception:
                         executed_qty = 0.0
+                if fills_info:
+                    try:
+                        fill_qty = float(fills_info.get('filled_qty') or 0.0)
+                        if fill_qty > 0.0:
+                            executed_qty = fill_qty
+                    except Exception:
+                        pass
                 qty_numeric = executed_qty if executed_qty else float(qty_display or 0.0)
                 leverage_used = None
                 if 'lev' in locals():
@@ -2038,6 +2119,23 @@ class StrategyEngine:
                     "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                     "status": "placed",
                 }
+                if fills_info:
+                    commission_val = fills_info.get("commission_usdt")
+                    net_realized_val = fills_info.get("net_realized")
+                    if commission_val is not None:
+                        try:
+                            order_info["commission_usdt"] = float(commission_val)
+                        except Exception:
+                            order_info["commission_usdt"] = commission_val
+                    if net_realized_val is not None:
+                        try:
+                            order_info["net_realized_usdt"] = float(net_realized_val)
+                        except Exception:
+                            order_info["net_realized_usdt"] = net_realized_val
+                    order_info["fills_meta"] = {
+                        "order_id": fills_info.get("order_id"),
+                        "trade_count": fills_info.get("trade_count"),
+                    }
                 if self.trade_cb:
                     self.trade_cb(order_info)
                 order_ok = True

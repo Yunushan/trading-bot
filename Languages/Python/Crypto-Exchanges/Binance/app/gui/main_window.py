@@ -6046,10 +6046,16 @@ class MainWindow(QtWidgets.QWidget):
         self.positions_view_combo.currentIndexChanged.connect(self._on_positions_view_changed)
         ctrl_layout.addWidget(self.positions_view_combo)
         ctrl_layout.addStretch()
+        tab2_layout.addLayout(ctrl_layout)
+
         tab2_status_widget = QtWidgets.QWidget()
+        tab2_status_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         tab2_status_layout = QtWidgets.QHBoxLayout(tab2_status_widget)
         tab2_status_layout.setContentsMargins(0, 0, 0, 0)
-        tab2_status_layout.setSpacing(8)
+        tab2_status_layout.setSpacing(12)
         self.pnl_active_label_tab2 = QtWidgets.QLabel()
         self.pnl_closed_label_tab2 = QtWidgets.QLabel()
         self.positions_total_balance_label = QtWidgets.QLabel("Total Balance: --")
@@ -6063,15 +6069,22 @@ class MainWindow(QtWidgets.QWidget):
             self.positions_available_balance_label,
         ):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            lbl.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
             tab2_status_layout.addWidget(lbl)
         tab2_status_layout.addStretch()
         for lbl in (self.bot_status_label_tab2, self.bot_time_label_tab2):
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            lbl.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Minimum,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
             tab2_status_layout.addWidget(lbl)
         self._register_pnl_summary_labels(self.pnl_active_label_tab2, self.pnl_closed_label_tab2)
         self._update_positions_balance_labels(None, None)
-        ctrl_layout.addWidget(tab2_status_widget)
-        tab2_layout.addLayout(ctrl_layout)
+        tab2_layout.addWidget(tab2_status_widget)
         self._sync_runtime_state()
 
         self.pos_table = QtWidgets.QTableWidget(0, POS_CLOSE_COLUMN + 1, tab2)
@@ -9837,6 +9850,52 @@ def _mw_on_trade_signal(self, order_info: dict):
     is_success = (status != "error") and (ok_flag is None or ok_flag is True)
     if sym and interval and side_for_key:
         side_key_local = "L" if str(side_for_key).upper() in ("BUY", "LONG") else "S"
+        if is_success and status not in {"error", "failed"}:
+            registry = getattr(self, "_processed_open_events", None)
+            if not isinstance(registry, dict):
+                from collections import deque
+                registry = {"order": deque(), "set": set()}
+                self._processed_open_events = registry
+            queue = registry.setdefault("order", None)
+            if queue is None:
+                from collections import deque
+                queue = registry["order"] = deque()
+            registry_set = registry.setdefault("set", set())
+            now_ts = time.time()
+            # prune stale entries (>10 minutes) or oversize cache
+            while queue and ((now_ts - queue[0][1]) > 600.0 or len(queue) > 400):
+                old_key, _ = queue.popleft()
+                registry_set.discard(old_key)
+            qty_token = ""
+            qty_source = order_info.get("executed_qty")
+            if qty_source is None:
+                qty_source = order_info.get("qty")
+            if qty_source is not None:
+                try:
+                    qty_token = f"{abs(float(qty_source)):.8f}"
+                except Exception:
+                    qty_token = str(qty_source)
+            fills_meta = order_info.get("fills_meta") or {}
+            order_id_token = fills_meta.get("order_id") or order_info.get("order_id") or ""
+            interval_token = _norm_interval(interval) or str(interval)
+            status_token = str(order_info.get("status") or "").lower()
+            time_token = str(order_info.get("time") or "")
+            unique_parts = [
+                sym_upper,
+                side_key_local,
+                interval_token,
+                str(order_id_token),
+                qty_token,
+                status_token,
+            ]
+            if not order_id_token:
+                unique_parts.append(time_token)
+            unique_key = "|".join(unique_parts)
+            if unique_key and unique_key in registry_set:
+                return
+            if unique_key:
+                registry_set.add(unique_key)
+                queue.append((unique_key, now_ts))
         self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
         # ignore opens while engines are stopping
         if getattr(self, "_is_stopping_engines", False) and status.lower() not in {"closed", "error"}:
