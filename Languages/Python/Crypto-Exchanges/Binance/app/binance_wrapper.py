@@ -2504,7 +2504,7 @@ class BinanceWrapper:
         if seconds % 86400 == 0:
             return f"{int(seconds // 86400)}D"
         if seconds % 3600 == 0:
-            return f"{int(seconds // 3600)}H"
+            return f"{int(seconds // 3600)}h"
         if seconds % 60 == 0:
             return f"{int(seconds // 60)}min"
         return f"{int(seconds)}S"
