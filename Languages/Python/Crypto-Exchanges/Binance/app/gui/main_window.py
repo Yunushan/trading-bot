@@ -1225,6 +1225,7 @@ class MainWindow(QtWidgets.QWidget):
             "closed": {"pnl": None, "roi": None},
         }
         self._processed_close_events: set[str] = set()
+        self._closed_trade_registry: dict[str, dict[str, float | None]] = {}
         self.language_combo = None
         self.exchange_combo = None
         self.forex_combo = None
@@ -1282,59 +1283,57 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 return None
 
-        def _extract_margin(record: dict) -> float | None:
-            data = record.get("data") if isinstance(record, dict) else None
-            if isinstance(data, dict):
-                margin_val = _safe_float(data.get("margin_usdt"))
-                if margin_val and margin_val > 0.0:
-                    return margin_val
-            allocs = None
-            if isinstance(record, dict):
-                allocs = record.get("allocations")
-            if allocs is None and isinstance(data, dict):
-                allocs = data.get("allocations")
-            total_alloc_margin = 0.0
-            alloc_found = False
-            if isinstance(allocs, list):
-                for alloc in allocs:
-                    margin_val = _safe_float((alloc or {}).get("margin_usdt"))
-                    if margin_val and margin_val > 0.0:
-                        total_alloc_margin += margin_val
-                        alloc_found = True
-            if alloc_found:
-                return total_alloc_margin
-            return None
-
-        def _aggregate(records) -> tuple[float | None, float | None]:
-            total_pnl = 0.0
-            total_margin = 0.0
-            pnl_found = False
-            margin_found = False
-            for rec in records:
-                if not isinstance(rec, dict):
-                    continue
-                data = rec.get("data") if isinstance(rec, dict) else None
-                pnl_val = None
-                if isinstance(data, dict):
-                    pnl_val = _safe_float(data.get("pnl_value"))
-                if pnl_val is None:
-                    pnl_val = _safe_float(rec.get("pnl_value"))
-                if pnl_val is not None:
-                    total_pnl += pnl_val
-                    pnl_found = True
-                margin_val = _extract_margin(rec)
-                if margin_val is not None and margin_val > 0.0:
-                    total_margin += margin_val
-                    margin_found = True
-            return (
-                total_pnl if pnl_found else None,
-                total_margin if margin_found and total_margin > 0.0 else None,
-            )
-
         open_records = getattr(self, "_open_position_records", {}) or {}
-        closed_records = getattr(self, "_closed_position_records", []) or []
-        active_pnl, active_margin = _aggregate(open_records.values())
-        closed_pnl, closed_margin = _aggregate(closed_records)
+        active_total_pnl = 0.0
+        active_total_margin = 0.0
+        active_pnl_found = False
+        active_margin_found = False
+        for rec in open_records.values():
+            if not isinstance(rec, dict):
+                continue
+            data = rec.get("data") if isinstance(rec, dict) else {}
+            pnl_val = _safe_float((data or {}).get("pnl_value"))
+            if pnl_val is None:
+                pnl_val = _safe_float(rec.get("pnl_value"))
+            if pnl_val is not None:
+                active_total_pnl += pnl_val
+                active_pnl_found = True
+            margin_val = _safe_float((data or {}).get("margin_usdt"))
+            if margin_val is None or margin_val <= 0.0:
+                margin_val = _safe_float((data or {}).get("margin_balance"))
+            if margin_val is None or margin_val <= 0.0:
+                allocs = (data or {}).get("allocations") or rec.get("allocations")
+                if isinstance(allocs, list):
+                    alloc_margin = 0.0
+                    for alloc in allocs:
+                        alloc_margin += _safe_float((alloc or {}).get("margin_usdt")) or 0.0
+                    if alloc_margin > 0.0:
+                        margin_val = alloc_margin
+            if margin_val is not None and margin_val > 0.0:
+                active_total_margin += margin_val
+                active_margin_found = True
+
+        closed_registry = getattr(self, "_closed_trade_registry", {}) or {}
+        closed_total_pnl = 0.0
+        closed_total_margin = 0.0
+        closed_pnl_found = False
+        closed_margin_found = False
+        for entry in closed_registry.values():
+            if not isinstance(entry, dict):
+                continue
+            pnl_val = _safe_float(entry.get("pnl_value"))
+            if pnl_val is not None:
+                closed_total_pnl += pnl_val
+                closed_pnl_found = True
+            margin_val = _safe_float(entry.get("margin_usdt"))
+            if margin_val is not None and margin_val > 0.0:
+                closed_total_margin += margin_val
+                closed_margin_found = True
+
+        active_pnl = active_total_pnl if active_pnl_found else None
+        active_margin = active_total_margin if active_margin_found and active_total_margin > 0.0 else None
+        closed_pnl = closed_total_pnl if closed_pnl_found else None
+        closed_margin = closed_total_margin if closed_margin_found and closed_total_margin > 0.0 else None
         return active_pnl, active_margin, closed_pnl, closed_margin
 
     def _on_close_on_exit_changed(self, state):
@@ -7077,6 +7076,10 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             maint_rate_val = float(p.get('maintMarginRate') or p.get('maintenanceMarginRate') or 0.0)
                         except Exception:
                             maint_rate_val = 0.0
+                        try:
+                            open_order_margin = float(p.get('openOrderMargin') or p.get('openOrderInitialMargin') or 0.0)
+                        except Exception:
+                            open_order_margin = 0.0
                         if maint <= 0.0 and maint_rate_val > 0.0 and value > 0.0:
                             maint = abs(value) * maint_rate_val
                         baseline_margin = maint if maint > 0.0 else initial_margin_val
@@ -7084,7 +7087,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             baseline_margin = margin_usdt / max(leverage, 1)
                         if baseline_margin <= 0.0:
                             baseline_margin = margin_usdt
-                        margin_balance_val = float(p.get('marginBalance') or 0.0)
+                        margin_balance_val = float(p.get('walletBalance') or p.get('marginBalance') or 0.0)
                         if margin_balance_val <= 0.0 and iso_wallet > 0.0:
                             margin_balance_val = iso_wallet
                         if margin_balance_val <= 0.0:
@@ -7093,11 +7096,13 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             margin_balance_val = margin_usdt
                         margin_balance_val = max(margin_balance_val, 0.0)
                         raw_margin_ratio = normalize_margin_ratio(p.get('marginRatio') or p.get('margin_ratio'))
+                        calc_ratio = normalize_margin_ratio(p.get('marginRatioCalc')) if p.get('marginRatioCalc') is not None else 0.0
                         margin_ratio = raw_margin_ratio
-                        if margin_ratio <= 0.0 and margin_balance_val > 0:
+                        if margin_ratio <= 0.0:
+                            margin_ratio = calc_ratio
+                        if (margin_ratio <= 0.0 or not margin_ratio) and margin_balance_val > 0:
                             unrealized_loss = abs(pnl) if pnl < 0 else 0.0
-                            order_margin = max(margin_usdt - baseline_margin, 0.0)
-                            margin_ratio = ((baseline_margin + order_margin + unrealized_loss) / margin_balance_val) * 100.0
+                            margin_ratio = ((baseline_margin + open_order_margin + unrealized_loss) / margin_balance_val) * 100.0
                         roi_pct = 0.0
                         if margin_usdt > 0:
                             try:
@@ -7125,7 +7130,10 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'margin_usdt': margin_usdt,
                             'margin_balance': margin_balance_val,
                             'maint_margin': maint,
+                            'open_order_margin': open_order_margin,
+                            'wallet_balance': margin_balance_val,
                             'margin_ratio': margin_ratio,
+                            'margin_ratio_calc': calc_ratio,
                             'pnl_roi': pnl_roi,
                             'pnl_value': pnl,
                             'roi_percent': roi_pct,
@@ -8054,6 +8062,8 @@ def _mw_clear_positions_all(self):
     try:
         if hasattr(self, "_closed_position_records"):
             self._closed_position_records = []
+        if hasattr(self, "_closed_trade_registry"):
+            self._closed_trade_registry = {}
         self._render_positions_table()
     except Exception:
         pass
@@ -8077,7 +8087,30 @@ def _mw_snapshot_closed_position(self, symbol: str, side_key: str) -> bool:
         if len(self._closed_position_records) > MAX_CLOSED_HISTORY:
             self._closed_position_records = self._closed_position_records[:MAX_CLOSED_HISTORY]
         try:
+            registry = getattr(self, "_closed_trade_registry", None)
+            if registry is None:
+                registry = {}
+                self._closed_trade_registry = registry
+            key = f"{symbol}-{side_key}-{int(time.time()*1000)}"
+            data = snap.get("data") if isinstance(snap, dict) else {}
+            def _safe_float_local(value):
+                try:
+                    return float(value)
+                except Exception:
+                    return None
+            registry[key] = {
+                "pnl_value": _safe_float_local((data or {}).get("pnl_value")),
+                "margin_usdt": _safe_float_local((data or {}).get("margin_usdt")),
+                "roi_percent": _safe_float_local((data or {}).get("roi_percent")),
+            }
+        except Exception:
+            pass
+        try:
             open_records.pop((symbol, side_key), None)
+        except Exception:
+            pass
+        try:
+            self._update_global_pnl_display(*self._compute_global_pnl_totals())
         except Exception:
             pass
         return True
@@ -9837,6 +9870,24 @@ def _mw_on_trade_signal(self, order_info: dict):
                 self._closed_position_records = closed_records
             except Exception:
                 pass
+            try:
+                registry = getattr(self, "_closed_trade_registry", None)
+                if registry is None:
+                    registry = {}
+                    self._closed_trade_registry = registry
+                registry_key = ledger_id or unique_key
+                if registry_key:
+                    registry[registry_key] = {
+                        "pnl_value": _safe_float_event(base_data_snap.get("pnl_value")),
+                        "margin_usdt": _safe_float_event(base_data_snap.get("margin_usdt")),
+                        "roi_percent": _safe_float_event(base_data_snap.get("roi_percent")),
+                    }
+                try:
+                    self._update_global_pnl_display(*self._compute_global_pnl_totals())
+                except Exception:
+                    pass
+            except Exception:
+                pass
         try:
             pending_close.pop((sym_upper, side_key), None)
         except Exception:
@@ -9852,6 +9903,12 @@ def _mw_on_trade_signal(self, order_info: dict):
                 getattr(self, "_position_missing_counts", {}).pop((sym_upper, side_key), None)
             except Exception:
                 pass
+        try:
+            guard_obj = getattr(self, "guard", None)
+            if guard_obj and hasattr(guard_obj, "mark_closed") and sym_upper:
+                guard_obj.mark_closed(sym_upper, interval, side_key)
+        except Exception:
+            pass
         self.update_balance_label()
         self.refresh_positions(symbols=[sym] if sym else None)
         return

@@ -15,6 +15,7 @@ class IntervalPositionGuard:
         self.stale_ttl_sec: int = int(stale_ttl_sec or 180)
         self.ledger: Dict[Tuple[str, str, str], float] = {}
         self.pending_attempts: Dict[Tuple[str, str], Tuple[float, str]] = {}
+        self.active: Dict[Tuple[str, str], Dict[str, int]] = {}
         self.strict_symbol_side: bool = True  # block across intervals if True
         self._bw = None  # late-attached binance wrapper
         self._lock = threading.RLock()
@@ -28,6 +29,7 @@ class IntervalPositionGuard:
         with self._lock:
             self.ledger.clear()
             self.pending_attempts.clear()
+            self.active.clear()
 
     # ----- internal
     def _expire_old_unlocked(self) -> None:
@@ -37,6 +39,15 @@ class IntervalPositionGuard:
         for k,ts in list(self.ledger.items()):
             if now - ts > self.stale_ttl_sec:
                 self.ledger.pop(k, None)
+                try:
+                    sym, iv, sd = k
+                    state = self.active.get((sym, iv))
+                    if state:
+                        state[sd] = max(0, state.get(sd, 0) - 1)
+                        if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
+                            self.active.pop((sym, iv), None)
+                except Exception:
+                    pass
 
     # ----- public
     def reconcile_with_exchange(self, bw=None, jobs: Optional[List[dict]]=None, account_type: str='FUTURES') -> None:
@@ -72,12 +83,14 @@ class IntervalPositionGuard:
         sd = (side or '').upper()
         with self._lock:
             self._expire_old_unlocked()
+            state = self.active.get((sym, iv), {})
+            opposite = 'SELL' if sd == 'BUY' else 'BUY'
+            if state.get(opposite, 0) > 0:
+                return False
             if (sym, iv, sd) in self.ledger:
                 return False
             if (sym, sd) in self.pending_attempts:
                 return False
-            # Block opposite side for the same symbol/interval as long as we still track it as open
-            opposite = 'SELL' if sd == 'BUY' else 'BUY'
             if (sym, opposite) in self.pending_attempts:
                 return False
             for (s, i, ss) in self.ledger.keys():
@@ -96,8 +109,10 @@ class IntervalPositionGuard:
                             continue
                         amt = float(p.get('positionAmt') or 0.0)
                         if sd == 'BUY' and amt > 0:
+                            self._record_active(sym, iv, 'BUY', delta=1)
                             return False
                         if sd == 'SELL' and amt < 0:
+                            self._record_active(sym, iv, 'SELL', delta=1)
                             return False
             except Exception:
                 pass
@@ -105,12 +120,22 @@ class IntervalPositionGuard:
             self.pending_attempts[(sym, sd)] = (time.time(), iv)
             return True
 
+    def _record_active(self, sym: str, iv: str, sd: str, delta: int = 0) -> None:
+        state = self.active.setdefault((sym, iv), {'BUY': 0, 'SELL': 0})
+        if delta != 0:
+            state[sd] = max(0, state.get(sd, 0) + delta)
+        else:
+            state.setdefault(sd, state.get(sd, 0))
+        if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
+            self.active.pop((sym, iv), None)
+
     def mark_opened(self, symbol: str, interval: str, side: str) -> None:
         sym = (symbol or '').upper()
         iv = interval or ''
         sd = (side or '').upper()
         with self._lock:
             self.ledger[(sym, iv, sd)] = time.time()
+            self._record_active(sym, iv, sd, delta=1)
 
     # in-flight coalescer
     def begin_open(self, symbol: str, interval: str, side: str, ttl: float=45.0) -> bool:
@@ -136,6 +161,7 @@ class IntervalPositionGuard:
             self.pending_attempts.pop(key, None)
             if success:
                 self.ledger[((symbol or '').upper(), interval or '', (side or '').upper())] = time.time()
+                self._record_active((symbol or '').upper(), interval or '', (side or '').upper(), delta=1)
 
     def mark_closed(self, symbol: str, interval: str, side: str) -> None:
         sym = (symbol or '').upper()
@@ -143,3 +169,8 @@ class IntervalPositionGuard:
         sd = (side or '').upper()
         with self._lock:
             self.ledger.pop((sym, iv, sd), None)
+            state = self.active.get((sym, iv))
+            if state:
+                state[sd] = max(0, state.get(sd, 0) - 1)
+                if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
+                    self.active.pop((sym, iv), None)

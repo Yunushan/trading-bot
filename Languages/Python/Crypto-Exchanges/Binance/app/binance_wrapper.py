@@ -2256,17 +2256,20 @@ class BinanceWrapper:
                     amt = float(p.get('positionAmt') or 0.0)
                     if abs(amt) <= 0.0:
                         continue
-                    out.append({
+                    row = {
                         'symbol': p.get('symbol'),
                         'positionAmt': amt,
                         'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
                         'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'positionInitialMargin': float(p.get('positionInitialMargin') or p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'openOrderMargin': float(p.get('openOrderInitialMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedMargin': float(p.get('isolatedMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'maintMargin': float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'maintMarginRate': float(p.get('maintMarginRate') or p.get('maintenanceMarginRate') or 0.0) if isinstance(p, dict) else 0.0,
-                        'marginRatio': normalize_margin_ratio(p.get('marginRatio')),
+                        'marginRatio': float(p.get('marginRatio') or 0.0),
                         'marginBalance': float(p.get('marginBalance') or 0.0) if isinstance(p, dict) else 0.0,
+                        'walletBalance': float(p.get('walletBalance') or p.get('marginBalance') or 0.0) if isinstance(p, dict) else 0.0,
                         'entryPrice': float(p.get('entryPrice') or 0.0),
                         'markPrice': float(p.get('markPrice') or 0.0),
                         'marginType': p.get('marginType'),
@@ -2275,7 +2278,8 @@ class BinanceWrapper:
                         'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
                         'positionSide': (p.get('positionSide') or p.get('positionside')),
                         'updateTime': _coerce_int(p.get('updateTime') or p.get('update_time')),
-                    })
+                    }
+                    out.append(row)
             except Exception:
                 pass
         else:
@@ -2285,17 +2289,20 @@ class BinanceWrapper:
                     amt = float(p.get('positionAmt') or 0.0)
                     if abs(amt) <= 0.0:
                         continue
-                    out.append({
+                    row = {
                         'symbol': p.get('symbol'),
                         'positionAmt': amt,
                         'notional': float(p.get('notional') or 0.0) if isinstance(p, dict) else 0.0,
                         'initialMargin': float(p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'positionInitialMargin': float(p.get('positionInitialMargin') or p.get('initialMargin') or 0.0) if isinstance(p, dict) else 0.0,
+                        'openOrderMargin': float(p.get('openOrderInitialMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedWallet': float(p.get('isolatedWallet') or 0.0) if isinstance(p, dict) else 0.0,
                         'isolatedMargin': float(p.get('isolatedMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'maintMargin': float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0) if isinstance(p, dict) else 0.0,
                         'maintMarginRate': float(p.get('maintMarginRate') or p.get('maintenanceMarginRate') or 0.0) if isinstance(p, dict) else 0.0,
-                        'marginRatio': normalize_margin_ratio(p.get('marginRatio')),
+                        'marginRatio': float(p.get('marginRatio') or 0.0),
                         'marginBalance': float(p.get('marginBalance') or 0.0) if isinstance(p, dict) else 0.0,
+                        'walletBalance': float(p.get('walletBalance') or p.get('marginBalance') or 0.0) if isinstance(p, dict) else 0.0,
                         'entryPrice': float(p.get('entryPrice') or 0.0),
                         'markPrice': float(p.get('markPrice') or 0.0),
                         'marginType': p.get('marginType'),
@@ -2304,7 +2311,8 @@ class BinanceWrapper:
                         'liquidationPrice': float(p.get('liquidationPrice') or 0.0),
                         'positionSide': (p.get('positionSide') or p.get('positionside')),
                         'updateTime': _coerce_int(p.get('updateTime') or p.get('update_time')),
-                    })
+                    }
+                    out.append(row)
                 except Exception:
                     continue
         if risk_lookup:
@@ -2332,11 +2340,35 @@ class BinanceWrapper:
                     _safe_update('isolatedMargin', ['isolatedMargin'])
                     _safe_update('marginBalance', ['marginBalance', 'isolatedWallet'])
                     _safe_update('initialMargin', ['initialMargin', 'isolatedMargin'])
+                    _safe_update('positionInitialMargin', ['positionInitialMargin', 'initialMargin'])
+                    _safe_update('openOrderMargin', ['openOrderInitialMargin', 'openOrderMargin'])
+                    _safe_update('walletBalance', ['walletBalance', 'marginBalance'])
                     _safe_update('notional', ['notional'])
                     _safe_update('unRealizedProfit', ['unRealizedProfit'])
                     _safe_update('entryPrice', ['entryPrice'])
                     _safe_update('markPrice', ['markPrice'])
                     _safe_update('leverage', ['leverage'])
+                    try:
+                        maint_margin = float(row.get('maintMargin') or 0.0)
+                    except Exception:
+                        maint_margin = 0.0
+                    try:
+                        open_order_margin = float(row.get('openOrderMargin') or 0.0)
+                    except Exception:
+                        open_order_margin = 0.0
+                    try:
+                        wallet_balance = float(row.get('walletBalance') or row.get('marginBalance') or 0.0)
+                    except Exception:
+                        wallet_balance = 0.0
+                    try:
+                        unreal = float(row.get('unRealizedProfit') or 0.0)
+                    except Exception:
+                        unreal = 0.0
+                    loss_component = abs(unreal) if unreal < 0 else 0.0
+                    calc_ratio = ((maint_margin + open_order_margin + loss_component) / wallet_balance) * 100.0 if wallet_balance > 0.0 else 0.0
+                    row['marginRatioCalc'] = calc_ratio
+                    if calc_ratio > 0.0:
+                        row['marginRatio'] = calc_ratio
                 except Exception:
                     continue
         snapshot = copy.deepcopy(out)

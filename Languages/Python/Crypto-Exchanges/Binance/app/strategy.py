@@ -1914,6 +1914,14 @@ class StrategyEngine:
                     order_res = {}
                     guard_side = side
                     order_success = False
+                    guard_obj = getattr(self, "guard", None)
+                    if guard_obj and hasattr(guard_obj, "begin_open"):
+                        try:
+                            if not guard_obj.begin_open(cw['symbol'], cw.get('interval'), guard_side):
+                                self.log(f"{cw['symbol']}@{cw.get('interval')} guard blocked {guard_side} entry (pending or opposite side active).")
+                                return
+                        except Exception:
+                            pass
                     try:
                         order_res = self.binance.place_futures_market_order(
                             cw['symbol'], side,
@@ -1931,7 +1939,6 @@ class StrategyEngine:
                         )
                         order_success = bool(order_res.get('ok', True))
                     finally:
-                        guard_obj = getattr(self, "guard", None)
                         if guard_obj and hasattr(guard_obj, "end_open"):
                             try:
                                 guard_obj.end_open(cw['symbol'], cw.get('interval'), guard_side, order_success)
