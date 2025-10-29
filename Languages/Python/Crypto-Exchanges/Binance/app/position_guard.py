@@ -76,6 +76,13 @@ class IntervalPositionGuard:
                 return False
             if (sym, sd) in self.pending_attempts:
                 return False
+            # Block opposite side for the same symbol/interval as long as we still track it as open
+            opposite = 'SELL' if sd == 'BUY' else 'BUY'
+            if (sym, opposite) in self.pending_attempts:
+                return False
+            for (s, i, ss) in self.ledger.keys():
+                if s == sym and i == iv and ss != sd:
+                    return False
             if self.strict_symbol_side:
                 for (s, i, ss) in self.ledger.keys():
                     if s == sym and ss == sd:
@@ -108,6 +115,7 @@ class IntervalPositionGuard:
     # in-flight coalescer
     def begin_open(self, symbol: str, interval: str, side: str, ttl: float=45.0) -> bool:
         sym = (symbol or '').upper()
+        iv = interval or ''
         sd = (side or '').upper()
         now = time.time()
         with self._lock:
@@ -119,9 +127,7 @@ class IntervalPositionGuard:
             key = (sym, sd)
             if key in self.pending_attempts:
                 return False
-            self.pending_attempts[key] = (now, interval or '')
-            # reserve pending attempt immediately (coalescing window)
-            self.pending_attempts[(sym, sd)] = (time.time(), iv)
+            self.pending_attempts[key] = (now, iv)
             return True
 
     def end_open(self, symbol: str, interval: str, side: str, success: bool) -> None:
@@ -130,3 +136,10 @@ class IntervalPositionGuard:
             self.pending_attempts.pop(key, None)
             if success:
                 self.ledger[((symbol or '').upper(), interval or '', (side or '').upper())] = time.time()
+
+    def mark_closed(self, symbol: str, interval: str, side: str) -> None:
+        sym = (symbol or '').upper()
+        iv = interval or ''
+        sd = (side or '').upper()
+        with self._lock:
+            self.ledger.pop((sym, iv, sd), None)

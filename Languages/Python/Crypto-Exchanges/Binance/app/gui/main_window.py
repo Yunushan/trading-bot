@@ -7073,7 +7073,15 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             initial_margin_val = float(p.get('initialMargin') or 0.0)
                         except Exception:
                             initial_margin_val = 0.0
+                        try:
+                            maint_rate_val = float(p.get('maintMarginRate') or p.get('maintenanceMarginRate') or 0.0)
+                        except Exception:
+                            maint_rate_val = 0.0
+                        if maint <= 0.0 and maint_rate_val > 0.0 and value > 0.0:
+                            maint = abs(value) * maint_rate_val
                         baseline_margin = maint if maint > 0.0 else initial_margin_val
+                        if baseline_margin <= 0.0 and margin_usdt > 0.0 and leverage:
+                            baseline_margin = margin_usdt / max(leverage, 1)
                         if baseline_margin <= 0.0:
                             baseline_margin = margin_usdt
                         margin_balance_val = float(p.get('marginBalance') or 0.0)
@@ -7088,7 +7096,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         margin_ratio = raw_margin_ratio
                         if margin_ratio <= 0.0 and margin_balance_val > 0:
                             unrealized_loss = abs(pnl) if pnl < 0 else 0.0
-                            margin_ratio = ((baseline_margin + unrealized_loss) / margin_balance_val) * 100.0
+                            order_margin = max(margin_usdt - baseline_margin, 0.0)
+                            margin_ratio = ((baseline_margin + order_margin + unrealized_loss) / margin_balance_val) * 100.0
                         roi_pct = 0.0
                         if margin_usdt > 0:
                             try:

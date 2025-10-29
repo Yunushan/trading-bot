@@ -2231,6 +2231,23 @@ class BinanceWrapper:
                 infos = self.client.futures_position_risk()
             except Exception:
                 infos = None
+        risk_lookup = {}
+        try:
+            risk_infos = self.client.futures_position_risk()
+        except Exception:
+            risk_infos = None
+        if isinstance(risk_infos, list):
+            for risk in risk_infos:
+                try:
+                    sym = str(risk.get("symbol") or "").upper()
+                    if not sym:
+                        continue
+                    side = str(risk.get("positionSide") or "BOTH").upper()
+                    risk_lookup[(sym, side)] = risk
+                    if side != "BOTH" and (sym, "BOTH") not in risk_lookup:
+                        risk_lookup[(sym, "BOTH")] = risk
+                except Exception:
+                    continue
         out = []
         if not infos:
             try:
@@ -2288,6 +2305,38 @@ class BinanceWrapper:
                         'positionSide': (p.get('positionSide') or p.get('positionside')),
                         'updateTime': _coerce_int(p.get('updateTime') or p.get('update_time')),
                     })
+                except Exception:
+                    continue
+        if risk_lookup:
+            for row in out:
+                try:
+                    sym = str(row.get('symbol') or '').upper()
+                    side = str(row.get('positionSide') or row.get('positionside') or 'BOTH').upper()
+                    risk = risk_lookup.get((sym, side)) or risk_lookup.get((sym, 'BOTH'))
+                    if not isinstance(risk, dict):
+                        continue
+                    def _safe_update(target_key, source_keys):
+                        for src in source_keys:
+                            if src not in risk:
+                                continue
+                            val = risk.get(src)
+                            if val in (None, "", 0, 0.0):
+                                continue
+                            try:
+                                row[target_key] = float(val)
+                            except Exception:
+                                row[target_key] = val
+                            return
+                    _safe_update('marginRatio', ['marginRatio'])
+                    _safe_update('isolatedWallet', ['isolatedWallet'])
+                    _safe_update('isolatedMargin', ['isolatedMargin'])
+                    _safe_update('marginBalance', ['marginBalance', 'isolatedWallet'])
+                    _safe_update('initialMargin', ['initialMargin', 'isolatedMargin'])
+                    _safe_update('notional', ['notional'])
+                    _safe_update('unRealizedProfit', ['unRealizedProfit'])
+                    _safe_update('entryPrice', ['entryPrice'])
+                    _safe_update('markPrice', ['markPrice'])
+                    _safe_update('leverage', ['leverage'])
                 except Exception:
                     continue
         snapshot = copy.deepcopy(out)

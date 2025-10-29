@@ -608,7 +608,7 @@ class StrategyEngine:
     def _close_opposite_position(self, symbol: str, interval: str, next_side: str) -> bool:
         """Ensure no net exposure in the opposite direction before opening a new leg."""
         try:
-            positions = self.binance.list_open_futures_positions() or []
+            positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
         except Exception as e:
             self.log(f"{symbol}@{interval} read positions failed: {e}")
             return False
@@ -663,6 +663,11 @@ class StrategyEngine:
                 else:
                     payload = self._build_close_event_payload(symbol, interval, opp, qty_to_close, res, leg_info_override=entry)
                     self._notify_interval_closed(symbol, interval, opp, **payload)
+                try:
+                    if hasattr(self.guard, "mark_closed"):
+                        self.guard.mark_closed(symbol, interval, opp)
+                except Exception:
+                    pass
                 self._remove_leg_entry(opp_key, entry.get("ledger_id"))
             return True
 
@@ -680,6 +685,11 @@ class StrategyEngine:
                         return False
                     payload = self._build_close_event_payload(symbol, interval, 'SELL', qty, res)
                     self._notify_interval_closed(symbol, interval, 'SELL', **payload)
+                    try:
+                        if hasattr(self.guard, "mark_closed"):
+                            self.guard.mark_closed(symbol, interval, 'SELL')
+                    except Exception:
+                        pass
                     closed_any = True
                 elif desired == 'SELL' and amt > 0:
                     qty = abs(amt)
@@ -689,6 +699,11 @@ class StrategyEngine:
                         return False
                     payload = self._build_close_event_payload(symbol, interval, 'BUY', qty, res)
                     self._notify_interval_closed(symbol, interval, 'BUY', **payload)
+                    try:
+                        if hasattr(self.guard, "mark_closed"):
+                            self.guard.mark_closed(symbol, interval, 'BUY')
+                    except Exception:
+                        pass
                     closed_any = True
             except Exception as exc:
                 self.log(f"{symbol}@{interval} close-opposite exception: {exc}")
