@@ -2323,6 +2323,13 @@ class BinanceWrapper:
                     risk = risk_lookup.get((sym, side)) or risk_lookup.get((sym, 'BOTH'))
                     if not isinstance(risk, dict):
                         continue
+                    risk_ratio_raw = risk.get('marginRatio')
+                    if risk_ratio_raw is not None:
+                        try:
+                            row['marginRatioRaw'] = float(risk_ratio_raw)
+                            row['marginRatio'] = float(risk_ratio_raw)
+                        except Exception:
+                            pass
                     def _safe_update(target_key, source_keys):
                         for src in source_keys:
                             if src not in risk:
@@ -2367,7 +2374,7 @@ class BinanceWrapper:
                     loss_component = abs(unreal) if unreal < 0 else 0.0
                     calc_ratio = ((maint_margin + open_order_margin + loss_component) / wallet_balance) * 100.0 if wallet_balance > 0.0 else 0.0
                     row['marginRatioCalc'] = calc_ratio
-                    if calc_ratio > 0.0:
+                    if float(row.get('marginRatio') or 0.0) <= 0.0 and calc_ratio > 0.0:
                         row['marginRatio'] = calc_ratio
                 except Exception:
                     continue

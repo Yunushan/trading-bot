@@ -104,7 +104,7 @@ class IntervalPositionGuard:
             try:
                 bw = self._bw
                 if bw:
-                    for p in (bw.list_open_futures_positions() or []):
+                    for p in (bw.list_open_futures_positions(force_refresh=True) or []):
                         if str(p.get('symbol') or '').upper() != sym:
                             continue
                         amt = float(p.get('positionAmt') or 0.0)
@@ -121,11 +121,12 @@ class IntervalPositionGuard:
             return True
 
     def _record_active(self, sym: str, iv: str, sd: str, delta: int = 0) -> None:
+        sd_norm = 'BUY' if str(sd).upper() in ('L', 'LONG', 'BUY') else 'SELL'
         state = self.active.setdefault((sym, iv), {'BUY': 0, 'SELL': 0})
         if delta != 0:
-            state[sd] = max(0, state.get(sd, 0) + delta)
+            state[sd_norm] = max(0, state.get(sd_norm, 0) + delta)
         else:
-            state.setdefault(sd, state.get(sd, 0))
+            state.setdefault(sd_norm, state.get(sd_norm, 0))
         if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
             self.active.pop((sym, iv), None)
 
@@ -166,7 +167,13 @@ class IntervalPositionGuard:
     def mark_closed(self, symbol: str, interval: str, side: str) -> None:
         sym = (symbol or '').upper()
         iv = interval or ''
-        sd = (side or '').upper()
+        raw_side = str(side or '').upper()
+        if raw_side in ('L', 'LONG'):
+            sd = 'BUY'
+        elif raw_side in ('S', 'SHORT'):
+            sd = 'SELL'
+        else:
+            sd = raw_side or 'BUY'
         with self._lock:
             self.ledger.pop((sym, iv, sd), None)
             state = self.active.get((sym, iv))

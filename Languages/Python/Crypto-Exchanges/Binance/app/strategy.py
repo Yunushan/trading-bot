@@ -403,7 +403,8 @@ class StrategyEngine:
         self._remove_leg_entry(leg_key, entry.get("ledger_id"))
         try:
             if hasattr(self.guard, "mark_closed"):
-                self.guard.mark_closed(symbol, interval, side_label)
+                side_norm = 'BUY' if str(side_label).upper() in ('BUY', 'LONG', 'L') else 'SELL'
+                self.guard.mark_closed(symbol, interval, side_norm)
         except Exception:
             pass
         self._notify_interval_closed(
@@ -1851,27 +1852,57 @@ class StrategyEngine:
                 price = last_price or 0.0
 
                 if account_type == "FUTURES":
+                    if price <= 0.0:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} skipped: no market price available for sizing.")
+                        return
                     try:
                         wallet_total = float(self.binance.get_total_wallet_balance())
                     except Exception:
                         wallet_total = 0.0
+                    try:
+                        available_total = float(self.binance.get_futures_balance_usdt())
+                    except Exception:
+                        available_total = 0.0
+                    if wallet_total <= 0.0:
+                        wallet_total = available_total
                     if wallet_total <= 0.0:
                         wallet_total = free_usdt
                     target_margin = wallet_total * pct
-                    capital_epsilon = max(0.1, wallet_total * 0.001)
-                    if target_margin <= 0.0 or free_usdt <= 0.0:
-                        self.log(f"{cw['symbol']}@{cw.get('interval')} capital guard: no free USDT available for {pct*100:.2f}% allocation.")
+                    if target_margin <= 0.0:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} capital guard: zero target margin for {pct*100:.2f}% allocation.")
                         return
-                    if free_usdt + capital_epsilon < target_margin:
-                        used_pct = 1.0 - (free_usdt / wallet_total if wallet_total > 0 else 0.0)
+                    if available_total <= 0.0:
+                        available_total = free_usdt
+                    if available_total <= 0.0:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} capital guard: no available USDT to allocate.")
+                        return
+                    if available_total < target_margin * 0.95:
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} capital guard: requested {target_margin:.2f} USDT "
-                            f"({pct*100:.2f}%) but only {free_usdt:.2f} USDT free ({used_pct*100:.2f}% already allocated)."
+                            f"({pct*100:.2f}%) but only {available_total:.2f} USDT available."
                         )
                         return
-                    use_usdt = min(free_usdt, target_margin)
                     lev = max(1, int(cw.get('leverage', 1)))
-                    qty_est = (use_usdt * lev / price) if price > 0 else 0.0
+                    qty_target = (target_margin * lev) / price
+                    adj_qty, adj_err = self.binance.adjust_qty_to_filters_futures(cw['symbol'], qty_target, price)
+                    if adj_err:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} sizing blocked: {adj_err}.")
+                        return
+                    if adj_qty <= 0.0:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} sizing blocked: quantity <= 0 after filter adjustment.")
+                        return
+                    margin_est = (adj_qty * price) / max(lev, 1)
+                    margin_tolerance = float(self.config.get("margin_over_target_tolerance", 0.05))
+                    if margin_tolerance > 1.0:
+                        margin_tolerance = margin_tolerance / 100.0
+                    max_margin = target_margin * (1.0 + max(0.0, margin_tolerance))
+                    if margin_est > max_margin + 1e-9:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} sizing blocked: adjusted margin {margin_est:.4f} "
+                            f"exceeds target {target_margin:.4f} by more than {margin_tolerance*100:.2f}%."
+                        )
+                        return
+                    qty_est = adj_qty
                     reduce_only = False
                     if bool(self.config.get('add_only', False)):
                         dual = self.binance.get_futures_dual_side()
@@ -1925,11 +1956,12 @@ class StrategyEngine:
                     try:
                         order_res = self.binance.place_futures_market_order(
                             cw['symbol'], side,
-                            percent_balance=(pct*100.0),
+                            percent_balance=None,
                             leverage=lev,
                             reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
                             position_side=desired_ps,
                             price=cw.get('price'),
+                            quantity=qty_est,
                             strict=True,
                             timeInForce=self.config.get('tif','GTC'),
                             gtd_minutes=int(self.config.get('gtd_minutes',30)),
@@ -2032,6 +2064,8 @@ class StrategyEngine:
                                     margin_est = (entry_price_est * qty) / leverage_val if leverage_val > 0 else entry_price_est * qty
                                 except Exception:
                                     margin_est = 0.0
+                                if margin_est <= 0.0:
+                                    margin_est = (price * qty) / max(leverage_val, 1)
 
                                 entry_fee_usdt = _float_or(fills_info.get('commission_usdt'))
                                 entry_net_realized = _float_or(fills_info.get('net_realized'))

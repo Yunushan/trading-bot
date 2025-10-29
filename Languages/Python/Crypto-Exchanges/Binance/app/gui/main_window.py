@@ -7049,6 +7049,10 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         entry_price = float(p.get('entryPrice') or 0.0)
                         iso_wallet = float(p.get('isolatedWallet') or 0.0)
                         margin_usdt = float(p.get('initialMargin') or 0.0)
+                        try:
+                            position_initial = float(p.get('positionInitialMargin') or 0.0)
+                        except Exception:
+                            position_initial = 0.0
                         pnl = float(p.get('unRealizedProfit') or 0.0)
                         lev_val_raw = float(p.get('leverage') or 0.0)
                         leverage = int(lev_val_raw) if lev_val_raw else None
@@ -7064,6 +7068,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if margin_usdt <= 0.0 and leverage and leverage > 0 and value > 0.0:
                             margin_usdt = value / max(leverage, 1)
                         margin_usdt = max(margin_usdt, 0.0)
+                        if position_initial > 0.0:
+                            margin_usdt = position_initial
                         try:
                             maint = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
                         except Exception:
@@ -7087,6 +7093,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             baseline_margin = margin_usdt / max(leverage, 1)
                         if baseline_margin <= 0.0:
                             baseline_margin = margin_usdt
+                        if position_initial > 0.0:
+                            baseline_margin = position_initial
                         margin_balance_val = float(p.get('walletBalance') or p.get('marginBalance') or 0.0)
                         if margin_balance_val <= 0.0 and iso_wallet > 0.0:
                             margin_balance_val = iso_wallet
@@ -7095,7 +7103,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if margin_balance_val <= 0.0:
                             margin_balance_val = margin_usdt
                         margin_balance_val = max(margin_balance_val, 0.0)
-                        raw_margin_ratio = normalize_margin_ratio(p.get('marginRatio') or p.get('margin_ratio'))
+                        raw_margin_ratio = normalize_margin_ratio(p.get('marginRatioRaw') or p.get('marginRatio') or p.get('margin_ratio'))
                         calc_ratio = normalize_margin_ratio(p.get('marginRatioCalc')) if p.get('marginRatioCalc') is not None else 0.0
                         margin_ratio = raw_margin_ratio
                         if margin_ratio <= 0.0:
@@ -8103,6 +8111,11 @@ def _mw_snapshot_closed_position(self, symbol: str, side_key: str) -> bool:
                 "margin_usdt": _safe_float_local((data or {}).get("margin_usdt")),
                 "roi_percent": _safe_float_local((data or {}).get("roi_percent")),
             }
+            if len(registry) > MAX_CLOSED_HISTORY:
+                excess = len(registry) - MAX_CLOSED_HISTORY
+                if excess > 0:
+                    for old_key in list(registry.keys())[:excess]:
+                        registry.pop(old_key, None)
         except Exception:
             pass
         try:
@@ -9882,6 +9895,11 @@ def _mw_on_trade_signal(self, order_info: dict):
                         "margin_usdt": _safe_float_event(base_data_snap.get("margin_usdt")),
                         "roi_percent": _safe_float_event(base_data_snap.get("roi_percent")),
                     }
+                    if len(registry) > MAX_CLOSED_HISTORY:
+                        excess = len(registry) - MAX_CLOSED_HISTORY
+                        if excess > 0:
+                            for old_key in list(registry.keys())[:excess]:
+                                registry.pop(old_key, None)
                 try:
                     self._update_global_pnl_display(*self._compute_global_pnl_totals())
                 except Exception:
@@ -9906,7 +9924,8 @@ def _mw_on_trade_signal(self, order_info: dict):
         try:
             guard_obj = getattr(self, "guard", None)
             if guard_obj and hasattr(guard_obj, "mark_closed") and sym_upper:
-                guard_obj.mark_closed(sym_upper, interval, side_key)
+                side_norm = "BUY" if side_key == "L" else "SELL"
+                guard_obj.mark_closed(sym_upper, interval, side_norm)
         except Exception:
             pass
         self.update_balance_label()
