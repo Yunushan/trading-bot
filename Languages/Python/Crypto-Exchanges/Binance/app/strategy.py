@@ -712,7 +712,19 @@ class StrategyEngine:
         if closed_any:
             try:
                 import time as _t
-                _t.sleep(0.05)
+                for _ in range(6):
+                    positions_refresh = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                    still_opposite = False
+                    for pos in positions_refresh:
+                        if str(pos.get('symbol') or '').upper() != symbol:
+                            continue
+                        amt_chk = float(pos.get('positionAmt') or 0.0)
+                        if (opp == 'SELL' and amt_chk < 0) or (opp == 'BUY' and amt_chk > 0):
+                            still_opposite = True
+                            break
+                    if not still_opposite:
+                        break
+                    _t.sleep(0.15)
             except Exception:
                 pass
             for key in list(self._leg_ledger.keys()):
@@ -1942,6 +1954,22 @@ class StrategyEngine:
                         if not self.can_open_cb(cw['symbol'], cw.get('interval'), side):
                             self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {side} already open - skipping.")
                             return
+                    # Final sanity check with exchange before opening the new side
+                    try:
+                        existing_positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                        for pos in existing_positions:
+                            if str(pos.get('symbol') or '').upper() != cw['symbol'].upper():
+                                continue
+                            amt_existing = float(pos.get('positionAmt') or 0.0)
+                            if side == 'BUY' and amt_existing < 0:
+                                self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short still open on exchange; skipping long entry.")
+                                return
+                            if side == 'SELL' and amt_existing > 0:
+                                self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long still open on exchange; skipping short entry.")
+                                return
+                    except Exception as ex_chk:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} guard check warning: {ex_chk}")
+                        return
                     order_res = {}
                     guard_side = side
                     order_success = False

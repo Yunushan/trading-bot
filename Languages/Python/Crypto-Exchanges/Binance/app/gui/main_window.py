@@ -7068,8 +7068,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if margin_usdt <= 0.0 and leverage and leverage > 0 and value > 0.0:
                             margin_usdt = value / max(leverage, 1)
                         margin_usdt = max(margin_usdt, 0.0)
-                        if position_initial > 0.0:
-                            margin_usdt = position_initial
+                        if position_initial > 0.0 or open_order_margin > 0.0:
+                            margin_usdt = max(0.0, position_initial) + max(0.0, open_order_margin)
                         try:
                             maint = float(p.get('maintMargin') or p.get('maintenanceMargin') or 0.0)
                         except Exception:
@@ -7137,10 +7137,11 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'size_usdt': value,
                             'margin_usdt': margin_usdt,
                             'margin_balance': margin_balance_val,
+                            'wallet_balance': margin_balance_val,
                             'maint_margin': maint,
                             'open_order_margin': open_order_margin,
-                            'wallet_balance': margin_balance_val,
                             'margin_ratio': margin_ratio,
+                            'margin_ratio_raw': raw_margin_ratio,
                             'margin_ratio_calc': calc_ratio,
                             'pnl_roi': pnl_roi,
                             'pnl_value': pnl,
