@@ -1956,17 +1956,51 @@ class StrategyEngine:
                             return
                     # Final sanity check with exchange before opening the new side
                     try:
+                        backend_key = str(getattr(self.binance, "_connector_backend", "") or "").lower()
+                        guard_duplicates = backend_key == "binance-sdk-derivatives-trading-usds-futures"
+                        tol = 1e-8
+                        dual_mode = bool(self.binance.get_futures_dual_side())
                         existing_positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
                         for pos in existing_positions:
                             if str(pos.get('symbol') or '').upper() != cw['symbol'].upper():
                                 continue
-                            amt_existing = float(pos.get('positionAmt') or 0.0)
-                            if side == 'BUY' and amt_existing < 0:
-                                self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short still open on exchange; skipping long entry.")
-                                return
-                            if side == 'SELL' and amt_existing > 0:
-                                self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long still open on exchange; skipping short entry.")
-                                return
+                            try:
+                                amt_existing = float(pos.get('positionAmt') or 0.0)
+                            except Exception:
+                                amt_existing = 0.0
+                            pos_side = str(pos.get('positionSide') or pos.get('positionside') or 'BOTH').upper()
+                            if side == 'BUY':
+                                if amt_existing < -tol:
+                                    self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short still open on exchange; skipping long entry.")
+                                    return
+                                if guard_duplicates:
+                                    long_active = False
+                                    if dual_mode:
+                                        if pos_side == 'LONG':
+                                            long_active = abs(amt_existing) > tol
+                                        elif pos_side == 'BOTH':
+                                            long_active = amt_existing > tol
+                                    else:
+                                        long_active = amt_existing > tol
+                                    if long_active:
+                                        self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long already active on exchange; skipping duplicate long entry.")
+                                        return
+                            elif side == 'SELL':
+                                if amt_existing > tol:
+                                    self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long still open on exchange; skipping short entry.")
+                                    return
+                                if guard_duplicates:
+                                    short_active = False
+                                    if dual_mode:
+                                        if pos_side == 'SHORT':
+                                            short_active = abs(amt_existing) > tol
+                                        elif pos_side == 'BOTH':
+                                            short_active = amt_existing < -tol
+                                    else:
+                                        short_active = amt_existing < -tol
+                                    if short_active:
+                                        self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short already active on exchange; skipping duplicate short entry.")
+                                        return
                     except Exception as ex_chk:
                         self.log(f"{cw['symbol']}@{cw.get('interval')} guard check warning: {ex_chk}")
                         return
