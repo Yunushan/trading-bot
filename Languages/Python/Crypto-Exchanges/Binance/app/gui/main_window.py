@@ -398,6 +398,64 @@ BACKTEST_TEMPLATE_DEFINITIONS = {
             "source": "Futures",
         },
     },
+    "top100_isolated_1pct_sl": {
+        "label": "Top 100, %2 per trade, isolated, %20 (%1 Actual Move) per trade SL",
+        "intervals": [
+            "1m",
+            "3m",
+            "5m",
+            "10m",
+            "15m",
+            "20m",
+            "30m",
+            "1h",
+            "2h",
+            "3h",
+            "4h",
+            "5h",
+            "6h",
+            "7h",
+            "8h",
+            "9h",
+            "10h",
+            "11h",
+            "12h",
+            "1d",
+            "2d",
+            "3d",
+            "4d",
+            "5d",
+            "6d",
+            "1w",
+        ],
+        "logic": "SEPARATE",
+        "position_pct": 2.0,
+        "side": "BOTH",
+        "loop_interval_override": "30s",
+        "stop_loss": {
+            "enabled": True,
+            "mode": "percent",
+            "percent": 20.0,
+            "scope": "per_trade",
+        },
+        "margin_mode": "Isolated",
+        "position_mode": "Hedge",
+        "assets_mode": "Single-Asset",
+        "account_mode": "Classic Trading",
+        "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
+        "leverage": 20,
+        "mdd_logic": "entire_account",
+        "indicators": {
+            "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
+            "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
+            "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
+        },
+        "symbol_selection": {
+            "type": "top_volume",
+            "count": 100,
+            "source": "Futures",
+        },
+    },
 }
 
 CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
@@ -4436,10 +4494,18 @@ class MainWindow(QtWidgets.QWidget):
             data["max_drawdown_during_display"] = f"{-abs(max_dd_during_pct):.2f}%"
         else:
             data["max_drawdown_during_display"] = "0.00%"
+        if max_dd_during_val > 0.0:
+            data["max_drawdown_during_value_display"] = f"{-abs(max_dd_during_val):.2f} USDT"
+        else:
+            data["max_drawdown_during_value_display"] = "0.00 USDT"
         if max_dd_result_pct > 0.0:
             data["max_drawdown_result_display"] = f"{-abs(max_dd_result_pct):.2f}%"
         else:
             data["max_drawdown_result_display"] = "0.00%"
+        if max_dd_result_val > 0.0:
+            data["max_drawdown_result_value_display"] = f"{-abs(max_dd_result_val):.2f} USDT"
+        else:
+            data["max_drawdown_result_value_display"] = "0.00 USDT"
         data["symbol"] = str(data.get("symbol") or "")
         data["interval"] = str(data.get("interval") or "")
         data["logic"] = str(data.get("logic") or "")
@@ -4570,6 +4636,16 @@ class MainWindow(QtWidgets.QWidget):
                     self.backtest_results_table.setItem(row, 15, roi_value_item)
                     roi_percent_item = _NumericItem(f"{roi_percent:+.2f}%", roi_percent)
                     self.backtest_results_table.setItem(row, 16, roi_percent_item)
+                    if max_drawdown_during_value > 0.0:
+                        dd_during_value_for_sort = -abs(max_drawdown_during_value)
+                        dd_during_value_text = f"{dd_during_value_for_sort:.2f} USDT"
+                    else:
+                        dd_during_value_for_sort = 0.0
+                        dd_during_value_text = "0.00 USDT"
+                    dd_during_value_item = _NumericItem(dd_during_value_text, dd_during_value_for_sort)
+                    if max_drawdown_during_percent > 0.0:
+                        dd_during_value_item.setToolTip(f"Peak-to-trough drop while open: {max_drawdown_during_percent:.2f}%")
+                    self.backtest_results_table.setItem(row, 17, dd_during_value_item)
                     if max_drawdown_during_percent > 0.0:
                         dd_during_for_sort = -abs(max_drawdown_during_percent)
                         dd_during_text = f"{dd_during_for_sort:.2f}%"
@@ -4579,8 +4655,17 @@ class MainWindow(QtWidgets.QWidget):
                     dd_during_item = _NumericItem(dd_during_text, dd_during_for_sort)
                     if max_drawdown_during_value > 0.0:
                         dd_during_item.setToolTip(f"Peak-to-trough drop while open: {max_drawdown_during_value:.2f} USDT")
-                    self.backtest_results_table.setItem(row, 17, dd_during_item)
-
+                    self.backtest_results_table.setItem(row, 18, dd_during_item)
+                    if max_drawdown_result_value > 0.0:
+                        dd_result_value_for_sort = -abs(max_drawdown_result_value)
+                        dd_result_value_text = f"{dd_result_value_for_sort:.2f} USDT"
+                    else:
+                        dd_result_value_for_sort = 0.0
+                        dd_result_value_text = "0.00 USDT"
+                    dd_result_value_item = _NumericItem(dd_result_value_text, dd_result_value_for_sort)
+                    if max_drawdown_result_percent > 0.0:
+                        dd_result_value_item.setToolTip(f"Max loss on closed position: {max_drawdown_result_percent:.2f}%")
+                    self.backtest_results_table.setItem(row, 19, dd_result_value_item)
                     if max_drawdown_result_percent > 0.0:
                         dd_result_for_sort = -abs(max_drawdown_result_percent)
                         dd_result_text = f"{dd_result_for_sort:.2f}%"
@@ -4590,7 +4675,7 @@ class MainWindow(QtWidgets.QWidget):
                     dd_result_item = _NumericItem(dd_result_text, dd_result_for_sort)
                     if max_drawdown_result_value > 0.0:
                         dd_result_item.setToolTip(f"Max loss on closed position: {max_drawdown_result_value:.2f} USDT")
-                    self.backtest_results_table.setItem(row, 18, dd_result_item)
+                    self.backtest_results_table.setItem(row, 20, dd_result_item)
                 except Exception as row_exc:
                     self.log(f"Backtest table row {row} error: {row_exc}")
                     err_item = QtWidgets.QTableWidgetItem(f"Error: {row_exc}")
@@ -6788,25 +6873,6 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_stop_loss_percent_spin.valueChanged.connect(lambda v: self._on_backtest_stop_loss_value_changed("percent", v))
         self._update_backtest_stop_loss_widgets()
 
-        template_row = QtWidgets.QWidget()
-        template_layout = QtWidgets.QHBoxLayout(template_row)
-        template_layout.setContentsMargins(0, 0, 0, 0)
-        template_layout.setSpacing(6)
-
-        self.backtest_template_enable_cb = QtWidgets.QCheckBox("Enable")
-        template_layout.addWidget(self.backtest_template_enable_cb)
-
-        self.backtest_template_combo = QtWidgets.QComboBox()
-        for key, definition in BACKTEST_TEMPLATE_DEFINITIONS.items():
-            label = definition.get("label", key.replace("_", " ").title())
-            self.backtest_template_combo.addItem(label, key)
-        template_layout.addWidget(self.backtest_template_combo, stretch=1)
-
-        param_form.addRow("Template:", template_row)
-
-        self.backtest_template_enable_cb.toggled.connect(self._on_backtest_template_enabled)
-        self.backtest_template_combo.currentIndexChanged.connect(self._on_backtest_template_selected)
-
         self.backtest_side_combo = QtWidgets.QComboBox()
         self.backtest_side_combo.addItems([SIDE_LABELS["BUY"], SIDE_LABELS["SELL"], SIDE_LABELS["BOTH"]])
         self.backtest_side_combo.currentTextChanged.connect(lambda v: self._update_backtest_config("side", v))
@@ -6865,6 +6931,25 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_leverage_spin.setRange(1, 150)
         self.backtest_leverage_spin.valueChanged.connect(lambda v: self._update_backtest_config("leverage", int(v)))
         param_form.addRow("Leverage (Futures):", self.backtest_leverage_spin)
+
+        template_row = QtWidgets.QWidget()
+        template_layout = QtWidgets.QHBoxLayout(template_row)
+        template_layout.setContentsMargins(0, 0, 0, 0)
+        template_layout.setSpacing(6)
+
+        self.backtest_template_enable_cb = QtWidgets.QCheckBox("Enable")
+        template_layout.addWidget(self.backtest_template_enable_cb)
+
+        self.backtest_template_combo = QtWidgets.QComboBox()
+        for key, definition in BACKTEST_TEMPLATE_DEFINITIONS.items():
+            label = definition.get("label", key.replace("_", " ").title())
+            self.backtest_template_combo.addItem(label, key)
+        template_layout.addWidget(self.backtest_template_combo, stretch=1)
+
+        param_form.addRow("Template:", template_row)
+
+        self.backtest_template_enable_cb.toggled.connect(self._on_backtest_template_enabled)
+        self.backtest_template_combo.currentIndexChanged.connect(self._on_backtest_template_selected)
 
         self._backtest_futures_widgets = [
             self.backtest_margin_mode_combo,
@@ -6975,7 +7060,7 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        self.backtest_results_table = QtWidgets.QTableWidget(0, 19)
+        self.backtest_results_table = QtWidgets.QTableWidget(0, 21)
         self.backtest_results_table.setHorizontalHeaderLabels([
             "Symbol",
             "Interval",
@@ -6994,7 +7079,9 @@ class MainWindow(QtWidgets.QWidget):
             "Leverage (Futures)",
             "ROI (USDT)",
             "ROI (%)",
+            "Max Drawdown During Position (USDT)",
             "Max Drawdown During Position (%)",
+            "Max Drawdown Results (USDT)",
             "Max Drawdown Results (%)",
         ])
         header = self.backtest_results_table.horizontalHeader()

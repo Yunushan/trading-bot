@@ -1136,6 +1136,62 @@ class BinanceWrapper:
         with self._positions_cache_lock:
             self._positions_cache = None
             self._positions_cache_ts = 0.0
+        self._invalidate_futures_account_cache()
+
+    def _invalidate_futures_account_cache(self) -> None:
+        with self._futures_account_cache_lock:
+            self._futures_account_cache = None
+            self._futures_account_cache_ts = 0.0
+            self._futures_account_balance_cache = None
+            self._futures_account_balance_cache_ts = 0.0
+
+    def _get_futures_account_cached(self, max_age: float = 2.5, *, force_refresh: bool = False) -> dict:
+        now = time.time()
+        if not force_refresh:
+            with self._futures_account_cache_lock:
+                if (
+                    self._futures_account_cache is not None
+                    and (now - self._futures_account_cache_ts) < max(0.0, float(max_age or 0.0))
+                ):
+                    return copy.deepcopy(self._futures_account_cache)
+        acct_dict = {}
+        try:
+            acct = self._futures_call("futures_account", allow_recv=True)
+            acct_dict = _as_futures_account_dict(acct)
+        except Exception:
+            acct_dict = {}
+        with self._futures_account_cache_lock:
+            if acct_dict:
+                self._futures_account_cache = copy.deepcopy(acct_dict)
+                self._futures_account_cache_ts = time.time()
+            elif force_refresh:
+                self._futures_account_cache = None
+                self._futures_account_cache_ts = 0.0
+        return copy.deepcopy(acct_dict) if acct_dict else {}
+
+    def _get_futures_account_balance_cached(self, max_age: float = 2.5, *, force_refresh: bool = False) -> list:
+        now = time.time()
+        if not force_refresh:
+            with self._futures_account_cache_lock:
+                if (
+                    self._futures_account_balance_cache is not None
+                    and (now - self._futures_account_balance_cache_ts) < max(0.0, float(max_age or 0.0))
+                ):
+                    return copy.deepcopy(self._futures_account_balance_cache)
+        entries: list = []
+        try:
+            bals = self._futures_call("futures_account_balance", allow_recv=True)
+            entries = list(_as_futures_balance_entries(bals))
+        except Exception:
+            entries = []
+        with self._futures_account_cache_lock:
+            if entries:
+                self._futures_account_balance_cache = copy.deepcopy(entries)
+                self._futures_account_balance_cache_ts = time.time()
+            elif force_refresh:
+                self._futures_account_balance_cache = None
+                self._futures_account_balance_cache_ts = 0.0
+        return copy.deepcopy(entries)
 
     @staticmethod
     def _format_quantity_for_order(value: float, step: float | None = None) -> str:
@@ -1756,6 +1812,11 @@ class BinanceWrapper:
         self._positions_cache = None
         self._positions_cache_ts = 0.0
         self._positions_cache_lock = threading.Lock()
+        self._futures_account_cache = None
+        self._futures_account_cache_ts = 0.0
+        self._futures_account_balance_cache = None
+        self._futures_account_balance_cache_ts = 0.0
+        self._futures_account_cache_lock = threading.Lock()
         self._last_ban_log = 0.0
         self._last_network_error_log = 0.0
         self._last_price_cache: dict[str, tuple[float, float]] = {}
@@ -1969,7 +2030,7 @@ class BinanceWrapper:
         rows: list[dict] = []
         if account_kind.startswith("FUT"):
             try:
-                balances = self.client.futures_account_balance() or []
+                balances = self._get_futures_account_balance_cached() or []
                 for entry in balances:
                     asset = entry.get("asset")
                     if not asset:
@@ -2203,12 +2264,7 @@ class BinanceWrapper:
     def get_futures_balance_usdt(self) -> float:
         """Return the withdrawable/available balance for the primary futures asset."""
         preferred_assets = ("USDT", "BUSD", "USD")
-        entries = []
-        try:
-            bals = self._futures_call('futures_account_balance', allow_recv=True)
-            entries = list(_as_futures_balance_entries(bals))
-        except Exception:
-            entries = []
+        entries = self._get_futures_account_balance_cached() or []
         for b in entries:
             if not isinstance(b, dict):
                 continue
@@ -2222,15 +2278,15 @@ class BinanceWrapper:
                         return float(val)
                     except Exception:
                         continue
-        try:
-            acct = self._futures_call('futures_account', allow_recv=True)
-            acct_dict = _as_futures_account_dict(acct)
+        acct_dict = self._get_futures_account_cached()
+        if isinstance(acct_dict, dict):
             for key in ('availableBalance', 'maxWithdrawAmount', 'totalWalletBalance', 'totalMarginBalance'):
                 val = acct_dict.get(key)
                 if val is not None:
-                    return float(val)
-        except Exception:
-            pass
+                    try:
+                        return float(val)
+                    except Exception:
+                        continue
         return 0.0
     def get_futures_available_balance(self) -> float:
         val = self.get_futures_balance_usdt()
@@ -2249,26 +2305,21 @@ class BinanceWrapper:
     def get_futures_wallet_balance(self) -> float:
         """Return the total wallet balance (including used margin) for the futures account."""
         preferred_assets = ("USDT", "BUSD", "USD")
-        try:
-            bals = self._futures_call("futures_account_balance", allow_recv=True)
-            for entry in _as_futures_balance_entries(bals):
-                if not isinstance(entry, dict):
-                    continue
-                asset = str(entry.get("asset") or "").upper()
-                if asset not in preferred_assets:
-                    continue
-                for key in ("walletBalance", "balance", "crossWalletBalance", "marginBalance"):
-                    val = entry.get(key)
-                    if val is not None:
-                        try:
-                            return float(val)
-                        except Exception:
-                            continue
-        except Exception:
-            pass
-        try:
-            acct = self._futures_call("futures_account", allow_recv=True)
-            acct_dict = _as_futures_account_dict(acct)
+        for entry in self._get_futures_account_balance_cached() or []:
+            if not isinstance(entry, dict):
+                continue
+            asset = str(entry.get("asset") or "").upper()
+            if asset not in preferred_assets:
+                continue
+            for key in ("walletBalance", "balance", "crossWalletBalance", "marginBalance"):
+                val = entry.get(key)
+                if val is not None:
+                    try:
+                        return float(val)
+                    except Exception:
+                        continue
+        acct_dict = self._get_futures_account_cached()
+        if isinstance(acct_dict, dict):
             for key in (
                 "totalWalletBalance",
                 "totalMarginBalance",
@@ -2278,9 +2329,10 @@ class BinanceWrapper:
             ):
                 val = acct_dict.get(key)
                 if val is not None:
-                    return float(val)
-        except Exception:
-            pass
+                    try:
+                        return float(val)
+                    except Exception:
+                        continue
         try:
             return float(self.get_futures_balance_usdt())
         except Exception:
@@ -2309,30 +2361,34 @@ class BinanceWrapper:
                     continue
             return float(total)
         except Exception:
-            try:
-                acct = self.client.futures_account()
-                acct_dict = acct if isinstance(acct, dict) else _as_futures_account_dict(acct)
-                if isinstance(acct_dict, dict):
-                    val = acct_dict.get('totalUnrealizedProfit')
-                    if val is None:
-                        val = acct_dict.get('totalCrossUnPnl')
-                    if val is not None:
+            acct_dict = self._get_futures_account_cached()
+            if isinstance(acct_dict, dict):
+                val = acct_dict.get('totalUnrealizedProfit')
+                if val is None:
+                    val = acct_dict.get('totalCrossUnPnl')
+                if val is not None:
+                    try:
                         return float(val)
-            except Exception:
-                pass
+                    except Exception:
+                        pass
         return 0.0
 
     def get_total_wallet_balance(self) -> float:
-        try:
-            acct = self.client.futures_account()
-            acct_dict = acct if isinstance(acct, dict) else _as_futures_account_dict(acct)
-            if isinstance(acct_dict, dict):
-                for key in ("totalWalletBalance", "totalMarginBalance", "totalInitialMargin", "totalCrossWalletBalance", "totalCrossBalance"):
-                    val = acct_dict.get(key)
-                    if val is not None:
+        acct_dict = self._get_futures_account_cached()
+        if isinstance(acct_dict, dict):
+            for key in (
+                "totalWalletBalance",
+                "totalMarginBalance",
+                "totalInitialMargin",
+                "totalCrossWalletBalance",
+                "totalCrossBalance",
+            ):
+                val = acct_dict.get(key)
+                if val is not None:
+                    try:
                         return float(val)
-        except Exception:
-            pass
+                    except Exception:
+                        continue
         try:
             return float(self.get_total_usdt_value())
         except Exception:
@@ -3185,7 +3241,7 @@ class BinanceWrapper:
         out = []
         if not infos:
             try:
-                acc = self.client.futures_account() or {}
+                acc = self._get_futures_account_cached(force_refresh=True) or {}
                 for p in acc.get('positions', []):
                     amt = float(p.get('positionAmt') or 0.0)
                     if abs(amt) <= 0.0:
@@ -3382,7 +3438,7 @@ def get_symbol_margin_type(self, symbol: str) -> str | None:
                 return mt
         # fallback to futures_account positions payload
         try:
-            acct = self.client.futures_account() or {}
+            acct = self._get_futures_account_cached(force_refresh=True) or {}
             for row in acct.get('positions', []):
                 mt = _extract(row)
                 if mt:
