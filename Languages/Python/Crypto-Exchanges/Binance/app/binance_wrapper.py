@@ -3877,7 +3877,12 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
     # Finally adjust the computed qty to step; also guard reduce-only
     qty = _floor_to_step(qty, step)
     if qty <= 0:
-        return {'ok': False, 'symbol': sym, 'error': 'qty<=0', 'computed': {'qty': qty, 'px': px, 'step': step}}
+        return {
+            'ok': False,
+            'symbol': sym,
+            'error': 'qty<=0',
+            'computed': {'qty': qty, 'px': px, 'step': step, 'lev': lev},
+        }
 
     # reduceOnly & positionSide
     side_up = (side or '').upper()
@@ -3894,12 +3899,27 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
     try:
         info = self.client.futures_create_order(**params)
         self._invalidate_futures_positions_cache()
-        return {'ok': True,
-                'info': info,
-                'computed': {'qty': qty, 'px': px, 'step': step, 'minQty': minQty, 'minNotional': minNotional},
-                'mode': mode}
+        return {
+            'ok': True,
+            'info': info,
+            'computed': {
+                'qty': qty,
+                'px': px,
+                'step': step,
+                'minQty': minQty,
+                'minNotional': minNotional,
+                'lev': lev,
+            },
+            'mode': mode,
+        }
     except Exception as e:
-        return {'ok': False, 'symbol': sym, 'error': str(e), 'computed': {'qty': qty, 'px': px, 'step': step}, 'mode': mode}
+        return {
+            'ok': False,
+            'symbol': sym,
+            'error': str(e),
+            'computed': {'qty': qty, 'px': px, 'step': step, 'lev': lev},
+            'mode': mode,
+        }
 
 # Unconditionally override to make behavior predictable.
 try:
@@ -4058,9 +4078,27 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
     try:
         order = self.client.futures_create_order(**params)
         self._invalidate_futures_positions_cache()
-        return {'ok': True, 'info': order, 'computed': {'qty': qty, 'px': px, 'step': step, 'minQty': minQty, 'minNotional': minNotional}, 'mode': mode}
+        return {
+            'ok': True,
+            'info': order,
+            'computed': {
+                'qty': qty,
+                'px': px,
+                'step': step,
+                'minQty': minQty,
+                'minNotional': minNotional,
+                'lev': lev,
+            },
+            'mode': mode,
+        }
     except Exception as e:
-        return {'ok': False, 'symbol': sym, 'error': str(e), 'computed': {'qty': qty, 'px': px, 'step': step}, 'mode': mode}
+        return {
+            'ok': False,
+            'symbol': sym,
+            'error': str(e),
+            'computed': {'qty': qty, 'px': px, 'step': step, 'lev': lev},
+            'mode': mode,
+        }
 
 # Override to FLEX behavior by default (auto-bump to exchange minimums)
 try:

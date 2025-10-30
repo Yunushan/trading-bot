@@ -2119,6 +2119,11 @@ class StrategyEngine:
                                         leverage_val = 0
                                 if leverage_val <= 0:
                                     try:
+                                        leverage_val = int(cw.get('leverage') or 0)
+                                    except Exception:
+                                        leverage_val = 0
+                                if leverage_val <= 0:
+                                    try:
                                         leverage_val = int(self.config.get('leverage') or 0)
                                     except Exception:
                                         leverage_val = 0
