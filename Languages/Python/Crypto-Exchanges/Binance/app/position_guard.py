@@ -14,7 +14,7 @@ class IntervalPositionGuard:
     def __init__(self, stale_ttl_sec: Optional[int]=180) -> None:
         self.stale_ttl_sec: int = int(stale_ttl_sec or 180)
         self.ledger: Dict[Tuple[str, str, str], float] = {}
-        self.pending_attempts: Dict[Tuple[str, str], Tuple[float, str]] = {}
+        self.pending_attempts: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
         self.active: Dict[Tuple[str, str], Dict[str, int]] = {}
         self.strict_symbol_side: bool = True  # block across intervals if True
         self._bw = None  # late-attached binance wrapper
@@ -77,10 +77,11 @@ class IntervalPositionGuard:
                 # never block on reconciliation errors
                 pass
 
-    def can_open(self, symbol: str, interval: str, side: str) -> bool:
+    def can_open(self, symbol: str, interval: str, side: str, context: str | None = None) -> bool:
         sym = (symbol or '').upper()
         iv = interval or ''
         sd = (side or '').upper()
+        ctx = str(context) if context is not None else "__legacy__"
         with self._lock:
             self._expire_old_unlocked()
             state = self.active.get((sym, iv), {})
@@ -89,9 +90,13 @@ class IntervalPositionGuard:
                 return False
             if (sym, iv, sd) in self.ledger:
                 return False
-            if (sym, sd) in self.pending_attempts:
-                return False
-            if (sym, opposite) in self.pending_attempts:
+            if context is None:
+                if any(k[0] == sym and k[1] == sd for k in self.pending_attempts):
+                    return False
+            else:
+                if (sym, sd, ctx) in self.pending_attempts:
+                    return False
+            if any(k[0] == sym and k[1] == opposite for k in self.pending_attempts):
                 return False
             for (s, i, ss) in self.ledger.keys():
                 if s == sym and i == iv and ss != sd:
@@ -117,7 +122,8 @@ class IntervalPositionGuard:
             except Exception:
                 pass
             # reserve pending attempt immediately (coalescing window)
-            self.pending_attempts[(sym, sd)] = (time.time(), iv)
+            if context is None:
+                self.pending_attempts[(sym, sd, ctx)] = (time.time(), iv)
             return True
 
     def _record_active(self, sym: str, iv: str, sd: str, delta: int = 0) -> None:
@@ -139,30 +145,37 @@ class IntervalPositionGuard:
             self._record_active(sym, iv, sd, delta=1)
 
     # in-flight coalescer
-    def begin_open(self, symbol: str, interval: str, side: str, ttl: float=45.0) -> bool:
+    def begin_open(self, symbol: str, interval: str, side: str, ttl: float=45.0, context: str | None = None) -> bool:
         sym = (symbol or '').upper()
         iv = interval or ''
         sd = (side or '').upper()
         now = time.time()
+        ctx = str(context) if context is not None else "__legacy__"
         with self._lock:
             self._expire_old_unlocked()
             # purge old attempts
             for k,(ts,_iv) in list(self.pending_attempts.items()):
                 if now - ts > float(ttl):
                     self.pending_attempts.pop(k, None)
-            key = (sym, sd)
+            key = (sym, sd, ctx)
             if key in self.pending_attempts:
+                if context is None:
+                    self.pending_attempts[key] = (now, iv)
+                    return True
                 return False
             self.pending_attempts[key] = (now, iv)
             return True
 
-    def end_open(self, symbol: str, interval: str, side: str, success: bool) -> None:
-        key = ((symbol or '').upper(), (side or '').upper())
+    def end_open(self, symbol: str, interval: str, side: str, success: bool, context: str | None = None) -> None:
+        sym = (symbol or '').upper()
+        sd = (side or '').upper()
+        ctx = str(context) if context is not None else "__legacy__"
+        key = (sym, sd, ctx)
         with self._lock:
             self.pending_attempts.pop(key, None)
             if success:
-                self.ledger[((symbol or '').upper(), interval or '', (side or '').upper())] = time.time()
-                self._record_active((symbol or '').upper(), interval or '', (side or '').upper(), delta=1)
+                self.ledger[(sym, interval or '', sd)] = time.time()
+                self._record_active(sym, interval or '', sd, delta=1)
 
     def mark_closed(self, symbol: str, interval: str, side: str) -> None:
         sym = (symbol or '').upper()

@@ -1844,6 +1844,7 @@ class StrategyEngine:
             if not trigger_labels:
                 trigger_labels = [side.lower()]
             signature = tuple(order_signature or tuple(sorted(trigger_labels)))
+            context_key = f"{side}:{'|'.join(signature) if signature else side}"
             try:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
                 usdt_bal = self.binance.get_total_usdt_value()
@@ -1951,7 +1952,7 @@ class StrategyEngine:
                         return
 
                     if callable(self.can_open_cb):
-                        if not self.can_open_cb(cw['symbol'], cw.get('interval'), side):
+                        if not self.can_open_cb(cw['symbol'], cw.get('interval'), side, context_key):
                             self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {side} already open - skipping.")
                             return
                     # Final sanity check with exchange before opening the new side
@@ -2010,7 +2011,7 @@ class StrategyEngine:
                     guard_obj = getattr(self, "guard", None)
                     if guard_obj and hasattr(guard_obj, "begin_open"):
                         try:
-                            if not guard_obj.begin_open(cw['symbol'], cw.get('interval'), guard_side):
+                            if not guard_obj.begin_open(cw['symbol'], cw.get('interval'), guard_side, context=context_key):
                                 self.log(f"{cw['symbol']}@{cw.get('interval')} guard blocked {guard_side} entry (pending or opposite side active).")
                                 return
                         except Exception:
@@ -2035,7 +2036,7 @@ class StrategyEngine:
                     finally:
                         if guard_obj and hasattr(guard_obj, "end_open"):
                             try:
-                                guard_obj.end_open(cw['symbol'], cw.get('interval'), guard_side, order_success)
+                                guard_obj.end_open(cw['symbol'], cw.get('interval'), guard_side, order_success, context=context_key)
                             except Exception:
                                 pass
                     try:
@@ -2147,6 +2148,7 @@ class StrategyEngine:
                                     'margin_usdt': float(margin_est or 0.0),
                                     'ledger_id': ledger_id,
                                     'trigger_signature': signature_list,
+                                    'trigger_indicators': list(trigger_labels),
                                     'trigger_desc': trigger_desc,
                                 }
                                 if entry_fee_usdt:
