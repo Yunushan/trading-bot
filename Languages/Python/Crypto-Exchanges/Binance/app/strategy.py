@@ -1176,7 +1176,18 @@ class StrategyEngine:
                 except Exception:
                     pass
 
-        last_price = float(df['close'].iloc[-1]) if not df.empty else None
+        last_price = None
+        try:
+            live_price = float(self.binance.get_last_price(cw['symbol']) or 0.0)
+            if live_price > 0.0:
+                last_price = live_price
+        except Exception:
+            last_price = None
+        if last_price is None and not df.empty:
+            try:
+                last_price = float(df['close'].iloc[-1])
+            except Exception:
+                last_price = None
 
         dual_side = False
         if account_type == "FUTURES":
@@ -1844,7 +1855,8 @@ class StrategyEngine:
             if not trigger_labels:
                 trigger_labels = [side.lower()]
             signature = tuple(order_signature or tuple(sorted(trigger_labels)))
-            context_key = f"{side}:{'|'.join(signature) if signature else side}"
+            interval_key = str(cw.get("interval") or "").strip() or "default"
+            context_key = f"{interval_key}:{side}:{'|'.join(signature) if signature else side}"
             try:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
                 usdt_bal = self.binance.get_total_usdt_value()
