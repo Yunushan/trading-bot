@@ -1765,10 +1765,16 @@ class BinanceWrapper:
         self._emergency_close_info = {}
         self._network_offline = False
         self._network_offline_since = 0.0
+        self._network_offline_hits = 0
+        self._network_emergency_dispatched = False
         getcontext().prec = 28
 
     # ---- internal helper for futures methods with recvWindow compatibility
     def _futures_call(self, method_name: str, allow_recv=True, **kwargs):
+        try:
+            self._throttle_request(f"/fapi/{method_name}")
+        except Exception:
+            pass
         method = getattr(self.client, method_name)
         if allow_recv:
             try:
@@ -2178,6 +2184,12 @@ class BinanceWrapper:
                     if last_error:
                         info["error"] = str(last_error)
                     self._emergency_close_info = info
+                try:
+                    self._network_emergency_dispatched = False
+                    self._network_offline_hits = 0
+                    self._network_offline_since = time.time()
+                except Exception:
+                    pass
 
             thread = threading.Thread(target=_worker, name="EmergencyCloseAll", daemon=True)
             self._emergency_closer_thread = thread
@@ -2325,7 +2337,7 @@ class BinanceWrapper:
             return float(self.get_total_usdt_value())
         except Exception:
             return 0.0
-    def get_last_price(self, symbol: str, *, max_age: float = 1.5) -> float:
+    def get_last_price(self, symbol: str, *, max_age: float = 5.0) -> float:
         sym = (symbol or "").upper()
         cache = getattr(self, "_last_price_cache", None)
         if cache is not None and sym:
@@ -2350,20 +2362,41 @@ class BinanceWrapper:
 
     def _handle_network_offline(self, context: str, exc: Exception) -> None:
         now = time.time()
-        message = f"Network connectivity lost while {context}. Emergency close queued."
+        message = f"Network connectivity lost while {context}. Monitoring for recovery."
         already_offline = getattr(self, "_network_offline", False)
         if not already_offline:
             self._network_offline = True
             self._network_offline_since = now
+            self._network_offline_hits = 1
+            self._network_emergency_dispatched = False
             self._last_network_error_log = now
             self._log(message, lvl="error")
         else:
+            self._network_offline_hits = getattr(self, "_network_offline_hits", 0) + 1
             if (now - getattr(self, "_last_network_error_log", 0.0)) > 60.0:
                 self._last_network_error_log = now
                 self._log(message, lvl="warn")
         try:
-            reason = context or "network_offline"
-            self.trigger_emergency_close_all(reason=reason, source="network")
+            offline_since = getattr(self, "_network_offline_since", now)
+            hits = getattr(self, "_network_offline_hits", 0)
+            should_trigger = False
+            if not getattr(self, "_network_emergency_dispatched", False):
+                elapsed = now - offline_since
+                if hits >= 4 or elapsed >= 45.0:
+                    should_trigger = True
+            if should_trigger:
+                elapsed = now - offline_since
+                try:
+                    self._log(
+                        f"Emergency close-all triggered after {hits} offline hits (elapsed {elapsed:.1f}s).",
+                        lvl="warn",
+                    )
+                except Exception:
+                    pass
+                delay = min(180.0, max(30.0, elapsed))
+                self._network_emergency_dispatched = True
+                reason = context or "network_offline"
+                self.trigger_emergency_close_all(reason=reason, source="network", initial_delay=delay)
         except Exception:
             pass
 
@@ -2371,6 +2404,8 @@ class BinanceWrapper:
         if getattr(self, "_network_offline", False):
             self._network_offline = False
             self._network_offline_since = 0.0
+            self._network_offline_hits = 0
+            self._network_emergency_dispatched = False
             try:
                 self._log("Network connectivity restored.", lvl="info")
             except Exception:

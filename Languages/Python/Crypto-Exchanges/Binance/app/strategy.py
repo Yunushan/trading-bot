@@ -2290,13 +2290,19 @@ class StrategyEngine:
             parts = reason_txt.split(":", 2)
             if len(parts) >= 2:
                 reason_txt = parts[-1] or "network_offline"
+        emergency_requested = False
+        shared = getattr(self, "binance", None)
+        if shared is not None:
+            emergency_requested = bool(getattr(shared, "_network_emergency_dispatched", False))
         if (now - getattr(self, "_last_network_log", 0.0)) >= 8.0:
             self._last_network_log = now
             try:
-                self.log(f"{sym}@{interval} network offline ({reason_txt}); emergency close queued; retrying in {backoff:.0f}s.")
+                note = "emergency close queued" if emergency_requested else "monitoring"
+                self.log(f"{sym}@{interval} network offline ({reason_txt}); {note}; retrying in {backoff:.0f}s.")
             except Exception:
                 pass
-        self._trigger_emergency_close(sym, interval, reason_txt)
+        if emergency_requested:
+            self._trigger_emergency_close(sym, interval, reason_txt)
         return backoff
 
     def run_loop(self):

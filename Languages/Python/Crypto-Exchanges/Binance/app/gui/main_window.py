@@ -2625,7 +2625,7 @@ class MainWindow(QtWidgets.QWidget):
                         backend_val = controls.get("connector_backend")
                     if not backend_val:
                         if kind == "runtime":
-                            backend_val = self._runtime_connector_backend(suppress_refresh=current_depth > 0)
+                            backend_val = self._runtime_connector_backend(suppress_refresh=True)
                         else:
                             if current_depth > 0:
                                 backend_val = _normalize_connector_backend(
@@ -4954,7 +4954,7 @@ class MainWindow(QtWidgets.QWidget):
         return backend
 
     def _create_binance_wrapper(self, *, api_key: str, api_secret: str, mode: str, account_type: str, connector_backend: str | None = None, **kwargs) -> BinanceWrapper:
-        backend = connector_backend or self._runtime_connector_backend()
+        backend = connector_backend or self._runtime_connector_backend(suppress_refresh=True)
         return BinanceWrapper(
             api_key,
             api_secret,
@@ -6545,7 +6545,7 @@ class MainWindow(QtWidgets.QWidget):
             self.api_secret_edit.text().strip(),
             self.mode_combo.currentText(),
             self.account_combo.currentText(),
-            connector_backend=self._runtime_connector_backend(),
+            connector_backend=self._runtime_connector_backend(suppress_refresh=True),
         )
         # Wire thread-safe control signals
         self.req_pos_start.connect(self._pos_worker.start_with_interval)
@@ -8901,6 +8901,13 @@ def apply_futures_modes(self):
 
 
 def start_strategy(self):
+    if getattr(self, '_is_stopping_engines', False):
+        self.log('Stop in progress; cannot start new engines.')
+        return
+    shared = getattr(self, 'shared_binance', None)
+    if shared is not None and getattr(shared, '_emergency_close_requested', False):
+        self.log('Emergency close-all in progress; wait for it to finish before starting.')
+        return
     started = 0
     try:
         default_loop_override = self._normalize_loop_override(self.loop_edit.text() if hasattr(self, "loop_edit") else None)
@@ -9006,7 +9013,7 @@ def start_strategy(self):
             self.log("No valid symbol/interval overrides found.")
             return
 
-        connector_name = self._connector_label_text(self._runtime_connector_backend())
+        connector_name = self._connector_label_text(self._runtime_connector_backend(suppress_refresh=True))
         self.log(f"Starting strategy with {len(combos)} symbol/interval loops. Connector: {connector_name}.")
 
         try:
@@ -9228,6 +9235,17 @@ def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
         else:
             self.log("No engines to stop.")
 
+        shared = getattr(self, "shared_binance", None)
+        if shared is not None:
+            try:
+                setattr(shared, "_emergency_close_requested", False)
+                setattr(shared, "_network_emergency_dispatched", False)
+                setattr(shared, "_network_offline_hits", 0)
+                setattr(shared, "_network_offline", False)
+                setattr(shared, "_network_offline_since", 0.0)
+            except Exception:
+                pass
+
         if close_positions:
             try:
                 self._close_all_positions_blocking()
@@ -9400,7 +9418,7 @@ def load_config(self):
             if idx_backtest_account is not None and idx_backtest_account >= 0:
                 with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
                     self.backtest_account_mode_combo.setCurrentIndex(idx_backtest_account)
-            runtime_backend = self._runtime_connector_backend()
+            runtime_backend = self._runtime_connector_backend(suppress_refresh=True)
             if hasattr(self, "connector_combo") and self.connector_combo is not None:
                 idx_runtime_connector = self.connector_combo.findData(runtime_backend)
                 if idx_runtime_connector is not None and idx_runtime_connector >= 0:
@@ -9890,7 +9908,7 @@ def _mw_reconfigure_positions_worker(self, symbols=None):
             mode=self.mode_combo.currentText(),
             account_type=self.account_combo.currentText(),
             symbols=target_symbols or None,
-            connector_backend=self._runtime_connector_backend(),
+            connector_backend=self._runtime_connector_backend(suppress_refresh=True),
         )
         setattr(self, "_pos_symbol_filter", target_symbols)
     except Exception:
@@ -10093,7 +10111,7 @@ def _mw_trade_mux(self, evt: dict):
 
 def _mw_on_trade_signal(self, order_info: dict):
     try:
-        connector_name = self._connector_label_text(self._runtime_connector_backend())
+        connector_name = self._connector_label_text(self._runtime_connector_backend(suppress_refresh=True))
     except Exception:
         connector_name = "Unknown"
     info_with_connector = dict(order_info or {})
