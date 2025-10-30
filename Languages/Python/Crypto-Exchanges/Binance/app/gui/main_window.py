@@ -1229,6 +1229,8 @@ class MainWindow(QtWidgets.QWidget):
         self._backtest_futures_widgets = []
         self.config.setdefault("runtime_symbol_interval_pairs", [])
         self.config.setdefault("backtest_symbol_interval_pairs", [])
+        self.config.setdefault("debug_override_verbose", True)
+        self._override_refresh_depth = 0
         self.symbol_interval_table = None
         self.pair_add_btn = None
         self.pair_remove_btn = None
@@ -1275,6 +1277,7 @@ class MainWindow(QtWidgets.QWidget):
         self._starter_forex_cards = {}
         self._code_tab_selected_market = self.config.get("code_market") or "crypto"
         self._ensure_runtime_connector_for_account(self.config.get("account_type") or "Futures", force_default=False)
+        self._override_debug_verbose = bool(self.config.get("debug_override_verbose", False))
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
@@ -1571,7 +1574,7 @@ class MainWindow(QtWidgets.QWidget):
                     "loop_interval_override": self.loop_edit.text() if hasattr(self, "loop_edit") else "",
                     "add_only": bool(self.cb_add_only.isChecked()) if hasattr(self, "cb_add_only") else None,
                     "stop_loss": stop_cfg,
-                    "connector_backend": self._runtime_connector_backend(),
+                    "connector_backend": self._runtime_connector_backend(suppress_refresh=True),
                 }
                 leverage_val = None
                 if hasattr(self, "leverage_spin"):
@@ -1636,6 +1639,189 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
         return {}
+
+    def _prepare_controls_snapshot(self, kind: str, snapshot) -> dict:
+        prepared: dict[str, object] = {}
+        if isinstance(snapshot, dict):
+            try:
+                prepared = copy.deepcopy(snapshot)
+            except Exception:
+                prepared = dict(snapshot)
+        else:
+            prepared = {}
+
+        def _runtime_default(name: str, getter, fallback=None):
+            if name in prepared and prepared.get(name) not in (None, ""):
+                return prepared[name]
+            try:
+                value = getter()
+                if value not in (None, ""):
+                    prepared[name] = value
+                    return value
+            except Exception:
+                pass
+            if fallback not in (None, ""):
+                prepared[name] = fallback
+                return fallback
+            return prepared.get(name)
+
+        if kind == "runtime":
+            _runtime_default(
+                "side",
+                lambda: self._resolve_dashboard_side() if hasattr(self, "_resolve_dashboard_side") else self.config.get("side"),
+                fallback=str(self.config.get("side") or "BOTH").upper(),
+            )
+            _runtime_default(
+                "position_pct",
+                lambda: float(self.pospct_spin.value()) if hasattr(self, "pospct_spin") else float(self.config.get("position_pct", 0.0)),
+                fallback=float(self.config.get("position_pct", 0.0)),
+            )
+            units_val = prepared.get("position_pct_units") or self.config.get("position_pct_units") or "percent"
+            try:
+                prepared["position_pct_units"] = self._normalize_position_pct_units(units_val)
+            except Exception:
+                prepared["position_pct_units"] = "percent"
+            loop_val = prepared.get("loop_interval_override")
+            if not loop_val and hasattr(self, "loop_edit"):
+                try:
+                    loop_val = self.loop_edit.text()
+                except Exception:
+                    loop_val = None
+            loop_val = self._normalize_loop_override(loop_val)
+            if loop_val:
+                prepared["loop_interval_override"] = loop_val
+            _runtime_default(
+                "add_only",
+                lambda: bool(self.cb_add_only.isChecked()) if hasattr(self, "cb_add_only") else self.config.get("add_only", False),
+                fallback=bool(self.config.get("add_only", False)),
+            )
+            _runtime_default(
+                "leverage",
+                lambda: int(self.leverage_spin.value()) if hasattr(self, "leverage_spin") else int(self.config.get("leverage", 1)),
+                fallback=int(self.config.get("leverage", 1)),
+            )
+            account_mode_val = prepared.get("account_mode")
+            if not account_mode_val and hasattr(self, "account_mode_combo"):
+                try:
+                    account_mode_val = self.account_mode_combo.currentData() or self.account_mode_combo.currentText()
+                except Exception:
+                    account_mode_val = None
+            if not account_mode_val:
+                account_mode_val = self.config.get("account_mode")
+            if account_mode_val:
+                try:
+                    prepared["account_mode"] = self._normalize_account_mode(account_mode_val)
+                except Exception:
+                    prepared["account_mode"] = self.config.get("account_mode")
+            stop_cfg = prepared.get("stop_loss")
+            if not isinstance(stop_cfg, dict):
+                prepared["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
+            connector_val = prepared.get("connector_backend")
+            if not connector_val:
+                try:
+                    connector_val = self._runtime_connector_backend(suppress_refresh=True)
+                except Exception:
+                    connector_val = self.config.get("connector_backend")
+            prepared["connector_backend"] = _normalize_connector_backend(connector_val)
+        elif kind == "backtest":
+            back_cfg = self.backtest_config if isinstance(getattr(self, "backtest_config", None), dict) else {}
+            _runtime_default(
+                "logic",
+                lambda: self.backtest_logic_combo.currentText() if hasattr(self, "backtest_logic_combo") else back_cfg.get("logic"),
+                fallback=back_cfg.get("logic"),
+            )
+            _runtime_default(
+                "capital",
+                lambda: float(self.backtest_capital_spin.value()) if hasattr(self, "backtest_capital_spin") else float(back_cfg.get("capital", 0.0)),
+                fallback=float(back_cfg.get("capital", 0.0)),
+            )
+            _runtime_default(
+                "position_pct",
+                lambda: float(self.backtest_pospct_spin.value()) if hasattr(self, "backtest_pospct_spin") else float(back_cfg.get("position_pct", 0.0)),
+                fallback=float(back_cfg.get("position_pct", 0.0)),
+            )
+            units_val = prepared.get("position_pct_units") or back_cfg.get("position_pct_units") or "percent"
+            try:
+                prepared["position_pct_units"] = self._normalize_position_pct_units(units_val)
+            except Exception:
+                prepared["position_pct_units"] = "percent"
+            _runtime_default(
+                "side",
+                lambda: self.backtest_side_combo.currentText() if hasattr(self, "backtest_side_combo") else back_cfg.get("side"),
+                fallback=back_cfg.get("side"),
+            )
+            _runtime_default(
+                "margin_mode",
+                lambda: self.backtest_margin_mode_combo.currentText() if hasattr(self, "backtest_margin_mode_combo") else back_cfg.get("margin_mode"),
+                fallback=back_cfg.get("margin_mode"),
+            )
+            _runtime_default(
+                "position_mode",
+                lambda: self.backtest_position_mode_combo.currentText() if hasattr(self, "backtest_position_mode_combo") else back_cfg.get("position_mode"),
+                fallback=back_cfg.get("position_mode"),
+            )
+            _runtime_default(
+                "assets_mode",
+                lambda: self.backtest_assets_mode_combo.currentData() if hasattr(self, "backtest_assets_mode_combo") else back_cfg.get("assets_mode"),
+                fallback=back_cfg.get("assets_mode"),
+            )
+            account_mode_val = prepared.get("account_mode")
+            if not account_mode_val and hasattr(self, "backtest_account_mode_combo"):
+                try:
+                    account_mode_val = self.backtest_account_mode_combo.currentData() or self.backtest_account_mode_combo.currentText()
+                except Exception:
+                    account_mode_val = None
+            if not account_mode_val:
+                account_mode_val = back_cfg.get("account_mode")
+            if account_mode_val:
+                try:
+                    prepared["account_mode"] = self._normalize_account_mode(account_mode_val)
+                except Exception:
+                    prepared["account_mode"] = account_mode_val
+            loop_val = prepared.get("loop_interval_override")
+            if not loop_val and hasattr(self, "backtest_loop_edit"):
+                try:
+                    loop_val = self.backtest_loop_edit.text()
+                except Exception:
+                    loop_val = None
+            loop_val = self._normalize_loop_override(loop_val)
+            if loop_val:
+                prepared["loop_interval_override"] = loop_val
+            _runtime_default(
+                "leverage",
+                lambda: int(self.backtest_leverage_spin.value()) if hasattr(self, "backtest_leverage_spin") else int(back_cfg.get("leverage", 1)),
+                fallback=int(back_cfg.get("leverage", 1)),
+            )
+            stop_cfg = prepared.get("stop_loss")
+            if not isinstance(stop_cfg, dict):
+                prepared["stop_loss"] = normalize_stop_loss_dict(back_cfg.get("stop_loss"))
+            connector_val = prepared.get("connector_backend")
+            if not connector_val:
+                try:
+                    connector_val = self._backtest_connector_backend()
+                except Exception:
+                    connector_val = back_cfg.get("connector_backend")
+            prepared["connector_backend"] = _normalize_connector_backend(connector_val)
+        return prepared
+
+    def _override_debug_enabled(self) -> bool:
+        return bool(getattr(self, "_override_debug_verbose", False) or self.config.get("debug_override_verbose", False))
+
+    def _log_override_debug(self, kind: str, message: str, *, payload: dict | None = None) -> None:
+        if not self._override_debug_enabled():
+            return
+        try:
+            suffix = ""
+            if payload:
+                try:
+                    import json
+
+                    suffix = f" :: {json.dumps(payload, default=str, ensure_ascii=False)}"
+                except Exception:
+                    suffix = f" :: {payload}"
+            self.log(f"[Override-{kind}] {message}{suffix}")
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_position_pct_units(value) -> str:
@@ -2324,149 +2510,190 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             return []
 
-    def _refresh_symbol_interval_pairs(self, kind: str = "runtime"):
-        ctx = self._override_ctx(kind)
-        table = ctx.get("table")
-        if table is None:
-            return
-        column_map = ctx.get("column_map") or {}
-        symbol_col = column_map.get("Symbol", 0)
-        interval_col = column_map.get("Interval", 1)
-        indicator_col = column_map.get("Indicators")
-        loop_col = column_map.get("Loop")
-        leverage_col = column_map.get("Leverage")
-        strategy_col = column_map.get("Strategy Controls")
-        connector_col = column_map.get("Connector")
-        stoploss_col = column_map.get("Stop-Loss")
-        header = table.horizontalHeader()
+    def _refresh_symbol_interval_pairs(self, kind: str = "runtime", _depth: int = 0):
+        current_depth = getattr(self, "_override_refresh_depth", 0)
+        setattr(self, "_override_refresh_depth", current_depth + 1)
         try:
-            sort_column = header.sortIndicatorSection()
-            sort_order = header.sortIndicatorOrder()
-            if sort_column is None or sort_column < 0:
+            ctx = self._override_ctx(kind)
+            table = ctx.get("table")
+            if table is None:
+                return
+            self._log_override_debug(kind, "Refreshing symbol/interval table start.")
+            column_map = ctx.get("column_map") or {}
+            symbol_col = column_map.get("Symbol", 0)
+            interval_col = column_map.get("Interval", 1)
+            indicator_col = column_map.get("Indicators")
+            loop_col = column_map.get("Loop")
+            leverage_col = column_map.get("Leverage")
+            strategy_col = column_map.get("Strategy Controls")
+            connector_col = column_map.get("Connector")
+            stoploss_col = column_map.get("Stop-Loss")
+            header = table.horizontalHeader()
+            try:
+                sort_column = header.sortIndicatorSection()
+                sort_order = header.sortIndicatorOrder()
+                if sort_column is None or sort_column < 0:
+                    sort_column = 0
+                    sort_order = QtCore.Qt.SortOrder.AscendingOrder
+            except Exception:
                 sort_column = 0
                 sort_order = QtCore.Qt.SortOrder.AscendingOrder
-        except Exception:
-            sort_column = 0
-            sort_order = QtCore.Qt.SortOrder.AscendingOrder
-        table.setSortingEnabled(False)
-        pairs_cfg = self._override_config_list(kind) or []
-        table.setRowCount(0)
-        seen = set()
-        cleaned = []
-        for entry in pairs_cfg:
-            sym = str((entry or {}).get('symbol') or '').strip().upper()
-            iv = str((entry or {}).get('interval') or '').strip()
-            if not sym or not iv:
-                continue
-            indicators_raw = entry.get('indicators')
-            indicator_values = _normalize_indicator_values(indicators_raw)
-            leverage_val = None
-            if isinstance(entry.get('strategy_controls'), dict):
-                lev_ctrl = entry['strategy_controls'].get('leverage')
-                if lev_ctrl is not None:
-                    try:
-                        leverage_val = max(1, int(lev_ctrl))
-                    except Exception:
-                        leverage_val = None
-            if leverage_val is None:
-                lev_entry_raw = entry.get("leverage")
-                if lev_entry_raw is not None:
-                    try:
-                        leverage_val = max(1, int(lev_entry_raw))
-                    except Exception:
-                        leverage_val = None
-            key = (sym, iv, tuple(indicator_values), leverage_val)
-            if key in seen:
-                continue
-            seen.add(key)
-            controls = self._normalize_strategy_controls(kind, entry.get("strategy_controls"))
-            entry_clean = {'symbol': sym, 'interval': iv}
-            if indicator_values:
-                entry_clean['indicators'] = list(indicator_values)
-            loop_val = entry.get("loop_interval_override")
-            if not loop_val and isinstance(controls, dict):
-                loop_val = controls.get("loop_interval_override")
-            loop_val = self._normalize_loop_override(loop_val)
-            if loop_val:
-                entry_clean["loop_interval_override"] = loop_val
-            if controls:
-                entry_clean['strategy_controls'] = controls
-                stop_cfg = controls.get("stop_loss")
-                if isinstance(stop_cfg, dict):
-                    entry_clean["stop_loss"] = normalize_stop_loss_dict(stop_cfg)
-                backend_ctrl = controls.get("connector_backend")
-                if backend_ctrl:
-                    entry_clean["connector_backend"] = backend_ctrl
-            if leverage_val is not None:
-                entry_clean["leverage"] = leverage_val
-                if isinstance(controls, dict):
-                    controls["leverage"] = leverage_val
-            if "stop_loss" not in entry_clean and entry.get("stop_loss"):
-                entry_clean["stop_loss"] = normalize_stop_loss_dict(entry.get("stop_loss"))
-            cleaned.append(entry_clean)
-            row = table.rowCount()
-            table.insertRow(row)
-            table.setItem(row, symbol_col, QtWidgets.QTableWidgetItem(sym))
-            table.setItem(row, interval_col, QtWidgets.QTableWidgetItem(iv))
-            if indicator_col is not None:
-                table.setItem(row, indicator_col, QtWidgets.QTableWidgetItem(_format_indicator_list(indicator_values)))
-            if loop_col is not None:
-                loop_display = entry_clean.get("loop_interval_override") or "-"
-                table.setItem(row, loop_col, QtWidgets.QTableWidgetItem(loop_display))
-            if leverage_col is not None:
-                leverage_display = f"{leverage_val}x" if leverage_val is not None else "-"
-                table.setItem(row, leverage_col, QtWidgets.QTableWidgetItem(leverage_display))
-            if strategy_col is not None:
-                summary = self._format_strategy_controls_summary(kind, controls)
-                table.setItem(row, strategy_col, QtWidgets.QTableWidgetItem(summary))
-            if connector_col is not None:
-                backend_val = None
-                if isinstance(controls, dict):
-                    backend_val = controls.get("connector_backend")
-                if not backend_val:
-                    backend_val = self._runtime_connector_backend() if kind == "runtime" else self._backtest_connector_backend()
-                connector_display = self._connector_label_text(backend_val) if backend_val else "-"
-                table.setItem(row, connector_col, QtWidgets.QTableWidgetItem(connector_display))
-            if stoploss_col is not None:
-                stop_label = "No"
-                stop_cfg_display = None
-                if isinstance(controls, dict):
-                    stop_cfg_display = controls.get("stop_loss")
-                if stop_cfg_display is None:
-                    stop_cfg_display = entry_clean.get("stop_loss")
-                if isinstance(stop_cfg_display, dict) and stop_cfg_display.get("enabled"):
-                    scope_txt = str(stop_cfg_display.get("scope") or "").replace("_", "-")
-                    stop_label = f"Yes ({scope_txt or 'per-trade'})"
-                table.setItem(row, stoploss_col, QtWidgets.QTableWidgetItem(stop_label))
+            table.setSortingEnabled(False)
+            pairs_cfg = self._override_config_list(kind) or []
+            self._log_override_debug(kind, "Refresh loaded config list.", payload={"count": len(pairs_cfg)})
+            snapshot_pairs = []
             try:
-                table.item(row, symbol_col).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
+                snapshot_pairs = [copy.deepcopy(entry) for entry in pairs_cfg if isinstance(entry, dict)]
             except Exception:
-                pass
-        cfg_key = ctx.get("config_key")
-        if cfg_key:
-            self.config[cfg_key] = cleaned
-            if kind == "backtest":
+                snapshot_pairs = [dict(entry) for entry in pairs_cfg if isinstance(entry, dict)]
+            table.setRowCount(0)
+            seen = set()
+            cleaned = []
+            for entry in pairs_cfg:
+                self._log_override_debug(kind, "Processing existing override entry.", payload={"entry": entry})
+                sym = str((entry or {}).get('symbol') or '').strip().upper()
+                iv = str((entry or {}).get('interval') or '').strip()
+                if not sym or not iv:
+                    self._log_override_debug(kind, "Skipping entry: missing symbol or interval.", payload={"entry": entry})
+                    continue
+                indicators_raw = entry.get('indicators')
+                indicator_values = _normalize_indicator_values(indicators_raw)
+                leverage_val = None
+                if isinstance(entry.get('strategy_controls'), dict):
+                    lev_ctrl = entry['strategy_controls'].get('leverage')
+                    if lev_ctrl is not None:
+                        try:
+                            leverage_val = max(1, int(lev_ctrl))
+                        except Exception:
+                            leverage_val = None
+                if leverage_val is None:
+                    lev_entry_raw = entry.get("leverage")
+                    if lev_entry_raw is not None:
+                        try:
+                            leverage_val = max(1, int(lev_entry_raw))
+                        except Exception:
+                            leverage_val = None
+                key = (sym, iv, tuple(indicator_values), leverage_val)
+                if key in seen:
+                    self._log_override_debug(kind, "Skipping duplicate entry.", payload={"key": key})
+                    continue
+                seen.add(key)
+                controls = self._normalize_strategy_controls(kind, entry.get("strategy_controls"))
+                self._log_override_debug(kind, "Normalized controls for entry.", payload={"symbol": sym, "interval": iv, "controls": controls})
+                entry_clean = {'symbol': sym, 'interval': iv}
+                if indicator_values:
+                    entry_clean['indicators'] = list(indicator_values)
+                loop_val = entry.get("loop_interval_override")
+                if not loop_val and isinstance(controls, dict):
+                    loop_val = controls.get("loop_interval_override")
+                loop_val = self._normalize_loop_override(loop_val)
+                if loop_val:
+                    entry_clean["loop_interval_override"] = loop_val
+                if controls:
+                    entry_clean['strategy_controls'] = controls
+                    stop_cfg = controls.get("stop_loss")
+                    if isinstance(stop_cfg, dict):
+                        entry_clean["stop_loss"] = normalize_stop_loss_dict(stop_cfg)
+                    backend_ctrl = controls.get("connector_backend")
+                    if backend_ctrl:
+                        entry_clean["connector_backend"] = backend_ctrl
+                if leverage_val is not None:
+                    entry_clean["leverage"] = leverage_val
+                    if isinstance(controls, dict):
+                        controls["leverage"] = leverage_val
+                if "stop_loss" not in entry_clean and entry.get("stop_loss"):
+                    entry_clean["stop_loss"] = normalize_stop_loss_dict(entry.get("stop_loss"))
+                cleaned.append(entry_clean)
+                row = table.rowCount()
+                table.insertRow(row)
+                table.setItem(row, symbol_col, QtWidgets.QTableWidgetItem(sym))
+                table.setItem(row, interval_col, QtWidgets.QTableWidgetItem(iv))
+                if indicator_col is not None:
+                    table.setItem(row, indicator_col, QtWidgets.QTableWidgetItem(_format_indicator_list(indicator_values)))
+                if loop_col is not None:
+                    loop_display = entry_clean.get("loop_interval_override") or "-"
+                    table.setItem(row, loop_col, QtWidgets.QTableWidgetItem(loop_display))
+                if leverage_col is not None:
+                    leverage_display = f"{leverage_val}x" if leverage_val is not None else "-"
+                    table.setItem(row, leverage_col, QtWidgets.QTableWidgetItem(leverage_display))
+                if strategy_col is not None:
+                    summary = self._format_strategy_controls_summary(kind, controls)
+                    table.setItem(row, strategy_col, QtWidgets.QTableWidgetItem(summary))
+                if connector_col is not None:
+                    backend_val = None
+                    if isinstance(controls, dict):
+                        backend_val = controls.get("connector_backend")
+                    if not backend_val:
+                        if kind == "runtime":
+                            backend_val = self._runtime_connector_backend(suppress_refresh=current_depth > 0)
+                        else:
+                            if current_depth > 0:
+                                backend_val = _normalize_connector_backend(
+                                    (self.backtest_config or {}).get("connector_backend")
+                                    or self.config.get("backtest", {}).get("connector_backend")
+                                )
+                            else:
+                                backend_val = self._backtest_connector_backend()
+                    connector_display = self._connector_label_text(backend_val) if backend_val else "-"
+                    table.setItem(row, connector_col, QtWidgets.QTableWidgetItem(connector_display))
+                if stoploss_col is not None:
+                    stop_label = "No"
+                    stop_cfg_display = None
+                    if isinstance(controls, dict):
+                        stop_cfg_display = controls.get("stop_loss")
+                    if stop_cfg_display is None:
+                        stop_cfg_display = entry_clean.get("stop_loss")
+                    if isinstance(stop_cfg_display, dict) and stop_cfg_display.get("enabled"):
+                        scope_txt = str(stop_cfg_display.get("scope") or "").replace("_", "-")
+                        stop_label = f"Yes ({scope_txt or 'per-trade'})"
+                    table.setItem(row, stoploss_col, QtWidgets.QTableWidgetItem(stop_label))
                 try:
-                    self.backtest_config[cfg_key] = list(cleaned)
+                    table.item(row, symbol_col).setData(QtCore.Qt.ItemDataRole.UserRole, entry_clean)
                 except Exception:
                     pass
-        table.setSortingEnabled(True)
-        try:
-            if sort_column is not None and sort_column >= 0:
-                table.sortItems(sort_column, sort_order)
-        except Exception:
-            pass
+                self._log_override_debug(kind, "Row populated.", payload={"row": row, "entry_clean": entry_clean})
+            cfg_key = ctx.get("config_key")
+            if cfg_key and not cleaned and snapshot_pairs and _depth == 0:
+                self._log_override_debug(
+                    kind,
+                    "Refresh produced no rows; retrying with snapshot fallback.",
+                    payload={"snapshot_len": len(snapshot_pairs)},
+                )
+                try:
+                    self.config[cfg_key] = snapshot_pairs
+                except Exception:
+                    self.config[cfg_key] = list(snapshot_pairs)
+                return self._refresh_symbol_interval_pairs(kind, _depth=_depth + 1)
+            if cfg_key:
+                self.config[cfg_key] = cleaned
+                if kind == "backtest":
+                    try:
+                        self.backtest_config[cfg_key] = list(cleaned)
+                    except Exception:
+                        pass
+            self._log_override_debug(kind, "Refresh completed.", payload={"cleaned_count": len(cleaned)})
+            table.setSortingEnabled(True)
+            try:
+                if sort_column is not None and sort_column >= 0:
+                    table.sortItems(sort_column, sort_order)
+            except Exception:
+                pass
+        finally:
+            setattr(self, "_override_refresh_depth", current_depth)
 
     def _add_selected_symbol_interval_pairs(self, kind: str = "runtime"):
         ctx = self._override_ctx(kind)
         symbol_list = ctx.get("symbol_list")
         interval_list = ctx.get("interval_list")
         if symbol_list is None or interval_list is None:
+            self._log_override_debug(kind, "Add-selected aborted: missing list widgets.", payload={"ctx_keys": list(ctx.keys())})
             return
         try:
+            self._log_override_debug(kind, "Add-selected triggered.")
             symbol_items = []
             try:
                 symbol_items = [item for item in symbol_list.selectedItems() if item]
+                self._log_override_debug(kind, "Collected selected symbol items via selectedItems().", payload={"count": len(symbol_items)})
             except Exception:
                 symbol_items = []
             if not symbol_items:
@@ -2474,6 +2701,7 @@ class MainWindow(QtWidgets.QWidget):
                     item = symbol_list.item(i)
                     if item and item.isSelected():
                         symbol_items.append(item)
+                self._log_override_debug(kind, "Fallback symbol scan after selectedItems() empty.", payload={"count": len(symbol_items)})
             symbols = []
             for item in symbol_items:
                 try:
@@ -2483,10 +2711,12 @@ class MainWindow(QtWidgets.QWidget):
                 text_norm = str(text or "").strip().upper()
                 if text_norm:
                     symbols.append(text_norm)
+            self._log_override_debug(kind, "Normalized symbols.", payload={"symbols": symbols})
 
             interval_items = []
             try:
                 interval_items = [item for item in interval_list.selectedItems() if item]
+                self._log_override_debug(kind, "Collected selected interval items via selectedItems().", payload={"count": len(interval_items)})
             except Exception:
                 interval_items = []
             if not interval_items:
@@ -2494,6 +2724,7 @@ class MainWindow(QtWidgets.QWidget):
                     item = interval_list.item(i)
                     if item and item.isSelected():
                         interval_items.append(item)
+                self._log_override_debug(kind, "Fallback interval scan after selectedItems() empty.", payload={"count": len(interval_items)})
             intervals = []
             for item in interval_items:
                 try:
@@ -2503,12 +2734,14 @@ class MainWindow(QtWidgets.QWidget):
                 text_norm = str(text or "").strip()
                 if text_norm:
                     intervals.append(text_norm)
+            self._log_override_debug(kind, "Normalized intervals.", payload={"intervals": intervals})
 
             if symbols:
                 symbols = list(dict.fromkeys(symbols))
             if intervals:
                 intervals = list(dict.fromkeys(intervals))
             if not symbols or not intervals:
+                self._log_override_debug(kind, "Add-selected aborted: missing symbols or intervals.", payload={"symbols": symbols, "intervals": intervals})
                 try:
                     self.log("Select at least one symbol and interval before adding overrides.")
                 except Exception:
@@ -2520,6 +2753,7 @@ class MainWindow(QtWidgets.QWidget):
                 sym_existing = str(entry.get('symbol') or '').strip().upper()
                 iv_existing = str(entry.get('interval') or '').strip()
                 if not (sym_existing and iv_existing):
+                    self._log_override_debug(kind, "Skipping existing entry missing symbol/interval.", payload={"entry": entry})
                     continue
                 indicators_existing = entry.get('indicators')
                 if isinstance(indicators_existing, (list, tuple)):
@@ -2528,16 +2762,22 @@ class MainWindow(QtWidgets.QWidget):
                     indicators_existing = []
                 key = (sym_existing, iv_existing, tuple(indicators_existing))
                 existing_keys[key] = entry
-            controls_snapshot = self._collect_strategy_controls(kind)
+            self._log_override_debug(kind, "Prepared existing key map.", payload={"existing_count": len(existing_keys)})
+            controls_snapshot_raw = self._collect_strategy_controls(kind)
+            self._log_override_debug(kind, "Raw strategy controls collected.", payload={"raw": controls_snapshot_raw})
+            controls_snapshot = self._prepare_controls_snapshot(kind, controls_snapshot_raw)
+            self._log_override_debug(kind, "Prepared strategy controls snapshot.", payload={"prepared": controls_snapshot})
             changed = False
             sel_indicators = self._get_selected_indicator_keys(kind)
             indicators_value = sorted({str(k).strip() for k in sel_indicators if str(k).strip()}) if sel_indicators else []
             indicators_tuple = tuple(indicators_value)
             for sym in symbols:
                 if not sym:
+                    self._log_override_debug(kind, "Skipping empty symbol after normalization.")
                     continue
                 for iv in intervals:
                     if not iv:
+                        self._log_override_debug(kind, "Skipping empty interval after normalization.", payload={"symbol": sym})
                         continue
                     key = (sym, iv, indicators_tuple)
                     if key in existing_keys:
@@ -2551,6 +2791,7 @@ class MainWindow(QtWidgets.QWidget):
                         else:
                             entry.pop('strategy_controls', None)
                         changed = True
+                        self._log_override_debug(kind, "Updated existing override entry.", payload={"symbol": sym, "interval": iv, "indicators": indicators_value})
                         continue
                     new_entry = {'symbol': sym, 'interval': iv}
                     if indicators_value:
@@ -2560,7 +2801,9 @@ class MainWindow(QtWidgets.QWidget):
                     pairs_cfg.append(new_entry)
                     existing_keys[key] = new_entry
                     changed = True
+                    self._log_override_debug(kind, "Appended new override entry.", payload={"symbol": sym, "interval": iv, "indicators": indicators_value})
             if changed:
+                self._log_override_debug(kind, "Changes detected, refreshing table.", payload={"total_entries": len(pairs_cfg)})
                 self._refresh_symbol_interval_pairs(kind)
             for widget in (symbol_list, interval_list):
                 try:
@@ -2570,8 +2813,14 @@ class MainWindow(QtWidgets.QWidget):
                             item.setSelected(False)
                 except Exception:
                     pass
+            self._log_override_debug(kind, "Add-selected completed.", payload={"final_entries": len(self.config.get(ctx.get("config_key"), []))})
         except Exception:
-            pass
+            try:
+                tb_text = traceback.format_exc()
+                self._log_override_debug(kind, "Exception while adding overrides.", payload={"traceback": tb_text})
+                self.log(f"Failed to add symbol/interval override: {tb_text}")
+            except Exception:
+                pass
 
     def _remove_selected_symbol_interval_pairs(self, kind: str = "runtime"):
         ctx = self._override_ctx(kind)
@@ -4654,7 +4903,7 @@ class MainWindow(QtWidgets.QWidget):
             return "Portfolio Margin"
         return "Classic Trading"
 
-    def _ensure_runtime_connector_for_account(self, account_type: str, *, force_default: bool = False) -> str:
+    def _ensure_runtime_connector_for_account(self, account_type: str, *, force_default: bool = False, suppress_refresh: bool = False) -> str:
         account_key = "FUTURES" if str(account_type or "Futures").upper().startswith("FUT") else "SPOT"
         allowed = FUTURES_CONNECTOR_KEYS if account_key == "FUTURES" else SPOT_CONNECTOR_KEYS
         recommended = _recommended_connector_for_key(account_key)
@@ -4679,12 +4928,13 @@ class MainWindow(QtWidgets.QWidget):
                 self.connector_combo.setCurrentIndex(idx)
                 if blocker is not None:
                     del blocker
-        self._update_connector_labels()
+        if not suppress_refresh:
+            self._update_connector_labels()
         return self.config.get("connector_backend", current_backend)
 
-    def _runtime_connector_backend(self) -> str:
+    def _runtime_connector_backend(self, *, suppress_refresh: bool = False) -> str:
         account_type = str(self.config.get("account_type", "Futures") or "Futures")
-        return self._ensure_runtime_connector_for_account(account_type, force_default=False)
+        return self._ensure_runtime_connector_for_account(account_type, force_default=False, suppress_refresh=suppress_refresh)
 
     def _backtest_connector_backend(self) -> str:
         source_text = ""
