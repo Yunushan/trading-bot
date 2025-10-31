@@ -65,6 +65,8 @@ class StrategyEngine:
     _ORDER_MIN_SPACING = 0.35  # seconds between order submissions by default
     _BAR_GUARD_LOCK = threading.Lock()
     _BAR_GLOBAL_SIGNATURES: dict[tuple[str, str, str], dict[str, object]] = {}
+    _SYMBOL_GUARD_LOCK = threading.Lock()
+    _SYMBOL_ORDER_STATE: dict[tuple[str, str], float] = {}
 
     @classmethod
     def concurrent_limit(cls, job_count: int | None = None) -> int:
@@ -1938,6 +1940,10 @@ class StrategyEngine:
             context_key = f"{interval_key}:{side}:{'|'.join(signature) if signature else side}"
             bar_sig_key = (cw["symbol"], interval_key, side)
             sig_sorted = tuple(sorted(signature)) if signature else (side.lower(),)
+            try:
+                interval_seconds = float(_interval_to_seconds(str(cw.get("interval") or "1m")))
+            except Exception:
+                interval_seconds = 60.0
             if current_bar_marker is not None:
                 with StrategyEngine._BAR_GUARD_LOCK:
                     global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.get(bar_sig_key)
@@ -1962,6 +1968,21 @@ class StrategyEngine:
                     try:
                         self.log(
                             f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (order already placed this bar)."
+                        )
+                    except Exception:
+                        pass
+                    return
+            guard_key_symbol = (cw["symbol"], side)
+            guard_window = max(8.0, min(45.0, interval_seconds * 1.5))
+            now_guard = time.time()
+            with StrategyEngine._SYMBOL_GUARD_LOCK:
+                last_symbol_order = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                if last_symbol_order is not None and (now_guard - last_symbol_order) < guard_window:
+                    try:
+                        remaining = guard_window - (now_guard - last_symbol_order)
+                        self.log(
+                            f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
+                            f"(last order {now_guard - last_symbol_order:.1f}s ago, wait {remaining:.1f}s)."
                         )
                     except Exception:
                         pass
@@ -2261,6 +2282,8 @@ class StrategyEngine:
                                             global_tracker["bar"] = current_bar_marker
                                             global_tracker["signatures"] = set()
                                         global_tracker.setdefault("signatures", set()).update({sig_sorted, "__ANY__"})
+                                with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                    StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = time.time()
                                 key = (cw['symbol'], cw.get('interval'), side)
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
