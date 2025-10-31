@@ -203,3 +203,18 @@ def load_app_icon() -> QtGui.QIcon:
     icon = QtGui.QIcon()
     icon.addPixmap(fallback_pixmap)
     return icon
+
+
+def find_primary_icon_file() -> Path | None:
+    """Return the first icon file discovered in the search sequence."""
+    env_icon_path = os.getenv("BINANCE_BOT_ICON")
+    if env_icon_path:
+        env_path = Path(env_icon_path)
+        if env_path.exists():
+            return env_path
+    for directory in _candidate_directories():
+        for filename in _icon_filename_candidates():
+            path = directory / filename
+            if path.exists():
+                return path
+    return None

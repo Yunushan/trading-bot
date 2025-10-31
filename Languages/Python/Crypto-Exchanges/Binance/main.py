@@ -1,4 +1,12 @@
+
 import sys
+from pathlib import Path
+
+# Ensure repo root is importable so shared helpers can be used when launched directly.
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT_STR = str(PROJECT_ROOT)
+if PROJECT_ROOT_STR not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT_STR)
 
 # Version banner / environment setup must run before importing PyQt modules
 from app import preamble  # noqa: F401
@@ -7,15 +15,11 @@ from PyQt6 import QtCore, QtGui
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
-# Ensure Windows taskbar uses our icon (AppUserModelID)
-try:
-    import ctypes
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Binance.TradingBot")
-except Exception:
-    pass
-
 from app.gui.main_window import MainWindow
-from app.gui.app_icon import load_app_icon
+from app.gui.app_icon import find_primary_icon_file, load_app_icon
+from windows_taskbar import apply_taskbar_metadata, build_relaunch_command, ensure_app_user_model_id
+
+APP_USER_MODEL_ID = "Binance.TradingBot"
 
 
 _previous_qt_message_handler = None
@@ -37,6 +41,7 @@ def _install_qt_warning_filter():
 
 def main():
     _install_qt_warning_filter()
+    ensure_app_user_model_id(APP_USER_MODEL_ID)
     app = QApplication(sys.argv)
     icon = QtGui.QIcon()
     try:
@@ -55,6 +60,26 @@ def main():
     except Exception:
         pass
     win.show()
+    win.winId()
+    if not icon.isNull():
+        QtCore.QTimer.singleShot(0, lambda: win.setWindowIcon(icon))
+    if sys.platform == "win32":
+        icon_path = find_primary_icon_file()
+        relaunch_cmd = build_relaunch_command()
+        def _apply_taskbar(attempts: int = 4) -> None:
+            if attempts <= 0:
+                return
+            success = apply_taskbar_metadata(
+                win,
+                app_id=APP_USER_MODEL_ID,
+                display_name="Binance Trading Bot",
+                icon_path=icon_path,
+                relaunch_command=relaunch_cmd,
+            )
+            if not success:
+                QtCore.QTimer.singleShot(120, lambda: _apply_taskbar(attempts - 1))
+
+        QtCore.QTimer.singleShot(0, _apply_taskbar)
     sys.exit(app.exec())
 
 if __name__ == "__main__":

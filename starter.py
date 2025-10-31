@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from windows_taskbar import apply_taskbar_metadata, build_relaunch_command, ensure_app_user_model_id
+
 BASE_DIR = Path(__file__).resolve().parent
 BINANCE_MAIN = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance" / "main.py"
 BINANCE_CPP_PROJECT = (
@@ -28,16 +30,6 @@ def _load_app_icon() -> QtGui.QIcon | None:
             return QtGui.QIcon(str(path))
     return None
 
-
-def _ensure_windows_app_id() -> None:
-    if sys.platform != "win32":
-        return
-    try:  # pragma: no cover - Windows only
-        import ctypes
-
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
-    except Exception:
-        pass
 
 LANGUAGE_OPTIONS = [
     {
@@ -727,14 +719,41 @@ class StarterWindow(QtWidgets.QWidget):
 
 
 def main() -> None:
-    _ensure_windows_app_id()
+    ensure_app_user_model_id(WINDOWS_APP_ID)
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Trading Bot Starter")
+    app.setApplicationDisplayName("Trading Bot Starter")
     app_icon = _load_app_icon()
     if app_icon is not None:
         app.setWindowIcon(app_icon)
+        QtGui.QGuiApplication.setWindowIcon(app_icon)
     window = StarterWindow(app_icon=app_icon)
     window.show()
+    window.winId()
+    if app_icon is not None:
+        QtCore.QTimer.singleShot(0, lambda: window.setWindowIcon(app_icon))
+    if sys.platform == "win32":
+        icon_location = None
+        if APP_ICON_PATH.is_file():
+            icon_location = APP_ICON_PATH
+        elif APP_ICON_FALLBACK.is_file():
+            icon_location = APP_ICON_FALLBACK
+        relaunch_cmd = build_relaunch_command(Path(__file__))
+
+        def _apply_taskbar(attempts: int = 4) -> None:
+            if attempts <= 0:
+                return
+            success = apply_taskbar_metadata(
+                window,
+                app_id=WINDOWS_APP_ID,
+                display_name="Trading Bot Starter",
+                icon_path=icon_location,
+                relaunch_command=relaunch_cmd,
+            )
+            if not success:
+                QtCore.QTimer.singleShot(120, lambda: _apply_taskbar(attempts - 1))
+
+        QtCore.QTimer.singleShot(0, _apply_taskbar)
     sys.exit(app.exec())
 
 

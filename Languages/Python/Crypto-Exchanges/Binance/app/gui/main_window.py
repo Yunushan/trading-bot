@@ -7565,6 +7565,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'stop_loss_enabled': stop_loss_enabled,
                 }
                 allocations_seed = _collect_allocations(sym, side_key)
+                intervals_from_alloc: set[str] = set()
                 if allocations_seed:
                     positions_map[(sym, side_key)]['allocations'] = allocations_seed
                     trigger_set = []
@@ -7572,6 +7573,29 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         trig = alloc.get("trigger_indicators")
                         if isinstance(trig, (list, tuple, set)):
                             trigger_set.extend([str(t).strip() for t in trig if str(t).strip()])
+                        status_flag = str(alloc.get("status") or "").strip().lower()
+                        try:
+                            qty_val = abs(float(alloc.get("qty") or 0.0))
+                        except Exception:
+                            qty_val = None
+                        is_active_allocation = status_flag not in {"closed", "error"}
+                        if qty_val is not None and qty_val <= 0.0:
+                            qty_val = 0.0
+                        if qty_val:
+                            is_active_allocation = True
+                        interval_val = alloc.get("interval_display") or alloc.get("interval")
+                        if interval_val:
+                            try:
+                                canon_iv = self._canonicalize_interval(interval_val)
+                            except Exception:
+                                canon_iv = None
+                            if canon_iv:
+                                interval_normalized = canon_iv
+                            else:
+                                interval_normalized = str(interval_val).strip()
+                            if interval_normalized:
+                                if is_active_allocation:
+                                    intervals_from_alloc.add(interval_normalized)
                     if trigger_set:
                         trigger_set = list(dict.fromkeys(trigger_set))
                         positions_map[(sym, side_key)]['indicators'] = trigger_set
@@ -7586,6 +7610,113 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     pass
             except Exception:
                 continue
+
+        # Backfill tracked allocations when exchange rows omitted the position
+        tracked_keys = set(positions_map.keys())
+        try:
+            for (alloc_sym, alloc_side_key), allocations in alloc_map_global.items():
+                if not isinstance(alloc_sym, str):
+                    continue
+                sym = alloc_sym.strip().upper()
+                side_key = str(alloc_side_key or '').strip().upper()
+                if not sym or side_key not in ('L', 'S'):
+                    continue
+                key = (sym, side_key)
+                if key in tracked_keys:
+                    continue
+                if not isinstance(allocations, list) or not allocations:
+                    continue
+                qty_total = 0.0
+                margin_total = 0.0
+                notional_total = 0.0
+                intervals_set: set[str] = set()
+                indicators: list[str] = []
+                leverage_val = None
+                open_times: list[str] = []
+                for alloc in allocations:
+                    if not isinstance(alloc, dict):
+                        continue
+                    try:
+                        qty_total += abs(float(alloc.get('qty') or 0.0))
+                    except Exception:
+                        pass
+                    try:
+                        margin_total += max(float(alloc.get('margin_usdt') or 0.0), 0.0)
+                    except Exception:
+                        pass
+                    try:
+                        notional_total += max(float(alloc.get('notional') or 0.0), 0.0)
+                    except Exception:
+                        pass
+                    interval_val = alloc.get('interval_display') or alloc.get('interval')
+                    if interval_val:
+                        try:
+                            canon_iv = self._canonicalize_interval(interval_val)
+                        except Exception:
+                            canon_iv = None
+                        intervals_set.add(canon_iv or str(interval_val).strip())
+                    trig_vals = alloc.get('trigger_indicators')
+                    if isinstance(trig_vals, (list, tuple, set)):
+                        indicators.extend(str(t).strip() for t in trig_vals if str(t).strip())
+                    alloc_open = alloc.get('open_time')
+                    if alloc_open:
+                        open_times.append(str(alloc_open))
+                    lev_val = alloc.get('leverage')
+                    try:
+                        lev_int = int(float(lev_val))
+                        if lev_int > 0:
+                            leverage_val = lev_int
+                    except Exception:
+                        pass
+                if qty_total <= 0.0 and margin_total <= 0.0 and notional_total <= 0.0:
+                    continue
+                entry_tf = '-'
+                if intervals_set:
+                    ordered_intervals = sorted(
+                        {self._canonicalize_interval(iv) or str(iv).strip() for iv in intervals_set if str(iv).strip()},
+                        key=_mw_interval_sort_key,
+                    )
+                    if ordered_intervals:
+                        entry_tf = ', '.join(ordered_intervals)
+                indicators = [item for item in dict.fromkeys(indicators) if item]
+                open_time_fmt = '-'
+                if open_times:
+                    try:
+                        dt_candidates = [
+                            self._parse_any_datetime(value) for value in open_times if self._parse_any_datetime(value)
+                        ]
+                    except Exception:
+                        dt_candidates = []
+                    if dt_candidates:
+                        dt_candidates.sort()
+                        open_time_fmt = self._format_display_time(dt_candidates[0])
+                    else:
+                        open_time_fmt = open_times[0]
+                data_entry = {
+                    'symbol': sym,
+                    'qty': qty_total,
+                    'margin_usdt': margin_total if margin_total > 0 else None,
+                    'size_usdt': notional_total if notional_total > 0 else None,
+                    'leverage': leverage_val,
+                    'interval_display': entry_tf.split(',')[0].strip() if entry_tf and entry_tf != '-' else entry_tf,
+                    'trigger_indicators': indicators,
+                    'open_time': open_time_fmt,
+                }
+                positions_map[key] = {
+                    'symbol': sym,
+                    'side_key': side_key,
+                    'entry_tf': entry_tf,
+                    'open_time': open_time_fmt,
+                    'close_time': '-',
+                    'status': 'Active',
+                    'data': data_entry,
+                    'indicators': indicators,
+                    'stop_loss_enabled': self._position_stop_loss_enabled(sym, side_key),
+                    'allocations': copy.deepcopy(allocations),
+                }
+                tracked_keys.add(key)
+        except Exception:
+            pass
 
         acct_upper = str(acct or '').upper()
         if acct_upper.startswith('FUT'):
@@ -7830,26 +7961,40 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
                         except Exception:
                             pass
-                        if not interval_display:
-                            try:
-                                for (sym_key, side_key_key, iv_key), ts in entry_times_map.items():
-                                    if sym_key == sym and side_key_key == side_key and ts and iv_key:
-                                        iv_text = str(iv_key).strip()
-                                        if not iv_text:
-                                            continue
-                                        try:
-                                            canon_iv = self._canonicalize_interval(iv_text)
-                                        except Exception:
-                                            canon_iv = None
-                                        key_iv = (canon_iv or iv_text).strip().lower()
-                                        if key_iv:
-                                            interval_display.setdefault(key_iv, canon_iv or iv_text)
-                                            interval_lookup.setdefault(key_iv, iv_text)
-                            except Exception:
-                                pass
-                        if not interval_display:
-                            stored_intervals = (self._entry_intervals.get(sym, {}) or {}).get(side_key, set())
-                            for iv in stored_intervals:
+                        symbol_variants = [sym]
+                        sym_lower = sym.lower()
+                        if sym_lower and sym_lower != sym:
+                            symbol_variants.append(sym_lower)
+                        entry_intervals_map = getattr(self, "_entry_intervals", {}) or {}
+                        intervals_tracked = set()
+                        try:
+                            for (sym_key, side_key_key, iv_key), ts in entry_times_map.items():
+                                if sym_key not in symbol_variants or side_key_key != side_key or not ts or not iv_key:
+                                    continue
+                                iv_text = str(iv_key).strip()
+                                if not iv_text:
+                                    continue
+                                try:
+                                    canon_iv = self._canonicalize_interval(iv_text)
+                                except Exception:
+                                    canon_iv = None
+                                interval_norm = canon_iv or iv_text
+                                if intervals_from_alloc and interval_norm not in intervals_from_alloc:
+                                    continue
+                                key_iv = interval_norm.strip().lower()
+                                if key_iv:
+                                    interval_display.setdefault(key_iv, interval_norm)
+                                    interval_lookup.setdefault(key_iv, iv_text)
+                        except Exception:
+                            pass
+                        for sym_variant in symbol_variants:
+                            side_map = entry_intervals_map.get(sym_variant)
+                            if not isinstance(side_map, dict):
+                                continue
+                            bucket = side_map.get(side_key)
+                            if not isinstance(bucket, set):
+                                continue
+                            for iv in bucket:
                                 iv_text = str(iv).strip()
                                 if not iv_text:
                                     continue
@@ -7857,33 +8002,52 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                                     canon_iv = self._canonicalize_interval(iv_text)
                                 except Exception:
                                     canon_iv = None
-                                key_iv = (canon_iv or iv_text).strip().lower()
+                                interval_norm = canon_iv or iv_text
+                                if intervals_from_alloc and interval_norm not in intervals_from_alloc:
+                                    continue
+                                key_iv = interval_norm.strip().lower()
                                 if key_iv:
-                                    interval_display.setdefault(key_iv, canon_iv or iv_text)
+                                    interval_display.setdefault(key_iv, interval_norm)
                                     interval_lookup.setdefault(key_iv, iv_text)
-                        if not interval_display:
-                            metadata = getattr(self, "_engine_indicator_map", {}) or {}
-                            for meta in metadata.values():
-                                if not isinstance(meta, dict):
+                                    intervals_tracked.add(interval_norm)
+                        metadata = getattr(self, "_engine_indicator_map", {}) or {}
+                        for meta in metadata.values():
+                            if not isinstance(meta, dict):
+                                continue
+                            if str(meta.get("symbol") or "").strip().upper() != sym:
+                                continue
+                            allowed_side = str(meta.get("side") or "BOTH").upper()
+                            if side_key == "L" and allowed_side == "SELL":
+                                continue
+                            if side_key == "S" and allowed_side == "BUY":
+                                continue
+                            iv_text = str(meta.get("interval") or "").strip()
+                            if not iv_text:
+                                continue
+                            try:
+                                canon_iv = self._canonicalize_interval(iv_text)
+                            except Exception:
+                                canon_iv = None
+                            interval_norm = canon_iv or iv_text
+                            if intervals_from_alloc and interval_norm not in intervals_from_alloc:
+                                continue
+                            key_iv = interval_norm.strip().lower()
+                            if key_iv:
+                                interval_display.setdefault(key_iv, interval_norm)
+                                interval_lookup.setdefault(key_iv, iv_text)
+                        if not interval_display and intervals_from_alloc:
+                            for iv_norm in intervals_from_alloc:
+                                if not iv_norm:
                                     continue
-                                if str(meta.get("symbol") or "").strip().upper() != sym:
-                                    continue
-                                allowed_side = str(meta.get("side") or "BOTH").upper()
-                                if side_key == "L" and allowed_side == "SELL":
-                                    continue
-                                if side_key == "S" and allowed_side == "BUY":
-                                    continue
-                                iv_text = str(meta.get("interval") or "").strip()
-                                if not iv_text:
+                                key_iv = str(iv_norm).strip().lower()
+                                if not key_iv:
                                     continue
                                 try:
-                                    canon_iv = self._canonicalize_interval(iv_text)
+                                    canon_iv = self._canonicalize_interval(iv_norm)
                                 except Exception:
                                     canon_iv = None
-                                key_iv = (canon_iv or iv_text).strip().lower()
-                                if key_iv:
-                                    interval_display.setdefault(key_iv, canon_iv or iv_text)
-                                    interval_lookup.setdefault(key_iv, iv_text)
+                                interval_display.setdefault(key_iv, canon_iv or str(iv_norm))
+                                interval_lookup.setdefault(key_iv, str(iv_norm))
                         ordered_keys: list[str] = []
                         primary_interval_key = None
                         if interval_display:
@@ -7903,9 +8067,12 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                                 data['interval_display'] = rec.get('entry_tf')
                                 data['interval'] = rec.get('entry_tf')
 
-                        if (not rec.get('entry_tf') or rec['entry_tf'] == '-') and self._entry_intervals.get(sym):
+                        if (not rec.get('entry_tf') or rec['entry_tf'] == '-') and intervals_tracked:
                             try:
-                                intervals_active = sorted(self._entry_intervals.get(sym, {}).get(side_key, []), key=_mw_interval_sort_key)
+                                intervals_active = sorted(
+                                    {self._canonicalize_interval(iv) or str(iv).strip() for iv in intervals_tracked if str(iv).strip()},
+                                    key=_mw_interval_sort_key,
+                                )
                                 if intervals_active:
                                     rec['entry_tf'] = ', '.join(intervals_active)
                                     if not data.get('interval_display'):
@@ -7936,7 +8103,12 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                                 if epoch is not None:
                                     open_times.append((epoch, dt_obj))
                         if not open_times:
-                            base_ts = getattr(self, '_entry_times', {}).get((sym, side_key)) if hasattr(self, '_entry_times') else None
+                            entry_time_map = getattr(self, '_entry_times', {}) if hasattr(self, '_entry_times') else {}
+                            base_ts = None
+                            for sym_variant in symbol_variants:
+                                base_ts = entry_time_map.get((sym_variant, side_key))
+                                if base_ts is not None:
+                                    break
                             dt_obj = self._parse_any_datetime(base_ts)
                             if dt_obj:
                                 try:
@@ -7959,7 +8131,12 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             rec['open_time'] = self._format_display_time(open_times[0][1])
                             data['open_time'] = rec['open_time']
                         else:
-                            base_open = getattr(self, '_entry_times', {}).get((sym, side_key))
+                            entry_time_map = getattr(self, '_entry_times', {}) if hasattr(self, '_entry_times') else {}
+                            base_open = None
+                            for sym_variant in symbol_variants:
+                                base_open = entry_time_map.get((sym_variant, side_key))
+                                if base_open is not None:
+                                    break
                             dt_obj = self._parse_any_datetime(base_open)
                             if dt_obj:
                                 formatted = self._format_display_time(dt_obj)
@@ -8557,7 +8734,7 @@ def _mw_render_positions_table(self):
                 if not sym:
                     sym = "-"
                 side_key = str(rec.get('side_key') or data.get('side_key') or "").upper()
-                interval = data.get('interval_display') or rec.get('entry_tf') or "-"
+                interval = rec.get('entry_tf') or data.get('interval_display') or "-"
                 row = self.pos_table.rowCount()
                 self.pos_table.insertRow(row)
 
@@ -8937,11 +9114,8 @@ def _mw_close_position_single(self, symbol: str, side_key: str | None, interval:
                 succeeded = isinstance(res, dict) and res.get("ok")
             if succeeded and interval and side_key in ("L", "S"):
                 try:
-                    self._entry_intervals.setdefault(symbol, {"L": set(), "S": set()}).setdefault(side_key, set()).discard(interval)
-                except Exception:
-                    pass
-                try:
-                    self._entry_times_by_iv.pop((symbol, side_key, interval), None)
+                    if hasattr(self, "_track_interval_close"):
+                        self._track_interval_close(symbol, side_key, interval)
                 except Exception:
                     pass
         except Exception:
@@ -10342,11 +10516,8 @@ def _mw_on_trade_signal(self, order_info: dict):
 
     if event_type == "close_interval":
         try:
-            self._entry_intervals.setdefault(sym, {"L": set(), "S": set()}).setdefault(side_key, set()).discard(interval)
-        except Exception:
-            pass
-        try:
-            self._entry_times_by_iv.pop((sym, side_key, interval), None)
+            if hasattr(self, "_track_interval_close"):
+                self._track_interval_close(sym, side_key, interval)
         except Exception:
             pass
         norm_iv = _norm_interval(interval)
@@ -10667,20 +10838,19 @@ def _mw_on_trade_signal(self, order_info: dict):
             if unique_key:
                 registry_set.add(unique_key)
                 queue.append((unique_key, now_ts))
-        self._entry_intervals.setdefault(sym, {'L': set(), 'S': set()})
         # ignore opens while engines are stopping
         if getattr(self, "_is_stopping_engines", False) and status.lower() not in {"closed", "error"}:
             is_success = False
         if is_success:
-            self._entry_intervals[sym][side_key_local].add(interval)
             tstr = order_info.get('time')
-            if tstr:
-                self._entry_times[(sym, side_key_local)] = tstr
-            else:
+            if not tstr:
                 from datetime import datetime
                 tstr = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                self._entry_times[(sym, side_key_local)] = tstr
-            self._entry_times_by_iv[(sym, side_key_local, interval)] = tstr
+            try:
+                if hasattr(self, "_track_interval_open"):
+                    self._track_interval_open(sym, side_key_local, interval, tstr)
+            except Exception:
+                pass
 
             norm_iv = _norm_interval(interval) or "-"
             try:
@@ -10713,7 +10883,7 @@ def _mw_on_trade_signal(self, order_info: dict):
                 margin_val = notional_val / leverage_val
             else:
                 margin_val = notional_val
-            open_time_val = order_info.get("time")
+            open_time_val = order_info.get("time") or tstr
             if open_time_val:
                 dt_obj = self._parse_any_datetime(open_time_val)
                 open_time_fmt = self._format_display_time(dt_obj) if dt_obj else open_time_val
@@ -10766,14 +10936,115 @@ def _mw_on_trade_signal(self, order_info: dict):
             pending_close.pop((sym_upper, side_key_local), None)
         else:
             try:
-                self._entry_intervals[sym][side_key_local].discard(interval)
-                self._entry_times_by_iv.pop((sym, side_key_local, interval), None)
+                if hasattr(self, "_track_interval_close"):
+                    self._track_interval_close(sym, side_key_local, interval)
             except Exception:
                 pass
     if sym:
         self.traded_symbols.add(sym)
     self.update_balance_label()
     self.refresh_positions(symbols=[sym] if sym else None)
+
+
+def _mw_pos_symbol_keys(self, symbol) -> tuple:
+    sym_raw = str(symbol or "").strip()
+    if not sym_raw:
+        return tuple()
+    sym_upper = sym_raw.upper()
+    if sym_upper == sym_raw:
+        return (sym_upper,)
+    return tuple(dict.fromkeys([sym_upper, sym_raw]))
+
+
+def _mw_pos_interval_keys(self, interval) -> tuple:
+    iv_raw = str(interval or "").strip()
+    if not iv_raw:
+        return tuple()
+    try:
+        canon = self._canonicalize_interval(iv_raw)
+    except Exception:
+        canon = None
+    keys = []
+    if canon:
+        keys.append(canon)
+    if iv_raw and iv_raw != canon:
+        keys.append(iv_raw)
+    return tuple(dict.fromkeys(keys))
+
+
+def _mw_pos_track_interval_open(self, symbol, side_key, interval, timestamp) -> None:
+    if side_key not in ("L", "S"):
+        return
+    symbol_keys = _mw_pos_symbol_keys(self, symbol)
+    if not symbol_keys:
+        sym_raw = str(symbol or "").strip()
+        if not sym_raw:
+            return
+        symbol_keys = _mw_pos_symbol_keys(self, sym_raw)
+        if not symbol_keys:
+            return
+    primary_symbol = symbol_keys[0]
+    interval_keys = _mw_pos_interval_keys(self, interval)
+    primary_interval = interval_keys[0] if interval_keys else None
+    entry_map = self._entry_intervals.setdefault(primary_symbol, {"L": set(), "S": set()})
+    entry_map.setdefault("L", set())
+    entry_map.setdefault("S", set())
+    if primary_interval:
+        entry_map[side_key].add(primary_interval)
+    if timestamp:
+        self._entry_times[(primary_symbol, side_key)] = timestamp
+        if primary_interval:
+            self._entry_times_by_iv[(primary_symbol, side_key, primary_interval)] = timestamp
+    for alt_symbol in symbol_keys[1:]:
+        if not alt_symbol:
+            continue
+        legacy = self._entry_intervals.pop(alt_symbol, None)
+        if isinstance(legacy, dict):
+            for leg_side, iv_set in legacy.items():
+                if leg_side not in ("L", "S") or not isinstance(iv_set, set):
+                    continue
+                target = entry_map.setdefault(leg_side, set())
+                for iv in iv_set:
+                    normalized = _mw_pos_interval_keys(self, iv)
+                    if normalized:
+                        target.add(normalized[0])
+        for side_variant in ("L", "S"):
+            ts_val = self._entry_times.pop((alt_symbol, side_variant), None)
+            if ts_val and (primary_symbol, side_variant) not in self._entry_times:
+                self._entry_times[(primary_symbol, side_variant)] = ts_val
+        for (sym_key, side_variant, iv_key), ts_val in list(self._entry_times_by_iv.items()):
+            if sym_key == alt_symbol:
+                normalized = _mw_pos_interval_keys(self, iv_key)
+                self._entry_times_by_iv.pop((sym_key, side_variant, iv_key), None)
+                if normalized:
+                    self._entry_times_by_iv[(primary_symbol, side_variant, normalized[0])] = ts_val
+
+
+def _mw_pos_track_interval_close(self, symbol, side_key, interval) -> None:
+    if side_key not in ("L", "S"):
+        return
+    symbol_keys = _mw_pos_symbol_keys(self, symbol)
+    if not symbol_keys:
+        sym_raw = str(symbol or "").strip()
+        candidates = [sym_raw.upper(), sym_raw]
+        symbol_keys = tuple(dict.fromkeys([c for c in candidates if c]))
+    interval_keys = _mw_pos_interval_keys(self, interval)
+    if not interval_keys and interval:
+        iv_raw = str(interval).strip()
+        if iv_raw:
+            interval_keys = (iv_raw,)
+    for sym_key in symbol_keys:
+        if not sym_key:
+            continue
+        side_map = self._entry_intervals.get(sym_key)
+        if not isinstance(side_map, dict):
+            continue
+        bucket = side_map.get(side_key)
+        if not isinstance(bucket, set):
+            bucket = side_map[side_key] = set()
+        for iv_key in interval_keys:
+            bucket.discard(iv_key)
+            self._entry_times_by_iv.pop((sym_key, side_key, iv_key), None)
 
 try:
     if not hasattr(MainWindow, 'log'):
@@ -10782,6 +11053,14 @@ try:
         MainWindow._trade_mux = _mw_trade_mux
     if not hasattr(MainWindow, '_on_trade_signal'):
         MainWindow._on_trade_signal = _mw_on_trade_signal
+    if not hasattr(MainWindow, '_pos_symbol_keys'):
+        MainWindow._pos_symbol_keys = _mw_pos_symbol_keys
+    if not hasattr(MainWindow, '_pos_interval_keys'):
+        MainWindow._pos_interval_keys = _mw_pos_interval_keys
+    if not hasattr(MainWindow, '_track_interval_open'):
+        MainWindow._track_interval_open = _mw_pos_track_interval_open
+    if not hasattr(MainWindow, '_track_interval_close'):
+        MainWindow._track_interval_close = _mw_pos_track_interval_close
 except Exception:
     pass
 def _derive_margin_snapshot(position: dict | None, qty_hint: float = 0.0, entry_price_hint: float = 0.0) -> tuple[float, float, float, float]:

@@ -113,6 +113,9 @@ class StrategyEngine:
         self._bar_order_tracker: dict[tuple[str, str, str], dict[str, object]] = {}
         self._symbol_signature_open: dict[tuple[str, str, tuple[str, ...]], int] = {}
         self._symbol_signature_lock = threading.Lock()
+        self._indicator_state: dict[tuple[str, str, str], dict[str, set[str]]] = {}
+        self._indicator_state_lock = threading.Lock()
+        self._ledger_index: dict[str, tuple[str, str, str]] = {}
         self.can_open_cb = can_open_callback
         self._stop = False
         key = f"{str(self.config.get('symbol') or '').upper()}@{str(self.config.get('interval') or '').lower()}"
@@ -328,7 +331,92 @@ class StrategyEngine:
         parts.sort()
         return tuple(parts)
 
-    def _bump_symbol_signature_open(self, symbol: str, side: str, signature: Iterable[str] | None, delta: int) -> None:
+    def _indicator_state_entry(self, symbol: str, interval: str, indicator_key: str) -> dict[str, set[str]]:
+        sym = str(symbol or "").upper()
+        iv = str(interval or "").lower()
+        key = (sym, iv, str(indicator_key or "").lower())
+        with self._indicator_state_lock:
+            state = self._indicator_state.get(key)
+            if not isinstance(state, dict):
+                state = {"BUY": set(), "SELL": set()}
+                self._indicator_state[key] = state
+            else:
+                state.setdefault("BUY", set())
+                state.setdefault("SELL", set())
+            return state
+
+    def _indicator_has_open(self, symbol: str, interval: str, indicator_key: str, side: str) -> bool:
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        sym = str(symbol or "").upper()
+        iv = str(interval or "").lower()
+        key = (sym, iv, str(indicator_key or "").lower())
+        with self._indicator_state_lock:
+            state = self._indicator_state.get(key)
+            if not isinstance(state, dict):
+                return False
+            ids = state.get(side_norm)
+            return bool(ids)
+
+    def _indicator_get_ledger_ids(self, symbol: str, interval: str, indicator_key: str, side: str) -> list[str]:
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        sym = str(symbol or "").upper()
+        iv = str(interval or "").lower()
+        key = (sym, iv, str(indicator_key or "").lower())
+        with self._indicator_state_lock:
+            state = self._indicator_state.get(key)
+            if not isinstance(state, dict):
+                return []
+            ids = state.get(side_norm)
+            return list(ids or [])
+
+    def _indicator_register_entry(
+        self,
+        symbol: str,
+        interval: str,
+        indicator_key: str,
+        side: str,
+        ledger_id: str | None,
+    ) -> None:
+        if not ledger_id:
+            return
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        state = self._indicator_state_entry(symbol, interval, indicator_key)
+        with self._indicator_state_lock:
+            state.setdefault(side_norm, set()).add(ledger_id)
+
+
+    def _indicator_unregister_entry(
+        self,
+        symbol: str,
+        interval: str,
+        indicator_key: str,
+        side: str,
+        ledger_id: str | None,
+    ) -> None:
+        if not ledger_id:
+            return
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        state = self._indicator_state_entry(symbol, interval, indicator_key)
+        with self._indicator_state_lock:
+            ids = state.get(side_norm)
+            if isinstance(ids, set):
+                ids.discard(ledger_id)
+
+    def _extract_indicator_key(self, entry: dict) -> str | None:
+        sig = entry.get("trigger_signature") or entry.get("trigger_indicators")
+        sig_tuple = self._normalize_signature_tuple(sig if isinstance(sig, Iterable) else [])
+        if sig_tuple and len(sig_tuple) == 1:
+            return sig_tuple[0]
+        return None
+
+    def _bump_symbol_signature_open(
+        self,
+        symbol: str,
+        interval: str | None,
+        side: str,
+        signature: Iterable[str] | None,
+        delta: int,
+    ) -> None:
         sig_tuple = self._normalize_signature_tuple(signature)
         if sig_tuple is None:
             return
@@ -340,13 +428,64 @@ class StrategyEngine:
             else:
                 self._symbol_signature_open[key] = current
 
-    def _symbol_signature_active(self, symbol: str, side: str, signature: Iterable[str] | None) -> bool:
+    def _symbol_signature_active(
+        self,
+        symbol: str,
+        side: str,
+        signature: Iterable[str] | None,
+        interval: str | None = None,
+    ) -> bool:
         sig_tuple = self._normalize_signature_tuple(signature)
         if sig_tuple is None:
+            return False
+        if len(sig_tuple) == 1:
+            if interval is not None and self._indicator_has_open(symbol, interval, sig_tuple[0], side):
+                return True
             return False
         key = (str(symbol or "").upper(), str(side or "").upper(), sig_tuple)
         with self._symbol_signature_lock:
             return self._symbol_signature_open.get(key, 0) > 0
+
+    def _close_indicator_positions(
+        self,
+        cw: dict,
+        interval: str,
+        indicator_key: str,
+        side_label: str,
+        position_side: str | None,
+    ) -> None:
+        symbol = cw["symbol"]
+        ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
+        close_side = "SELL" if str(side_label).upper() in {"BUY", "LONG"} else "BUY"
+        side_norm = "BUY" if str(side_label).upper() in {"BUY", "LONG"} else "SELL"
+        for ledger_id in list(ledger_ids):
+            leg_key = self._ledger_index.get(ledger_id)
+            if not leg_key:
+                continue
+            entries = self._leg_entries(leg_key)
+            target_entry = None
+            for entry in entries:
+                if entry.get("ledger_id") == ledger_id:
+                    target_entry = entry
+                    break
+            if not target_entry:
+                continue
+            try:
+                cw_clone = dict(cw)
+                cw_clone["interval"] = leg_key[1]
+                self._close_leg_entry(
+                    cw_clone,
+                    leg_key,
+                    target_entry,
+                    side_norm,
+                    close_side,
+                    position_side,
+                    loss_usdt=0.0,
+                    price_pct=0.0,
+                    margin_pct=0.0,
+                )
+            except Exception:
+                continue
 
 
     def _update_leg_snapshot(self, leg_key, leg: dict | None) -> None:
@@ -391,7 +530,16 @@ class StrategyEngine:
         self._last_order_time[leg_key] = time.time()
         try:
             signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
-            self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, +1)
+            self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, +1)
+        except Exception:
+            pass
+        try:
+            ledger_id = entry.get("ledger_id")
+            if ledger_id:
+                self._ledger_index[ledger_id] = leg_key
+            indicator_key = self._extract_indicator_key(entry)
+            if indicator_key and ledger_id:
+                self._indicator_register_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_id)
         except Exception:
             pass
 
@@ -401,7 +549,15 @@ class StrategyEngine:
             for entry in current_entries:
                 try:
                     signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
-                    self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, -1)
+                    self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, -1)
+                except Exception:
+                    pass
+                try:
+                    indicator_key = self._extract_indicator_key(entry)
+                    ledger = entry.get("ledger_id")
+                    if indicator_key and ledger:
+                        self._indicator_unregister_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger)
+                        self._ledger_index.pop(ledger, None)
                 except Exception:
                     pass
             self._leg_ledger.pop(leg_key, None)
@@ -416,9 +572,24 @@ class StrategyEngine:
             for entry in removed_entries:
                 try:
                     signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
-                    self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, -1)
+                    self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, -1)
                 except Exception:
                     pass
+                try:
+                    indicator_key = self._extract_indicator_key(entry)
+                    if indicator_key:
+                        self._indicator_unregister_entry(
+                            leg_key[0], leg_key[1], indicator_key, leg_key[2], entry.get("ledger_id")
+                        )
+                except Exception:
+                    pass
+            try:
+                for entry in removed_entries:
+                    ledger = entry.get("ledger_id")
+                    if ledger:
+                        self._ledger_index.pop(ledger, None)
+            except Exception:
+                pass
             self._leg_ledger.pop(leg_key, None)
             self._last_order_time.pop(leg_key, None)
             return
@@ -427,7 +598,21 @@ class StrategyEngine:
         for entry in removed_entries:
             try:
                 signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
-                self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, -1)
+                self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, -1)
+            except Exception:
+                pass
+            try:
+                indicator_key = self._extract_indicator_key(entry)
+                if indicator_key:
+                    self._indicator_unregister_entry(
+                        leg_key[0], leg_key[1], indicator_key, leg_key[2], entry.get("ledger_id")
+                    )
+            except Exception:
+                pass
+            try:
+                ledger = entry.get("ledger_id")
+                if ledger:
+                    self._ledger_index.pop(ledger, None)
             except Exception:
                 pass
 
@@ -845,7 +1030,7 @@ class StrategyEngine:
                 pass
             for key in list(self._leg_ledger.keys()):
                 if key[0] == symbol and key[2] == opp:
-                    self._leg_ledger.pop(key, None)
+                    self._remove_leg_entry(key, None)
         return True
     # ---- indicator computation (uses pandas_ta when available)
     def compute_indicators(self, df):
@@ -1267,7 +1452,7 @@ class StrategyEngine:
                         res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='SELL', position_side=desired_ps)
                         if isinstance(res, dict) and res.get('ok'):
                             payload = self._build_close_event_payload(cw['symbol'], cw.get('interval'), 'BUY', qty, res)
-                            self._leg_ledger.pop(key_long, None)
+                            self._remove_leg_entry(key_long, None)
                             try:
                                 if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'BUY')
                             except Exception:
@@ -1286,7 +1471,7 @@ class StrategyEngine:
                         res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='BUY', position_side=desired_ps)
                         if isinstance(res, dict) and res.get('ok'):
                             payload = self._build_close_event_payload(cw['symbol'], cw.get('interval'), 'SELL', qty, res)
-                            self._leg_ledger.pop(key_short, None)
+                            self._remove_leg_entry(key_short, None)
                             try:
                                 if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'SELL')
                             except Exception:
@@ -1526,8 +1711,7 @@ class StrategyEngine:
                         )
                         for leg_key in list(self._leg_ledger.keys()):
                             if leg_key[0] == cw["symbol"] and leg_key[2] == target_side_label:
-                                self._leg_ledger.pop(leg_key, None)
-                                self._last_order_time.pop(leg_key, None)
+                                self._remove_leg_entry(leg_key, None)
                         try:
                             if hasattr(self.guard, "mark_closed"):
                                 self.guard.mark_closed(cw["symbol"], cw.get("interval"), target_side_label)
@@ -1616,8 +1800,7 @@ class StrategyEngine:
                                 payload = self._build_close_event_payload(
                                     cw["symbol"], cw.get("interval"), "BUY", qty_long, res
                                 )
-                                self._leg_ledger.pop(key_long, None)
-                                self._last_order_time.pop(key_long, None)
+                                self._remove_leg_entry(key_long, None)
                                 long_open = False
                                 try:
                                     if hasattr(self.guard, "mark_closed"):
@@ -1704,8 +1887,7 @@ class StrategyEngine:
                                 payload = self._build_close_event_payload(
                                     cw["symbol"], cw.get("interval"), "SELL", qty_short, res
                                 )
-                                self._leg_ledger.pop(key_short, None)
-                                self._last_order_time.pop(key_short, None)
+                                self._remove_leg_entry(key_short, None)
                                 short_open = False
                                 try:
                                     if hasattr(self.guard, "mark_closed"):
@@ -1761,67 +1943,31 @@ class StrategyEngine:
         if trigger_actions:
             desired_ps_long = "LONG" if dual_side else None
             desired_ps_short = "SHORT" if dual_side else None
-
-            def _entries_for_indicator(entries: list[dict], label_key: str) -> list[dict]:
-                key_norm = label_key.lower()
-                matches: list[dict] = []
-                for existing_entry in entries or []:
-                    try:
-                        triggers = existing_entry.get("trigger_indicators") or []
-                    except Exception:
-                        triggers = []
-                    for trig in triggers:
-                        if str(trig or "").strip().lower() == key_norm:
-                            matches.append(existing_entry)
-                            break
-                return matches
-
             for indicator_name, indicator_action in trigger_actions.items():
                 indicator_label = str(indicator_name or "").strip()
                 if not indicator_label:
                     continue
                 indicator_key = indicator_label.lower()
                 action_norm = str(indicator_action or "").strip().lower()
+                interval_current = cw.get("interval")
                 if action_norm == "buy":
-                    if self._symbol_signature_active(cw["symbol"], "BUY", (indicator_key,)):
+                    # Close existing shorts for this indicator on this interval then open long if not already open.
+                    self._close_indicator_positions(cw, interval_current, indicator_key, "SELL", desired_ps_short)
+                    if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "BUY"):
                         continue
-                    short_entries = _entries_for_indicator(self._leg_entries(key_short), indicator_key)
-                    for entry in list(short_entries):
-                        self._close_leg_entry(
-                            cw,
-                            key_short,
-                            entry,
-                            "SELL",
-                            "BUY",
-                            desired_ps_short,
-                            loss_usdt=0.0,
-                            price_pct=0.0,
-                            margin_pct=0.0,
-                        )
                     indicator_order_requests.append(
                         {
                             "side": "BUY",
                             "labels": [indicator_label],
                             "signature": (indicator_key,),
                             "indicator_key": indicator_key,
-                            }
-                        )
+                        }
+                    )
                 elif action_norm == "sell":
-                    if self._symbol_signature_active(cw["symbol"], "SELL", (indicator_key,)):
+                    # Close existing longs for this indicator on this interval then open short if not already open.
+                    self._close_indicator_positions(cw, interval_current, indicator_key, "BUY", desired_ps_long)
+                    if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "SELL"):
                         continue
-                    long_entries = _entries_for_indicator(self._leg_entries(key_long), indicator_key)
-                    for entry in list(long_entries):
-                        self._close_leg_entry(
-                            cw,
-                            key_long,
-                            entry,
-                            "BUY",
-                            "SELL",
-                            desired_ps_long,
-                            loss_usdt=0.0,
-                            price_pct=0.0,
-                            margin_pct=0.0,
-                        )
                     indicator_order_requests.append(
                         {
                             "side": "SELL",
@@ -1830,6 +1976,36 @@ class StrategyEngine:
                             "indicator_key": indicator_key,
                         }
                     )
+            if not indicator_order_requests:
+                for indicator_name, indicator_action in trigger_actions.items():
+                    indicator_label = str(indicator_name or "").strip()
+                    if not indicator_label:
+                        continue
+                    indicator_key = indicator_label.lower()
+                    interval_current = cw.get("interval")
+                    action_norm = str(indicator_action or "").strip().lower()
+                    if action_norm == "buy":
+                        if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "BUY"):
+                            continue
+                        indicator_order_requests.append(
+                            {
+                                "side": "BUY",
+                                "labels": [indicator_label],
+                                "signature": (indicator_key,),
+                                "indicator_key": indicator_key,
+                            }
+                        )
+                    elif action_norm == "sell":
+                        if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "SELL"):
+                            continue
+                        indicator_order_requests.append(
+                            {
+                                "side": "SELL",
+                                "labels": [indicator_label],
+                                "signature": (indicator_key,),
+                                "indicator_key": indicator_key,
+                            }
+                        )
         thresholds = []
         try:
             if cw['indicators']['ma']['enabled'] and 'ma' in ind and not ind['ma'].isnull().all(): 
@@ -1868,7 +2044,7 @@ class StrategyEngine:
                     if str(part or "").strip()
                 )
                 signature = signature_parts or tuple(sorted(lbl.lower() for lbl in label_list))
-                if self._symbol_signature_active(cw["symbol"], side_value, signature):
+                if self._symbol_signature_active(cw["symbol"], side_value, signature, cw.get("interval")):
                     continue
                 if signature in seen_signatures:
                     continue
@@ -1978,7 +2154,7 @@ class StrategyEngine:
                                 allow_order = False
                             else:
                                 try:
-                                    self._leg_ledger.pop(key_dup, None)
+                                    self._remove_leg_entry(key_dup, None)
                                 except Exception:
                                     pass
                                 try:
@@ -2020,7 +2196,7 @@ class StrategyEngine:
             )
 
             active_check_signature = signature if signature else tuple(sorted(trigger_labels))
-            if self._symbol_signature_active(cw["symbol"], side, active_check_signature):
+            if self._symbol_signature_active(cw["symbol"], side, active_check_signature, cw.get("interval")):
                 try:
                     self.log(
                         f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (signature {signature_label} still open)."
@@ -2217,7 +2393,24 @@ class StrategyEngine:
                     margin_tolerance = float(self.config.get("margin_over_target_tolerance", 0.05))
                     if margin_tolerance > 1.0:
                         margin_tolerance = margin_tolerance / 100.0
+                    min_required_margin = 0.0
+                    try:
+                        f_filters = self.binance.get_futures_symbol_filters(cw['symbol']) or {}
+                        min_notional_filter = float(f_filters.get('minNotional') or 0.0)
+                        if min_notional_filter > 0.0:
+                            min_required_margin = max(min_required_margin, min_notional_filter / max(lev, 1))
+                        min_qty_filter = float(f_filters.get('minQty') or 0.0)
+                        if min_qty_filter > 0.0 and price > 0.0:
+                            min_required_margin = max(min_required_margin, (min_qty_filter * price) / max(lev, 1))
+                    except Exception:
+                        min_required_margin = max(min_required_margin, 0.0)
                     max_margin = target_margin * (1.0 + max(0.0, margin_tolerance))
+                    if min_required_margin > 0.0 and min_required_margin > max_margin + 1e-9:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} sizing blocked: minimum contract margin {min_required_margin:.4f} "
+                            f"exceeds target {target_margin:.4f} by more than {margin_tolerance*100:.2f}%."
+                        )
+                        return
                     if margin_est > max_margin + 1e-9:
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} sizing blocked: adjusted margin {margin_est:.4f} "
