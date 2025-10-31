@@ -2011,6 +2011,9 @@ class StrategyEngine:
                         equity_estimate = max(0.0, float(available_total or 0.0)) + ledger_margin_total
                     if equity_estimate > 0.0:
                         wallet_total = equity_estimate
+                    equity_cap = max(0.0, float(free_usdt or 0.0)) + ledger_margin_total
+                    if equity_cap > 0.0:
+                        wallet_total = min(wallet_total, equity_cap)
                     if wallet_total <= 0.0:
                         wallet_total = max(float(equity_estimate or 0.0), float(free_usdt or 0.0))
                     if wallet_total <= 0.0:
