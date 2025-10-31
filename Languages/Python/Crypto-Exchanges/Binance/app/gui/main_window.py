@@ -152,6 +152,27 @@ STOP_LOSS_SCOPE_LABELS = {
     "entire_account": "Entire Account Stop Loss",
 }
 
+DASHBOARD_LOOP_CHOICES = [
+    ("Use Candle Interval", ""),
+    ("30 seconds", "30s"),
+    ("45 seconds", "45s"),
+    ("1 minute", "1m"),
+    ("2 minutes", "2m"),
+    ("3 minutes", "3m"),
+    ("5 minutes", "5m"),
+    ("10 minutes", "10m"),
+    ("30 minutes", "30m"),
+    ("1 hour", "1h"),
+    ("2 hours", "2h"),
+]
+
+LEAD_TRADER_OPTIONS = [
+    ("Futures Public Lead Trader", "futures_public"),
+    ("Futures Private Lead Trader", "futures_private"),
+    ("Spot Public Lead Trader", "spot_public"),
+    ("Spot Private Lead Trader", "spot_private"),
+]
+
 MDD_LOGIC_LABELS = {
     "per_trade": "Per Trade MDD",
     "cumulative": "Cumulative MDD",
@@ -1621,6 +1642,40 @@ class MainWindow(QtWidgets.QWidget):
             return cleaned
         return None
 
+    def _loop_choice_value(self, combo: QtWidgets.QComboBox | None) -> str:
+        if combo is None:
+            return ""
+        try:
+            data = combo.currentData()
+        except Exception:
+            data = ""
+        if data is None:
+            data = ""
+        normalized = self._normalize_loop_override(data)
+        if normalized:
+            return normalized
+        return ""
+
+    def _set_loop_combo_value(self, combo: QtWidgets.QComboBox | None, value: str | None) -> None:
+        if combo is None:
+            return
+        target = self._normalize_loop_override(value)
+        if not target:
+            target = ""
+        idx = combo.findData(target)
+        if idx < 0 and target:
+            combo.addItem(target, target)
+            idx = combo.count() - 1
+        try:
+            blocker = QtCore.QSignalBlocker(combo)
+        except Exception:
+            blocker = None
+        if idx < 0:
+            idx = 0
+        combo.setCurrentIndex(idx)
+        if blocker is not None:
+            del blocker
+
     def _collect_strategy_controls(self, kind: str) -> dict:
         try:
             if kind == "runtime":
@@ -1629,7 +1684,7 @@ class MainWindow(QtWidgets.QWidget):
                     "side": self._resolve_dashboard_side(),
                     "position_pct": float(self.pospct_spin.value()) if hasattr(self, "pospct_spin") else None,
                     "position_pct_units": "percent" if hasattr(self, "pospct_spin") else None,
-                    "loop_interval_override": self.loop_edit.text() if hasattr(self, "loop_edit") else "",
+                    "loop_interval_override": self._loop_choice_value(getattr(self, "loop_combo", None)),
                     "add_only": bool(self.cb_add_only.isChecked()) if hasattr(self, "cb_add_only") else None,
                     "stop_loss": stop_cfg,
                     "connector_backend": self._runtime_connector_backend(suppress_refresh=True),
@@ -1686,7 +1741,7 @@ class MainWindow(QtWidgets.QWidget):
                     "margin_mode": self.backtest_margin_mode_combo.currentText() if hasattr(self, "backtest_margin_mode_combo") else None,
                     "position_mode": self.backtest_position_mode_combo.currentText() if hasattr(self, "backtest_position_mode_combo") else None,
                     "assets_mode": assets_mode_val,
-                    "loop_interval_override": self._normalize_loop_override(self.backtest_loop_edit.text() if hasattr(self, "backtest_loop_edit") else None),
+                    "loop_interval_override": self._loop_choice_value(getattr(self, "backtest_loop_combo", None)),
                     "leverage": int(self.backtest_leverage_spin.value()) if hasattr(self, "backtest_leverage_spin") else None,
                     "stop_loss": stop_cfg,
                     "connector_backend": self._backtest_connector_backend(),
@@ -1740,11 +1795,8 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 prepared["position_pct_units"] = "percent"
             loop_val = prepared.get("loop_interval_override")
-            if not loop_val and hasattr(self, "loop_edit"):
-                try:
-                    loop_val = self.loop_edit.text()
-                except Exception:
-                    loop_val = None
+            if not loop_val and hasattr(self, "loop_combo"):
+                loop_val = self._loop_choice_value(getattr(self, "loop_combo", None))
             loop_val = self._normalize_loop_override(loop_val)
             if loop_val:
                 prepared["loop_interval_override"] = loop_val
@@ -1837,11 +1889,8 @@ class MainWindow(QtWidgets.QWidget):
                 except Exception:
                     prepared["account_mode"] = account_mode_val
             loop_val = prepared.get("loop_interval_override")
-            if not loop_val and hasattr(self, "backtest_loop_edit"):
-                try:
-                    loop_val = self.backtest_loop_edit.text()
-                except Exception:
-                    loop_val = None
+            if not loop_val and hasattr(self, "backtest_loop_combo"):
+                loop_val = self._loop_choice_value(getattr(self, "backtest_loop_combo", None))
             loop_val = self._normalize_loop_override(loop_val)
             if loop_val:
                 prepared["loop_interval_override"] = loop_val
@@ -2189,6 +2238,39 @@ class MainWindow(QtWidgets.QWidget):
                     combo.setCurrentIndex(idx)
                 combo.blockSignals(False)
 
+        if key == "top10":
+            updated_sl = self._runtime_stop_loss_update(
+                enabled=True,
+                mode="percent",
+                percent=20.0,
+                scope="per_trade",
+            )
+            checkbox = getattr(self, "stop_loss_enable_cb", None)
+            if checkbox is not None:
+                with QtCore.QSignalBlocker(checkbox):
+                    checkbox.setChecked(True)
+            mode_combo = getattr(self, "stop_loss_mode_combo", None)
+            if mode_combo is not None:
+                with QtCore.QSignalBlocker(mode_combo):
+                    idx_mode = mode_combo.findData("percent")
+                    if idx_mode < 0:
+                        idx_mode = 0
+                    mode_combo.setCurrentIndex(idx_mode)
+            percent_spin = getattr(self, "stop_loss_percent_spin", None)
+            if percent_spin is not None:
+                with QtCore.QSignalBlocker(percent_spin):
+                    percent_spin.setValue(20.0)
+            scope_combo = getattr(self, "stop_loss_scope_combo", None)
+            if scope_combo is not None:
+                with QtCore.QSignalBlocker(scope_combo):
+                    idx_scope = scope_combo.findData("per_trade")
+                    if idx_scope < 0:
+                        idx_scope = scope_combo.findData(STOP_LOSS_SCOPE_OPTIONS[0])
+                    if idx_scope is not None and idx_scope >= 0:
+                        scope_combo.setCurrentIndex(idx_scope)
+            self.config["stop_loss"] = updated_sl
+            self._update_runtime_stop_loss_widgets()
+
         indicators = template.get("indicators", {})
         for ind_key, params in indicators.items():
             cfg = self.config["indicators"].setdefault(ind_key, {})
@@ -2201,6 +2283,127 @@ class MainWindow(QtWidgets.QWidget):
                     cb.setChecked(True)
                 else:
                     self.config["indicators"][ind_key] = cfg
+
+    def _on_runtime_loop_changed(self, *_args):
+        value = self._loop_choice_value(getattr(self, "loop_combo", None))
+        self.config["loop_interval_override"] = value
+
+    def _on_backtest_loop_changed(self, *_args):
+        value = self._loop_choice_value(getattr(self, "backtest_loop_combo", None))
+        self._update_backtest_config("loop_interval_override", value)
+
+    def _on_runtime_account_mode_changed(self, index: int) -> None:
+        combo = getattr(self, "account_mode_combo", None)
+        if combo is None:
+            return
+        if index is None or index < 0:
+            index = combo.currentIndex()
+        try:
+            data = combo.itemData(index)
+        except Exception:
+            data = None
+        if data is None:
+            data = combo.itemText(index)
+        normalized = self._normalize_account_mode(data)
+        self.config["account_mode"] = normalized
+        self._apply_runtime_account_mode_constraints(normalized)
+
+    def _on_backtest_account_mode_changed(self, index: int) -> None:
+        combo = getattr(self, "backtest_account_mode_combo", None)
+        if combo is None:
+            return
+        if index is None or index < 0:
+            index = combo.currentIndex()
+        try:
+            data = combo.itemData(index)
+        except Exception:
+            data = None
+        if data is None:
+            data = combo.itemText(index)
+        normalized = self._normalize_account_mode(data)
+        self._update_backtest_config("account_mode", normalized)
+        self._apply_backtest_account_mode_constraints(normalized)
+
+    def _apply_runtime_account_mode_constraints(self, normalized_mode: str) -> None:
+        self._enforce_portfolio_margin_constraints(
+            normalized_mode,
+            getattr(self, "margin_mode_combo", None),
+            runtime=True,
+        )
+
+    def _apply_backtest_account_mode_constraints(self, normalized_mode: str) -> None:
+        self._enforce_portfolio_margin_constraints(
+            normalized_mode,
+            getattr(self, "backtest_margin_mode_combo", None),
+            runtime=False,
+        )
+
+    def _enforce_portfolio_margin_constraints(
+        self,
+        normalized_mode: str,
+        combo: QtWidgets.QComboBox | None,
+        *,
+        runtime: bool,
+    ) -> None:
+        if combo is None:
+            return
+        is_portfolio = (normalized_mode == "Portfolio Margin")
+        blocker = None
+        try:
+            blocker = QtCore.QSignalBlocker(combo)
+        except Exception:
+            blocker = None
+        if is_portfolio:
+            idx_cross = -1
+            try:
+                idx_cross = combo.findText("Cross", QtCore.Qt.MatchFlag.MatchFixedString)
+            except Exception:
+                try:
+                    idx_cross = combo.findText("Cross")
+                except Exception:
+                    idx_cross = -1
+            if idx_cross < 0:
+                for pos in range(combo.count()):
+                    text = str(combo.itemText(pos)).strip().lower()
+                    if text == "cross":
+                        idx_cross = pos
+                        break
+            if idx_cross >= 0:
+                combo.setCurrentIndex(idx_cross)
+        if blocker is not None:
+            del blocker
+        combo.setEnabled(not is_portfolio)
+        if is_portfolio:
+            if runtime:
+                self.config["margin_mode"] = "Cross"
+            else:
+                self.backtest_config["margin_mode"] = "Cross"
+                self.config.setdefault("backtest", {})["margin_mode"] = "Cross"
+
+    def _on_lead_trader_toggled(self, checked: bool) -> None:
+        enabled = bool(checked)
+        self.config["lead_trader_enabled"] = enabled
+        self._apply_lead_trader_state(enabled)
+
+    def _on_lead_trader_option_changed(self, index: int) -> None:
+        combo = getattr(self, "lead_trader_combo", None)
+        if combo is None:
+            return
+        if index is None or index < 0:
+            index = combo.currentIndex()
+        try:
+            value = combo.itemData(index)
+        except Exception:
+            value = None
+        if value is None:
+            value = combo.itemText(index)
+        self.config["lead_trader_profile"] = str(value)
+
+    def _apply_lead_trader_state(self, enabled: bool) -> None:
+        combo = getattr(self, "lead_trader_combo", None)
+        if combo is not None:
+            combo.setEnabled(bool(enabled))
+        self._apply_runtime_account_mode_constraints(self.config.get("account_mode", ACCOUNT_MODE_OPTIONS[0]))
 
     def _apply_initial_geometry(self):
         """Ensure the window fits on the active screen on Linux desktops."""
@@ -3412,11 +3615,10 @@ class MainWindow(QtWidgets.QWidget):
                     self.backtest_account_mode_combo.setCurrentIndex(idx_account_mode)
             leverage_cfg = int(self.backtest_config.get("leverage", 5) or 1)
             self.backtest_leverage_spin.setValue(leverage_cfg)
-            loop_cfg = self._normalize_loop_override(self.backtest_config.get("loop_interval_override"))
-            if hasattr(self, "backtest_loop_edit"):
-                with QtCore.QSignalBlocker(self.backtest_loop_edit):
-                    self.backtest_loop_edit.setText(loop_cfg or "")
-            self.backtest_config["loop_interval_override"] = loop_cfg or ""
+            loop_cfg = self._normalize_loop_override(self.backtest_config.get("loop_interval_override")) or ""
+            if hasattr(self, "backtest_loop_combo"):
+                self._set_loop_combo_value(self.backtest_loop_combo, loop_cfg)
+            self.backtest_config["loop_interval_override"] = loop_cfg
             now_dt = QtCore.QDateTime.currentDateTime()
             start_cfg = self.backtest_config.get("start_date")
             end_cfg = self.backtest_config.get("end_date")
@@ -4048,8 +4250,8 @@ class MainWindow(QtWidgets.QWidget):
             loop_override_value = template.get("loop_interval_override")
             if loop_override_value is not None:
                 normalized_loop = self._normalize_loop_override(loop_override_value)
-                with QtCore.QSignalBlocker(self.backtest_loop_edit):
-                    self.backtest_loop_edit.setText(normalized_loop or "")
+                if hasattr(self, "backtest_loop_combo"):
+                    self._set_loop_combo_value(self.backtest_loop_combo, normalized_loop)
                 self._update_backtest_config("loop_interval_override", normalized_loop or "")
         except Exception:
             pass
@@ -6179,9 +6381,9 @@ class MainWindow(QtWidgets.QWidget):
         if idx_account_mode < 0:
             idx_account_mode = 0
         self.account_mode_combo.setCurrentIndex(idx_account_mode)
-        self.account_mode_combo.currentTextChanged.connect(
-            lambda value: self.config.__setitem__("account_mode", self._normalize_account_mode(value))
-        )
+        self.account_mode_combo.currentIndexChanged.connect(self._on_runtime_account_mode_changed)
+        self.config["account_mode"] = account_mode_cfg
+        self._apply_runtime_account_mode_constraints(account_mode_cfg)
         grid.addWidget(self.account_mode_combo, 1, 5)
 
         grid.addWidget(QtWidgets.QLabel("Connector:"), 1, 6)
@@ -6222,6 +6424,7 @@ class MainWindow(QtWidgets.QWidget):
         self.margin_mode_combo.addItems(["Cross", "Isolated"])
         self.margin_mode_combo.setCurrentText(self.config.get('margin_mode', 'Isolated'))
         grid.addWidget(self.margin_mode_combo, 2, 6)
+        self._apply_runtime_account_mode_constraints(self.config.get("account_mode", ACCOUNT_MODE_OPTIONS[0]))
 
         grid.addWidget(QtWidgets.QLabel("Position Mode:"), 2, 7)
         self.position_mode_combo = QtWidgets.QComboBox()
@@ -6364,28 +6567,62 @@ class MainWindow(QtWidgets.QWidget):
         g.addWidget(self.pospct_spin, 0, 3)
 
         g.addWidget(QtWidgets.QLabel("Loop Interval Override:"), 0, 4)
-        self.loop_edit = QtWidgets.QLineEdit()
-        self.loop_edit.setPlaceholderText("Leave empty to use candle interval; e.g., 30s")
-        g.addWidget(self.loop_edit, 0, 5)
+        self.loop_combo = QtWidgets.QComboBox()
+        for label, value in DASHBOARD_LOOP_CHOICES:
+            self.loop_combo.addItem(label, value)
+        initial_loop = self._normalize_loop_override(self.config.get("loop_interval_override"))
+        if not initial_loop:
+            initial_loop = "1m"
+        self.config["loop_interval_override"] = initial_loop
+        if initial_loop and self.loop_combo.findData(initial_loop) < 0:
+            self.loop_combo.addItem(initial_loop, initial_loop)
+        idx_loop = self.loop_combo.findData(initial_loop)
+        if idx_loop < 0:
+            idx_loop = 0
+        self.loop_combo.setCurrentIndex(idx_loop)
+        self.loop_combo.currentIndexChanged.connect(self._on_runtime_loop_changed)
+        g.addWidget(self.loop_combo, 0, 5)
+
+        # Lead trader controls
+        self.lead_trader_enable_cb = QtWidgets.QCheckBox("Enable Lead Trader")
+        lead_trader_enabled = bool(self.config.get("lead_trader_enabled", False))
+        self.lead_trader_enable_cb.setChecked(lead_trader_enabled)
+        g.addWidget(self.lead_trader_enable_cb, 1, 0, 1, 2)
+
+        self.lead_trader_combo = QtWidgets.QComboBox()
+        for label, value in LEAD_TRADER_OPTIONS:
+            self.lead_trader_combo.addItem(label, value)
+        lead_trader_choice = self.config.get("lead_trader_profile") or LEAD_TRADER_OPTIONS[0][1]
+        idx_lead_trader = self.lead_trader_combo.findData(lead_trader_choice)
+        if idx_lead_trader < 0:
+            idx_lead_trader = 0
+        self.lead_trader_combo.setCurrentIndex(idx_lead_trader)
+        self.config["lead_trader_profile"] = str(self.lead_trader_combo.itemData(idx_lead_trader))
+        g.addWidget(self.lead_trader_combo, 1, 2, 1, 3)
+
+        self.lead_trader_enable_cb.toggled.connect(self._on_lead_trader_toggled)
+        self.lead_trader_combo.currentIndexChanged.connect(self._on_lead_trader_option_changed)
 
         # Add-only (One-way guard) option
         self.cb_add_only = QtWidgets.QCheckBox("Add-only in current net direction (one-way)")
         self.cb_add_only.setChecked(bool(self.config.get('add_only', False)))
-        g.addWidget(self.cb_add_only, 1, 0, 1, 6)
+        g.addWidget(self.cb_add_only, 2, 0, 1, 6)
 
         self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All On Window Close")
         self.cb_close_on_exit.setChecked(bool(self.config.get('close_on_exit', False)))
         self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
-        g.addWidget(self.cb_close_on_exit, 2, 0, 1, 6)
+        g.addWidget(self.cb_close_on_exit, 3, 0, 1, 6)
+
+        self._apply_lead_trader_state(lead_trader_enabled)
 
         stop_cfg = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.config["stop_loss"] = stop_cfg
 
-        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 3, 0)
+        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 4, 0)
         self.stop_loss_enable_cb = QtWidgets.QCheckBox("Enable")
         self.stop_loss_enable_cb.setToolTip("Toggle automatic stop-loss handling for live trades.")
         self.stop_loss_enable_cb.setChecked(stop_cfg.get("enabled", False))
-        g.addWidget(self.stop_loss_enable_cb, 3, 1)
+        g.addWidget(self.stop_loss_enable_cb, 4, 1)
 
         self.stop_loss_mode_combo = QtWidgets.QComboBox()
         for mode_key in STOP_LOSS_MODE_ORDER:
@@ -6394,7 +6631,7 @@ class MainWindow(QtWidgets.QWidget):
         if mode_idx < 0:
             mode_idx = 0
         self.stop_loss_mode_combo.setCurrentIndex(mode_idx)
-        g.addWidget(self.stop_loss_mode_combo, 3, 2, 1, 2)
+        g.addWidget(self.stop_loss_mode_combo, 4, 2, 1, 2)
 
         self.stop_loss_usdt_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_usdt_spin.setRange(0.0, 1_000_000_000.0)
@@ -6402,7 +6639,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_usdt_spin.setSingleStep(1.0)
         self.stop_loss_usdt_spin.setSuffix(" USDT")
         self.stop_loss_usdt_spin.setValue(float(stop_cfg.get("usdt", 0.0)))
-        g.addWidget(self.stop_loss_usdt_spin, 3, 4)
+        g.addWidget(self.stop_loss_usdt_spin, 4, 4)
 
         self.stop_loss_percent_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_percent_spin.setRange(0.0, 100.0)
@@ -6410,7 +6647,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_percent_spin.setSingleStep(0.5)
         self.stop_loss_percent_spin.setSuffix(" %")
         self.stop_loss_percent_spin.setValue(float(stop_cfg.get("percent", 0.0)))
-        g.addWidget(self.stop_loss_percent_spin, 3, 5)
+        g.addWidget(self.stop_loss_percent_spin, 4, 5)
 
         self.stop_loss_scope_combo = QtWidgets.QComboBox()
         for scope_key in STOP_LOSS_SCOPE_OPTIONS:
@@ -6420,8 +6657,8 @@ class MainWindow(QtWidgets.QWidget):
         if scope_idx < 0:
             scope_idx = 0
         self.stop_loss_scope_combo.setCurrentIndex(scope_idx)
-        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 4, 0)
-        g.addWidget(self.stop_loss_scope_combo, 4, 1, 1, 2)
+        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 5, 0)
+        g.addWidget(self.stop_loss_scope_combo, 5, 1, 1, 2)
 
         # Strategy templates
         self._dashboard_templates = {
@@ -6459,7 +6696,7 @@ class MainWindow(QtWidgets.QWidget):
                 },
             },
         }
-        g.addWidget(QtWidgets.QLabel("Template:"), 5, 0)
+        g.addWidget(QtWidgets.QLabel("Template:"), 6, 0)
         self.template_combo = QtWidgets.QComboBox()
         self.template_combo.addItem("No Template", "")
         for key, info in self._dashboard_templates.items():
@@ -6470,7 +6707,7 @@ class MainWindow(QtWidgets.QWidget):
             idx_template = 0
         self.template_combo.setCurrentIndex(idx_template)
         self.template_combo.currentIndexChanged.connect(self._on_dashboard_template_changed)
-        g.addWidget(self.template_combo, 5, 1, 1, 3)
+        g.addWidget(self.template_combo, 6, 1, 1, 3)
 
         self.stop_loss_enable_cb.toggled.connect(self._on_runtime_stop_loss_enabled)
         self.stop_loss_mode_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_mode_changed)
@@ -6497,7 +6734,7 @@ class MainWindow(QtWidgets.QWidget):
                     self._on_indicator_toggled(_key, checked)
                 return _toggle
             cb.toggled.connect(make_toggle_handler())
-            btn = QtWidgets.QPushButton("Params...")
+            btn = QtWidgets.QPushButton("Buy-Sell Values")
             def make_handler(_key=key, _params=params):
                 def handler():
                     dlg = ParamDialog(_key, _params, self, display_name=INDICATOR_DISPLAY_NAMES.get(_key, _key))
@@ -6555,7 +6792,9 @@ class MainWindow(QtWidgets.QWidget):
             self.add_interval_btn,
             self.side_combo,
             self.pospct_spin,
-            self.loop_edit,
+            self.loop_combo,
+            self.lead_trader_enable_cb,
+            self.lead_trader_combo,
             self.cb_add_only,
             self.cb_close_on_exit,
             self.stop_loss_enable_cb,
@@ -6906,15 +7145,20 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_pospct_spin.valueChanged.connect(lambda v: self._update_backtest_config("position_pct", float(v)))
         param_form.addRow("Position % of Balance:", self.backtest_pospct_spin)
 
-        self.backtest_loop_edit = QtWidgets.QLineEdit()
-        self.backtest_loop_edit.setPlaceholderText("Leave blank to use strategy interval (e.g. 30s, 2m)")
-        loop_default = self._normalize_loop_override(self.backtest_config.get("loop_interval_override"))
-        with QtCore.QSignalBlocker(self.backtest_loop_edit):
-            self.backtest_loop_edit.setText(loop_default or "")
-        self.backtest_loop_edit.textChanged.connect(lambda v: self._update_backtest_config("loop_interval_override", self._normalize_loop_override(v) or ""))
-        self.backtest_config["loop_interval_override"] = loop_default or ""
-        self.config.setdefault("backtest", {})["loop_interval_override"] = loop_default or ""
-        param_form.addRow("Loop Interval Override:", self.backtest_loop_edit)
+        self.backtest_loop_combo = QtWidgets.QComboBox()
+        for label, value in DASHBOARD_LOOP_CHOICES:
+            self.backtest_loop_combo.addItem(label, value)
+        loop_default = self._normalize_loop_override(self.backtest_config.get("loop_interval_override")) or ""
+        if loop_default and self.backtest_loop_combo.findData(loop_default) < 0:
+            self.backtest_loop_combo.addItem(loop_default, loop_default)
+        idx_backtest_loop = self.backtest_loop_combo.findData(loop_default)
+        if idx_backtest_loop < 0:
+            idx_backtest_loop = 0
+        self.backtest_loop_combo.setCurrentIndex(idx_backtest_loop)
+        self.backtest_loop_combo.currentIndexChanged.connect(self._on_backtest_loop_changed)
+        self.backtest_config["loop_interval_override"] = loop_default
+        self.config.setdefault("backtest", {})["loop_interval_override"] = loop_default
+        param_form.addRow("Loop Interval Override:", self.backtest_loop_combo)
 
         backtest_stop_cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
         self.backtest_config["stop_loss"] = backtest_stop_cfg
@@ -7018,12 +7262,10 @@ class MainWindow(QtWidgets.QWidget):
             idx_account_mode_bt = 0
         with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
             self.backtest_account_mode_combo.setCurrentIndex(idx_account_mode_bt)
-        self.backtest_account_mode_combo.currentIndexChanged.connect(
-            lambda idx: self._update_backtest_config(
-                "account_mode",
-                self._normalize_account_mode(self.backtest_account_mode_combo.itemData(idx)),
-            )
-        )
+        self.backtest_account_mode_combo.currentIndexChanged.connect(self._on_backtest_account_mode_changed)
+        self.backtest_config["account_mode"] = account_mode_cfg_bt
+        self.config.setdefault("backtest", {})["account_mode"] = account_mode_cfg_bt
+        self._apply_backtest_account_mode_constraints(account_mode_cfg_bt)
         param_form.addRow("Account Mode:", self.backtest_account_mode_combo)
 
         self.backtest_connector_combo = QtWidgets.QComboBox()
@@ -7100,7 +7342,7 @@ class MainWindow(QtWidgets.QWidget):
             cb.setProperty("indicator_key", key)
             cb.setChecked(bool(params.get("enabled", False)))
             cb.toggled.connect(lambda checked, _key=key: self._backtest_toggle_indicator(_key, checked))
-            btn = QtWidgets.QPushButton("Params...")
+            btn = QtWidgets.QPushButton("Buy-Sell Values")
             btn.clicked.connect(lambda _=False, _key=key: self._open_backtest_params(_key))
             ind_layout.addWidget(cb, row, 0)
             ind_layout.addWidget(btn, row, 1)
@@ -9275,7 +9517,7 @@ def start_strategy(self):
         return
     started = 0
     try:
-        default_loop_override = self._normalize_loop_override(self.loop_edit.text() if hasattr(self, "loop_edit") else None)
+        default_loop_override = self._loop_choice_value(getattr(self, "loop_combo", None))
         runtime_ctx = self._override_ctx("runtime")
         account_type_text = (self.account_combo.currentText() or "Futures").strip()
         pair_entries: list[dict] = []
@@ -9783,6 +10025,30 @@ def load_config(self):
             if idx_backtest_account is not None and idx_backtest_account >= 0:
                 with QtCore.QSignalBlocker(self.backtest_account_mode_combo):
                     self.backtest_account_mode_combo.setCurrentIndex(idx_backtest_account)
+            self._apply_runtime_account_mode_constraints(account_mode_loaded)
+            self._apply_backtest_account_mode_constraints(backtest_account_mode_loaded)
+            loop_loaded = self._normalize_loop_override(self.config.get("loop_interval_override"))
+            if not loop_loaded:
+                loop_loaded = "1m"
+            self._set_loop_combo_value(getattr(self, "loop_combo", None), loop_loaded)
+            self.config["loop_interval_override"] = loop_loaded or ""
+            backtest_loop_loaded = self._normalize_loop_override(self.backtest_config.get("loop_interval_override"))
+            self._set_loop_combo_value(getattr(self, "backtest_loop_combo", None), backtest_loop_loaded)
+            self.backtest_config["loop_interval_override"] = backtest_loop_loaded or ""
+            self.config.setdefault("backtest", {})["loop_interval_override"] = backtest_loop_loaded or ""
+            lead_enabled_loaded = bool(self.config.get("lead_trader_enabled", False))
+            if hasattr(self, "lead_trader_enable_cb") and self.lead_trader_enable_cb is not None:
+                with QtCore.QSignalBlocker(self.lead_trader_enable_cb):
+                    self.lead_trader_enable_cb.setChecked(lead_enabled_loaded)
+            lead_profile_loaded = self.config.get("lead_trader_profile") or LEAD_TRADER_OPTIONS[0][1]
+            if hasattr(self, "lead_trader_combo") and self.lead_trader_combo is not None:
+                idx_lead_loaded = self.lead_trader_combo.findData(lead_profile_loaded)
+                if idx_lead_loaded < 0:
+                    idx_lead_loaded = 0
+                with QtCore.QSignalBlocker(self.lead_trader_combo):
+                    self.lead_trader_combo.setCurrentIndex(idx_lead_loaded)
+                self.config["lead_trader_profile"] = str(self.lead_trader_combo.itemData(self.lead_trader_combo.currentIndex()))
+            self._apply_lead_trader_state(lead_enabled_loaded)
             runtime_backend = self._runtime_connector_backend(suppress_refresh=True)
             if hasattr(self, "connector_combo") and self.connector_combo is not None:
                 idx_runtime_connector = self.connector_combo.findData(runtime_backend)

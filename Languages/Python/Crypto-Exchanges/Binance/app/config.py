@@ -32,6 +32,9 @@ DEFAULT_CONFIG = {
     "position_mode": "Hedge",    # "One-way" or "Hedge"
     "assets_mode": "Single-Asset",
     "account_mode": "Classic Trading",
+    "lead_trader_enabled": False,
+    "lead_trader_profile": None,
+    "loop_interval_override": "1m",
     "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
     "code_language": "Python (PyQt)",
     "selected_exchange": "Binance",

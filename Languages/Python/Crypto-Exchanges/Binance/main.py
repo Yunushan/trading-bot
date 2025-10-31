@@ -1,4 +1,3 @@
-
 import sys
 from pathlib import Path
 
@@ -7,6 +6,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 PROJECT_ROOT_STR = str(PROJECT_ROOT)
 if PROJECT_ROOT_STR not in sys.path:
     sys.path.insert(0, PROJECT_ROOT_STR)
+
+BINANCE_DIR = Path(__file__).resolve().parent
+BINANCE_DIR_STR = str(BINANCE_DIR)
+if BINANCE_DIR_STR not in sys.path:
+    sys.path.insert(0, BINANCE_DIR_STR)
 
 # Version banner / environment setup must run before importing PyQt modules
 from app import preamble  # noqa: F401

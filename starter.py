@@ -9,9 +9,12 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from windows_taskbar import apply_taskbar_metadata, build_relaunch_command, ensure_app_user_model_id
-
 BASE_DIR = Path(__file__).resolve().parent
+WINDOWS_TASKBAR_DIR = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance"
+if str(WINDOWS_TASKBAR_DIR) not in sys.path:
+    sys.path.insert(0, str(WINDOWS_TASKBAR_DIR))
+
+from windows_taskbar import apply_taskbar_metadata, build_relaunch_command, ensure_app_user_model_id
 BINANCE_MAIN = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance" / "main.py"
 BINANCE_CPP_PROJECT = (
     BASE_DIR / "Languages" / "C++" / "Crypto-Exchanges" / "Binance" / "backtest_tab"
