@@ -1852,31 +1852,39 @@ class StrategyEngine:
                         existing_qty = 0.0
                     signature_tracked_elsewhere = bool(active_signatures) and bool(signature) and signature not in active_signatures
                     if existing_qty > 0.0 and not signature_tracked_elsewhere:
-                        cache = _load_positions_cache()
                         side_is_long = side_upper == "BUY"
-                        position_active = False
-                        for pos in cache:
-                            try:
-                                if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+
+                        def _is_position_active(entries: list[dict] | None) -> bool:
+                            for pos in entries or []:
+                                try:
+                                    if str(pos.get("symbol") or "").upper() != cw["symbol"]:
+                                        continue
+                                    amt = float(pos.get("positionAmt") or 0.0)
+                                    if dual_side:
+                                        pos_side = str(pos.get("positionSide") or "").upper()
+                                        if side_is_long and pos_side == "LONG" and amt > 1e-9:
+                                            return True
+                                        if (not side_is_long) and pos_side == "SHORT" and abs(amt) > 1e-9:
+                                            return True
+                                    else:
+                                        if side_is_long and amt > 1e-9:
+                                            return True
+                                        if (not side_is_long) and amt < -1e-9:
+                                            return True
+                                except Exception:
                                     continue
-                                amt = float(pos.get("positionAmt") or 0.0)
-                                if dual_side:
-                                    pos_side = str(pos.get("positionSide") or "").upper()
-                                    if side_is_long and pos_side == "LONG" and amt > 1e-9:
-                                        position_active = True
-                                        break
-                                    if (not side_is_long) and pos_side == "SHORT" and abs(amt) > 1e-9:
-                                        position_active = True
-                                        break
-                                else:
-                                    if side_is_long and amt > 1e-9:
-                                        position_active = True
-                                        break
-                                    if (not side_is_long) and amt < -1e-9:
-                                        position_active = True
-                                        break
+                            return False
+
+                        cache = _load_positions_cache()
+                        position_active = _is_position_active(cache)
+                        if not position_active:
+                            try:
+                                fresh_cache = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                                if fresh_cache:
+                                    positions_cache = fresh_cache  # capture latest snapshot
+                                position_active = _is_position_active(fresh_cache)
                             except Exception:
-                                continue
+                                position_active = False
                         if position_active:
                             self.log(
                                 f"{cw['symbol']}@{cw.get('interval')} duplicate {side_upper} open prevented (position still active)."
@@ -1884,9 +1892,14 @@ class StrategyEngine:
                             allow_order = False
                         else:
                             elapsed = time.time() - float(leg_dup.get("timestamp") or 0.0)
-                            if elapsed < 5.0:
+                            try:
+                                interval_seconds = float(_interval_to_seconds(str(cw.get('interval') or '1m')))
+                            except Exception:
+                                interval_seconds = 60.0
+                            guard_window = max(12.0, max(5.0, interval_seconds) * 1.2)
+                            if elapsed < guard_window:
                                 self.log(
-                                    f"{cw['symbol']}@{cw.get('interval')} awaiting exchange update; suppressing duplicate {side_upper} open (last fill {elapsed:.1f}s ago)."
+                                    f"{cw['symbol']}@{cw.get('interval')} pending fill guard: suppressing duplicate {side_upper} open (last attempt {elapsed:.1f}s ago)."
                                 )
                                 allow_order = False
                             else:
@@ -1913,6 +1926,7 @@ class StrategyEngine:
             orders_to_execute = []
 
         def _execute_signal_order(order_side: str, indicator_labels: list[str], order_signature: tuple[str, ...], origin_timestamp: float | None) -> None:
+            nonlocal positions_cache
             side = str(order_side or "").upper()
             if side not in ("BUY", "SELL"):
                 return
