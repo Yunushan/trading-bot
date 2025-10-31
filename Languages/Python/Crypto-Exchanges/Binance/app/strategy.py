@@ -1945,10 +1945,10 @@ class StrategyEngine:
                         global_tracker = {"bar": current_bar_marker, "signatures": set()}
                         StrategyEngine._BAR_GLOBAL_SIGNATURES[bar_sig_key] = global_tracker
                     global_sig_set = global_tracker.setdefault("signatures", set())
-                    if sig_sorted in global_sig_set:
+                    if "__ANY__" in global_sig_set or sig_sorted in global_sig_set:
                         try:
                             self.log(
-                                f"{cw['symbol']}@{interval_key} global duplicate {side} suppressed (signature {sig_sorted} already executed this bar)."
+                                f"{cw['symbol']}@{interval_key} global duplicate {side} suppressed (order already placed this bar)."
                             )
                         except Exception:
                             pass
@@ -1958,10 +1958,10 @@ class StrategyEngine:
                     tracker = {"bar": current_bar_marker, "signatures": set()}
                     self._bar_order_tracker[bar_sig_key] = tracker
                 sig_set = tracker.setdefault("signatures", set())
-                if sig_sorted in sig_set:
+                if "__ANY__" in sig_set or sig_sorted in sig_set:
                     try:
                         self.log(
-                            f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (signature {sig_sorted} already executed this bar)."
+                            f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (order already placed this bar)."
                         )
                     except Exception:
                         pass
@@ -2248,7 +2248,7 @@ class StrategyEngine:
                                     if tracker.get("bar") != current_bar_marker:
                                         tracker["bar"] = current_bar_marker
                                         tracker["signatures"] = set()
-                                    tracker.setdefault("signatures", set()).add(sig_sorted)
+                                    tracker.setdefault("signatures", set()).update({sig_sorted, "__ANY__"})
                                     with StrategyEngine._BAR_GUARD_LOCK:
                                         global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.setdefault(
                                             bar_sig_key,
@@ -2257,7 +2257,7 @@ class StrategyEngine:
                                         if global_tracker.get("bar") != current_bar_marker:
                                             global_tracker["bar"] = current_bar_marker
                                             global_tracker["signatures"] = set()
-                                        global_tracker.setdefault("signatures", set()).add(sig_sorted)
+                                        global_tracker.setdefault("signatures", set()).update({sig_sorted, "__ANY__"})
                                 key = (cw['symbol'], cw.get('interval'), side)
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
