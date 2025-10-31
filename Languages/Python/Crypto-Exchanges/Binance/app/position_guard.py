@@ -6,17 +6,18 @@ from typing import Dict, Tuple, Optional, Any, List
 class IntervalPositionGuard:
     """Prevents duplicate opens for (symbol, interval, side).
 
-    - Tracks a ledger of successful opens stamped by timestamp.
-    - Tracks 'pending' in-flight attempts keyed by (symbol, side) to coalesce
+    - Tracks a ledger of successful opens stamped by timestamp per context.
+    - Tracks 'pending' in-flight attempts keyed by (symbol, side, context) to coalesce
       near-simultaneous signals arriving from multiple intervals.
-    - Optionally can be strict by symbol+side across all intervals (disabled by default).
+    - By default allows stacking distinct contexts on the same symbol & side while still
+      blocking exact duplicates and enforcing opposite-side mutual exclusion.
     """
     def __init__(self, stale_ttl_sec: Optional[int]=180) -> None:
         self.stale_ttl_sec: int = int(stale_ttl_sec or 180)
-        self.ledger: Dict[Tuple[str, str, str], float] = {}
+        self.ledger: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self.pending_attempts: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
         self.active: Dict[Tuple[str, str], Dict[str, int]] = {}
-        self.strict_symbol_side: bool = True  # block across intervals if True
+        self.strict_symbol_side: bool = False  # allow stacking by default; can be tightened by caller
         self._bw = None  # late-attached binance wrapper
         self._lock = threading.RLock()
 
@@ -36,18 +37,28 @@ class IntervalPositionGuard:
         if not self.stale_ttl_sec:
             return
         now = time.time()
-        for k,ts in list(self.ledger.items()):
-            if now - ts > self.stale_ttl_sec:
-                self.ledger.pop(k, None)
+        for key, ctx_map in list(self.ledger.items()):
+            if not isinstance(ctx_map, dict):
+                ctx_map = {"__legacy__": float(ctx_map or 0.0)}
+                self.ledger[key] = ctx_map
+            expired_any = False
+            sym, iv, sd = key
+            for ctx, ts in list(ctx_map.items()):
                 try:
-                    sym, iv, sd = k
-                    state = self.active.get((sym, iv))
-                    if state:
-                        state[sd] = max(0, state.get(sd, 0) - 1)
-                        if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
-                            self.active.pop((sym, iv), None)
+                    ts_val = float(ts or 0.0)
                 except Exception:
-                    pass
+                    ts_val = 0.0
+                if now - ts_val > self.stale_ttl_sec:
+                    ctx_map.pop(ctx, None)
+                    self._record_active(sym, iv, sd, delta=-1)
+                    expired_any = True
+            if not ctx_map:
+                self.ledger.pop(key, None)
+            if expired_any:
+                state = self.active.get((sym, iv))
+                if state and state.get(sd, 0) <= 0:
+                    if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
+                        self.active.pop((sym, iv), None)
 
     # ----- public
     def reconcile_with_exchange(self, bw=None, jobs: Optional[List[dict]]=None, account_type: str='FUTURES') -> None:
@@ -72,7 +83,12 @@ class IntervalPositionGuard:
                         if str(job.get('symbol') or '').upper() == sym:
                             iv = str(job.get('interval') or '')
                             if iv:
-                                self.ledger[(sym, iv, sd)] = now
+                                key = (sym, iv, sd)
+                                ctx_map = self.ledger.get(key)
+                                if not isinstance(ctx_map, dict):
+                                    ctx_map = {}
+                                    self.ledger[key] = ctx_map
+                                ctx_map["__reconciled__"] = now
             except Exception:
                 # never block on reconciliation errors
                 pass
@@ -88,7 +104,14 @@ class IntervalPositionGuard:
             opposite = 'SELL' if sd == 'BUY' else 'BUY'
             if state.get(opposite, 0) > 0:
                 return False
-            if (sym, iv, sd) in self.ledger:
+            entry_ctx = self.ledger.get((sym, iv, sd))
+            if isinstance(entry_ctx, dict):
+                if ctx in entry_ctx:
+                    return False
+                if context is None and entry_ctx:
+                    return False
+            elif entry_ctx is not None:
+                # legacy float format; block duplicate opens
                 return False
             if context is None:
                 if any(k[0] == sym and k[1] == sd for k in self.pending_attempts):
@@ -98,12 +121,14 @@ class IntervalPositionGuard:
                     return False
             if any(k[0] == sym and k[1] == opposite for k in self.pending_attempts):
                 return False
-            for (s, i, ss) in self.ledger.keys():
-                if s == sym and i == iv and ss != sd:
+            for (s, i, ss), contexts in self.ledger.items():
+                if not isinstance(contexts, dict):
+                    contexts = {"__legacy__": contexts}
+                    self.ledger[(s, i, ss)] = contexts  # type: ignore[assignment]
+                if s == sym and i == iv and ss != sd and contexts:
                     return False
-            if self.strict_symbol_side:
-                for (s, i, ss) in self.ledger.keys():
-                    if s == sym and ss == sd:
+                if self.strict_symbol_side and s == sym and ss == sd and contexts:
+                    if context is None or any(c != ctx for c in contexts.keys()):
                         return False
             # defensive exchange check
             try:
@@ -122,8 +147,7 @@ class IntervalPositionGuard:
             except Exception:
                 pass
             # reserve pending attempt immediately (coalescing window)
-            if context is None:
-                self.pending_attempts[(sym, sd, ctx)] = (time.time(), iv)
+            self.pending_attempts[(sym, sd, ctx)] = (time.time(), iv)
             return True
 
     def _record_active(self, sym: str, iv: str, sd: str, delta: int = 0) -> None:
@@ -141,8 +165,10 @@ class IntervalPositionGuard:
         iv = interval or ''
         sd = (side or '').upper()
         with self._lock:
-            self.ledger[(sym, iv, sd)] = time.time()
-            self._record_active(sym, iv, sd, delta=1)
+            entry = self.ledger.setdefault((sym, iv, sd), {})
+            if "__legacy__" not in entry:
+                self._record_active(sym, iv, sd, delta=1)
+            entry["__legacy__"] = time.time()
 
     # in-flight coalescer
     def begin_open(self, symbol: str, interval: str, side: str, ttl: float=45.0, context: str | None = None) -> bool:
@@ -174,8 +200,12 @@ class IntervalPositionGuard:
         with self._lock:
             self.pending_attempts.pop(key, None)
             if success:
-                self.ledger[(sym, interval or '', sd)] = time.time()
-                self._record_active(sym, interval or '', sd, delta=1)
+                key = (sym, interval or '', sd)
+                ctx_map = self.ledger.setdefault(key, {})
+                is_new = ctx not in ctx_map
+                ctx_map[ctx] = time.time()
+                if is_new:
+                    self._record_active(sym, interval or '', sd, delta=1)
 
     def mark_closed(self, symbol: str, interval: str, side: str) -> None:
         sym = (symbol or '').upper()
@@ -188,9 +218,13 @@ class IntervalPositionGuard:
         else:
             sd = raw_side or 'BUY'
         with self._lock:
-            self.ledger.pop((sym, iv, sd), None)
+            entry = self.ledger.pop((sym, iv, sd), None)
+            if isinstance(entry, dict):
+                removal_count = len(entry)
+            else:
+                removal_count = 1 if entry is not None else 0
             state = self.active.get((sym, iv))
             if state:
-                state[sd] = max(0, state.get(sd, 0) - 1)
+                state[sd] = max(0, state.get(sd, 0) - removal_count)
                 if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
                     self.active.pop((sym, iv), None)

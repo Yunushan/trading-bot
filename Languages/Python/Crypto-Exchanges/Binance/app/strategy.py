@@ -1,5 +1,6 @@
 
 import time, copy, traceback, math, threading, os
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -66,7 +67,7 @@ class StrategyEngine:
     _BAR_GUARD_LOCK = threading.Lock()
     _BAR_GLOBAL_SIGNATURES: dict[tuple[str, str, str], dict[str, object]] = {}
     _SYMBOL_GUARD_LOCK = threading.Lock()
-    _SYMBOL_ORDER_STATE: dict[tuple[str, str], dict[str, float | bool]] = {}
+    _SYMBOL_ORDER_STATE: dict[tuple[str, str], dict[str, object]] = {}
 
     @classmethod
     def concurrent_limit(cls, job_count: int | None = None) -> int:
@@ -110,6 +111,8 @@ class StrategyEngine:
         self._last_order_time = {}  # (symbol, interval, side)->{'qty': float, 'timestamp': float}
         self._last_bar_key = set()  # prevent multi entries within same bar per (symbol, interval, side)
         self._bar_order_tracker: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._symbol_signature_open: dict[tuple[str, str, tuple[str, ...]], int] = {}
+        self._symbol_signature_lock = threading.Lock()
         self.can_open_cb = can_open_callback
         self._stop = False
         key = f"{str(self.config.get('symbol') or '').upper()}@{str(self.config.get('interval') or '').lower()}"
@@ -312,6 +315,40 @@ class StrategyEngine:
                 filtered.append(entry)
         return filtered
 
+    @staticmethod
+    def _normalize_signature_tuple(signature: Iterable[str] | None) -> tuple[str, ...] | None:
+        parts: list[str] = []
+        for label in signature or []:
+            text = str(label or "").strip().lower()
+            if not text:
+                continue
+            parts.append(text)
+        if not parts:
+            return None
+        parts.sort()
+        return tuple(parts)
+
+    def _bump_symbol_signature_open(self, symbol: str, side: str, signature: Iterable[str] | None, delta: int) -> None:
+        sig_tuple = self._normalize_signature_tuple(signature)
+        if sig_tuple is None:
+            return
+        key = (str(symbol or "").upper(), str(side or "").upper(), sig_tuple)
+        with self._symbol_signature_lock:
+            current = self._symbol_signature_open.get(key, 0) + int(delta)
+            if current <= 0:
+                self._symbol_signature_open.pop(key, None)
+            else:
+                self._symbol_signature_open[key] = current
+
+    def _symbol_signature_active(self, symbol: str, side: str, signature: Iterable[str] | None) -> bool:
+        sig_tuple = self._normalize_signature_tuple(signature)
+        if sig_tuple is None:
+            return False
+        key = (str(symbol or "").upper(), str(side or "").upper(), sig_tuple)
+        with self._symbol_signature_lock:
+            return self._symbol_signature_open.get(key, 0) > 0
+
+
     def _update_leg_snapshot(self, leg_key, leg: dict | None) -> None:
         if not isinstance(leg, dict):
             self._leg_ledger.pop(leg_key, None)
@@ -352,22 +389,47 @@ class StrategyEngine:
         leg["entries"] = entries
         self._update_leg_snapshot(leg_key, leg)
         self._last_order_time[leg_key] = time.time()
+        try:
+            signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
+            self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, +1)
+        except Exception:
+            pass
 
     def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
+        current_entries = self._leg_entries(leg_key)
         if ledger_id is None:
+            for entry in current_entries:
+                try:
+                    signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
+                    self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, -1)
+                except Exception:
+                    pass
             self._leg_ledger.pop(leg_key, None)
             self._last_order_time.pop(leg_key, None)
             return
         leg = self._leg_ledger.get(leg_key)
         if not isinstance(leg, dict):
             return
-        entries = [entry for entry in self._leg_entries(leg_key) if entry.get("ledger_id") != ledger_id]
+        removed_entries = [entry for entry in current_entries if entry.get("ledger_id") == ledger_id]
+        entries = [entry for entry in current_entries if entry.get("ledger_id") != ledger_id]
         if not entries:
+            for entry in removed_entries:
+                try:
+                    signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
+                    self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, -1)
+                except Exception:
+                    pass
             self._leg_ledger.pop(leg_key, None)
             self._last_order_time.pop(leg_key, None)
             return
         leg["entries"] = entries
         self._update_leg_snapshot(leg_key, leg)
+        for entry in removed_entries:
+            try:
+                signature_labels = entry.get("trigger_signature") or entry.get("trigger_indicators")
+                self._bump_symbol_signature_open(leg_key[0], leg_key[2], signature_labels, -1)
+            except Exception:
+                pass
 
     def _sync_leg_entry_totals(self, leg_key, actual_qty: float) -> None:
         leg = self._leg_ledger.get(leg_key)
@@ -1695,32 +1757,35 @@ class StrategyEngine:
             long_open = qty_long > 0.0
             short_open = qty_short > 0.0
 
-        indicator_orders_map: dict[str, set[str]] = {}
+        indicator_order_requests: list[dict[str, object]] = []
         if trigger_actions:
             desired_ps_long = "LONG" if dual_side else None
             desired_ps_short = "SHORT" if dual_side else None
+
+            def _entries_for_indicator(entries: list[dict], label_key: str) -> list[dict]:
+                key_norm = label_key.lower()
+                matches: list[dict] = []
+                for existing_entry in entries or []:
+                    try:
+                        triggers = existing_entry.get("trigger_indicators") or []
+                    except Exception:
+                        triggers = []
+                    for trig in triggers:
+                        if str(trig or "").strip().lower() == key_norm:
+                            matches.append(existing_entry)
+                            break
+                return matches
+
             for indicator_name, indicator_action in trigger_actions.items():
                 indicator_label = str(indicator_name or "").strip()
                 if not indicator_label:
                     continue
+                indicator_key = indicator_label.lower()
                 action_norm = str(indicator_action or "").strip().lower()
-                long_entries = [
-                    entry
-                    for entry in self._leg_entries(key_long)
-                    if indicator_label.lower() in [
-                        str(t).strip().lower()
-                        for t in (entry.get("trigger_indicators") or [])
-                    ]
-                ]
-                short_entries = [
-                    entry
-                    for entry in self._leg_entries(key_short)
-                    if indicator_label.lower() in [
-                        str(t).strip().lower()
-                        for t in (entry.get("trigger_indicators") or [])
-                    ]
-                ]
                 if action_norm == "buy":
+                    if self._symbol_signature_active(cw["symbol"], "BUY", (indicator_key,)):
+                        continue
+                    short_entries = _entries_for_indicator(self._leg_entries(key_short), indicator_key)
                     for entry in list(short_entries):
                         self._close_leg_entry(
                             cw,
@@ -1733,18 +1798,18 @@ class StrategyEngine:
                             price_pct=0.0,
                             margin_pct=0.0,
                         )
-                    long_entries = [
-                        entry
-                        for entry in self._leg_entries(key_long)
-                        if indicator_label.lower()
-                        in [
-                            str(t).strip().lower()
-                            for t in (entry.get("trigger_indicators") or [])
-                        ]
-                    ]
-                    if not long_entries:
-                        indicator_orders_map.setdefault("BUY", set()).add(indicator_label)
+                    indicator_order_requests.append(
+                        {
+                            "side": "BUY",
+                            "labels": [indicator_label],
+                            "signature": (indicator_key,),
+                            "indicator_key": indicator_key,
+                            }
+                        )
                 elif action_norm == "sell":
+                    if self._symbol_signature_active(cw["symbol"], "SELL", (indicator_key,)):
+                        continue
+                    long_entries = _entries_for_indicator(self._leg_entries(key_long), indicator_key)
                     for entry in list(long_entries):
                         self._close_leg_entry(
                             cw,
@@ -1757,18 +1822,14 @@ class StrategyEngine:
                             price_pct=0.0,
                             margin_pct=0.0,
                         )
-                    short_entries = [
-                        entry
-                        for entry in self._leg_entries(key_short)
-                        if indicator_label.lower()
-                        in [
-                            str(t).strip().lower()
-                            for t in (entry.get("trigger_indicators") or [])
-                        ]
-                    ]
-                    if not short_entries:
-                        indicator_orders_map.setdefault("SELL", set()).add(indicator_label)
-
+                    indicator_order_requests.append(
+                        {
+                            "side": "SELL",
+                            "labels": [indicator_label],
+                            "signature": (indicator_key,),
+                            "indicator_key": indicator_key,
+                        }
+                    )
         thresholds = []
         try:
             if cw['indicators']['ma']['enabled'] and 'ma' in ind and not ind['ma'].isnull().all(): 
@@ -1788,26 +1849,37 @@ class StrategyEngine:
         base_trigger_labels = list(dict.fromkeys(trigger_sources or []))
         base_signature = tuple(sorted(base_trigger_labels))
         orders_to_execute: list[dict[str, object]] = []
-        indicator_orders: list[tuple[str, list[str]]] = []
-        if indicator_orders_map:
-            for side_value, label_set in indicator_orders_map.items():
-                ordered_labels = sorted({lbl for lbl in label_set if str(lbl or "").strip()})
-                indicator_orders.append((side_value, ordered_labels))
-        if indicator_orders:
+        if indicator_order_requests:
             order_ts = signal_timestamp or time.time()
-            for side_value, labels in indicator_orders:
-                label_list = [
+            seen_signatures: set[tuple[str, ...]] = set()
+            for request in indicator_order_requests:
+                side_value = str(request.get("side") or "").upper()
+                if side_value not in ("BUY", "SELL"):
+                    continue
+                raw_labels = [
                     str(lbl).strip()
-                    for lbl in (labels or [])
+                    for lbl in (request.get("labels") or [])
                     if str(lbl or "").strip()
                 ]
-                signature = tuple(sorted(label_list)) if label_list else base_signature
+                label_list = raw_labels or [side_value.lower()]
+                signature_parts = tuple(
+                    str(part).strip().lower()
+                    for part in (request.get("signature") or ())
+                    if str(part or "").strip()
+                )
+                signature = signature_parts or tuple(sorted(lbl.lower() for lbl in label_list))
+                if self._symbol_signature_active(cw["symbol"], side_value, signature):
+                    continue
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
                 orders_to_execute.append(
                     {
-                        "side": str(side_value or "").upper(),
+                        "side": side_value,
                         "labels": label_list,
                         "signature": signature,
-                        "timestamp": order_ts,
+                        "timestamp": request.get("timestamp") or order_ts,
+                        "indicator_key": request.get("indicator_key"),
                     }
                 )
         elif signal:
@@ -1940,6 +2012,22 @@ class StrategyEngine:
             context_key = f"{interval_key}:{side}:{'|'.join(signature) if signature else side}"
             bar_sig_key = (cw["symbol"], interval_key, side)
             sig_sorted = tuple(sorted(signature)) if signature else (side.lower(),)
+            signature_guard_key = sig_sorted if sig_sorted else (side.lower(),)
+            signature_label = (
+                "|".join(str(part) for part in signature_guard_key)
+                if signature_guard_key
+                else side.lower()
+            )
+
+            active_check_signature = signature if signature else tuple(sorted(trigger_labels))
+            if self._symbol_signature_active(cw["symbol"], side, active_check_signature):
+                try:
+                    self.log(
+                        f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (signature {signature_label} still open)."
+                    )
+                except Exception:
+                    pass
+                return
             try:
                 interval_seconds = float(_interval_to_seconds(str(cw.get("interval") or "1m")))
             except Exception:
@@ -1951,7 +2039,7 @@ class StrategyEngine:
                         global_tracker = {"bar": current_bar_marker, "signatures": set()}
                         StrategyEngine._BAR_GLOBAL_SIGNATURES[bar_sig_key] = global_tracker
                     global_sig_set = global_tracker.setdefault("signatures", set())
-                    if "__ANY__" in global_sig_set or sig_sorted in global_sig_set:
+                    if sig_sorted in global_sig_set:
                         try:
                             self.log(
                                 f"{cw['symbol']}@{interval_key} global duplicate {side} suppressed (order already placed this bar)."
@@ -1964,7 +2052,7 @@ class StrategyEngine:
                     tracker = {"bar": current_bar_marker, "signatures": set()}
                     self._bar_order_tracker[bar_sig_key] = tracker
                 sig_set = tracker.setdefault("signatures", set())
-                if "__ANY__" in sig_set or sig_sorted in sig_set:
+                if sig_sorted in sig_set:
                     try:
                         self.log(
                             f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (order already placed this bar)."
@@ -1978,32 +2066,73 @@ class StrategyEngine:
             guard_claimed = False
             with StrategyEngine._SYMBOL_GUARD_LOCK:
                 entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
-                last_ts = float(entry_guard.get("last", 0.0)) if isinstance(entry_guard, dict) else float(entry_guard or 0.0)
-                pending = bool(entry_guard.get("pending", False)) if isinstance(entry_guard, dict) else False
-                if pending:
+                if not isinstance(entry_guard, dict):
+                    entry_guard = {}
+                last_ts = float(entry_guard.get("last") or 0.0)
+                signatures_state = entry_guard.get("signatures")
+                if not isinstance(signatures_state, dict):
+                    signatures_state = {}
+                pending_map = entry_guard.get("pending_map")
+                if not isinstance(pending_map, dict):
+                    pending_map = {}
+                # prune expired signature reservations
+                try:
+                    expired = [
+                        sig
+                        for sig, ts in list(signatures_state.items())
+                        if now_guard - float(ts or 0.0) > guard_window
+                    ]
+                except Exception:
+                    expired = []
+                for sig in expired:
+                    signatures_state.pop(sig, None)
+                pending_expired = [
+                    sig
+                    for sig, ts in list(pending_map.items())
+                    if now_guard - float(ts or 0.0) > guard_window * 1.5
+                ]
+                for sig in pending_expired:
+                    pending_map.pop(sig, None)
+                entry_guard["signatures"] = signatures_state
+                entry_guard["pending_map"] = pending_map
+                if signature_guard_key in pending_map:
                     try:
                         self.log(
                             f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
-                            f"(previous order still pending)."
+                            f"(previous order still pending for {signature_label})."
                         )
                     except Exception:
                         pass
                     return
-                if last_ts > 0.0 and (now_guard - last_ts) < guard_window:
+                elapsed_since_last = now_guard - last_ts if last_ts > 0.0 else float("inf")
+                if signature_guard_key in signatures_state:
+                    if elapsed_since_last < guard_window:
+                        try:
+                            remaining = guard_window - elapsed_since_last
+                            self.log(
+                                f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
+                                f"(trigger {signature_label} still within guard window, wait {remaining:.1f}s)."
+                            )
+                        except Exception:
+                            pass
+                        return
+                    signatures_state.pop(signature_guard_key, None)
+                elif not signatures_state and elapsed_since_last < guard_window:
                     try:
-                        remaining = guard_window - (now_guard - last_ts)
+                        remaining = guard_window - elapsed_since_last
                         self.log(
                             f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
-                            f"(last order {now_guard - last_ts:.1f}s ago, wait {remaining:.1f}s)."
+                            f"(last order {elapsed_since_last:.1f}s ago, wait {remaining:.1f}s)."
                         )
                     except Exception:
                         pass
                     return
-                StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = {
-                    "pending": True,
-                    "last": last_ts,
-                    "window": guard_window,
-                }
+                entry_guard["window"] = guard_window
+                entry_guard["last"] = last_ts
+                entry_guard["signatures"] = signatures_state
+                pending_map[signature_guard_key] = now_guard
+                entry_guard["pending_map"] = pending_map
+                StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
                 guard_claimed = True
             try:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
@@ -2290,7 +2419,7 @@ class StrategyEngine:
                                     if tracker.get("bar") != current_bar_marker:
                                         tracker["bar"] = current_bar_marker
                                         tracker["signatures"] = set()
-                                    tracker.setdefault("signatures", set()).update({sig_sorted, "__ANY__"})
+                                    tracker.setdefault("signatures", set()).add(sig_sorted)
                                     with StrategyEngine._BAR_GUARD_LOCK:
                                         global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.setdefault(
                                             bar_sig_key,
@@ -2299,36 +2428,54 @@ class StrategyEngine:
                                         if global_tracker.get("bar") != current_bar_marker:
                                             global_tracker["bar"] = current_bar_marker
                                             global_tracker["signatures"] = set()
-                                        global_tracker.setdefault("signatures", set()).update({sig_sorted, "__ANY__"})
+                                        global_tracker.setdefault("signatures", set()).add(sig_sorted)
+                                success_ts = time.time()
                                 if guard_claimed:
                                     with StrategyEngine._SYMBOL_GUARD_LOCK:
                                         entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol, {})
                                         if isinstance(entry_guard, dict):
-                                            entry_guard["last"] = time.time()
-                                            entry_guard["pending"] = False
+                                            signatures_state = entry_guard.get("signatures")
+                                            if not isinstance(signatures_state, dict):
+                                                signatures_state = {}
+                                            signatures_state[signature_guard_key] = success_ts
+                                            entry_guard["signatures"] = signatures_state
+                                            pending_map = entry_guard.get("pending_map")
+                                            if not isinstance(pending_map, dict):
+                                                pending_map = {}
+                                            pending_map.pop(signature_guard_key, None)
+                                            entry_guard["pending_map"] = pending_map
+                                            entry_guard["last"] = success_ts
                                             entry_guard["window"] = guard_window
                                             StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
                                 else:
                                     with StrategyEngine._SYMBOL_GUARD_LOCK:
                                         entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
                                         if isinstance(entry_guard, dict):
-                                            entry_guard["pending"] = False
-                                            entry_guard["last"] = time.time()
+                                            signatures_state = entry_guard.get("signatures")
+                                            if not isinstance(signatures_state, dict):
+                                                signatures_state = {}
+                                            signatures_state[signature_guard_key] = success_ts
+                                            entry_guard["signatures"] = signatures_state
+                                            pending_map = entry_guard.get("pending_map")
+                                            if not isinstance(pending_map, dict):
+                                                pending_map = {}
+                                            pending_map.pop(signature_guard_key, None)
+                                            entry_guard["pending_map"] = pending_map
+                                            entry_guard["last"] = success_ts
                                             entry_guard["window"] = guard_window
                                             StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
                             else:
-                                if guard_claimed:
-                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
-                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
-                                        if isinstance(entry_guard, dict):
-                                            entry_guard["pending"] = False
-                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
-                                else:
-                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
-                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
-                                        if isinstance(entry_guard, dict):
-                                            entry_guard["pending"] = False
-                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
+                                failure_ts = time.time()
+                                with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                    entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                                    if isinstance(entry_guard, dict):
+                                        pending_map = entry_guard.get("pending_map")
+                                        if not isinstance(pending_map, dict):
+                                            pending_map = {}
+                                        pending_map.pop(signature_guard_key, None)
+                                        entry_guard["pending_map"] = pending_map
+                                        entry_guard["last"] = max(float(entry_guard.get("last") or 0.0), failure_ts)
+                                        StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
                                 key = (cw['symbol'], cw.get('interval'), side)
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
@@ -2535,7 +2682,11 @@ class StrategyEngine:
                     with StrategyEngine._SYMBOL_GUARD_LOCK:
                         entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
                         if isinstance(entry_guard, dict):
-                            entry_guard["pending"] = False
+                            pending_map = entry_guard.get("pending_map")
+                            if not isinstance(pending_map, dict):
+                                pending_map = {}
+                            pending_map.pop(signature_guard_key, None)
+                            entry_guard["pending_map"] = pending_map
                             StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
 
         for order in orders_to_execute:

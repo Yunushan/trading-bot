@@ -2147,6 +2147,61 @@ class MainWindow(QtWidgets.QWidget):
             scope_combo.setEnabled(enabled)
             scope_combo.blockSignals(False)
 
+    def _on_dashboard_template_changed(self):
+        if not hasattr(self, "template_combo"):
+            return
+        key = self.template_combo.currentData()
+        if key is None:
+            return
+        key = str(key or "")
+        self.config["dashboard_template"] = key
+        if not key:
+            return
+        template = self._dashboard_templates.get(key)
+        if not template:
+            return
+
+        pct_value = float(template.get("position_pct", self.config.get("position_pct", 2.0)))
+        self.config["position_pct"] = pct_value
+        self.config["position_pct_units"] = "percent"
+        display_pct = pct_value if pct_value > 1.0 else pct_value * 100.0
+        if hasattr(self, "pospct_spin"):
+            self.pospct_spin.blockSignals(True)
+            self.pospct_spin.setValue(display_pct)
+            self.pospct_spin.blockSignals(False)
+
+        leverage_value = int(template.get("leverage", self.config.get("leverage", 5)))
+        self.config["leverage"] = leverage_value
+        if hasattr(self, "leverage_spin"):
+            self.leverage_spin.setValue(leverage_value)
+
+        margin_mode = template.get("margin_mode")
+        if margin_mode:
+            self.config["margin_mode"] = margin_mode
+            if hasattr(self, "margin_mode_combo"):
+                combo = self.margin_mode_combo
+                combo.blockSignals(True)
+                if hasattr(QtCore.Qt, "MatchFlag"):
+                    idx = combo.findText(margin_mode, QtCore.Qt.MatchFlag.MatchFixedString)
+                else:
+                    idx = combo.findText(margin_mode)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+
+        indicators = template.get("indicators", {})
+        for ind_key, params in indicators.items():
+            cfg = self.config["indicators"].setdefault(ind_key, {})
+            cfg.update(params)
+            cfg["enabled"] = True
+            widgets = self.indicator_widgets.get(ind_key) if hasattr(self, "indicator_widgets") else None
+            if widgets:
+                cb, _btn = widgets
+                if not cb.isChecked():
+                    cb.setChecked(True)
+                else:
+                    self.config["indicators"][ind_key] = cfg
+
     def _apply_initial_geometry(self):
         """Ensure the window fits on the active screen on Linux desktops."""
         if not sys.platform.startswith("linux"):
@@ -6367,6 +6422,55 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_scope_combo.setCurrentIndex(scope_idx)
         g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 4, 0)
         g.addWidget(self.stop_loss_scope_combo, 4, 1, 1, 2)
+
+        # Strategy templates
+        self._dashboard_templates = {
+            "top10": {
+                "label": "Top 10 %2 per trade 5x Isolated",
+                "position_pct": 2.0,
+                "leverage": 5,
+                "margin_mode": "Isolated",
+                "indicators": {
+                    "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
+                    "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
+                    "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
+                },
+            },
+            "top50": {
+                "label": "Top 50 %2 per trade 20x",
+                "position_pct": 2.0,
+                "leverage": 20,
+                "margin_mode": "Isolated",
+                "indicators": {
+                    "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
+                    "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
+                    "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
+                },
+            },
+            "top100": {
+                "label": "Top 100 %1 per trade 5x",
+                "position_pct": 1.0,
+                "leverage": 5,
+                "margin_mode": "Isolated",
+                "indicators": {
+                    "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
+                    "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
+                    "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
+                },
+            },
+        }
+        g.addWidget(QtWidgets.QLabel("Template:"), 5, 0)
+        self.template_combo = QtWidgets.QComboBox()
+        self.template_combo.addItem("No Template", "")
+        for key, info in self._dashboard_templates.items():
+            self.template_combo.addItem(info["label"], key)
+        current_template = str(self.config.get("dashboard_template") or "")
+        idx_template = self.template_combo.findData(current_template)
+        if idx_template < 0:
+            idx_template = 0
+        self.template_combo.setCurrentIndex(idx_template)
+        self.template_combo.currentIndexChanged.connect(self._on_dashboard_template_changed)
+        g.addWidget(self.template_combo, 5, 1, 1, 3)
 
         self.stop_loss_enable_cb.toggled.connect(self._on_runtime_stop_loss_enabled)
         self.stop_loss_mode_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_mode_changed)
