@@ -63,6 +63,8 @@ class StrategyEngine:
     _ORDER_THROTTLE_LOCK = threading.Lock()
     _ORDER_LAST_TS = 0.0
     _ORDER_MIN_SPACING = 0.35  # seconds between order submissions by default
+    _BAR_GUARD_LOCK = threading.Lock()
+    _BAR_GLOBAL_SIGNATURES: dict[tuple[str, str, str], dict[str, object]] = {}
 
     @classmethod
     def concurrent_limit(cls, job_count: int | None = None) -> int:
@@ -105,6 +107,7 @@ class StrategyEngine:
         self._leg_ledger = {}
         self._last_order_time = {}  # (symbol, interval, side)->{'qty': float, 'timestamp': float}
         self._last_bar_key = set()  # prevent multi entries within same bar per (symbol, interval, side)
+        self._bar_order_tracker: dict[tuple[str, str, str], dict[str, object]] = {}
         self.can_open_cb = can_open_callback
         self._stop = False
         key = f"{str(self.config.get('symbol') or '').upper()}@{str(self.config.get('interval') or '').lower()}"
@@ -1163,6 +1166,10 @@ class StrategyEngine:
         ind = self.compute_indicators(df)
         signal, trigger_desc, trigger_price, trigger_sources, trigger_actions = self.generate_signal(df, ind)
         signal_timestamp = time.time() if signal else None
+        try:
+            current_bar_marker = int(df.index[-1].value) if not df.empty else None
+        except Exception:
+            current_bar_marker = None
         
         # --- RSI guard-close (interval-scoped) ---
         try:
@@ -1686,7 +1693,7 @@ class StrategyEngine:
             long_open = qty_long > 0.0
             short_open = qty_short > 0.0
 
-        indicator_orders: list[tuple[str, list[str]]] = []
+        indicator_orders_map: dict[str, set[str]] = {}
         if trigger_actions:
             desired_ps_long = "LONG" if dual_side else None
             desired_ps_short = "SHORT" if dual_side else None
@@ -1734,7 +1741,7 @@ class StrategyEngine:
                         ]
                     ]
                     if not long_entries:
-                        indicator_orders.append(("BUY", [indicator_label]))
+                        indicator_orders_map.setdefault("BUY", set()).add(indicator_label)
                 elif action_norm == "sell":
                     for entry in list(long_entries):
                         self._close_leg_entry(
@@ -1758,7 +1765,7 @@ class StrategyEngine:
                         ]
                     ]
                     if not short_entries:
-                        indicator_orders.append(("SELL", [indicator_label]))
+                        indicator_orders_map.setdefault("SELL", set()).add(indicator_label)
 
         thresholds = []
         try:
@@ -1779,6 +1786,11 @@ class StrategyEngine:
         base_trigger_labels = list(dict.fromkeys(trigger_sources or []))
         base_signature = tuple(sorted(base_trigger_labels))
         orders_to_execute: list[dict[str, object]] = []
+        indicator_orders: list[tuple[str, list[str]]] = []
+        if indicator_orders_map:
+            for side_value, label_set in indicator_orders_map.items():
+                ordered_labels = sorted({lbl for lbl in label_set if str(lbl or "").strip()})
+                indicator_orders.append((side_value, ordered_labels))
         if indicator_orders:
             order_ts = signal_timestamp or time.time()
             for side_value, labels in indicator_orders:
@@ -1910,6 +1922,36 @@ class StrategyEngine:
             signature = tuple(order_signature or tuple(sorted(trigger_labels)))
             interval_key = str(cw.get("interval") or "").strip() or "default"
             context_key = f"{interval_key}:{side}:{'|'.join(signature) if signature else side}"
+            bar_sig_key = (cw["symbol"], interval_key, side)
+            sig_sorted = tuple(sorted(signature)) if signature else (side.lower(),)
+            if current_bar_marker is not None:
+                with StrategyEngine._BAR_GUARD_LOCK:
+                    global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.get(bar_sig_key)
+                    if not global_tracker or global_tracker.get("bar") != current_bar_marker:
+                        global_tracker = {"bar": current_bar_marker, "signatures": set()}
+                        StrategyEngine._BAR_GLOBAL_SIGNATURES[bar_sig_key] = global_tracker
+                    global_sig_set = global_tracker.setdefault("signatures", set())
+                    if sig_sorted in global_sig_set:
+                        try:
+                            self.log(
+                                f"{cw['symbol']}@{interval_key} global duplicate {side} suppressed (signature {sig_sorted} already executed this bar)."
+                            )
+                        except Exception:
+                            pass
+                        return
+                tracker = self._bar_order_tracker.get(bar_sig_key)
+                if not tracker or tracker.get("bar") != current_bar_marker:
+                    tracker = {"bar": current_bar_marker, "signatures": set()}
+                    self._bar_order_tracker[bar_sig_key] = tracker
+                sig_set = tracker.setdefault("signatures", set())
+                if sig_sorted in sig_set:
+                    try:
+                        self.log(
+                            f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (signature {sig_sorted} already executed this bar)."
+                        )
+                    except Exception:
+                        pass
+                    return
             try:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
                 usdt_bal = self.binance.get_total_usdt_value()
@@ -1934,17 +1976,34 @@ class StrategyEngine:
                         self.log(f"{cw['symbol']}@{cw.get('interval')} skipped: no market price available for sizing.")
                         return
                     try:
-                        wallet_total = float(self.binance.get_total_wallet_balance())
-                    except Exception:
-                        wallet_total = 0.0
-                    try:
                         available_total = float(self.binance.get_futures_balance_usdt())
                     except Exception:
                         available_total = 0.0
-                    if wallet_total <= 0.0:
-                        wallet_total = available_total
+                    wallet_total = available_total
                     if wallet_total <= 0.0:
                         wallet_total = free_usdt
+                    ledger_margin_total = 0.0
+                    try:
+                        for leg_state in self._leg_ledger.values():
+                            if not isinstance(leg_state, dict):
+                                continue
+                            margin_val = float(leg_state.get("margin_usdt") or 0.0)
+                            if margin_val > 0.0:
+                                ledger_margin_total += margin_val
+                    except Exception:
+                        ledger_margin_total = 0.0
+                    equity_estimate = 0.0
+                    if (available_total or 0.0) > 0.0 or ledger_margin_total > 0.0:
+                        equity_estimate = max(0.0, float(available_total or 0.0)) + ledger_margin_total
+                    if equity_estimate > 0.0:
+                        wallet_total = equity_estimate
+                    if wallet_total <= 0.0:
+                        wallet_total = max(float(equity_estimate or 0.0), float(free_usdt or 0.0))
+                    if wallet_total <= 0.0:
+                        try:
+                            wallet_total = float(self.binance.get_total_wallet_balance())
+                        except Exception:
+                            wallet_total = 0.0
                     target_margin = wallet_total * pct
                     if target_margin <= 0.0:
                         self.log(f"{cw['symbol']}@{cw.get('interval')} capital guard: zero target margin for {pct*100:.2f}% allocation.")
@@ -2166,8 +2225,26 @@ class StrategyEngine:
                                 })
                         except Exception:
                             pass
-                        if order_res.get('ok'):
-                            key = (cw['symbol'], cw.get('interval'), side)
+                            if order_res.get('ok'):
+                                if current_bar_marker is not None:
+                                    tracker = self._bar_order_tracker.setdefault(
+                                        bar_sig_key,
+                                        {"bar": current_bar_marker, "signatures": set()},
+                                    )
+                                    if tracker.get("bar") != current_bar_marker:
+                                        tracker["bar"] = current_bar_marker
+                                        tracker["signatures"] = set()
+                                    tracker.setdefault("signatures", set()).add(sig_sorted)
+                                    with StrategyEngine._BAR_GUARD_LOCK:
+                                        global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.setdefault(
+                                            bar_sig_key,
+                                            {"bar": current_bar_marker, "signatures": set()},
+                                        )
+                                        if global_tracker.get("bar") != current_bar_marker:
+                                            global_tracker["bar"] = current_bar_marker
+                                            global_tracker["signatures"] = set()
+                                        global_tracker.setdefault("signatures", set()).add(sig_sorted)
+                                key = (cw['symbol'], cw.get('interval'), side)
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
                             if exec_qty is not None:
