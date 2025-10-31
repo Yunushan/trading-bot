@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -11,10 +12,18 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 BASE_DIR = Path(__file__).resolve().parent
 WINDOWS_TASKBAR_DIR = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance"
-if str(WINDOWS_TASKBAR_DIR) not in sys.path:
-    sys.path.insert(0, str(WINDOWS_TASKBAR_DIR))
 
-from windows_taskbar import apply_taskbar_metadata, build_relaunch_command, ensure_app_user_model_id
+_WINDOWS_TASKBAR_SPEC = importlib.util.spec_from_file_location(
+    "windows_taskbar", WINDOWS_TASKBAR_DIR / "windows_taskbar.py"
+)
+if _WINDOWS_TASKBAR_SPEC is None or _WINDOWS_TASKBAR_SPEC.loader is None:  # pragma: no cover - sanity guard
+    raise ImportError(f"Unable to locate windows_taskbar module at {WINDOWS_TASKBAR_DIR}")
+windows_taskbar = importlib.util.module_from_spec(_WINDOWS_TASKBAR_SPEC)
+_WINDOWS_TASKBAR_SPEC.loader.exec_module(windows_taskbar)
+
+apply_taskbar_metadata = windows_taskbar.apply_taskbar_metadata
+build_relaunch_command = windows_taskbar.build_relaunch_command
+ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
 BINANCE_MAIN = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance" / "main.py"
 BINANCE_CPP_PROJECT = (
     BASE_DIR / "Languages" / "C++" / "Crypto-Exchanges" / "Binance" / "backtest_tab"
@@ -225,6 +234,7 @@ class StarterWindow(QtWidgets.QWidget):
         self._update_language_selection("python")
         self._allow_language_auto_advance = True
         self._update_nav_state()
+        self._update_status_message()
 
     @staticmethod
     def _button_style(outlined: bool = False) -> str:
@@ -510,6 +520,20 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _go_back(self) -> None:
         if self.stack.currentIndex() == 1:
+            # Clear market/exchange selections when returning to language step
+            if self.selected_market is not None:
+                for card in self.market_cards.values():
+                    card.setSelected(False)
+            self.selected_market = None
+            if self.selected_exchange is not None:
+                for card in self.exchange_cards.values():
+                    card.setSelected(False)
+            self.selected_exchange = None
+            self.crypto_exchange_group.setVisible(False)
+            # Also clear language highlight so the user must reselect
+            self.selected_language = None
+            for card in self.language_cards.values():
+                card.setSelected(False)
             self.stack.setCurrentIndex(0)
             self._update_nav_state()
             self._update_status_message()
@@ -528,7 +552,7 @@ class StarterWindow(QtWidgets.QWidget):
         self.back_button.setVisible(page_idx > 0)
         if page_idx == 0:
             self.primary_button.setText("Next")
-            self.primary_button.setEnabled(True)
+            self.primary_button.setEnabled(self.selected_language is not None)
         else:
             if self._is_launching:
                 if self._bot_ready:
@@ -574,7 +598,14 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _update_status_message(self) -> None:
         if self.stack.currentIndex() == 0:
-            self.status_label.setText("Python stays selected by default. Pick another language if needed.")
+            if self.selected_language:
+                label = next(
+                    (opt["title"] for opt in LANGUAGE_OPTIONS if opt["key"] == self.selected_language),
+                    self.selected_language.title(),
+                )
+                self.status_label.setText(f"{label} selected. Click Next to choose your market.")
+            else:
+                self.status_label.setText("Select a programming language to continue.")
             return
         if self._is_launching:
             return
@@ -738,25 +769,34 @@ def main() -> None:
     if sys.platform == "win32":
         icon_location = None
         if APP_ICON_PATH.is_file():
-            icon_location = APP_ICON_PATH
+            icon_location = APP_ICON_PATH.resolve()
         elif APP_ICON_FALLBACK.is_file():
-            icon_location = APP_ICON_FALLBACK
+            icon_location = APP_ICON_FALLBACK.resolve()
+        icon_str = str(icon_location) if icon_location is not None else None
         relaunch_cmd = build_relaunch_command(Path(__file__))
 
-        def _apply_taskbar(attempts: int = 4) -> None:
-            if attempts <= 0:
+        def _attempt_taskbar(attempts_remaining: int = 4, delay_ms: int = 0) -> None:
+            if attempts_remaining <= 0:
                 return
-            success = apply_taskbar_metadata(
-                window,
-                app_id=WINDOWS_APP_ID,
-                display_name="Trading Bot Starter",
-                icon_path=icon_location,
-                relaunch_command=relaunch_cmd,
-            )
-            if not success:
-                QtCore.QTimer.singleShot(120, lambda: _apply_taskbar(attempts - 1))
+            def _run():
+                success = apply_taskbar_metadata(
+                    window,
+                    app_id=WINDOWS_APP_ID,
+                    display_name="Trading Bot Starter",
+                    icon_path=icon_str,
+                    relaunch_command=relaunch_cmd,
+                )
+                if not success:
+                    QtCore.QTimer.singleShot(
+                        150,
+                        lambda: _attempt_taskbar(attempts_remaining - 1, 0),
+                    )
+            if delay_ms > 0:
+                QtCore.QTimer.singleShot(delay_ms, _run)
+            else:
+                _run()
 
-        QtCore.QTimer.singleShot(0, _apply_taskbar)
+        QtCore.QTimer.singleShot(0, lambda: _attempt_taskbar(4, 0))
     sys.exit(app.exec())
 
 

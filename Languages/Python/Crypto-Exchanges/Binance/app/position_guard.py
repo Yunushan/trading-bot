@@ -12,12 +12,12 @@ class IntervalPositionGuard:
     - By default allows stacking distinct contexts on the same symbol & side while still
       blocking exact duplicates and enforcing opposite-side mutual exclusion.
     """
-    def __init__(self, stale_ttl_sec: Optional[int]=180) -> None:
-        self.stale_ttl_sec: int = int(stale_ttl_sec or 180)
+    def __init__(self, stale_ttl_sec: Optional[int]=180, *, strict_symbol_side: bool = False) -> None:
+        self.stale_ttl_sec: int = 0 if stale_ttl_sec in (None, 0) else int(stale_ttl_sec)
         self.ledger: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self.pending_attempts: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
         self.active: Dict[Tuple[str, str], Dict[str, int]] = {}
-        self.strict_symbol_side: bool = False  # allow stacking by default; can be tightened by caller
+        self.strict_symbol_side: bool = bool(strict_symbol_side)
         self._bw = None  # late-attached binance wrapper
         self._lock = threading.RLock()
 

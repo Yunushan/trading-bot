@@ -2533,16 +2533,21 @@ class BinanceWrapper:
         while attempt < max_retries:
             attempt += 1
             try:
+                params = {"symbol": symbol, "interval": interval, "limit": limit}
+                client = self.client
+                method = None
                 if source in ("", "binance futures", "binance_futures", "futures"):
-                    raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+                    method = getattr(client, "futures_klines", None)
+                    if method is None:
+                        method = getattr(client, "get_klines", None)
                 elif source in ("binance spot", "binance_spot", "spot"):
-                    raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+                    method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
                 elif source == "bybit":
                     import pandas as pd  # local import to avoid optional dependency cost when unused
                     bybit_interval = self._bybit_interval(interval)
                     url = "https://api.bybit.com/v5/market/kline"
-                    params = {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit}
-                    r = requests.get(url, params=params, timeout=10)
+                    bybit_params = {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit}
+                    r = requests.get(url, params=bybit_params, timeout=10)
                     r.raise_for_status()
                     j = r.json() or {}
                     lst = (j.get("result", {}) or {}).get("list", []) or []
@@ -2552,9 +2557,15 @@ class BinanceWrapper:
                     raise NotImplementedError("TradingView data source is not implemented in this build.")
                 else:
                     if self.account_type == "FUTURES":
-                        raw = self.client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+                        method = getattr(client, "futures_klines", None)
+                        if method is None:
+                            method = getattr(client, "get_klines", None)
                     else:
-                        raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+                        method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
+                if method is not None:
+                    raw = method(**params)
+                elif raw is None and source not in ("bybit", "tradingview", "trading view"):
+                    raise AttributeError("Connector does not provide a klines method")
                 break
             except (BinanceAPIException, OfficialConnectorError) as exc:
                 ban_until = self._handle_potential_ban(exc)
@@ -2652,10 +2663,23 @@ class BinanceWrapper:
             last_error = None
             for attempt in range(max_network_retries):
                 try:
+                    params = {
+                        "symbol": symbol,
+                        "interval": interval,
+                        "startTime": current,
+                        "endTime": end_ms,
+                        "limit": limit,
+                    }
+                    client = self.client
                     if acct == "FUTURES" or source in ("binance futures", "binance_futures", "futures", ""):
-                        raw = self.client.futures_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
+                        method = getattr(client, "futures_klines", None)
+                        if method is None:
+                            method = getattr(client, "get_klines", None)
                     else:
-                        raw = self.client.get_klines(symbol=symbol, interval=interval, startTime=current, endTime=end_ms, limit=limit)
+                        method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
+                    if method is None:
+                        raise AttributeError("Connector does not provide a klines method")
+                    raw = method(**params)
                     break
                 except (BinanceAPIException, OfficialConnectorError) as exc:
                     ban_until = self._handle_potential_ban(exc)

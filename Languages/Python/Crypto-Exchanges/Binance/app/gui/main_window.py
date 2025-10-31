@@ -1108,9 +1108,13 @@ class MainWindow(QtWidgets.QWidget):
         border-radius: 3px;
         background-color: #FFFFFF;
     }
+    QCheckBox::indicator:unchecked {
+        image: none;
+    }
     QCheckBox::indicator:checked {
         background-color: #0A84FF;
         border-color: #0A84FF;
+        image: url(:/qt-project.org/styles/commonstyle/images/checkboxchecked.png);
     }
     QCheckBox::indicator:hover {
         border-color: #0A84FF;
@@ -1144,9 +1148,13 @@ class MainWindow(QtWidgets.QWidget):
         border-radius: 3px;
         background-color: #1A1A1A;
     }
+    QCheckBox::indicator:unchecked {
+        image: none;
+    }
     QCheckBox::indicator:checked {
         background-color: #3FB950;
         border-color: #3FB950;
+        image: url(:/qt-project.org/styles/commonstyle/images/checkboxchecked.png);
     }
     QCheckBox::indicator:hover {
         border-color: #3FB950;
@@ -1171,7 +1179,7 @@ class MainWindow(QtWidgets.QWidget):
         self._session_marker_active = False
         self._auto_close_on_restart_triggered = False
         self._ui_initialized = False
-        self.guard = IntervalPositionGuard(stale_ttl_sec=180)
+        self.guard = IntervalPositionGuard(stale_ttl_sec=0, strict_symbol_side=True)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         state_close_pref = bool(self._app_state.get("close_on_exit", self.config.get("close_on_exit", False)))
@@ -3287,9 +3295,6 @@ class MainWindow(QtWidgets.QWidget):
             for widget in (table, add_btn, remove_btn, clear_btn):
                 if widget and widget not in lock_widgets:
                     lock_widgets.append(widget)
-        if kind == "backtest":
-            for btn in (add_btn, remove_btn, clear_btn):
-                self._register_runtime_active_exemption(btn)
         self._refresh_symbol_interval_pairs(kind)
         return group
 
@@ -7399,9 +7404,15 @@ class MainWindow(QtWidgets.QWidget):
         output_group_layout.addLayout(controls_layout)
         self._update_bot_status()
         try:
-            for widget in (self.backtest_run_btn, self.backtest_stop_btn, self.backtest_add_to_dashboard_btn):
+            for widget in (
+                self.backtest_run_btn,
+                self.backtest_stop_btn,
+                self.backtest_add_to_dashboard_btn,
+                self.backtest_add_all_to_dashboard_btn,
+            ):
                 if widget and widget not in self._runtime_lock_widgets:
                     self._runtime_lock_widgets.append(widget)
+                if widget in (self.backtest_run_btn, self.backtest_stop_btn):
                     self._register_runtime_active_exemption(widget)
         except Exception:
             pass
@@ -7615,7 +7626,13 @@ def _init_code_language_tab(self):
 def _code_tab_select_language(self, config_key: str) -> None:
     if config_key not in LANGUAGE_PATHS:
         return
+    previous_lang = self.config.get("code_language")
     self.config["code_language"] = config_key
+    if previous_lang != config_key:
+        self.config["code_market"] = None
+        self.config["selected_exchange"] = None
+        self.config["selected_forex_broker"] = None
+        self._code_tab_selected_market = None
     self._refresh_code_tab_from_config()
     self._ensure_language_exchange_paths()
 
@@ -7651,21 +7668,21 @@ def _refresh_code_tab_from_config(self) -> None:
     lang_key = self.config.get("code_language")
     for key, card in getattr(self, "_starter_language_cards", {}).items():
         card.setSelected(key == lang_key)
-    market = self.config.get("code_market") or "crypto"
+    market = self.config.get("code_market")
     self._code_tab_selected_market = market
     for key, card in getattr(self, "_starter_market_cards", {}).items():
-        card.setSelected(key == market)
-    selected_exchange = self.config.get("selected_exchange")
+        card.setSelected(bool(market) and key == market)
+    selected_exchange = self.config.get("selected_exchange") if market == "crypto" else None
     for key, card in getattr(self, "_starter_crypto_cards", {}).items():
         card.setSelected(key == selected_exchange)
-    selected_forex = self.config.get("selected_forex_broker")
+    selected_forex = self.config.get("selected_forex_broker") if market == "forex" else None
     for key, card in getattr(self, "_starter_forex_cards", {}).items():
         card.setSelected(key == selected_forex)
     self._update_code_tab_market_sections()
 
 
 def _update_code_tab_market_sections(self) -> None:
-    market = getattr(self, "_code_tab_selected_market", "crypto")
+    market = getattr(self, "_code_tab_selected_market", None)
     show_crypto = market == "crypto"
     show_forex = market == "forex"
     for widget in (getattr(self, "_crypto_section_label", None), getattr(self, "_crypto_cards_widget", None)):
@@ -7686,6 +7703,20 @@ def _sync_language_exchange_lists_from_config(self):
         if widget is None:
             continue
         desired = self.config.get(key)
+        if not desired:
+            try:
+                blocker = QtCore.QSignalBlocker(widget)
+            except Exception:
+                blocker = None
+            try:
+                widget.setCurrentIndex(-1)
+                if widget.isEditable():
+                    widget.clearEditText()
+            except Exception:
+                pass
+            if blocker is not None:
+                del blocker
+            continue
         if desired not in options_map:
             desired = next(iter(options_map))
             self.config[key] = desired
