@@ -2305,19 +2305,29 @@ class BinanceWrapper:
     def get_futures_wallet_balance(self) -> float:
         """Return the total wallet balance (including used margin) for the futures account."""
         preferred_assets = ("USDT", "BUSD", "USD")
+        best_val: float | None = None
         for entry in self._get_futures_account_balance_cached() or []:
             if not isinstance(entry, dict):
                 continue
             asset = str(entry.get("asset") or "").upper()
             if asset not in preferred_assets:
                 continue
-            for key in ("walletBalance", "balance", "crossWalletBalance", "marginBalance"):
+            for key in ("walletBalance", "marginBalance", "balance", "crossWalletBalance"):
                 val = entry.get(key)
-                if val is not None:
-                    try:
-                        return float(val)
-                    except Exception:
-                        continue
+                if val is None:
+                    continue
+                try:
+                    parsed = float(val)
+                except Exception:
+                    continue
+                if parsed < 0.0 and best_val is None:
+                    best_val = parsed
+                elif parsed >= 0.0:
+                    best_val = parsed if best_val is None else max(best_val, parsed)
+            if best_val is not None:
+                break
+        if best_val is not None:
+            return best_val
         acct_dict = self._get_futures_account_cached()
         if isinstance(acct_dict, dict):
             for key in (
@@ -2325,18 +2335,15 @@ class BinanceWrapper:
                 "totalMarginBalance",
                 "totalCrossWalletBalance",
                 "totalCrossBalance",
-                "totalInitialMargin",
             ):
                 val = acct_dict.get(key)
-                if val is not None:
-                    try:
-                        return float(val)
-                    except Exception:
-                        continue
-        try:
-            return float(self.get_futures_balance_usdt())
-        except Exception:
-            return 0.0
+                if val is None:
+                    continue
+                try:
+                    return float(val)
+                except Exception:
+                    continue
+        return 0.0
     def get_total_usdt_value(self) -> float:
         # Prefer total futures wallet balance; fall back to spot if unavailable
         try:
