@@ -60,6 +60,9 @@ _MAX_PARALLEL_RUNS = max(1, min(16, _default_parallel_limit(_CPU_COUNT)))
 class StrategyEngine:
     _RUN_GATE = threading.BoundedSemaphore(_MAX_PARALLEL_RUNS)
     _MAX_ACTIVE = _MAX_PARALLEL_RUNS
+    _ORDER_THROTTLE_LOCK = threading.Lock()
+    _ORDER_LAST_TS = 0.0
+    _ORDER_MIN_SPACING = 0.35  # seconds between order submissions by default
 
     @classmethod
     def concurrent_limit(cls, job_count: int | None = None) -> int:
@@ -70,6 +73,27 @@ class StrategyEngine:
             except Exception:
                 pass
         return limit
+
+    @classmethod
+    def _reserve_order_slot(cls, min_spacing: float | None = None) -> None:
+        """Global rate limiter so we don't spam the exchange with concurrent orders."""
+        spacing = float(min_spacing) if min_spacing is not None else cls._ORDER_MIN_SPACING
+        if not math.isfinite(spacing) or spacing <= 0.0:
+            spacing = cls._ORDER_MIN_SPACING
+        spacing = max(cls._ORDER_MIN_SPACING, spacing)
+        while True:
+            with cls._ORDER_THROTTLE_LOCK:
+                now = time.time()
+                wait = (cls._ORDER_LAST_TS + spacing) - now
+                if wait <= 0.0:
+                    cls._ORDER_LAST_TS = now
+                    return
+            time.sleep(min(max(wait, 0.01), 0.5))
+
+    @classmethod
+    def _release_order_slot(cls) -> None:
+        with cls._ORDER_THROTTLE_LOCK:
+            cls._ORDER_LAST_TS = max(cls._ORDER_LAST_TS, time.time())
 
     def __init__(self, binance_wrapper, config, log_callback, trade_callback=None, loop_interval_override=None, can_open_callback=None):
         self.config = copy.deepcopy(config)
@@ -91,6 +115,16 @@ class StrategyEngine:
         self._offline_backoff = 0.0
         self._last_network_log = 0.0
         self._emergency_close_triggered = False
+        try:
+            spacing = float(self.config.get("order_rate_min_spacing", StrategyEngine._ORDER_MIN_SPACING))
+        except Exception:
+            spacing = StrategyEngine._ORDER_MIN_SPACING
+        self._order_rate_min_spacing = max(0.05, min(spacing, 5.0))
+        try:
+            retry_backoff = float(self.config.get("order_rate_retry_backoff", 0.75))
+        except Exception:
+            retry_backoff = 0.75
+        self._order_rate_retry_backoff = max(0.1, min(retry_backoff, 5.0))
 
     def _notify_interval_closed(self, symbol: str, interval: str, position_side: str, **extra):
         if not self.trade_cb:
@@ -606,7 +640,13 @@ class StrategyEngine:
         except Exception:
             pass
 
-    def _close_opposite_position(self, symbol: str, interval: str, next_side: str) -> bool:
+    def _close_opposite_position(
+        self,
+        symbol: str,
+        interval: str,
+        next_side: str,
+        trigger_signature: tuple[str, ...] | None = None,
+    ) -> bool:
         """Ensure no net exposure in the opposite direction before opening a new leg."""
         try:
             positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
@@ -624,7 +664,16 @@ class StrategyEngine:
         opp_key = (symbol, interval, opp)
 
         if dual:
-            entries = self._leg_entries(opp_key)
+            entries_all = self._leg_entries(opp_key)
+            if trigger_signature:
+                sig_sorted = tuple(sorted(trigger_signature))
+                entries = [
+                    entry
+                    for entry in entries_all
+                    if tuple(sorted(entry.get("trigger_signature") or [])) == sig_sorted
+                ]
+            else:
+                entries = list(entries_all)
             if not entries:
                 entry = self._leg_ledger.get(opp_key) if hasattr(self, '_leg_ledger') else None
                 if isinstance(entry, dict) and entry.get("qty", 0.0):
@@ -1769,10 +1818,13 @@ class StrategyEngine:
             if leg_dup:
                 entries_dup = self._leg_entries(key_dup)
                 duplicate_active = False
+                active_signatures: set[tuple[str, ...]] = set()
                 if entries_dup:
                     for entry in entries_dup:
                         entry_sig = tuple(sorted(entry.get("trigger_signature") or []))
                         entry_qty = max(0.0, float(entry.get("qty") or 0.0))
+                        if entry_qty > 0.0:
+                            active_signatures.add(entry_sig)
                         if entry_qty > 0.0 and (not signature or entry_sig == signature):
                             duplicate_active = True
                             self.log(
@@ -1786,7 +1838,8 @@ class StrategyEngine:
                         existing_qty = float(leg_dup.get('qty') or 0.0)
                     except Exception:
                         existing_qty = 0.0
-                    if existing_qty > 0.0:
+                    signature_tracked_elsewhere = bool(active_signatures) and bool(signature) and signature not in active_signatures
+                    if existing_qty > 0.0 and not signature_tracked_elsewhere:
                         cache = _load_positions_cache()
                         side_is_long = side_upper == "BUY"
                         position_active = False
@@ -1960,7 +2013,7 @@ class StrategyEngine:
                     except Exception:
                         pass
 
-                    if not self._close_opposite_position(cw['symbol'], cw.get('interval'), side):
+                    if not self._close_opposite_position(cw['symbol'], cw.get('interval'), side, signature):
                         return
 
                     if callable(self.can_open_cb):
@@ -1996,8 +2049,12 @@ class StrategyEngine:
                                     else:
                                         long_active = amt_existing > tol
                                     if long_active:
-                                        self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long already active on exchange; skipping duplicate long entry.")
-                                        return
+                                        entries_dup = self._leg_entries(key_bar)
+                                        sig_sorted = signature if signature else ()
+                                        if any(tuple(sorted(entry.get("trigger_signature") or [])) == sig_sorted for entry in entries_dup):
+                                            self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long already active on exchange; skipping duplicate long entry.")
+                                            return
+                                        long_active = False
                             elif side == 'SELL':
                                 if amt_existing > tol:
                                     self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long still open on exchange; skipping short entry.")
@@ -2012,8 +2069,12 @@ class StrategyEngine:
                                     else:
                                         short_active = amt_existing < -tol
                                     if short_active:
-                                        self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short already active on exchange; skipping duplicate short entry.")
-                                        return
+                                        entries_dup = self._leg_entries(key_dup)
+                                        sig_sorted = signature if signature else ()
+                                        if any(tuple(sorted(entry.get("trigger_signature") or [])) == sig_sorted for entry in entries_dup):
+                                            self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short already active on exchange; skipping duplicate short entry.")
+                                            return
+                                        short_active = False
                     except Exception as ex_chk:
                         self.log(f"{cw['symbol']}@{cw.get('interval')} guard check warning: {ex_chk}")
                         return
@@ -2029,22 +2090,44 @@ class StrategyEngine:
                         except Exception:
                             pass
                     try:
-                        order_res = self.binance.place_futures_market_order(
-                            cw['symbol'], side,
-                            percent_balance=None,
-                            leverage=lev,
-                            reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
-                            position_side=desired_ps,
-                            price=cw.get('price'),
-                            quantity=qty_est,
-                            strict=True,
-                            timeInForce=self.config.get('tif','GTC'),
-                            gtd_minutes=int(self.config.get('gtd_minutes',30)),
-                            interval=cw.get('interval'),
-                            max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0)),
-                            auto_bump_percent_multiplier=float(self.config.get('auto_bump_percent_multiplier', 10.0)),
-                        )
-                        order_success = bool(order_res.get('ok', True))
+                        order_attempts = 0
+                        order_success = False
+                        price_for_order = last_price if (last_price is not None and last_price > 0.0) else cw.get('price')
+                        backoff_base = self._order_rate_retry_backoff
+                        rate_limit_tokens = ("too frequent", "-1003", "frequency", "rate limit", "request too many", "too many requests")
+                        while True:
+                            order_attempts += 1
+                            StrategyEngine._reserve_order_slot(self._order_rate_min_spacing)
+                            try:
+                                order_res = self.binance.place_futures_market_order(
+                                    cw['symbol'],
+                                    side,
+                                    percent_balance=None,
+                                    leverage=lev,
+                                    reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
+                                    position_side=desired_ps,
+                                    price=price_for_order,
+                                    quantity=qty_est,
+                                    strict=True,
+                                    timeInForce=self.config.get('tif', 'GTC'),
+                                    gtd_minutes=int(self.config.get('gtd_minutes', 30)),
+                                    interval=cw.get('interval'),
+                                    max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0)),
+                                    auto_bump_percent_multiplier=float(self.config.get('auto_bump_percent_multiplier', 10.0)),
+                                )
+                            except Exception as exc_order:
+                                order_res = {'ok': False, 'symbol': cw['symbol'], 'error': str(exc_order)}
+                            finally:
+                                StrategyEngine._release_order_slot()
+                            order_success = bool(order_res.get('ok', True))
+                            if order_success:
+                                break
+                            err_text = str(order_res.get('error') or '').lower()
+                            if order_attempts < 3 and any(token in err_text for token in rate_limit_tokens):
+                                wait_time = min(5.0, backoff_base * order_attempts)
+                                time.sleep(wait_time)
+                                continue
+                            break
                     finally:
                         if guard_obj and hasattr(guard_obj, "end_open"):
                             try:
