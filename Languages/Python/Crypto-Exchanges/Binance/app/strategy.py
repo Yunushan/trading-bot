@@ -66,7 +66,7 @@ class StrategyEngine:
     _BAR_GUARD_LOCK = threading.Lock()
     _BAR_GLOBAL_SIGNATURES: dict[tuple[str, str, str], dict[str, object]] = {}
     _SYMBOL_GUARD_LOCK = threading.Lock()
-    _SYMBOL_ORDER_STATE: dict[tuple[str, str], float] = {}
+    _SYMBOL_ORDER_STATE: dict[tuple[str, str], dict[str, float | bool]] = {}
 
     @classmethod
     def concurrent_limit(cls, job_count: int | None = None) -> int:
@@ -1975,18 +1975,36 @@ class StrategyEngine:
             guard_key_symbol = (cw["symbol"], side)
             guard_window = max(8.0, min(45.0, interval_seconds * 1.5))
             now_guard = time.time()
+            guard_claimed = False
             with StrategyEngine._SYMBOL_GUARD_LOCK:
-                last_symbol_order = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
-                if last_symbol_order is not None and (now_guard - last_symbol_order) < guard_window:
+                entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                last_ts = float(entry_guard.get("last", 0.0)) if isinstance(entry_guard, dict) else float(entry_guard or 0.0)
+                pending = bool(entry_guard.get("pending", False)) if isinstance(entry_guard, dict) else False
+                if pending:
                     try:
-                        remaining = guard_window - (now_guard - last_symbol_order)
                         self.log(
                             f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
-                            f"(last order {now_guard - last_symbol_order:.1f}s ago, wait {remaining:.1f}s)."
+                            f"(previous order still pending)."
                         )
                     except Exception:
                         pass
                     return
+                if last_ts > 0.0 and (now_guard - last_ts) < guard_window:
+                    try:
+                        remaining = guard_window - (now_guard - last_ts)
+                        self.log(
+                            f"{cw['symbol']}@{interval_key} symbol-level guard suppressed {side} entry "
+                            f"(last order {now_guard - last_ts:.1f}s ago, wait {remaining:.1f}s)."
+                        )
+                    except Exception:
+                        pass
+                    return
+                StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = {
+                    "pending": True,
+                    "last": last_ts,
+                    "window": guard_window,
+                }
+                guard_claimed = True
             try:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
                 usdt_bal = self.binance.get_total_usdt_value()
@@ -2282,8 +2300,35 @@ class StrategyEngine:
                                             global_tracker["bar"] = current_bar_marker
                                             global_tracker["signatures"] = set()
                                         global_tracker.setdefault("signatures", set()).update({sig_sorted, "__ANY__"})
-                                with StrategyEngine._SYMBOL_GUARD_LOCK:
-                                    StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = time.time()
+                                if guard_claimed:
+                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol, {})
+                                        if isinstance(entry_guard, dict):
+                                            entry_guard["last"] = time.time()
+                                            entry_guard["pending"] = False
+                                            entry_guard["window"] = guard_window
+                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
+                                else:
+                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                                        if isinstance(entry_guard, dict):
+                                            entry_guard["pending"] = False
+                                            entry_guard["last"] = time.time()
+                                            entry_guard["window"] = guard_window
+                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
+                            else:
+                                if guard_claimed:
+                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                                        if isinstance(entry_guard, dict):
+                                            entry_guard["pending"] = False
+                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
+                                else:
+                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                                        if isinstance(entry_guard, dict):
+                                            entry_guard["pending"] = False
+                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
                                 key = (cw['symbol'], cw.get('interval'), side)
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
@@ -2486,6 +2531,12 @@ class StrategyEngine:
                 self.log(f"{cw['symbol']}@{cw['interval']} Order placed: {order_res}")
             except Exception as e:
                 self.log(f"{cw['symbol']}@{cw['interval']} Order failed: {e}")
+                if guard_claimed:
+                    with StrategyEngine._SYMBOL_GUARD_LOCK:
+                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                        if isinstance(entry_guard, dict):
+                            entry_guard["pending"] = False
+                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
 
         for order in orders_to_execute:
             order_ts = order.get("timestamp")
