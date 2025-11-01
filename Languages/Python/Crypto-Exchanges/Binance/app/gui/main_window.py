@@ -9296,10 +9296,8 @@ def _mw_render_positions_table(self):
         closed_records = getattr(self, "_closed_position_records", []) or []
         view_mode = getattr(self, "_positions_view_mode", "cumulative")
         try:
-            vbar = self.pos_table.verticalScrollBar()
             vbar_val = vbar.value()
         except Exception:
-            vbar = None
             vbar_val = None
         try:
             hbar = self.pos_table.horizontalScrollBar()
@@ -9307,6 +9305,7 @@ def _mw_render_positions_table(self):
         except Exception:
             hbar = None
             hbar_val = None
+        prev_snapshot = getattr(self, "_last_positions_table_snapshot", None)
         if view_mode == "per_trade":
             display_records = _mw_positions_records_per_trade(self, open_records, closed_records)
         else:
@@ -9315,6 +9314,29 @@ def _mw_render_positions_table(self):
                 + list(closed_records)
             )
         display_records = [rec for rec in (display_records or []) if isinstance(rec, dict)]
+        snapshot_digest: list[tuple] = []
+        for rec in display_records:
+            data = rec.get('data') or {}
+            indicators_list = tuple(_normalize_indicator_values(rec.get('indicators')))
+            snapshot_digest.append(
+                (
+                    str(rec.get('symbol') or "").upper(),
+                    str(rec.get('side_key') or "").upper(),
+                    str(rec.get('entry_tf') or ""),
+                    indicators_list,
+                    float(data.get('qty') or 0.0),
+                    float(data.get('margin_usdt') or 0.0),
+                    float(data.get('pnl_value') or 0.0),
+                    str(rec.get('status') or ""),
+                )
+            )
+        snapshot_key = (view_mode, tuple(snapshot_digest))
+        if prev_snapshot == snapshot_key and view_mode == "per_trade":
+            totals = getattr(self, "_last_positions_table_totals", None)
+            if isinstance(totals, tuple) and len(totals) == 2:
+                self._update_positions_pnl_summary(*totals)
+                self._update_global_pnl_display(*self._compute_global_pnl_totals())
+            return
         header = self.pos_table.horizontalHeader()
         try:
             sort_column = header.sortIndicatorSection()
@@ -9463,6 +9485,11 @@ def _mw_render_positions_table(self):
         try:
             if hbar is not None and hbar_val is not None:
                 QtCore.QTimer.singleShot(0, lambda: _restore_scrollbar(hbar, hbar_val))
+        except Exception:
+            pass
+        try:
+            self._last_positions_table_snapshot = snapshot_key
+            self._last_positions_table_totals = (total_pnl if pnl_has_value else None, summary_margin)
         except Exception:
             pass
 

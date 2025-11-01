@@ -47,14 +47,14 @@ LANGUAGE_OPTIONS = [
     {
         "key": "python",
         "title": "Python",
-        "subtitle": "Fast to build · Huge ecosystem",
+        "subtitle": "Fast to build - Huge ecosystem",
         "accent": "#3b82f6",
         "badge": "Recommended",
     },
     {
         "key": "cpp",
         "title": "C++",
-        "subtitle": "Qt native · coming soon",
+        "subtitle": "Qt native - coming soon",
         "accent": "#38bdf8",
         "badge": "Coming Soon",
         "disabled": True,
@@ -62,7 +62,7 @@ LANGUAGE_OPTIONS = [
     {
         "key": "rust",
         "title": "Rust",
-        "subtitle": "Memory safe · coming soon",
+        "subtitle": "Memory safe - coming soon",
         "accent": "#fb923c",
         "badge": "Coming Soon",
         "disabled": True,
@@ -70,7 +70,7 @@ LANGUAGE_OPTIONS = [
     {
         "key": "c",
         "title": "C",
-        "subtitle": "Low-level power · coming soon",
+        "subtitle": "Low-level power - coming soon",
         "accent": "#f87171",
         "badge": "Coming Soon",
         "disabled": True,
@@ -78,8 +78,15 @@ LANGUAGE_OPTIONS = [
 ]
 
 MARKET_OPTIONS = [
-    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin…", "accent": "#34d399"},
-    {"key": "forex", "title": "Forex Exchange", "subtitle": "OANDA, FXCM, MetaTrader…", "accent": "#93c5fd"},
+    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin", "accent": "#34d399"},
+    {
+        "key": "forex",
+        "title": "Forex Exchange",
+        "subtitle": "OANDA, FXCM, MetaTrader - coming soon",
+        "accent": "#93c5fd",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
 ]
 
 CRYPTO_EXCHANGES = [
@@ -87,7 +94,7 @@ CRYPTO_EXCHANGES = [
     {
         "key": "bybit",
         "title": "Bybit",
-        "subtitle": "Derivatives-focused · coming soon",
+        "subtitle": "Derivatives-focused - coming soon",
         "accent": "#fb7185",
         "badge": "Coming Soon",
         "disabled": True,
@@ -95,7 +102,7 @@ CRYPTO_EXCHANGES = [
     {
         "key": "okx",
         "title": "OKX",
-        "subtitle": "Options + spot · coming soon",
+        "subtitle": "Options + spot - coming soon",
         "accent": "#a78bfa",
         "badge": "Coming Soon",
         "disabled": True,
@@ -106,7 +113,7 @@ FOREX_BROKERS = [
     {
         "key": "oanda",
         "title": "OANDA",
-        "subtitle": "Popular REST API · coming soon",
+        "subtitle": "Popular REST API - coming soon",
         "accent": "#60a5fa",
         "badge": "Coming Soon",
         "disabled": True,
@@ -114,7 +121,7 @@ FOREX_BROKERS = [
     {
         "key": "fxcm",
         "title": "FXCM",
-        "subtitle": "Streaming quotes · coming soon",
+        "subtitle": "Streaming quotes - coming soon",
         "accent": "#c084fc",
         "badge": "Coming Soon",
         "disabled": True,
@@ -122,7 +129,7 @@ FOREX_BROKERS = [
     {
         "key": "ig",
         "title": "IG",
-        "subtitle": "Global CFD trading · coming soon",
+        "subtitle": "Global CFD trading - coming soon",
         "accent": "#f472b6",
         "badge": "Coming Soon",
         "disabled": True,

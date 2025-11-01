@@ -351,24 +351,78 @@ class StrategyEngine:
         sym = str(symbol or "").upper()
         iv = str(interval or "").lower()
         key = (sym, iv, str(indicator_key or "").lower())
+        state = None
         with self._indicator_state_lock:
-            state = self._indicator_state.get(key)
-            if not isinstance(state, dict):
-                return False
-            ids = state.get(side_norm)
-            return bool(ids)
+            raw = self._indicator_state.get(key)
+            if isinstance(raw, dict):
+                state = raw
+                ids = state.get(side_norm)
+                if ids:
+                    return True
+        return bool(self._iter_indicator_entries(symbol, interval, indicator_key, side))
 
     def _indicator_get_ledger_ids(self, symbol: str, interval: str, indicator_key: str, side: str) -> list[str]:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         sym = str(symbol or "").upper()
         iv = str(interval or "").lower()
         key = (sym, iv, str(indicator_key or "").lower())
+        ids: set[str] | None = None
         with self._indicator_state_lock:
             state = self._indicator_state.get(key)
-            if not isinstance(state, dict):
-                return []
-            ids = state.get(side_norm)
-            return list(ids or [])
+            if isinstance(state, dict):
+                ids = state.get(side_norm)
+        collected: list[str] = []
+        if ids:
+            collected.extend(list(ids))
+        for _, _, _, entry in self._iter_indicator_entries(symbol, interval, indicator_key, side):
+            ledger = entry.get("ledger_id")
+            if ledger and ledger not in collected:
+                collected.append(ledger)
+        return collected
+
+    def _iter_indicator_entries(
+        self,
+        symbol: str,
+        interval: str,
+        indicator_key: str,
+        side: str,
+    ) -> list[tuple[tuple[str, str, str], dict]]:
+        sym_norm = str(symbol or "").upper()
+        iv_norm = str(interval or "").lower()
+        indicator_norm = str(indicator_key or "").strip().lower()
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        if not indicator_norm:
+            return []
+        matches: list[tuple[tuple[str, str, str], dict]] = []
+        for (leg_sym, leg_iv, leg_side), _ in list(self._leg_ledger.items()):
+            try:
+                if str(leg_sym or "").upper() != sym_norm:
+                    continue
+                if str(leg_iv or "").lower() != iv_norm:
+                    continue
+                leg_side_norm = "BUY" if str(leg_side or "").upper() in {"BUY", "LONG"} else "SELL"
+                if leg_side_norm != side_norm:
+                    continue
+                entries = self._leg_entries((leg_sym, leg_iv, leg_side))
+                if not entries:
+                    continue
+                for entry in entries:
+                    try:
+                        qty_val = max(0.0, float(entry.get("qty") or 0.0))
+                    except Exception:
+                        qty_val = 0.0
+                    if qty_val <= 0.0:
+                        continue
+                    sig_tuple = self._normalize_signature_tuple(
+                        entry.get("trigger_signature") or entry.get("trigger_indicators")
+                    )
+                    if not sig_tuple:
+                        continue
+                    if indicator_norm in sig_tuple:
+                        matches.append(((leg_sym, leg_iv, leg_side), entry))
+            except Exception:
+                continue
+        return matches
 
     def _indicator_register_entry(
         self,
@@ -454,11 +508,12 @@ class StrategyEngine:
         indicator_key: str,
         side_label: str,
         position_side: str | None,
-    ) -> None:
+    ) -> int:
         symbol = cw["symbol"]
         ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
         close_side = "SELL" if str(side_label).upper() in {"BUY", "LONG"} else "BUY"
         side_norm = "BUY" if str(side_label).upper() in {"BUY", "LONG"} else "SELL"
+        closed_count = 0
         for ledger_id in list(ledger_ids):
             leg_key = self._ledger_index.get(ledger_id)
             if not leg_key:
@@ -474,7 +529,7 @@ class StrategyEngine:
             try:
                 cw_clone = dict(cw)
                 cw_clone["interval"] = leg_key[1]
-                self._close_leg_entry(
+                if self._close_leg_entry(
                     cw_clone,
                     leg_key,
                     target_entry,
@@ -484,9 +539,11 @@ class StrategyEngine:
                     loss_usdt=0.0,
                     price_pct=0.0,
                     margin_pct=0.0,
-                )
+                ):
+                    closed_count += 1
             except Exception:
                 continue
+        return closed_count
 
 
     def _update_leg_snapshot(self, leg_key, leg: dict | None) -> None:
@@ -640,6 +697,36 @@ class StrategyEngine:
                 entry["margin_usdt"] = margin * scale if margin > 0.0 else margin
         leg["entries"] = entries
         self._update_leg_snapshot(leg_key, leg)
+
+    @staticmethod
+    def _entry_margin_value(entry: dict | None, leverage_fallback: float | int = 1) -> float:
+        if not isinstance(entry, dict):
+            return 0.0
+        try:
+            margin_val = float(entry.get("margin_usdt") or 0.0)
+        except Exception:
+            margin_val = 0.0
+        if margin_val > 0.0:
+            return max(0.0, margin_val)
+        try:
+            qty = max(0.0, float(entry.get("qty") or 0.0))
+        except Exception:
+            qty = 0.0
+        try:
+            price = max(0.0, float(entry.get("entry_price") or 0.0))
+        except Exception:
+            price = 0.0
+        try:
+            lev_val = float(entry.get("leverage") or leverage_fallback or 1.0)
+        except Exception:
+            lev_val = float(leverage_fallback or 1.0)
+        lev_val = max(1.0, lev_val)
+        if qty > 0.0 and price > 0.0:
+            try:
+                return (price * qty) / lev_val
+            except Exception:
+                return 0.0
+        return 0.0
 
     def _close_leg_entry(
         self,
@@ -1440,6 +1527,17 @@ class StrategyEngine:
         short_open = bool(self._leg_ledger.get(key_short, {}).get('qty', 0) > 0)
         long_open  = bool(self._leg_ledger.get(key_long,  {}).get('qty', 0) > 0)
 
+        dual_side = False
+        desired_ps_long_guard = None
+        desired_ps_short_guard = None
+        if account_type == "FUTURES":
+            try:
+                dual_side = bool(self.binance.get_futures_dual_side())
+            except Exception:
+                dual_side = False
+            desired_ps_long_guard = "LONG" if dual_side else None
+            desired_ps_short_guard = "SHORT" if dual_side else None
+
         # Exit thresholds
         try:
             rsi_cfg = cw.get('indicators',{}).get('rsi',{})
@@ -1448,45 +1546,51 @@ class StrategyEngine:
         except Exception:
             exit_up, exit_dn = 70.0, 30.0
 
-        if last_rsi is not None:
-            # Close LONG when RSI >= sell threshold (e.g., 70)
-            if long_open and last_rsi >= exit_up:
-                try:
-                    leg = self._leg_ledger.get(key_long)
-                    qty = float(leg.get('qty', 0)) if leg else 0.0
-                    if qty > 0:
-                        desired_ps = ('LONG' if self.binance.get_futures_dual_side() else None)
-                        res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='SELL', position_side=desired_ps)
-                        if isinstance(res, dict) and res.get('ok'):
-                            payload = self._build_close_event_payload(cw['symbol'], cw.get('interval'), 'BUY', qty, res)
-                            self._remove_leg_entry(key_long, None)
-                            try:
-                                if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'BUY')
-                            except Exception:
-                                pass
-                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'BUY', **payload)
-                            self.log(f"Closed LONG for {cw['symbol']}@{cw.get('interval')} (RSI >= {exit_up}).")
-                except Exception:
-                    pass
-            # Close SHORT when RSI <= buy threshold (e.g., 30)
-            if short_open and last_rsi <= exit_dn:
-                try:
-                    leg = self._leg_ledger.get(key_short)
-                    qty = float(leg.get('qty', 0)) if leg else 0.0
-                    if qty > 0:
-                        desired_ps = ('SHORT' if self.binance.get_futures_dual_side() else None)
-                        res = self.binance.close_futures_leg_exact(cw['symbol'], qty, side='BUY', position_side=desired_ps)
-                        if isinstance(res, dict) and res.get('ok'):
-                            payload = self._build_close_event_payload(cw['symbol'], cw.get('interval'), 'SELL', qty, res)
-                            self._remove_leg_entry(key_short, None)
-                            try:
-                                if hasattr(self.guard, 'mark_closed'): self.guard.mark_closed(cw['symbol'], cw.get('interval'), 'SELL')
-                            except Exception:
-                                pass
-                            self._notify_interval_closed(cw['symbol'], cw.get('interval'), 'SELL', **payload)
-                            self.log(f"Closed SHORT for {cw['symbol']}@{cw.get('interval')} (RSI <= {exit_dn}).")
-                except Exception:
-                    pass
+        if account_type == "FUTURES" and last_rsi is not None:
+            interval_current = cw.get('interval')
+            try:
+                if last_rsi >= exit_up and self._indicator_has_open(cw['symbol'], interval_current, 'rsi', 'BUY'):
+                    try:
+                        closed_long = self._close_indicator_positions(
+                            cw,
+                            interval_current,
+                            'rsi',
+                            'BUY',
+                            desired_ps_long_guard,
+                        )
+                    except Exception:
+                        closed_long = 0
+                    if closed_long:
+                        long_open = bool(self._leg_ledger.get(key_long, {}).get('qty', 0) > 0)
+                        try:
+                            plural = "entry" if closed_long == 1 else "entries"
+                            self.log(
+                                f"Closed {closed_long} RSI LONG {plural} for {cw['symbol']}@{cw.get('interval')} (RSI >= {exit_up})."
+                            )
+                        except Exception:
+                            pass
+                if last_rsi <= exit_dn and self._indicator_has_open(cw['symbol'], interval_current, 'rsi', 'SELL'):
+                    try:
+                        closed_short = self._close_indicator_positions(
+                            cw,
+                            interval_current,
+                            'rsi',
+                            'SELL',
+                            desired_ps_short_guard,
+                        )
+                    except Exception:
+                        closed_short = 0
+                    if closed_short:
+                        short_open = bool(self._leg_ledger.get(key_short, {}).get('qty', 0) > 0)
+                        try:
+                            plural = "entry" if closed_short == 1 else "entries"
+                            self.log(
+                                f"Closed {closed_short} RSI SHORT {plural} for {cw['symbol']}@{cw.get('interval')} (RSI <= {exit_dn})."
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         last_price = None
         try:
@@ -1500,13 +1604,6 @@ class StrategyEngine:
                 last_price = float(df['close'].iloc[-1])
             except Exception:
                 last_price = None
-
-        dual_side = False
-        if account_type == "FUTURES":
-            try:
-                dual_side = bool(self.binance.get_futures_dual_side())
-            except Exception:
-                dual_side = False
         positions_cache = None
 
         def _load_positions_cache():
@@ -2362,9 +2459,14 @@ class StrategyEngine:
                         available_total = float(self.binance.get_futures_balance_usdt())
                     except Exception:
                         available_total = 0.0
-                    wallet_total = available_total
+                    try:
+                        wallet_total = float(self.binance.get_total_wallet_balance())
+                    except Exception:
+                        wallet_total = 0.0
+                    available_total = max(0.0, available_total)
+                    wallet_total = max(0.0, wallet_total)
                     if wallet_total <= 0.0:
-                        wallet_total = free_usdt
+                        wallet_total = max(available_total, free_usdt)
                     ledger_margin_total = 0.0
                     try:
                         for leg_state in self._leg_ledger.values():
@@ -2375,25 +2477,147 @@ class StrategyEngine:
                                 ledger_margin_total += margin_val
                     except Exception:
                         ledger_margin_total = 0.0
-                    equity_estimate = 0.0
-                    if (available_total or 0.0) > 0.0 or ledger_margin_total > 0.0:
-                        equity_estimate = max(0.0, float(available_total or 0.0)) + ledger_margin_total
-                    if equity_estimate > 0.0:
-                        wallet_total = equity_estimate
-                    equity_cap = max(0.0, float(free_usdt or 0.0)) + ledger_margin_total
-                    if equity_cap > 0.0:
-                        wallet_total = min(wallet_total, equity_cap)
-                    if wallet_total <= 0.0:
-                        wallet_total = max(float(equity_estimate or 0.0), float(free_usdt or 0.0))
-                    if wallet_total <= 0.0:
-                        try:
-                            wallet_total = float(self.binance.get_total_wallet_balance())
-                        except Exception:
-                            wallet_total = 0.0
-                    target_margin = wallet_total * pct
-                    if target_margin <= 0.0:
-                        self.log(f"{cw['symbol']}@{cw.get('interval')} capital guard: zero target margin for {pct*100:.2f}% allocation.")
+                    equity_estimate = max(wallet_total, available_total + ledger_margin_total)
+                    equity_estimate = max(equity_estimate, free_usdt + ledger_margin_total)
+                    if equity_estimate <= 0.0:
+                        equity_estimate = max(wallet_total, available_total, free_usdt, ledger_margin_total)
+                    wallet_total = max(0.0, equity_estimate)
+                    margin_tolerance = float(self.config.get("margin_over_target_tolerance", 0.05))
+                    if margin_tolerance > 1.0:
+                        margin_tolerance = margin_tolerance / 100.0
+                    margin_tolerance = max(0.0, margin_tolerance)
+
+                    try:
+                        lev_raw = cw.get('leverage', self.config.get('leverage', 1))
+                        lev = int(lev_raw)
+                    except Exception:
+                        lev = int(self.config.get('leverage', 1))
+                    if lev <= 0:
+                        lev = 1
+
+                    per_indicator_margin_target = wallet_total * pct
+                    if per_indicator_margin_target <= 0.0:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} sizing blocked: computed margin target <= 0 "
+                            f"for {pct*100:.2f}% allocation."
+                        )
                         return
+                    per_indicator_notional_target = per_indicator_margin_target * float(lev)
+
+                    sig_tuple_for_order = tuple(
+                        sorted(
+                            str(part or "").strip().lower()
+                            for part in (signature or ())
+                            if str(part or "").strip()
+                        )
+                    )
+                    indicator_key_for_order = None
+                    if len(sig_tuple_for_order) == 1:
+                        indicator_key_for_order = sig_tuple_for_order[0]
+                    if not indicator_key_for_order and trigger_labels:
+                        labels_norm = [
+                            str(lbl or "").strip().lower()
+                            for lbl in trigger_labels
+                            if str(lbl or "").strip()
+                        ]
+                        if len(labels_norm) == 1:
+                            indicator_key_for_order = labels_norm[0]
+
+                    key_current_leg = (cw["symbol"], cw.get("interval"), side)
+                    entries_side_all: list[tuple[tuple[str, str, str], dict]] = []
+                    try:
+                        for (leg_sym, leg_iv, leg_side), _ in list(self._leg_ledger.items()):
+                            if str(leg_sym or "").upper() != str(cw["symbol"]).upper():
+                                continue
+                            leg_side_norm = str(leg_side or "").upper()
+                            if leg_side_norm in {"LONG", "SHORT"}:
+                                leg_side_norm = "BUY" if leg_side_norm == "LONG" else "SELL"
+                            if leg_side_norm != side:
+                                continue
+                            leg_entries = self._leg_entries((leg_sym, leg_iv, leg_side))
+                            for entry in leg_entries:
+                                entries_side_all.append(((leg_sym, leg_iv, leg_side), entry))
+                    except Exception:
+                        entries_side_all = list(entries_side_all)
+
+                    def _normalized_signature(entry_dict: dict) -> tuple[str, ...]:
+                        raw_sig = entry_dict.get("trigger_signature") or entry_dict.get("trigger_indicators")
+                        if isinstance(raw_sig, Iterable) and not isinstance(raw_sig, (str, bytes)):
+                            parts: list[str] = []
+                            for part in raw_sig:
+                                text = str(part or "").strip().lower()
+                                if text:
+                                    parts.append(text)
+                            parts.sort()
+                            return tuple(parts)
+                        return tuple()
+
+                    def _slot_token_from_entry(entry_dict: dict) -> str:
+                        indicator_id = self._extract_indicator_key(entry_dict)
+                        if indicator_id:
+                            return f"ind:{indicator_id}"
+                        sig_norm = _normalized_signature(entry_dict)
+                        if sig_norm:
+                            return "sig:" + "|".join(sig_norm)
+                        ledger_id = entry_dict.get("ledger_id")
+                        if ledger_id:
+                            return f"id:{ledger_id}"
+                        return f"side:{side}"
+
+                    active_slot_tokens_all: set[str] = set()
+                    for _, entry in entries_side_all:
+                        active_slot_tokens_all.add(_slot_token_from_entry(entry))
+                    if indicator_key_for_order:
+                        indicator_entries_all = [
+                            (leg_key, entry)
+                            for leg_key, entry in entries_side_all
+                            if self._extract_indicator_key(entry) == indicator_key_for_order
+                        ]
+                    elif sig_tuple_for_order:
+                        indicator_entries_all = [
+                            (leg_key, entry)
+                            for leg_key, entry in entries_side_all
+                            if _normalized_signature(entry) == sig_tuple_for_order
+                        ]
+                    else:
+                        indicator_entries_all = entries_side_all[:]
+
+                    existing_margin_indicator_total = sum(
+                        self._entry_margin_value(entry, lev) for _, entry in indicator_entries_all
+                    )
+
+                    slot_token_for_order = (
+                        f"ind:{indicator_key_for_order}"
+                        if indicator_key_for_order
+                        else (
+                            "sig:" + "|".join(sig_tuple_for_order)
+                            if sig_tuple_for_order
+                            else f"side:{side}"
+                        )
+                    )
+                    slot_label = (
+                        indicator_key_for_order.upper()
+                        if indicator_key_for_order
+                        else ("|".join(sig_tuple_for_order) if sig_tuple_for_order else "current slot")
+                    )
+
+                    max_indicator_margin = per_indicator_margin_target * (1.0 + margin_tolerance)
+                    if existing_margin_indicator_total >= max_indicator_margin - 1e-9:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} capital guard: existing {side} margin for {slot_label} "
+                            f"{existing_margin_indicator_total:.4f} USDT already >= cap {max_indicator_margin:.4f} USDT "
+                            f"({pct*100:.2f}% margin target → {per_indicator_notional_target:.4f} USDT notional @ {lev}x)."
+                        )
+                        return
+
+                    target_margin = max(0.0, per_indicator_margin_target - existing_margin_indicator_total)
+                    if target_margin <= 0.0:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} capital guard: {slot_label} exposure already meets "
+                            f"the {pct*100:.2f}% margin allocation target."
+                        )
+                        return
+
                     if available_total <= 0.0:
                         available_total = free_usdt
                     if available_total <= 0.0:
@@ -2401,11 +2625,15 @@ class StrategyEngine:
                         return
                     if available_total < target_margin * 0.95:
                         self.log(
-                            f"{cw['symbol']}@{cw.get('interval')} capital guard: requested {target_margin:.2f} USDT "
-                            f"({pct*100:.2f}%) but only {available_total:.2f} USDT available."
+                            f"{cw['symbol']}@{cw.get('interval')} capital guard: requested {target_margin:.4f} USDT "
+                            f"({pct*100:.2f}% margin target) but only {available_total:.4f} USDT available."
                         )
                         return
-                    lev = max(1, int(cw.get('leverage', 1)))
+
+                    existing_margin_same_side = sum(
+                        self._entry_margin_value(entry, lev) for _, entry in entries_side_all
+                    )
+
                     qty_target = (target_margin * lev) / price
                     adj_qty, adj_err = self.binance.adjust_qty_to_filters_futures(cw['symbol'], qty_target, price)
                     if adj_err:
@@ -2414,38 +2642,53 @@ class StrategyEngine:
                     if adj_qty <= 0.0:
                         self.log(f"{cw['symbol']}@{cw.get('interval')} sizing blocked: quantity <= 0 after filter adjustment.")
                         return
-                    margin_est = (adj_qty * price) / max(lev, 1)
-                    margin_tolerance = float(self.config.get("margin_over_target_tolerance", 0.05))
-                    if margin_tolerance > 1.0:
-                        margin_tolerance = margin_tolerance / 100.0
+
+                    margin_est = (adj_qty * price) / float(lev)
+                    if existing_margin_indicator_total + margin_est > max_indicator_margin + 1e-6:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} capital guard: adding {margin_est:.4f} USDT to {slot_label} "
+                            f"would exceed cap {max_indicator_margin:.4f} USDT "
+                            f"({pct*100:.2f}% margin target → {per_indicator_notional_target:.4f} USDT notional @ {lev}x)."
+                        )
+                        return
+
+                    expected_slots_after = len(active_slot_tokens_all)
+                    if slot_token_for_order not in active_slot_tokens_all:
+                        expected_slots_after += 1
+                    expected_slots_after = max(1, expected_slots_after)
+                    max_side_margin = per_indicator_margin_target * expected_slots_after * (1.0 + margin_tolerance)
+                    projected_total_margin = existing_margin_same_side + margin_est
+                    if projected_total_margin > max_side_margin + 1e-6:
+                        self.log(
+                            f"{cw['symbol']}@{cw.get('interval')} capital guard: projected total {side} margin {projected_total_margin:.4f} USDT "
+                            f"exceeds cap {max_side_margin:.4f} USDT for {expected_slots_after} slot(s) at "
+                            f"{pct*100:.2f}% margin each."
+                        )
+                        return
+
                     min_required_margin = 0.0
                     try:
                         f_filters = self.binance.get_futures_symbol_filters(cw['symbol']) or {}
                         min_notional_filter = float(f_filters.get('minNotional') or 0.0)
                         if min_notional_filter > 0.0:
-                            min_required_margin = max(min_required_margin, min_notional_filter / max(lev, 1))
+                            min_required_margin = max(min_required_margin, min_notional_filter / float(lev))
                         min_qty_filter = float(f_filters.get('minQty') or 0.0)
                         if min_qty_filter > 0.0 and price > 0.0:
-                            min_required_margin = max(min_required_margin, (min_qty_filter * price) / max(lev, 1))
+                            min_required_margin = max(min_required_margin, (min_qty_filter * price) / float(lev))
                     except Exception:
                         min_required_margin = max(min_required_margin, 0.0)
-                    max_margin = target_margin * (1.0 + max(0.0, margin_tolerance))
-                    if min_required_margin > 0.0 and min_required_margin > max_margin + 1e-9:
+                    if min_required_margin > 0.0 and min_required_margin > max_indicator_margin + 1e-9:
                         try:
                             self._close_opposite_position(cw['symbol'], cw.get('interval'), side, signature)
                         except Exception:
                             pass
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} sizing blocked: minimum contract margin {min_required_margin:.4f} "
-                            f"exceeds target {target_margin:.4f} by more than {margin_tolerance*100:.2f}%."
+                            f"exceeds cap {max_indicator_margin:.4f} USDT for {slot_label} "
+                            f"({pct*100:.2f}% margin target)."
                         )
                         return
-                    if margin_est > max_margin + 1e-9:
-                        self.log(
-                            f"{cw['symbol']}@{cw.get('interval')} sizing blocked: adjusted margin {margin_est:.4f} "
-                            f"exceeds target {target_margin:.4f} by more than {margin_tolerance*100:.2f}%."
-                        )
-                        return
+
                     qty_est = adj_qty
                     reduce_only = False
                     if bool(self.config.get('add_only', False)):
