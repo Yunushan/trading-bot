@@ -677,6 +677,50 @@ def _normalize_indicator_values(raw) -> list[str]:
     # Deduplicate while maintaining deterministic order.
     return sorted(dict.fromkeys(items))
 
+def _normalize_indicator_token(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+_INDICATOR_DESC_TOKENS = {
+    key: _normalize_indicator_token(name)
+    for key, name in INDICATOR_DISPLAY_NAMES.items()
+    if isinstance(name, str) and name
+}
+
+_INDICATOR_DESC_HINTS = {
+    "stoch_rsi": {"stochrsi", "stochasticrsi"},
+    "willr": {"williamsr"},
+    "rsi": {"rsi"},
+}
+
+def _infer_indicators_from_desc(desc: str | None) -> list[str]:
+    if not desc:
+        return []
+    inferred: set[str] = set()
+    segments = [seg.strip() for seg in str(desc).split("|") if "->" in seg]
+    for segment in segments:
+        norm_segment = _normalize_indicator_token(segment)
+        if not norm_segment:
+            continue
+        for key, token in _INDICATOR_DESC_TOKENS.items():
+            if token and token in norm_segment:
+                inferred.add(key)
+        for key, hints in _INDICATOR_DESC_HINTS.items():
+            if any(hint in norm_segment for hint in hints):
+                if key == "rsi" and (
+                    "stochrsi" in norm_segment or "stochasticrsi" in norm_segment
+                ):
+                    continue
+                inferred.add(key)
+    return sorted(inferred)
+
+def _resolve_trigger_indicators(raw, desc: str | None = None) -> list[str]:
+    indicators = _normalize_indicator_values(raw)
+    if desc:
+        indicators.extend(_infer_indicators_from_desc(desc))
+    if not indicators:
+        return []
+    return sorted(dict.fromkeys(indicators))
+
 
 class _StarterCard(QtWidgets.QFrame):
     clicked = QtCore.pyqtSignal(str)
@@ -7839,13 +7883,20 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                 }
                 allocations_seed = _collect_allocations(sym, side_key)
                 intervals_from_alloc: set[str] = set()
+                interval_trigger_map: dict[str, set[str]] = {}
+                trigger_union: set[str] = set()
+                normalized_entry_triggers = _resolve_trigger_indicators(
+                    data_entry.get('trigger_indicators'),
+                    data_entry.get('trigger_desc'),
+                )
+                if normalized_entry_triggers:
+                    trigger_union.update(normalized_entry_triggers)
+                    data_entry['trigger_indicators'] = normalized_entry_triggers
+                elif data_entry.get('trigger_indicators'):
+                    data_entry.pop('trigger_indicators', None)
                 if allocations_seed:
                     positions_map[(sym, side_key)]['allocations'] = allocations_seed
-                    trigger_set = []
                     for alloc in allocations_seed:
-                        trig = alloc.get("trigger_indicators")
-                        if isinstance(trig, (list, tuple, set)):
-                            trigger_set.extend([str(t).strip() for t in trig if str(t).strip()])
                         status_flag = str(alloc.get("status") or "").strip().lower()
                         try:
                             qty_val = abs(float(alloc.get("qty") or 0.0))
@@ -7857,26 +7908,38 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         if qty_val:
                             is_active_allocation = True
                         interval_val = alloc.get("interval_display") or alloc.get("interval")
+                        interval_normalized = ""
+                        interval_key = None
                         if interval_val:
                             try:
                                 canon_iv = self._canonicalize_interval(interval_val)
                             except Exception:
                                 canon_iv = None
                             if canon_iv:
-                                interval_normalized = canon_iv
+                                interval_normalized = canon_iv.strip()
                             else:
                                 interval_normalized = str(interval_val).strip()
                             if interval_normalized:
+                                interval_key = interval_normalized.lower()
                                 if is_active_allocation:
                                     intervals_from_alloc.add(interval_normalized)
-                    if trigger_set:
-                        trigger_set = list(dict.fromkeys(trigger_set))
-                        positions_map[(sym, side_key)]['indicators'] = trigger_set
-                        data_entry['trigger_indicators'] = trigger_set
-                elif isinstance(data_entry.get('trigger_indicators'), (list, tuple, set)):
-                    trig_list = [str(t).strip() for t in data_entry.get('trigger_indicators') if str(t).strip()]
-                    if trig_list:
-                        positions_map[(sym, side_key)]['indicators'] = list(dict.fromkeys(trig_list))
+                                    interval_trigger_map.setdefault(interval_key, set())
+                        normalized_triggers = _resolve_trigger_indicators(
+                            alloc.get("trigger_indicators"),
+                            alloc.get("trigger_desc"),
+                        )
+                        if normalized_triggers:
+                            alloc["trigger_indicators"] = normalized_triggers
+                        elif alloc.get("trigger_indicators"):
+                            alloc.pop("trigger_indicators", None)
+                        if is_active_allocation and normalized_triggers:
+                            trigger_union.update(normalized_triggers)
+                            target_key = interval_key or (interval_normalized.strip().lower() if interval_normalized else None) or "-"
+                            interval_trigger_map.setdefault(target_key, set()).update(normalized_triggers)
+                    if trigger_union:
+                        data_entry['trigger_indicators'] = sorted(dict.fromkeys(trigger_union))
+                elif normalized_entry_triggers:
+                    data_entry['trigger_indicators'] = normalized_entry_triggers
                 try:
                     getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
                 except Exception:
@@ -7903,34 +7966,59 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                 margin_total = 0.0
                 notional_total = 0.0
                 intervals_set: set[str] = set()
-                indicators: list[str] = []
+                interval_trigger_map: dict[str, set[str]] = {}
+                trigger_union: set[str] = set()
                 leverage_val = None
                 open_times: list[str] = []
                 for alloc in allocations:
                     if not isinstance(alloc, dict):
                         continue
+                    status_flag = str(alloc.get("status") or "").strip().lower()
                     try:
-                        qty_total += abs(float(alloc.get('qty') or 0.0))
+                        qty_val = abs(float(alloc.get('qty') or 0.0))
                     except Exception:
-                        pass
-                    try:
-                        margin_total += max(float(alloc.get('margin_usdt') or 0.0), 0.0)
-                    except Exception:
-                        pass
-                    try:
-                        notional_total += max(float(alloc.get('notional') or 0.0), 0.0)
-                    except Exception:
-                        pass
-                    interval_val = alloc.get('interval_display') or alloc.get('interval')
-                    if interval_val:
+                        qty_val = None
+                    is_active_allocation = status_flag not in {"closed", "error"}
+                    if qty_val is not None and qty_val <= 0.0:
+                        qty_val = 0.0
+                    if qty_val:
+                        is_active_allocation = True
+                    if is_active_allocation:
                         try:
-                            canon_iv = self._canonicalize_interval(interval_val)
+                            qty_total += abs(qty_val or 0.0)
                         except Exception:
-                            canon_iv = None
-                        intervals_set.add(canon_iv or str(interval_val).strip())
-                    trig_vals = alloc.get('trigger_indicators')
-                    if isinstance(trig_vals, (list, tuple, set)):
-                        indicators.extend(str(t).strip() for t in trig_vals if str(t).strip())
+                            pass
+                        try:
+                            margin_total += max(float(alloc.get('margin_usdt') or 0.0), 0.0)
+                        except Exception:
+                            pass
+                        try:
+                            notional_total += max(float(alloc.get('notional') or 0.0), 0.0)
+                        except Exception:
+                            pass
+                        interval_val = alloc.get('interval_display') or alloc.get('interval')
+                        interval_normalized = ""
+                        interval_key = None
+                        if interval_val:
+                            try:
+                                canon_iv = self._canonicalize_interval(interval_val)
+                            except Exception:
+                                canon_iv = None
+                            interval_normalized = (canon_iv or str(interval_val).strip()) or ""
+                            if interval_normalized:
+                                interval_key = interval_normalized.lower()
+                                intervals_set.add(interval_normalized)
+                        normalized_trigs = _resolve_trigger_indicators(
+                            alloc.get('trigger_indicators'),
+                            alloc.get('trigger_desc'),
+                        )
+                        if normalized_trigs:
+                            alloc['trigger_indicators'] = normalized_trigs
+                            trigger_union.update(normalized_trigs)
+                            key = interval_key or (interval_normalized.lower() if interval_normalized else "-")
+                            interval_trigger_map.setdefault(key, set()).update(normalized_trigs)
+                        elif alloc.get('trigger_indicators'):
+                            alloc.pop('trigger_indicators', None)
                     alloc_open = alloc.get('open_time')
                     if alloc_open:
                         open_times.append(str(alloc_open))
@@ -7951,7 +8039,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     )
                     if ordered_intervals:
                         entry_tf = ', '.join(ordered_intervals)
-                indicators = [item for item in dict.fromkeys(indicators) if item]
+                indicators = sorted(dict.fromkeys(trigger_union)) if trigger_union else []
                 open_time_fmt = '-'
                 if open_times:
                     try:
@@ -7975,6 +8063,9 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'trigger_indicators': indicators,
                     'open_time': open_time_fmt,
                 }
+                primary_interval = entry_tf.split(',')[0].strip().lower() if entry_tf and entry_tf != '-' else None
+                if primary_interval and primary_interval in interval_trigger_map:
+                    indicators = sorted(dict.fromkeys(interval_trigger_map.get(primary_interval) or []))
                 positions_map[key] = {
                     'symbol': sym,
                     'side_key': side_key,
@@ -8177,6 +8268,25 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'open_time': None,
                         }
                         rec = positions_map.get((sym, side_key))
+                        prev_data_entry = {}
+                        prev_indicators: list[str] = []
+                        if rec and isinstance(rec, dict):
+                            try:
+                                prev_data_entry = dict(rec.get('data') or {})
+                            except Exception:
+                                prev_data_entry = {}
+                            try:
+                                prev_indicators = list(rec.get('indicators') or [])
+                            except Exception:
+                                prev_indicators = []
+                        row_triggers = _resolve_trigger_indicators(
+                            prev_data_entry.get('trigger_indicators'),
+                            prev_data_entry.get('trigger_desc'),
+                        )
+                        if not row_triggers and prev_indicators:
+                            cleaned = [str(t).strip() for t in prev_indicators if str(t).strip()]
+                            if cleaned:
+                                row_triggers = sorted(dict.fromkeys(cleaned))
                         if rec is None:
                             rec = {
                                 'symbol': sym,
@@ -8197,39 +8307,66 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         interval_display: dict[str, str] = {}
                         interval_lookup: dict[str, str] = {}
                         entry_times_map = getattr(self, '_entry_times_by_iv', {}) or {}
+                        intervals_from_alloc: set[str] = set()
+                        interval_trigger_map: dict[str, set[str]] = {}
+                        trigger_union: set[str] = set()
                         if allocations_existing:
                             rec['allocations'] = allocations_existing
-                            trigger_set = []
                             for alloc in allocations_existing:
                                 if not isinstance(alloc, dict):
                                     continue
                                 iv_disp = alloc.get("interval_display") or alloc.get("interval")
                                 iv_raw = alloc.get("interval")
                                 status_flag = str(alloc.get("status") or "Active").strip().lower()
-                                if iv_disp and status_flag not in {"closed", "error"}:
+                                try:
+                                    qty_val = abs(float(alloc.get("qty") or 0.0))
+                                except Exception:
+                                    qty_val = None
+                                is_active = status_flag not in {"closed", "error"}
+                                if qty_val is not None and qty_val <= 0.0:
+                                    qty_val = 0.0
+                                if qty_val:
+                                    is_active = True
+                                normalized_iv = ""
+                                key_iv = "-"
+                                if iv_disp:
                                     iv_text = str(iv_disp).strip()
                                     if iv_text:
                                         try:
                                             canon_iv = self._canonicalize_interval(iv_text)
                                         except Exception:
                                             canon_iv = None
-                                        key_iv = (canon_iv or iv_text).strip().lower()
-                                        if key_iv:
-                                            interval_display.setdefault(key_iv, canon_iv or iv_text)
-                                            lookup_val = str(iv_raw or iv_text).strip()
-                                            if lookup_val:
-                                                interval_lookup.setdefault(key_iv, lookup_val)
-                                trig = alloc.get("trigger_indicators")
-                                if isinstance(trig, (list, tuple, set)):
-                                    trigger_set.extend([str(t).strip() for t in trig if str(t).strip()])
-                            if trigger_set:
-                                trigger_set = list(dict.fromkeys(trigger_set))
-                                rec['indicators'] = trigger_set
-                                data['trigger_indicators'] = trigger_set
-                        elif data.get("trigger_indicators"):
-                            trig_list = [str(t).strip() for t in data.get("trigger_indicators") if str(t).strip()]
-                            if trig_list:
-                                rec['indicators'] = list(dict.fromkeys(trig_list))
+                                        normalized_iv = (canon_iv or iv_text).strip()
+                                        if normalized_iv:
+                                            key_iv = normalized_iv.lower()
+                                            if is_active:
+                                                intervals_from_alloc.add(normalized_iv)
+                                            if key_iv and (canon_iv or iv_text):
+                                                interval_display.setdefault(key_iv, canon_iv or iv_text)
+                                                lookup_val = str(iv_raw or iv_text).strip()
+                                                if lookup_val:
+                                                    interval_lookup.setdefault(key_iv, lookup_val)
+                                normalized_triggers = _resolve_trigger_indicators(
+                                    alloc.get("trigger_indicators"),
+                                    alloc.get("trigger_desc"),
+                                )
+                                if normalized_triggers:
+                                    alloc["trigger_indicators"] = normalized_triggers
+                                elif alloc.get("trigger_indicators"):
+                                    alloc.pop("trigger_indicators", None)
+                                if is_active and normalized_triggers:
+                                    trigger_union.update(normalized_triggers)
+                                    interval_trigger_map.setdefault(key_iv, set()).update(normalized_triggers)
+                            if trigger_union:
+                                indicators_union = sorted(dict.fromkeys(trigger_union))
+                                rec['indicators'] = indicators_union
+                                data['trigger_indicators'] = indicators_union
+                            elif row_triggers:
+                                rec['indicators'] = row_triggers
+                                data['trigger_indicators'] = row_triggers
+                        elif row_triggers:
+                            rec['indicators'] = row_triggers
+                            data['trigger_indicators'] = row_triggers
                         try:
                             getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
                         except Exception:
@@ -8420,10 +8557,26 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             for key in (ordered_keys if interval_display else [])
                             if (interval_lookup.get(key) or interval_display.get(key))
                         ]
-                        if not rec.get('indicators'):
+                        primary_interval_key = None
+                        if ordered_keys:
+                            primary_interval_key = ordered_keys[0]
+                        indicators_selected: list[str] = []
+                        if trigger_union:
+                            if primary_interval_key:
+                                normalized_key = primary_interval_key
+                                indicators_selected = sorted(
+                                    dict.fromkeys(interval_trigger_map.get(normalized_key, []))
+                                )
+                            if not indicators_selected:
+                                indicators_selected = sorted(dict.fromkeys(trigger_union))
+                        if indicators_selected:
+                            rec['indicators'] = indicators_selected
+                            if rec.get('data'):
+                                rec['data']['trigger_indicators'] = indicators_selected
+                        elif not rec.get('indicators'):
                             rec['indicators'] = self._collect_strategy_indicators(sym, side_key, intervals=interval_list)
-                        if rec.get('data') and not rec['data'].get('trigger_indicators'):
-                            rec['data']['trigger_indicators'] = rec.get('indicators') or []
+                            if rec.get('data') and not rec['data'].get('trigger_indicators'):
+                                rec['data']['trigger_indicators'] = rec.get('indicators') or []
                         rec['stop_loss_enabled'] = stop_loss_enabled
                         positions_map[(sym, side_key)] = rec
                     except Exception:
@@ -8561,6 +8714,13 @@ def _mw_update_position_history(self, positions_map: dict):
                 except Exception:
                     alloc_entries = []
                 if alloc_entries:
+                    for entry in alloc_entries:
+                        if isinstance(entry, dict):
+                            normalized_triggers = _resolve_trigger_indicators(entry.get("trigger_indicators"), entry.get("trigger_desc"))
+                            if normalized_triggers:
+                                entry["trigger_indicators"] = normalized_triggers
+                            elif entry.get("trigger_indicators"):
+                                entry.pop("trigger_indicators", None)
                     base_data = rec.get("data", {}) or {}
                     base_qty = float(base_data.get("qty") or 0.0)
                     base_margin = float(base_data.get("margin_usdt") or 0.0)
@@ -9884,13 +10044,15 @@ def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
             except Exception:
                 pass
 
+        close_result = None
         if close_positions:
             try:
-                self._close_all_positions_blocking()
+                close_result = self._close_all_positions_blocking()
             except Exception as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
                 self.log(f"Failed to trigger close-all: {exc}")
+            result["close_all_result"] = close_result
     except Exception as e:
         result["ok"] = False
         result["error"] = str(e)
@@ -9903,23 +10065,41 @@ def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
             self._is_stopping_engines = False
         except Exception:
             pass
-        try:
-            self._sync_runtime_state()
-        except Exception:
-            pass
+        result["_sync_runtime_state"] = True
     return result
 
 
 def stop_strategy_async(self, close_positions: bool = True, blocking: bool = False):
     """Stop all StrategyEngine threads and then market-close ALL active positions."""
+    def _process_stop_result(res):
+        if not isinstance(res, dict):
+            return res
+        if not res.get("ok", True):
+            try:
+                self.log(f"Stop warning: {res.get('error')}")
+            except Exception:
+                pass
+        close_details = res.get("close_all_result", None)
+        if close_details is not None:
+            try:
+                _handle_close_all_result(self, close_details)
+            except Exception:
+                pass
+        if res.get("_sync_runtime_state"):
+            try:
+                self._sync_runtime_state()
+            except Exception:
+                pass
+        return res
+
     if blocking:
-        return _stop_strategy_sync(self, close_positions=close_positions)
+        return _process_stop_result(_stop_strategy_sync(self, close_positions=close_positions))
 
     try:
         from ..workers import CallWorker as _CallWorker
     except Exception:
         # fallback to synchronous if worker import fails
-        return _stop_strategy_sync(self, close_positions=close_positions)
+        return _process_stop_result(_stop_strategy_sync(self, close_positions=close_positions))
 
     def _do():
         return _stop_strategy_sync(self, close_positions=close_positions)
@@ -9931,11 +10111,7 @@ def stop_strategy_async(self, close_positions: bool = True, blocking: bool = Fal
             except Exception:
                 pass
             return
-        if isinstance(res, dict) and not res.get("ok", True):
-            try:
-                self.log(f"Stop warning: {res.get('error')}")
-            except Exception:
-                pass
+        _process_stop_result(res)
 
     worker = _CallWorker(_do, parent=self)
     try:
@@ -10236,6 +10412,10 @@ def _handle_close_all_result(self, res):
     except Exception:
         self.log(f"Close-all result: {res}")
     try:
+        _apply_close_all_to_positions_cache(self, res)
+    except Exception:
+        pass
+    try:
         self.refresh_positions()
     except Exception:
         pass
@@ -10244,12 +10424,136 @@ def _handle_close_all_result(self, res):
     except Exception:
         pass
 
-def _close_all_positions_blocking(self):
+
+
+def _apply_close_all_to_positions_cache(self, res) -> None:
+    """Mark local position state as closed when a close-all command succeeds."""
+    details = res or []
+    if isinstance(details, dict):
+        details = [details]
+    elif not isinstance(details, (list, tuple, set)):
+        details = [details]
+
+    symbols_to_mark: set[str] = set()
+    had_error = False
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        sym_raw = str(item.get("symbol") or "").strip().upper()
+        if not sym_raw:
+            continue
+        ok_flag = bool(item.get("ok"))
+        skipped_flag = bool(item.get("skipped"))
+        if ok_flag or skipped_flag:
+            symbols_to_mark.add(sym_raw)
+        else:
+            had_error = True
+
+    open_records = getattr(self, "_open_position_records", {}) or {}
+    if not symbols_to_mark and not had_error and open_records:
+        symbols_to_mark = {sym for sym, _ in open_records.keys()}
+    if not symbols_to_mark:
+        return
+
+    from datetime import datetime as _dt
+
+    pending_close = getattr(self, "_pending_close_times", None)
+    if not isinstance(pending_close, dict):
+        pending_close = {}
+        self._pending_close_times = pending_close
+    missing_counts = getattr(self, "_position_missing_counts", None)
+    if not isinstance(missing_counts, dict):
+        missing_counts = {}
+        self._position_missing_counts = missing_counts
+
+    close_time_fmt = self._format_display_time(_dt.now().astimezone())
+    alloc_map = getattr(self, "_entry_allocations", {})
+    closed_records = getattr(self, "_closed_position_records", None)
+    if not isinstance(closed_records, list):
+        closed_records = []
+        self._closed_position_records = closed_records
+
+    for key in list(open_records.keys()):
+        sym_key, side_key = key
+        record = open_records.get(key)
+        if sym_key not in symbols_to_mark:
+            continue
+        if key not in pending_close:
+            pending_close[key] = close_time_fmt
+        missing_counts[key] = 0
+        try:
+            intervals_map = getattr(self, "_entry_intervals", {})
+            side_bucket = intervals_map.get(sym_key, {}).get(side_key)
+            if hasattr(self, "_track_interval_close") and isinstance(side_bucket, set):
+                for interval in list(side_bucket):
+                    self._track_interval_close(sym_key, side_key, interval)
+        except Exception:
+            pass
+
+        snap = copy.deepcopy(record) if isinstance(record, dict) else {
+            "symbol": sym_key,
+            "side_key": side_key,
+            "status": "Closed",
+            "open_time": "-",
+            "close_time": close_time_fmt,
+            "data": {},
+            "indicators": [],
+            "stop_loss_enabled": False,
+        }
+        snap["status"] = "Closed"
+        snap["close_time"] = close_time_fmt
+        if "stop_loss_enabled" not in snap:
+            snap["stop_loss_enabled"] = bool((record or {}).get("stop_loss_enabled"))
+
+        base_data = dict((record or {}).get("data") or {})
+        snap["data"] = base_data
+        try:
+            alloc_entries = copy.deepcopy(alloc_map.get(key, [])) or []
+            for alloc_entry in alloc_entries:
+                if isinstance(alloc_entry, dict):
+                    normalized_triggers = _resolve_trigger_indicators(alloc_entry.get("trigger_indicators"), alloc_entry.get("trigger_desc"))
+                    if normalized_triggers:
+                        alloc_entry["trigger_indicators"] = normalized_triggers
+                    elif alloc_entry.get("trigger_indicators"):
+                        alloc_entry.pop("trigger_indicators", None)
+        except Exception:
+            alloc_entries = []
+        if alloc_entries:
+            snap["allocations"] = alloc_entries
+        closed_records.insert(0, snap)
+        if len(closed_records) > MAX_CLOSED_HISTORY:
+            del closed_records[MAX_CLOSED_HISTORY:]
+        alloc_map.pop(key, None)
+        open_records.pop(key, None)
+        try:
+            getattr(self, "_entry_times", {}).pop(key, None)
+        except Exception:
+            pass
+        try:
+            iv_times = getattr(self, "_entry_times_by_iv", {})
+            if isinstance(iv_times, dict):
+                for (sym, side, interval) in list(iv_times.keys()):
+                    if sym == sym_key and side == side_key:
+                        iv_times.pop((sym, side, interval), None)
+        except Exception:
+            pass
+
     try:
-        result = _close_all_positions_sync(self)
-        _handle_close_all_result(self, result)
-    except Exception as e:
-        self.log(f"Close-all error: {e}")
+        self._open_position_records = dict(open_records)
+    except Exception:
+        self._open_position_records = open_records
+    try:
+        self._update_global_pnl_display(*self._compute_global_pnl_totals())
+    except Exception:
+        pass
+    try:
+        self._render_positions_table()
+    except Exception:
+        pass
+
+
+def _close_all_positions_blocking(self):
+    return _close_all_positions_sync(self)
 
 def close_all_positions_async(self):
     """Close all open futures positions using reduce-only market orders in a worker."""
@@ -11186,7 +11490,7 @@ def _mw_on_trade_signal(self, order_info: dict):
                 open_time_fmt = self._format_display_time(dt_obj) if dt_obj else open_time_val
             else:
                 open_time_fmt = None
-            trigger_inds = order_info.get("trigger_indicators") or []
+            trigger_inds = _resolve_trigger_indicators(order_info.get("trigger_indicators"), order_info.get("trigger_desc"))
             trade_entry = {
                 "interval": norm_iv,
                 "interval_display": interval,
