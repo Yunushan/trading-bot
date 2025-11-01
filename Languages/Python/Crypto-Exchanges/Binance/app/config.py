@@ -40,6 +40,7 @@ DEFAULT_CONFIG = {
     "selected_exchange": "Binance",
     "selected_forex_broker": "FXCM",
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
+    "close_on_exit": False,
     "indicators": {
         "ma":        {"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},
         "donchian":  {"enabled": False, "length": 20, "buy_value": None, "sell_value": None},

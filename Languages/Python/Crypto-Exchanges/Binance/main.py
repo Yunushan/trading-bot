@@ -63,7 +63,7 @@ def main():
             win.setWindowIcon(icon)
     except Exception:
         pass
-    win.show()
+    win.showMaximized()
     win.winId()
     if not icon.isNull():
         QtCore.QTimer.singleShot(0, lambda: win.setWindowIcon(icon))

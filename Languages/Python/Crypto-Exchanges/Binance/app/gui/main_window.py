@@ -1226,10 +1226,9 @@ class MainWindow(QtWidgets.QWidget):
         self.guard = IntervalPositionGuard(stale_ttl_sec=0, strict_symbol_side=True)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
-        state_close_pref = bool(self._app_state.get("close_on_exit", self.config.get("close_on_exit", False)))
         self.config.setdefault('theme', 'Dark')
-        self.config['close_on_exit'] = state_close_pref
-        self.config.setdefault('close_on_exit', state_close_pref)
+        self.config['close_on_exit'] = False
+        self.config.setdefault('close_on_exit', False)
         self.config.setdefault('account_mode', 'Classic Trading')
         self.config.setdefault('auto_bump_percent_multiplier', DEFAULT_CONFIG.get('auto_bump_percent_multiplier', 10.0))
         self.config["connector_backend"] = _normalize_connector_backend(self.config.get("connector_backend"))
@@ -2208,6 +2207,7 @@ class MainWindow(QtWidgets.QWidget):
         enabled = bool(cfg.get("enabled"))
         mode = str(cfg.get("mode") or "usdt").lower()
         scope = str(cfg.get("scope") or "per_trade").lower()
+        bot_active = bool(getattr(self, "_bot_active", False))
         checkbox = getattr(self, "stop_loss_enable_cb", None)
         combo = getattr(self, "stop_loss_mode_combo", None)
         usdt_spin = getattr(self, "stop_loss_usdt_spin", None)
@@ -2225,18 +2225,18 @@ class MainWindow(QtWidgets.QWidget):
                 if idx < 0:
                     idx = 0
             combo.setCurrentIndex(idx)
-            combo.setEnabled(enabled)
+            combo.setEnabled(enabled and not bot_active)
             combo.blockSignals(False)
         if usdt_spin is not None:
             usdt_spin.blockSignals(True)
             usdt_spin.setValue(float(cfg.get("usdt", 0.0)))
             usdt_spin.blockSignals(False)
-            usdt_spin.setEnabled(enabled and mode in ("usdt", "both"))
+            usdt_spin.setEnabled(enabled and not bot_active and mode in ("usdt", "both"))
         if pct_spin is not None:
             pct_spin.blockSignals(True)
             pct_spin.setValue(float(cfg.get("percent", 0.0)))
             pct_spin.blockSignals(False)
-            pct_spin.setEnabled(enabled and mode in ("percent", "both"))
+            pct_spin.setEnabled(enabled and not bot_active and mode in ("percent", "both"))
         if scope_combo is not None:
             scope_combo.blockSignals(True)
             idx_scope = scope_combo.findData(scope)
@@ -2245,7 +2245,7 @@ class MainWindow(QtWidgets.QWidget):
                 if idx_scope < 0:
                     idx_scope = 0
             scope_combo.setCurrentIndex(idx_scope)
-            scope_combo.setEnabled(enabled)
+            scope_combo.setEnabled(enabled and not bot_active)
             scope_combo.blockSignals(False)
 
     def _on_dashboard_template_changed(self):
@@ -3050,6 +3050,12 @@ class MainWindow(QtWidgets.QWidget):
             setattr(self, "_override_refresh_depth", current_depth)
 
     def _add_selected_symbol_interval_pairs(self, kind: str = "runtime"):
+        if kind == "runtime" and getattr(self, "_bot_active", False):
+            try:
+                self.log("Stop the bot before modifying runtime overrides.")
+            except Exception:
+                pass
+            return
         ctx = self._override_ctx(kind)
         symbol_list = ctx.get("symbol_list")
         interval_list = ctx.get("interval_list")
@@ -3191,6 +3197,12 @@ class MainWindow(QtWidgets.QWidget):
                 pass
 
     def _remove_selected_symbol_interval_pairs(self, kind: str = "runtime"):
+        if kind == "runtime" and getattr(self, "_bot_active", False):
+            try:
+                self.log("Stop the bot before modifying runtime overrides.")
+            except Exception:
+                pass
+            return
         ctx = self._override_ctx(kind)
         table = ctx.get("table")
         if table is None:
@@ -3254,6 +3266,12 @@ class MainWindow(QtWidgets.QWidget):
             pass
 
     def _clear_symbol_interval_pairs(self, kind: str = "runtime"):
+        if kind == "runtime" and getattr(self, "_bot_active", False):
+            try:
+                self.log("Stop the bot before modifying runtime overrides.")
+            except Exception:
+                pass
+            return
         ctx = self._override_ctx(kind)
         cfg_key = ctx.get("config_key")
         if not cfg_key:
@@ -3292,6 +3310,10 @@ class MainWindow(QtWidgets.QWidget):
         header.setStretchLastSection(False)
         try:
             header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        except Exception:
+            pass
+        try:
+            header.setSectionsMovable(True)
         except Exception:
             pass
         table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -3334,6 +3356,10 @@ class MainWindow(QtWidgets.QWidget):
             "clear_btn": clear_btn,
             "column_map": column_map,
         }
+        if kind == "runtime":
+            self.pair_add_btn = add_btn
+            self.pair_remove_btn = remove_btn
+            self.pair_clear_btn = clear_btn
         lock_widgets = getattr(self, '_runtime_lock_widgets', None)
         if isinstance(lock_widgets, list):
             for widget in (table, add_btn, remove_btn, clear_btn):
@@ -3506,7 +3532,12 @@ class MainWindow(QtWidgets.QWidget):
                 "pnl": closed_pnl if closed_pnl is not None else None,
                 "roi": _roi(closed_pnl, closed_margin),
             }
-            for active_label, closed_label in getattr(self, "_pnl_label_sets", []) or []:
+            for label_pair in getattr(self, "_pnl_label_sets", []) or []:
+                if not isinstance(label_pair, (list, tuple)):
+                    continue
+                if len(label_pair) != 2:
+                    continue
+                active_label, closed_label = label_pair
                 self._apply_pnl_snapshot_to_labels(active_label, closed_label)
         except Exception:
             pass
@@ -3548,6 +3579,16 @@ class MainWindow(QtWidgets.QWidget):
                 start_btn.setEnabled(not active)
             if stop_btn is not None:
                 stop_btn.setEnabled(active)
+        except Exception:
+            pass
+        try:
+            for btn in (
+                getattr(self, "pair_add_btn", None),
+                getattr(self, "pair_remove_btn", None),
+                getattr(self, "pair_clear_btn", None),
+            ):
+                if btn is not None:
+                    btn.setEnabled(not active)
         except Exception:
             pass
         self._update_bot_status(active)
@@ -5355,6 +5396,42 @@ class MainWindow(QtWidgets.QWidget):
             **kwargs,
         )
 
+    def _invalidate_shared_binance(self, reason: str | None = None):
+        try:
+            existing = getattr(self, "shared_binance", None)
+        except Exception:
+            existing = None
+        if existing is not None:
+            try:
+                self.shared_binance = None
+            except Exception:
+                self.__dict__["shared_binance"] = None
+        try:
+            self._shared_binance_invalidated_reason = reason
+        except Exception:
+            pass
+        try:
+            if getattr(self, "balance_label", None):
+                self.balance_label.setText("N/A")
+        except Exception:
+            pass
+        try:
+            self._update_positions_balance_labels(None, None)
+        except Exception:
+            pass
+
+    def _on_api_credentials_changed(self):
+        self._invalidate_shared_binance("credentials_changed")
+        self._reconfigure_positions_worker()
+
+    def _on_mode_changed(self, value: str):
+        try:
+            self.config["mode"] = str(value or self.mode_combo.currentText() or "Live")
+        except Exception:
+            pass
+        self._invalidate_shared_binance("mode_changed")
+        self._reconfigure_positions_worker()
+
     def _connector_label_text(self, backend: str) -> str:
         backend = _normalize_connector_backend(backend)
         for label, value in CONNECTOR_OPTIONS:
@@ -5383,11 +5460,7 @@ class MainWindow(QtWidgets.QWidget):
             account_text = "Futures"
         normalized = "Futures" if account_text.lower().startswith("fut") else "Spot"
         self.config["account_type"] = normalized
-        try:
-            if hasattr(self, "shared_binance") and self.shared_binance is not None:
-                self.shared_binance.account_type = normalized.upper()
-        except Exception:
-            pass
+        self._invalidate_shared_binance("account_type_changed")
         self._ensure_runtime_connector_for_account(normalized, force_default=False)
         desired_spot = "Binance spot"
         desired_futures = "Binance futures"
@@ -6376,15 +6449,15 @@ class MainWindow(QtWidgets.QWidget):
         self.api_secret_edit = QtWidgets.QLineEdit(self.config['api_secret'])
         self.api_secret_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         grid.addWidget(self.api_secret_edit, 1, 1)
-        self.api_key_edit.editingFinished.connect(self._reconfigure_positions_worker)
-        self.api_secret_edit.editingFinished.connect(self._reconfigure_positions_worker)
+        self.api_key_edit.editingFinished.connect(self._on_api_credentials_changed)
+        self.api_secret_edit.editingFinished.connect(self._on_api_credentials_changed)
 
         grid.addWidget(QtWidgets.QLabel("Mode:"), 0, 2)
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItems(["Live", "Demo/Testnet"])
         self.mode_combo.setCurrentText(self.config.get('mode', 'Live'))
         grid.addWidget(self.mode_combo, 0, 3)
-        self.mode_combo.currentTextChanged.connect(lambda _=None: self._reconfigure_positions_worker())
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
         grid.addWidget(QtWidgets.QLabel("Theme:"), 0, 4)
         self.theme_combo = QtWidgets.QComboBox()
@@ -6658,7 +6731,8 @@ class MainWindow(QtWidgets.QWidget):
         g.addWidget(self.cb_add_only, 2, 0, 1, 6)
 
         self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All On Window Close")
-        self.cb_close_on_exit.setChecked(bool(self.config.get('close_on_exit', False)))
+        initial_close = bool(self.config.get('close_on_exit', False))
+        self.cb_close_on_exit.setChecked(initial_close)
         self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
         g.addWidget(self.cb_close_on_exit, 3, 0, 1, 6)
 
@@ -6851,6 +6925,7 @@ class MainWindow(QtWidgets.QWidget):
             self.stop_loss_usdt_spin,
             self.stop_loss_percent_spin,
             self.stop_loss_scope_combo,
+            self.template_combo,
             self.start_btn,
             self.save_btn,
             self.load_btn
@@ -6859,18 +6934,41 @@ class MainWindow(QtWidgets.QWidget):
 
 
         # Log
-        self.log_edit = QtWidgets.QPlainTextEdit()
-        self.log_edit.setReadOnly(True)
-        self.log_edit.setMinimumHeight(220)
+        self.log_tab_widget = QtWidgets.QTabWidget()
         try:
-            self.log_edit.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+            self.log_tab_widget.setDocumentMode(True)
+        except Exception:
+            pass
+        self.log_all_edit = QtWidgets.QPlainTextEdit()
+        self.log_all_edit.setReadOnly(True)
+        self.log_all_edit.setMinimumHeight(220)
+        try:
+            self.log_all_edit.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         except Exception:
             pass
         try:
-            self.log_edit.document().setMaximumBlockCount(1000)
+            self.log_all_edit.document().setMaximumBlockCount(1000)
         except Exception:
             pass
-        scroll_layout.addWidget(self.log_edit)
+        self.log_tab_widget.addTab(self.log_all_edit, "All Logs")
+        self.log_triggers_edit = QtWidgets.QPlainTextEdit()
+        self.log_triggers_edit.setReadOnly(True)
+        self.log_triggers_edit.setMinimumHeight(220)
+        try:
+            self.log_triggers_edit.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        except Exception:
+            pass
+        try:
+            self.log_triggers_edit.document().setMaximumBlockCount(1000)
+        except Exception:
+            pass
+        self.log_tab_widget.addTab(self.log_triggers_edit, "Position Trigger Logs")
+        try:
+            self.log_tab_widget.setCurrentIndex(0)
+        except Exception:
+            pass
+        self.log_edit = self.log_all_edit
+        scroll_layout.addWidget(self.log_tab_widget)
 
         self.tabs.addTab(tab1, "Dashboard")
 
@@ -6994,7 +7092,12 @@ class MainWindow(QtWidgets.QWidget):
             "Status",
             "Close",
         ])
-        self.pos_table.horizontalHeader().setStretchLastSection(True)
+        pos_header = self.pos_table.horizontalHeader()
+        pos_header.setStretchLastSection(True)
+        try:
+            pos_header.setSectionsMovable(True)
+        except Exception:
+            pass
         self.pos_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         try:
             self.pos_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -7487,6 +7590,10 @@ class MainWindow(QtWidgets.QWidget):
         ])
         header = self.backtest_results_table.horizontalHeader()
         header.setStretchLastSection(False)
+        try:
+            header.setSectionsMovable(True)
+        except Exception:
+            pass
         try:
             header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
         except Exception:
@@ -9070,6 +9177,57 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             entry["open_time"] = open_hint or default_open
             entry["close_time"] = close_hint or default_close
             entry["stop_loss_enabled"] = bool(entry.get("stop_loss_enabled"))
+            normalized_inds = _normalize_indicator_values(
+                entry.get("indicators") or alloc_data.get("trigger_indicators")
+            )
+            if normalized_inds:
+                entry["indicators"] = normalized_inds
+                alloc_data["trigger_indicators"] = normalized_inds
+            else:
+                entry.pop("indicators", None)
+                alloc_data.pop("trigger_indicators", None)
+
+            aggregate_key = None
+            if isinstance(allocation, dict):
+                aggregate_key = (
+                    allocation.get("trade_id")
+                    or allocation.get("client_order_id")
+                    or allocation.get("order_id")
+                    or allocation.get("ledger_id")
+                )
+            if not aggregate_key:
+                aggregate_key = (
+                    entry.get("trade_id")
+                    or entry.get("client_order_id")
+                    or entry.get("order_id")
+                    or entry.get("ledger_id")
+                    or base_rec.get("ledger_id")
+                )
+            if not aggregate_key:
+                aggregate_key = f"{sym}|{side_key}|{interval_label}|{entry.get('open_time')}"
+
+            indicator_values = entry.get("indicators") or []
+            if len(indicator_values) > 1:
+                for idx, indicator_name in enumerate(indicator_values):
+                    clone = copy.deepcopy(entry)
+                    clone_indicators = [indicator_name]
+                    clone["indicators"] = clone_indicators
+                    clone_data = dict(clone.get("data") or {})
+                    clone_data["trigger_indicators"] = clone_indicators
+                    clone["data"] = clone_data
+                    clone["_aggregate_key"] = aggregate_key
+                    clone["_aggregate_is_primary"] = bool(idx == 0)
+                    records.append(clone)
+                return
+
+            if indicator_values:
+                single = indicator_values[0]
+                entry["indicators"] = [single]
+                entry_data = dict(entry.get("data") or {})
+                entry_data["trigger_indicators"] = [single]
+                entry["data"] = entry_data
+            entry["_aggregate_key"] = aggregate_key
+            entry["_aggregate_is_primary"] = True
             records.append(entry)
 
         if allocations:
@@ -9137,6 +9295,18 @@ def _mw_render_positions_table(self):
         open_records = getattr(self, "_open_position_records", {}) or {}
         closed_records = getattr(self, "_closed_position_records", []) or []
         view_mode = getattr(self, "_positions_view_mode", "cumulative")
+        try:
+            vbar = self.pos_table.verticalScrollBar()
+            vbar_val = vbar.value()
+        except Exception:
+            vbar = None
+            vbar_val = None
+        try:
+            hbar = self.pos_table.horizontalScrollBar()
+            hbar_val = hbar.value()
+        except Exception:
+            hbar = None
+            hbar_val = None
         if view_mode == "per_trade":
             display_records = _mw_positions_records_per_trade(self, open_records, closed_records)
         else:
@@ -9160,6 +9330,7 @@ def _mw_render_positions_table(self):
         total_pnl = 0.0
         total_margin = 0.0
         pnl_has_value = False
+        aggregated_keys: set[str] = set()
         for rec in display_records:
             try:
                 data = rec.get('data', {}) or {}
@@ -9189,6 +9360,18 @@ def _mw_render_positions_table(self):
                 stop_loss_enabled = bool(rec.get('stop_loss_enabled'))
                 stop_loss_text = "Yes" if stop_loss_enabled else "No"
 
+                aggregate_key = str(rec.get("_aggregate_key") or rec.get("ledger_id") or "")
+                aggregate_primary = bool(rec.get("_aggregate_is_primary", True))
+                should_aggregate = True
+                if aggregate_key:
+                    if aggregate_primary:
+                        if aggregate_key in aggregated_keys:
+                            should_aggregate = False
+                        else:
+                            aggregated_keys.add(aggregate_key)
+                    else:
+                        should_aggregate = False
+
                 self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
 
                 qty_item = _NumericItem(f"{qty_show:.8f}", qty_show)
@@ -9206,13 +9389,13 @@ def _mw_render_positions_table(self):
 
                 margin_item = _NumericItem(f"{margin_usdt:.2f} USDT" if margin_usdt else "-", margin_usdt)
                 self.pos_table.setItem(row, 5, margin_item)
-                if margin_usdt > 0.0:
+                if margin_usdt > 0.0 and should_aggregate:
                     total_margin += margin_usdt
 
                 pnl_item = _NumericItem(str(pnl_roi or "-"), pnl_value)
                 self.pos_table.setItem(row, 6, pnl_item)
                 added_to_total = False
-                if pnl_raw_value is not None:
+                if pnl_raw_value is not None and should_aggregate:
                     total_pnl += pnl_value
                     pnl_has_value = True
                     added_to_total = True
@@ -9220,7 +9403,7 @@ def _mw_render_positions_table(self):
                 pnl_valid = (pnl_raw_value is not None) or (abs(pnl_value) > 0.0)
                 if not pnl_valid and status_lower == "closed":
                     pnl_valid = True
-                if status_lower == "closed" and not added_to_total and pnl_valid:
+                if status_lower == "closed" and not added_to_total and pnl_valid and should_aggregate:
                     total_pnl += pnl_value
                     pnl_has_value = True
 
@@ -9258,10 +9441,28 @@ def _mw_render_positions_table(self):
         except Exception:
             pass
     finally:
+        def _restore_scrollbar(bar, value):
+            try:
+                if bar is None or value is None:
+                    return
+                value_clamped = max(bar.minimum(), min(value, bar.maximum()))
+                bar.setValue(value_clamped)
+            except Exception:
+                pass
         try:
             self.pos_table.setSortingEnabled(True)
             if sort_column is not None and sort_column >= 0:
                 self.pos_table.sortItems(sort_column, sort_order)
+        except Exception:
+            pass
+        try:
+            if vbar is not None and vbar_val is not None:
+                QtCore.QTimer.singleShot(0, lambda: _restore_scrollbar(vbar, vbar_val))
+        except Exception:
+            pass
+        try:
+            if hbar is not None and hbar_val is not None:
+                QtCore.QTimer.singleShot(0, lambda: _restore_scrollbar(hbar, hbar_val))
         except Exception:
             pass
 
@@ -10752,26 +10953,76 @@ def _teardown_positions_thread(self):
         pass
 
 def closeEvent(self, event):
-    try:
-        # Stop strategy loops and close positions if needed
+    close_guard = getattr(self, "_close_in_progress", False)
+    if close_guard:
+        event.ignore()
+        return
+    if getattr(self, "_force_close", False):
+        self._force_close = False
         try:
-            self.stop_strategy_async(close_positions=bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked()), blocking=True)
+            _teardown_positions_thread(self)
         except Exception:
             pass
-        _teardown_positions_thread(self)
         try:
             self._mark_session_inactive()
         except Exception:
             pass
-    finally:
         try:
             super(MainWindow, self).closeEvent(event)
         except Exception:
-            # if super call fails (rare), still accept close
             try:
                 event.accept()
             except Exception:
                 pass
+        return
+
+    close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
+    should_wait = False
+    if close_on_exit_enabled:
+        try:
+            should_wait = self._has_active_engines()
+        except Exception:
+            should_wait = False
+        if not should_wait:
+            try:
+                open_records = getattr(self, "_open_position_records", {}) or {}
+                for rec in open_records.values():
+                    data = rec.get("data") if isinstance(rec, dict) else {}
+                    qty_val = 0.0
+                    try:
+                        qty_val = abs(float((data or {}).get("qty") or 0.0))
+                    except Exception:
+                        qty_val = 0.0
+                    if qty_val > 0.0:
+                        should_wait = True
+                        break
+            except Exception:
+                should_wait = False
+
+    if should_wait:
+        event.ignore()
+        self._begin_close_on_exit_sequence()
+        return
+
+    try:
+        self.stop_strategy_async(close_positions=close_on_exit_enabled, blocking=True)
+    except Exception:
+        pass
+    try:
+        _teardown_positions_thread(self)
+    except Exception:
+        pass
+    try:
+        self._mark_session_inactive()
+    except Exception:
+        pass
+    try:
+        super(MainWindow, self).closeEvent(event)
+    except Exception:
+        try:
+            event.accept()
+        except Exception:
+            pass
 
 try:
     MainWindow._teardown_positions_thread = _teardown_positions_thread
@@ -10988,6 +11239,34 @@ def _mw_interval_sort_key(label: str):
         return (float('inf'), str(label))
 
 
+def _is_trigger_log_line(raw_text: str) -> bool:
+    try:
+        text = str(raw_text or "")
+    except Exception:
+        text = ""
+    low = text.lower()
+    if not low:
+        return False
+    trigger_tokens = (
+        "signal=buy",
+        "signal=sell",
+        "-> buy",
+        "-> sell",
+        "'side': 'buy",
+        "\"side\": \"buy",
+        "'side': 'sell",
+        "\"side\": \"sell",
+        "liquidat",
+        "triggered buy",
+        "triggered sell",
+    )
+    if any(token in low for token in trigger_tokens):
+        return True
+    if "trade update" in low and (" buy" in low or " sell" in low):
+        return True
+    return False
+
+
 def _gui_flush_log_buffer(self):
     try:
         if not hasattr(self, '_log_buf') or not self._log_buf:
@@ -11004,6 +11283,7 @@ def _gui_flush_log_buffer(self):
         pat = _re.compile(r'^\[?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]?\s*(.*)$')
         pat2 = _re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*(.*)$')
         formatted = []
+        formatted_triggers = []
         for raw in lines:
             line = str(raw)
             match = pat.match(line)
@@ -11021,12 +11301,29 @@ def _gui_flush_log_buffer(self):
             else:
                 ts = _dt.now().strftime('%d.%m.%Y %H:%M:%S')
                 formatted.append(f"[{ts}] {line}")
+            if _is_trigger_log_line(line):
+                formatted_triggers.append(formatted[-1])
         text = '\n'.join(formatted)
         try:
             self.log_edit.appendPlainText(text)
         except Exception:
             self.log_edit.append(text)
         self.log_edit.verticalScrollBar().setValue(self.log_edit.verticalScrollBar().maximum())
+        if formatted_triggers:
+            target = getattr(self, "log_triggers_edit", None)
+            if target is not None:
+                trigger_text = '\n'.join(formatted_triggers)
+                try:
+                    target.appendPlainText(trigger_text)
+                except Exception:
+                    try:
+                        target.insertPlainText(trigger_text + "\n")
+                    except Exception:
+                        pass
+                try:
+                    target.verticalScrollBar().setValue(target.verticalScrollBar().maximum())
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -11420,6 +11717,15 @@ def _mw_on_trade_signal(self, order_info: dict):
                     qty_token = str(qty_source)
             fills_meta = order_info.get("fills_meta") or {}
             order_id_token = fills_meta.get("order_id") or order_info.get("order_id") or ""
+            if order_id_token is None:
+                order_id_token = ""
+            else:
+                order_id_token = str(order_id_token)
+            client_order_token = order_info.get("client_order_id") or order_info.get("clientOrderId") or ""
+            if client_order_token is None:
+                client_order_token = ""
+            else:
+                client_order_token = str(client_order_token)
             interval_token = _norm_interval(interval) or str(interval)
             status_token = str(order_info.get("status") or "").lower()
             time_token = str(order_info.get("time") or "")
@@ -11508,31 +11814,59 @@ def _mw_on_trade_signal(self, order_info: dict):
                 "trigger_indicators": list(trigger_inds) if trigger_inds else [],
                 "trigger_desc": order_info.get("trigger_desc"),
             }
-            try:
-                import time as _time
-                existing_list = alloc_map.get((sym_upper, side_key_local), [])
-                if isinstance(existing_list, list):
-                    seq_len = len(existing_list)
-                elif isinstance(existing_list, dict):
-                    seq_len = len(existing_list)
-                else:
-                    seq_len = 0
-                trade_entry["trade_id"] = f"{sym_upper}-{side_key_local}-{int(_time.time()*1000)}-{seq_len + 1}"
-            except Exception:
-                existing_list = alloc_map.get((sym_upper, side_key_local), [])
-                if isinstance(existing_list, list):
-                    seq_len = len(existing_list)
-                elif isinstance(existing_list, dict):
-                    seq_len = len(existing_list)
-                else:
-                    seq_len = 0
-                trade_entry["trade_id"] = f"{sym_upper}-{side_key_local}-{seq_len + 1}"
+            if order_id_token:
+                trade_entry["order_id"] = order_id_token
+            if client_order_token:
+                trade_entry["client_order_id"] = client_order_token
+            order_identifier = client_order_token or order_id_token
             alloc_list = alloc_map.get((sym_upper, side_key_local))
             if isinstance(alloc_list, dict):
                 alloc_list = list(alloc_list.values())
             if not isinstance(alloc_list, list):
                 alloc_list = []
-            alloc_list.append(trade_entry)
+            existing_entry = None
+            if alloc_list:
+                for entry in alloc_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    if client_order_token and entry.get("client_order_id") == client_order_token:
+                        existing_entry = entry
+                        break
+                    if order_id_token and str(entry.get("order_id") or "") == order_id_token:
+                        existing_entry = entry
+                        break
+                    if order_identifier and entry.get("trade_id") == order_identifier:
+                        existing_entry = entry
+                        break
+                    if (
+                        not order_identifier
+                        and entry.get("interval") == norm_iv
+                        and list(entry.get("trigger_indicators") or []) == list(trade_entry.get("trigger_indicators") or [])
+                        and entry.get("open_time") == open_time_fmt
+                    ):
+                        existing_entry = entry
+                        break
+            if existing_entry:
+                for key, value in trade_entry.items():
+                    if value is None:
+                        continue
+                    if isinstance(value, (list, tuple, set)) and not value:
+                        continue
+                    if key == "trade_id" and not order_identifier:
+                        continue
+                    existing_entry[key] = value
+                if order_identifier:
+                    existing_entry["trade_id"] = order_identifier
+            else:
+                if not order_identifier:
+                    try:
+                        import time as _time
+                        seq_len = len(alloc_list)
+                        order_identifier = f"{sym_upper}-{side_key_local}-{int(_time.time()*1000)}-{seq_len + 1}"
+                    except Exception:
+                        order_identifier = f"{sym_upper}-{side_key_local}-{len(alloc_list) + 1}"
+                trade_entry["trade_id"] = order_identifier
+                alloc_list.append(trade_entry)
             alloc_map[(sym_upper, side_key_local)] = alloc_list
             pending_close.pop((sym_upper, side_key_local), None)
         else:
@@ -11747,3 +12081,66 @@ def _derive_margin_snapshot(position: dict | None, qty_hint: float = 0.0, entry_
         maint_margin = margin_balance
     unrealized_loss = max(0.0, -unrealized_profit)
     return margin, margin_balance, maint_margin, unrealized_loss
+    def _begin_close_on_exit_sequence(self):
+        if getattr(self, "_close_in_progress", False):
+            return
+        self._close_in_progress = True
+        if not hasattr(self, "_bg_workers"):
+            self._bg_workers = []
+        try:
+            message = QtWidgets.QMessageBox(self)
+            message.setWindowTitle("Closing Positions")
+            message.setText("Closing open positions before exit. Please wait…")
+            try:
+                message.setIcon(QtWidgets.QMessageBox.Icon.Information)
+            except Exception:
+                pass
+            message.setStandardButtons(QtWidgets.QMessageBox.StandardButton.NoButton)
+            message.setModal(False)
+            message.show()
+            self._close_progress_dialog = message
+        except Exception:
+            self._close_progress_dialog = None
+
+        def _do():
+            return _stop_strategy_sync(self, close_positions=True)
+
+        def _done(res, err):
+            try:
+                if getattr(self, "_close_progress_dialog", None):
+                    self._close_progress_dialog.close()
+            except Exception:
+                pass
+            self._close_progress_dialog = None
+            self._close_in_progress = False
+            if err:
+                try:
+                    self.log(f"Stop error during exit: {err}")
+                except Exception:
+                    pass
+            else:
+                try:
+                    if isinstance(res, dict) and res.get("close_all_result"):
+                        _handle_close_all_result(self, res.get("close_all_result"))
+                except Exception:
+                    pass
+            self._force_close = True
+            QtWidgets.QWidget.close(self)
+
+        worker = CallWorker(_do, parent=self)
+        try:
+            worker.progress.connect(self.log)
+        except Exception:
+            pass
+        worker.done.connect(_done)
+
+        def _cleanup():
+            try:
+                self._bg_workers.remove(worker)
+            except Exception:
+                pass
+
+        worker.finished.connect(_cleanup)
+        worker.finished.connect(worker.deleteLater)
+        self._bg_workers.append(worker)
+        worker.start()

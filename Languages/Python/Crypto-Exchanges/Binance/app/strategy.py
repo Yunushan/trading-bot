@@ -126,6 +126,7 @@ class StrategyEngine:
         self._offline_backoff = 0.0
         self._last_network_log = 0.0
         self._emergency_close_triggered = False
+        self._stop_time = 0.0
         try:
             spacing = float(self.config.get("order_rate_min_spacing", StrategyEngine._ORDER_MIN_SPACING))
         except Exception:
@@ -873,6 +874,10 @@ class StrategyEngine:
 
     def stop(self):
         self._stop = True
+        try:
+            self._stop_time = float(time.time())
+        except Exception:
+            self._stop_time = 0.0
 
     def stopped(self):
         return self._stop
@@ -1364,6 +1369,8 @@ class StrategyEngine:
 
     def run_once(self):
         cw = self.config
+        if self.stopped():
+            return
         stop_cfg = normalize_stop_loss_dict(cw.get("stop_loss"))
         stop_mode = str(stop_cfg.get("mode") or "usdt").lower()
         if stop_mode not in STOP_LOSS_MODE_ORDER:
@@ -2069,7 +2076,23 @@ class StrategyEngine:
             )
 
         filtered_orders: list[dict[str, object]] = []
+        if self.stopped():
+            return
         for order in orders_to_execute:
+            if self.stopped():
+                return
+            stop_cutoff = 0.0
+            try:
+                stop_cutoff = float(getattr(self, "_stop_time", 0.0) or 0.0)
+            except Exception:
+                stop_cutoff = 0.0
+            if stop_cutoff > 0.0:
+                try:
+                    order_ts = float(order.get("timestamp") or 0.0)
+                except Exception:
+                    order_ts = 0.0
+                if order_ts > 0.0 and order_ts <= stop_cutoff:
+                    continue
             side_upper = str(order.get("side") or "").upper()
             if side_upper not in ("BUY", "SELL"):
                 continue
@@ -2229,6 +2252,8 @@ class StrategyEngine:
                     self._bar_order_tracker[bar_sig_key] = tracker
                 sig_set = tracker.setdefault("signatures", set())
                 if sig_sorted in sig_set:
+                    if self.stopped():
+                        return
                     try:
                         self.log(
                             f"{cw['symbol']}@{interval_key} duplicate {side} suppressed (order already placed this bar)."
@@ -2406,6 +2431,10 @@ class StrategyEngine:
                         min_required_margin = max(min_required_margin, 0.0)
                     max_margin = target_margin * (1.0 + max(0.0, margin_tolerance))
                     if min_required_margin > 0.0 and min_required_margin > max_margin + 1e-9:
+                        try:
+                            self._close_opposite_position(cw['symbol'], cw.get('interval'), side, signature)
+                        except Exception:
+                            pass
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} sizing blocked: minimum contract margin {min_required_margin:.4f} "
                             f"exceeds target {target_margin:.4f} by more than {margin_tolerance*100:.2f}%."
@@ -2533,30 +2562,40 @@ class StrategyEngine:
                         backoff_base = self._order_rate_retry_backoff
                         rate_limit_tokens = ("too frequent", "-1003", "frequency", "rate limit", "request too many", "too many requests")
                         while True:
+                            if self.stopped():
+                                order_res = {'ok': False, 'symbol': cw['symbol'], 'error': 'stop_requested'}
+                                order_success = False
+                                break
                             order_attempts += 1
                             StrategyEngine._reserve_order_slot(self._order_rate_min_spacing)
                             try:
-                                order_res = self.binance.place_futures_market_order(
-                                    cw['symbol'],
-                                    side,
-                                    percent_balance=None,
-                                    leverage=lev,
-                                    reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
-                                    position_side=desired_ps,
-                                    price=price_for_order,
-                                    quantity=qty_est,
-                                    strict=True,
-                                    timeInForce=self.config.get('tif', 'GTC'),
-                                    gtd_minutes=int(self.config.get('gtd_minutes', 30)),
-                                    interval=cw.get('interval'),
-                                    max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0)),
-                                    auto_bump_percent_multiplier=float(self.config.get('auto_bump_percent_multiplier', 10.0)),
-                                )
+                                if self.stopped():
+                                    order_res = {'ok': False, 'symbol': cw['symbol'], 'error': 'stop_requested'}
+                                else:
+                                    order_res = self.binance.place_futures_market_order(
+                                        cw['symbol'],
+                                        side,
+                                        percent_balance=None,
+                                        leverage=lev,
+                                        reduce_only=(False if self.binance.get_futures_dual_side() else reduce_only),
+                                        position_side=desired_ps,
+                                        price=price_for_order,
+                                        quantity=qty_est,
+                                        strict=True,
+                                        timeInForce=self.config.get('tif', 'GTC'),
+                                        gtd_minutes=int(self.config.get('gtd_minutes', 30)),
+                                        interval=cw.get('interval'),
+                                        max_auto_bump_percent=float(self.config.get('max_auto_bump_percent', 5.0)),
+                                        auto_bump_percent_multiplier=float(self.config.get('auto_bump_percent_multiplier', 10.0)),
+                                    )
                             except Exception as exc_order:
                                 order_res = {'ok': False, 'symbol': cw['symbol'], 'error': str(exc_order)}
                             finally:
                                 StrategyEngine._release_order_slot()
                             order_success = bool(order_res.get('ok', True))
+                            if self.stopped():
+                                order_success = False
+                                break
                             if order_success:
                                 break
                             err_text = str(order_res.get('error') or '').lower()
@@ -2571,6 +2610,8 @@ class StrategyEngine:
                                 guard_obj.end_open(cw['symbol'], cw.get('interval'), guard_side, order_success, context=context_key)
                             except Exception:
                                 pass
+                    if self.stopped():
+                        return
                     try:
                         qty_emit = float(order_res.get('computed',{}).get('qty') or 0.0)
                         if qty_emit <= 0:
@@ -2841,6 +2882,20 @@ class StrategyEngine:
                     "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                     "status": "placed",
                 }
+                info_meta = order_res.get("info") or {}
+                computed_meta = order_res.get("computed") or {}
+                order_id_value = None
+                client_order_id_value = None
+                if isinstance(info_meta, dict):
+                    order_id_value = info_meta.get("orderId") or info_meta.get("order_id") or info_meta.get("orderID")
+                    client_order_id_value = info_meta.get("clientOrderId") or info_meta.get("client_order_id") or info_meta.get("clientOrderID")
+                if isinstance(computed_meta, dict):
+                    order_id_value = order_id_value or computed_meta.get("order_id") or computed_meta.get("orderId")
+                    client_order_id_value = client_order_id_value or computed_meta.get("client_order_id") or computed_meta.get("clientOrderId")
+                if order_id_value is not None:
+                    order_info["order_id"] = order_id_value
+                if client_order_id_value is not None:
+                    order_info["client_order_id"] = client_order_id_value
                 if fills_info:
                     commission_val = fills_info.get("commission_usdt")
                     net_realized_val = fills_info.get("net_realized")

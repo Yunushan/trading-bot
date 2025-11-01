@@ -54,14 +54,26 @@ LANGUAGE_OPTIONS = [
     {
         "key": "cpp",
         "title": "C++",
-        "subtitle": "Qt native · Max performance",
+        "subtitle": "Qt native · coming soon",
         "accent": "#38bdf8",
+        "badge": "Coming Soon",
+        "disabled": True,
     },
     {
         "key": "rust",
         "title": "Rust",
-        "subtitle": "Memory safe · Near-C speed",
+        "subtitle": "Memory safe · coming soon",
         "accent": "#fb923c",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "key": "c",
+        "title": "C",
+        "subtitle": "Low-level power · coming soon",
+        "accent": "#f87171",
+        "badge": "Coming Soon",
+        "disabled": True,
     },
 ]
 
@@ -72,8 +84,49 @@ MARKET_OPTIONS = [
 
 CRYPTO_EXCHANGES = [
     {"key": "binance", "title": "Binance", "subtitle": "Advanced desktop bot ready to launch", "accent": "#fbbf24"},
-    {"key": "bybit", "title": "Bybit", "subtitle": "Derivatives-focused · coming soon", "accent": "#fb7185"},
-    {"key": "okx", "title": "OKX", "subtitle": "Options + spot · coming soon", "accent": "#a78bfa"},
+    {
+        "key": "bybit",
+        "title": "Bybit",
+        "subtitle": "Derivatives-focused · coming soon",
+        "accent": "#fb7185",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "key": "okx",
+        "title": "OKX",
+        "subtitle": "Options + spot · coming soon",
+        "accent": "#a78bfa",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+]
+
+FOREX_BROKERS = [
+    {
+        "key": "oanda",
+        "title": "OANDA",
+        "subtitle": "Popular REST API · coming soon",
+        "accent": "#60a5fa",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "key": "fxcm",
+        "title": "FXCM",
+        "subtitle": "Streaming quotes · coming soon",
+        "accent": "#c084fc",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "key": "ig",
+        "title": "IG",
+        "subtitle": "Global CFD trading · coming soon",
+        "accent": "#f472b6",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
 ]
 
 WINDOW_BG = "#0d1117"
@@ -92,12 +145,17 @@ class SelectableCard(QtWidgets.QFrame):
         subtitle: str,
         accent_color: str,
         badge_text: str | None = None,
+        *,
+        disabled: bool = False,
     ) -> None:
         super().__init__()
         self.option_key = option_key
         self.accent_color = accent_color
         self._selected = False
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._disabled = bool(disabled)
+        self.setCursor(
+            QtCore.Qt.CursorShape.ArrowCursor if self._disabled else QtCore.Qt.CursorShape.PointingHandCursor
+        )
         self.setObjectName(f"card_{option_key}")
 
         wrapper = QtWidgets.QVBoxLayout(self)
@@ -132,20 +190,46 @@ class SelectableCard(QtWidgets.QFrame):
         body_layout.addWidget(self.subtitle_label)
         body_layout.addStretch()
 
+        self.setDisabledState(self._disabled)
+
         self._refresh_style()
 
     def setSelected(self, selected: bool) -> None:
-        self._selected = bool(selected)
+        if self._disabled:
+            self._selected = False
+        else:
+            self._selected = bool(selected)
         self._refresh_style()
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and not self._disabled:
             self.clicked.emit(self.option_key)
         super().mouseReleaseEvent(event)
 
+    def setDisabledState(self, disabled: bool) -> None:
+        self._disabled = bool(disabled)
+        super().setEnabled(not self._disabled)
+        self.setCursor(
+            QtCore.Qt.CursorShape.ArrowCursor if self._disabled else QtCore.Qt.CursorShape.PointingHandCursor
+        )
+        self._refresh_style()
+
+    def is_disabled(self) -> bool:
+        return self._disabled
+
     def _refresh_style(self) -> None:
-        bg = "#1b2231" if self._selected else "#141925"
-        border = self.accent_color if self._selected else "#262c3f"
+        if self._disabled:
+            bg = "#111827"
+            border = "#1f2433"
+            accent = "#1f2433"
+            title_color = "#6b7280"
+            subtitle_color = "#4b5563"
+        else:
+            bg = "#1b2231" if self._selected else "#141925"
+            border = self.accent_color if self._selected else "#262c3f"
+            accent = self.accent_color if self._selected else "#1f2433"
+            title_color = TEXT_COLOR
+            subtitle_color = MUTED_TEXT
         self.setStyleSheet(
             f"""
             QFrame#{self.objectName()} {{
@@ -156,15 +240,17 @@ class SelectableCard(QtWidgets.QFrame):
             """
         )
         self.accent_bar.setStyleSheet(
-            f"background-color: {self.accent_color if self._selected else '#1f2433'};"
-            "border-top-left-radius: 18px; border-top-right-radius: 18px;"
+            f"background-color: {accent}; border-top-left-radius: 18px; border-top-right-radius: 18px;"
         )
+        self.title_label.setStyleSheet(f"font-size: 24px; font-weight: 600; color: {title_color};")
+        self.subtitle_label.setStyleSheet(f"color: {subtitle_color}; font-size: 13px;")
 
 
 class StarterWindow(QtWidgets.QWidget):
     def __init__(self, app_icon: QtGui.QIcon | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Trading Bot Starter")
+        self.setMinimumSize(1024, 640)
         self.resize(1100, 720)
         self.setStyleSheet(
             f"background-color: {WINDOW_BG}; color: {TEXT_COLOR};"
@@ -233,6 +319,8 @@ class StarterWindow(QtWidgets.QWidget):
         self._allow_language_auto_advance = False
         self._update_language_selection("python")
         self._allow_language_auto_advance = True
+        QtCore.QTimer.singleShot(0, lambda: self.resize(1100, 720))
+        QtCore.QTimer.singleShot(0, self._update_exchange_card_widths)
         self._update_nav_state()
         self._update_status_message()
 
@@ -376,7 +464,7 @@ class StarterWindow(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(24)
 
-        heading = QtWidgets.QLabel("Choose your language")
+        heading = QtWidgets.QLabel("Choose your programming language")
         heading.setStyleSheet("font-size: 28px; font-weight: 700;")
         layout.addWidget(heading)
 
@@ -396,6 +484,7 @@ class StarterWindow(QtWidgets.QWidget):
                 opt["subtitle"],
                 opt["accent"],
                 opt.get("badge"),
+                disabled=opt.get("disabled", False),
             )
             card.setMinimumWidth(250)
             card.clicked.connect(self._update_language_selection)
@@ -459,23 +548,66 @@ class StarterWindow(QtWidgets.QWidget):
         exch_layout.addWidget(hint)
 
         self.exchange_cards: dict[str, SelectableCard] = {}
-        exchange_row = QtWidgets.QHBoxLayout()
-        exchange_row.setSpacing(18)
-        exch_layout.addLayout(exchange_row)
+        self.exchange_row = QtWidgets.QHBoxLayout()
+        self.exchange_row.setSpacing(18)
+        exch_layout.addLayout(self.exchange_row)
 
         for opt in CRYPTO_EXCHANGES:
-            card = SelectableCard(opt["key"], opt["title"], opt["subtitle"], opt["accent"])
-            card.setMinimumWidth(240)
+            card = SelectableCard(
+                opt["key"],
+                opt["title"],
+                opt["subtitle"],
+                opt["accent"],
+                opt.get("badge"),
+                disabled=opt.get("disabled", False),
+            )
+            card.setMinimumHeight(150)
+            card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
             card.clicked.connect(self._update_exchange_selection)
             self.exchange_cards[opt["key"]] = card
-            exchange_row.addWidget(card)
+            self.exchange_row.addWidget(card)
 
         layout.addWidget(self.crypto_exchange_group)
+
+        self.forex_broker_group = QtWidgets.QGroupBox("Forex brokers")
+        self.forex_broker_group.setVisible(False)
+        self.forex_broker_group.setStyleSheet(crypto_group_style)
+
+        forex_layout = QtWidgets.QVBoxLayout(self.forex_broker_group)
+        forex_layout.setContentsMargins(16, 20, 16, 16)
+        forex_layout.setSpacing(14)
+
+        forex_hint = QtWidgets.QLabel("Forex integrations are in progress. Desktop workspaces will arrive soon.")
+        forex_hint.setStyleSheet(f"color: {MUTED_TEXT};")
+        forex_layout.addWidget(forex_hint)
+
+        self.forex_cards: dict[str, SelectableCard] = {}
+        self.forex_row = QtWidgets.QHBoxLayout()
+        self.forex_row.setSpacing(18)
+        forex_layout.addLayout(self.forex_row)
+        for opt in FOREX_BROKERS:
+            card = SelectableCard(
+                opt["key"],
+                opt["title"],
+                opt["subtitle"],
+                opt["accent"],
+                opt.get("badge"),
+                disabled=True,
+            )
+            card.setMinimumWidth(240)
+            self.forex_cards[opt["key"]] = card
+            self.forex_row.addWidget(card)
+
+        layout.addWidget(self.forex_broker_group)
         layout.addStretch()
         return page
 
     def _update_language_selection(self, key: str) -> None:
         if key not in self.language_cards:
+            return
+        card_selected = self.language_cards.get(key)
+        if card_selected is not None and card_selected.is_disabled():
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Coming soon")
             return
         allow_auto = getattr(self, "_allow_language_auto_advance", True)
         auto_advance = (self.stack.currentIndex() == 0) and allow_auto
@@ -488,6 +620,37 @@ class StarterWindow(QtWidgets.QWidget):
             self._update_status_message()
             self._update_nav_state()
 
+    def _update_exchange_card_widths(self) -> None:
+        try:
+            cards = getattr(self, "exchange_cards", {})
+            row = getattr(self, "exchange_row", None)
+            group = getattr(self, "crypto_exchange_group", None)
+            if cards and row is not None and group is not None:
+                available = max(0, group.contentsRect().width())
+                margins = row.contentsMargins()
+                available -= margins.left() + margins.right()
+                spacing = max(0, row.spacing())
+                count = len(cards)
+                if count:
+                    width = max(320, (available - spacing * (count - 1)) / count)
+                    for card in cards.values():
+                        card.setFixedWidth(int(width))
+            forex_cards = getattr(self, "forex_cards", {})
+            forex_row = getattr(self, "forex_row", None)
+            forex_group = getattr(self, "forex_broker_group", None)
+            if forex_cards and forex_row is not None and forex_group is not None:
+                available = max(0, forex_group.contentsRect().width())
+                margins = forex_row.contentsMargins()
+                available -= margins.left() + margins.right()
+                spacing = max(0, forex_row.spacing())
+                count = len(forex_cards)
+                if count:
+                    width = max(300, (available - spacing * (count - 1)) / count)
+                    for card in forex_cards.values():
+                        card.setFixedWidth(int(width))
+        except Exception:
+            pass
+
     def _update_market_selection(self, key: str) -> None:
         if key not in self.market_cards:
             return
@@ -495,15 +658,25 @@ class StarterWindow(QtWidgets.QWidget):
         for card_key, card in self.market_cards.items():
             card.setSelected(card_key == key)
         self.crypto_exchange_group.setVisible(key == "crypto")
+        if hasattr(self, "forex_broker_group"):
+            self.forex_broker_group.setVisible(key == "forex")
         if key != "crypto":
             self.selected_exchange = None
             for card in self.exchange_cards.values():
                 card.setSelected(False)
+        if key != "forex" and hasattr(self, "forex_cards"):
+            for card in self.forex_cards.values():
+                card.setSelected(False)
+        QtCore.QTimer.singleShot(0, self._update_exchange_card_widths)
         self._update_status_message()
         self._update_nav_state()
 
     def _update_exchange_selection(self, key: str) -> None:
         if key not in self.exchange_cards:
+            return
+        card = self.exchange_cards.get(key)
+        if card is not None and card.is_disabled():
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Coming soon")
             return
         self.selected_exchange = key
         for card_key, card in self.exchange_cards.items():
@@ -515,6 +688,7 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _show_market_page(self) -> None:
         self.stack.setCurrentIndex(1)
+        QtCore.QTimer.singleShot(0, self._update_exchange_card_widths)
         self._update_nav_state()
         self._update_status_message()
 
@@ -530,6 +704,11 @@ class StarterWindow(QtWidgets.QWidget):
                     card.setSelected(False)
             self.selected_exchange = None
             self.crypto_exchange_group.setVisible(False)
+            if hasattr(self, "forex_cards"):
+                for card in self.forex_cards.values():
+                    card.setSelected(False)
+            if hasattr(self, "forex_broker_group"):
+                self.forex_broker_group.setVisible(False)
             # Also clear language highlight so the user must reselect
             self.selected_language = None
             for card in self.language_cards.values():
@@ -609,8 +788,16 @@ class StarterWindow(QtWidgets.QWidget):
             return
         if self._is_launching:
             return
+        if self.selected_market is None:
+            self.status_label.setText("Select a market to continue.")
+            return
+        if self.selected_market == "forex":
+            self.status_label.setText(
+                "Forex brokers (OANDA, FXCM, IG) are coming soon. Choose Crypto → Binance to launch today."
+            )
+            return
         if self.selected_market != "crypto":
-            self.status_label.setText("Select 'Crypto Exchange' to reveal supported exchanges (Forex coming soon).")
+            self.status_label.setText("Select 'Crypto Exchange' to reveal supported exchanges.")
             return
         language = self.selected_language
         exchange = self.selected_exchange
@@ -621,7 +808,7 @@ class StarterWindow(QtWidgets.QWidget):
             if exchange in {"bybit", "okx"}:
                 self.status_label.setText(f"{exchange.title()} workspace is being scaffolded.")
                 return
-            self.status_label.setText("Pick Binance, Bybit, or OKX to prepare their workspace.")
+            self.status_label.setText("Select Binance to launch the Python workspace. Other exchanges are coming soon.")
             return
 
         if language == "cpp":
@@ -642,11 +829,13 @@ class StarterWindow(QtWidgets.QWidget):
                     "Only the Binance Qt C++ preview is available today. Select Binance to launch it."
                 )
                 return
-            self.status_label.setText("Pick Binance to launch the Qt C++ backtest tab preview.")
+            self.status_label.setText(
+                "Select Binance to launch the Qt C++ backtest tab preview. Other exchanges are coming soon."
+            )
             return
 
         self.status_label.setText(
-            "This language launcher is still under construction. Select Python or C++ Binance to launch an app."
+            "This language launcher is still under construction. Select Python to launch the available workspace."
         )
 
     def _can_launch_selected(self) -> bool:
@@ -660,6 +849,10 @@ class StarterWindow(QtWidgets.QWidget):
         if language == "cpp":
             return BINANCE_CPP_PROJECT.is_dir()
         return False
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._update_exchange_card_widths()
 
     def launch_selected_bot(self) -> None:
         if not self._can_launch_selected():
@@ -762,7 +955,7 @@ def main() -> None:
         app.setWindowIcon(app_icon)
         QtGui.QGuiApplication.setWindowIcon(app_icon)
     window = StarterWindow(app_icon=app_icon)
-    window.show()
+    window.showMaximized()
     window.winId()
     if app_icon is not None:
         QtCore.QTimer.singleShot(0, lambda: window.setWindowIcon(app_icon))
