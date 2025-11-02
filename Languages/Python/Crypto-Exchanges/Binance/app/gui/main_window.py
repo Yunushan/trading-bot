@@ -10074,6 +10074,37 @@ def start_strategy(self):
         except Exception:
             pass
 
+        guard_obj = getattr(self, "guard", None)
+        guard_can_open = getattr(guard_obj, "can_open", None) if guard_obj else None
+        if guard_obj:
+            try:
+                if self.shared_binance is not None and hasattr(guard_obj, "attach_wrapper"):
+                    guard_obj.attach_wrapper(self.shared_binance)
+            except Exception as guard_attach_err:
+                self.log(f"Guard attach error: {guard_attach_err}")
+            try:
+                if hasattr(guard_obj, "reset"):
+                    guard_obj.reset()
+            except Exception as guard_reset_err:
+                self.log(f"Guard reset error: {guard_reset_err}")
+            guard_jobs = [
+                {"symbol": combo.get("symbol"), "interval": combo.get("interval")}
+                for combo in combos
+                if combo.get("symbol") and combo.get("interval")
+            ]
+            try:
+                if hasattr(guard_obj, "reconcile_with_exchange"):
+                    guard_account_type = str(
+                        getattr(self.shared_binance, "account_type", account_type_text) or account_type_text
+                    ).upper()
+                    guard_obj.reconcile_with_exchange(
+                        self.shared_binance,
+                        guard_jobs,
+                        account_type=guard_account_type,
+                    )
+            except Exception as guard_reconcile_err:
+                self.log(f"Guard reconcile warning: {guard_reconcile_err}")
+
         for combo in combos:
             sym = combo.get("symbol")
             iv = combo.get("interval")
@@ -10171,7 +10202,13 @@ def start_strategy(self):
                     log_callback=self.log,
                     trade_callback=self._on_trade_signal,
                     loop_interval_override=loop_override_entry,
+                    can_open_callback=guard_can_open,
                 )
+                if guard_obj and hasattr(eng, "set_guard"):
+                    try:
+                        eng.set_guard(guard_obj)
+                    except Exception:
+                        pass
                 eng.start()
                 self.strategy_engines[key] = eng
                 try:
