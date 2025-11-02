@@ -1983,6 +1983,72 @@ class BinanceWrapper:
         self._futures_max_leverage_cache[sym] = max_lev
         return max_lev
 
+    def get_recent_force_orders(
+        self,
+        symbol: str | None = None,
+        *,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Fetch recent forced liquidation orders for the given futures symbol."""
+        func = getattr(self.client, "futures_force_orders", None)
+        if func is None:
+            func = getattr(self.client, "futures_get_force_orders", None)
+        if func is None:
+            return []
+        params: dict[str, object] = {"limit": max(1, min(int(limit or 1), 1000))}
+        if symbol:
+            params["symbol"] = str(symbol).upper()
+        if start_time:
+            try:
+                params["startTime"] = int(start_time)
+            except Exception:
+                pass
+        if end_time:
+            try:
+                params["endTime"] = int(end_time)
+            except Exception:
+                pass
+        try:
+            data = func(**params)
+        except Exception:
+            return []
+        if isinstance(data, dict):
+            seq = None
+            for key in ("rows", "data", "forceOrders", "orders", "list"):
+                if key in data:
+                    seq = data.get(key)
+                    break
+            data_list = seq if isinstance(seq, list) else []
+        elif isinstance(data, list):
+            data_list = data
+        else:
+            data_list = []
+        normalized: list[dict] = []
+        for item in data_list:
+            if not isinstance(item, dict):
+                continue
+            entry: dict[str, object] = {}
+            for key in (
+                "avgPrice",
+                "executedQty",
+                "origQty",
+                "price",
+                "time",
+                "updateTime",
+                "orderId",
+                "side",
+                "symbol",
+                "positionSide",
+                "status",
+                "type",
+            ):
+                if key in item:
+                    entry[key] = item[key]
+            normalized.append(entry)
+        return normalized
+
     def clamp_futures_leverage(self, symbol: str, leverage: int | None = None) -> int:
         sym = str(symbol or "").upper()
         desired = leverage if leverage is not None else getattr(self, "_requested_default_leverage", getattr(self, "_default_leverage", 5))
