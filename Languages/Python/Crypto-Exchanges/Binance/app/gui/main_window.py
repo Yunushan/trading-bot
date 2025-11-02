@@ -1223,7 +1223,7 @@ class MainWindow(QtWidgets.QWidget):
         self._session_marker_active = False
         self._auto_close_on_restart_triggered = False
         self._ui_initialized = False
-        self.guard = IntervalPositionGuard(stale_ttl_sec=0, strict_symbol_side=True)
+        self.guard = IntervalPositionGuard(stale_ttl_sec=0, strict_symbol_side=False)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.config.setdefault('theme', 'Dark')
@@ -8012,7 +8012,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         is_active_allocation = status_flag not in {"closed", "error"}
                         if qty_val is not None and qty_val <= 0.0:
                             qty_val = 0.0
-                        if qty_val:
+                        if qty_val and status_flag not in {"closed", "error"}:
                             is_active_allocation = True
                         interval_val = alloc.get("interval_display") or alloc.get("interval")
                         interval_normalized = ""
@@ -8069,6 +8069,45 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     continue
                 if not isinstance(allocations, list) or not allocations:
                     continue
+                active_any = False
+                for alloc in allocations:
+                    if not isinstance(alloc, dict):
+                        continue
+                    status_flag = str(alloc.get("status") or "").strip().lower()
+                    if status_flag in {"closed", "error"}:
+                        continue
+                    try:
+                        qty_val_chk = abs(float(alloc.get("qty") or 0.0))
+                    except Exception:
+                        qty_val_chk = 0.0
+                    margin_val_chk = 0.0
+                    notional_val_chk = 0.0
+                    try:
+                        margin_val_chk = abs(float(alloc.get("margin_usdt") or alloc.get("margin") or 0.0))
+                    except Exception:
+                        margin_val_chk = 0.0
+                    try:
+                        notional_val_chk = abs(float(alloc.get("notional") or alloc.get("size_usdt") or 0.0))
+                    except Exception:
+                        notional_val_chk = 0.0
+                    if qty_val_chk > 0.0 or margin_val_chk > 0.0 or notional_val_chk > 0.0:
+                        active_any = True
+                        break
+                if not active_any:
+                    continue
+                try:
+                    pending_close_map = getattr(self, "_pending_close_times", {})
+                except Exception:
+                    pending_close_map = {}
+                if isinstance(pending_close_map, dict):
+                    try:
+                        pending_close_map.setdefault(
+                            key,
+                            self._format_display_time(datetime.now().astimezone()),
+                        )
+                    except Exception:
+                        pass
+                continue
                 qty_total = 0.0
                 margin_total = 0.0
                 notional_total = 0.0
@@ -8088,7 +8127,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     is_active_allocation = status_flag not in {"closed", "error"}
                     if qty_val is not None and qty_val <= 0.0:
                         qty_val = 0.0
-                    if qty_val:
+                    if qty_val and status_flag not in {"closed", "error"}:
                         is_active_allocation = True
                     if is_active_allocation:
                         try:
@@ -8964,14 +9003,46 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             return []
         out: list[dict] = []
         for payload in allocs:
-            if isinstance(payload, dict):
-                entry = copy.deepcopy(payload)
-                interval = entry.get("interval")
-                if interval is None and entry.get("interval_display"):
-                    interval = entry.get("interval_display")
-                entry["interval"] = interval
-                out.append(entry)
-        return out
+            if not isinstance(payload, dict):
+                continue
+            entry = copy.deepcopy(payload)
+            interval = entry.get("interval")
+            if interval is None and entry.get("interval_display"):
+                interval = entry.get("interval_display")
+            entry["interval"] = interval
+            triggers_any = entry.get("trigger_indicators")
+            if isinstance(triggers_any, dict):
+                merged = []
+                for value in triggers_any.values():
+                    if isinstance(value, (list, tuple, set)):
+                        merged.extend([str(v).strip() for v in value if str(v).strip()])
+                    elif isinstance(value, str) and value.strip():
+                        merged.append(value.strip())
+                entry["trigger_indicators"] = merged or None
+            out.append(entry)
+        unique: list[dict] = []
+        seen: dict[tuple, dict] = {}
+        for entry in out:
+            indicators_tuple = tuple(sorted(str(v).strip().lower() for v in (entry.get("trigger_indicators") or []) if str(v).strip()))
+            key = (
+                str(entry.get("ledger_id") or ""),
+                str(entry.get("interval") or "").strip().lower(),
+                indicators_tuple,
+            )
+            existing = seen.get(key)
+            if existing:
+                try:
+                    existing["margin_usdt"] = max(float(existing.get("margin_usdt") or 0.0), float(entry.get("margin_usdt") or 0.0))
+                    existing["qty"] = max(float(existing.get("qty") or 0.0), float(entry.get("qty") or 0.0))
+                    existing["notional"] = max(float(existing.get("notional") or 0.0), float(entry.get("notional") or 0.0))
+                except Exception:
+                    pass
+                continue
+            if indicators_tuple:
+                entry["trigger_indicators"] = list(indicators_tuple)
+            seen[key] = entry
+            unique.append(entry)
+        return unique
 
     def _compute_trade_data(base_data: dict, allocation: dict | None, side_key: str, status: str) -> dict:
         data = dict(base_data)
@@ -9206,8 +9277,9 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             if not aggregate_key:
                 aggregate_key = f"{sym}|{side_key}|{interval_label}|{entry.get('open_time')}"
 
-            indicator_values = entry.get("indicators") or []
-            if len(indicator_values) > 1:
+            indicator_values = [str(val).strip() for val in (entry.get("indicators") or []) if str(val).strip()]
+            indicator_values = sorted(dict.fromkeys(indicator_values))
+            if indicator_values:
                 for idx, indicator_name in enumerate(indicator_values):
                     clone = copy.deepcopy(entry)
                     clone_indicators = [indicator_name]
@@ -9215,17 +9287,14 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                     clone_data = dict(clone.get("data") or {})
                     clone_data["trigger_indicators"] = clone_indicators
                     clone["data"] = clone_data
-                    clone["_aggregate_key"] = aggregate_key
+                    clone["_aggregate_key"] = f"{aggregate_key}|{indicator_name.lower()}"
                     clone["_aggregate_is_primary"] = bool(idx == 0)
                     records.append(clone)
                 return
-
-            if indicator_values:
-                single = indicator_values[0]
-                entry["indicators"] = [single]
-                entry_data = dict(entry.get("data") or {})
-                entry_data["trigger_indicators"] = [single]
-                entry["data"] = entry_data
+            entry["indicators"] = []
+            entry_data = dict(entry.get("data") or {})
+            entry_data["trigger_indicators"] = []
+            entry["data"] = entry_data
             entry["_aggregate_key"] = aggregate_key
             entry["_aggregate_is_primary"] = True
             records.append(entry)
@@ -9280,6 +9349,66 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         if not meta_items:
             meta_items = [None]
         _emit_entries(rec, sym, side_key, meta_items)
+
+    grouped: dict[tuple[str, str, str, tuple[str, ...]], dict[str, list[dict]]] = {}
+    for entry in records:
+        try:
+            symbol_key = str(entry.get("symbol") or "").strip().upper()
+            side_key = str(entry.get("side_key") or "").strip().upper()
+            interval_key = str(entry.get("entry_tf") or "").strip().lower()
+            indicators_tuple = tuple(
+                sorted(
+                    str(ind or "").strip().lower()
+                    for ind in (entry.get("indicators") or [])
+                    if str(ind or "").strip()
+                )
+            )
+            status_key = str(entry.get("status") or "").strip().lower() or "active"
+            bucket = grouped.setdefault((symbol_key, side_key, interval_key, indicators_tuple), {})
+            bucket.setdefault(status_key, []).append(entry)
+        except Exception:
+            continue
+
+    def _qty_key(entry: dict) -> float:
+        try:
+            return abs(float((entry.get("data") or {}).get("qty") or 0.0))
+        except Exception:
+            return 0.0
+
+    def _close_time_key(entry: dict) -> datetime:
+        data = entry.get("data") or {}
+        close_val = data.get("close_time") or entry.get("close_time") or ""
+        dt = None
+        try:
+            dt = self._parse_any_datetime(close_val)
+        except Exception:
+            dt = None
+        if dt is None:
+            try:
+                dt = datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            except Exception:
+                dt = datetime.min
+        return dt
+
+    deduped_records: list[dict] = []
+    for (_sym, _side, _interval, _indicators), status_map in grouped.items():
+        if not isinstance(status_map, dict):
+            continue
+        active_entries = status_map.get("active") or status_map.get("open") or []
+        if active_entries:
+            chosen_active = max(active_entries, key=_qty_key)
+            deduped_records.append(chosen_active)
+        closed_entries = status_map.get("closed") or []
+        if closed_entries:
+            chosen_closed = max(closed_entries, key=_close_time_key)
+            deduped_records.append(chosen_closed)
+        for status_name, entries in status_map.items():
+            if status_name in {"active", "open", "closed"}:
+                continue
+            if entries:
+                deduped_records.append(entries[0])
+
+    records = deduped_records
 
     records.sort(key=lambda item: (
         str(item.get("symbol") or ""),
@@ -10082,6 +10211,16 @@ def start_strategy(self):
                     guard_obj.attach_wrapper(self.shared_binance)
             except Exception as guard_attach_err:
                 self.log(f"Guard attach error: {guard_attach_err}")
+            try:
+                dual_enabled = False
+                if self.shared_binance is not None and hasattr(self.shared_binance, "get_futures_dual_side"):
+                    dual_enabled = bool(self.shared_binance.get_futures_dual_side())
+                if hasattr(guard_obj, "allow_opposite"):
+                    guard_obj.allow_opposite = dual_enabled
+                if hasattr(guard_obj, "strict_symbol_side"):
+                    guard_obj.strict_symbol_side = False
+            except Exception:
+                pass
             try:
                 if hasattr(guard_obj, "reset"):
                     guard_obj.reset()
@@ -11483,6 +11622,7 @@ def _mw_on_trade_signal(self, order_info: dict):
         except Exception:
             pass
         norm_iv = _norm_interval(interval)
+        closed_snapshots: list[dict] = []
         entries = alloc_map.get((sym_upper, side_key), [])
         if isinstance(entries, dict):
             entries = list(entries.values())
@@ -11493,13 +11633,42 @@ def _mw_on_trade_signal(self, order_info: dict):
                     continue
                 entry_iv = _norm_interval(entry.get("interval") or entry.get("interval_display"))
                 if norm_iv is None or entry_iv == norm_iv:
+                    entry_snapshot = copy.deepcopy(entry)
                     entry["status"] = "Closed"
+                    try:
+                        entry["qty"] = 0.0
+                    except Exception:
+                        entry["qty"] = 0.0
+                    for field in ("margin_usdt", "margin", "notional", "size_usdt"):
+                        try:
+                            if entry.get(field) not in (None, 0, 0.0):
+                                entry[field] = 0.0
+                        except Exception:
+                            entry[field] = 0.0
                     close_time_val = order_info.get("time")
                     if close_time_val:
                         dt_obj = self._parse_any_datetime(close_time_val)
                         entry["close_time"] = self._format_display_time(dt_obj) if dt_obj else close_time_val
                     else:
                         entry["close_time"] = entry.get("close_time")
+                    close_time_val = order_info.get("time")
+                    if close_time_val:
+                        dt_obj = self._parse_any_datetime(close_time_val)
+                        entry_snapshot["close_time"] = self._format_display_time(dt_obj) if dt_obj else close_time_val
+                    elif entry_snapshot.get("close_time") is None:
+                        entry_snapshot["close_time"] = entry.get("close_time")
+                    entry_snapshot["status"] = "Closed"
+                    closed_snapshots.append(entry_snapshot)
+            try:
+                if all(
+                    isinstance(entry, dict)
+                    and str(entry.get("status") or "").strip().lower() == "closed"
+                    and (entry.get("qty") in (None, 0, 0.0))
+                    for entry in entries
+                ):
+                    alloc_map.pop((sym_upper, side_key), None)
+            except Exception:
+                pass
         if sym_upper:
             from datetime import datetime as _dt
             close_time_val = order_info.get("time")
@@ -11510,7 +11679,12 @@ def _mw_on_trade_signal(self, order_info: dict):
             if close_time_val:
                 pending_close[(sym_upper, side_key)] = close_time_fmt
             alloc_entries_snapshot = []
-            if isinstance(entries, list):
+            if closed_snapshots:
+                alloc_entries_snapshot = closed_snapshots
+                for entry_snap in alloc_entries_snapshot:
+                    if not entry_snap.get("close_time"):
+                        entry_snap["close_time"] = close_time_fmt
+            elif isinstance(entries, list):
                 for entry in entries:
                     if isinstance(entry, dict):
                         entry_snap = copy.deepcopy(entry)

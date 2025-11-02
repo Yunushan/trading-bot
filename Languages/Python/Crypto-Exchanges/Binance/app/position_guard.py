@@ -18,6 +18,7 @@ class IntervalPositionGuard:
         self.pending_attempts: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
         self.active: Dict[Tuple[str, str], Dict[str, int]] = {}
         self.strict_symbol_side: bool = bool(strict_symbol_side)
+        self.allow_opposite: bool = False
         self._bw = None  # late-attached binance wrapper
         self._lock = threading.RLock()
 
@@ -102,7 +103,7 @@ class IntervalPositionGuard:
             self._expire_old_unlocked()
             state = self.active.get((sym, iv), {})
             opposite = 'SELL' if sd == 'BUY' else 'BUY'
-            if state.get(opposite, 0) > 0:
+            if (not self.allow_opposite) and state.get(opposite, 0) > 0:
                 return False
             entry_ctx = self.ledger.get((sym, iv, sd))
             if isinstance(entry_ctx, dict):
@@ -119,13 +120,13 @@ class IntervalPositionGuard:
             else:
                 if (sym, sd, ctx) in self.pending_attempts:
                     return False
-            if any(k[0] == sym and k[1] == opposite for k in self.pending_attempts):
+            if (not self.allow_opposite) and any(k[0] == sym and k[1] == opposite for k in self.pending_attempts):
                 return False
             for (s, i, ss), contexts in self.ledger.items():
                 if not isinstance(contexts, dict):
                     contexts = {"__legacy__": contexts}
                     self.ledger[(s, i, ss)] = contexts  # type: ignore[assignment]
-                if s == sym and i == iv and ss != sd and contexts:
+                if (not self.allow_opposite) and s == sym and i == iv and ss != sd and contexts:
                     return False
                 if self.strict_symbol_side and s == sym and ss == sd and contexts:
                     if context is None or any(c != ctx for c in contexts.keys()):
@@ -133,7 +134,11 @@ class IntervalPositionGuard:
             # defensive exchange check
             try:
                 bw = self._bw
-                if bw:
+                # Only enforce global symbol-side duplication guard when we are in strict mode
+                # or no contextual key was provided. In hedge/stacking scenarios the caller
+                # passes a unique context per indicator, so we allow multiple active legs even
+                # if the exchange already reports an open quantity.
+                if bw and (self.strict_symbol_side or context is None):
                     for p in (bw.list_open_futures_positions(force_refresh=True) or []):
                         if str(p.get('symbol') or '').upper() != sym:
                             continue
@@ -184,8 +189,11 @@ class IntervalPositionGuard:
                 if now - ts > float(ttl):
                     self.pending_attempts.pop(k, None)
             key = (sym, sd, ctx)
-            if key in self.pending_attempts:
-                if context is None:
+            pending = self.pending_attempts.get(key)
+            if pending is not None:
+                pending_iv = pending[1]
+                if context is None or not pending_iv or pending_iv == iv:
+                    # refresh coalescing window for the same logical attempt
                     self.pending_attempts[key] = (now, iv)
                     return True
                 return False
