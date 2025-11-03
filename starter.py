@@ -169,29 +169,29 @@ class SelectableCard(QtWidgets.QFrame):
         wrapper.setContentsMargins(0, 0, 0, 0)
         wrapper.setSpacing(0)
 
-        self.accent_bar = QtWidgets.QFrame()
+        self.accent_bar = QtWidgets.QFrame(self)
         self.accent_bar.setFixedHeight(6)
         wrapper.addWidget(self.accent_bar)
 
-        body = QtWidgets.QWidget()
+        body = QtWidgets.QWidget(self)
         body_layout = QtWidgets.QVBoxLayout(body)
         body_layout.setContentsMargins(18, 18, 18, 18)
         body_layout.setSpacing(10)
         wrapper.addWidget(body)
 
-        self.badge_label = QtWidgets.QLabel(badge_text or "")
+        self.badge_label = QtWidgets.QLabel(badge_text or "", parent=body)
         self.badge_label.setStyleSheet(
             "padding: 2px 8px; border-radius: 8px; font-size: 11px; font-weight: 600;"
             "background-color: rgba(59, 130, 246, 0.15); color: #93c5fd;"
         )
-        self.badge_label.setVisible(bool(badge_text))
         body_layout.addWidget(self.badge_label, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.badge_label.setVisible(bool(badge_text))
 
-        self.title_label = QtWidgets.QLabel(title)
+        self.title_label = QtWidgets.QLabel(title, parent=body)
         self.title_label.setStyleSheet("font-size: 24px; font-weight: 600;")
         body_layout.addWidget(self.title_label)
 
-        self.subtitle_label = QtWidgets.QLabel(subtitle)
+        self.subtitle_label = QtWidgets.QLabel(subtitle, parent=body)
         self.subtitle_label.setWordWrap(True)
         self.subtitle_label.setStyleSheet(f"color: {MUTED_TEXT}; font-size: 13px;")
         body_layout.addWidget(self.subtitle_label)
