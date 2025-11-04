@@ -730,6 +730,98 @@ class StrategyEngine:
                 return 0.0
         return 0.0
 
+    def _current_futures_position_qty(
+        self,
+        symbol: str,
+        side_label: str,
+        position_side: str | None,
+        positions: list[dict] | None = None,
+    ) -> float | None:
+        rows: list[dict] | None
+        if positions is None:
+            try:
+                rows = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+            except Exception:
+                return None
+        else:
+            rows = positions
+        sym_norm = str(symbol or "").upper()
+        side_norm = "BUY" if str(side_label or "").upper() in {"BUY", "LONG"} else "SELL"
+        desired_pos_side = str(position_side or "").upper() if position_side else None
+        best_qty = 0.0
+        for pos in rows or []:
+            try:
+                if str(pos.get("symbol") or "").upper() != sym_norm:
+                    continue
+                amt = float(pos.get("positionAmt") or 0.0)
+                pos_side_val = str(pos.get("positionSide") or "").upper()
+                if desired_pos_side:
+                    if pos_side_val and pos_side_val not in ("BOTH", desired_pos_side):
+                        if not (
+                            desired_pos_side == "LONG" and pos_side_val == "BOTH" and amt > 0.0
+                        ) and not (
+                            desired_pos_side == "SHORT" and pos_side_val == "BOTH" and amt < 0.0
+                        ):
+                            continue
+                if desired_pos_side:
+                    qty_val = abs(amt)
+                else:
+                    if side_norm == "BUY":
+                        if amt <= 0.0:
+                            continue
+                        qty_val = amt
+                    else:
+                        if amt >= 0.0:
+                            continue
+                        qty_val = abs(amt)
+                if qty_val > best_qty:
+                    best_qty = qty_val
+            except Exception:
+                continue
+        return best_qty if best_qty > 0.0 else 0.0
+
+    def _purge_flat_futures_legs(
+        self,
+        symbol: str,
+        positions: list[dict] | None,
+        *,
+        dual_side: bool,
+    ) -> None:
+        sym_norm = str(symbol or "").upper()
+        if not sym_norm:
+            return
+        for leg_key, leg in list(self._leg_ledger.items()):
+            leg_sym, leg_interval, leg_side = leg_key
+            if str(leg_sym or "").upper() != sym_norm:
+                continue
+            try:
+                qty_recorded = max(0.0, float((leg or {}).get("qty") or 0.0))
+            except Exception:
+                qty_recorded = 0.0
+            if qty_recorded <= 0.0:
+                continue
+            leg_side_norm = "BUY" if str(leg_side or "").upper() in {"BUY", "LONG"} else "SELL"
+            desired_pos_side = None
+            if dual_side:
+                desired_pos_side = "LONG" if leg_side_norm == "BUY" else "SHORT"
+            live_qty = self._current_futures_position_qty(
+                sym_norm,
+                leg_side_norm,
+                desired_pos_side,
+                positions,
+            )
+            if live_qty is None:
+                continue
+            eps = max(1e-8, abs(live_qty) * 1e-6)
+            if live_qty <= eps:
+                self._remove_leg_entry(leg_key, None)
+                try:
+                    self.log(
+                        f"Purged stale {leg_side_norm} leg for {sym_norm}@{leg_interval} after liquidation/manual close."
+                    )
+                except Exception:
+                    pass
+
     def _close_leg_entry(
         self,
         cw: dict,
@@ -744,14 +836,36 @@ class StrategyEngine:
         margin_pct: float,
     ) -> bool:
         symbol, interval, _ = leg_key
-        qty = max(0.0, float(entry.get("qty") or 0.0))
-        if qty <= 0.0:
+        qty_recorded = max(0.0, float(entry.get("qty") or 0.0))
+        if qty_recorded <= 0.0:
             return False
+        qty_to_close = qty_recorded
+        actual_qty = self._current_futures_position_qty(symbol, side_label, position_side)
+        if actual_qty is not None:
+            eps = max(1e-9, actual_qty * 1e-6)
+            if actual_qty <= eps:
+                self._remove_leg_entry(leg_key, entry.get("ledger_id"))
+                try:
+                    self.log(
+                        f"Skip close for {symbol}@{interval} ({side_label}): position already flat on exchange."
+                    )
+                except Exception:
+                    pass
+                return True
+            if qty_to_close - actual_qty > eps:
+                try:
+                    self.log(
+                        f"Adjusting close size for {symbol}@{interval} ({side_label}) "
+                        f"from {qty_to_close:.10f} to live {actual_qty:.10f}."
+                    )
+                except Exception:
+                    pass
+                qty_to_close = actual_qty
         start_ts = time.time()
         try:
             res = self.binance.close_futures_leg_exact(
                 symbol,
-                qty,
+                qty_to_close,
                 side=close_side,
                 position_side=position_side,
             )
@@ -772,7 +886,7 @@ class StrategyEngine:
             symbol,
             interval,
             side_label,
-            qty,
+            qty_to_close,
             res,
             leg_info_override=entry,
         )
@@ -797,7 +911,7 @@ class StrategyEngine:
             pct_display = max(price_pct, margin_pct)
             self.log(
                 f"Per-trade stop-loss closed {side_label} for {symbol}@{interval} "
-                f"(loss {loss_usdt:.4f} USDT / {pct_display:.2f}%)."
+                f"(qty {qty_to_close:.10f}, loss {loss_usdt:.4f} USDT / {pct_display:.2f}%)."
             )
         except Exception:
             pass
@@ -2000,8 +2114,21 @@ class StrategyEngine:
                 action_norm = str(indicator_action or "").strip().lower()
                 interval_current = cw.get("interval")
                 if action_norm == "buy":
-                    # Close existing shorts for this indicator on this interval then open long if not already open.
-                    self._close_indicator_positions(cw, interval_current, indicator_key, "SELL", desired_ps_short)
+                    # Close existing shorts for this indicator on this interval.
+                    closed_short = self._close_indicator_positions(
+                        cw, interval_current, indicator_key, "SELL", desired_ps_short
+                    )
+                    if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "SELL"):
+                        if closed_short <= 0:
+                            try:
+                                self.log(
+                                    f"Skip BUY for {cw['symbol']}@{interval_current} ({indicator_key}): short leg still open."
+                                )
+                            except Exception:
+                                pass
+                        continue
+                    if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "BUY"):
+                        continue
                     indicator_order_requests.append(
                         {
                             "side": "BUY",
@@ -2011,8 +2138,21 @@ class StrategyEngine:
                         }
                     )
                 elif action_norm == "sell":
-                    # Close existing longs for this indicator on this interval then open short if not already open.
-                    self._close_indicator_positions(cw, interval_current, indicator_key, "BUY", desired_ps_long)
+                    # Close existing longs for this indicator on this interval.
+                    closed_long = self._close_indicator_positions(
+                        cw, interval_current, indicator_key, "BUY", desired_ps_long
+                    )
+                    if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "BUY"):
+                        if closed_long <= 0:
+                            try:
+                                self.log(
+                                    f"Skip SELL for {cw['symbol']}@{interval_current} ({indicator_key}): long leg still open."
+                                )
+                            except Exception:
+                                pass
+                        continue
+                    if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "SELL"):
+                        continue
                     indicator_order_requests.append(
                         {
                             "side": "SELL",

@@ -2935,8 +2935,8 @@ class BinanceWrapper:
         if min_qty > 0 and adj < min_qty:
             adj = min_qty
         # Enforce futures MIN_NOTIONAL if price provided
-        if min_notional > 0 and (price or 0) > 0:
-            needed = min_notional / float(price)
+        if min_notional > 0 and (est_price or 0) > 0:
+            needed = min_notional / float(est_price)
             if adj < needed:
                 adj = needed
             adj = min_qty
@@ -3059,6 +3059,7 @@ class BinanceWrapper:
         """
         assert self.account_type == "FUTURES", "Futures order called while account_type != FUTURES"
 
+        sym = (symbol or '').upper()
         self._ensure_margin_and_leverage_or_block(sym, kwargs.get('margin_mode') or getattr(self,'_default_margin_mode','ISOLATED'), kwargs.get('leverage'))
 
 
@@ -3735,11 +3736,12 @@ def _bw_place_futures_market_order(self, symbol: str, side: str, percent_balance
                                    price: float | None = None, position_side: str | None = None,
                                    quantity: float | None = None, **kwargs):
     # Reuse the module-level implementation if it exists.
-    try:
-        return place_futures_market_order(self, symbol, side, percent_balance=percent_balance,
-                                          price=price, position_side=position_side,
-                                          quantity=quantity, **kwargs)
-    except NameError:
+    fn = globals().get('place_futures_market_order')
+    if callable(fn):
+        return fn(self, symbol, side, percent_balance=percent_balance,
+                  price=price, position_side=position_side,
+                  quantity=quantity, **kwargs)
+    else:
         # Fallback minimal implementation
         sym = (symbol or '').upper()
         px = float(price if price is not None else self.get_last_price(sym) or 0.0)
@@ -4039,6 +4041,7 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
 
     # reduceOnly & positionSide
     side_up = (side or '').upper()
+    qty_str = self._format_quantity_for_order(qty, step)
     params = dict(symbol=sym, side=side_up, type='MARKET', quantity=qty_str)
     if bool(kwargs.get('reduce_only')):
         params['reduceOnly'] = True
