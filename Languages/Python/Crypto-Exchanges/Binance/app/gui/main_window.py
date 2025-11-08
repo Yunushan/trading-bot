@@ -3,10 +3,14 @@ from __future__ import annotations
 import copy
 import sys
 import json
+import math
 import re
 import threading
 import time
 import traceback
+import importlib.metadata as importlib_metadata
+import urllib.request
+import pandas as pd
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +54,13 @@ from app.strategy import StrategyEngine
 from app.workers import StopWorker, StartWorker, CallWorker
 from app.position_guard import IntervalPositionGuard
 from app.gui.param_dialog import ParamDialog
+from app.indicators import (
+    rsi as rsi_indicator,
+    stoch_rsi as stoch_rsi_indicator,
+    williams_r as williams_r_indicator,
+    sma as sma_indicator,
+    ema as ema_indicator,
+)
 try:
     from app.gui.tradingview_widget import TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
 except Exception:
@@ -262,10 +273,11 @@ EXCHANGE_PATHS = {
 }
 
 FOREX_BROKER_PATHS = {
+    "OANDA": "Forex-Brokers/OANDA",
     "FXCM": "Forex-Brokers/FXCM",
+    "IG": "Forex-Brokers/IG",
     "XM": "Forex-Brokers/XM",
     "IC Markets Global": "Forex-Brokers/IC Markets Global",
-    "IG": "Forex-Brokers/IG",
     "Forex.com": "Forex-Brokers/Forex.com",
 }
 MUTED_TEXT = "#94a3b8"
@@ -281,35 +293,122 @@ STARTER_LANGUAGE_OPTIONS = [
     {
         "config_key": "C++ (Qt/C++23)",
         "title": "C++",
-        "subtitle": "Qt native - Max performance",
+        "subtitle": "Qt native - coming soon",
         "accent": "#38bdf8",
+        "badge": "Coming Soon",
+        "disabled": True,
     },
     {
         "config_key": "Rust",
         "title": "Rust",
-        "subtitle": "Memory safe - Near-C speed",
+        "subtitle": "Memory safe - coming soon",
         "accent": "#fb923c",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "config_key": "C",
+        "title": "C",
+        "subtitle": "Low-level power - coming soon",
+        "accent": "#f87171",
+        "badge": "Coming Soon",
+        "disabled": True,
     },
 ]
 
 STARTER_MARKET_OPTIONS = [
-    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin...", "accent": "#34d399"},
-    {"key": "forex", "title": "Forex Exchange", "subtitle": "OANDA, FXCM, MetaTrader...", "accent": "#93c5fd"},
+    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin", "accent": "#34d399"},
+    {
+        "key": "forex",
+        "title": "Forex Exchange",
+        "subtitle": "OANDA, FXCM, MetaTrader - coming soon",
+        "accent": "#93c5fd",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
 ]
 
 STARTER_CRYPTO_EXCHANGES = [
     {"key": "Binance", "title": "Binance", "subtitle": "Advanced desktop bot ready to launch", "accent": "#fbbf24"},
-    {"key": "Bybit", "title": "Bybit", "subtitle": "Derivatives-focused - coming soon", "accent": "#fb7185"},
-    {"key": "OKX", "title": "OKX", "subtitle": "Options + spot - coming soon", "accent": "#a78bfa"},
+    {
+        "key": "Bybit",
+        "title": "Bybit",
+        "subtitle": "Derivatives-focused - coming soon",
+        "accent": "#fb7185",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "key": "OKX",
+        "title": "OKX",
+        "subtitle": "Options + spot - coming soon",
+        "accent": "#a78bfa",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
 ]
 
 STARTER_FOREX_BROKERS = [
-    {"key": "FXCM", "title": "FXCM", "subtitle": "Institutional-grade APIs and MT4 bridge", "accent": "#60a5fa"},
-    {"key": "Forex.com", "title": "Forex.com", "subtitle": "US-regulated CFD + FX access", "accent": "#f472b6"},
-    {"key": "IC Markets Global", "title": "IC Markets", "subtitle": "Tight spreads - multi-asset", "accent": "#f59e0b"},
-    {"key": "XM", "title": "XM", "subtitle": "MetaTrader specialist - micro lots", "accent": "#f97316"},
-    {"key": "IG", "title": "IG", "subtitle": "Global CFD giant - pro tooling", "accent": "#a3e635"},
+    {
+        "key": "OANDA",
+        "title": "OANDA",
+        "subtitle": "Popular REST API - coming soon",
+        "accent": "#60a5fa",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "key": "FXCM",
+        "title": "FXCM",
+        "subtitle": "Streaming quotes - coming soon",
+        "accent": "#c084fc",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
+    {
+        "key": "IG",
+        "title": "IG",
+        "subtitle": "Global CFD trading - coming soon",
+        "accent": "#f472b6",
+        "badge": "Coming Soon",
+        "disabled": True,
+    },
 ]
+
+DEPENDENCY_VERSION_TARGETS = [
+    {"label": "pandas", "package": "pandas"},
+    {"label": "pandas_ta", "package": "pandas-ta"},
+    {"label": "PyQt6", "package": "PyQt6"},
+    {"label": "PyQt6 (Qt)", "package": None, "custom": "qt"},
+    {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},
+    {"label": "python-binance", "package": "python-binance"},
+    {"label": "binance-connector", "package": "binance-connector"},
+    {"label": "binance-sdk-derivatives-trading-usds-futures", "package": "binance-sdk-derivatives-trading-usds-futures"},
+    {"label": "binance-sdk-derivatives-trading-coin-futures", "package": "binance-sdk-derivatives-trading-coin-futures"},
+    {"label": "binance-sdk-spot", "package": "binance-sdk-spot"},
+    {"label": "numpy", "package": "numpy"},
+    {"label": "requests", "package": "requests"},
+]
+
+def _latest_version_from_pypi(package: str) -> str | None:
+    if not package:
+        return None
+    cache_entry = _LATEST_VERSION_CACHE.get(package)
+    now = time.time()
+    if cache_entry and now - cache_entry[1] < 1800:
+        return cache_entry[0]
+    url = f"https://pypi.org/pypi/{package}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=6) as resp:
+            payload = json.load(resp)
+            latest = payload.get("info", {}).get("version")
+            if latest:
+                _LATEST_VERSION_CACHE[package] = (latest, now)
+                return latest
+    except Exception:
+        pass
+    _LATEST_VERSION_CACHE[package] = (None, now)
+    return None
 
 BACKTEST_TEMPLATE_DEFINITIONS = {
     "volume_top50": {
@@ -484,9 +583,12 @@ CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
 CHART_MARKET_OPTIONS = ["Futures", "Spot"]
 
 ACCOUNT_MODE_OPTIONS = ["Classic Trading", "Portfolio Margin"]
-POS_STOP_LOSS_COLUMN = 12
-POS_STATUS_COLUMN = 13
-POS_CLOSE_COLUMN = 14
+POS_TRIGGERED_VALUE_COLUMN = 10
+POS_CURRENT_VALUE_COLUMN = 11
+POS_STOP_LOSS_COLUMN = 15
+POS_STATUS_COLUMN = 16
+POS_CLOSE_COLUMN = 17
+WAITING_POSITION_LATE_THRESHOLD = 45.0
 
 DEFAULT_CHART_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
@@ -614,6 +716,502 @@ def _format_indicator_list(keys):
     return ", ".join(rendered) if rendered else "-"
 
 
+_FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_ACTION_RE = re.compile(r"->\s*(BUY|SELL)", re.IGNORECASE)
+_INDICATOR_SHORT_LABEL_OVERRIDES = {
+    "stoch_rsi": "SRSI",
+    "rsi": "RSI",
+    "willr": "W%R",
+}
+
+
+def _indicator_short_label(indicator_key: str) -> str:
+    key_norm = str(indicator_key or "").strip().lower()
+    if not key_norm:
+        return "-"
+    if key_norm in _INDICATOR_SHORT_LABEL_OVERRIDES:
+        return _INDICATOR_SHORT_LABEL_OVERRIDES[key_norm]
+    display = INDICATOR_DISPLAY_NAMES.get(key_norm)
+    if display:
+        if "(" in display and ")" in display:
+            candidate = display.rsplit("(", 1)[-1].rstrip(")")
+            if candidate.strip():
+                return candidate.strip()
+        first_word = display.strip().split()[0]
+        if first_word:
+            return first_word.upper()
+    return key_norm.upper()
+
+
+def _split_trigger_desc(desc: str | None) -> list[str]:
+    if not desc:
+        return []
+    return [segment.strip() for segment in str(desc).split("|") if segment.strip()]
+
+
+def _indicator_segment_match(indicator_key: str, segment: str) -> bool:
+    key_norm = str(indicator_key or "").strip().lower()
+    seg_low = segment.lower()
+    if not key_norm or not seg_low:
+        return False
+    if key_norm == "stoch_rsi":
+        return "stochrsi" in seg_low
+    if key_norm == "rsi":
+        return "rsi" in seg_low and "stochrsi" not in seg_low
+    if key_norm == "willr":
+        return "williams" in seg_low
+    token = key_norm.replace("_", "")
+    return token in seg_low if token else False
+
+
+def _extract_indicator_metrics(indicator_key: str, segments: list[str]) -> tuple[str | None, str | None]:
+    if not segments:
+        return None, None
+    value_str: str | None = None
+    action_str: str | None = None
+    for seg in segments:
+        if not _indicator_segment_match(indicator_key, seg):
+            continue
+        if "=" in seg and "->" not in seg:
+            match = _FLOAT_RE.search(seg.split("=", 1)[1])
+            if match:
+                value_str = match.group(0)
+                break
+    if value_str is None:
+        for seg in segments:
+            if not _indicator_segment_match(indicator_key, seg):
+                continue
+            if "->" in seg:
+                continue
+            match = _FLOAT_RE.search(seg)
+            if match:
+                value_str = match.group(0)
+                break
+    if value_str is None:
+        for seg in segments:
+            if not _indicator_segment_match(indicator_key, seg):
+                continue
+            match = _FLOAT_RE.search(seg)
+            if match:
+                value_str = match.group(0)
+                break
+    for seg in segments:
+        if not _indicator_segment_match(indicator_key, seg):
+            continue
+        match = _ACTION_RE.search(seg)
+        if match:
+            action_str = match.group(1).title()
+            break
+    return value_str, action_str
+
+
+def _normalize_interval_token(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(value).strip().lower() or None
+    except Exception:
+        return None
+
+
+def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None) -> tuple[list[str], dict[str, list[str]]]:
+    data = rec.get("data") or {}
+    primary_interval = ""
+    if interval_hint:
+        primary_interval = str(interval_hint).split(",")[0].strip()
+    elif isinstance(data.get("interval_display"), str):
+        primary_interval = str(data.get("interval_display")).split(",")[0].strip()
+    primary_interval_norm = _normalize_interval_token(primary_interval)
+
+    indicator_keys_raw = _normalize_indicator_values(rec.get("indicators"))
+    if not indicator_keys_raw:
+        indicator_keys_raw = _normalize_indicator_values(data.get("trigger_indicators"))
+    if not indicator_keys_raw:
+        inferred = _resolve_trigger_indicators(None, data.get("trigger_desc"))
+        indicator_keys_raw = inferred
+    seen: set[str] = set()
+    indicator_keys: list[str] = []
+    for key in indicator_keys_raw or []:
+        key_norm = str(key).strip().lower()
+        if key_norm and key_norm not in seen:
+            seen.add(key_norm)
+            indicator_keys.append(key_norm)
+    if not indicator_keys:
+        return [], {}
+
+    sources: list[dict] = []
+    data_desc = data.get("trigger_desc")
+    if data_desc:
+        interval_display = data.get("interval_display") or data.get("interval") or primary_interval
+        sources.append(
+            {
+                "interval": interval_display,
+                "norm_interval": _normalize_interval_token(interval_display),
+                "segments": _split_trigger_desc(data_desc),
+            }
+        )
+
+    allocations = rec.get("allocations") or []
+    if isinstance(allocations, dict):
+        allocations = list(allocations.values())
+    if isinstance(allocations, list):
+        for alloc in allocations:
+            if not isinstance(alloc, dict):
+                continue
+            desc = alloc.get("trigger_desc")
+            if not desc:
+                continue
+            iv = alloc.get("interval_display") or alloc.get("interval")
+            sources.append(
+                {
+                    "interval": iv,
+                    "norm_interval": _normalize_interval_token(iv),
+                    "segments": _split_trigger_desc(desc),
+                }
+            )
+
+    side_key = str(rec.get("side_key") or (rec.get("data") or {}).get("side_key") or "").upper()
+
+    interval_map: dict[str, list[str]] = {}
+    results: list[str] = []
+    for key in indicator_keys:
+        interval_entry_order: list[str | None] = []
+        interval_entry_map: dict[str | None, str] = {}
+
+        def _register_interval_entry(interval_val: str | None, entry_text: str) -> None:
+            interval_key = (interval_val or "").strip().lower() or None
+            if interval_key in interval_entry_map:
+                interval_entry_map[interval_key] = entry_text
+            else:
+                interval_entry_map[interval_key] = entry_text
+                interval_entry_order.append(interval_key)
+
+        for source in sources:
+            segments = source.get("segments") or []
+            value, action = _extract_indicator_metrics(key, segments)
+            if value is None and action is None:
+                continue
+            interval_label = source.get("interval") or primary_interval
+            interval_display = (interval_label or "").strip()
+            if not interval_display and primary_interval:
+                interval_display = primary_interval
+            action_final = action
+            if action_final is None:
+                if side_key == "L":
+                    action_final = "BUY"
+                elif side_key == "S":
+                    action_final = "SELL"
+            label = _indicator_short_label(key)
+            interval_part = f"@{interval_display.upper()}" if interval_display else ""
+            if value is not None:
+                try:
+                    value_display = f"{float(value):.2f}"
+                except Exception:
+                    value_display = str(value)
+            else:
+                value_display = "--"
+            action_part = f" -{action_final}" if action_final else ""
+            entry = f"{label}{interval_part} {value_display}{action_part}".strip()
+            _register_interval_entry(interval_display, entry)
+            if interval_display:
+                interval_clean = interval_display.strip().upper()
+                slots = interval_map.setdefault(key.lower(), [])
+                if interval_clean not in slots:
+                    slots.append(interval_clean)
+        if interval_entry_map:
+            results.extend(interval_entry_map[idx] for idx in interval_entry_order)
+            continue
+
+        # fallback to best-match logic when we cannot resolve per-source metrics
+        best_value = None
+        best_action = None
+        best_interval = primary_interval
+        best_score = float("-inf")
+        for source in sources:
+            segments = source.get("segments") or []
+            value, action = _extract_indicator_metrics(key, segments)
+            if value is None and action is None:
+                continue
+            score = 0.0
+            source_norm = source.get("norm_interval")
+            if source_norm and primary_interval_norm and source_norm == primary_interval_norm:
+                score += 2.0
+            if source_norm:
+                score += 0.5
+            if score > best_score:
+                best_score = score
+                best_value = value
+                best_action = action
+                best_interval = source.get("interval") or primary_interval
+        if best_value is None and sources:
+            best_interval = sources[0].get("interval") or primary_interval
+        if best_action is None:
+            if side_key == "L":
+                best_action = "BUY"
+            elif side_key == "S":
+                best_action = "SELL"
+        label = _indicator_short_label(key)
+        interval_display = (best_interval or primary_interval or "").strip()
+        interval_part = f"@{interval_display.upper()}" if interval_display else ""
+        if best_value is not None:
+            try:
+                value_display = f"{float(best_value):.2f}"
+            except Exception:
+                value_display = str(best_value)
+        else:
+            value_display = "--"
+        action_part = f" -{best_action}" if best_action else ""
+        entry = f"{label}{interval_part} {value_display}{action_part}".strip()
+        results.append(entry)
+        if interval_display:
+            interval_clean = interval_display.strip().upper()
+            slots = interval_map.setdefault(key.lower(), [])
+            if interval_clean not in slots:
+                slots.append(interval_clean)
+
+    deduped_results: list[str] = []
+    seen_entries: set[str] = set()
+    for entry in results:
+        if entry in seen_entries:
+            continue
+        seen_entries.add(entry)
+        deduped_results.append(entry)
+    return deduped_results, interval_map
+
+
+def _collect_dependency_versions() -> list[tuple[str, str, str]]:
+    versions: list[tuple[str, str, str]] = []
+    for target in DEPENDENCY_VERSION_TARGETS:
+        label = target["label"]
+        installed_version = None
+        if target.get("custom") == "qt":
+            installed_version = getattr(QtCore, "QT_VERSION_STR", None)
+        else:
+            package = target.get("package")
+            if package:
+                try:
+                    installed_version = importlib_metadata.version(package)
+                except Exception:
+                    installed_version = None
+        installed_display = installed_version or "Not installed"
+        latest_display = "Unknown"
+        if target.get("custom") != "qt":
+            pypi_name = target.get("pypi") or target.get("package")
+            if pypi_name:
+                latest = _latest_version_from_pypi(pypi_name)
+                if latest:
+                    latest_display = latest
+        versions.append((label, installed_display, latest_display))
+    return versions
+
+
+def _sanitize_interval_hint(interval_hint: str | None) -> str:
+    if not interval_hint:
+        return ""
+    try:
+        primary = str(interval_hint).split(",")[0].strip()
+    except Exception:
+        primary = str(interval_hint or "").strip()
+    return primary
+
+
+def _calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict) -> float | None:
+    if df is None or df.empty:
+        return None
+    key = str(indicator_key or "").strip().lower()
+    if not key:
+        return None
+    try:
+        close = pd.to_numeric(df["close"], errors="coerce")
+    except Exception:
+        return None
+    close = close.dropna()
+    if close.empty:
+        return None
+    cfg = indicator_cfg or {}
+    try:
+        if key == "rsi":
+            length = int(cfg.get("length") or cfg.get("period") or 14)
+            series = rsi_indicator(close, length=length).dropna()
+            if not series.empty:
+                return float(series.iloc[-1])
+        elif key == "stoch_rsi":
+            length = int(cfg.get("length") or cfg.get("rsi_length") or 14)
+            smooth_k = int(cfg.get("smooth_k") or 3)
+            smooth_d = int(cfg.get("smooth_d") or 3)
+            k_series, _ = stoch_rsi_indicator(close, length=length, smooth_k=smooth_k, smooth_d=smooth_d)
+            k_series = k_series.dropna()
+            if not k_series.empty:
+                return float(k_series.iloc[-1])
+        elif key == "willr":
+            length = int(cfg.get("length") or 14)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
+            wr_series = williams_r_indicator(price_frame, length=length).dropna()
+            if not wr_series.empty:
+                return float(wr_series.iloc[-1])
+        elif key == "ma":
+            length = int(cfg.get("length") or 20)
+            kind = str(cfg.get("type") or "SMA").upper()
+            if kind == "EMA":
+                series = ema_indicator(close, length).dropna()
+            else:
+                series = sma_indicator(close, length).dropna()
+            if not series.empty:
+                return float(series.iloc[-1])
+        elif key == "ema":
+            length = int(cfg.get("length") or 20)
+            series = ema_indicator(close, length).dropna()
+            if not series.empty:
+                return float(series.iloc[-1])
+    except Exception:
+        return None
+    return None
+
+
+def _ensure_shared_wrapper(window) -> BinanceWrapper | None:
+    bw = getattr(window, "shared_binance", None)
+    if bw is not None:
+        return bw
+    if not hasattr(window, "_create_binance_wrapper"):
+        return None
+    try:
+        api_key = window.api_key_edit.text().strip()
+        api_secret = window.api_secret_edit.text().strip()
+        mode = window.mode_combo.currentText()
+        account = window.account_combo.currentText()
+        backend = window._runtime_connector_backend(suppress_refresh=True)
+        bw = window._create_binance_wrapper(
+            api_key=api_key,
+            api_secret=api_secret,
+            mode=mode,
+            account_type=account,
+            connector_backend=backend,
+        )
+        window.shared_binance = bw
+        return bw
+    except Exception:
+        return None
+
+
+def _collect_current_indicator_live_strings(
+    window,
+    symbol,
+    indicator_keys,
+    cache,
+    interval_map: dict[str, list[str]] | None = None,
+    default_interval_hint: str | None = None,
+):
+    keys = [str(k).strip().lower() for k in (indicator_keys or []) if str(k).strip()]
+    if not symbol or not keys:
+        return []
+    default_interval = _sanitize_interval_hint(default_interval_hint) or "1m"
+    bw = _ensure_shared_wrapper(window)
+    if bw is None:
+        return []
+    symbol_norm = str(symbol).strip().upper()
+
+    try:
+        indicators_cfg = (window.config or {}).get("indicators", {}) or {}
+    except Exception:
+        indicators_cfg = {}
+    buy_thresholds = {
+        "stoch_rsi": float((indicators_cfg.get("stoch_rsi", {}).get("buy_value") or 20.0)),
+        "willr": float((indicators_cfg.get("willr", {}).get("buy_value") or -80.0)),
+        "rsi": float((indicators_cfg.get("rsi", {}).get("buy_value") or 30.0)),
+    }
+    sell_thresholds = {
+        "stoch_rsi": float((indicators_cfg.get("stoch_rsi", {}).get("sell_value") or 80.0)),
+        "willr": float((indicators_cfg.get("willr", {}).get("sell_value") or -20.0)),
+        "rsi": float((indicators_cfg.get("rsi", {}).get("sell_value") or 70.0)),
+    }
+    ttl = float(getattr(window, "_live_indicator_cache_ttl", 8.0) or 8.0)
+    now_ts = time.monotonic()
+
+    entries: list[str] = []
+    for key in keys:
+        intervals = []
+        if isinstance(interval_map, dict):
+            intervals = interval_map.get(key) or interval_map.get(key.lower()) or []
+        if not intervals:
+            intervals = [default_interval]
+        for interval_label in intervals:
+            interval_clean = (str(interval_label or "").strip() or default_interval).lower()
+            cache_key = (symbol_norm, interval_clean)
+            cache_entry = cache.get(cache_key)
+            if cache_entry is None:
+                cache_entry = {
+                    "df": None,
+                    "values": {},
+                    "error": False,
+                    "df_ts": 0.0,
+                    "error_ts": 0.0,
+                }
+                cache[cache_key] = cache_entry
+            frame = cache_entry.get("df")
+            try:
+                frame_ts = float(cache_entry.get("df_ts") or 0.0)
+            except Exception:
+                frame_ts = 0.0
+            needs_refresh = frame is None or (now_ts - frame_ts) >= ttl
+            try:
+                error_ts = float(cache_entry.get("error_ts") or 0.0)
+            except Exception:
+                error_ts = 0.0
+            recently_failed = bool(cache_entry.get("error")) and (now_ts - error_ts) < ttl
+            if needs_refresh and not recently_failed:
+                try:
+                    frame = bw.get_klines(symbol_norm, interval_clean, limit=200)
+                    cache_entry["df"] = frame
+                    cache_entry["df_ts"] = now_ts
+                    cache_entry["values"] = {}
+                    cache_entry["error"] = False
+                except Exception:
+                    cache_entry["error"] = True
+                    cache_entry["error_ts"] = now_ts
+                    frame = cache_entry.get("df")
+            values_cache = cache_entry.setdefault("values", {})
+            value = values_cache.get(key)
+            if value is None:
+                frame = cache_entry.get("df")
+                if frame is not None and not getattr(frame, "empty", True):
+                    value = _calc_indicator_value_from_df(frame, key, indicators_cfg.get(key, {}))
+                    values_cache[key] = value
+                else:
+                    values_cache[key] = None
+                    value = None
+
+            label = _indicator_short_label(key)
+            interval_tag = f"@{interval_clean.upper()}" if interval_clean else ""
+            if value is None or not isinstance(value, (int, float)) or not math.isfinite(value):
+                value_text = "--"
+                action = ""
+            else:
+                value_text = f"{value:.2f}"
+                action = ""
+                buy = buy_thresholds.get(key)
+                sell = sell_thresholds.get(key)
+                if key == "stoch_rsi":
+                    if buy is not None and value <= buy:
+                        action = "-Buy"
+                    elif sell is not None and value >= sell:
+                        action = "-Sell"
+                elif key == "willr":
+                    if buy is not None and value <= buy:
+                        action = "-Buy"
+                    elif sell is not None and value >= sell:
+                        action = "-Sell"
+                elif key == "rsi":
+                    if buy is not None and value <= buy:
+                        action = "-Buy"
+                    elif sell is not None and value >= sell:
+                        action = "-Sell"
+            entry = f"{label}{interval_tag} {value_text}{action}".strip()
+            entries.append(entry)
+    return entries
+
+
 class _NumericItem(QtWidgets.QTableWidgetItem):
     def __init__(self, text: str, value: float = 0.0):
         super().__init__(text)
@@ -732,13 +1330,19 @@ class _StarterCard(QtWidgets.QFrame):
         subtitle: str,
         accent_color: str,
         badge_text: str | None = None,
+        *,
+        disabled: bool = False,
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.option_key = option_key
         self._accent = accent_color
         self._selected = False
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._disabled = bool(disabled)
+        cursor_shape = (
+            QtCore.Qt.CursorShape.ForbiddenCursor if self._disabled else QtCore.Qt.CursorShape.PointingHandCursor
+        )
+        self.setCursor(cursor_shape)
         self.setObjectName(f"starter_card_{option_key.replace(' ', '_')}")
 
         root = QtWidgets.QVBoxLayout(self)
@@ -764,29 +1368,40 @@ class _StarterCard(QtWidgets.QFrame):
         body_layout.addWidget(self.badge_label, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
 
         self.title_label = QtWidgets.QLabel(title)
-        self.title_label.setStyleSheet("font-size: 20px; font-weight: 600;")
         body_layout.addWidget(self.title_label)
 
         self.subtitle_label = QtWidgets.QLabel(subtitle)
         self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setStyleSheet(f"color: {MUTED_TEXT}; font-size: 12px;")
         body_layout.addWidget(self.subtitle_label)
         body_layout.addStretch()
 
         self._refresh_style()
 
     def setSelected(self, selected: bool) -> None:
+        if self._disabled:
+            selected = False
         self._selected = bool(selected)
         self._refresh_style()
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if self._disabled:
+            event.ignore()
+            return
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.clicked.emit(self.option_key)
         super().mouseReleaseEvent(event)
 
+    def is_disabled(self) -> bool:
+        return self._disabled
+
     def _refresh_style(self) -> None:
-        bg = "#1b2231" if self._selected else "#151926"
-        border = self._accent if self._selected else "#242b3d"
+        effective_selected = self._selected and not self._disabled
+        if self._disabled:
+            bg = "#10131d"
+            border = "#1f2433"
+        else:
+            bg = "#1b2231" if effective_selected else "#151926"
+            border = self._accent if effective_selected else "#242b3d"
         self.setStyleSheet(
             f"""
             QFrame#{self.objectName()} {{
@@ -796,10 +1411,17 @@ class _StarterCard(QtWidgets.QFrame):
             }}
             """
         )
-        bar_color = self._accent if self._selected else "#1f2433"
+        if self._disabled:
+            bar_color = "#1f2433"
+        else:
+            bar_color = self._accent if effective_selected else "#1f2433"
         self.accent_bar.setStyleSheet(
             f"background-color: {bar_color}; border-top-left-radius: 16px; border-top-right-radius: 16px;"
         )
+        title_color = "#6b7280" if self._disabled else "#f8fafc"
+        subtitle_color = "#4b5565" if self._disabled else MUTED_TEXT
+        self.title_label.setStyleSheet(f"font-size: 20px; font-weight: 600; color: {title_color};")
+        self.subtitle_label.setStyleSheet(f"color: {subtitle_color}; font-size: 12px;")
 
 
 def _normalize_datetime_pair(value) -> tuple[str, str]:
@@ -937,17 +1559,59 @@ class _PositionsWorker(QtCore.QObject):
 
     def _compute_futures_metrics(self, p: dict) -> dict:
         try:
+            sym = str(p.get('symbol') or '').strip().upper()
             amt = float(p.get('positionAmt') or 0.0)
-            mark = float(p.get('markPrice') or 0.0)
+            try:
+                mark = float(p.get('markPrice') or 0.0)
+            except Exception:
+                mark = 0.0
+            raw_mark = mark
             lev = int(float(p.get('leverage') or 0.0)) or 0
             pnl = float(p.get('unRealizedProfit') or 0.0)
             notional = float(p.get('notional') or 0.0)
-            if notional == 0.0 and mark and amt:
-                notional = abs(amt) * mark
-            size_usdt = abs(notional)
             entry_price = float(p.get('entryPrice') or 0.0)
+            qty_abs = abs(amt)
+            if notional <= 0.0 and mark > 0.0 and qty_abs > 0.0:
+                notional = qty_abs * mark
+            if entry_price <= 0.0 and qty_abs > 0.0 and notional > 0.0:
+                entry_price = notional / qty_abs
+
+            # Repair missing/zero mark prices by falling back to alternate sources.
+            if mark <= 0.0 or not math.isfinite(mark):
+                for key in ("indexPrice", "lastPrice", "estimatedSettlePrice", "oraclePrice", "avgPrice"):
+                    try:
+                        alt = float(p.get(key) or 0.0)
+                    except Exception:
+                        alt = 0.0
+                    if alt > 0.0:
+                        mark = alt
+                        break
+            if (mark <= 0.0 or not math.isfinite(mark)) and notional > 0.0 and qty_abs > 0.0:
+                implied = notional / qty_abs
+                if implied > 0.0:
+                    mark = implied
+            if (mark <= 0.0 or not math.isfinite(mark)) and entry_price > 0.0:
+                mark = entry_price
+            if (mark <= 0.0 or not math.isfinite(mark)) and sym and self._wrapper is not None:
+                try:
+                    alt = float(self._wrapper.get_last_price(sym, max_age=2.5) or 0.0)
+                    if alt > 0.0:
+                        mark = alt
+                except Exception:
+                    pass
+
+            size_usdt = abs(notional)
+            if (size_usdt <= 0.0 or not math.isfinite(size_usdt)) and mark > 0.0 and qty_abs > 0.0:
+                size_usdt = qty_abs * mark
+                notional = size_usdt
+
+            if ((not math.isfinite(pnl)) or abs(pnl) <= 1e-9 or raw_mark <= 0.0) and mark > 0.0 and entry_price > 0.0 and qty_abs > 0.0:
+                pnl = (mark - entry_price) * amt
+            elif not math.isfinite(pnl):
+                pnl = 0.0
+
             margin, margin_balance, maint_margin, unrealized_loss = _derive_margin_snapshot(
-                p, qty_hint=abs(amt), entry_price_hint=entry_price
+                p, qty_hint=qty_abs, entry_price_hint=entry_price
             )
             if margin <= 0.0 and size_usdt > 0.0 and lev > 0:
                 margin = size_usdt / max(lev, 1)
@@ -964,6 +1628,13 @@ class _PositionsWorker(QtCore.QObject):
                 update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
             except Exception:
                 update_time = None
+            try:
+                liq_price = float(p.get('liquidationPrice') or p.get('liqPrice') or 0.0)
+            except Exception:
+                liq_price = 0.0
+            contract_type = str(
+                p.get('contractType') or p.get('contract_type') or ""
+            ).strip()
             return {
                 'size_usdt': size_usdt,
                 'margin_usdt': margin,
@@ -976,6 +1647,9 @@ class _PositionsWorker(QtCore.QObject):
                 'update_time': update_time,
                 'leverage': lev or None,
                 'entry_price': entry_price or None,
+                'mark': mark if mark > 0.0 else 0.0,
+                'liquidation_price': liq_price if liq_price > 0.0 else 0.0,
+                'contract_type': contract_type or None,
             }
         except Exception:
             return {
@@ -989,6 +1663,7 @@ class _PositionsWorker(QtCore.QObject):
                 'roi_percent': 0.0,
                 'update_time': None,
                 'leverage': None,
+                'mark': 0.0,
             }
 
 
@@ -1021,14 +1696,18 @@ class _PositionsWorker(QtCore.QObject):
                         amt = float(p.get('positionAmt') or 0.0)
                         if abs(amt) <= 0.0:
                             continue
-                        mark = float(p.get('markPrice') or 0.0)
-                        value = abs(amt) * mark if mark else 0.0
-                        side_key = 'L' if amt > 0 else 'S'
                         metrics = self._compute_futures_metrics(p)
+                        mark = metrics.get('mark')
+                        if mark is None:
+                            mark = float(p.get('markPrice') or 0.0)
+                        value = metrics.get('size_usdt')
+                        if not value:
+                            value = abs(amt) * mark if mark else 0.0
+                        side_key = 'L' if amt > 0 else 'S'
                         data_row = {
                             'symbol': sym,
                             'qty': abs(amt),
-                            'mark': mark,
+                            'mark': mark or 0.0,
                             'value': value,
                             'side_key': side_key,
                             'raw_position': dict(p),
@@ -6963,12 +7642,44 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
         self.log_tab_widget.addTab(self.log_triggers_edit, "Position Trigger Logs")
+        self.waiting_pos_table = QtWidgets.QTableWidget(0, 6)
+        self.waiting_pos_table.setHorizontalHeaderLabels([
+            "Symbol",
+            "Interval",
+            "Side",
+            "Context",
+            "State",
+            "Age (s)",
+        ])
+        self.waiting_pos_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.waiting_pos_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        self.waiting_pos_table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        try:
+            self.waiting_pos_table.setPlaceholderText("No waiting positions")
+        except Exception:
+            pass
+        header_waiting = self.waiting_pos_table.horizontalHeader()
+        try:
+            header_waiting.setStretchLastSection(True)
+            header_waiting.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        except Exception:
+            pass
+        try:
+            self.waiting_pos_table.verticalHeader().setVisible(False)
+        except Exception:
+            pass
+        self.log_tab_widget.addTab(self.waiting_pos_table, "Waiting Positions")
         try:
             self.log_tab_widget.setCurrentIndex(0)
         except Exception:
             pass
         self.log_edit = self.log_all_edit
         scroll_layout.addWidget(self.log_tab_widget)
+        self.waiting_positions_timer = QtCore.QTimer(self)
+        self.waiting_positions_timer.setInterval(1000)
+        self.waiting_positions_timer.timeout.connect(self._refresh_waiting_positions_tab)
+        self.waiting_positions_timer.start()
+        self._refresh_waiting_positions_tab()
 
         self.tabs.addTab(tab1, "Dashboard")
 
@@ -7008,6 +7719,13 @@ class MainWindow(QtWidgets.QWidget):
         self._open_position_records = {}
         self._closed_position_records = []
         self._engine_indicator_map = {}
+        self._live_indicator_cache: dict[tuple[str, str], dict] = {}
+        try:
+            ttl_value = float(self.config.get("positions_live_indicator_refresh_seconds", 8.0) or 8.0)
+            self._live_indicator_cache_ttl = max(2.0, ttl_value)
+        except Exception:
+            self._live_indicator_cache_ttl = 8.0
+        self._live_indicator_cache_last_cleanup = time.monotonic()
         self._positions_view_mode = "cumulative"
         try:
             self._pos_refresh_interval_ms = int(self.config.get("positions_refresh_interval_ms", 5000) or 5000)
@@ -7077,14 +7795,17 @@ class MainWindow(QtWidgets.QWidget):
         self.pos_table = QtWidgets.QTableWidget(0, POS_CLOSE_COLUMN + 1, tab2)
         self.pos_table.setHorizontalHeaderLabels([
             "Symbol",
-            "Balance/Position",
-            "Last Price (USDT)",
             "Size (USDT)",
+            "Last Price (USDT)",
             "Margin Ratio",
+            "Liq Price (USDT)",
             "Margin (USDT)",
+            "Quantity (Qty)",
             "PNL (ROI%)",
             "Interval",
             "Indicator",
+            "Triggered Indicator Value",
+            "Current Indicator Value",
             "Side",
             "Open Time",
             "Close Time",
@@ -7104,6 +7825,11 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             self.pos_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.pos_table.setSortingEnabled(True)
+        self.pos_table.setWordWrap(True)
+        try:
+            self.pos_table.verticalHeader().setDefaultSectionSize(44)
+        except Exception:
+            pass
         tab2_layout.addWidget(self.pos_table)
 
         pos_btn_layout = QtWidgets.QHBoxLayout()
@@ -7689,7 +8415,12 @@ def _init_code_language_tab(self):
     lang_row.setSpacing(12)
     for opt in STARTER_LANGUAGE_OPTIONS:
         card = _StarterCard(
-            opt["config_key"], opt["title"], opt["subtitle"], opt["accent"], opt.get("badge")
+            opt["config_key"],
+            opt["title"],
+            opt["subtitle"],
+            opt["accent"],
+            opt.get("badge"),
+            disabled=opt.get("disabled", False),
         )
         card.clicked.connect(self._code_tab_select_language)
         card.setMinimumWidth(180)
@@ -7704,7 +8435,14 @@ def _init_code_language_tab(self):
     market_row = QtWidgets.QHBoxLayout()
     market_row.setSpacing(12)
     for opt in STARTER_MARKET_OPTIONS:
-        card = _StarterCard(opt["key"], opt["title"], opt["subtitle"], opt["accent"])
+        card = _StarterCard(
+            opt["key"],
+            opt["title"],
+            opt["subtitle"],
+            opt["accent"],
+            opt.get("badge"),
+            disabled=opt.get("disabled", False),
+        )
         card.clicked.connect(self._code_tab_select_market)
         card.setMinimumWidth(220)
         market_row.addWidget(card, 1)
@@ -7721,7 +8459,14 @@ def _init_code_language_tab(self):
     for opt in STARTER_CRYPTO_EXCHANGES:
         if opt["key"] not in EXCHANGE_PATHS:
             continue
-        card = _StarterCard(opt["key"], opt["title"], opt["subtitle"], opt["accent"])
+        card = _StarterCard(
+            opt["key"],
+            opt["title"],
+            opt["subtitle"],
+            opt["accent"],
+            opt.get("badge"),
+            disabled=opt.get("disabled", False),
+        )
         card.clicked.connect(self._code_tab_select_exchange)
         card.setMinimumWidth(200)
         crypto_layout.addWidget(card, 1)
@@ -7738,7 +8483,14 @@ def _init_code_language_tab(self):
     for opt in STARTER_FOREX_BROKERS:
         if opt["key"] not in FOREX_BROKER_PATHS:
             continue
-        card = _StarterCard(opt["key"], opt["title"], opt["subtitle"], opt["accent"])
+        card = _StarterCard(
+            opt["key"],
+            opt["title"],
+            opt["subtitle"],
+            opt["accent"],
+            opt.get("badge"),
+            disabled=opt.get("disabled", False),
+        )
         card.clicked.connect(self._code_tab_select_forex)
         card.setMinimumWidth(200)
         forex_cards_layout.addWidget(card, 1)
@@ -7767,6 +8519,41 @@ def _init_code_language_tab(self):
     self._register_pnl_summary_labels(self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab)
     layout.addWidget(status_widget)
 
+    self._dep_version_labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel]] = {}
+    versions_group = QtWidgets.QGroupBox("Environment Versions")
+    versions_layout = QtWidgets.QGridLayout(versions_group)
+    versions_layout.setColumnStretch(0, 1)
+    versions_layout.setColumnStretch(1, 1)
+    versions_layout.setColumnStretch(2, 1)
+    header_dep = QtWidgets.QLabel("Dependency")
+    header_dep.setStyleSheet("font-weight: 600;")
+    header_inst = QtWidgets.QLabel("Installed")
+    header_inst.setStyleSheet("font-weight: 600;")
+    header_latest = QtWidgets.QLabel("Latest")
+    header_latest.setStyleSheet("font-weight: 600;")
+    versions_layout.addWidget(header_dep, 0, 0)
+    versions_layout.addWidget(header_inst, 0, 1)
+    versions_layout.addWidget(header_latest, 0, 2)
+    for row, target in enumerate(DEPENDENCY_VERSION_TARGETS, start=1):
+        label_widget = QtWidgets.QLabel(target["label"])
+        label_widget.setStyleSheet("font-weight: 600;")
+        installed_widget = QtWidgets.QLabel("Checking...")
+        installed_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        latest_widget = QtWidgets.QLabel("Checking...")
+        latest_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        versions_layout.addWidget(label_widget, row, 0)
+        versions_layout.addWidget(installed_widget, row, 1)
+        versions_layout.addWidget(latest_widget, row, 2)
+        self._dep_version_labels[target["label"]] = (installed_widget, latest_widget)
+    layout.addWidget(versions_group)
+    version_btn_row = QtWidgets.QHBoxLayout()
+    version_btn_row.addStretch()
+    self._version_refresh_btn = QtWidgets.QPushButton("Check Versions")
+    self._version_refresh_btn.clicked.connect(self._refresh_dependency_versions)
+    version_btn_row.addWidget(self._version_refresh_btn)
+    layout.addLayout(version_btn_row)
+    self._refresh_dependency_versions()
+
     layout.addStretch()
 
     self._sync_language_exchange_lists_from_config()
@@ -7776,6 +8563,9 @@ def _init_code_language_tab(self):
 
 def _code_tab_select_language(self, config_key: str) -> None:
     if config_key not in LANGUAGE_PATHS:
+        return
+    card = getattr(self, "_starter_language_cards", {}).get(config_key)
+    if card is not None and card.is_disabled():
         return
     previous_lang = self.config.get("code_language")
     self.config["code_language"] = config_key
@@ -7791,6 +8581,9 @@ def _code_tab_select_language(self, config_key: str) -> None:
 def _code_tab_select_market(self, market_key: str) -> None:
     if market_key not in {"crypto", "forex"}:
         return
+    card = getattr(self, "_starter_market_cards", {}).get(market_key)
+    if card is not None and card.is_disabled():
+        return
     self.config["code_market"] = market_key
     self._code_tab_selected_market = market_key
     self._refresh_code_tab_from_config()
@@ -7800,6 +8593,9 @@ def _code_tab_select_market(self, market_key: str) -> None:
 def _code_tab_select_exchange(self, exchange_key: str) -> None:
     if exchange_key not in EXCHANGE_PATHS:
         return
+    card = getattr(self, "_starter_crypto_cards", {}).get(exchange_key)
+    if card is not None and card.is_disabled():
+        return
     self.config["selected_exchange"] = exchange_key
     self._refresh_code_tab_from_config()
     self._ensure_language_exchange_paths()
@@ -7807,6 +8603,9 @@ def _code_tab_select_exchange(self, exchange_key: str) -> None:
 
 def _code_tab_select_forex(self, broker_key: str) -> None:
     if broker_key not in FOREX_BROKER_PATHS:
+        return
+    card = getattr(self, "_starter_forex_cards", {}).get(broker_key)
+    if card is not None and card.is_disabled():
         return
     self.config["selected_forex_broker"] = broker_key
     self._code_tab_selected_market = "forex"
@@ -7816,20 +8615,63 @@ def _code_tab_select_forex(self, broker_key: str) -> None:
 
 
 def _refresh_code_tab_from_config(self) -> None:
+    lang_cards = getattr(self, "_starter_language_cards", {})
     lang_key = self.config.get("code_language")
-    for key, card in getattr(self, "_starter_language_cards", {}).items():
-        card.setSelected(key == lang_key)
-    market = self.config.get("code_market")
+    if not lang_key or lang_key not in lang_cards or lang_cards[lang_key].is_disabled():
+        lang_key = next((k for k, c in lang_cards.items() if not c.is_disabled()), None)
+        if lang_key:
+            self.config["code_language"] = lang_key
+    for key, card in lang_cards.items():
+        card.setSelected(bool(lang_key) and key == lang_key)
+
+    market_cards = getattr(self, "_starter_market_cards", {})
+    market = self.config.get("code_market") or "crypto"
+    if market not in market_cards or market_cards[market].is_disabled():
+        market = next((k for k, c in market_cards.items() if not c.is_disabled()), None)
+        self.config["code_market"] = market
     self._code_tab_selected_market = market
-    for key, card in getattr(self, "_starter_market_cards", {}).items():
+    for key, card in market_cards.items():
         card.setSelected(bool(market) and key == market)
-    selected_exchange = self.config.get("selected_exchange") if market == "crypto" else None
-    for key, card in getattr(self, "_starter_crypto_cards", {}).items():
-        card.setSelected(key == selected_exchange)
-    selected_forex = self.config.get("selected_forex_broker") if market == "forex" else None
-    for key, card in getattr(self, "_starter_forex_cards", {}).items():
-        card.setSelected(key == selected_forex)
+
+    selected_exchange = None
+    crypto_cards = getattr(self, "_starter_crypto_cards", {})
+    if market == "crypto":
+        available_crypto = [k for k, c in crypto_cards.items() if not c.is_disabled()]
+        selected_exchange = self.config.get("selected_exchange")
+        if selected_exchange not in available_crypto:
+            selected_exchange = available_crypto[0] if available_crypto else None
+            self.config["selected_exchange"] = selected_exchange
+    else:
+        self.config["selected_exchange"] = None
+    for key, card in crypto_cards.items():
+        card.setSelected(selected_exchange is not None and key == selected_exchange)
+
+    forex_cards = getattr(self, "_starter_forex_cards", {})
+    selected_forex = None
+    if market == "forex":
+        available_forex = [k for k, c in forex_cards.items() if not c.is_disabled()]
+        selected_forex = self.config.get("selected_forex_broker")
+        if selected_forex not in available_forex:
+            selected_forex = available_forex[0] if available_forex else None
+            self.config["selected_forex_broker"] = selected_forex
+    else:
+        self.config["selected_forex_broker"] = None
+    for key, card in forex_cards.items():
+        card.setSelected(selected_forex is not None and key == selected_forex)
     self._update_code_tab_market_sections()
+
+
+def _refresh_dependency_versions(self) -> None:
+    labels = getattr(self, "_dep_version_labels", None)
+    if not labels:
+        return
+    for label, installed, latest in _collect_dependency_versions():
+        widgets = labels.get(label)
+        if widgets is None:
+            continue
+        installed_widget, latest_widget = widgets
+        installed_widget.setText(installed)
+        latest_widget.setText(latest)
 
 
 def _update_code_tab_market_sections(self) -> None:
@@ -7987,6 +8829,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'data': data_entry,
                     'indicators': [],
                     'stop_loss_enabled': stop_loss_enabled,
+                    'leverage': data_entry.get('leverage'),
+                    'liquidation_price': data_entry.get('liquidation_price') or data_entry.get('liquidationPrice'),
                 }
                 allocations_seed = _collect_allocations(sym, side_key)
                 intervals_from_alloc: set[str] = set()
@@ -8003,6 +8847,14 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     data_entry.pop('trigger_indicators', None)
                 if allocations_seed:
                     positions_map[(sym, side_key)]['allocations'] = allocations_seed
+                    if not data_entry.get('trigger_desc'):
+                        for alloc in allocations_seed:
+                            if not isinstance(alloc, dict):
+                                continue
+                            desc = alloc.get("trigger_desc")
+                            if desc:
+                                data_entry['trigger_desc'] = desc
+                                break
                     for alloc in allocations_seed:
                         status_flag = str(alloc.get("status") or "").strip().lower()
                         try:
@@ -8115,6 +8967,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                 interval_trigger_map: dict[str, set[str]] = {}
                 trigger_union: set[str] = set()
                 leverage_val = None
+                liquidation_value = None
                 open_times: list[str] = []
                 for alloc in allocations:
                     if not isinstance(alloc, dict):
@@ -8175,6 +9028,18 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             leverage_val = lev_int
                     except Exception:
                         pass
+                    if liquidation_value is None:
+                        for liq_key in ('liquidation_price', 'liquidationPrice', 'liq_price', 'liqPrice'):
+                            cand = alloc.get(liq_key)
+                            if cand in (None, '', 0, 0.0):
+                                continue
+                            try:
+                                val = float(cand)
+                            except Exception:
+                                continue
+                            if val > 0.0:
+                                liquidation_value = val
+                                break
                 if qty_total <= 0.0 and margin_total <= 0.0 and notional_total <= 0.0:
                     continue
                 entry_tf = '-'
@@ -8205,6 +9070,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'margin_usdt': margin_total if margin_total > 0 else None,
                     'size_usdt': notional_total if notional_total > 0 else None,
                     'leverage': leverage_val,
+                    'liquidation_price': liquidation_value,
                     'interval_display': entry_tf.split(',')[0].strip() if entry_tf and entry_tf != '-' else entry_tf,
                     'trigger_indicators': indicators,
                     'open_time': open_time_fmt,
@@ -8223,6 +9089,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                     'indicators': indicators,
                     'stop_loss_enabled': self._position_stop_loss_enabled(sym, side_key),
                     'allocations': copy.deepcopy(allocations),
+                    'leverage': leverage_val,
+                    'liquidation_price': liquidation_value,
                 }
                 tracked_keys.add(key)
         except Exception:
@@ -8383,6 +9251,15 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             update_time = int(float(p.get('updateTime') or p.get('update_time') or 0))
                         except Exception:
                             update_time = 0
+                        try:
+                            liquidation_price = float(
+                                p.get('liquidationPrice')
+                                or p.get('liqPrice')
+                                or prev_data_entry.get('liquidation_price')
+                                or 0.0
+                            )
+                        except Exception:
+                            liquidation_price = 0.0
                         stop_loss_enabled = False
                         if side_key in ('L', 'S'):
                             try:
@@ -8409,6 +9286,7 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             'update_time': update_time,
                             'entry_price': entry_price if entry_price > 0 else None,
                             'leverage': leverage,
+                            'liquidation_price': liquidation_price if liquidation_price > 0 else None,
                             'interval': None,
                             'interval_display': None,
                             'open_time': None,
@@ -8445,6 +9323,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         else:
                             rec = dict(rec)
                         rec['data'] = data
+                        rec['leverage'] = data.get('leverage')
+                        rec['liquidation_price'] = data.get('liquidation_price')
                         rec['status'] = 'Active'
                         rec['close_time'] = '-'
                         if (not rec.get('entry_tf') or rec['entry_tf'] == '-') and data.get('interval_display'):
@@ -8503,6 +9383,14 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                                 if is_active and normalized_triggers:
                                     trigger_union.update(normalized_triggers)
                                     interval_trigger_map.setdefault(key_iv, set()).update(normalized_triggers)
+                            if not data.get('trigger_desc'):
+                                for alloc in allocations_existing:
+                                    if not isinstance(alloc, dict):
+                                        continue
+                                    desc = alloc.get("trigger_desc")
+                                    if desc:
+                                        data['trigger_desc'] = desc
+                                        break
                             if trigger_union:
                                 indicators_union = sorted(dict.fromkeys(trigger_union))
                                 rec['indicators'] = indicators_union
@@ -8513,6 +9401,8 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         elif row_triggers:
                             rec['indicators'] = row_triggers
                             data['trigger_indicators'] = row_triggers
+                        if not data.get('trigger_desc') and prev_data_entry.get('trigger_desc'):
+                            data['trigger_desc'] = prev_data_entry.get('trigger_desc')
                         try:
                             getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
                         except Exception:
@@ -9196,6 +10086,12 @@ def _mw_update_position_history(self, positions_map: dict):
 
         self._open_position_records = positions_map
         self._position_missing_counts = missing_counts
+        try:
+            acct_flag = str(acct or "").upper()
+        except Exception:
+            acct_flag = ""
+        self._positions_account_type = acct_flag
+        self._positions_account_is_futures = "FUT" in acct_flag
     except Exception:
         pass
 
@@ -9312,6 +10208,38 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         margin_ratio = 0.0
         margin_balance_val = 0.0
         maint_margin_val = 0.0
+        base_liq_price = None
+
+        def _extract_liq_value(candidate):
+            try:
+                if candidate is None or candidate == "":
+                    return None
+                value = float(candidate)
+                return value if value > 0.0 else None
+            except Exception:
+                return None
+
+        for cand in (
+            base_data.get("liquidation_price"),
+            base_data.get("liquidationPrice"),
+            base_data.get("liq_price"),
+            base_data.get("liqPrice"),
+        ):
+            found = _extract_liq_value(cand)
+            if found:
+                base_liq_price = found
+                break
+        if not base_liq_price:
+            raw_base = base_data.get("raw_position") if isinstance(base_data.get("raw_position"), dict) else None
+            if raw_base:
+                for cand in (
+                    raw_base.get("liquidationPrice"),
+                    raw_base.get("liqPrice"),
+                ):
+                    found = _extract_liq_value(cand)
+                    if found:
+                        base_liq_price = found
+                        break
 
         if allocation:
             try:
@@ -9338,6 +10266,17 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                 notional = float(allocation.get("notional") or 0.0)
             except Exception:
                 notional = 0.0
+            if base_liq_price is None:
+                for cand in (
+                    allocation.get("liquidation_price"),
+                    allocation.get("liquidationPrice"),
+                    allocation.get("liq_price"),
+                    allocation.get("liqPrice"),
+                ):
+                    found = _extract_liq_value(cand)
+                    if found:
+                        base_liq_price = found
+                        break
             alloc_pnl = allocation.get("pnl_value")
             if alloc_pnl is not None:
                 try:
@@ -9444,6 +10383,12 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             data["entry_price"] = entry_price
         if leverage:
             data["leverage"] = leverage
+        if base_liq_price:
+            data["liquidation_price"] = base_liq_price
+        if allocation and isinstance(allocation, dict) and allocation.get("trigger_desc"):
+            data["trigger_desc"] = allocation.get("trigger_desc")
+        elif base_data.get("trigger_desc") and not data.get("trigger_desc"):
+            data["trigger_desc"] = base_data.get("trigger_desc")
         return data
 
     def _emit_entries(base_rec: dict, sym: str, side_key: str, meta_items: list[dict | None]) -> None:
@@ -9476,6 +10421,8 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                 entry["stop_loss_enabled"] = bool((allocation or {}).get("stop_loss_enabled", stop_loss_flag))
             alloc_data = _compute_trade_data(base_data, allocation, side_key, alloc_status)
             entry["data"] = alloc_data
+            entry["leverage"] = alloc_data.get("leverage")
+            entry["liquidation_price"] = alloc_data.get("liquidation_price")
             indicators = allocation.get("trigger_indicators") if isinstance(allocation, dict) else None
             if isinstance(indicators, (list, tuple, set)):
                 entry["indicators"] = list(dict.fromkeys(str(t).strip() for t in indicators if str(t).strip()))
@@ -9690,15 +10637,68 @@ def _mw_render_positions_table(self):
             )
         display_records = [rec for rec in (display_records or []) if isinstance(rec, dict)]
         snapshot_digest: list[tuple] = []
+        acct_type = str(getattr(self, "_positions_account_type", "") or "").upper()
+        acct_is_futures = getattr(self, "_positions_account_is_futures", None)
+        if acct_is_futures is None:
+            acct_is_futures = "FUT" in acct_type
+        live_value_cache = getattr(self, "_live_indicator_cache", None)
+        if not isinstance(live_value_cache, dict):
+            live_value_cache = {}
+            self._live_indicator_cache = live_value_cache
+        now_ts = time.monotonic()
+        ttl = float(getattr(self, "_live_indicator_cache_ttl", 8.0) or 8.0)
+        cleanup_interval = max(ttl * 3.0, 30.0)
+        last_cleanup = float(getattr(self, "_live_indicator_cache_last_cleanup", 0.0) or 0.0)
+        if now_ts - last_cleanup >= cleanup_interval:
+            cutoff = now_ts - max(ttl * 6.0, 60.0)
+            stale_keys: list[tuple[str, str]] = []
+            for key, entry in list(live_value_cache.items()):
+                try:
+                    entry_ts = float(entry.get("df_ts") or entry.get("ts") or 0.0)
+                except Exception:
+                    entry_ts = 0.0
+                if entry_ts and entry_ts < cutoff:
+                    stale_keys.append(key)
+            for key in stale_keys:
+                live_value_cache.pop(key, None)
+            self._live_indicator_cache_last_cleanup = now_ts
         for rec in display_records:
             data = rec.get('data') or {}
             indicators_list = tuple(_normalize_indicator_values(rec.get('indicators')))
+            interval_hint = (
+                rec.get('entry_tf')
+                or data.get('interval_display')
+                or data.get('interval')
+                or "-"
+            )
+            indicator_value_entries, interval_map = _collect_indicator_value_strings(rec, interval_hint)
+            rec["_indicator_value_entries"] = indicator_value_entries
+            rec["_indicator_interval_map"] = interval_map
+            sym_digest = str(rec.get('symbol') or data.get('symbol') or "").strip().upper()
+            current_live_entries = _collect_current_indicator_live_strings(
+                self,
+                sym_digest,
+                indicators_list,
+                live_value_cache,
+                interval_map,
+                interval_hint,
+            )
+            rec["_current_indicator_values"] = current_live_entries
+            indicator_snapshot = tuple(indicator_value_entries or [])
+            interval_snapshot = tuple(
+                (key, tuple(values))
+                for key, values in (interval_map or {}).items()
+            )
+            current_live_tuple = tuple(current_live_entries or [])
             snapshot_digest.append(
                 (
                     str(rec.get('symbol') or "").upper(),
                     str(rec.get('side_key') or "").upper(),
                     str(rec.get('entry_tf') or ""),
                     indicators_list,
+                    indicator_snapshot,
+                    interval_snapshot,
+                    current_live_tuple,
                     float(data.get('qty') or 0.0),
                     float(data.get('margin_usdt') or 0.0),
                     float(data.get('pnl_value') or 0.0),
@@ -9769,28 +10769,104 @@ def _mw_render_positions_table(self):
                     else:
                         should_aggregate = False
 
-                self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym))
+                raw_position = data.get("raw_position")
+                if not isinstance(raw_position, dict):
+                    raw_position = rec.get("raw_position") if isinstance(rec.get("raw_position"), dict) else None
+                leverage_val = 0
+                leverage_candidates = [
+                    data.get("leverage"),
+                    rec.get("leverage"),
+                    (raw_position or {}).get("leverage"),
+                ]
+                for candidate in leverage_candidates:
+                    try:
+                        if candidate is None:
+                            continue
+                        val = int(round(float(candidate)))
+                        if val > 0:
+                            leverage_val = val
+                            break
+                    except Exception:
+                        continue
+                contract_label_raw = (
+                    data.get("contract_type")
+                    or data.get("contractType")
+                    or data.get("instrument_type")
+                    or data.get("instrumentType")
+                    or (raw_position or {}).get("contractType")
+                    or (raw_position or {}).get("contract_type")
+                    or ""
+                )
+                contract_label = str(contract_label_raw).strip()
+                if not contract_label:
+                    if side_key in ("L", "S") and acct_is_futures:
+                        contract_label = "Perp"
+                    elif side_key == "SPOT":
+                        contract_label = "Spot"
+                elif side_key == "SPOT":
+                    contract_label = "Spot"
+                contract_display = ""
+                if contract_label:
+                    if contract_label.upper().startswith("PERP"):
+                        contract_display = "Perp"
+                    else:
+                        contract_display = contract_label.title()
+                info_parts: list[str] = []
+                if contract_display:
+                    info_parts.append(contract_display)
+                if leverage_val > 0:
+                    info_parts.append(f"{leverage_val}x")
+                if info_parts:
+                    sym_display = f"{sym}\n{'    '.join(info_parts)}"
+                else:
+                    sym_display = sym
+                self.pos_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sym_display))
 
-                qty_item = _NumericItem(f"{qty_show:.8f}", qty_show)
-                self.pos_table.setItem(row, 1, qty_item)
+                size_item = _NumericItem(f"{size_usdt:.8f}", size_usdt)
+                self.pos_table.setItem(row, 1, size_item)
 
                 mark_item = _NumericItem(f"{mark:.8f}" if mark else "-", mark)
                 self.pos_table.setItem(row, 2, mark_item)
 
-                size_item = _NumericItem(f"{size_usdt:.2f}", size_usdt)
-                self.pos_table.setItem(row, 3, size_item)
-
                 mr_display = f"{mr:.2f}%" if mr > 0 else "-"
                 mr_item = _NumericItem(mr_display, mr)
-                self.pos_table.setItem(row, 4, mr_item)
+                self.pos_table.setItem(row, 3, mr_item)
+
+                liq_price = 0.0
+                liq_candidates = [
+                    data.get("liquidation_price"),
+                    data.get("liquidationPrice"),
+                    data.get("liq_price"),
+                    data.get("liqPrice"),
+                    rec.get("liquidation_price"),
+                    rec.get("liquidationPrice"),
+                    (raw_position or {}).get("liquidationPrice"),
+                    (raw_position or {}).get("liqPrice"),
+                ]
+                for candidate in liq_candidates:
+                    try:
+                        if candidate is None or candidate == "":
+                            continue
+                        value = float(candidate)
+                        if value > 0.0:
+                            liq_price = value
+                            break
+                    except Exception:
+                        continue
+                liq_text = f"{liq_price:.6f}" if liq_price > 0 else "-"
+                liq_item = _NumericItem(liq_text if liq_price > 0 else "-", liq_price)
+                self.pos_table.setItem(row, 4, liq_item)
 
                 margin_item = _NumericItem(f"{margin_usdt:.2f} USDT" if margin_usdt else "-", margin_usdt)
                 self.pos_table.setItem(row, 5, margin_item)
                 if margin_usdt > 0.0 and should_aggregate:
                     total_margin += margin_usdt
 
+                qty_margin_item = _NumericItem(f"{qty_show:.6f}", qty_show)
+                self.pos_table.setItem(row, 6, qty_margin_item)
+
                 pnl_item = _NumericItem(str(pnl_roi or "-"), pnl_value)
-                self.pos_table.setItem(row, 6, pnl_item)
+                self.pos_table.setItem(row, 7, pnl_item)
                 added_to_total = False
                 if pnl_raw_value is not None and should_aggregate:
                     total_pnl += pnl_value
@@ -9804,17 +10880,38 @@ def _mw_render_positions_table(self):
                     total_pnl += pnl_value
                     pnl_has_value = True
 
-                self.pos_table.setItem(row, 7, QtWidgets.QTableWidgetItem(interval or '-'))
+                self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(interval or '-'))
                 indicators_raw = rec.get('indicators')
                 indicators_list = _normalize_indicator_values(indicators_raw)
                 if indicators_list:
                     indicators_display = _format_indicator_list(indicators_list) or '-'
                 else:
                     indicators_display = '-'
-                self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(indicators_display))
-                self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(side_text))
-                self.pos_table.setItem(row, 10, QtWidgets.QTableWidgetItem(str(open_time or '-')))
-                self.pos_table.setItem(row, 11, QtWidgets.QTableWidgetItem(str(close_time or '-')))
+                self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(indicators_display))
+                indicator_values_entries = rec.get("_indicator_value_entries")
+                interval_map = rec.get("_indicator_interval_map")
+                if indicator_values_entries is None or interval_map is None:
+                    indicator_values_entries, interval_map = _collect_indicator_value_strings(rec, interval)
+                    rec["_indicator_value_entries"] = indicator_values_entries
+                    rec["_indicator_interval_map"] = interval_map
+                indicator_values_display = "\n".join(indicator_values_entries) if indicator_values_entries else "-"
+                self.pos_table.setItem(row, POS_TRIGGERED_VALUE_COLUMN, QtWidgets.QTableWidgetItem(indicator_values_display))
+                live_values_entries = rec.get("_current_indicator_values")
+                if live_values_entries is None:
+                    live_values_entries = _collect_current_indicator_live_strings(
+                        self,
+                        sym,
+                        indicators_list,
+                        live_value_cache,
+                        interval_map,
+                        interval,
+                    )
+                    rec["_current_indicator_values"] = live_values_entries
+                current_values_display = "\n".join(live_values_entries) if live_values_entries else "-"
+                self.pos_table.setItem(row, POS_CURRENT_VALUE_COLUMN, QtWidgets.QTableWidgetItem(current_values_display))
+                self.pos_table.setItem(row, 12, QtWidgets.QTableWidgetItem(side_text))
+                self.pos_table.setItem(row, 13, QtWidgets.QTableWidgetItem(str(open_time or '-')))
+                self.pos_table.setItem(row, 14, QtWidgets.QTableWidgetItem(str(close_time or '-')))
                 self.pos_table.setItem(row, POS_STOP_LOSS_COLUMN, QtWidgets.QTableWidgetItem(stop_loss_text))
                 self.pos_table.setItem(row, POS_STATUS_COLUMN, QtWidgets.QTableWidgetItem(status_txt))
                 btn_interval = interval if interval != "-" else None
@@ -9822,6 +10919,10 @@ def _mw_render_positions_table(self):
                 if str(status_txt).strip().lower() != 'active':
                     btn.setEnabled(False)
                 self.pos_table.setCellWidget(row, POS_CLOSE_COLUMN, btn)
+                try:
+                    self.pos_table.resizeRowToContents(row)
+                except Exception:
+                    pass
             except Exception:
                 pass
         summary_margin = total_margin if total_margin > 0.0 else None
@@ -10996,6 +12097,7 @@ try:
     MainWindow._init_code_language_tab = _init_code_language_tab
     MainWindow._sync_language_exchange_lists_from_config = _sync_language_exchange_lists_from_config
     MainWindow._ensure_language_exchange_paths = _ensure_language_exchange_paths
+    MainWindow._refresh_dependency_versions = _refresh_dependency_versions
     MainWindow._on_code_language_changed = _on_code_language_changed
     MainWindow._on_exchange_selection_changed = _on_exchange_selection_changed
     MainWindow._on_forex_selection_changed = _on_forex_selection_changed
@@ -11329,15 +12431,20 @@ def update_balance_label(self):
         try:
             wrapper = getattr(self, "shared_binance", None)
             if account_text.startswith("FUT"):
-                bal = float(wrapper.get_futures_balance_usdt() or 0.0)
+                bal = float(wrapper.get_futures_balance_usdt(force_refresh=True) or 0.0)
                 try:
-                    total_balance_value = float(wrapper.get_total_usdt_value() or bal)
+                    total_balance_value = float(wrapper.get_total_usdt_value(force_refresh=True) or bal)
                 except Exception:
                     total_balance_value = bal
                 try:
-                    available_balance_value = float(wrapper.get_futures_available_balance() or bal)
+                    available_balance_value = float(wrapper.get_futures_available_balance(force_refresh=True) or total_balance_value)
                 except Exception:
-                    available_balance_value = bal
+                    available_balance_value = total_balance_value
+                if available_balance_value <= 0.0:
+                    try:
+                        available_balance_value = float(wrapper.get_futures_balance_usdt(force_refresh=True) or total_balance_value)
+                    except Exception:
+                        available_balance_value = total_balance_value
             else:
                 bal = float(wrapper.get_spot_balance("USDT") or 0.0)
                 try:
@@ -11353,12 +12460,17 @@ def update_balance_label(self):
 
         try:
             if getattr(self, "balance_label", None):
-                self.balance_label.setText(f"{bal:.3f} USDT")
+                total_txt = f"{(total_balance_value if total_balance_value is not None else bal):.3f}"
+                avail_txt = f"{(available_balance_value if available_balance_value is not None else bal):.3f}"
+                if abs(float(total_txt) - float(avail_txt)) > 1e-6:
+                    self.balance_label.setText(f"Total {total_txt} USDT | Available {avail_txt} USDT")
+                else:
+                    self.balance_label.setText(f"{total_txt} USDT")
             self._update_positions_balance_labels(total_balance_value, available_balance_value)
         except Exception:
             # Fallback: log only
             try:
-                self.log(f"Balance updated: {bal:.3f} USDT")
+                self.log(f"Balance updated: total={total_balance_value} available={available_balance_value} (raw={bal})")
             except Exception:
                 pass
     except Exception as e:
@@ -11788,10 +12900,84 @@ except Exception:
     pass
 
 
+def _mw_refresh_waiting_positions_tab(self):
+    table = getattr(self, "waiting_pos_table", None)
+    if table is None:
+        return
+    try:
+        guard = getattr(self, "guard", None)
+    except Exception:
+        guard = None
+    snapshot = []
+    if guard is not None and hasattr(guard, "snapshot_pending_attempts"):
+        try:
+            raw = guard.snapshot_pending_attempts() or []
+            snapshot = [item for item in raw if isinstance(item, dict)]
+        except Exception:
+            snapshot = []
+    table.setSortingEnabled(False)
+    table.setRowCount(len(snapshot))
+    if not snapshot:
+        table.clearContents()
+        table.setSortingEnabled(True)
+        return
+    try:
+        snapshot.sort(
+            key=lambda item: (
+                -float(str(item.get("age") or 0.0)),
+                str(item.get("symbol") or "")
+            )
+        )
+    except Exception:
+        pass
+    for row, item in enumerate(snapshot):
+        symbol = str(item.get("symbol") or "").upper() or "-"
+        interval_raw = str(item.get("interval") or "").strip()
+        interval = interval_raw.upper() if interval_raw else "-"
+        side_raw = str(item.get("side") or "").upper()
+        if side_raw in ("L", "LONG"):
+            side = "BUY"
+        elif side_raw in ("S", "SHORT"):
+            side = "SELL"
+        else:
+            side = side_raw or "-"
+        context = str(item.get("context") or "")
+        try:
+            age_val = float(item.get("age") or 0.0)
+        except Exception:
+            age_val = 0.0
+        age_seconds = max(0, int(age_val))
+        state = "Late" if age_val >= WAITING_POSITION_LATE_THRESHOLD else "Queued"
+
+        symbol_item = QtWidgets.QTableWidgetItem(symbol)
+        symbol_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        table.setItem(row, 0, symbol_item)
+
+        interval_item = QtWidgets.QTableWidgetItem(interval)
+        interval_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        table.setItem(row, 1, interval_item)
+
+        side_item = QtWidgets.QTableWidgetItem(side.title() if side not in ("-", "") else "-")
+        side_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        table.setItem(row, 2, side_item)
+
+        context_item = QtWidgets.QTableWidgetItem(context or "-")
+        table.setItem(row, 3, context_item)
+
+        state_item = QtWidgets.QTableWidgetItem(state)
+        state_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        table.setItem(row, 4, state_item)
+
+        age_item = _NumericItem(f"{age_seconds}", age_val)
+        table.setItem(row, 5, age_item)
+    table.setSortingEnabled(True)
+
+
 try:
     MainWindow._setup_log_buffer = _gui_setup_log_buffer
     MainWindow._buffer_log = _gui_buffer_log
     MainWindow._flush_log_buffer = _gui_flush_log_buffer
+    MainWindow._refresh_waiting_positions_tab = _mw_refresh_waiting_positions_tab
 except Exception:
     pass
 
@@ -12628,3 +13814,4 @@ def _derive_margin_snapshot(position: dict | None, qty_hint: float = 0.0, entry_
         worker.finished.connect(worker.deleteLater)
         self._bg_workers.append(worker)
         worker.start()
+_LATEST_VERSION_CACHE: dict[str, tuple[str, float]] = {}

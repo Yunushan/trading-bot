@@ -3,6 +3,7 @@ from collections import deque
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 import copy
 from datetime import datetime, timezone
+import math
 from enum import Enum
 import re
 import time
@@ -2327,10 +2328,12 @@ class BinanceWrapper:
             thread.start()
             return True
 
-    def get_futures_balance_usdt(self) -> float:
+    def get_futures_balance_usdt(self, *, force_refresh: bool = False) -> float:
         """Return the withdrawable/available balance for the primary futures asset."""
         preferred_assets = ("USDT", "BUSD", "USD")
-        entries = self._get_futures_account_balance_cached() or []
+        entries = self._get_futures_account_balance_cached(force_refresh=force_refresh) or []
+        if not entries and not force_refresh:
+            entries = self._get_futures_account_balance_cached(force_refresh=True) or []
         for b in entries:
             if not isinstance(b, dict):
                 continue
@@ -2344,7 +2347,7 @@ class BinanceWrapper:
                         return float(val)
                     except Exception:
                         continue
-        acct_dict = self._get_futures_account_cached()
+        acct_dict = self._get_futures_account_cached(force_refresh=force_refresh)
         if isinstance(acct_dict, dict):
             for key in ('availableBalance', 'maxWithdrawAmount', 'totalWalletBalance', 'totalMarginBalance'):
                 val = acct_dict.get(key)
@@ -2353,9 +2356,22 @@ class BinanceWrapper:
                         return float(val)
                     except Exception:
                         continue
+        if not force_refresh:
+            acct_dict = self._get_futures_account_cached(force_refresh=True)
+            if isinstance(acct_dict, dict):
+                for key in ('availableBalance', 'maxWithdrawAmount', 'totalWalletBalance', 'totalMarginBalance'):
+                    val = acct_dict.get(key)
+                    if val is not None:
+                        try:
+                            return float(val)
+                        except Exception:
+                            continue
         return 0.0
-    def get_futures_available_balance(self) -> float:
-        val = self.get_futures_balance_usdt()
+    def get_futures_available_balance(self, *, force_refresh: bool = False) -> float:
+        val = self.get_futures_balance_usdt(force_refresh=force_refresh)
+        if val:
+            return val
+        val = self.get_futures_balance_usdt(force_refresh=True)
         if val:
             return val
         try:
@@ -2368,11 +2384,14 @@ class BinanceWrapper:
             pass
         return 0.0
 
-    def get_futures_wallet_balance(self) -> float:
+    def get_futures_wallet_balance(self, *, force_refresh: bool = False) -> float:
         """Return the total wallet balance (including used margin) for the futures account."""
         preferred_assets = ("USDT", "BUSD", "USD")
         best_val: float | None = None
-        for entry in self._get_futures_account_balance_cached() or []:
+        entries_cached = self._get_futures_account_balance_cached(force_refresh=force_refresh) or []
+        if not entries_cached and not force_refresh:
+            entries_cached = self._get_futures_account_balance_cached(force_refresh=True) or []
+        for entry in entries_cached:
             if not isinstance(entry, dict):
                 continue
             asset = str(entry.get("asset") or "").upper()
@@ -2394,7 +2413,7 @@ class BinanceWrapper:
                 break
         if best_val is not None:
             return best_val
-        acct_dict = self._get_futures_account_cached()
+        acct_dict = self._get_futures_account_cached(force_refresh=force_refresh)
         if isinstance(acct_dict, dict):
             for key in (
                 "totalWalletBalance",
@@ -2409,19 +2428,48 @@ class BinanceWrapper:
                     return float(val)
                 except Exception:
                     continue
+        if not force_refresh:
+            acct_dict = self._get_futures_account_cached(force_refresh=True)
+            if isinstance(acct_dict, dict):
+                for key in (
+                    "totalWalletBalance",
+                    "totalMarginBalance",
+                    "totalCrossWalletBalance",
+                    "totalCrossBalance",
+                ):
+                    val = acct_dict.get(key)
+                    if val is None:
+                        continue
+                    try:
+                        return float(val)
+                    except Exception:
+                        continue
         return 0.0
-    def get_total_usdt_value(self) -> float:
-        # Prefer total futures wallet balance; fall back to spot if unavailable
-        try:
-            val = float(self.get_futures_wallet_balance())
-        except Exception:
-            val = 0.0
-        if not val:
+    def get_total_usdt_value(self, *, force_refresh: bool = False) -> float:
+        """Aggregate view of USDT value across futures and spot with graceful fallbacks."""
+        candidates: list[float] = []
+
+        def _push(label: str, value) -> None:
             try:
-                val = float(self.get_spot_balance('USDT'))
+                val = float(value or 0.0)
             except Exception:
-                pass
-        return float(val or 0.0)
+                return
+            if math.isfinite(val):
+                candidates.append(val)
+
+        if self.account_type == "FUTURES":
+            _push("futures_wallet", self.get_futures_wallet_balance(force_refresh=force_refresh))
+            _push("futures_available", self.get_futures_balance_usdt(force_refresh=force_refresh))
+            _push("futures_available_balance", self.get_futures_available_balance())
+        try:
+            _push("spot_usdt", self.get_spot_balance('USDT'))
+        except Exception:
+            pass
+        if not candidates and not force_refresh:
+            return self.get_total_usdt_value(force_refresh=True)
+        if not candidates:
+            return 0.0
+        return max(candidates)
 
     def get_total_unrealized_pnl(self) -> float:
         try:

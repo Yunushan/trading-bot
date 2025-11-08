@@ -215,6 +215,48 @@ class IntervalPositionGuard:
                 if is_new:
                     self._record_active(sym, interval or '', sd, delta=1)
 
+    def snapshot_pending_attempts(self) -> List[dict]:
+        """
+        Return a thread-safe snapshot of in-flight attempts currently held by the guard.
+        Each item contains symbol, side, interval, context and the number of seconds queued.
+        """
+        with self._lock:
+            self._expire_old_unlocked()
+            now = time.time()
+            snapshot: list[dict] = []
+            for (sym, side_key, context), meta in list(self.pending_attempts.items()):
+                try:
+                    ts, interval = meta
+                except Exception:
+                    ts = meta if isinstance(meta, (int, float)) else 0.0
+                    interval = ""
+                try:
+                    ts_float = float(ts or 0.0)
+                except Exception:
+                    ts_float = 0.0
+                if ts_float <= 0.0:
+                    ts_float = 0.0
+                age = max(0.0, now - ts_float) if ts_float else 0.0
+                try:
+                    interval_text = str(interval or "")
+                except Exception:
+                    interval_text = ""
+                side_norm = str(side_key or "").upper()
+                if side_norm in ("L", "LONG"):
+                    side_norm = "BUY"
+                elif side_norm in ("S", "SHORT"):
+                    side_norm = "SELL"
+                snapshot.append(
+                    {
+                        "symbol": sym,
+                        "side": side_norm or "BUY",
+                        "interval": interval_text,
+                        "context": str(context),
+                        "age": age,
+                    }
+                )
+            return snapshot
+
     def mark_closed(self, symbol: str, interval: str, side: str) -> None:
         sym = (symbol or '').upper()
         iv = interval or ''

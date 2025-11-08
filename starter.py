@@ -282,6 +282,7 @@ class StarterWindow(QtWidgets.QWidget):
         self._process_watch_timer = QtCore.QTimer(self)
         self._process_watch_timer.setInterval(1000)
         self._process_watch_timer.timeout.connect(self._monitor_bot_process)
+        self._auto_launch_timer: QtCore.QTimer | None = None
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(40, 32, 40, 32)
@@ -690,8 +691,8 @@ class StarterWindow(QtWidgets.QWidget):
             card.setSelected(card_key == key)
         self._update_status_message()
         self._update_nav_state()
-        if self._can_launch_selected() and not self._is_launching:
-            QtCore.QTimer.singleShot(100, self.launch_selected_bot)
+        if self._can_launch_selected():
+            self._schedule_auto_launch()
 
     def _show_market_page(self) -> None:
         self.stack.setCurrentIndex(1)
@@ -772,9 +773,48 @@ class StarterWindow(QtWidgets.QWidget):
             self._reset_launch_tracking()
             self.status_label.setText(message)
 
+    def _schedule_auto_launch(self) -> None:
+        if self._auto_launch_timer is not None:
+            try:
+                self._auto_launch_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._auto_launch_timer.deleteLater()
+            except Exception:
+                pass
+            self._auto_launch_timer = None
+        if not self._can_launch_selected():
+            return
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(200)
+        timer.timeout.connect(self._perform_auto_launch_if_ready)
+        timer.start()
+        self._auto_launch_timer = timer
+
+    def _perform_auto_launch_if_ready(self) -> None:
+        self._auto_launch_timer = None
+        if self._is_launching:
+            return
+        if self._active_bot_process and self._active_bot_process.poll() is None:
+            return
+        if self._can_launch_selected():
+            self.launch_selected_bot()
+
     def _reset_launch_tracking(self) -> None:
         self._launch_status_timer.stop()
         self._process_watch_timer.stop()
+        if self._auto_launch_timer is not None:
+            try:
+                self._auto_launch_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._auto_launch_timer.deleteLater()
+            except Exception:
+                pass
+            self._auto_launch_timer = None
         self._active_bot_process = None
         self._bot_ready = False
         self._active_launch_label = "Selected bot"

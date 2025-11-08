@@ -1,9 +1,11 @@
 
-python-binance==1.0.30
+python-binance==1.0.32
 binance-connector==3.12.0
 PyQt6==6.10.0
 PyQt6-Qt6==6.10.0
 PyQt6-WebEngine==6.10.0
+numba==0.61.2
+llvmlite==0.44.0
 numpy==2.2.6
 pandas==2.3.3
 pandas-ta==0.4.71b0
