@@ -539,6 +539,40 @@ class StrategyEngine:
         signal_val = live_val if self._indicator_use_live_values else prev_val
         return prev_val, live_val, signal_val
 
+    def _indicator_hold_ready(
+        self,
+        entry_ts: float | int | None,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str | None,
+        side_label: str,
+        now_ts: float | None = None,
+    ) -> bool:
+        hold_secs = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
+        if hold_secs <= 0.0:
+            return True
+        try:
+            ts_val = float(entry_ts or 0.0)
+        except Exception:
+            ts_val = 0.0
+        if ts_val <= 0.0:
+            return True
+        if now_ts is None:
+            now_ts = time.time()
+        age = max(0.0, now_ts - ts_val)
+        if age >= hold_secs:
+            return True
+        remaining = max(0.0, hold_secs - age)
+        try:
+            indicator_label = str(indicator_key or "").upper() or "<indicator>"
+            self.log(
+                f"{str(symbol or '').upper()}@{interval or 'default'} hold guard: waiting {remaining:.1f}s "
+                f"before flipping {indicator_label} {side_label}."
+            )
+        except Exception:
+            pass
+        return False
+
     def _indicator_signal_confirmation_ready(
         self,
         symbol: str,
@@ -804,31 +838,6 @@ class StrategyEngine:
         interval_tokens = self._tokenize_interval_label(interval_text)
         interval_lower = interval_text.lower()
         interval_has_filter = interval_tokens != {"-"}
-        hold_secs = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
-        now_ts = time.time()
-
-        def _hold_ready(entry_ts: float | None) -> bool:
-            if hold_secs <= 0.0:
-                return True
-            try:
-                ts_val = float(entry_ts or 0.0)
-            except Exception:
-                ts_val = 0.0
-            if ts_val <= 0.0:
-                return True
-            age = now_ts - ts_val
-            if age >= hold_secs:
-                return True
-            remaining = max(0.0, hold_secs - age)
-            try:
-                self.log(
-                    f"{symbol}@{interval_text or 'default'} hold guard: waiting {remaining:.1f}s before flipping "
-                    f"{indicator_key} {side_label} entry."
-                )
-            except Exception:
-                pass
-            return False
-
         ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
         if (not ledger_ids) and signature_hint:
             signature_hint = tuple(
@@ -868,7 +877,14 @@ class StrategyEngine:
             except Exception:
                 qty_snapshot = 0.0
             try:
-                if not _hold_ready(target_entry.get("timestamp")):
+                if not self._indicator_hold_ready(
+                    target_entry.get("timestamp"),
+                    symbol,
+                    leg_key[1],
+                    indicator_key,
+                    side_label,
+                    now_ts=None,
+                ):
                     continue
                 cw_clone = dict(cw)
                 cw_clone["interval"] = leg_key[1]
@@ -918,7 +934,14 @@ class StrategyEngine:
                     except Exception:
                         qty_snapshot = 0.0
                     try:
-                        if not _hold_ready(entry.get("timestamp")):
+                        if not self._indicator_hold_ready(
+                            entry.get("timestamp"),
+                            symbol,
+                            leg_key[1],
+                            indicator_key,
+                            side_label,
+                            now_ts=None,
+                        ):
                             continue
                         cw_clone = dict(cw)
                         cw_clone["interval"] = leg_key[1]
@@ -1723,6 +1746,16 @@ class StrategyEngine:
                             entry.get("trigger_signature") or entry.get("trigger_indicators")
                         )
                         if tuple(entry_sig or ()) != signature_filter:
+                            continue
+                    indicator_hold_key = indicator_filter_norm or (entry_keys[0] if entry_keys else None)
+                    if indicator_hold_key:
+                        if not self._indicator_hold_ready(
+                            entry.get("timestamp"),
+                            leg_sym,
+                            interval_for_entry,
+                            indicator_hold_key,
+                            leg_side_norm,
+                        ):
                             continue
                     close_side = 'SELL' if leg_side_norm == 'BUY' else 'BUY'
                     position_side = None
