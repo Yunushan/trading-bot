@@ -958,12 +958,18 @@ class StrategyEngine:
                 entries = self._leg_entries(leg_key)
                 if not entries:
                     continue
-                fallback_leg_keys.append(leg_key)
+                matched_entries = []
                 for entry in entries:
+                    keys_for_entry = self._extract_indicator_keys(entry)
+                    if indicator_key not in keys_for_entry:
+                        continue
+                    matched_entries.append(entry)
                     try:
                         fallback_qty_target += max(0.0, float(entry.get("qty") or 0.0))
                     except Exception:
                         continue
+                if matched_entries:
+                    fallback_leg_keys.append(leg_key)
             live_qty = 0.0
             try:
                 live_qty = max(
