@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "indicator_flip_cooldown_seconds": 0.0,
     "indicator_use_live_values": True,
     "indicator_min_position_hold_seconds": 12.0,
+    "indicator_flip_confirmation_bars": 2,
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "close_on_exit": False,
     "indicators": {

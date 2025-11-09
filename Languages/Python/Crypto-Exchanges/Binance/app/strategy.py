@@ -160,7 +160,14 @@ class StrategyEngine:
             )
         except Exception:
             self._indicator_flip_cooldown_bars = 0
+        try:
+            self._indicator_flip_confirm_bars = max(
+                1, int(self.config.get("indicator_flip_confirmation_bars") or 1)
+            )
+        except Exception:
+            self._indicator_flip_confirm_bars = 1
         self._indicator_last_action: dict[tuple[str, str, str], dict[str, float]] = {}
+        self._indicator_signal_tracker: dict[tuple[str, str, str], dict[str, float | int | str]] = {}
 
     def _notify_interval_closed(self, symbol: str, interval: str, position_side: str, **extra):
         if not self.trade_cb:
@@ -531,6 +538,54 @@ class StrategyEngine:
         prev_val = float(data.iloc[-2]) if len(data) >= 2 else live_val
         signal_val = live_val if self._indicator_use_live_values else prev_val
         return prev_val, live_val, signal_val
+
+    def _indicator_signal_confirmation_ready(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str,
+        action: str,
+        interval_seconds: float,
+        signal_ts: float | None,
+    ) -> bool:
+        confirm_req = max(1, getattr(self, "_indicator_flip_confirm_bars", 1))
+        if confirm_req <= 1:
+            return True
+        action_norm = str(action or "").strip().lower()
+        if action_norm not in {"buy", "sell"}:
+            return True
+        sym_norm = str(symbol or "").upper()
+        interval_norm = str(interval or "").strip().lower() or "default"
+        indicator_norm = str(indicator_key or "").strip().lower()
+        if not indicator_norm:
+            return True
+        key = (sym_norm, interval_norm, indicator_norm)
+        tracker = self._indicator_signal_tracker.get(key)
+        now_ts = signal_ts or time.time()
+        reset_window = max(1.0, float(interval_seconds or 0.0)) * max(confirm_req + 1, 2)
+        if tracker:
+            try:
+                last_ts = float(tracker.get("ts") or 0.0)
+            except Exception:
+                last_ts = 0.0
+            if last_ts and now_ts - last_ts > reset_window:
+                tracker = None
+        if tracker and tracker.get("direction") == action_norm:
+            count = int(tracker.get("count", 0)) + 1
+        else:
+            count = 1
+        tracker = {"direction": action_norm, "count": count, "ts": now_ts}
+        self._indicator_signal_tracker[key] = tracker
+        if count >= confirm_req:
+            return True
+        try:
+            self.log(
+                f"{symbol}@{interval or 'default'} {indicator_key} {action_norm.upper()} "
+                f"confirmation {count}/{confirm_req} – waiting additional bar(s)."
+            )
+        except Exception:
+            pass
+        return False
 
     def _guard_mark_leg_closed(self, leg_key: tuple[str, str, str]) -> None:
         guard_obj = getattr(self, "guard", None)
@@ -2859,6 +2914,17 @@ class StrategyEngine:
                     interval_seconds_est = float(_interval_to_seconds(str(interval_current or "1m")))
                 except Exception:
                     interval_seconds_est = 60.0
+                if action_norm not in {"buy", "sell"}:
+                    continue
+                if not self._indicator_signal_confirmation_ready(
+                    cw["symbol"],
+                    interval_current,
+                    indicator_key,
+                    action_norm,
+                    interval_seconds_est,
+                    now_indicator_ts,
+                ):
+                    continue
                 action_side_label = "BUY" if action_norm == "buy" else "SELL"
                 cooldown_remaining = self._indicator_cooldown_remaining(
                     cw["symbol"],
@@ -2997,6 +3063,21 @@ class StrategyEngine:
                     indicator_key = indicator_label.lower()
                     interval_current = cw.get("interval")
                     action_norm = str(indicator_action or "").strip().lower()
+                    try:
+                        interval_seconds_est = float(_interval_to_seconds(str(interval_current or "1m")))
+                    except Exception:
+                        interval_seconds_est = 60.0
+                    if action_norm not in {"buy", "sell"}:
+                        continue
+                    if not self._indicator_signal_confirmation_ready(
+                        cw["symbol"],
+                        interval_current,
+                        indicator_key,
+                        action_norm,
+                        interval_seconds_est,
+                        now_indicator_ts,
+                    ):
+                        continue
                     if action_norm == "buy":
                         indicator_order_requests.append(
                             {
@@ -3006,7 +3087,7 @@ class StrategyEngine:
                                 "indicator_key": indicator_key,
                             }
                         )
-                    elif action_norm == "sell":
+                    else:
                         indicator_order_requests.append(
                             {
                                 "side": "SELL",
