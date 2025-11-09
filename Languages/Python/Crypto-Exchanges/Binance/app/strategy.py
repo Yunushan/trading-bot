@@ -161,6 +161,12 @@ class StrategyEngine:
         except Exception:
             self._indicator_flip_cooldown_bars = 0
         try:
+            self._indicator_min_hold_bars = max(
+                0, int(self.config.get("indicator_min_position_hold_bars") or 0)
+            )
+        except Exception:
+            self._indicator_min_hold_bars = 0
+        try:
             self._indicator_flip_confirm_bars = max(
                 1, int(self.config.get("indicator_flip_confirmation_bars") or 1)
             )
@@ -546,10 +552,17 @@ class StrategyEngine:
         interval: str | None,
         indicator_key: str | None,
         side_label: str,
+        interval_seconds: float,
         now_ts: float | None = None,
     ) -> bool:
-        hold_secs = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
-        if hold_secs <= 0.0:
+        base_hold = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
+        try:
+            interval_seconds = max(1.0, float(interval_seconds or 0.0))
+        except Exception:
+            interval_seconds = 60.0
+        bars_hold = max(0, getattr(self, "_indicator_min_hold_bars", 0))
+        effective_hold = max(base_hold, interval_seconds * bars_hold)
+        if effective_hold <= 0.0:
             return True
         try:
             ts_val = float(entry_ts or 0.0)
@@ -560,9 +573,9 @@ class StrategyEngine:
         if now_ts is None:
             now_ts = time.time()
         age = max(0.0, now_ts - ts_val)
-        if age >= hold_secs:
+        if age >= effective_hold:
             return True
-        remaining = max(0.0, hold_secs - age)
+        remaining = max(0.0, effective_hold - age)
         try:
             indicator_label = str(indicator_key or "").upper() or "<indicator>"
             self.log(
@@ -934,12 +947,17 @@ class StrategyEngine:
                     except Exception:
                         qty_snapshot = 0.0
                     try:
+                        try:
+                            interval_seconds_entry = float(_interval_to_seconds(str(leg_key[1] or "1m")))
+                        except Exception:
+                            interval_seconds_entry = 60.0
                         if not self._indicator_hold_ready(
                             entry.get("timestamp"),
                             symbol,
                             leg_key[1],
                             indicator_key,
                             side_label,
+                            interval_seconds_entry,
                             now_ts=None,
                         ):
                             continue
@@ -985,6 +1003,20 @@ class StrategyEngine:
                 for entry in entries:
                     keys_for_entry = self._extract_indicator_keys(entry)
                     if indicator_key not in keys_for_entry:
+                        continue
+                    try:
+                        interval_seconds_entry = float(_interval_to_seconds(str(leg_key[1] or "1m")))
+                    except Exception:
+                        interval_seconds_entry = 60.0
+                    if not self._indicator_hold_ready(
+                        entry.get("timestamp"),
+                        leg_sym,
+                        leg_key[1],
+                        indicator_key,
+                        side_norm,
+                        interval_seconds_entry,
+                        now_ts=None,
+                    ):
                         continue
                     matched_entries.append(entry)
                     try:
@@ -1749,12 +1781,17 @@ class StrategyEngine:
                             continue
                     indicator_hold_key = indicator_filter_norm or (entry_keys[0] if entry_keys else None)
                     if indicator_hold_key:
+                        try:
+                            interval_seconds_entry = float(_interval_to_seconds(str(interval_for_entry or "1m")))
+                        except Exception:
+                            interval_seconds_entry = 60.0
                         if not self._indicator_hold_ready(
                             entry.get("timestamp"),
                             leg_sym,
                             interval_for_entry,
                             indicator_hold_key,
                             leg_side_norm,
+                            interval_seconds_entry,
                         ):
                             continue
                     close_side = 'SELL' if leg_side_norm == 'BUY' else 'BUY'
