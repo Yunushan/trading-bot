@@ -105,6 +105,7 @@ class StrategyEngine:
         self.config.setdefault("indicator_flip_cooldown_bars", 1)
         self.config.setdefault("indicator_flip_cooldown_seconds", 0.0)
         self.config.setdefault("indicator_use_live_values", True)
+        self.config.setdefault("indicator_min_position_hold_seconds", 0.0)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.binance = binance_wrapper
         self.log = log_callback
@@ -141,6 +142,12 @@ class StrategyEngine:
             retry_backoff = 0.75
         self._order_rate_retry_backoff = max(0.1, min(retry_backoff, 5.0))
         self._indicator_use_live_values = bool(self.config.get("indicator_use_live_values", True))
+        try:
+            self._indicator_min_hold_seconds = max(
+                0.0, float(self.config.get("indicator_min_position_hold_seconds") or 0.0)
+            )
+        except Exception:
+            self._indicator_min_hold_seconds = 0.0
         try:
             self._indicator_flip_cooldown_seconds = max(
                 0.0, float(self.config.get("indicator_flip_cooldown_seconds") or 0.0)
@@ -742,6 +749,31 @@ class StrategyEngine:
         interval_tokens = self._tokenize_interval_label(interval_text)
         interval_lower = interval_text.lower()
         interval_has_filter = interval_tokens != {"-"}
+        hold_secs = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
+        now_ts = time.time()
+
+        def _hold_ready(entry_ts: float | None) -> bool:
+            if hold_secs <= 0.0:
+                return True
+            try:
+                ts_val = float(entry_ts or 0.0)
+            except Exception:
+                ts_val = 0.0
+            if ts_val <= 0.0:
+                return True
+            age = now_ts - ts_val
+            if age >= hold_secs:
+                return True
+            remaining = max(0.0, hold_secs - age)
+            try:
+                self.log(
+                    f"{symbol}@{interval_text or 'default'} hold guard: waiting {remaining:.1f}s before flipping "
+                    f"{indicator_key} {side_label} entry."
+                )
+            except Exception:
+                pass
+            return False
+
         ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
         if (not ledger_ids) and signature_hint:
             signature_hint = tuple(
@@ -781,6 +813,8 @@ class StrategyEngine:
             except Exception:
                 qty_snapshot = 0.0
             try:
+                if not _hold_ready(target_entry.get("timestamp")):
+                    continue
                 cw_clone = dict(cw)
                 cw_clone["interval"] = leg_key[1]
                 closed_qty = self._close_leg_entry(
@@ -829,6 +863,8 @@ class StrategyEngine:
                     except Exception:
                         qty_snapshot = 0.0
                     try:
+                        if not _hold_ready(entry.get("timestamp")):
+                            continue
                         cw_clone = dict(cw)
                         cw_clone["interval"] = leg_key[1]
                         closed_qty = self._close_leg_entry(
