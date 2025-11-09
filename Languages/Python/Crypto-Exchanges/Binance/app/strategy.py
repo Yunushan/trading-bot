@@ -525,6 +525,17 @@ class StrategyEngine:
         signal_val = live_val if self._indicator_use_live_values else prev_val
         return prev_val, live_val, signal_val
 
+    def _guard_mark_leg_closed(self, leg_key: tuple[str, str, str]) -> None:
+        guard_obj = getattr(self, "guard", None)
+        if not guard_obj or not hasattr(guard_obj, "mark_closed"):
+            return
+        try:
+            symbol, interval, side = leg_key
+            side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+            guard_obj.mark_closed(symbol, interval, side_norm)
+        except Exception:
+            pass
+
     def _indicator_cooldown_remaining(
         self,
         symbol: str,
@@ -887,6 +898,7 @@ class StrategyEngine:
                     closed_count = max(1, len(fallback_leg_keys))
                     for leg_key in fallback_leg_keys:
                         self._remove_leg_entry(leg_key, None)
+                        self._guard_mark_leg_closed(leg_key)
                     try:
                         self.log(
                             f"{symbol}@{interval_text or 'default'} fallback closed {qty_to_close:.10f} "
@@ -1187,6 +1199,7 @@ class StrategyEngine:
             eps = max(1e-8, abs(live_qty) * 1e-6)
             if live_qty <= eps:
                 self._remove_leg_entry(leg_key, None)
+                self._guard_mark_leg_closed(leg_key)
                 try:
                     self.log(
                         f"Purged stale {leg_side_norm} leg for {sym_norm}@{leg_interval} after liquidation/manual close."
@@ -1873,6 +1886,7 @@ class StrategyEngine:
             for key in list(self._leg_ledger.keys()):
                 if key[0] == symbol and key[2] == opp:
                     self._remove_leg_entry(key, None)
+                    self._guard_mark_leg_closed(key)
         return True
     # ---- indicator computation (uses pandas_ta when available)
     def compute_indicators(self, df):
@@ -3152,6 +3166,7 @@ class StrategyEngine:
                             else:
                                 try:
                                     self._remove_leg_entry(key_dup, None)
+                                    self._guard_mark_leg_closed(key_dup)
                                 except Exception:
                                     pass
                                 try:
