@@ -102,6 +102,8 @@ class StrategyEngine:
 
     def __init__(self, binance_wrapper, config, log_callback, trade_callback=None, loop_interval_override=None, can_open_callback=None):
         self.config = copy.deepcopy(config)
+        self.config.setdefault("indicator_flip_cooldown_bars", 1)
+        self.config.setdefault("indicator_flip_cooldown_seconds", 0.0)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.binance = binance_wrapper
         self.log = log_callback
@@ -137,6 +139,19 @@ class StrategyEngine:
         except Exception:
             retry_backoff = 0.75
         self._order_rate_retry_backoff = max(0.1, min(retry_backoff, 5.0))
+        try:
+            self._indicator_flip_cooldown_seconds = max(
+                0.0, float(self.config.get("indicator_flip_cooldown_seconds") or 0.0)
+            )
+        except Exception:
+            self._indicator_flip_cooldown_seconds = 0.0
+        try:
+            self._indicator_flip_cooldown_bars = max(
+                0, int(self.config.get("indicator_flip_cooldown_bars") or 0)
+            )
+        except Exception:
+            self._indicator_flip_cooldown_bars = 0
+        self._indicator_last_action: dict[tuple[str, str, str], dict[str, float]] = {}
 
     def _notify_interval_closed(self, symbol: str, interval: str, position_side: str, **extra):
         if not self.trade_cb:
@@ -491,6 +506,49 @@ class StrategyEngine:
         return total
         return 0.0
 
+    def _indicator_cooldown_remaining(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str | None,
+        next_side: str,
+        interval_seconds: float,
+        now_ts: float | None = None,
+    ) -> float:
+        """Return remaining cooldown time before the indicator can flip sides."""
+        try:
+            interval_seconds = max(1.0, float(interval_seconds or 0.0))
+        except Exception:
+            interval_seconds = 60.0
+        cooldown_window = max(
+            float(getattr(self, "_indicator_flip_cooldown_seconds", 0.0)),
+            float(max(0, getattr(self, "_indicator_flip_cooldown_bars", 0))) * interval_seconds,
+        )
+        if cooldown_window <= 0.0:
+            return 0.0
+        sym_norm = str(symbol or "").upper()
+        interval_norm = str(interval or "").strip().lower() or "default"
+        indicator_norm = str(indicator_key or "").strip().lower()
+        if not indicator_norm:
+            return 0.0
+        last = self._indicator_last_action.get((sym_norm, interval_norm, indicator_norm))
+        if not isinstance(last, dict):
+            return 0.0
+        last_side = str(last.get("side") or "").upper()
+        if last_side == str(next_side or "").upper():
+            return 0.0
+        try:
+            last_ts = float(last.get("ts") or 0.0)
+        except Exception:
+            last_ts = 0.0
+        if last_ts <= 0.0:
+            return 0.0
+        if now_ts is None:
+            now_ts = time.time()
+        elapsed = max(0.0, float(now_ts) - last_ts)
+        remaining = cooldown_window - elapsed
+        return max(0.0, remaining)
+
     def _indicator_register_entry(
         self,
         symbol: str,
@@ -652,6 +710,8 @@ class StrategyEngine:
         symbol = cw["symbol"]
         interval_text = str(interval or "").strip()
         interval_tokens = self._tokenize_interval_label(interval_text)
+        interval_lower = interval_text.lower()
+        interval_has_filter = interval_tokens != {"-"}
         ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
         if (not ledger_ids) and signature_hint:
             signature_hint = tuple(
@@ -767,8 +827,9 @@ class StrategyEngine:
                 leg_sym, leg_interval, leg_side = leg_key
                 if str(leg_sym or "").upper() != symbol:
                     continue
-                leg_interval_norm = str(leg_interval or "").strip().lower()
-                if interval_lower and leg_interval_norm != interval_lower:
+                leg_interval_norm = str(leg_interval or "").strip()
+                leg_tokens = self._tokenize_interval_label(leg_interval_norm)
+                if interval_has_filter and leg_tokens.isdisjoint(interval_tokens):
                     continue
                 leg_side_norm = "BUY" if str(leg_side or "").upper() in {"BUY", "LONG"} else "SELL"
                 if leg_side_norm != side_norm:
@@ -862,6 +923,7 @@ class StrategyEngine:
             self._bump_symbol_signature_open(leg_key[0], leg_key[1], leg_key[2], signature_labels, +1)
         except Exception:
             pass
+        indicator_keys: list[str] | None = None
         try:
             ledger_id = entry.get("ledger_id")
             if ledger_id:
@@ -870,6 +932,22 @@ class StrategyEngine:
             if ledger_id and indicator_keys:
                 for indicator_key in indicator_keys:
                     self._indicator_register_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_id)
+        except Exception:
+            indicator_keys = None
+        try:
+            if indicator_keys:
+                interval_norm = str(leg_key[1] or "").strip().lower() or "default"
+                sym_norm = str(leg_key[0] or "").upper()
+                side_norm = "BUY" if str(leg_key[2] or "").upper() in {"BUY", "LONG"} else "SELL"
+                now_ts = time.time()
+                for indicator_key in indicator_keys:
+                    ind_norm = str(indicator_key or "").strip().lower()
+                    if not ind_norm:
+                        continue
+                    self._indicator_last_action[(sym_norm, interval_norm, ind_norm)] = {
+                        "side": side_norm,
+                        "ts": now_ts,
+                    }
         except Exception:
             pass
 
@@ -1387,6 +1465,8 @@ class StrategyEngine:
         """Ensure no conflicting exposure remains before opening a new leg."""
         interval_norm = str(interval or "").strip()
         interval_tokens = self._tokenize_interval_label(interval_norm)
+        interval_norm_lower = interval_norm.lower()
+        interval_has_filter = interval_tokens != {"-"}
         indicator_hint = indicator_key or self._indicator_token_from_signature(trigger_signature)
         signature_hint_tokens = StrategyEngine._normalize_signature_tokens_no_slots(trigger_signature)
 
@@ -1490,7 +1570,8 @@ class StrategyEngine:
                 if str(leg_sym or "").upper() != symbol:
                     continue
                 leg_interval_norm = str(leg_interval or "").strip()
-                if interval_norm and leg_interval_norm.lower() != interval_norm_lower:
+                leg_tokens = self._tokenize_interval_label(leg_interval_norm)
+                if interval_has_filter and leg_tokens.isdisjoint(interval_tokens):
                     continue
                 leg_side_norm = str(leg_side or "").upper()
                 if leg_side_norm in {"LONG", "SHORT"}:
@@ -2704,13 +2785,38 @@ class StrategyEngine:
         if trigger_actions:
             desired_ps_long = "LONG" if dual_side else None
             desired_ps_short = "SHORT" if dual_side else None
+            now_indicator_ts = time.time()
             for indicator_name, indicator_action in trigger_actions.items():
                 indicator_label = str(indicator_name or "").strip()
                 if not indicator_label:
                     continue
                 indicator_key = indicator_label.lower()
+                if not indicator_key:
+                    continue
                 action_norm = str(indicator_action or "").strip().lower()
                 interval_current = cw.get("interval")
+                try:
+                    interval_seconds_est = float(_interval_to_seconds(str(interval_current or "1m")))
+                except Exception:
+                    interval_seconds_est = 60.0
+                action_side_label = "BUY" if action_norm == "buy" else "SELL"
+                cooldown_remaining = self._indicator_cooldown_remaining(
+                    cw["symbol"],
+                    interval_current,
+                    indicator_key,
+                    action_side_label,
+                    interval_seconds_est,
+                    now_indicator_ts,
+                )
+                if cooldown_remaining > 0.0:
+                    try:
+                        self.log(
+                            f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
+                            f"{action_side_label} suppressed: cooldown {cooldown_remaining:.1f}s remaining."
+                        )
+                    except Exception:
+                        pass
+                    continue
                 if action_norm == "buy":
                     # Close existing shorts for this indicator on this interval.
                     closed_short, closed_short_qty = self._close_indicator_positions(
@@ -3625,7 +3731,7 @@ class StrategyEngine:
                     except Exception:
                         pass
 
-                    target_flip_qty = flip_qty_override if flip_qty_override > 0.0 else 0.0
+                    target_flip_qty = flip_qty_override if flip_qty_override > 0.0 else None
                     if not self._close_opposite_position(
                         cw['symbol'],
                         cw.get('interval'),
