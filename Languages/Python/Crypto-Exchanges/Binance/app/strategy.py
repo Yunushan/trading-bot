@@ -545,6 +545,13 @@ class StrategyEngine:
         signal_val = live_val if self._indicator_use_live_values else prev_val
         return prev_val, live_val, signal_val
 
+    @staticmethod
+    def _interval_seconds_value(interval_value: str | None) -> float:
+        try:
+            return float(_interval_to_seconds(str(interval_value or "1m")))
+        except Exception:
+            return 60.0
+
     def _indicator_hold_ready(
         self,
         entry_ts: float | int | None,
@@ -890,12 +897,14 @@ class StrategyEngine:
             except Exception:
                 qty_snapshot = 0.0
             try:
+                interval_seconds_entry = self._interval_seconds_value(leg_key[1])
                 if not self._indicator_hold_ready(
                     target_entry.get("timestamp"),
                     symbol,
                     leg_key[1],
                     indicator_key,
                     side_label,
+                    interval_seconds_entry,
                     now_ts=None,
                 ):
                     continue
@@ -1890,7 +1899,7 @@ class StrategyEngine:
             if qty_goal is not None:
                 if _goal_met():
                     return True
-            elif not _has_opposite_live(positions):
+            else:
                 return True
 
         ledger_closed, ledger_failed, ledger_qty_closed = _close_interval_side_entries(indicator_hint, signature_hint_tokens)
@@ -1924,6 +1933,8 @@ class StrategyEngine:
             if qty_goal is not None:
                 if _goal_met():
                     return True
+            elif indicator_hint and indicator_target_cleared:
+                return True
             elif not _has_opposite_live(positions):
                 return True
         elif _goal_met():
