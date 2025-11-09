@@ -104,6 +104,7 @@ class StrategyEngine:
         self.config = copy.deepcopy(config)
         self.config.setdefault("indicator_flip_cooldown_bars", 1)
         self.config.setdefault("indicator_flip_cooldown_seconds", 0.0)
+        self.config.setdefault("indicator_use_live_values", True)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.binance = binance_wrapper
         self.log = log_callback
@@ -139,6 +140,7 @@ class StrategyEngine:
         except Exception:
             retry_backoff = 0.75
         self._order_rate_retry_backoff = max(0.1, min(retry_backoff, 5.0))
+        self._indicator_use_live_values = bool(self.config.get("indicator_use_live_values", True))
         try:
             self._indicator_flip_cooldown_seconds = max(
                 0.0, float(self.config.get("indicator_flip_cooldown_seconds") or 0.0)
@@ -504,7 +506,24 @@ class StrategyEngine:
         except Exception:
             return 0.0
         return total
-        return 0.0
+
+    def _indicator_prev_live_signal_values(self, series) -> tuple[float, float, float]:
+        """
+        Returns (prev_closed, live, selected_signal) for a pandas Series.
+        selected_signal respects indicator_use_live_values.
+        """
+        if series is None:
+            raise ValueError("indicator series missing")
+        try:
+            data = series.dropna()
+        except Exception:
+            data = series
+        if data is None or len(data) == 0:
+            raise ValueError("indicator series empty")
+        live_val = float(data.iloc[-1])
+        prev_val = float(data.iloc[-2]) if len(data) >= 2 else live_val
+        signal_val = live_val if self._indicator_use_live_values else prev_val
+        return prev_val, live_val, signal_val
 
     def _indicator_cooldown_remaining(
         self,
@@ -2057,7 +2076,7 @@ class StrategyEngine:
         rsi_enabled = bool(rsi_cfg.get('enabled', False))
         if rsi_enabled and 'rsi' in ind and not ind['rsi'].dropna().empty:
             try:
-                r = float(ind['rsi'].iloc[-2])
+                _, _, r = self._indicator_prev_live_signal_values(ind['rsi'])
                 if math.isfinite(r):
                     trigger_desc.append(f"RSI={r:.2f}")
                     buy_th = float(rsi_cfg.get('buy_value', 30) or 30)
@@ -2086,28 +2105,26 @@ class StrategyEngine:
         stoch_rsi_enabled = bool(stoch_rsi_cfg.get('enabled', False))
         if stoch_rsi_enabled and 'stoch_rsi_k' in ind and ind['stoch_rsi_k'] is not None:
             try:
-                srsi_series = ind['stoch_rsi_k'].dropna()
-                if not srsi_series.empty:
-                    srsi_val = float(srsi_series.iloc[-2])
-                    trigger_desc.append(f"StochRSI %K={srsi_val:.2f}")
-                    buy_th = stoch_rsi_cfg.get('buy_value')
-                    sell_th = stoch_rsi_cfg.get('sell_value')
-                    buy_limit = float(buy_th if buy_th is not None else 20.0)
-                    sell_limit = float(sell_th if sell_th is not None else 80.0)
-                    buy_allowed = cfg['side'] in ('BUY', 'BOTH')
-                    sell_allowed = cfg['side'] in ('SELL', 'BOTH')
-                    if buy_allowed and srsi_val <= buy_limit:
-                        trigger_actions["stoch_rsi"] = "buy"
-                        trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} -> BUY")
-                        trigger_sources.append("stoch_rsi")
-                        if signal is None:
-                            signal = 'BUY'
-                    elif sell_allowed and srsi_val >= sell_limit:
-                        trigger_actions["stoch_rsi"] = "sell"
-                        trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} -> SELL")
-                        trigger_sources.append("stoch_rsi")
-                        if signal is None:
-                            signal = 'SELL'
+                prev_srsi, live_srsi, srsi_val = self._indicator_prev_live_signal_values(ind['stoch_rsi_k'])
+                trigger_desc.append(f"StochRSI %K={srsi_val:.2f} (prev={prev_srsi:.2f}, live={live_srsi:.2f})")
+                buy_th = stoch_rsi_cfg.get('buy_value')
+                sell_th = stoch_rsi_cfg.get('sell_value')
+                buy_limit = float(buy_th if buy_th is not None else 20.0)
+                sell_limit = float(sell_th if sell_th is not None else 80.0)
+                buy_allowed = cfg['side'] in ('BUY', 'BOTH')
+                sell_allowed = cfg['side'] in ('SELL', 'BOTH')
+                if buy_allowed and srsi_val <= buy_limit:
+                    trigger_actions["stoch_rsi"] = "buy"
+                    trigger_desc.append(f"StochRSI %K <= {buy_limit:.2f} -> BUY")
+                    trigger_sources.append("stoch_rsi")
+                    if signal is None:
+                        signal = 'BUY'
+                elif sell_allowed and srsi_val >= sell_limit:
+                    trigger_actions["stoch_rsi"] = "sell"
+                    trigger_desc.append(f"StochRSI %K >= {sell_limit:.2f} -> SELL")
+                    trigger_sources.append("stoch_rsi")
+                    if signal is None:
+                        signal = 'SELL'
             except Exception as e:
                 trigger_desc.append(f"StochRSI error:{e!r}")
 
@@ -2116,40 +2133,30 @@ class StrategyEngine:
         willr_enabled = bool(willr_cfg.get('enabled', False))
         if willr_enabled and 'willr' in ind:
             try:
-                wr_series = ind['willr'].dropna()
-                if wr_series.empty:
-                    raise ValueError("no williams %R data")
-                wr_live = float(wr_series.iloc[-1])
-                wr_signal = float(wr_series.iloc[-2]) if len(wr_series) >= 2 else wr_live
-                if math.isfinite(wr_signal):
-                    if math.isfinite(wr_live) and len(wr_series) >= 2:
-                        trigger_desc.append(f"Williams %R(prev={wr_signal:.2f}, live={wr_live:.2f})")
-                    else:
-                        trigger_desc.append(f"Williams %R={wr_signal:.2f}")
-                    buy_val = willr_cfg.get('buy_value')
-                    sell_val = willr_cfg.get('sell_value')
-                    buy_th = float(buy_val if buy_val is not None else -80.0)
-                    sell_th = float(sell_val if sell_val is not None else -20.0)
-                    buy_upper = max(-100.0, min(0.0, buy_th))
-                    buy_lower = -100.0
-                    sell_lower = max(-100.0, min(0.0, sell_th))
-                    sell_upper = 0.0
-                    buy_allowed = cfg['side'] in ('BUY', 'BOTH')
-                    sell_allowed = cfg['side'] in ('SELL', 'BOTH')
-                    if buy_allowed and buy_lower <= wr_signal <= buy_upper:
-                        trigger_actions["willr"] = "buy"
-                        trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] -> BUY")
-                        trigger_sources.append("willr")
-                        if signal is None:
-                            signal = 'BUY'
-                    elif sell_allowed and sell_lower <= wr_signal <= sell_upper:
-                        trigger_actions["willr"] = "sell"
-                        trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] -> SELL")
-                        trigger_sources.append("willr")
-                        if signal is None:
-                            signal = 'SELL'
-                else:
-                    trigger_desc.append("Williams %R=NaN/inf skipped")
+                prev_wr, live_wr, wr_signal = self._indicator_prev_live_signal_values(ind['willr'])
+                trigger_desc.append(f"Williams %R(prev={prev_wr:.2f}, live={live_wr:.2f}) -> using {wr_signal:.2f}")
+                buy_val = willr_cfg.get('buy_value')
+                sell_val = willr_cfg.get('sell_value')
+                buy_th = float(buy_val if buy_val is not None else -80.0)
+                sell_th = float(sell_val if sell_val is not None else -20.0)
+                buy_upper = max(-100.0, min(0.0, buy_th))
+                buy_lower = -100.0
+                sell_lower = max(-100.0, min(0.0, sell_th))
+                sell_upper = 0.0
+                buy_allowed = cfg['side'] in ('BUY', 'BOTH')
+                sell_allowed = cfg['side'] in ('SELL', 'BOTH')
+                if buy_allowed and buy_lower <= wr_signal <= buy_upper:
+                    trigger_actions["willr"] = "buy"
+                    trigger_desc.append(f"Williams %R in [{buy_lower:.2f}, {buy_upper:.2f}] -> BUY")
+                    trigger_sources.append("willr")
+                    if signal is None:
+                        signal = 'BUY'
+                elif sell_allowed and sell_lower <= wr_signal <= sell_upper:
+                    trigger_actions["willr"] = "sell"
+                    trigger_desc.append(f"Williams %R in [{sell_lower:.2f}, {sell_upper:.2f}] -> SELL")
+                    trigger_sources.append("willr")
+                    if signal is None:
+                        signal = 'SELL'
             except Exception as e:
                 trigger_desc.append(f"Williams %R error:{e!r}")
 
@@ -2255,7 +2262,10 @@ class StrategyEngine:
         # --- RSI guard-close (interval-scoped) ---
         try:
             rsi_series = ind.get('rsi') or ind.get('RSI') or None
-            last_rsi = float(rsi_series.iloc[-2]) if rsi_series is not None and len(rsi_series.dropna()) else None
+            if rsi_series is not None:
+                _, _, last_rsi = self._indicator_prev_live_signal_values(rsi_series)
+            else:
+                last_rsi = None
         except Exception:
             last_rsi = None
 
