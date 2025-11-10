@@ -992,7 +992,7 @@ class StrategyEngine:
                     return closed_count, total_qty_closed
 
         if closed_count <= 0:
-            fallback_leg_keys: list[tuple[str, str, str]] = []
+            fallback_entries: list[tuple[tuple[str, str, str], str | None]] = []
             fallback_qty_target = 0.0
             for leg_key, leg_state in list(self._leg_ledger.items()):
                 leg_sym, leg_interval, leg_side = leg_key
@@ -1008,7 +1008,6 @@ class StrategyEngine:
                 entries = self._leg_entries(leg_key)
                 if not entries:
                     continue
-                matched_entries = []
                 for entry in entries:
                     keys_for_entry = self._extract_indicator_keys(entry)
                     if indicator_key not in keys_for_entry:
@@ -1027,13 +1026,12 @@ class StrategyEngine:
                         now_ts=None,
                     ):
                         continue
-                    matched_entries.append(entry)
                     try:
-                        fallback_qty_target += max(0.0, float(entry.get("qty") or 0.0))
+                        qty_val = max(0.0, float(entry.get("qty") or 0.0))
+                        fallback_qty_target += qty_val
                     except Exception:
                         continue
-                if matched_entries:
-                    fallback_leg_keys.append(leg_key)
+                    fallback_entries.append((leg_key, entry.get("ledger_id")))
             live_qty = 0.0
             try:
                 live_qty = max(
@@ -1043,7 +1041,7 @@ class StrategyEngine:
             except Exception:
                 live_qty = 0.0
             qty_to_close = min(live_qty, fallback_qty_target) if fallback_qty_target > 0.0 else 0.0
-            if fallback_leg_keys and qty_to_close > 0.0:
+            if fallback_entries and qty_to_close > 0.0:
                 close_side = "SELL" if side_norm == "BUY" else "BUY"
                 try:
                     res = self.binance.close_futures_leg_exact(
@@ -1055,15 +1053,45 @@ class StrategyEngine:
                 except Exception as exc:
                     res = {"ok": False, "error": str(exc)}
                 if isinstance(res, dict) and res.get("ok"):
-                    total_qty_closed += qty_to_close
-                    closed_count = max(1, len(fallback_leg_keys))
-                    for leg_key in fallback_leg_keys:
-                        self._remove_leg_entry(leg_key, None)
-                        self._guard_mark_leg_closed(leg_key)
                     try:
+                        executed_qty_val = float(
+                            self._order_field(res, "executedQty", "cumQty", "cumQuantity", "origQty") or 0.0
+                        )
+                    except Exception:
+                        executed_qty_val = 0.0
+                    if executed_qty_val <= 0.0 and isinstance(res.get("fills"), dict):
+                        try:
+                            executed_qty_val = float(res["fills"].get("filled_qty") or 0.0)
+                        except Exception:
+                            executed_qty_val = 0.0
+                    qty_recorded = executed_qty_val if executed_qty_val > 0.0 else qty_to_close
+                    total_qty_closed += qty_recorded
+                    entries_removed = 0
+                    affected_leg_keys: set[tuple[str, str, str]] = set()
+                    for leg_key, ledger_token in fallback_entries:
+                        affected_leg_keys.add(leg_key)
+                        if ledger_token:
+                            self._remove_leg_entry(leg_key, ledger_token)
+                            entries_removed += 1
+                        else:
+                            try:
+                                self.log(
+                                    f"{symbol}@{interval_text or 'default'} fallback removal missing ledger id for "
+                                    f"{leg_key[0]}@{leg_key[1]} {indicator_key}; purging leg."
+                                )
+                            except Exception:
+                                pass
+                            self._remove_leg_entry(leg_key, None)
+                            entries_removed += 1
+                    for leg_key in affected_leg_keys:
+                        if not self._leg_entries(leg_key):
+                            self._guard_mark_leg_closed(leg_key)
+                    closed_count = max(1, entries_removed)
+                    try:
+                        entry_note = f"{entries_removed} entry" if entries_removed == 1 else f"{entries_removed} entries"
                         self.log(
-                            f"{symbol}@{interval_text or 'default'} fallback closed {qty_to_close:.10f} "
-                            f"{side_norm} leg(s) for indicator {indicator_key}."
+                            f"{symbol}@{interval_text or 'default'} fallback closed {qty_recorded:.10f} "
+                            f"{side_norm} {entry_note} for indicator {indicator_key}."
                         )
                     except Exception:
                         pass
