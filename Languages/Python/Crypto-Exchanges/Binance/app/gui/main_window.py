@@ -10618,8 +10618,10 @@ def _mw_render_positions_table(self):
         closed_records = getattr(self, "_closed_position_records", []) or []
         view_mode = getattr(self, "_positions_view_mode", "cumulative")
         try:
+            vbar = self.pos_table.verticalScrollBar()
             vbar_val = vbar.value()
         except Exception:
+            vbar = None
             vbar_val = None
         try:
             hbar = self.pos_table.horizontalScrollBar()

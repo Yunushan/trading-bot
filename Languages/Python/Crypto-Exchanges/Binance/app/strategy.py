@@ -561,7 +561,11 @@ class StrategyEngine:
         side_label: str,
         interval_seconds: float,
         now_ts: float | None = None,
+        *,
+        ignore_hold: bool = False,
     ) -> bool:
+        if ignore_hold:
+            return True
         base_hold = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
         try:
             interval_seconds = max(1.0, float(interval_seconds or 0.0))
@@ -857,6 +861,8 @@ class StrategyEngine:
         side_label: str,
         position_side: str | None,
         signature_hint: tuple[str, ...] | None = None,
+        *,
+        ignore_hold: bool = False,
     ) -> tuple[int, float]:
         symbol = cw["symbol"]
         interval_text = str(interval or "").strip()
@@ -874,8 +880,16 @@ class StrategyEngine:
                     sig_tuple = StrategyEngine._normalize_signature_tokens_no_slots(
                         entry.get("trigger_signature") or entry.get("trigger_indicators")
                     )
-                    if signature_hint and tuple(sig_tuple or ()) != tuple(signature_hint):
-                        continue
+                    if signature_hint:
+                        hint_norm = tuple(
+                            str(token or "").strip().lower()
+                            for token in signature_hint
+                            if str(token or "").strip()
+                        )
+                        if hint_norm:
+                            sig_set = set(sig_tuple or ())
+                            if not set(hint_norm).issubset(sig_set):
+                                continue
                     ledger = entry.get("ledger_id")
                     if ledger and ledger not in ledger_ids and ledger not in extra_ids:
                         extra_ids.append(ledger)
@@ -911,6 +925,7 @@ class StrategyEngine:
                     side_label,
                     interval_seconds_entry,
                     now_ts=None,
+                    ignore_hold=ignore_hold,
                 ):
                     continue
                 cw_clone = dict(cw)
@@ -973,6 +988,7 @@ class StrategyEngine:
                             side_label,
                             interval_seconds_entry,
                             now_ts=None,
+                            ignore_hold=ignore_hold,
                         ):
                             continue
                         cw_clone = dict(cw)
@@ -1029,6 +1045,7 @@ class StrategyEngine:
                         side_norm,
                         interval_seconds_entry,
                         now_ts=None,
+                        ignore_hold=ignore_hold,
                     ):
                         continue
                     try:
@@ -1180,6 +1197,88 @@ class StrategyEngine:
                     }
         except Exception:
             pass
+        try:
+            if indicator_keys:
+                self._resolve_indicator_conflicts(leg_key, indicator_keys, entry)
+        except Exception:
+            pass
+
+    def _resolve_indicator_conflicts(
+        self,
+        leg_key: tuple[str, str, str],
+        indicator_keys: list[str],
+        current_entry: dict,
+    ) -> None:
+        if not indicator_keys:
+            return
+        symbol, interval, side_raw = leg_key
+        side_norm = "BUY" if str(side_raw or "").upper() in {"BUY", "LONG"} else "SELL"
+        opposite_side = "SELL" if side_norm == "BUY" else "BUY"
+        cw_stub = {"symbol": symbol, "interval": interval}
+        account_type = str(self.config.get("account_type") or getattr(self.binance, "account_type", "") or "").upper()
+        dual_side = False
+        if account_type == "FUTURES":
+            try:
+                dual_side = bool(self.binance.get_futures_dual_side())
+            except Exception:
+                dual_side = False
+        desired_ps_opposite = None
+        desired_ps_current = None
+        if dual_side:
+            desired_ps_opposite = "LONG" if opposite_side == "BUY" else "SHORT"
+            desired_ps_current = "LONG" if side_norm == "BUY" else "SHORT"
+        conflict_found = False
+        for indicator_key in indicator_keys:
+            conflicts = self._iter_indicator_entries(symbol, interval, indicator_key, opposite_side)
+            if not conflicts:
+                continue
+            conflict_found = True
+            try:
+                self.log(
+                    f"{symbol}@{interval or 'default'} conflict: {indicator_key} has active {opposite_side} leg while opening {side_norm}. "
+                    "Forcing additional close."
+                )
+            except Exception:
+                pass
+            for conflict_leg_key, conflict_entry in conflicts:
+                try:
+                    self._close_leg_entry(
+                        cw_stub,
+                        conflict_leg_key,
+                        conflict_entry,
+                        opposite_side,
+                        "SELL" if opposite_side == "BUY" else "BUY",
+                        desired_ps_opposite,
+                        loss_usdt=0.0,
+                        price_pct=0.0,
+                        margin_pct=0.0,
+                    )
+                except Exception:
+                    continue
+        if conflict_found:
+            # After forcing opposite closes, re-check. If still conflicting, drop the newly opened leg.
+            for indicator_key in indicator_keys:
+                residual = self._iter_indicator_entries(symbol, interval, indicator_key, opposite_side)
+                if residual:
+                    try:
+                        self.log(
+                            f"{symbol}@{interval or 'default'} conflict persists for {indicator_key}; "
+                            f"closing newly opened {side_norm} leg to avoid overlap."
+                        )
+                    except Exception:
+                        pass
+                    self._close_leg_entry(
+                        cw_stub,
+                        leg_key,
+                        current_entry,
+                        side_norm,
+                        "SELL" if side_norm == "BUY" else "BUY",
+                        desired_ps_current,
+                        loss_usdt=0.0,
+                        price_pct=0.0,
+                        margin_pct=0.0,
+                    )
+                    break
 
     def _remove_leg_entry(self, leg_key, ledger_id: str | None = None) -> None:
         current_entries = self._leg_entries(leg_key)
@@ -1891,6 +1990,7 @@ class StrategyEngine:
                     opp,
                     indicator_position_side,
                     signature_hint=signature_hint_tokens,
+                    ignore_hold=True,
                 )
             except Exception as exc:
                 try:
@@ -2535,6 +2635,7 @@ class StrategyEngine:
                             'rsi',
                             'BUY',
                             desired_ps_long_guard,
+                            ignore_hold=True,
                         )
                     except Exception:
                         closed_long = 0
@@ -2555,6 +2656,7 @@ class StrategyEngine:
                             'rsi',
                             'SELL',
                             desired_ps_short_guard,
+                            ignore_hold=True,
                         )
                     except Exception:
                         closed_short = 0
@@ -3077,7 +3179,26 @@ class StrategyEngine:
                         "SELL",
                         desired_ps_short,
                         signature_hint=(indicator_key,),
+                        ignore_hold=True,
                     )
+                    if closed_short <= 0:
+                        live_short_qty = 0.0
+                        try:
+                            live_short_qty = max(
+                                0.0,
+                                float(self._current_futures_position_qty(cw["symbol"], "SELL", desired_ps_short)),
+                            )
+                        except Exception:
+                            live_short_qty = 0.0
+                        if live_short_qty > 0.0:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY skipped:"
+                                    f" short leg still live on exchange ({live_short_qty:.10f})."
+                                )
+                            except Exception:
+                                pass
+                            continue
                     flip_from_side = None
                     flip_qty = 0.0
                     remaining_indicator_qty = self._indicator_open_qty(
@@ -3133,7 +3254,26 @@ class StrategyEngine:
                         "BUY",
                         desired_ps_long,
                         signature_hint=(indicator_key,),
+                        ignore_hold=True,
                     )
+                    if closed_long <= 0:
+                        live_long_qty = 0.0
+                        try:
+                            live_long_qty = max(
+                                0.0,
+                                float(self._current_futures_position_qty(cw["symbol"], "BUY", desired_ps_long)),
+                            )
+                        except Exception:
+                            live_long_qty = 0.0
+                        if live_long_qty > 0.0:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL skipped:"
+                                    f" long leg still live on exchange ({live_long_qty:.10f})."
+                                )
+                            except Exception:
+                                pass
+                            continue
                     flip_from_side = None
                     flip_qty = 0.0
                     remaining_indicator_qty = self._indicator_open_qty(
@@ -3204,6 +3344,23 @@ class StrategyEngine:
                     ):
                         continue
                     if action_norm == "buy":
+                        live_short_qty = 0.0
+                        try:
+                            live_short_qty = max(
+                                0.0,
+                                float(self._current_futures_position_qty(cw["symbol"], "SELL", desired_ps_short)),
+                            )
+                        except Exception:
+                            live_short_qty = 0.0
+                        if live_short_qty > 0.0:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY skipped:"
+                                    f" short leg still live on exchange ({live_short_qty:.10f})."
+                                )
+                            except Exception:
+                                pass
+                            continue
                         indicator_order_requests.append(
                             {
                                 "side": "BUY",
@@ -3213,6 +3370,23 @@ class StrategyEngine:
                             }
                         )
                     else:
+                        live_long_qty = 0.0
+                        try:
+                            live_long_qty = max(
+                                0.0,
+                                float(self._current_futures_position_qty(cw["symbol"], "BUY", desired_ps_long)),
+                            )
+                        except Exception:
+                            live_long_qty = 0.0
+                        if live_long_qty > 0.0:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL skipped:"
+                                    f" long leg still live on exchange ({live_long_qty:.10f})."
+                                )
+                            except Exception:
+                                pass
+                            continue
                         indicator_order_requests.append(
                             {
                                 "side": "SELL",
