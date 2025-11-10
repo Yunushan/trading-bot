@@ -460,7 +460,7 @@ class StrategyEngine:
         collected: list[str] = []
         if ids:
             collected.extend(list(ids))
-        for _, _, _, entry in self._iter_indicator_entries(symbol, interval, indicator_key, side):
+        for _, entry in self._iter_indicator_entries(symbol, interval, indicator_key, side):
             ledger = entry.get("ledger_id")
             if ledger and ledger not in collected:
                 collected.append(ledger)
@@ -1102,7 +1102,12 @@ class StrategyEngine:
         if not isinstance(leg, dict):
             self._leg_ledger.pop(leg_key, None)
             return
-        entries = self._leg_entries(leg_key)
+        entries_param = leg.get("entries") if isinstance(leg, dict) else None
+        if isinstance(entries_param, list):
+            provided_entries = [entry for entry in entries_param if isinstance(entry, dict)]
+            entries = provided_entries if provided_entries else self._leg_entries(leg_key)
+        else:
+            entries = self._leg_entries(leg_key)
         total_qty = 0.0
         weighted_notional = 0.0
         total_margin = 0.0
