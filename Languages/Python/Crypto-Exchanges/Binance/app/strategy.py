@@ -420,7 +420,7 @@ class StrategyEngine:
 
     def _indicator_state_entry(self, symbol: str, interval: str, indicator_key: str) -> dict[str, set[str]]:
         sym = str(symbol or "").upper()
-        iv = str(interval or "").lower()
+        iv = str(interval or "").strip().lower()
         key = (sym, iv, str(indicator_key or "").lower())
         with self._indicator_state_lock:
             state = self._indicator_state.get(key)
@@ -435,7 +435,7 @@ class StrategyEngine:
     def _indicator_has_open(self, symbol: str, interval: str, indicator_key: str, side: str) -> bool:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         sym = str(symbol or "").upper()
-        iv = str(interval or "").lower()
+        iv = str(interval or "").strip().lower()
         key = (sym, iv, str(indicator_key or "").lower())
         state = None
         with self._indicator_state_lock:
@@ -450,7 +450,7 @@ class StrategyEngine:
     def _indicator_get_ledger_ids(self, symbol: str, interval: str, indicator_key: str, side: str) -> list[str]:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         sym = str(symbol or "").upper()
-        iv = str(interval or "").lower()
+        iv = str(interval or "").strip().lower()
         key = (sym, iv, str(indicator_key or "").lower())
         ids: set[str] | None = None
         with self._indicator_state_lock:
@@ -751,6 +751,11 @@ class StrategyEngine:
     def _extract_indicator_keys(self, entry: dict | None) -> list[str]:
         if not isinstance(entry, dict):
             return []
+        key_override = entry.get("indicator_keys")
+        if isinstance(key_override, (list, tuple)):
+            keys = [str(token or "").strip().lower() for token in key_override if str(token or "").strip()]
+            if keys:
+                return keys
         sig = entry.get("trigger_signature") or entry.get("trigger_indicators")
         sig_tuple = self._normalize_signature_tuple(sig if isinstance(sig, Iterable) else [])
         if not sig_tuple:
@@ -4325,6 +4330,12 @@ class StrategyEngine:
                                     'trigger_indicators': list(trigger_labels),
                                     'trigger_desc': trigger_desc,
                                 }
+                                try:
+                                    sig_tokens = StrategyEngine._normalize_signature_tokens_no_slots(signature_list)
+                                    if sig_tokens:
+                                        entry_payload['indicator_keys'] = list(sig_tokens)
+                                except Exception:
+                                    pass
                                 if entry_fee_usdt:
                                     entry_payload['fees_usdt'] = float(entry_fee_usdt)
                                     entry_payload['entry_fee_usdt'] = float(entry_fee_usdt)
