@@ -1,5 +1,5 @@
 
-import time, copy, traceback, math, threading, os
+import time, copy, traceback, math, threading, os, re
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
@@ -489,6 +489,17 @@ class StrategyEngine:
             filtered.append(canon)
         return tuple(filtered)
 
+    @staticmethod
+    def _normalize_indicator_token_list(tokens: Iterable[str] | str | None) -> list[str]:
+        if tokens is None:
+            return []
+        if isinstance(tokens, str):
+            iterable = [tokens]
+        else:
+            iterable = list(tokens)
+        normalized = StrategyEngine._normalize_signature_tokens_no_slots(iterable)
+        return list(dict.fromkeys(normalized))
+
     def _indicator_state_entry(self, symbol: str, interval: str, indicator_key: str) -> dict[str, set[str]]:
         sym = str(symbol or "").upper()
         iv = str(interval or "").strip().lower()
@@ -577,6 +588,31 @@ class StrategyEngine:
             bucket.pop(ledger_id, None)
             if not bucket:
                 self._trade_book.pop(key, None)
+
+    def _trade_book_update_qty(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str,
+        side: str,
+        ledger_id: str | None,
+        qty: float,
+    ) -> None:
+        if not ledger_id:
+            return
+        key = self._trade_book_key(symbol, interval, indicator_key, side)
+        if not key:
+            return
+        with self._trade_book_lock:
+            bucket = self._trade_book.get(key)
+            if not bucket:
+                return
+            meta = bucket.get(ledger_id)
+            if isinstance(meta, dict):
+                try:
+                    meta["qty"] = max(0.0, float(qty or 0.0))
+                except Exception:
+                    meta["qty"] = 0.0
 
     def _trade_book_entries(
         self,
@@ -729,8 +765,20 @@ class StrategyEngine:
                 continue
         return matches
 
-    def _indicator_open_qty(self, symbol: str, interval: str, indicator_key: str, side: str) -> float:
+    def _indicator_open_qty(
+        self,
+        symbol: str,
+        interval: str,
+        indicator_key: str,
+        side: str,
+        interval_aliases: Iterable[str] | None = None,
+    ) -> float:
         target_tokens = self._tokenize_interval_label(interval)
+        if interval_aliases:
+            for alias in interval_aliases:
+                norm = _normalize_interval_token(alias)
+                if norm:
+                    target_tokens.add(norm)
         indicator_norm = _canonical_indicator_token(indicator_key) or indicator_key
         qty_from_book = self._trade_book_total_qty(symbol, interval, indicator_norm, side)
         if qty_from_book is not None:
@@ -1038,6 +1086,21 @@ class StrategyEngine:
                 break
         return token or None
 
+
+def _extract_interval_tokens_from_labels(labels: Iterable[str] | None) -> set[str]:
+    tokens: set[str] = set()
+    if not labels:
+        return tokens
+    pattern = re.compile(r"@([0-9]+[smhd])", re.IGNORECASE)
+    for label in labels:
+        if not isinstance(label, str):
+            continue
+        for match in pattern.finditer(label):
+            norm = StrategyEngine._normalize_interval_token(match.group(1))
+            if norm:
+                tokens.add(norm)
+    return tokens
+
     @classmethod
     def _tokenize_interval_label(cls, interval_value: str | None) -> set[str]:
         tokens: set[str] = set()
@@ -1096,10 +1159,17 @@ class StrategyEngine:
         signature_hint: tuple[str, ...] | None = None,
         *,
         ignore_hold: bool = False,
+        interval_aliases: Iterable[str] | None = None,
+        qty_limit: float | None = None,
     ) -> tuple[int, float]:
         symbol = cw["symbol"]
         interval_text = str(interval or "").strip()
         interval_tokens = self._tokenize_interval_label(interval_text)
+        if interval_aliases:
+            for alias in interval_aliases:
+                norm = _normalize_interval_token(alias)
+                if norm:
+                    interval_tokens.add(norm)
         interval_lower = interval_text.lower()
         interval_has_filter = interval_tokens != {"-"}
         ledger_entries = self._trade_book_entries(symbol, interval, indicator_key, side_label)
@@ -1136,7 +1206,16 @@ class StrategyEngine:
         side_norm = "BUY" if str(side_label).upper() in {"BUY", "LONG"} else "SELL"
         closed_count = 0
         total_qty_closed = 0.0
+        limit_remaining = None
+        limit_tol = 1e-9
+        if qty_limit is not None:
+            try:
+                limit_remaining = max(0.0, float(qty_limit))
+            except Exception:
+                limit_remaining = 0.0
         for ledger_id in list(ledger_ids):
+            if limit_remaining is not None and limit_remaining <= limit_tol:
+                break
             leg_key = self._ledger_index.get(ledger_id)
             if not leg_key:
                 continue
@@ -1167,6 +1246,7 @@ class StrategyEngine:
                     continue
                 cw_clone = dict(cw)
                 cw_clone["interval"] = leg_key[1]
+                qty_request = limit_remaining if limit_remaining is not None else None
                 closed_qty = self._close_leg_entry(
                     cw_clone,
                     leg_key,
@@ -1177,12 +1257,17 @@ class StrategyEngine:
                     loss_usdt=0.0,
                     price_pct=0.0,
                     margin_pct=0.0,
+                    qty_limit=qty_request,
                 )
                 if closed_qty > 0.0:
                     closed_count += 1
                     total_qty_closed += closed_qty
+                    if limit_remaining is not None:
+                        limit_remaining = max(0.0, limit_remaining - closed_qty)
             except Exception:
                 continue
+            if limit_remaining is not None and limit_remaining <= limit_tol:
+                break
         if closed_count <= 0:
             targeted_entries: list[tuple[tuple[str, str, str], dict]] = []
             for leg_key, leg_state in list(self._leg_ledger.items()):
@@ -1208,6 +1293,8 @@ class StrategyEngine:
                     targeted_entries.append((leg_key, entry))
             if targeted_entries:
                 for leg_key, entry in targeted_entries:
+                    if limit_remaining is not None and limit_remaining <= limit_tol:
+                        break
                     try:
                         qty_snapshot = max(0.0, float(entry.get("qty") or 0.0))
                     except Exception:
@@ -1230,6 +1317,7 @@ class StrategyEngine:
                             continue
                         cw_clone = dict(cw)
                         cw_clone["interval"] = leg_key[1]
+                        qty_request = limit_remaining if limit_remaining is not None else None
                         closed_qty = self._close_leg_entry(
                             cw_clone,
                             leg_key,
@@ -1240,10 +1328,13 @@ class StrategyEngine:
                             loss_usdt=0.0,
                             price_pct=0.0,
                             margin_pct=0.0,
+                            qty_limit=qty_request,
                         )
                         if closed_qty > 0.0:
                             closed_count += 1
                             total_qty_closed += closed_qty
+                            if limit_remaining is not None:
+                                limit_remaining = max(0.0, limit_remaining - closed_qty)
                     except Exception:
                         continue
                 if closed_count > 0:
@@ -1300,6 +1391,8 @@ class StrategyEngine:
             except Exception:
                 live_qty = 0.0
             qty_to_close = min(live_qty, fallback_qty_target) if fallback_qty_target > 0.0 else 0.0
+            if limit_remaining is not None:
+                qty_to_close = min(qty_to_close, limit_remaining)
             if fallback_entries and qty_to_close > 0.0:
                 close_side = "SELL" if side_norm == "BUY" else "BUY"
                 try:
@@ -1325,6 +1418,8 @@ class StrategyEngine:
                             executed_qty_val = 0.0
                     qty_recorded = executed_qty_val if executed_qty_val > 0.0 else qty_to_close
                     total_qty_closed += qty_recorded
+                    if limit_remaining is not None:
+                        limit_remaining = max(0.0, limit_remaining - qty_recorded)
                     entries_removed = 0
                     affected_leg_keys: set[tuple[str, str, str]] = set()
                     for leg_key, ledger_token in fallback_entries:
@@ -1611,6 +1706,61 @@ class StrategyEngine:
             except Exception:
                 pass
 
+    def _decrement_leg_entry_qty(
+        self,
+        leg_key: tuple[str, str, str],
+        ledger_id: str,
+        previous_qty: float,
+        remaining_qty: float,
+    ) -> None:
+        leg = self._leg_ledger.get(leg_key)
+        if not isinstance(leg, dict):
+            return
+        entries = leg.get("entries")
+        if not isinstance(entries, list):
+            return
+        ratio = 0.0
+        try:
+            if previous_qty > 0.0:
+                ratio = max(0.0, remaining_qty / previous_qty)
+        except Exception:
+            ratio = 0.0
+        updated = False
+        for idx, entry in enumerate(entries):
+            if entry.get("ledger_id") != ledger_id:
+                continue
+            new_entry = dict(entry)
+            new_entry["qty"] = remaining_qty
+            for field in (
+                "margin_usdt",
+                "margin",
+                "size_usdt",
+                "notional",
+                "margin_balance",
+                "maint_margin",
+                "position_size",
+            ):
+                value = new_entry.get(field)
+                if isinstance(value, (int, float)):
+                    new_entry[field] = max(0.0, float(value) * ratio)
+            entries[idx] = new_entry
+            leg["entries"] = entries
+            indicator_keys = self._extract_indicator_keys(new_entry)
+            if ledger_id and indicator_keys:
+                for indicator_key in indicator_keys:
+                    self._trade_book_update_qty(
+                        leg_key[0],
+                        leg_key[1],
+                        indicator_key,
+                        leg_key[2],
+                        ledger_id,
+                        remaining_qty,
+                    )
+            updated = True
+            break
+        if updated:
+            self._update_leg_snapshot(leg_key, leg)
+
     def _sync_leg_entry_totals(self, leg_key, actual_qty: float) -> None:
         leg = self._leg_ledger.get(leg_key)
         if not isinstance(leg, dict):
@@ -1770,12 +1920,21 @@ class StrategyEngine:
         loss_usdt: float,
         price_pct: float,
         margin_pct: float,
+        qty_limit: float | None = None,
     ) -> float:
         symbol, interval, _ = leg_key
         qty_recorded = max(0.0, float(entry.get("qty") or 0.0))
         if qty_recorded <= 0.0:
             return 0.0
         qty_to_close = qty_recorded
+        if qty_limit is not None:
+            try:
+                qty_cap = max(0.0, float(qty_limit))
+            except Exception:
+                qty_cap = 0.0
+            if qty_cap <= 0.0:
+                return 0.0
+            qty_to_close = min(qty_to_close, qty_cap)
         actual_qty = self._current_futures_position_qty(symbol, side_label, position_side)
         if actual_qty is not None:
             eps = max(1e-9, actual_qty * 1e-6)
@@ -1826,7 +1985,17 @@ class StrategyEngine:
             res,
             leg_info_override=entry,
         )
-        self._remove_leg_entry(leg_key, entry.get("ledger_id"))
+        remaining_qty = qty_recorded - qty_to_close
+        eps_remaining = max(1e-9, qty_recorded * 1e-6)
+        if remaining_qty <= eps_remaining or not entry.get("ledger_id"):
+            self._remove_leg_entry(leg_key, entry.get("ledger_id"))
+        else:
+            self._decrement_leg_entry_qty(
+                leg_key,
+                entry.get("ledger_id"),
+                qty_recorded,
+                remaining_qty,
+            )
         try:
             if hasattr(self.guard, "mark_closed"):
                 side_norm = 'BUY' if str(side_label).upper() in ('BUY', 'LONG', 'L') else 'SELL'
@@ -2042,7 +2211,7 @@ class StrategyEngine:
         interval: str,
         next_side: str,
         trigger_signature: tuple[str, ...] | None = None,
-        indicator_key: str | None = None,
+        indicator_key: Iterable[str] | str | None = None,
         target_qty: float | None = None,
     ) -> bool:
         """Ensure no conflicting exposure remains before opening a new leg."""
@@ -2050,7 +2219,11 @@ class StrategyEngine:
         interval_tokens = self._tokenize_interval_label(interval_norm)
         interval_norm_lower = interval_norm.lower()
         interval_has_filter = interval_tokens != {"-"}
-        indicator_hint = indicator_key or self._indicator_token_from_signature(trigger_signature)
+        indicator_tokens = StrategyEngine._normalize_indicator_token_list(indicator_key)
+        if not indicator_tokens:
+            indicator_tokens = StrategyEngine._normalize_indicator_token_list(
+                self._indicator_token_from_signature(trigger_signature)
+            )
         signature_hint_tokens = StrategyEngine._normalize_signature_tokens_no_slots(trigger_signature)
 
         try:
@@ -2138,6 +2311,7 @@ class StrategyEngine:
         def _close_interval_side_entries(
             indicator_filter: str | None,
             signature_filter: tuple[str, ...] | None,
+            qty_limit: float | None,
         ) -> tuple[int, bool, float]:
             """Close ledger-tracked entries for this symbol/interval/opposite side."""
             closed_entries = 0
@@ -2148,7 +2322,16 @@ class StrategyEngine:
                 tuple(str(token or "").strip().lower() for token in (signature_filter or ()) if str(token or "").strip())
                 or None
             )
+            limit_remaining = None
+            limit_tol = 1e-9
+            if qty_limit is not None:
+                try:
+                    limit_remaining = max(0.0, float(qty_limit))
+                except Exception:
+                    limit_remaining = 0.0
             for leg_key in list(self._leg_ledger.keys()):
+                if limit_remaining is not None and limit_remaining <= limit_tol:
+                    break
                 leg_sym, leg_interval, leg_side = leg_key
                 if str(leg_sym or "").upper() != symbol:
                     continue
@@ -2201,6 +2384,7 @@ class StrategyEngine:
                     if dual:
                         position_side = 'LONG' if leg_side_norm == 'BUY' else 'SHORT'
                     try:
+                        qty_request = limit_remaining if limit_remaining is not None else None
                         closed_qty = self._close_leg_entry(
                             cw_ctx,
                             leg_key,
@@ -2211,10 +2395,13 @@ class StrategyEngine:
                             loss_usdt=0.0,
                             price_pct=0.0,
                             margin_pct=0.0,
+                            qty_limit=qty_request,
                         )
                         if closed_qty > 0.0:
                             closed_entries += 1
                             qty_closed += closed_qty
+                            if limit_remaining is not None:
+                                limit_remaining = max(0.0, limit_remaining - closed_qty)
                         else:
                             failed = True
                             break
@@ -2231,48 +2418,54 @@ class StrategyEngine:
                     break
             return closed_entries, failed, qty_closed
 
-        if indicator_hint:
+        if indicator_tokens:
             cw_stub = {"symbol": symbol, "interval": interval_norm}
             indicator_position_side = None
             if dual:
                 indicator_position_side = 'LONG' if opp == 'BUY' else 'SHORT'
-            closed_count = 0
-            closed_qty_total = 0.0
-            try:
-                closed_count, closed_qty_total = self._close_indicator_positions(
-                    cw_stub,
-                    interval_norm,
-                    indicator_hint,
-                    opp,
-                    indicator_position_side,
-                    signature_hint=signature_hint_tokens,
-                    ignore_hold=True,
-                )
-            except Exception as exc:
+            indicator_target_cleared = True
+            for indicator_hint in indicator_tokens:
+                closed_count = 0
+                closed_qty_total = 0.0
                 try:
-                    self.log(f"{symbol}@{interval} indicator-close {indicator_hint} failed: {exc}")
-                except Exception:
-                    pass
-            if closed_count:
-                closed_any = True
-                _reduce_goal(closed_qty_total)
-                try:
-                    ctx_interval = interval_norm or "default"
-                    self.log(
-                        f"{symbol}@{ctx_interval} flip {indicator_hint}: closed {closed_count} {opp} leg(s) before opening {next_side}."
+                    closed_count, closed_qty_total = self._close_indicator_positions(
+                        cw_stub,
+                        interval_norm,
+                        indicator_hint,
+                        opp,
+                        indicator_position_side,
+                        signature_hint=signature_hint_tokens,
+                        ignore_hold=True,
+                        qty_limit=qty_goal,
                     )
+                except Exception as exc:
+                    try:
+                        self.log(f"{symbol}@{interval} indicator-close {indicator_hint} failed: {exc}")
+                    except Exception:
+                        pass
+                if closed_count:
+                    closed_any = True
+                    _reduce_goal(closed_qty_total)
+                    try:
+                        ctx_interval = interval_norm or "default"
+                        self.log(
+                            f"{symbol}@{ctx_interval} flip {indicator_hint}: closed {closed_count} {opp} leg(s) before opening {next_side}."
+                        )
+                    except Exception:
+                        pass
+                    refreshed = _refresh_positions_snapshot()
+                    if refreshed is None:
+                        return False
+                    positions = refreshed
+                    if _goal_met():
+                        return True
+                try:
+                    indicator_clear = not self._indicator_has_open(symbol, interval_norm, indicator_hint, opp)
                 except Exception:
-                    pass
-                refreshed = _refresh_positions_snapshot()
-                if refreshed is None:
-                    return False
-                positions = refreshed
+                    indicator_clear = False
+                indicator_target_cleared = indicator_target_cleared and indicator_clear
                 if _goal_met():
                     return True
-            try:
-                indicator_target_cleared = not self._indicator_has_open(symbol, interval_norm, indicator_hint, opp)
-            except Exception:
-                indicator_target_cleared = False
 
         def _has_opposite_live(pos_iterable) -> bool:
             tol = 1e-9
@@ -2289,14 +2482,28 @@ class StrategyEngine:
                         return True
             return False
 
-        if dual and indicator_hint and indicator_target_cleared:
+        if dual and indicator_tokens and indicator_target_cleared:
             if qty_goal is not None:
                 if _goal_met():
                     return True
             else:
                 return True
 
-        ledger_closed, ledger_failed, ledger_qty_closed = _close_interval_side_entries(indicator_hint, signature_hint_tokens)
+        ledger_closed = 0
+        ledger_failed = False
+        ledger_qty_closed = 0.0
+        if indicator_tokens:
+            for indicator_hint in indicator_tokens:
+                closed, failed, qty = _close_interval_side_entries(indicator_hint, signature_hint_tokens, qty_goal)
+                ledger_closed += closed
+                ledger_qty_closed += qty
+                if failed:
+                    ledger_failed = True
+                    break
+        else:
+            ledger_closed, ledger_failed, ledger_qty_closed = _close_interval_side_entries(
+                None, signature_hint_tokens, qty_goal
+            )
         if ledger_failed:
             try:
                 self.log(
@@ -2314,11 +2521,13 @@ class StrategyEngine:
             positions = refreshed
             if _goal_met():
                 return True
-        if indicator_hint and ledger_closed <= 0 and not indicator_target_cleared:
+        if indicator_tokens and not indicator_target_cleared:
             try:
-                self.log(
-                    f"{symbol}@{interval_norm or 'default'} flip skipped: no {indicator_hint} {opp} leg to close."
-                )
+                indicator_label = ", ".join(indicator_tokens)
+                if ledger_closed <= 0:
+                    self.log(f"{symbol}@{interval_norm or 'default'} flip skipped: no {indicator_label} {opp} leg to close.")
+                else:
+                    self.log(f"{symbol}@{interval_norm or 'default'} flip blocked: {indicator_label} {opp} leg still active.")
             except Exception:
                 pass
             return False
@@ -2327,7 +2536,7 @@ class StrategyEngine:
             if qty_goal is not None:
                 if _goal_met():
                     return True
-            elif indicator_hint and indicator_target_cleared:
+            elif indicator_tokens and indicator_target_cleared:
                 return True
             elif not _has_opposite_live(positions):
                 return True
@@ -3427,16 +3636,27 @@ class StrategyEngine:
                         pass
                     continue
                 if action_norm == "buy":
-                    # Close existing shorts for this indicator on this interval.
-                    closed_short, closed_short_qty = self._close_indicator_positions(
-                        cw,
+                    remaining_indicator_qty = self._indicator_open_qty(
+                        cw["symbol"],
                         interval_current,
                         indicator_key,
                         "SELL",
-                        desired_ps_short,
-                        signature_hint=(indicator_key,),
-                        ignore_hold=True,
+                        interval_aliases=indicator_interval_tokens,
                     )
+                    closed_short = 0
+                    closed_short_qty = 0.0
+                    if remaining_indicator_qty > 0.0:
+                        closed_short, closed_short_qty = self._close_indicator_positions(
+                            cw,
+                            interval_current,
+                            indicator_key,
+                            "SELL",
+                            desired_ps_short,
+                            signature_hint=(indicator_key,),
+                            ignore_hold=True,
+                            interval_aliases=indicator_interval_tokens,
+                            qty_limit=remaining_indicator_qty,
+                        )
                     if closed_short <= 0:
                         live_short_qty = 0.0
                         try:
@@ -3458,7 +3678,11 @@ class StrategyEngine:
                     flip_from_side = None
                     flip_qty = 0.0
                     remaining_indicator_qty = self._indicator_open_qty(
-                        cw["symbol"], interval_current, indicator_key, "SELL"
+                        cw["symbol"],
+                        interval_current,
+                        indicator_key,
+                        "SELL",
+                        interval_aliases=indicator_interval_tokens,
                     )
                     if closed_short > 0 and closed_short_qty > 0.0:
                         flip_from_side = "SELL"
@@ -3503,15 +3727,27 @@ class StrategyEngine:
                     )
                 elif action_norm == "sell":
                     # Close existing longs for this indicator on this interval.
-                    closed_long, closed_long_qty = self._close_indicator_positions(
-                        cw,
+                    remaining_long_qty = self._indicator_open_qty(
+                        cw["symbol"],
                         interval_current,
                         indicator_key,
                         "BUY",
-                        desired_ps_long,
-                        signature_hint=(indicator_key,),
-                        ignore_hold=True,
+                        interval_aliases=indicator_interval_tokens,
                     )
+                    closed_long = 0
+                    closed_long_qty = 0.0
+                    if remaining_long_qty > 0.0:
+                        closed_long, closed_long_qty = self._close_indicator_positions(
+                            cw,
+                            interval_current,
+                            indicator_key,
+                            "BUY",
+                            desired_ps_long,
+                            signature_hint=(indicator_key,),
+                            ignore_hold=True,
+                            interval_aliases=indicator_interval_tokens,
+                            qty_limit=remaining_long_qty,
+                        )
                     if closed_long <= 0:
                         live_long_qty = 0.0
                         try:
@@ -3533,7 +3769,11 @@ class StrategyEngine:
                     flip_from_side = None
                     flip_qty = 0.0
                     remaining_indicator_qty = self._indicator_open_qty(
-                        cw["symbol"], interval_current, indicator_key, "BUY"
+                        cw["symbol"],
+                        interval_current,
+                        indicator_key,
+                        "BUY",
+                        interval_aliases=indicator_interval_tokens,
                     )
                     if closed_long > 0 and closed_long_qty > 0.0:
                         flip_from_side = "BUY"
@@ -3910,17 +4150,30 @@ class StrategyEngine:
                 else side.lower()
             )
 
+            indicator_tokens_for_order = StrategyEngine._normalize_indicator_token_list(signature)
+            if not indicator_tokens_for_order:
+                indicator_tokens_for_order = StrategyEngine._normalize_indicator_token_list(trigger_labels)
+            indicator_interval_tokens = _extract_interval_tokens_from_labels(trigger_labels)
+
             indicator_key_hint = self._indicator_token_from_signature(signature, trigger_labels)
             indicator_guard_override = flip_active
             guard_override_used = False
             indicator_opposite_side = 'SELL' if side == 'BUY' else 'BUY'
-            if indicator_key_hint and not indicator_guard_override:
+            indicator_tokens_for_guard = list(indicator_tokens_for_order)
+            if indicator_key_hint:
+                hint_norm = _canonical_indicator_token(indicator_key_hint) or indicator_key_hint
+                if hint_norm and hint_norm not in indicator_tokens_for_guard:
+                    indicator_tokens_for_guard.append(hint_norm)
+            if indicator_tokens_for_guard and not indicator_guard_override:
                 try:
-                    indicator_guard_override = self._indicator_has_open(
-                        cw["symbol"],
-                        interval_norm,
-                        indicator_key_hint,
-                        indicator_opposite_side,
+                    indicator_guard_override = any(
+                        self._indicator_has_open(
+                            cw["symbol"],
+                            interval_norm,
+                            token,
+                            indicator_opposite_side,
+                        )
+                        for token in indicator_tokens_for_guard
                     )
                 except Exception:
                     indicator_guard_override = False
@@ -4179,6 +4432,10 @@ class StrategyEngine:
                         ]
                         if len(labels_norm) == 1:
                             indicator_key_for_order = labels_norm[0]
+                    if indicator_key_for_order:
+                        indicator_key_norm = _canonical_indicator_token(indicator_key_for_order) or indicator_key_for_order
+                        if indicator_key_norm and indicator_key_norm not in indicator_tokens_for_order:
+                            indicator_tokens_for_order.append(indicator_key_norm)
 
                     key_current_leg = (cw["symbol"], cw.get("interval"), side)
                     entries_side_all: list[tuple[tuple[str, str, str], dict]] = []
@@ -4434,7 +4691,7 @@ class StrategyEngine:
                         cw.get('interval'),
                         side,
                         signature,
-                        indicator_key_for_order,
+                        indicator_tokens_for_order,
                         target_qty=target_flip_qty,
                     ):
                         _guard_abort()

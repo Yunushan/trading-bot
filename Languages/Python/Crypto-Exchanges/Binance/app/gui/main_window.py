@@ -805,6 +805,27 @@ def _extract_indicator_metrics(indicator_key: str, segments: list[str]) -> tuple
     return value_str, action_str
 
 
+_CLOSED_RECORD_STATES = {
+    "closed",
+    "liquidated",
+    "liquidation",
+    "error",
+    "stopped",
+}
+
+_CLOSED_ALLOCATION_STATES = {
+    "closed",
+    "error",
+    "cancelled",
+    "canceled",
+    "liquidated",
+    "liquidation",
+    "stopped",
+    "completed",
+    "filled",
+}
+
+
 def _normalize_interval_token(value: str | None) -> str | None:
     if not value:
         return None
@@ -816,6 +837,8 @@ def _normalize_interval_token(value: str | None) -> str | None:
 
 def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None) -> tuple[list[str], dict[str, list[str]]]:
     data = rec.get("data") or {}
+    record_status = str(rec.get("status") or data.get("status") or "").strip().lower()
+    include_inactive_allocs = record_status in _CLOSED_RECORD_STATES
     primary_interval = ""
     if interval_hint:
         primary_interval = str(interval_hint).split(",")[0].strip()
@@ -857,6 +880,9 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
     if isinstance(allocations, list):
         for alloc in allocations:
             if not isinstance(alloc, dict):
+                continue
+            status_flag = str(alloc.get("status") or "").strip().lower()
+            if status_flag in _CLOSED_ALLOCATION_STATES and not include_inactive_allocs:
                 continue
             desc = alloc.get("trigger_desc")
             if not desc:
@@ -10666,6 +10692,8 @@ def _mw_render_positions_table(self):
             self._live_indicator_cache_last_cleanup = now_ts
         for rec in display_records:
             data = rec.get('data') or {}
+            status_flag = str(rec.get('status') or data.get('status') or "").strip().lower()
+            record_is_closed = status_flag in _CLOSED_RECORD_STATES
             indicators_list = tuple(_normalize_indicator_values(rec.get('indicators')))
             interval_hint = (
                 rec.get('entry_tf')
@@ -10677,15 +10705,19 @@ def _mw_render_positions_table(self):
             rec["_indicator_value_entries"] = indicator_value_entries
             rec["_indicator_interval_map"] = interval_map
             sym_digest = str(rec.get('symbol') or data.get('symbol') or "").strip().upper()
-            current_live_entries = _collect_current_indicator_live_strings(
-                self,
-                sym_digest,
-                indicators_list,
-                live_value_cache,
-                interval_map,
-                interval_hint,
-            )
-            rec["_current_indicator_values"] = current_live_entries
+            if record_is_closed:
+                current_live_entries = list(rec.get("_current_indicator_values") or [])
+                rec["_current_indicator_values"] = current_live_entries
+            else:
+                current_live_entries = _collect_current_indicator_live_strings(
+                    self,
+                    sym_digest,
+                    indicators_list,
+                    live_value_cache,
+                    interval_map,
+                    interval_hint,
+                )
+                rec["_current_indicator_values"] = current_live_entries
             indicator_snapshot = tuple(indicator_value_entries or [])
             interval_snapshot = tuple(
                 (key, tuple(values))
@@ -10755,7 +10787,9 @@ def _mw_render_positions_table(self):
                 side_text = 'Long' if side_key == 'L' else ('Short' if side_key == 'S' else 'Spot')
                 open_time = data.get('open_time') or rec.get('open_time') or '-'
                 status_txt = rec.get('status', 'Active')
-                close_time = rec.get('close_time') if status_txt == 'Closed' else '-'
+                status_lower = str(status_txt).strip().lower()
+                is_closed_like = status_lower in _CLOSED_RECORD_STATES
+                close_time = rec.get('close_time') if is_closed_like else '-'
                 stop_loss_enabled = bool(rec.get('stop_loss_enabled'))
                 stop_loss_text = "Yes" if stop_loss_enabled else "No"
 
@@ -10874,7 +10908,6 @@ def _mw_render_positions_table(self):
                     total_pnl += pnl_value
                     pnl_has_value = True
                     added_to_total = True
-                status_lower = str(status_txt).strip().lower()
                 pnl_valid = (pnl_raw_value is not None) or (abs(pnl_value) > 0.0)
                 if not pnl_valid and status_lower == "closed":
                     pnl_valid = True
@@ -10900,15 +10933,18 @@ def _mw_render_positions_table(self):
                 self.pos_table.setItem(row, POS_TRIGGERED_VALUE_COLUMN, QtWidgets.QTableWidgetItem(indicator_values_display))
                 live_values_entries = rec.get("_current_indicator_values")
                 if live_values_entries is None:
-                    live_values_entries = _collect_current_indicator_live_strings(
-                        self,
-                        sym,
-                        indicators_list,
-                        live_value_cache,
-                        interval_map,
-                        interval,
-                    )
-                    rec["_current_indicator_values"] = live_values_entries
+                    if not is_closed_like:
+                        live_values_entries = _collect_current_indicator_live_strings(
+                            self,
+                            sym,
+                            indicators_list,
+                            live_value_cache,
+                            interval_map,
+                            interval,
+                        )
+                        rec["_current_indicator_values"] = live_values_entries
+                    else:
+                        live_values_entries = []
                 current_values_display = "\n".join(live_values_entries) if live_values_entries else "-"
                 self.pos_table.setItem(row, POS_CURRENT_VALUE_COLUMN, QtWidgets.QTableWidgetItem(current_values_display))
                 self.pos_table.setItem(row, 12, QtWidgets.QTableWidgetItem(side_text))
