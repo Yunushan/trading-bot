@@ -4,7 +4,12 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 
 import pandas as pd
-from .config import STOP_LOSS_MODE_ORDER, STOP_LOSS_SCOPE_OPTIONS, normalize_stop_loss_dict
+from .config import (
+    STOP_LOSS_MODE_ORDER,
+    STOP_LOSS_SCOPE_OPTIONS,
+    normalize_stop_loss_dict,
+    INDICATOR_DISPLAY_NAMES,
+)
 from .binance_wrapper import NetworkConnectivityError, normalize_margin_ratio
 from .indicators import (
     sma,
@@ -56,6 +61,66 @@ def _default_parallel_limit(cpu_count: int) -> int:
 
 
 _MAX_PARALLEL_RUNS = max(1, min(16, _default_parallel_limit(_CPU_COUNT)))
+
+
+def _normalize_indicator_alias(token: str | None) -> str:
+    return str(token or "").strip().lower()
+
+
+def _strip_indicator_label(alias: str) -> str:
+    text = alias.replace("(", " ").replace(")", " ")
+    text = text.replace("%", " % ")
+    while "  " in text:
+        text = text.replace("  ", " ")
+    return text.strip()
+
+
+def _build_indicator_alias_map() -> dict[str, str]:
+    alias_map: dict[str, str] = {}
+
+    def _register(alias: str | None, canonical: str | None) -> None:
+        alias_norm = _normalize_indicator_alias(alias)
+        canonical_norm = _normalize_indicator_alias(canonical)
+        if alias_norm and canonical_norm and alias_norm not in alias_map:
+            alias_map[alias_norm] = canonical_norm
+
+    indicators = INDICATOR_DISPLAY_NAMES or {}
+    for key, label in indicators.items():
+        _register(key, key)
+        _register(label, key)
+        if isinstance(label, str):
+            _register(_strip_indicator_label(label), key)
+            _register(_strip_indicator_label(label).replace(" ", ""), key)
+            if "(" in label and ")" in label:
+                inner = label[label.find("(") + 1 : label.rfind(")")]
+                _register(inner, key)
+                _register(inner.replace(" ", ""), key)
+    return alias_map
+
+
+_INDICATOR_ALIAS_MAP = _build_indicator_alias_map()
+
+
+def _canonical_indicator_token(token: str | None) -> str | None:
+    text = _normalize_indicator_alias(token)
+    if not text:
+        return None
+    mapped = _INDICATOR_ALIAS_MAP.get(text)
+    if mapped:
+        return mapped
+    compact = text.replace(" ", "")
+    mapped = _INDICATOR_ALIAS_MAP.get(compact)
+    if mapped:
+        return mapped
+    stripped = _strip_indicator_label(text)
+    mapped = _INDICATOR_ALIAS_MAP.get(stripped)
+    if mapped:
+        return mapped
+    compact_stripped = stripped.replace(" ", "")
+    mapped = _INDICATOR_ALIAS_MAP.get(compact_stripped)
+    if mapped:
+        return mapped
+    return text
 
 
 class StrategyEngine:
@@ -119,6 +184,8 @@ class StrategyEngine:
         self._symbol_signature_lock = threading.Lock()
         self._indicator_state: dict[tuple[str, str, str], dict[str, set[str]]] = {}
         self._indicator_state_lock = threading.Lock()
+        self._trade_book_lock = threading.RLock()
+        self._trade_book: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = {}
         self._ledger_index: dict[str, tuple[str, str, str]] = {}
         self.can_open_cb = can_open_callback
         self._stop = False
@@ -401,7 +468,10 @@ class StrategyEngine:
             text = str(label or "").strip().lower()
             if not text:
                 continue
-            parts.append(text)
+            if text.startswith("slot"):
+                parts.append(text)
+            else:
+                parts.append(_canonical_indicator_token(text) or text)
         if not parts:
             return None
         parts.sort()
@@ -415,13 +485,15 @@ class StrategyEngine:
             token_norm = str(token or "").strip().lower()
             if not token_norm or token_norm.startswith("slot"):
                 continue
-            filtered.append(token_norm)
+            canon = _canonical_indicator_token(token_norm) or token_norm
+            filtered.append(canon)
         return tuple(filtered)
 
     def _indicator_state_entry(self, symbol: str, interval: str, indicator_key: str) -> dict[str, set[str]]:
         sym = str(symbol or "").upper()
         iv = str(interval or "").strip().lower()
-        key = (sym, iv, str(indicator_key or "").lower())
+        ind = _canonical_indicator_token(indicator_key) or ""
+        key = (sym, iv, ind)
         with self._indicator_state_lock:
             state = self._indicator_state.get(key)
             if not isinstance(state, dict):
@@ -432,11 +504,156 @@ class StrategyEngine:
                 state.setdefault("SELL", set())
             return state
 
+    def _trade_book_key(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str | None,
+        side: str,
+    ) -> tuple[str, str, str, str] | None:
+        indicator_norm = _canonical_indicator_token(indicator_key) or ""
+        if not indicator_norm:
+            return None
+        sym_norm = str(symbol or "").upper()
+        interval_norm = str(interval or "").strip().lower() or "default"
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        return (sym_norm, interval_norm, indicator_norm, side_norm)
+
+    def _trade_book_add_entry(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str,
+        side: str,
+        ledger_id: str | None,
+        qty: float | None,
+        entry: dict,
+    ) -> None:
+        if not ledger_id:
+            return
+        key = self._trade_book_key(symbol, interval, indicator_key, side)
+        if not key:
+            return
+        try:
+            qty_val = max(0.0, float(qty or 0.0))
+        except Exception:
+            qty_val = 0.0
+        if qty_val <= 0.0:
+            return
+        meta = {
+            "ledger_id": ledger_id,
+            "qty": qty_val,
+            "timestamp": float(entry.get("timestamp") or time.time()),
+        }
+        try:
+            meta["entry_price"] = float(entry.get("entry_price") or 0.0)
+        except Exception:
+            pass
+        try:
+            meta["margin_usdt"] = float(entry.get("margin_usdt") or 0.0)
+        except Exception:
+            pass
+        with self._trade_book_lock:
+            bucket = self._trade_book.setdefault(key, {})
+            bucket[ledger_id] = meta
+
+    def _trade_book_remove_entry(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str,
+        side: str,
+        ledger_id: str | None,
+    ) -> None:
+        if not ledger_id:
+            return
+        key = self._trade_book_key(symbol, interval, indicator_key, side)
+        if not key:
+            return
+        with self._trade_book_lock:
+            bucket = self._trade_book.get(key)
+            if not bucket:
+                return
+            bucket.pop(ledger_id, None)
+            if not bucket:
+                self._trade_book.pop(key, None)
+
+    def _trade_book_entries(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str | None,
+        side: str,
+    ) -> list[dict]:
+        key = self._trade_book_key(symbol, interval, indicator_key, side)
+        if not key:
+            return []
+        with self._trade_book_lock:
+            bucket = self._trade_book.get(key)
+            if not bucket:
+                return []
+            entries: list[dict] = []
+            for ledger_id, meta in bucket.items():
+                if not ledger_id:
+                    continue
+                record = dict(meta or {})
+                record.setdefault("ledger_id", ledger_id)
+                entries.append(record)
+        entries.sort(key=lambda rec: float(rec.get("timestamp") or 0.0))
+        return entries
+
+    def _trade_book_total_qty(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str,
+        side: str,
+    ) -> float | None:
+        key = self._trade_book_key(symbol, interval, indicator_key, side)
+        if not key:
+            return None
+        with self._trade_book_lock:
+            bucket = self._trade_book.get(key)
+            if not bucket:
+                return None
+            total = 0.0
+            for meta in bucket.values():
+                try:
+                    total += max(0.0, float(meta.get("qty") or 0.0))
+                except Exception:
+                    continue
+            return total
+
+    def _trade_book_has_entries(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str,
+        side: str,
+    ) -> bool:
+        key = self._trade_book_key(symbol, interval, indicator_key, side)
+        if not key:
+            return False
+        with self._trade_book_lock:
+            bucket = self._trade_book.get(key)
+            if not bucket:
+                return False
+            for meta in bucket.values():
+                try:
+                    if max(0.0, float(meta.get("qty") or 0.0)) > 0.0:
+                        return True
+                except Exception:
+                    continue
+        return False
+
     def _indicator_has_open(self, symbol: str, interval: str, indicator_key: str, side: str) -> bool:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         sym = str(symbol or "").upper()
         iv = str(interval or "").strip().lower()
-        key = (sym, iv, str(indicator_key or "").lower())
+        indicator_norm = _canonical_indicator_token(indicator_key) or ""
+        key = (sym, iv, indicator_norm)
+        if self._trade_book_has_entries(symbol, interval, indicator_norm, side):
+            return True
         state = None
         with self._indicator_state_lock:
             raw = self._indicator_state.get(key)
@@ -451,7 +668,8 @@ class StrategyEngine:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         sym = str(symbol or "").upper()
         iv = str(interval or "").strip().lower()
-        key = (sym, iv, str(indicator_key or "").lower())
+        indicator_norm = _canonical_indicator_token(indicator_key) or ""
+        key = (sym, iv, indicator_norm)
         ids: set[str] | None = None
         with self._indicator_state_lock:
             state = self._indicator_state.get(key)
@@ -475,7 +693,7 @@ class StrategyEngine:
     ) -> list[tuple[tuple[str, str, str], dict]]:
         sym_norm = str(symbol or "").upper()
         target_tokens = self._tokenize_interval_label(interval)
-        indicator_norm = str(indicator_key or "").strip().lower()
+        indicator_norm = _canonical_indicator_token(indicator_key) or ""
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         if not indicator_norm:
             return []
@@ -513,6 +731,10 @@ class StrategyEngine:
 
     def _indicator_open_qty(self, symbol: str, interval: str, indicator_key: str, side: str) -> float:
         target_tokens = self._tokenize_interval_label(interval)
+        indicator_norm = _canonical_indicator_token(indicator_key) or indicator_key
+        qty_from_book = self._trade_book_total_qty(symbol, interval, indicator_norm, side)
+        if qty_from_book is not None:
+            return qty_from_book
         total = 0.0
         try:
             for (leg_sym, leg_iv, leg_side), entry in self._iter_indicator_entries(symbol, interval, indicator_key, side):
@@ -614,7 +836,7 @@ class StrategyEngine:
             return True
         sym_norm = str(symbol or "").upper()
         interval_norm = str(interval or "").strip().lower() or "default"
-        indicator_norm = str(indicator_key or "").strip().lower()
+        indicator_norm = _canonical_indicator_token(indicator_key) or ""
         if not indicator_norm:
             return True
         key = (sym_norm, interval_norm, indicator_norm)
@@ -678,7 +900,7 @@ class StrategyEngine:
             return 0.0
         sym_norm = str(symbol or "").upper()
         interval_norm = str(interval or "").strip().lower() or "default"
-        indicator_norm = str(indicator_key or "").strip().lower()
+        indicator_norm = _canonical_indicator_token(indicator_key) or ""
         if not indicator_norm:
             return 0.0
         last = self._indicator_last_action.get((sym_norm, interval_norm, indicator_norm))
@@ -749,28 +971,39 @@ class StrategyEngine:
         for token in sig_tuple:
             token_norm = str(token or "").strip().lower()
             if token_norm and not token_norm.startswith("slot"):
-                return token_norm
-        return sig_tuple[0] if sig_tuple else None
+                return _canonical_indicator_token(token_norm) or token_norm
+        fallback = sig_tuple[0] if sig_tuple else None
+        return _canonical_indicator_token(fallback) or (fallback if isinstance(fallback, str) else None)
 
     def _extract_indicator_keys(self, entry: dict | None) -> list[str]:
         if not isinstance(entry, dict):
             return []
         key_override = entry.get("indicator_keys")
         if isinstance(key_override, (list, tuple)):
-            keys = [str(token or "").strip().lower() for token in key_override if str(token or "").strip()]
-            if keys:
-                return keys
+            normalized = []
+            for token in key_override:
+                canon = _canonical_indicator_token(token)
+                if canon:
+                    normalized.append(canon)
+            if normalized:
+                return list(dict.fromkeys(normalized))
         sig = entry.get("trigger_signature") or entry.get("trigger_indicators")
         sig_tuple = self._normalize_signature_tuple(sig if isinstance(sig, Iterable) else [])
         if not sig_tuple:
             return []
         keys: list[str] = []
+        seen: set[str] = set()
         for token in sig_tuple:
             token_str = str(token or "").strip().lower()
             if token_str and not token_str.startswith("slot"):
-                keys.append(token_str)
+                canon = _canonical_indicator_token(token_str) or token_str
+                if canon not in seen:
+                    keys.append(canon)
+                    seen.add(canon)
         if not keys and sig_tuple:
-            keys.append(sig_tuple[0])
+            fallback = _canonical_indicator_token(sig_tuple[0]) or str(sig_tuple[0]).strip().lower()
+            if fallback:
+                keys.append(fallback)
         return keys
 
     def _extract_indicator_key(self, entry: dict) -> str | None:
@@ -869,7 +1102,11 @@ class StrategyEngine:
         interval_tokens = self._tokenize_interval_label(interval_text)
         interval_lower = interval_text.lower()
         interval_has_filter = interval_tokens != {"-"}
-        ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
+        ledger_entries = self._trade_book_entries(symbol, interval, indicator_key, side_label)
+        ledger_ids = [entry.get("ledger_id") for entry in ledger_entries if entry.get("ledger_id")]
+        ledger_ids = [lid for lid in ledger_ids if lid]
+        if not ledger_ids:
+            ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
         if (not ledger_ids) and signature_hint:
             signature_hint = tuple(
                 str(token or "").strip().lower() for token in signature_hint if str(token or "").strip()
@@ -1179,6 +1416,15 @@ class StrategyEngine:
             if ledger_id and indicator_keys:
                 for indicator_key in indicator_keys:
                     self._indicator_register_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_id)
+                    self._trade_book_add_entry(
+                        leg_key[0],
+                        leg_key[1],
+                        indicator_key,
+                        leg_key[2],
+                        ledger_id,
+                        entry.get("qty"),
+                        entry,
+                    )
         except Exception:
             indicator_keys = None
         try:
@@ -1188,7 +1434,7 @@ class StrategyEngine:
                 side_norm = "BUY" if str(leg_key[2] or "").upper() in {"BUY", "LONG"} else "SELL"
                 now_ts = time.time()
                 for indicator_key in indicator_keys:
-                    ind_norm = str(indicator_key or "").strip().lower()
+                    ind_norm = _canonical_indicator_token(indicator_key) or ""
                     if not ind_norm:
                         continue
                     self._indicator_last_action[(sym_norm, interval_norm, ind_norm)] = {
@@ -1295,6 +1541,7 @@ class StrategyEngine:
                     if ledger and indicator_keys:
                         for indicator_key in indicator_keys:
                             self._indicator_unregister_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger)
+                            self._trade_book_remove_entry(leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger)
                         self._ledger_index.pop(ledger, None)
                 except Exception:
                     pass
@@ -1319,6 +1566,9 @@ class StrategyEngine:
                     if ledger_token and indicator_keys:
                         for indicator_key in indicator_keys:
                             self._indicator_unregister_entry(
+                                leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_token
+                            )
+                            self._trade_book_remove_entry(
                                 leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_token
                             )
                 except Exception:
@@ -1347,6 +1597,9 @@ class StrategyEngine:
                 if ledger_token and indicator_keys:
                     for indicator_key in indicator_keys:
                         self._indicator_unregister_entry(
+                            leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_token
+                        )
+                        self._trade_book_remove_entry(
                             leg_key[0], leg_key[1], indicator_key, leg_key[2], ledger_token
                         )
             except Exception:
@@ -1890,7 +2143,7 @@ class StrategyEngine:
             closed_entries = 0
             failed = False
             qty_closed = 0.0
-            indicator_filter_norm = str(indicator_filter or "").strip().lower()
+            indicator_filter_norm = _canonical_indicator_token(indicator_filter) or ""
             signature_filter = (
                 tuple(str(token or "").strip().lower() for token in (signature_filter or ()) if str(token or "").strip())
                 or None
@@ -1916,7 +2169,10 @@ class StrategyEngine:
                 for entry in entries:
                     entry_keys = self._extract_indicator_keys(entry)
                     if indicator_filter_norm:
-                        matches_filter = any(str(key or "").strip().lower() == indicator_filter_norm for key in entry_keys)
+                        matches_filter = any(
+                            (_canonical_indicator_token(key) or str(key or "").strip().lower()) == indicator_filter_norm
+                            for key in entry_keys
+                        )
                         if not matches_filter:
                             continue
                     if signature_filter:
@@ -3495,12 +3751,12 @@ class StrategyEngine:
                     if str(part or "").strip()
                 )
             )
-            indicator_key_for_order = str(order.get("indicator_key") or "").strip().lower() or None
+            indicator_key_for_order = _canonical_indicator_token(order.get("indicator_key")) or None
             if not indicator_key_for_order:
                 if len(sig_tuple_base) == 1:
                     indicator_key_for_order = sig_tuple_base[0]
                 elif len(trigger_labels_raw) == 1:
-                    indicator_key_for_order = trigger_labels_raw[0].lower()
+                    indicator_key_for_order = _canonical_indicator_token(trigger_labels_raw[0]) or trigger_labels_raw[0].lower()
             allow_order = True
             if leg_dup:
                 entries_dup = self._leg_entries(key_dup)
@@ -3912,12 +4168,12 @@ class StrategyEngine:
                             if str(part or "").strip()
                         )
                     )
-                    indicator_key_for_order = indicator_key_hint
+                    indicator_key_for_order = _canonical_indicator_token(indicator_key_hint) or indicator_key_hint
                     if not indicator_key_for_order and len(sig_tuple_base) == 1:
                         indicator_key_for_order = sig_tuple_base[0]
                     if not indicator_key_for_order and trigger_labels:
                         labels_norm = [
-                            str(lbl or "").strip().lower()
+                            _canonical_indicator_token(lbl) or str(lbl or "").strip().lower()
                             for lbl in trigger_labels
                             if str(lbl or "").strip()
                         ]
