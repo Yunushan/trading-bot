@@ -1086,20 +1086,20 @@ class StrategyEngine:
                 break
         return token or None
 
-
-def _extract_interval_tokens_from_labels(labels: Iterable[str] | None) -> set[str]:
-    tokens: set[str] = set()
-    if not labels:
+    @staticmethod
+    def _extract_interval_tokens_from_labels(labels: Iterable[str] | None) -> set[str]:
+        tokens: set[str] = set()
+        if not labels:
+            return tokens
+        pattern = re.compile(r"@([0-9]+[smhd])", re.IGNORECASE)
+        for label in labels:
+            if not isinstance(label, str):
+                continue
+            for match in pattern.finditer(label):
+                norm = StrategyEngine._normalize_interval_token(match.group(1))
+                if norm:
+                    tokens.add(norm)
         return tokens
-    pattern = re.compile(r"@([0-9]+[smhd])", re.IGNORECASE)
-    for label in labels:
-        if not isinstance(label, str):
-            continue
-        for match in pattern.finditer(label):
-            norm = StrategyEngine._normalize_interval_token(match.group(1))
-            if norm:
-                tokens.add(norm)
-    return tokens
 
     @classmethod
     def _tokenize_interval_label(cls, interval_value: str | None) -> set[str]:
@@ -3606,6 +3606,10 @@ def _extract_interval_tokens_from_labels(labels: Iterable[str] | None) -> set[st
                     interval_seconds_est = float(_interval_to_seconds(str(interval_current or "1m")))
                 except Exception:
                     interval_seconds_est = 60.0
+                indicator_interval_tokens: set[str] = set(self._tokenize_interval_label(interval_current))
+                label_interval_tokens = StrategyEngine._extract_interval_tokens_from_labels([indicator_label])
+                if label_interval_tokens:
+                    indicator_interval_tokens.update(label_interval_tokens)
                 if action_norm not in {"buy", "sell"}:
                     continue
                 if not self._indicator_signal_confirmation_ready(
@@ -4153,8 +4157,6 @@ def _extract_interval_tokens_from_labels(labels: Iterable[str] | None) -> set[st
             indicator_tokens_for_order = StrategyEngine._normalize_indicator_token_list(signature)
             if not indicator_tokens_for_order:
                 indicator_tokens_for_order = StrategyEngine._normalize_indicator_token_list(trigger_labels)
-            indicator_interval_tokens = _extract_interval_tokens_from_labels(trigger_labels)
-
             indicator_key_hint = self._indicator_token_from_signature(signature, trigger_labels)
             indicator_guard_override = flip_active
             guard_override_used = False
