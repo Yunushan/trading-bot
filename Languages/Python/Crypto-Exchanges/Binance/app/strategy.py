@@ -776,16 +776,17 @@ class StrategyEngine:
         target_tokens = self._tokenize_interval_label(interval)
         if interval_aliases:
             for alias in interval_aliases:
-                norm = _normalize_interval_token(alias)
+                norm = self._normalize_interval_token(alias)
                 if norm:
                     target_tokens.add(norm)
         indicator_norm = _canonical_indicator_token(indicator_key) or indicator_key
-        qty_from_book = self._trade_book_total_qty(symbol, interval, indicator_norm, side)
+        indicator_lookup_key = indicator_norm or indicator_key
+        qty_from_book = self._trade_book_total_qty(symbol, interval, indicator_lookup_key, side)
         if qty_from_book is not None:
             return qty_from_book
         total = 0.0
         try:
-            for (leg_sym, leg_iv, leg_side), entry in self._iter_indicator_entries(symbol, interval, indicator_key, side):
+            for (leg_sym, leg_iv, leg_side), entry in self._iter_indicator_entries(symbol, interval, indicator_lookup_key, side):
                 leg_tokens = self._tokenize_interval_label(leg_iv)
                 if target_tokens and target_tokens != {'-'} and leg_tokens.isdisjoint(target_tokens):
                     continue
@@ -1164,19 +1165,23 @@ class StrategyEngine:
     ) -> tuple[int, float]:
         symbol = cw["symbol"]
         interval_text = str(interval or "").strip()
+        indicator_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
+        if not indicator_norm:
+            indicator_norm = str(indicator_key or "").strip().lower()
+        indicator_lookup_key = indicator_norm or indicator_key
         interval_tokens = self._tokenize_interval_label(interval_text)
         if interval_aliases:
             for alias in interval_aliases:
-                norm = _normalize_interval_token(alias)
+                norm = self._normalize_interval_token(alias)
                 if norm:
                     interval_tokens.add(norm)
         interval_lower = interval_text.lower()
         interval_has_filter = interval_tokens != {"-"}
-        ledger_entries = self._trade_book_entries(symbol, interval, indicator_key, side_label)
+        ledger_entries = self._trade_book_entries(symbol, interval, indicator_lookup_key, side_label)
         ledger_ids = [entry.get("ledger_id") for entry in ledger_entries if entry.get("ledger_id")]
         ledger_ids = [lid for lid in ledger_ids if lid]
         if not ledger_ids:
-            ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_key, side_label)
+            ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_lookup_key, side_label)
         if (not ledger_ids) and signature_hint:
             signature_hint = tuple(
                 str(token or "").strip().lower() for token in signature_hint if str(token or "").strip()
@@ -1288,7 +1293,7 @@ class StrategyEngine:
                     continue
                 for entry in entries:
                     keys_for_entry = self._extract_indicator_keys(entry)
-                    if indicator_key not in keys_for_entry:
+                    if indicator_lookup_key not in keys_for_entry:
                         continue
                     targeted_entries.append((leg_key, entry))
             if targeted_entries:
@@ -1359,7 +1364,7 @@ class StrategyEngine:
                     continue
                 for entry in entries:
                     keys_for_entry = self._extract_indicator_keys(entry)
-                    if indicator_key not in keys_for_entry:
+                    if indicator_lookup_key not in keys_for_entry:
                         continue
                     try:
                         interval_seconds_entry = float(_interval_to_seconds(str(leg_key[1] or "1m")))

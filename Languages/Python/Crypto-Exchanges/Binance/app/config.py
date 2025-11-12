@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
     "indicator_flip_confirmation_bars": 2,
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "close_on_exit": False,
+    "allow_opposite_positions": False,
     "indicators": {
         "ma":        {"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},
         "donchian":  {"enabled": False, "length": 20, "buy_value": None, "sell_value": None},

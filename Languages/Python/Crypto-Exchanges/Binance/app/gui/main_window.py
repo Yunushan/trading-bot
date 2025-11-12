@@ -1934,6 +1934,7 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault('theme', 'Dark')
         self.config['close_on_exit'] = False
         self.config.setdefault('close_on_exit', False)
+        self.config.setdefault("allow_opposite_positions", False)
         self.config.setdefault('account_mode', 'Classic Trading')
         self.config.setdefault('auto_bump_percent_multiplier', DEFAULT_CONFIG.get('auto_bump_percent_multiplier', 10.0))
         self.config["connector_backend"] = _normalize_connector_backend(self.config.get("connector_backend"))
@@ -3044,6 +3045,22 @@ class MainWindow(QtWidgets.QWidget):
     def _on_runtime_loop_changed(self, *_args):
         value = self._loop_choice_value(getattr(self, "loop_combo", None))
         self.config["loop_interval_override"] = value
+
+    def _on_allow_opposite_changed(self, state: int) -> None:
+        allow = state == QtCore.Qt.CheckState.Checked
+        self.config["allow_opposite_positions"] = allow
+        guard_obj = getattr(self, "guard", None)
+        if guard_obj and hasattr(guard_obj, "allow_opposite"):
+            dual_enabled = False
+            try:
+                if self.shared_binance is not None and hasattr(self.shared_binance, "get_futures_dual_side"):
+                    dual_enabled = bool(self.shared_binance.get_futures_dual_side())
+            except Exception:
+                dual_enabled = False
+            try:
+                guard_obj.allow_opposite = allow and dual_enabled
+            except Exception:
+                pass
 
     def _on_backtest_loop_changed(self, *_args):
         value = self._loop_choice_value(getattr(self, "backtest_loop_combo", None))
@@ -7269,6 +7286,15 @@ class MainWindow(QtWidgets.QWidget):
             idx_assets = 0
         self.assets_mode_combo.setCurrentIndex(idx_assets)
         grid.addWidget(self.assets_mode_combo, 2, 10)
+
+        self.allow_opposite_checkbox = QtWidgets.QCheckBox("Allow simultaneous long & short positions (hedge stacking)")
+        self.allow_opposite_checkbox.setChecked(bool(self.config.get("allow_opposite_positions", False)))
+        self.allow_opposite_checkbox.setToolTip(
+            "When enabled, the bot may keep both long and short positions open at the same time if hedge mode is active. "
+            "Leave disabled to force the bot to close the opposite side before opening a new trade."
+        )
+        self.allow_opposite_checkbox.stateChanged.connect(self._on_allow_opposite_changed)
+        grid.addWidget(self.allow_opposite_checkbox, 4, 0, 1, 6)
 
         grid.addWidget(QtWidgets.QLabel("Time-in-Force:"), 3, 2)
         self.tif_combo = QtWidgets.QComboBox()
@@ -11600,10 +11626,16 @@ def start_strategy(self):
                 dual_enabled = False
                 if self.shared_binance is not None and hasattr(self.shared_binance, "get_futures_dual_side"):
                     dual_enabled = bool(self.shared_binance.get_futures_dual_side())
+                allow_opposite_cfg = bool(self.config.get("allow_opposite_positions"))
                 if hasattr(guard_obj, "allow_opposite"):
-                    guard_obj.allow_opposite = dual_enabled
+                    guard_obj.allow_opposite = dual_enabled and allow_opposite_cfg
                 if hasattr(guard_obj, "strict_symbol_side"):
                     guard_obj.strict_symbol_side = False
+                if dual_enabled and not allow_opposite_cfg:
+                    self.log(
+                        "Hedge mode detected on Binance account; opposite-side entries are disabled so the bot will close "
+                        "existing positions before flipping."
+                    )
             except Exception:
                 pass
             try:
