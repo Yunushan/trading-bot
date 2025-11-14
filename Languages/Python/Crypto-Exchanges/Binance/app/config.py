@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
     "indicator_flip_confirmation_bars": 2,
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "close_on_exit": False,
-    "allow_opposite_positions": False,
+    "allow_opposite_positions": True,
     "indicators": {
         "ma":        {"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},
         "donchian":  {"enabled": False, "length": 20, "buy_value": None, "sell_value": None},
@@ -161,3 +161,31 @@ def normalize_stop_loss_dict(value):
         scope = STOP_LOSS_SCOPE_OPTIONS[0]
     data["scope"] = scope
     return data
+
+
+def coerce_bool(value, default=False):
+    """
+    Normalize loose user-provided values (bools/strings/ints) into a strict bool.
+
+    We frequently persist settings as JSON, so this helper tolerates values like
+    "false", "0", 0, None, etc. and falls back to the provided default.
+    """
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return bool(default)
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        if text in {"none", "null"}:
+            return bool(default)
+        return bool(default)
+    try:
+        return bool(int(value))
+    except Exception:
+        return bool(value)

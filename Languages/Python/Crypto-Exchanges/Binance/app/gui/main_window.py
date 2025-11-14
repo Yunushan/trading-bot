@@ -47,6 +47,7 @@ from app.config import (
     STOP_LOSS_SCOPE_OPTIONS,
     BACKTEST_TEMPLATE_DEFAULT,
     normalize_stop_loss_dict,
+    coerce_bool,
 )
 from app.binance_wrapper import BinanceWrapper, normalize_margin_ratio
 from app.backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
@@ -844,7 +845,6 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
         primary_interval = str(interval_hint).split(",")[0].strip()
     elif isinstance(data.get("interval_display"), str):
         primary_interval = str(data.get("interval_display")).split(",")[0].strip()
-    primary_interval_norm = _normalize_interval_token(primary_interval)
 
     indicator_keys_raw = _normalize_indicator_values(rec.get("indicators"))
     if not indicator_keys_raw:
@@ -901,99 +901,46 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
     interval_map: dict[str, list[str]] = {}
     results: list[str] = []
     for key in indicator_keys:
-        interval_entry_order: list[str | None] = []
-        interval_entry_map: dict[str | None, str] = {}
+            interval_entry_order: list[str | None] = []
+            interval_entry_map: dict[str | None, str] = {}
 
-        def _register_interval_entry(interval_val: str | None, entry_text: str) -> None:
-            interval_key = (interval_val or "").strip().lower() or None
-            if interval_key in interval_entry_map:
-                interval_entry_map[interval_key] = entry_text
-            else:
-                interval_entry_map[interval_key] = entry_text
-                interval_entry_order.append(interval_key)
+            def _register_interval_entry(interval_val: str | None, entry_text: str) -> None:
+                interval_key = (interval_val or "").strip().lower() or None
+                if interval_key in interval_entry_map:
+                    interval_entry_map[interval_key] = entry_text
+                else:
+                    interval_entry_map[interval_key] = entry_text
+                    interval_entry_order.append(interval_key)
 
-        for source in sources:
-            segments = source.get("segments") or []
-            value, action = _extract_indicator_metrics(key, segments)
-            if value is None and action is None:
+            for source in sources:
+                segments = source.get("segments") or []
+                value, action = _extract_indicator_metrics(key, segments)
+                if action is None:
+                    continue
+                interval_label = source.get("interval") or primary_interval
+                interval_display = (interval_label or "").strip()
+                if not interval_display and primary_interval:
+                    interval_display = primary_interval
+                label = _indicator_short_label(key)
+                interval_part = f"@{interval_display.upper()}" if interval_display else ""
+                if value is not None:
+                    try:
+                        value_display = f"{float(value):.2f}"
+                    except Exception:
+                        value_display = str(value)
+                else:
+                    value_display = "--"
+                action_part = f" -{action}" if action else ""
+                entry = f"{label}{interval_part} {value_display}{action_part}".strip()
+                _register_interval_entry(interval_display, entry)
+                if interval_display:
+                    interval_clean = interval_display.strip().upper()
+                    slots = interval_map.setdefault(key.lower(), [])
+                    if interval_clean not in slots:
+                        slots.append(interval_clean)
+            if not interval_entry_map:
                 continue
-            interval_label = source.get("interval") or primary_interval
-            interval_display = (interval_label or "").strip()
-            if not interval_display and primary_interval:
-                interval_display = primary_interval
-            action_final = action
-            if action_final is None:
-                if side_key == "L":
-                    action_final = "BUY"
-                elif side_key == "S":
-                    action_final = "SELL"
-            label = _indicator_short_label(key)
-            interval_part = f"@{interval_display.upper()}" if interval_display else ""
-            if value is not None:
-                try:
-                    value_display = f"{float(value):.2f}"
-                except Exception:
-                    value_display = str(value)
-            else:
-                value_display = "--"
-            action_part = f" -{action_final}" if action_final else ""
-            entry = f"{label}{interval_part} {value_display}{action_part}".strip()
-            _register_interval_entry(interval_display, entry)
-            if interval_display:
-                interval_clean = interval_display.strip().upper()
-                slots = interval_map.setdefault(key.lower(), [])
-                if interval_clean not in slots:
-                    slots.append(interval_clean)
-        if interval_entry_map:
             results.extend(interval_entry_map[idx] for idx in interval_entry_order)
-            continue
-
-        # fallback to best-match logic when we cannot resolve per-source metrics
-        best_value = None
-        best_action = None
-        best_interval = primary_interval
-        best_score = float("-inf")
-        for source in sources:
-            segments = source.get("segments") or []
-            value, action = _extract_indicator_metrics(key, segments)
-            if value is None and action is None:
-                continue
-            score = 0.0
-            source_norm = source.get("norm_interval")
-            if source_norm and primary_interval_norm and source_norm == primary_interval_norm:
-                score += 2.0
-            if source_norm:
-                score += 0.5
-            if score > best_score:
-                best_score = score
-                best_value = value
-                best_action = action
-                best_interval = source.get("interval") or primary_interval
-        if best_value is None and sources:
-            best_interval = sources[0].get("interval") or primary_interval
-        if best_action is None:
-            if side_key == "L":
-                best_action = "BUY"
-            elif side_key == "S":
-                best_action = "SELL"
-        label = _indicator_short_label(key)
-        interval_display = (best_interval or primary_interval or "").strip()
-        interval_part = f"@{interval_display.upper()}" if interval_display else ""
-        if best_value is not None:
-            try:
-                value_display = f"{float(best_value):.2f}"
-            except Exception:
-                value_display = str(best_value)
-        else:
-            value_display = "--"
-        action_part = f" -{best_action}" if best_action else ""
-        entry = f"{label}{interval_part} {value_display}{action_part}".strip()
-        results.append(entry)
-        if interval_display:
-            interval_clean = interval_display.strip().upper()
-            slots = interval_map.setdefault(key.lower(), [])
-            if interval_clean not in slots:
-                slots.append(interval_clean)
 
     deduped_results: list[str] = []
     seen_entries: set[str] = set()
@@ -1339,8 +1286,8 @@ def _infer_indicators_from_desc(desc: str | None) -> list[str]:
 
 def _resolve_trigger_indicators(raw, desc: str | None = None) -> list[str]:
     indicators = _normalize_indicator_values(raw)
-    if desc:
-        indicators.extend(_infer_indicators_from_desc(desc))
+    if not indicators and desc:
+        indicators = _infer_indicators_from_desc(desc)
     if not indicators:
         return []
     return sorted(dict.fromkeys(indicators))
@@ -1934,7 +1881,9 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault('theme', 'Dark')
         self.config['close_on_exit'] = False
         self.config.setdefault('close_on_exit', False)
-        self.config.setdefault("allow_opposite_positions", False)
+        self.config["allow_opposite_positions"] = coerce_bool(
+            self.config.get("allow_opposite_positions", True), True
+        )
         self.config.setdefault('account_mode', 'Classic Trading')
         self.config.setdefault('auto_bump_percent_multiplier', DEFAULT_CONFIG.get('auto_bump_percent_multiplier', 10.0))
         self.config["connector_backend"] = _normalize_connector_backend(self.config.get("connector_backend"))
@@ -7287,15 +7236,6 @@ class MainWindow(QtWidgets.QWidget):
         self.assets_mode_combo.setCurrentIndex(idx_assets)
         grid.addWidget(self.assets_mode_combo, 2, 10)
 
-        self.allow_opposite_checkbox = QtWidgets.QCheckBox("Allow simultaneous long & short positions (hedge stacking)")
-        self.allow_opposite_checkbox.setChecked(bool(self.config.get("allow_opposite_positions", False)))
-        self.allow_opposite_checkbox.setToolTip(
-            "When enabled, the bot may keep both long and short positions open at the same time if hedge mode is active. "
-            "Leave disabled to force the bot to close the opposite side before opening a new trade."
-        )
-        self.allow_opposite_checkbox.stateChanged.connect(self._on_allow_opposite_changed)
-        grid.addWidget(self.allow_opposite_checkbox, 4, 0, 1, 6)
-
         grid.addWidget(QtWidgets.QLabel("Time-in-Force:"), 3, 2)
         self.tif_combo = QtWidgets.QComboBox()
         self.tif_combo.addItems(["GTC", "IOC", "FOK", "GTD"])
@@ -7461,22 +7401,33 @@ class MainWindow(QtWidgets.QWidget):
         self.cb_add_only.setChecked(bool(self.config.get('add_only', False)))
         g.addWidget(self.cb_add_only, 2, 0, 1, 6)
 
+        self.allow_opposite_checkbox = QtWidgets.QCheckBox("Allow simultaneous long & short positions (hedge stacking)")
+        allow_opposite_enabled = coerce_bool(self.config.get("allow_opposite_positions", True), True)
+        self.config["allow_opposite_positions"] = allow_opposite_enabled
+        self.allow_opposite_checkbox.setChecked(allow_opposite_enabled)
+        self.allow_opposite_checkbox.setToolTip(
+            "When enabled, the bot may keep both long and short positions open at the same time if hedge mode is active. "
+            "Leave disabled to force the bot to close the opposite side before opening a new trade."
+        )
+        self.allow_opposite_checkbox.stateChanged.connect(self._on_allow_opposite_changed)
+        g.addWidget(self.allow_opposite_checkbox, 3, 0, 1, 6)
+
         self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All On Window Close")
         initial_close = bool(self.config.get('close_on_exit', False))
         self.cb_close_on_exit.setChecked(initial_close)
         self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
-        g.addWidget(self.cb_close_on_exit, 3, 0, 1, 6)
+        g.addWidget(self.cb_close_on_exit, 4, 0, 1, 6)
 
         self._apply_lead_trader_state(lead_trader_enabled)
 
         stop_cfg = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.config["stop_loss"] = stop_cfg
 
-        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 4, 0)
+        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 5, 0)
         self.stop_loss_enable_cb = QtWidgets.QCheckBox("Enable")
         self.stop_loss_enable_cb.setToolTip("Toggle automatic stop-loss handling for live trades.")
         self.stop_loss_enable_cb.setChecked(stop_cfg.get("enabled", False))
-        g.addWidget(self.stop_loss_enable_cb, 4, 1)
+        g.addWidget(self.stop_loss_enable_cb, 5, 1)
 
         self.stop_loss_mode_combo = QtWidgets.QComboBox()
         for mode_key in STOP_LOSS_MODE_ORDER:
@@ -7485,7 +7436,7 @@ class MainWindow(QtWidgets.QWidget):
         if mode_idx < 0:
             mode_idx = 0
         self.stop_loss_mode_combo.setCurrentIndex(mode_idx)
-        g.addWidget(self.stop_loss_mode_combo, 4, 2, 1, 2)
+        g.addWidget(self.stop_loss_mode_combo, 5, 2, 1, 2)
 
         self.stop_loss_usdt_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_usdt_spin.setRange(0.0, 1_000_000_000.0)
@@ -7493,7 +7444,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_usdt_spin.setSingleStep(1.0)
         self.stop_loss_usdt_spin.setSuffix(" USDT")
         self.stop_loss_usdt_spin.setValue(float(stop_cfg.get("usdt", 0.0)))
-        g.addWidget(self.stop_loss_usdt_spin, 4, 4)
+        g.addWidget(self.stop_loss_usdt_spin, 5, 4)
 
         self.stop_loss_percent_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_percent_spin.setRange(0.0, 100.0)
@@ -7501,7 +7452,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_percent_spin.setSingleStep(0.5)
         self.stop_loss_percent_spin.setSuffix(" %")
         self.stop_loss_percent_spin.setValue(float(stop_cfg.get("percent", 0.0)))
-        g.addWidget(self.stop_loss_percent_spin, 4, 5)
+        g.addWidget(self.stop_loss_percent_spin, 5, 5)
 
         self.stop_loss_scope_combo = QtWidgets.QComboBox()
         for scope_key in STOP_LOSS_SCOPE_OPTIONS:
@@ -7511,8 +7462,8 @@ class MainWindow(QtWidgets.QWidget):
         if scope_idx < 0:
             scope_idx = 0
         self.stop_loss_scope_combo.setCurrentIndex(scope_idx)
-        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 5, 0)
-        g.addWidget(self.stop_loss_scope_combo, 5, 1, 1, 2)
+        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 6, 0)
+        g.addWidget(self.stop_loss_scope_combo, 6, 1, 1, 2)
 
         # Strategy templates
         self._dashboard_templates = {
@@ -7550,7 +7501,7 @@ class MainWindow(QtWidgets.QWidget):
                 },
             },
         }
-        g.addWidget(QtWidgets.QLabel("Template:"), 6, 0)
+        g.addWidget(QtWidgets.QLabel("Template:"), 7, 0)
         self.template_combo = QtWidgets.QComboBox()
         self.template_combo.addItem("No Template", "")
         for key, info in self._dashboard_templates.items():
@@ -7561,7 +7512,7 @@ class MainWindow(QtWidgets.QWidget):
             idx_template = 0
         self.template_combo.setCurrentIndex(idx_template)
         self.template_combo.currentIndexChanged.connect(self._on_dashboard_template_changed)
-        g.addWidget(self.template_combo, 6, 1, 1, 3)
+        g.addWidget(self.template_combo, 7, 1, 1, 3)
 
         self.stop_loss_enable_cb.toggled.connect(self._on_runtime_stop_loss_enabled)
         self.stop_loss_mode_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_mode_changed)
@@ -9661,10 +9612,10 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             rec['indicators'] = indicators_selected
                             if rec.get('data'):
                                 rec['data']['trigger_indicators'] = indicators_selected
+                        elif rec.get('data', {}).get('trigger_indicators'):
+                            rec['indicators'] = list(rec['data']['trigger_indicators'])
                         elif not rec.get('indicators'):
-                            rec['indicators'] = self._collect_strategy_indicators(sym, side_key, intervals=interval_list)
-                            if rec.get('data') and not rec['data'].get('trigger_indicators'):
-                                rec['data']['trigger_indicators'] = rec.get('indicators') or []
+                            rec['indicators'] = []
                         rec['stop_loss_enabled'] = stop_loss_enabled
                         positions_map[(sym, side_key)] = rec
                     except Exception:
@@ -10533,7 +10484,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                     clone_data["trigger_indicators"] = clone_indicators
                     clone["data"] = clone_data
                     clone["_aggregate_key"] = f"{aggregate_key}|{indicator_name.lower()}"
-                    clone["_aggregate_is_primary"] = bool(idx == 0)
+                    clone["_aggregate_is_primary"] = True
                     records.append(clone)
                 return
             entry["indicators"] = []
@@ -10635,25 +10586,21 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                 dt = datetime.min
         return dt
 
-    deduped_records: list[dict] = []
+    records = []
     for (_sym, _side, _interval, _indicators), status_map in grouped.items():
         if not isinstance(status_map, dict):
             continue
         active_entries = status_map.get("active") or status_map.get("open") or []
         if active_entries:
             chosen_active = max(active_entries, key=_qty_key)
-            deduped_records.append(chosen_active)
-        closed_entries = status_map.get("closed") or []
-        if closed_entries:
-            chosen_closed = max(closed_entries, key=_close_time_key)
-            deduped_records.append(chosen_closed)
+            records.append(chosen_active)
+        closed_entries = (status_map.get("closed") or [])[:]
+        closed_entries.sort(key=_close_time_key, reverse=True)
+        records.extend(closed_entries)
         for status_name, entries in status_map.items():
             if status_name in {"active", "open", "closed"}:
                 continue
-            if entries:
-                deduped_records.append(entries[0])
-
-    records = deduped_records
+            records.extend(entries or [])
 
     records.sort(key=lambda item: (
         str(item.get("symbol") or ""),
@@ -10662,6 +10609,69 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         -float(item.get("data", {}).get("qty") or item.get("data", {}).get("margin_usdt") or 0.0),
     ))
     return records
+
+
+def _mw_positions_records_cumulative(entries: list[dict]) -> list[dict]:
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for rec in entries or []:
+        if not isinstance(rec, dict):
+            continue
+        sym = str(rec.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        side_key = str(rec.get("side_key") or "").strip().upper()
+        if not side_key:
+            continue
+        grouped.setdefault((sym, side_key), []).append(rec)
+    aggregated: list[dict] = []
+    for (sym, side_key), bucket in grouped.items():
+        if not bucket:
+            continue
+        primary = max(
+            bucket,
+            key=lambda r: float((r.get("data") or {}).get("qty") or (r.get("data") or {}).get("margin_usdt") or 0.0),
+        )
+        clone = copy.deepcopy(primary)
+        intervals: list[str] = []
+        total_qty = 0.0
+        total_margin = 0.0
+        total_pnl = 0.0
+        for entry in bucket:
+            label = str(entry.get("entry_tf") or entry.get("data", {}).get("interval_display") or "").strip()
+            if label and label not in intervals:
+                intervals.append(label)
+            data = entry.get("data") or {}
+            try:
+                total_qty += max(0.0, float(data.get("qty") or 0.0))
+            except Exception:
+                pass
+            try:
+                total_margin += max(0.0, float(data.get("margin_usdt") or 0.0))
+            except Exception:
+                pass
+            try:
+                total_pnl += float(data.get("pnl_value") or 0.0)
+            except Exception:
+                pass
+        if intervals:
+            clone["entry_tf"] = ", ".join(intervals)
+        agg_data = dict(clone.get("data") or {})
+        if total_qty > 0.0:
+            agg_data["qty"] = total_qty
+        if total_margin > 0.0:
+            agg_data["margin_usdt"] = total_margin
+        if total_pnl or total_pnl == 0.0:
+            agg_data["pnl_value"] = total_pnl
+        if total_margin > 0.0:
+            try:
+                agg_data["roi_percent"] = (total_pnl / total_margin) * 100.0
+            except Exception:
+                pass
+        clone["data"] = agg_data
+        clone["_aggregated_entries"] = bucket
+        aggregated.append(clone)
+    aggregated.sort(key=lambda item: (item.get("symbol"), item.get("side_key"), item.get("entry_tf")))
+    return aggregated
 
 
 def _mw_render_positions_table(self):
@@ -10685,9 +10695,11 @@ def _mw_render_positions_table(self):
         if view_mode == "per_trade":
             display_records = _mw_positions_records_per_trade(self, open_records, closed_records)
         else:
-            display_records = (
-                sorted(open_records.values(), key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf')))
-                + list(closed_records)
+            display_records = _mw_positions_records_cumulative(
+                sorted(
+                    open_records.values(),
+                    key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf')),
+                )
             )
         display_records = [rec for rec in (display_records or []) if isinstance(rec, dict)]
         snapshot_digest: list[tuple] = []
@@ -10942,19 +10954,44 @@ def _mw_render_positions_table(self):
                     pnl_has_value = True
 
                 self.pos_table.setItem(row, 8, QtWidgets.QTableWidgetItem(interval or '-'))
-                indicators_raw = rec.get('indicators')
-                indicators_list = _normalize_indicator_values(indicators_raw)
-                if indicators_list:
-                    indicators_display = _format_indicator_list(indicators_list) or '-'
-                else:
-                    indicators_display = '-'
+                source_entries = rec.get("_aggregated_entries") or [rec]
+                indicators_list: list[str] = []
+                indicator_values_entries: list[str] = []
+                interval_map: dict[str, list[str]] = {}
+                for entry in source_entries:
+                    entry_inds = _normalize_indicator_values(entry.get("indicators"))
+                    for token in entry_inds:
+                        if token and token not in indicators_list:
+                            indicators_list.append(token)
+                    cached_values = entry.get("_indicator_value_entries")
+                    cached_map = entry.get("_indicator_interval_map")
+                    interval_hint_entry = (
+                        entry.get("entry_tf")
+                        or (entry.get("data") or {}).get("interval_display")
+                        or interval
+                    )
+                    if cached_values is None or cached_map is None:
+                        cached_values, cached_map = _collect_indicator_value_strings(entry, interval_hint_entry)
+                        entry["_indicator_value_entries"] = cached_values
+                        entry["_indicator_interval_map"] = cached_map
+                    for value_entry in cached_values or []:
+                        if value_entry not in indicator_values_entries:
+                            indicator_values_entries.append(value_entry)
+                    for key, slots in (cached_map or {}).items():
+                        bucket = interval_map.setdefault(key, [])
+                        for slot in slots:
+                            if slot not in bucket:
+                                bucket.append(slot)
+                rec["_indicator_value_entries"] = indicator_values_entries
+                rec["_indicator_interval_map"] = interval_map
+                active_indicator_keys_ordered = list((interval_map or {}).keys())
+                display_list: list[str] = list(indicators_list or [])
+                if active_indicator_keys_ordered:
+                    filtered = [ind for ind in display_list if ind.lower() in active_indicator_keys_ordered]
+                    display_list = filtered if filtered else active_indicator_keys_ordered
+                indicators_list = display_list
+                indicators_display = _format_indicator_list(display_list) if display_list else '-'
                 self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(indicators_display))
-                indicator_values_entries = rec.get("_indicator_value_entries")
-                interval_map = rec.get("_indicator_interval_map")
-                if indicator_values_entries is None or interval_map is None:
-                    indicator_values_entries, interval_map = _collect_indicator_value_strings(rec, interval)
-                    rec["_indicator_value_entries"] = indicator_values_entries
-                    rec["_indicator_interval_map"] = interval_map
                 indicator_values_display = "\n".join(indicator_values_entries) if indicator_values_entries else "-"
                 self.pos_table.setItem(row, POS_TRIGGERED_VALUE_COLUMN, QtWidgets.QTableWidgetItem(indicator_values_display))
                 live_values_entries = rec.get("_current_indicator_values")
@@ -11626,7 +11663,7 @@ def start_strategy(self):
                 dual_enabled = False
                 if self.shared_binance is not None and hasattr(self.shared_binance, "get_futures_dual_side"):
                     dual_enabled = bool(self.shared_binance.get_futures_dual_side())
-                allow_opposite_cfg = bool(self.config.get("allow_opposite_positions"))
+                allow_opposite_cfg = coerce_bool(self.config.get("allow_opposite_positions"), True)
                 if hasattr(guard_obj, "allow_opposite"):
                     guard_obj.allow_opposite = dual_enabled and allow_opposite_cfg
                 if hasattr(guard_obj, "strict_symbol_side"):
@@ -13128,7 +13165,7 @@ def _mw_on_trade_signal(self, order_info: dict):
         entries = alloc_map.get((sym_upper, side_key), [])
         if isinstance(entries, dict):
             entries = list(entries.values())
-            alloc_map[(sym_upper, side_key)] = entries
+        survivors: list[dict] = []
         if isinstance(entries, list):
             for entry in entries:
                 if not isinstance(entry, dict):
@@ -13136,41 +13173,22 @@ def _mw_on_trade_signal(self, order_info: dict):
                 entry_iv = _norm_interval(entry.get("interval") or entry.get("interval_display"))
                 if norm_iv is None or entry_iv == norm_iv:
                     entry_snapshot = copy.deepcopy(entry)
-                    entry["status"] = "Closed"
-                    try:
-                        entry["qty"] = 0.0
-                    except Exception:
-                        entry["qty"] = 0.0
-                    for field in ("margin_usdt", "margin", "notional", "size_usdt"):
-                        try:
-                            if entry.get(field) not in (None, 0, 0.0):
-                                entry[field] = 0.0
-                        except Exception:
-                            entry[field] = 0.0
-                    close_time_val = order_info.get("time")
-                    if close_time_val:
-                        dt_obj = self._parse_any_datetime(close_time_val)
-                        entry["close_time"] = self._format_display_time(dt_obj) if dt_obj else close_time_val
-                    else:
-                        entry["close_time"] = entry.get("close_time")
                     close_time_val = order_info.get("time")
                     if close_time_val:
                         dt_obj = self._parse_any_datetime(close_time_val)
                         entry_snapshot["close_time"] = self._format_display_time(dt_obj) if dt_obj else close_time_val
-                    elif entry_snapshot.get("close_time") is None:
+                    elif not entry_snapshot.get("close_time"):
                         entry_snapshot["close_time"] = entry.get("close_time")
                     entry_snapshot["status"] = "Closed"
                     closed_snapshots.append(entry_snapshot)
-            try:
-                if all(
-                    isinstance(entry, dict)
-                    and str(entry.get("status") or "").strip().lower() == "closed"
-                    and (entry.get("qty") in (None, 0, 0.0))
-                    for entry in entries
-                ):
-                    alloc_map.pop((sym_upper, side_key), None)
-            except Exception:
-                pass
+                    continue
+                survivors.append(entry)
+        if survivors:
+            alloc_map[(sym_upper, side_key)] = survivors
+            entries = survivors
+        else:
+            alloc_map.pop((sym_upper, side_key), None)
+            entries = []
         if sym_upper:
             from datetime import datetime as _dt
             close_time_val = order_info.get("time")

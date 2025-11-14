@@ -9,6 +9,7 @@ from .config import (
     STOP_LOSS_SCOPE_OPTIONS,
     normalize_stop_loss_dict,
     INDICATOR_DISPLAY_NAMES,
+    coerce_bool,
 )
 from .binance_wrapper import NetworkConnectivityError, normalize_margin_ratio
 from .indicators import (
@@ -659,6 +660,25 @@ class StrategyEngine:
                 except Exception:
                     continue
             return total
+
+    def _indicator_trade_book_qty(
+        self,
+        symbol: str,
+        interval: str | None,
+        indicator_key: str,
+        side: str,
+    ) -> float:
+        key = _canonical_indicator_token(indicator_key) or indicator_key
+        if not key:
+            return 0.0
+        entries = self._trade_book_entries(symbol, interval, key, side)
+        total = 0.0
+        for meta in entries:
+            try:
+                total += max(0.0, float(meta.get("qty") or 0.0))
+            except Exception:
+                continue
+        return total
 
     def _trade_book_has_entries(
         self,
@@ -1346,7 +1366,7 @@ class StrategyEngine:
                     return closed_count, total_qty_closed
 
         if closed_count <= 0:
-            fallback_entries: list[tuple[tuple[str, str, str], str | None]] = []
+            fallback_entries: list[tuple[tuple[str, str, str], str | None, float]] = []
             fallback_qty_target = 0.0
             for leg_key, leg_state in list(self._leg_ledger.items()):
                 leg_sym, leg_interval, leg_side = leg_key
@@ -1386,7 +1406,7 @@ class StrategyEngine:
                         fallback_qty_target += qty_val
                     except Exception:
                         continue
-                    fallback_entries.append((leg_key, entry.get("ledger_id")))
+                    fallback_entries.append((leg_key, entry.get("ledger_id"), qty_val))
             live_qty = 0.0
             try:
                 live_qty = max(
@@ -1395,7 +1415,16 @@ class StrategyEngine:
                 )
             except Exception:
                 live_qty = 0.0
-            qty_to_close = min(live_qty, fallback_qty_target) if fallback_qty_target > 0.0 else 0.0
+            qty_limit_hint = None
+            if qty_limit is not None:
+                try:
+                    qty_limit_hint = max(0.0, float(qty_limit))
+                except Exception:
+                    qty_limit_hint = 0.0
+            fallback_qty_goal = fallback_qty_target
+            if fallback_qty_goal <= 0.0:
+                fallback_qty_goal = qty_limit_hint or 0.0
+            qty_to_close = min(live_qty, fallback_qty_goal) if fallback_qty_goal > 0.0 else 0.0
             if limit_remaining is not None:
                 qty_to_close = min(qty_to_close, limit_remaining)
             if fallback_entries and qty_to_close > 0.0:
@@ -1426,12 +1455,23 @@ class StrategyEngine:
                     if limit_remaining is not None:
                         limit_remaining = max(0.0, limit_remaining - qty_recorded)
                     entries_removed = 0
+                    partial_updates = 0
                     affected_leg_keys: set[tuple[str, str, str]] = set()
-                    for leg_key, ledger_token in fallback_entries:
+                    qty_remaining = qty_recorded
+                    tol = max(1e-9, qty_recorded * 1e-6)
+                    for leg_key, ledger_token, entry_qty in fallback_entries:
+                        if qty_remaining <= tol:
+                            break
                         affected_leg_keys.add(leg_key)
+                        consume = min(entry_qty, qty_remaining)
                         if ledger_token:
-                            self._remove_leg_entry(leg_key, ledger_token)
-                            entries_removed += 1
+                            if entry_qty <= tol or consume >= entry_qty - tol:
+                                self._remove_leg_entry(leg_key, ledger_token)
+                                entries_removed += 1
+                            else:
+                                self._decrement_leg_entry_qty(leg_key, ledger_token, entry_qty, entry_qty - consume)
+                                partial_updates += 1
+                            qty_remaining = max(0.0, qty_remaining - consume)
                         else:
                             try:
                                 self.log(
@@ -1442,12 +1482,29 @@ class StrategyEngine:
                                 pass
                             self._remove_leg_entry(leg_key, None)
                             entries_removed += 1
+                            qty_remaining = max(0.0, qty_remaining - entry_qty)
+                    if qty_remaining > tol:
+                        try:
+                            self.log(
+                                f"{symbol}@{interval_text or 'default'} fallback close executed {qty_recorded:.10f} "
+                                f"but only reconciled {qty_recorded - qty_remaining:.10f}; residual {qty_remaining:.10f} "
+                                f"will be flushed on next sync."
+                            )
+                        except Exception:
+                            pass
                     for leg_key in affected_leg_keys:
                         if not self._leg_entries(leg_key):
                             self._guard_mark_leg_closed(leg_key)
-                    closed_count = max(1, entries_removed)
+                    closed_count = max(1, entries_removed + partial_updates)
                     try:
-                        entry_note = f"{entries_removed} entry" if entries_removed == 1 else f"{entries_removed} entries"
+                        note_parts: list[str] = []
+                        if entries_removed:
+                            label = "entry" if entries_removed == 1 else "entries"
+                            note_parts.append(f"{entries_removed} {label}")
+                        if partial_updates:
+                            label = "entry" if partial_updates == 1 else "entries"
+                            note_parts.append(f"{partial_updates} {label} (partial)")
+                        entry_note = ", ".join(note_parts) if note_parts else "entries"
                         self.log(
                             f"{symbol}@{interval_text or 'default'} fallback closed {qty_recorded:.10f} "
                             f"{side_norm} {entry_note} for indicator {indicator_key}."
@@ -2423,11 +2480,11 @@ class StrategyEngine:
                     break
             return closed_entries, failed, qty_closed
 
+        indicator_position_side = None
+        if dual:
+            indicator_position_side = 'LONG' if opp == 'BUY' else 'SHORT'
         if indicator_tokens:
             cw_stub = {"symbol": symbol, "interval": interval_norm}
-            indicator_position_side = None
-            if dual:
-                indicator_position_side = 'LONG' if opp == 'BUY' else 'SHORT'
             indicator_target_cleared = True
             for indicator_hint in indicator_tokens:
                 closed_count = 0
@@ -2526,17 +2583,6 @@ class StrategyEngine:
             positions = refreshed
             if _goal_met():
                 return True
-        if indicator_tokens and not indicator_target_cleared:
-            try:
-                indicator_label = ", ".join(indicator_tokens)
-                if ledger_closed <= 0:
-                    self.log(f"{symbol}@{interval_norm or 'default'} flip skipped: no {indicator_label} {opp} leg to close.")
-                else:
-                    self.log(f"{symbol}@{interval_norm or 'default'} flip blocked: {indicator_label} {opp} leg still active.")
-            except Exception:
-                pass
-            return False
-
         if dual:
             if qty_goal is not None:
                 if _goal_met():
@@ -2584,6 +2630,55 @@ class StrategyEngine:
                 if "position side does not match" in message.lower():
                     continue
             return False, last_res
+
+        if indicator_tokens and not indicator_target_cleared:
+            try:
+                residual_qty = max(
+                    0.0,
+                    float(
+                        self._current_futures_position_qty(
+                            symbol,
+                            opp,
+                            indicator_position_side,
+                            positions,
+                        )
+                        or 0.0
+                    ),
+                )
+            except Exception:
+                residual_qty = 0.0
+            qty_hint = qty_goal if qty_goal is not None and qty_goal > 0.0 else residual_qty
+            if qty_hint > 0.0:
+                success, close_res = _execute_close_with_fallback(opp, qty_hint, indicator_position_side)
+                if success:
+                    closed_any = True
+                    _reduce_goal(qty_hint)
+                    refreshed = _refresh_positions_snapshot()
+                    if refreshed is None:
+                        return False
+                    positions = refreshed
+                    indicator_target_cleared = True
+                    ledger_closed = 1
+                    ledger_qty_closed = qty_hint
+                    if _goal_met():
+                        return True
+                else:
+                    try:
+                        indicator_label = ", ".join(indicator_tokens)
+                        self.log(
+                            f"{symbol}@{interval_norm or 'default'} flip blocked: residual {indicator_label} {opp} leg "
+                            f"could not be closed ({close_res})."
+                        )
+                    except Exception:
+                        pass
+                    return False
+            else:
+                try:
+                    indicator_label = ", ".join(indicator_tokens)
+                    self.log(f"{symbol}@{interval_norm or 'default'} flip skipped: no {indicator_label} {opp} leg to close.")
+                except Exception:
+                    pass
+                return False
 
         opp_key = (symbol, interval, opp)
         for p in positions:
@@ -3085,6 +3180,8 @@ class StrategyEngine:
                 dual_side = False
             desired_ps_long_guard = "LONG" if dual_side else None
             desired_ps_short_guard = "SHORT" if dual_side else None
+        allow_opposite_enabled = coerce_bool(self.config.get("allow_opposite_positions"), True)
+        hedge_overlap_allowed = bool(dual_side and allow_opposite_enabled)
 
         # Exit thresholds
         try:
@@ -3654,7 +3751,35 @@ class StrategyEngine:
                     )
                     closed_short = 0
                     closed_short_qty = 0.0
-                    if remaining_indicator_qty > 0.0:
+                    try:
+                        needs_close_short = self._indicator_has_open(
+                            cw["symbol"], interval_current, indicator_key, "SELL"
+                        )
+                    except Exception:
+                        needs_close_short = False
+                    if remaining_indicator_qty <= 0.0 and needs_close_short:
+                        fallback_live_qty = self._indicator_trade_book_qty(
+                            cw["symbol"],
+                            interval_current,
+                            indicator_key,
+                            "SELL",
+                        )
+                        if fallback_live_qty <= 0.0:
+                            try:
+                                fallback_live_qty = max(
+                                    0.0,
+                                    float(
+                                        self._current_futures_position_qty(
+                                            cw["symbol"], "SELL", desired_ps_short
+                                        )
+                                        or 0.0
+                                    ),
+                                )
+                            except Exception:
+                                fallback_live_qty = 0.0
+                        remaining_indicator_qty = fallback_live_qty
+                    if remaining_indicator_qty > 0.0 or needs_close_short:
+                        qty_cap = remaining_indicator_qty if remaining_indicator_qty > 0.0 else None
                         closed_short, closed_short_qty = self._close_indicator_positions(
                             cw,
                             interval_current,
@@ -3664,28 +3789,75 @@ class StrategyEngine:
                             signature_hint=(indicator_key,),
                             ignore_hold=True,
                             interval_aliases=indicator_interval_tokens,
-                            qty_limit=remaining_indicator_qty,
+                            qty_limit=qty_cap,
                         )
+                        if closed_short <= 0:
+                            try:
+                                still_open = self._indicator_has_open(
+                                    cw["symbol"], interval_current, indicator_key, "SELL"
+                                )
+                            except Exception:
+                                still_open = False
+                            if still_open:
+                                target_qty_hint = qty_cap
+                                if (target_qty_hint is None or target_qty_hint <= 0.0) and remaining_indicator_qty > 0.0:
+                                    target_qty_hint = remaining_indicator_qty
+                                if not self._close_opposite_position(
+                                    cw["symbol"],
+                                    interval_current,
+                                    "BUY",
+                                    trigger_signature=(indicator_key,),
+                                    indicator_key=(indicator_key,),
+                                    target_qty=target_qty_hint,
+                                ):
+                                    continue
+                                closed_short = 1
                     if closed_short <= 0:
-                        live_short_qty = 0.0
-                        try:
-                            live_short_qty = max(
-                                0.0,
-                                float(self._current_futures_position_qty(cw["symbol"], "SELL", desired_ps_short)),
+                        fallback_qty = self._indicator_trade_book_qty(
+                            cw["symbol"],
+                            interval_current,
+                            indicator_key,
+                            "SELL",
+                        )
+                        if fallback_qty <= 0.0:
+                            try:
+                                fallback_qty = max(
+                                    0.0,
+                                    float(
+                                        self._current_futures_position_qty(
+                                            cw["symbol"], "SELL", desired_ps_short
+                                        )
+                                        or 0.0
+                                    ),
+                                )
+                            except Exception:
+                                fallback_qty = 0.0
+                        if fallback_qty > 0.0:
+                            retry_count, retry_qty = self._close_indicator_positions(
+                                cw,
+                                interval_current,
+                                indicator_key,
+                                "SELL",
+                                desired_ps_short,
+                                signature_hint=(indicator_key,),
+                                ignore_hold=True,
+                                interval_aliases=indicator_interval_tokens,
+                                qty_limit=fallback_qty,
                             )
-                        except Exception:
-                            live_short_qty = 0.0
-                        if live_short_qty > 0.0:
+                            closed_short = retry_count
+                            closed_short_qty = retry_qty
+                        if closed_short <= 0:
                             try:
                                 self.log(
                                     f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY skipped:"
-                                    f" short leg still live on exchange ({live_short_qty:.10f})."
+                                    " short leg still live on exchange."
                                 )
                             except Exception:
                                 pass
                             continue
                     flip_from_side = None
                     flip_qty = 0.0
+                    flip_qty_target = 0.0
                     remaining_indicator_qty = self._indicator_open_qty(
                         cw["symbol"],
                         interval_current,
@@ -3696,6 +3868,7 @@ class StrategyEngine:
                     if closed_short > 0 and closed_short_qty > 0.0:
                         flip_from_side = "SELL"
                         flip_qty = closed_short_qty
+                        flip_qty_target = closed_short_qty
                         try:
                             self.log(
                                 f"{cw['symbol']}@{interval_current} {indicator_key} flip SELL→BUY "
@@ -3704,17 +3877,45 @@ class StrategyEngine:
                         except Exception:
                             pass
                     elif remaining_indicator_qty > 0.0:
-                        flip_from_side = "SELL"
-                        flip_qty = remaining_indicator_qty
                         try:
                             self.log(
-                                f"{cw['symbol']}@{interval_current} {indicator_key} flip SELL→BUY "
-                                f"(pending close {flip_qty:.10f})."
+                                f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY deferred: "
+                                f"{remaining_indicator_qty:.10f} short qty still open."
                             )
                         except Exception:
                             pass
+                        continue
                     else:
-                        if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "SELL"):
+                        live_short_residual = 0.0
+                        try:
+                            live_short_residual = max(
+                                0.0,
+                                float(self._current_futures_position_qty(cw["symbol"], "SELL", desired_ps_short)),
+                            )
+                        except Exception:
+                            live_short_residual = 0.0
+                        tol_live = max(1e-9, live_short_residual * 1e-6)
+                        if live_short_residual > tol_live:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY forcing close of residual short "
+                                    f"({live_short_residual:.10f})."
+                                )
+                            except Exception:
+                                pass
+                            if not self._close_opposite_position(
+                                cw["symbol"],
+                                interval_current,
+                                "BUY",
+                                trigger_signature=(indicator_key,),
+                                indicator_key=(indicator_key,),
+                                target_qty=live_short_residual,
+                            ):
+                                continue
+                            flip_from_side = "SELL"
+                            flip_qty = live_short_residual
+                            flip_qty_target = live_short_residual
+                        elif self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "SELL"):
                             try:
                                 self.log(
                                     f"Skip BUY for {cw['symbol']}@{interval_current} ({indicator_key}): short leg still syncing (waiting for ledger)."
@@ -3732,6 +3933,7 @@ class StrategyEngine:
                             "indicator_key": indicator_key,
                             "flip_from": flip_from_side,
                             "flip_qty": flip_qty,
+                            "flip_qty_target": flip_qty_target,
                         }
                     )
                 elif action_norm == "sell":
@@ -3745,38 +3947,113 @@ class StrategyEngine:
                     )
                     closed_long = 0
                     closed_long_qty = 0.0
-                    if remaining_long_qty > 0.0:
-                        closed_long, closed_long_qty = self._close_indicator_positions(
-                            cw,
+                    try:
+                        needs_close_long = self._indicator_has_open(
+                            cw["symbol"], interval_current, indicator_key, "BUY"
+                        )
+                    except Exception:
+                        needs_close_long = False
+                    if remaining_long_qty <= 0.0 and needs_close_long:
+                        fallback_live_qty = self._indicator_trade_book_qty(
+                            cw["symbol"],
                             interval_current,
+                            indicator_key,
+                            "BUY",
+                        )
+                        if fallback_live_qty <= 0.0:
+                            try:
+                                fallback_live_qty = max(
+                                    0.0,
+                                    float(
+                                        self._current_futures_position_qty(
+                                            cw["symbol"], "BUY", desired_ps_long
+                                        )
+                                        or 0.0
+                                    ),
+                                )
+                            except Exception:
+                                fallback_live_qty = 0.0
+                        remaining_long_qty = fallback_live_qty
+                        if remaining_long_qty > 0.0 or needs_close_long:
+                            qty_cap = remaining_long_qty if remaining_long_qty > 0.0 else None
+                            closed_long, closed_long_qty = self._close_indicator_positions(
+                                cw,
+                                interval_current,
                             indicator_key,
                             "BUY",
                             desired_ps_long,
                             signature_hint=(indicator_key,),
                             ignore_hold=True,
                             interval_aliases=indicator_interval_tokens,
-                            qty_limit=remaining_long_qty,
+                            qty_limit=qty_cap,
                         )
+                            if closed_long <= 0:
+                                try:
+                                    still_open = self._indicator_has_open(
+                                        cw["symbol"], interval_current, indicator_key, "BUY"
+                                    )
+                                except Exception:
+                                    still_open = False
+                                if still_open:
+                                    target_qty_hint = qty_cap
+                                    if (target_qty_hint is None or target_qty_hint <= 0.0) and remaining_long_qty > 0.0:
+                                        target_qty_hint = remaining_long_qty
+                                    if not self._close_opposite_position(
+                                        cw["symbol"],
+                                        interval_current,
+                                        "SELL",
+                                        trigger_signature=(indicator_key,),
+                                        indicator_key=(indicator_key,),
+                                        target_qty=target_qty_hint,
+                                    ):
+                                        continue
+                                    closed_long = 1
                     if closed_long <= 0:
-                        live_long_qty = 0.0
-                        try:
-                            live_long_qty = max(
-                                0.0,
-                                float(self._current_futures_position_qty(cw["symbol"], "BUY", desired_ps_long)),
+                        fallback_qty = self._indicator_trade_book_qty(
+                            cw["symbol"],
+                            interval_current,
+                            indicator_key,
+                            "BUY",
+                        )
+                        if fallback_qty <= 0.0:
+                            try:
+                                fallback_qty = max(
+                                    0.0,
+                                    float(
+                                        self._current_futures_position_qty(
+                                            cw["symbol"], "BUY", desired_ps_long
+                                        )
+                                        or 0.0
+                                    ),
+                                )
+                            except Exception:
+                                fallback_qty = 0.0
+                        if fallback_qty > 0.0:
+                            retry_count, retry_qty = self._close_indicator_positions(
+                                cw,
+                                interval_current,
+                                indicator_key,
+                                "BUY",
+                                desired_ps_long,
+                                signature_hint=(indicator_key,),
+                                ignore_hold=True,
+                                interval_aliases=indicator_interval_tokens,
+                                qty_limit=fallback_qty,
                             )
-                        except Exception:
-                            live_long_qty = 0.0
-                        if live_long_qty > 0.0:
+                            closed_long = retry_count
+                            closed_long_qty = retry_qty
+                        if closed_long <= 0:
                             try:
                                 self.log(
                                     f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL skipped:"
-                                    f" long leg still live on exchange ({live_long_qty:.10f})."
+                                    " long leg still live on exchange."
                                 )
                             except Exception:
                                 pass
                             continue
                     flip_from_side = None
                     flip_qty = 0.0
+                    flip_qty_target = 0.0
                     remaining_indicator_qty = self._indicator_open_qty(
                         cw["symbol"],
                         interval_current,
@@ -3787,6 +4064,7 @@ class StrategyEngine:
                     if closed_long > 0 and closed_long_qty > 0.0:
                         flip_from_side = "BUY"
                         flip_qty = closed_long_qty
+                        flip_qty_target = closed_long_qty
                         try:
                             self.log(
                                 f"{cw['symbol']}@{interval_current} {indicator_key} flip BUY→SELL "
@@ -3795,17 +4073,45 @@ class StrategyEngine:
                         except Exception:
                             pass
                     elif remaining_indicator_qty > 0.0:
-                        flip_from_side = "BUY"
-                        flip_qty = remaining_indicator_qty
                         try:
                             self.log(
-                                f"{cw['symbol']}@{interval_current} {indicator_key} flip BUY→SELL "
-                                f"(pending close {flip_qty:.10f})."
+                                f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL deferred: "
+                                f"{remaining_indicator_qty:.10f} long qty still open."
                             )
                         except Exception:
                             pass
+                        continue
                     else:
-                        if self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "BUY"):
+                        live_long_residual = 0.0
+                        try:
+                            live_long_residual = max(
+                                0.0,
+                                float(self._current_futures_position_qty(cw["symbol"], "BUY", desired_ps_long)),
+                            )
+                        except Exception:
+                            live_long_residual = 0.0
+                        tol_live = max(1e-9, live_long_residual * 1e-6)
+                        if live_long_residual > tol_live:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL forcing close of residual long "
+                                    f"({live_long_residual:.10f})."
+                                )
+                            except Exception:
+                                pass
+                            if not self._close_opposite_position(
+                                cw["symbol"],
+                                interval_current,
+                                "SELL",
+                                trigger_signature=(indicator_key,),
+                                indicator_key=(indicator_key,),
+                                target_qty=live_long_residual,
+                            ):
+                                continue
+                            flip_from_side = "BUY"
+                            flip_qty = live_long_residual
+                            flip_qty_target = live_long_residual
+                        elif self._indicator_has_open(cw["symbol"], interval_current, indicator_key, "BUY"):
                             try:
                                 self.log(
                                     f"Skip SELL for {cw['symbol']}@{interval_current} ({indicator_key}): long leg still syncing (waiting for ledger)."
@@ -3823,6 +4129,7 @@ class StrategyEngine:
                             "indicator_key": indicator_key,
                             "flip_from": flip_from_side,
                             "flip_qty": flip_qty,
+                            "flip_qty_target": flip_qty_target,
                         }
                     )
             if not indicator_order_requests:
@@ -3849,23 +4156,24 @@ class StrategyEngine:
                     ):
                         continue
                     if action_norm == "buy":
-                        live_short_qty = 0.0
-                        try:
-                            live_short_qty = max(
-                                0.0,
-                                float(self._current_futures_position_qty(cw["symbol"], "SELL", desired_ps_short)),
-                            )
-                        except Exception:
+                        if not hedge_overlap_allowed:
                             live_short_qty = 0.0
-                        if live_short_qty > 0.0:
                             try:
-                                self.log(
-                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY skipped:"
-                                    f" short leg still live on exchange ({live_short_qty:.10f})."
+                                live_short_qty = max(
+                                    0.0,
+                                    float(self._current_futures_position_qty(cw["symbol"], "SELL", desired_ps_short)),
                                 )
                             except Exception:
-                                pass
-                            continue
+                                live_short_qty = 0.0
+                            if live_short_qty > 0.0:
+                                try:
+                                    self.log(
+                                        f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY skipped:"
+                                        f" short leg still live on exchange ({live_short_qty:.10f})."
+                                    )
+                                except Exception:
+                                    pass
+                                continue
                         indicator_order_requests.append(
                             {
                                 "side": "BUY",
@@ -3875,23 +4183,24 @@ class StrategyEngine:
                             }
                         )
                     else:
-                        live_long_qty = 0.0
-                        try:
-                            live_long_qty = max(
-                                0.0,
-                                float(self._current_futures_position_qty(cw["symbol"], "BUY", desired_ps_long)),
-                            )
-                        except Exception:
+                        if not hedge_overlap_allowed:
                             live_long_qty = 0.0
-                        if live_long_qty > 0.0:
                             try:
-                                self.log(
-                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL skipped:"
-                                    f" long leg still live on exchange ({live_long_qty:.10f})."
+                                live_long_qty = max(
+                                    0.0,
+                                    float(self._current_futures_position_qty(cw["symbol"], "BUY", desired_ps_long)),
                                 )
                             except Exception:
-                                pass
-                            continue
+                                live_long_qty = 0.0
+                            if live_long_qty > 0.0:
+                                try:
+                                    self.log(
+                                        f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL skipped:"
+                                        f" long leg still live on exchange ({live_long_qty:.10f})."
+                                    )
+                                except Exception:
+                                    pass
+                                continue
                         indicator_order_requests.append(
                             {
                                 "side": "SELL",
@@ -3952,6 +4261,7 @@ class StrategyEngine:
                         "indicator_key": request.get("indicator_key"),
                         "flip_from": request.get("flip_from"),
                         "flip_qty": request.get("flip_qty"),
+                        "flip_qty_target": request.get("flip_qty_target"),
                     }
                 )
         elif signal:
@@ -4120,6 +4430,7 @@ class StrategyEngine:
             origin_timestamp: float | None,
             flip_from_side: str | None = None,
             flip_qty: float | int | None = None,
+            flip_qty_target: float | int | None = None,
         ) -> None:
             nonlocal positions_cache, order_batch_counter, order_batch_total
             side = str(order_side or "").upper()
@@ -4130,17 +4441,25 @@ class StrategyEngine:
                 flip_qty_val = float(flip_qty or 0.0)
             except Exception:
                 flip_qty_val = 0.0
+            try:
+                flip_qty_target_val = float(
+                    flip_qty_target if flip_qty_target is not None else (flip_qty or 0.0)
+                )
+            except Exception:
+                flip_qty_target_val = 0.0
             flip_active = flip_from_norm in ("BUY", "SELL") and flip_from_norm != side
             flip_qty_override = 0.0
-            if flip_active and flip_qty_val > 0.0:
-                flip_qty_override = flip_qty_val
-                try:
-                    self.log(
-                        f"{cw['symbol']}@{interval_norm or 'default'} flip {flip_from_norm}→{side} "
-                        f"request (qty {flip_qty_val:.10f})."
-                    )
-                except Exception:
-                    pass
+            if flip_active:
+                if flip_qty_target_val > 0.0:
+                    flip_qty_override = flip_qty_target_val
+                if flip_qty_val > 0.0:
+                    try:
+                        self.log(
+                            f"{cw['symbol']}@{interval_norm or 'default'} flip {flip_from_norm}→{side} "
+                            f"request (qty {flip_qty_val:.10f})."
+                        )
+                    except Exception:
+                        pass
             current_batch_index = order_batch_counter
             order_batch_counter += 1
             trigger_labels = list(dict.fromkeys(indicator_labels or base_trigger_labels))
@@ -5210,6 +5529,7 @@ class StrategyEngine:
                 ts_float,
                 order.get("flip_from"),
                 order.get("flip_qty"),
+                order.get("flip_qty_target"),
             )
 
     def _trigger_emergency_close(self, sym: str, interval: str, reason: str):

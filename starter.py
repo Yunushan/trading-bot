@@ -8,6 +8,14 @@ import sys
 import textwrap
 from pathlib import Path
 
+os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+_chromium_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+_dns_guard_flags = "--dns-prefetch-disable --disable-features=WinUseBrowserSignal"
+if _dns_guard_flags not in _chromium_flags:
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
+        f"{_chromium_flags} {_dns_guard_flags}".strip()
+    )
+
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 BASE_DIR = Path(__file__).resolve().parent
