@@ -1427,90 +1427,67 @@ class StrategyEngine:
             qty_to_close = min(live_qty, fallback_qty_goal) if fallback_qty_goal > 0.0 else 0.0
             if limit_remaining is not None:
                 qty_to_close = min(qty_to_close, limit_remaining)
-            if fallback_entries and qty_to_close > 0.0:
+            if qty_to_close > 0.0:
                 close_side = "SELL" if side_norm == "BUY" else "BUY"
-                try:
-                    res = self.binance.close_futures_leg_exact(
-                        symbol,
-                        qty_to_close,
-                        side=close_side,
-                        position_side=position_side,
-                    )
-                except Exception as exc:
-                    res = {"ok": False, "error": str(exc)}
-                if isinstance(res, dict) and res.get("ok"):
-                    try:
-                        executed_qty_val = float(
-                            self._order_field(res, "executedQty", "cumQty", "cumQuantity", "origQty") or 0.0
-                        )
-                    except Exception:
-                        executed_qty_val = 0.0
-                    if executed_qty_val <= 0.0 and isinstance(res.get("fills"), dict):
-                        try:
-                            executed_qty_val = float(res["fills"].get("filled_qty") or 0.0)
-                        except Exception:
-                            executed_qty_val = 0.0
-                    qty_recorded = executed_qty_val if executed_qty_val > 0.0 else qty_to_close
-                    total_qty_closed += qty_recorded
-                    if limit_remaining is not None:
-                        limit_remaining = max(0.0, limit_remaining - qty_recorded)
-                    entries_removed = 0
-                    partial_updates = 0
-                    affected_leg_keys: set[tuple[str, str, str]] = set()
-                    qty_remaining = qty_recorded
-                    tol = max(1e-9, qty_recorded * 1e-6)
+                qty_remaining = qty_to_close
+                tol = max(1e-9, qty_to_close * 1e-6)
+                if fallback_entries:
                     for leg_key, ledger_token, entry_qty in fallback_entries:
                         if qty_remaining <= tol:
                             break
-                        affected_leg_keys.add(leg_key)
-                        consume = min(entry_qty, qty_remaining)
-                        if ledger_token:
-                            if entry_qty <= tol or consume >= entry_qty - tol:
-                                self._remove_leg_entry(leg_key, ledger_token)
-                                entries_removed += 1
-                            else:
-                                self._decrement_leg_entry_qty(leg_key, ledger_token, entry_qty, entry_qty - consume)
-                                partial_updates += 1
-                            qty_remaining = max(0.0, qty_remaining - consume)
-                        else:
-                            try:
-                                self.log(
-                                    f"{symbol}@{interval_text or 'default'} fallback removal missing ledger id for "
-                                    f"{leg_key[0]}@{leg_key[1]} {indicator_key}; purging leg."
-                                )
-                            except Exception:
-                                pass
-                            self._remove_leg_entry(leg_key, None)
-                            entries_removed += 1
-                            qty_remaining = max(0.0, qty_remaining - entry_qty)
+                        if not ledger_token:
+                            continue
+                        entry_match = None
+                        for entry in self._leg_entries(leg_key):
+                            if entry.get("ledger_id") == ledger_token:
+                                entry_match = entry
+                                break
+                        if not entry_match:
+                            continue
+                        cw_clone = dict(cw)
+                        cw_clone["interval"] = leg_key[1]
+                        request_qty = min(entry_qty, qty_remaining)
+                        closed_qty_entry = self._close_leg_entry(
+                            cw_clone,
+                            leg_key,
+                            entry_match,
+                            side_norm,
+                            close_side,
+                            position_side,
+                            loss_usdt=0.0,
+                            price_pct=0.0,
+                            margin_pct=0.0,
+                            qty_limit=request_qty,
+                        )
+                        if closed_qty_entry > 0.0:
+                            closed_count += 1
+                            total_qty_closed += closed_qty_entry
+                            qty_remaining = max(0.0, qty_remaining - closed_qty_entry)
+                            if limit_remaining is not None:
+                                limit_remaining = max(0.0, limit_remaining - closed_qty_entry)
                     if qty_remaining > tol:
                         try:
                             self.log(
-                                f"{symbol}@{interval_text or 'default'} fallback close executed {qty_recorded:.10f} "
-                                f"but only reconciled {qty_recorded - qty_remaining:.10f}; residual {qty_remaining:.10f} "
-                                f"will be flushed on next sync."
+                                f"{symbol}@{interval_text or 'default'} fallback close incomplete for {indicator_key}: "
+                                f"residual {qty_remaining:.10f} {side_norm} still open."
                             )
                         except Exception:
                             pass
-                    for leg_key in affected_leg_keys:
-                        if not self._leg_entries(leg_key):
-                            self._guard_mark_leg_closed(leg_key)
-                    closed_count = max(1, entries_removed + partial_updates)
-                    try:
-                        note_parts: list[str] = []
-                        if entries_removed:
-                            label = "entry" if entries_removed == 1 else "entries"
-                            note_parts.append(f"{entries_removed} {label}")
-                        if partial_updates:
-                            label = "entry" if partial_updates == 1 else "entries"
-                            note_parts.append(f"{partial_updates} {label} (partial)")
-                        entry_note = ", ".join(note_parts) if note_parts else "entries"
-                        self.log(
-                            f"{symbol}@{interval_text or 'default'} fallback closed {qty_recorded:.10f} "
-                            f"{side_norm} {entry_note} for indicator {indicator_key}."
-                        )
-                    except Exception:
-                        pass
+                else:
+                    success, res = _execute_close_with_fallback(close_side, qty_remaining, position_side)
+                    if success:
+                        closed_count += 1
+                        total_qty_closed += qty_remaining
+                        if limit_remaining is not None:
+                            limit_remaining = max(0.0, limit_remaining - qty_remaining)
+                        qty_remaining = 0.0
+                    else:
+                        try:
+                            self.log(
+                                f"{symbol}@{interval_text or 'default'} fallback close failed for indicator {indicator_key}: {res}"
+                            )
+                        except Exception:
+                            pass
         return closed_count, total_qty_closed
 
 

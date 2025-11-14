@@ -7412,11 +7412,22 @@ class MainWindow(QtWidgets.QWidget):
         self.allow_opposite_checkbox.stateChanged.connect(self._on_allow_opposite_changed)
         g.addWidget(self.allow_opposite_checkbox, 3, 0, 1, 6)
 
+        self.cb_stop_without_close = QtWidgets.QCheckBox("Stop Bot Without Closing Active Positions")
+        stop_without_close = bool(self.config.get("stop_without_close", False))
+        self.cb_stop_without_close.setChecked(stop_without_close)
+        self.cb_stop_without_close.setToolTip(
+            "When checked, the Stop button will halt strategy threads but leave all open positions untouched."
+        )
+        self.cb_stop_without_close.stateChanged.connect(
+            lambda state: self.config.__setitem__("stop_without_close", bool(state == QtCore.Qt.CheckState.Checked))
+        )
+        g.addWidget(self.cb_stop_without_close, 4, 0, 1, 6)
+
         self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All On Window Close")
         initial_close = bool(self.config.get('close_on_exit', False))
         self.cb_close_on_exit.setChecked(initial_close)
         self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
-        g.addWidget(self.cb_close_on_exit, 4, 0, 1, 6)
+        g.addWidget(self.cb_close_on_exit, 5, 0, 1, 6)
 
         self._apply_lead_trader_state(lead_trader_enabled)
 
@@ -7564,7 +7575,11 @@ class MainWindow(QtWidgets.QWidget):
         self.start_btn.clicked.connect(self.start_strategy)
         btn_layout.addWidget(self.start_btn)
         self.stop_btn = QtWidgets.QPushButton("Stop")
-        self.stop_btn.clicked.connect(lambda checked=False: self.stop_strategy_async(close_positions=True))
+        self.stop_btn.clicked.connect(
+            lambda checked=False: self.stop_strategy_async(
+                close_positions=not bool(self.cb_stop_without_close.isChecked())
+            )
+        )
         self.stop_btn.setEnabled(False)
         btn_layout.addWidget(self.stop_btn)
         self.save_btn = QtWidgets.QPushButton("Save Config")
@@ -7601,6 +7616,8 @@ class MainWindow(QtWidgets.QWidget):
             self.lead_trader_enable_cb,
             self.lead_trader_combo,
             self.cb_add_only,
+            self.allow_opposite_checkbox,
+            self.cb_stop_without_close,
             self.cb_close_on_exit,
             self.stop_loss_enable_cb,
             self.stop_loss_mode_combo,

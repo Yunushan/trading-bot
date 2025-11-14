@@ -19,7 +19,8 @@ if _dns_guard_flags not in _chromium_flags:
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 BASE_DIR = Path(__file__).resolve().parent
-WINDOWS_TASKBAR_DIR = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance"
+REPO_ROOT = BASE_DIR.parents[3] if len(BASE_DIR.parents) >= 4 else BASE_DIR
+WINDOWS_TASKBAR_DIR = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "Binance"
 
 _WINDOWS_TASKBAR_SPEC = importlib.util.spec_from_file_location(
     "windows_taskbar", WINDOWS_TASKBAR_DIR / "windows_taskbar.py"
@@ -32,15 +33,15 @@ _WINDOWS_TASKBAR_SPEC.loader.exec_module(windows_taskbar)
 apply_taskbar_metadata = windows_taskbar.apply_taskbar_metadata
 build_relaunch_command = windows_taskbar.build_relaunch_command
 ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
-BINANCE_MAIN = BASE_DIR / "Languages" / "Python" / "Crypto-Exchanges" / "Binance" / "main.py"
+BINANCE_MAIN = WINDOWS_TASKBAR_DIR / "main.py"
 BINANCE_CPP_PROJECT = (
-    BASE_DIR / "Languages" / "C++" / "Crypto-Exchanges" / "Binance" / "backtest_tab"
+    REPO_ROOT / "Languages" / "C++" / "Crypto-Exchanges" / "Binance" / "backtest_tab"
 )
-BINANCE_CPP_BUILD_ROOT = BASE_DIR / "build" / "backtest_tab"
+BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "backtest_tab"
 BINANCE_CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
 APP_ICON_BASENAME = "crypto_forex_logo"
-APP_ICON_PATH = BASE_DIR / "assets" / f"{APP_ICON_BASENAME}.ico"
-APP_ICON_FALLBACK = BASE_DIR / "assets" / f"{APP_ICON_BASENAME}.png"
+APP_ICON_PATH = REPO_ROOT / "assets" / f"{APP_ICON_BASENAME}.ico"
+APP_ICON_FALLBACK = REPO_ROOT / "assets" / f"{APP_ICON_BASENAME}.png"
 WINDOWS_APP_ID = "com.tradingbot.starter"
 
 
@@ -987,10 +988,11 @@ class StarterWindow(QtWidgets.QWidget):
         self._closed_message = closed_message
         self.status_label.setText(start_message)
         try:
-            self._active_bot_process = subprocess.Popen(
-                command,
-                cwd=str(cwd),
-            )
+            popen_kwargs: dict[str, object] = {"cwd": str(cwd)}
+            create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if create_no_window:
+                popen_kwargs["creationflags"] = create_no_window
+            self._active_bot_process = subprocess.Popen(command, **popen_kwargs)
         except Exception as exc:  # pragma: no cover - UI only
             self._reset_launch_tracking()
             QtWidgets.QMessageBox.critical(self, "Launch failed", str(exc))
