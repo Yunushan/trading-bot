@@ -376,20 +376,68 @@ STARTER_FOREX_BROKERS = [
     },
 ]
 
-DEPENDENCY_VERSION_TARGETS = [
-    {"label": "pandas", "package": "pandas"},
-    {"label": "pandas_ta", "package": "pandas-ta"},
-    {"label": "PyQt6", "package": "PyQt6"},
-    {"label": "PyQt6 (Qt)", "package": None, "custom": "qt"},
-    {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},
+_REQUIREMENTS_PATH = _THIS_FILE.parents[3] / "requirements.txt"
+
+_DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "python-binance", "package": "python-binance"},
     {"label": "binance-connector", "package": "binance-connector"},
+    {"label": "PyQt6", "package": "PyQt6"},
+    {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6"},
+    {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},
+    {"label": "numba", "package": "numba"},
+    {"label": "llvmlite", "package": "llvmlite"},
+    {"label": "numpy", "package": "numpy"},
+    {"label": "pandas", "package": "pandas"},
+    {"label": "pandas-ta", "package": "pandas-ta"},
+    {"label": "requests", "package": "requests"},
     {"label": "binance-sdk-derivatives-trading-usds-futures", "package": "binance-sdk-derivatives-trading-usds-futures"},
     {"label": "binance-sdk-derivatives-trading-coin-futures", "package": "binance-sdk-derivatives-trading-coin-futures"},
     {"label": "binance-sdk-spot", "package": "binance-sdk-spot"},
-    {"label": "numpy", "package": "numpy"},
-    {"label": "requests", "package": "requests"},
 ]
+
+
+def _extract_requirement_name(line: str) -> str | None:
+    stripped = (line or "").strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith(("-", "--")):
+        return None
+    if "#" in stripped:
+        stripped = stripped.split("#", 1)[0].strip()
+    if not stripped:
+        return None
+    separators = ("==", ">=", "<=", "~=", "!=", "===", "<", ">", "@")
+    name_part = stripped
+    for sep in separators:
+        if sep in stripped:
+            name_part = stripped.split(sep, 1)[0].strip()
+            break
+    if "[" in name_part:
+        name_part = name_part.split("[", 1)[0].strip()
+    return name_part or None
+
+
+def _dependency_targets_from_requirements() -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    path = _REQUIREMENTS_PATH
+    if path.is_file():
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    pkg_name = _extract_requirement_name(raw_line)
+                    if not pkg_name or pkg_name in seen:
+                        continue
+                    entries.append({"label": pkg_name, "package": pkg_name})
+                    seen.add(pkg_name)
+        except Exception:
+            entries = []
+    if not entries:
+        return copy.deepcopy(_DEFAULT_DEPENDENCY_VERSION_TARGETS)
+    return entries
+
+
+DEPENDENCY_VERSION_TARGETS = _dependency_targets_from_requirements()
 
 def _latest_version_from_pypi(package: str) -> str | None:
     if not package:
@@ -806,6 +854,136 @@ def _extract_indicator_metrics(indicator_key: str, segments: list[str]) -> tuple
     return value_str, action_str
 
 
+def _fallback_trigger_entries_from_desc(
+    desc: str | None,
+    interval_hint: str | None,
+    allowed_indicators: set[str] | None = None,
+) -> list[str]:
+    if not desc:
+        return []
+    interval_label = str(interval_hint or "").strip().upper()
+    interval_part = f"@{interval_label}" if interval_label else ""
+    results: list[str] = []
+
+    def _infer_indicator_key(segment: str) -> str | None:
+        seg_low = segment.lower()
+        if "stochrsi" in seg_low:
+            return "stoch_rsi"
+        if "williams" in seg_low or "%r" in seg_low:
+            return "willr"
+        if "rsi" in seg_low:
+            return "rsi"
+        return None
+
+    for segment in _split_trigger_desc(desc):
+        seg_clean = segment.strip()
+        if not seg_clean:
+            continue
+        indicator_key = _infer_indicator_key(seg_clean)
+        if not indicator_key:
+            continue
+        if allowed_indicators and indicator_key not in allowed_indicators:
+            continue
+        value_str, action_str = _extract_indicator_metrics(indicator_key, [seg_clean])
+        if value_str is None:
+            match = _FLOAT_RE.search(seg_clean)
+            if match:
+                value_str = match.group(0)
+        if value_str is not None:
+            try:
+                value_display = f"{float(value_str):.2f}"
+            except Exception:
+                value_display = str(value_str)
+        else:
+            value_display = "--"
+        label = _indicator_short_label(indicator_key)
+        action_part = f" -{action_str}" if action_str else ""
+        entry_text = f"{label}{interval_part} {value_display}{action_part}".strip()
+        if entry_text:
+            results.append(entry_text)
+    return results
+
+
+def _indicator_entry_signature(text: str) -> tuple[str, str]:
+    parts = text.split("@", 1)
+    label_part = parts[0].strip().lower()
+    interval_part = ""
+    if len(parts) == 2:
+        remainder = parts[1]
+        interval_part = remainder.split(None, 1)[0].strip().lower()
+    return label_part, interval_part
+
+
+def _dedupe_indicator_entries(entries: list[str] | None) -> list[str]:
+    if not entries:
+        return []
+    seen: set[tuple[str, str]] = set()
+    deduped: list[str] = []
+    for entry in entries:
+        sig = _indicator_entry_signature(entry)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        deduped.append(entry)
+    return deduped
+
+
+def _filter_indicator_entries_for_interval(
+    entries: list[str],
+    interval_hint: str | None,
+    *,
+    include_non_matching: bool = True,
+) -> list[str]:
+    """Return entries matching the given interval (case-insensitive)."""
+    if not entries:
+        return []
+    interval_targets: list[str] = []
+    if interval_hint:
+        for part in str(interval_hint).split(","):
+            token = _normalize_interval_token(part)
+            if token and token not in interval_targets:
+                interval_targets.append(token)
+    seen: set[tuple[str, str]] = set()
+    filtered: list[str] = []
+
+    def _interval_token(text: str) -> str | None:
+        if "@" not in text:
+            return None
+        return text.split("@", 1)[1].split(None, 1)[0].strip().lower()
+
+    def _label_token(text: str) -> str:
+        return text.split("@", 1)[0].strip().lower()
+
+    matched: list[str] = []
+    if interval_targets:
+        for target in interval_targets:
+            for text in entries:
+                token = _interval_token(text)
+                if token != target:
+                    continue
+                label = _label_token(text)
+                sig = (label, token)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                matched.append(text)
+    if matched:
+        return _dedupe_indicator_entries(matched)
+    if not include_non_matching:
+        return []
+    for text in entries:
+        token = _interval_token(text)
+        if token is None:
+            continue
+        label = _label_token(text)
+        sig = (label, token)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        filtered.append(text)
+    return _dedupe_indicator_entries(filtered or entries)
+
+
 _CLOSED_RECORD_STATES = {
     "closed",
     "liquidated",
@@ -861,18 +1039,37 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
             indicator_keys.append(key_norm)
     if not indicator_keys:
         return [], {}
+    indicator_key_set = set(indicator_keys)
 
     sources: list[dict] = []
+
+    def _append_source(interval_value, desc_text):
+        if not desc_text:
+            return
+        segments = _split_trigger_desc(desc_text)
+        if not segments:
+            return
+        interval_tokens: list[tuple[str | None, str | None]] = []
+        if interval_value:
+            parts = [part.strip() for part in str(interval_value).split(",") if part.strip()]
+            for part in parts:
+                interval_tokens.append((part, _normalize_interval_token(part)))
+        if not interval_tokens:
+            interval_tokens.append(((interval_value or "").strip() or None, _normalize_interval_token(interval_value)))
+        for display_token, norm_token in interval_tokens:
+            sources.append(
+                {
+                    "interval": display_token or interval_value,
+                    "norm_interval": norm_token,
+                    "segments": segments,
+                }
+            )
+
+    aggregated_entries = rec.get("_aggregated_entries")
     data_desc = data.get("trigger_desc")
-    if data_desc:
+    if data_desc and not aggregated_entries:
         interval_display = data.get("interval_display") or data.get("interval") or primary_interval
-        sources.append(
-            {
-                "interval": interval_display,
-                "norm_interval": _normalize_interval_token(interval_display),
-                "segments": _split_trigger_desc(data_desc),
-            }
-        )
+        _append_source(interval_display, data_desc)
 
     allocations = rec.get("allocations") or []
     if isinstance(allocations, dict):
@@ -888,67 +1085,201 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
             if not desc:
                 continue
             iv = alloc.get("interval_display") or alloc.get("interval")
-            sources.append(
-                {
-                    "interval": iv,
-                    "norm_interval": _normalize_interval_token(iv),
-                    "segments": _split_trigger_desc(desc),
-                }
-            )
+            _append_source(iv, desc)
+
+    if isinstance(aggregated_entries, list):
+        for agg in aggregated_entries:
+            if not isinstance(agg, dict):
+                continue
+            agg_data = agg.get("data") or {}
+            agg_status = str(agg.get("status") or agg_data.get("status") or "").strip().lower()
+            if agg_status in _CLOSED_RECORD_STATES and not include_inactive_allocs:
+                continue
+            agg_desc = agg_data.get("trigger_desc") or agg.get("trigger_desc")
+            if agg_desc:
+                agg_interval = (
+                    agg_data.get("interval_display")
+                    or agg_data.get("interval")
+                    or agg.get("entry_tf")
+                    or primary_interval
+                )
+                _append_source(agg_interval, agg_desc)
+            agg_allocs = agg.get("allocations") or []
+            if isinstance(agg_allocs, dict):
+                agg_allocs = list(agg_allocs.values())
+            if isinstance(agg_allocs, list):
+                for alloc in agg_allocs:
+                    if not isinstance(alloc, dict):
+                        continue
+                    status_flag = str(alloc.get("status") or "").strip().lower()
+                    if status_flag in _CLOSED_ALLOCATION_STATES and not include_inactive_allocs:
+                        continue
+                    desc = alloc.get("trigger_desc")
+                    if not desc:
+                        continue
+                    iv = alloc.get("interval_display") or alloc.get("interval")
+                    _append_source(iv, desc)
 
     side_key = str(rec.get("side_key") or (rec.get("data") or {}).get("side_key") or "").upper()
 
+    primary_norm = _normalize_interval_token(primary_interval)
+    restrict_to_primary = bool(rec.get("_aggregate_is_primary"))
+    sources_to_use = sources
+    if restrict_to_primary and primary_norm:
+        preferred_sources = [src for src in sources if src.get("norm_interval") == primary_norm]
+        if preferred_sources:
+            sources_to_use = preferred_sources
+        else:
+            fallback_sources = [src for src in sources if src.get("norm_interval") in (None, "")]
+            if fallback_sources:
+                sources_to_use = fallback_sources
     interval_map: dict[str, list[str]] = {}
     results: list[str] = []
     for key in indicator_keys:
-            interval_entry_order: list[str | None] = []
-            interval_entry_map: dict[str | None, str] = {}
+        interval_entry_order: list[str | None] = []
+        interval_entry_map: dict[str | None, str] = {}
 
-            def _register_interval_entry(interval_val: str | None, entry_text: str) -> None:
-                interval_key = (interval_val or "").strip().lower() or None
-                if interval_key in interval_entry_map:
-                    interval_entry_map[interval_key] = entry_text
-                else:
-                    interval_entry_map[interval_key] = entry_text
-                    interval_entry_order.append(interval_key)
-
-            for source in sources:
-                segments = source.get("segments") or []
-                value, action = _extract_indicator_metrics(key, segments)
-                if action is None:
-                    continue
-                interval_label = source.get("interval") or primary_interval
-                interval_display = (interval_label or "").strip()
-                if not interval_display and primary_interval:
-                    interval_display = primary_interval
-                label = _indicator_short_label(key)
-                interval_part = f"@{interval_display.upper()}" if interval_display else ""
-                if value is not None:
-                    try:
-                        value_display = f"{float(value):.2f}"
-                    except Exception:
-                        value_display = str(value)
-                else:
-                    value_display = "--"
-                action_part = f" -{action}" if action else ""
-                entry = f"{label}{interval_part} {value_display}{action_part}".strip()
-                _register_interval_entry(interval_display, entry)
-                if interval_display:
-                    interval_clean = interval_display.strip().upper()
-                    slots = interval_map.setdefault(key.lower(), [])
-                    if interval_clean not in slots:
-                        slots.append(interval_clean)
-            if not interval_entry_map:
+        for source in sources_to_use:
+            segments = source.get("segments") or []
+            value, action = _extract_indicator_metrics(key, segments)
+            if action is None:
                 continue
+            interval_label = source.get("interval") or primary_interval
+            interval_display = (interval_label or "").strip()
+            if not interval_display and primary_interval:
+                interval_display = primary_interval
+            label = _indicator_short_label(key)
+            interval_part = f"@{interval_display.upper()}" if interval_display else ""
+            if value is not None:
+                try:
+                    value_display = f"{float(value):.2f}"
+                except Exception:
+                    value_display = str(value)
+            else:
+                value_display = "--"
+            action_part = f" -{action}" if action else ""
+            entry = f"{label}{interval_part} {value_display}{action_part}".strip()
+            interval_reg_key = (interval_display or "").strip().lower() or None
+            if interval_reg_key in interval_entry_map:
+                interval_entry_map[interval_reg_key] = entry
+            else:
+                interval_entry_map[interval_reg_key] = entry
+                interval_entry_order.append(interval_reg_key)
+            if interval_display:
+                interval_clean = interval_display.strip().upper()
+                slots = interval_map.setdefault(key.lower(), [])
+                if interval_clean not in slots:
+                    slots.append(interval_clean)
+        if interval_entry_map:
             results.extend(interval_entry_map[idx] for idx in interval_entry_order)
 
-    deduped_results: list[str] = []
-    seen_entries: set[str] = set()
-    for entry in results:
-        if entry in seen_entries:
-            continue
-        seen_entries.add(entry)
-        deduped_results.append(entry)
+    deduped_results = _dedupe_indicator_entries(results)
+
+    seen_interval_pairs = {_indicator_entry_signature(entry) for entry in deduped_results}
+    if not deduped_results:
+        fallback_entries: list[str] = []
+        data_desc_primary = (rec.get("data") or {}).get("trigger_desc") or rec.get("trigger_desc")
+        fallback_entries.extend(
+            _fallback_trigger_entries_from_desc(
+                data_desc_primary,
+                interval_hint,
+                allowed_indicators=indicator_key_set,
+            )
+        )
+        allocations = rec.get("allocations") or []
+        if isinstance(allocations, dict):
+            allocations = list(allocations.values())
+        for alloc in allocations or []:
+            if not isinstance(alloc, dict):
+                continue
+            status_flag = str(alloc.get("status") or "").strip().lower()
+            if status_flag in _CLOSED_ALLOCATION_STATES and not include_inactive_allocs:
+                continue
+            fallback_entries.extend(
+                _fallback_trigger_entries_from_desc(
+                    alloc.get("trigger_desc"),
+                    alloc.get("interval_display") or alloc.get("interval") or interval_hint,
+                    allowed_indicators=indicator_key_set,
+                )
+            )
+        aggregated_entries = rec.get("_aggregated_entries") or []
+        if isinstance(aggregated_entries, list):
+            for agg in aggregated_entries:
+                if not isinstance(agg, dict):
+                    continue
+                agg_data = agg.get("data") or {}
+                agg_status = str(agg.get("status") or agg_data.get("status") or "").strip().lower()
+                if agg_status in _CLOSED_RECORD_STATES and not include_inactive_allocs:
+                    continue
+                agg_desc = agg_data.get("trigger_desc") or agg.get("trigger_desc")
+                fallback_entries.extend(
+                    _fallback_trigger_entries_from_desc(
+                        agg_desc,
+                        agg.get("entry_tf") or agg_data.get("interval_display") or interval_hint,
+                        allowed_indicators=indicator_key_set,
+                    )
+                )
+        if fallback_entries:
+            filtered: list[str] = []
+            for entry in fallback_entries:
+                interval_key = _indicator_entry_signature(entry)
+                if interval_key in seen_interval_pairs:
+                    continue
+                seen_interval_pairs.add(interval_key)
+                filtered.append(entry)
+            if filtered:
+                deduped_results = list(dict.fromkeys(filtered))
+    else:
+        fallback_entries: list[str] = []
+        data_desc_primary = (rec.get("data") or {}).get("trigger_desc") or rec.get("trigger_desc")
+        fallback_entries.extend(
+            _fallback_trigger_entries_from_desc(
+                data_desc_primary,
+                interval_hint,
+                allowed_indicators=indicator_key_set,
+            )
+        )
+        allocations = rec.get("allocations") or []
+        if isinstance(allocations, dict):
+            allocations = list(allocations.values())
+        for alloc in allocations or []:
+            if not isinstance(alloc, dict):
+                continue
+            status_flag = str(alloc.get("status") or "").strip().lower()
+            if status_flag in _CLOSED_ALLOCATION_STATES and not include_inactive_allocs:
+                continue
+            fallback_entries.extend(
+                _fallback_trigger_entries_from_desc(
+                    alloc.get("trigger_desc"),
+                    alloc.get("interval_display") or alloc.get("interval") or interval_hint,
+                    allowed_indicators=indicator_key_set,
+                )
+            )
+        aggregated_entries = rec.get("_aggregated_entries") or []
+        if isinstance(aggregated_entries, list):
+            for agg in aggregated_entries:
+                if not isinstance(agg, dict):
+                    continue
+                agg_data = agg.get("data") or {}
+                agg_status = str(agg.get("status") or agg_data.get("status") or "").strip().lower()
+                if agg_status in _CLOSED_RECORD_STATES and not include_inactive_allocs:
+                    continue
+                agg_desc = agg_data.get("trigger_desc") or agg.get("trigger_desc")
+                fallback_entries.extend(
+                    _fallback_trigger_entries_from_desc(
+                        agg_desc,
+                        agg.get("entry_tf") or agg_data.get("interval_display") or interval_hint,
+                        allowed_indicators=indicator_key_set,
+                    )
+                )
+        if fallback_entries:
+            for entry in fallback_entries:
+                interval_key = _indicator_entry_signature(entry)
+                if interval_key in seen_interval_pairs:
+                    continue
+                seen_interval_pairs.add(interval_key)
+                if entry not in deduped_results:
+                    deduped_results.append(entry)
     return deduped_results, interval_map
 
 
@@ -2048,8 +2379,8 @@ class MainWindow(QtWidgets.QWidget):
         self._bot_time_timer = None
         self._pnl_label_sets: list[tuple[QtWidgets.QLabel | None, QtWidgets.QLabel | None]] = []
         self._last_pnl_snapshot = {
-            "active": {"pnl": None, "roi": None},
-            "closed": {"pnl": None, "roi": None},
+            "active": {"pnl": None},
+            "closed": {"pnl": None},
         }
         self._processed_close_events: set[str] = set()
         self._closed_trade_registry: dict[str, dict[str, float | None]] = {}
@@ -4132,12 +4463,20 @@ class MainWindow(QtWidgets.QWidget):
             pass
 
     @staticmethod
-    def _format_total_pnl_text(prefix: str, pnl_value: float | None, roi_value: float | None) -> str:
+    def _format_total_pnl_text(prefix: str, pnl_value: float | None, total_balance: float | None) -> str:
         if pnl_value is None:
             return f"{prefix}: --"
         text = f"{prefix}: {pnl_value:+.2f} USDT"
-        if roi_value is not None:
-            text += f" ({roi_value:+.2f}%)"
+        if total_balance is not None:
+            try:
+                if total_balance != 0:
+                    roi_value = (float(pnl_value) / float(total_balance)) * 100.0
+                else:
+                    roi_value = None
+            except Exception:
+                roi_value = None
+            if roi_value is not None:
+                text += f" ({roi_value:+.2f}%)"
         return text
 
     def _apply_pnl_snapshot_to_labels(
@@ -4146,6 +4485,8 @@ class MainWindow(QtWidgets.QWidget):
         closed_label: QtWidgets.QLabel | None,
     ) -> None:
         snapshot = getattr(self, "_last_pnl_snapshot", None) or {}
+        balance_snapshot = getattr(self, "_positions_balance_snapshot", None) or {}
+        total_balance_ref = balance_snapshot.get("total")
         active_snapshot = snapshot.get("active", {})
         closed_snapshot = snapshot.get("closed", {})
         if active_label is not None:
@@ -4153,7 +4494,7 @@ class MainWindow(QtWidgets.QWidget):
                 self._format_total_pnl_text(
                     "Total PNL Active Positions",
                     active_snapshot.get("pnl"),
-                    active_snapshot.get("roi"),
+                    total_balance_ref,
                 )
             )
         if closed_label is not None:
@@ -4161,7 +4502,7 @@ class MainWindow(QtWidgets.QWidget):
                 self._format_total_pnl_text(
                     "Total PNL Closed Positions",
                     closed_snapshot.get("pnl"),
-                    closed_snapshot.get("roi"),
+                    total_balance_ref,
                 )
             )
 
@@ -4185,23 +4526,14 @@ class MainWindow(QtWidgets.QWidget):
         try:
             snapshot = getattr(self, "_last_pnl_snapshot", None)
             if snapshot is None:
-                snapshot = {"active": {"pnl": None, "roi": None}, "closed": {"pnl": None, "roi": None}}
+                snapshot = {"active": {"pnl": None}, "closed": {"pnl": None}}
                 self._last_pnl_snapshot = snapshot
-            def _roi(pnl_value: float | None, margin_value: float | None) -> float | None:
-                try:
-                    if pnl_value is None or margin_value is None or margin_value <= 0.0:
-                        return None
-                    return (float(pnl_value) / float(margin_value)) * 100.0
-                except Exception:
-                    return None
 
             snapshot["active"] = {
                 "pnl": active_pnl if active_pnl is not None else None,
-                "roi": _roi(active_pnl, active_margin),
             }
             snapshot["closed"] = {
                 "pnl": closed_pnl if closed_pnl is not None else None,
-                "roi": _roi(closed_pnl, closed_margin),
             }
             for label_pair in getattr(self, "_pnl_label_sets", []) or []:
                 if not isinstance(label_pair, (list, tuple)):
@@ -10116,7 +10448,7 @@ def _mw_update_position_history(self, positions_map: dict):
         pass
 
 def _mw_positions_records_per_trade(self, open_records: dict, closed_records: list) -> list:
-    records: list[dict] = []
+    raw_records: list[dict] = []
     metadata = getattr(self, "_engine_indicator_map", {}) or {}
     meta_map: dict[tuple[str, str], list[dict]] = {}
     for meta in metadata.values():
@@ -10490,8 +10822,12 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             if not aggregate_key:
                 aggregate_key = f"{sym}|{side_key}|{interval_label}|{entry.get('open_time')}"
 
-            indicator_values = [str(val).strip() for val in (entry.get("indicators") or []) if str(val).strip()]
-            indicator_values = sorted(dict.fromkeys(indicator_values))
+            indicator_source = (
+                alloc_data.get("trigger_indicators")
+                or entry.get("indicators")
+                or base_data.get("trigger_indicators")
+            )
+            indicator_values = _normalize_indicator_values(indicator_source)
             if indicator_values:
                 for idx, indicator_name in enumerate(indicator_values):
                     clone = copy.deepcopy(entry)
@@ -10502,7 +10838,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                     clone["data"] = clone_data
                     clone["_aggregate_key"] = f"{aggregate_key}|{indicator_name.lower()}"
                     clone["_aggregate_is_primary"] = True
-                    records.append(clone)
+                    raw_records.append(clone)
                 return
             entry["indicators"] = []
             entry_data = dict(entry.get("data") or {})
@@ -10510,7 +10846,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             entry["data"] = entry_data
             entry["_aggregate_key"] = aggregate_key
             entry["_aggregate_is_primary"] = True
-            records.append(entry)
+            raw_records.append(entry)
 
         if allocations:
             for alloc in allocations:
@@ -10564,7 +10900,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         _emit_entries(rec, sym, side_key, meta_items)
 
     grouped: dict[tuple[str, str, str, tuple[str, ...]], dict[str, list[dict]]] = {}
-    for entry in records:
+    for entry in raw_records:
         try:
             symbol_key = str(entry.get("symbol") or "").strip().upper()
             side_key = str(entry.get("side_key") or "").strip().upper()
@@ -10578,7 +10914,11 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             )
             status_key = str(entry.get("status") or "").strip().lower() or "active"
             bucket = grouped.setdefault((symbol_key, side_key, interval_key, indicators_tuple), {})
-            bucket.setdefault(status_key, []).append(entry)
+            status_bucket = bucket.setdefault(status_key, [])
+            aggregate_key = entry.get("_aggregate_key")
+            if aggregate_key and any(existing.get("_aggregate_key") == aggregate_key for existing in status_bucket):
+                continue
+            status_bucket.append(entry)
         except Exception:
             continue
 
@@ -10625,7 +10965,54 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         str(item.get("entry_tf") or ""),
         -float(item.get("data", {}).get("qty") or item.get("data", {}).get("margin_usdt") or 0.0),
     ))
-    return records
+    deduped: list[dict] = []
+    seen_keys: set[str] = set()
+    seen_ledger_keys: set[str] = set()
+    for entry in records:
+        agg_key = str(entry.get("_aggregate_key") or "")
+        if agg_key:
+            signature = f"{agg_key}|{entry.get('status')}"
+        else:
+            indicator_sig = ",".join(_normalize_indicator_values(entry.get("indicators")))
+            signature = "|".join(
+                [
+                    str(entry.get("symbol") or "").upper(),
+                    str(entry.get("side_key") or "").upper(),
+                    str(entry.get("entry_tf") or "").lower(),
+                    str(entry.get("open_time") or ""),
+                    str(entry.get("close_time") or ""),
+                    indicator_sig,
+                ]
+            )
+        if signature in seen_keys:
+            continue
+        ledger_signature_parts: list[str] = []
+        for token in (
+            entry.get("ledger_id"),
+            (entry.get("data") or {}).get("ledger_id"),
+            entry.get("trade_id"),
+            entry.get("client_order_id"),
+            entry.get("order_id"),
+        ):
+            if token:
+                ledger_signature_parts.append(str(token))
+        ledger_signature_parts.extend(
+            [
+                str(entry.get("entry_tf") or "").strip().lower(),
+                ",".join(_normalize_indicator_values(entry.get("indicators"))),
+                str(entry.get("status") or "").strip().lower(),
+            ]
+        )
+        ledger_signature = "|".join(ledger_signature_parts).strip()
+        if ledger_signature and ledger_signature in seen_ledger_keys:
+            continue
+        seen_keys.add(signature)
+        if ledger_signature:
+            seen_ledger_keys.add(ledger_signature)
+        deduped.append(entry)
+    for entry in deduped:
+        entry["_aggregated_entries"] = [entry]
+    return deduped
 
 
 def _mw_positions_records_cumulative(entries: list[dict]) -> list[dict]:
@@ -10816,7 +11203,7 @@ def _mw_render_positions_table(self):
         total_pnl = 0.0
         total_margin = 0.0
         pnl_has_value = False
-        aggregated_keys: set[str] = set()
+        aggregated_keys: set[tuple[str, tuple[str, ...]] | str] = set()
         for rec in display_records:
             try:
                 data = rec.get('data', {}) or {}
@@ -10852,11 +11239,17 @@ def _mw_render_positions_table(self):
                 aggregate_primary = bool(rec.get("_aggregate_is_primary", True))
                 should_aggregate = True
                 if aggregate_key:
+                    indicator_signature = tuple(_normalize_indicator_values(rec.get("indicators")))
+                    interval_signature = str(rec.get("entry_tf") or "").strip().lower()
+                    if indicator_signature:
+                        key_entry = (aggregate_key, interval_signature, indicator_signature)
+                    else:
+                        key_entry = (aggregate_key, interval_signature)
                     if aggregate_primary:
-                        if aggregate_key in aggregated_keys:
+                        if key_entry in aggregated_keys:
                             should_aggregate = False
                         else:
-                            aggregated_keys.add(aggregate_key)
+                            aggregated_keys.add(key_entry)
                     else:
                         should_aggregate = False
 
@@ -11009,7 +11402,16 @@ def _mw_render_positions_table(self):
                 indicators_list = display_list
                 indicators_display = _format_indicator_list(display_list) if display_list else '-'
                 self.pos_table.setItem(row, 9, QtWidgets.QTableWidgetItem(indicators_display))
-                indicator_values_display = "\n".join(indicator_values_entries) if indicator_values_entries else "-"
+                interval_for_display = interval
+                strict_interval_values = getattr(self, "_positions_view_mode", "cumulative") == "per_trade"
+                filtered_indicator_values = _filter_indicator_entries_for_interval(
+                    indicator_values_entries,
+                    interval_for_display,
+                    include_non_matching=not strict_interval_values,
+                )
+                if filtered_indicator_values:
+                    filtered_indicator_values = list(dict.fromkeys(filtered_indicator_values))
+                indicator_values_display = "\n".join(filtered_indicator_values) if filtered_indicator_values else "-"
                 self.pos_table.setItem(row, POS_TRIGGERED_VALUE_COLUMN, QtWidgets.QTableWidgetItem(indicator_values_display))
                 live_values_entries = rec.get("_current_indicator_values")
                 if live_values_entries is None:
@@ -13171,6 +13573,89 @@ def _mw_on_trade_signal(self, order_info: dict):
             return lowered or None
         return None
 
+    def _sync_open_position_snapshot(
+        symbol_key: str,
+        side_key_local: str,
+        alloc_entries: list | None,
+        trade_snapshot: dict | None,
+        interval_label: str | None,
+        normalized_interval: str | None,
+        open_time_fmt: str | None,
+    ) -> None:
+        if not symbol_key or side_key_local not in ("L", "S"):
+            return
+        open_records = getattr(self, "_open_position_records", None)
+        if not isinstance(open_records, dict):
+            open_records = {}
+            self._open_position_records = open_records
+        record = open_records.get((symbol_key, side_key_local))
+        if not isinstance(record, dict):
+            record = {
+                "symbol": symbol_key,
+                "side_key": side_key_local,
+                "entry_tf": interval_label or normalized_interval or "-",
+                "open_time": open_time_fmt or (trade_snapshot.get("open_time") if isinstance(trade_snapshot, dict) else "-"),
+                "close_time": "-",
+                "status": "Active",
+                "data": {},
+                "indicators": [],
+                "stop_loss_enabled": False,
+            }
+            open_records[(symbol_key, side_key_local)] = record
+        record["status"] = "Active"
+        if interval_label:
+            record["entry_tf"] = interval_label
+        elif normalized_interval and not record.get("entry_tf"):
+            record["entry_tf"] = normalized_interval
+        if open_time_fmt:
+            record["open_time"] = open_time_fmt
+        record["allocations"] = copy.deepcopy(alloc_entries or [])
+        base_data = dict(record.get("data") or {})
+        base_data.setdefault("symbol", symbol_key)
+        base_data.setdefault("side_key", side_key_local)
+        if interval_label:
+            base_data.setdefault("interval_display", interval_label)
+        if normalized_interval:
+            base_data.setdefault("interval", normalized_interval)
+        if isinstance(trade_snapshot, dict):
+            trigger_desc = trade_snapshot.get("trigger_desc")
+            if trigger_desc:
+                base_data["trigger_desc"] = trigger_desc
+            normalized_triggers = _resolve_trigger_indicators(
+                trade_snapshot.get("trigger_indicators"),
+                trigger_desc,
+            )
+            if normalized_triggers:
+                base_data["trigger_indicators"] = normalized_triggers
+            value_mappings = (
+                ("qty", "qty"),
+                ("margin_usdt", "margin_usdt"),
+                ("pnl_value", "pnl_value"),
+                ("entry_price", "entry_price"),
+                ("leverage", "leverage"),
+                ("notional", "size_usdt"),
+                ("size_usdt", "size_usdt"),
+            )
+            for src_key, dest_key in value_mappings:
+                value = trade_snapshot.get(src_key)
+                if value is None or value == "":
+                    continue
+                if isinstance(value, str):
+                    try:
+                        value_num = float(value)
+                    except Exception:
+                        value_num = value
+                else:
+                    value_num = value
+                if dest_key == "leverage":
+                    try:
+                        value_num = int(value_num)
+                    except Exception:
+                        pass
+                if dest_key not in base_data or base_data.get(dest_key) in (None, "", 0):
+                    base_data[dest_key] = value_num
+        record["data"] = base_data
+
     if event_type == "close_interval":
         try:
             if hasattr(self, "_track_interval_close"):
@@ -13642,8 +14127,19 @@ def _mw_on_trade_signal(self, order_info: dict):
                         order_identifier = f"{sym_upper}-{side_key_local}-{len(alloc_list) + 1}"
                 trade_entry["trade_id"] = order_identifier
                 alloc_list.append(trade_entry)
+                existing_entry = trade_entry
             alloc_map[(sym_upper, side_key_local)] = alloc_list
             pending_close.pop((sym_upper, side_key_local), None)
+            snapshot_entry = existing_entry or trade_entry
+            _sync_open_position_snapshot(
+                sym_upper,
+                side_key_local,
+                alloc_list,
+                snapshot_entry,
+                interval,
+                norm_iv,
+                open_time_fmt,
+            )
         else:
             try:
                 if hasattr(self, "_track_interval_close"):
