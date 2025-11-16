@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app.gui.main_window import MainWindow
 from app.gui.app_icon import find_primary_icon_file, load_app_icon
+import os
 from windows_taskbar import apply_taskbar_metadata, build_relaunch_command, ensure_app_user_model_id
 
 APP_USER_MODEL_ID = "Binance.TradingBot"
@@ -67,7 +68,8 @@ def main():
     win.winId()
     if not icon.isNull():
         QtCore.QTimer.singleShot(0, lambda: win.setWindowIcon(icon))
-    if sys.platform == "win32":
+    disable_taskbar = os.getenv("BOT_DISABLE_TASKBAR", "").strip() == "1"
+    if sys.platform == "win32" and not disable_taskbar:
         icon_path = find_primary_icon_file()
         relaunch_cmd = build_relaunch_command()
         def _apply_taskbar(attempts: int = 4) -> None:

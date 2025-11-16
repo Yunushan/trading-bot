@@ -7,6 +7,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from datetime import datetime
 
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 _chromium_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
@@ -43,6 +44,21 @@ APP_ICON_BASENAME = "crypto_forex_logo"
 APP_ICON_PATH = REPO_ROOT / "assets" / f"{APP_ICON_BASENAME}.ico"
 APP_ICON_FALLBACK = REPO_ROOT / "assets" / f"{APP_ICON_BASENAME}.png"
 WINDOWS_APP_ID = "com.tradingbot.starter"
+DEBUG_LOG_PATH = Path(os.getenv("TEMP") or ".").resolve() / "starter_debug.log"
+
+
+def _debug_log(message: str) -> None:
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8", errors="ignore") as fh:
+            fh.write(f"[{timestamp}] {message}\n")
+        try:
+            print(f"[starter] {message}", flush=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _load_app_icon() -> QtGui.QIcon | None:
@@ -912,10 +928,12 @@ class StarterWindow(QtWidgets.QWidget):
 
     def launch_selected_bot(self) -> None:
         if not self._can_launch_selected():
+            _debug_log("Launch blocked: _can_launch_selected returned False.")
             self._update_status_message()
             return
         if self._active_bot_process and self._active_bot_process.poll() is None:
             label = self._active_launch_label or "Selected bot"
+            _debug_log(f"Launch blocked: {label} already running (pid={self._active_bot_process.pid}).")
             self.status_label.setText(f"{label} is already running. Close it to relaunch.")
             return
 
@@ -928,18 +946,26 @@ class StarterWindow(QtWidgets.QWidget):
 
         if self.selected_language == "python":
             if not BINANCE_MAIN.is_file():
+                _debug_log(f"Binance main missing: {BINANCE_MAIN}")
                 QtWidgets.QMessageBox.critical(
                     self,
                     "Binance bot missing",
                     f"Could not find {BINANCE_MAIN}. Make sure the repository is intact.",
                 )
                 return
-            command = [sys.executable, str(BINANCE_MAIN)]
+            python_exec = sys.executable
+            if sys.platform == "win32":
+                pythonw = Path(sys.executable).with_name("pythonw.exe")
+                if pythonw.is_file():
+                    python_exec = str(pythonw)
+                    _debug_log(f"Using pythonw for child process: {python_exec}")
+            command = [python_exec, str(BINANCE_MAIN)]
             cwd = BINANCE_MAIN.parent
             start_message = "Bot is starting... Opening the Binance workspace."
             running_label = "Binance Python bot"
             ready_message = "Binance Python bot is running. Close it to relaunch."
             closed_message = "Binance Python bot closed. Launch it again anytime."
+            _debug_log(f"Launching Python bot: exec={python_exec}, cwd={cwd}")
         elif self.selected_language == "cpp":
             exe_path = self._resolve_cpp_binance_executable(refresh=True)
             if exe_path is None or not exe_path.is_file():
@@ -967,6 +993,7 @@ class StarterWindow(QtWidgets.QWidget):
                         ),
                     )
                     self._update_status_message()
+                    _debug_log(f"CPP launch failed during build: {detail}")
                     return
             command = [str(exe_path)]
             cwd = exe_path.parent
@@ -974,10 +1001,12 @@ class StarterWindow(QtWidgets.QWidget):
             running_label = "Qt C++ Binance backtest tab"
             ready_message = "Qt C++ Binance backtest tab is running. Close it to relaunch."
             closed_message = "Qt C++ Binance backtest tab closed. Launch it again anytime."
+            _debug_log(f"Launching C++ bot: exe={exe_path}, cwd={cwd}")
         else:
             self.status_label.setText(
                 "Selected language does not have a launcher yet. Choose Python or C++ Binance."
             )
+            _debug_log(f"Launch blocked: unsupported language {self.selected_language}")
             return
 
         self._launch_status_timer.stop()
@@ -986,15 +1015,65 @@ class StarterWindow(QtWidgets.QWidget):
         self._active_launch_label = running_label
         self._running_ready_message = ready_message
         self._closed_message = closed_message
-        self.status_label.setText(start_message)
+        launch_log_hint = ""
+        if self.selected_language == "python":
+            launch_log_hint = f" | Launch log: {os.getenv('TEMP') or cwd}\\binance_launch.log"
+        self.status_label.setText(start_message + launch_log_hint)
         try:
             popen_kwargs: dict[str, object] = {"cwd": str(cwd)}
             create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             if create_no_window:
                 popen_kwargs["creationflags"] = create_no_window
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+                startupinfo.wShowWindow = 0  # SW_HIDE
+                popen_kwargs["startupinfo"] = startupinfo
+                # Also request a detached process to avoid transient console flashes.
+                DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0)
+                if DETACHED_PROCESS:
+                    popen_kwargs["creationflags"] |= DETACHED_PROCESS
+            # Pass env hint to child to skip taskbar metadata (reduces transient window flashes).
+            env = os.environ.copy()
+            env["BOT_DISABLE_TASKBAR"] = "1"
+            popen_kwargs["env"] = env
+            # Capture early stdout/stderr so failures are visible when using hidden window flags.
+            try:
+                log_dir = Path(os.getenv("TEMP") or cwd)
+                log_dir.mkdir(parents=True, exist_ok=True)
+                self._launch_log_path = log_dir / "binance_launch.log"
+                popen_kwargs["stdout"] = open(self._launch_log_path, "w", encoding="utf-8", errors="ignore")
+                popen_kwargs["stderr"] = subprocess.STDOUT
+                _debug_log(f"Child stdout/stderr redirected to {self._launch_log_path}")
+            except Exception as log_exc:
+                self._launch_log_path = None
+                _debug_log(f"Failed to attach launch log: {log_exc}")
             self._active_bot_process = subprocess.Popen(command, **popen_kwargs)
+            _debug_log(f"Spawned process pid={self._active_bot_process.pid}")
+            # If the child dies immediately, surface the error instead of leaving the user waiting.
+            if self._active_bot_process.poll() is not None:
+                rc = self._active_bot_process.returncode
+                self._reset_launch_tracking()
+                log_tail = ""
+                try:
+                    if self._launch_log_path and self._launch_log_path.is_file():
+                        with open(self._launch_log_path, "r", encoding="utf-8", errors="ignore") as fh:
+                            lines = fh.readlines()
+                            log_tail = "".join(lines[-12:])
+                except Exception as tail_exc:
+                    _debug_log(f"Reading launch log failed: {tail_exc}")
+                    log_tail = ""
+                _debug_log(f"Process exited immediately code={rc}. Tail:\n{log_tail}")
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Bot failed to start",
+                    f"{running_label} exited immediately (code {rc}).\n\n{log_tail or 'Check that dependencies are installed.'}",
+                )
+                self._update_status_message()
+                return
         except Exception as exc:  # pragma: no cover - UI only
             self._reset_launch_tracking()
+            _debug_log(f"Launch exception: {exc}")
             QtWidgets.QMessageBox.critical(self, "Launch failed", str(exc))
             self._update_status_message()
             return
@@ -1051,4 +1130,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    _debug_log("Starter launched.")
     main()

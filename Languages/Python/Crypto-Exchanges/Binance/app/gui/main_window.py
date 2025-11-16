@@ -1985,7 +1985,7 @@ class _PositionsWorker(QtCore.QObject):
             rows = []
             if acct == "FUTURES":
                 try:
-                    positions = self._wrapper.list_open_futures_positions() or []
+                    positions = self._wrapper.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
                 except Exception as e:
                     import time
                     if time.time() - self._last_err_ts > 5:
@@ -8079,6 +8079,17 @@ class MainWindow(QtWidgets.QWidget):
             self._live_indicator_cache_ttl = 8.0
         self._live_indicator_cache_last_cleanup = time.monotonic()
         self._positions_view_mode = "cumulative"
+        # Retain a larger closed-history buffer so per-trade view can show prior legs.
+        try:
+            global MAX_CLOSED_HISTORY  # allow runtime override from config
+            cfg_max_hist = int(self.config.get("positions_closed_history_max", 500) or 500)
+            from .gui_consts import MAX_CLOSED_HISTORY as _GUI_MAX_HIST  # type: ignore
+            MAX_CLOSED_HISTORY = max(_GUI_MAX_HIST, cfg_max_hist)  # noqa: N806
+        except Exception:
+            try:
+                MAX_CLOSED_HISTORY = max(MAX_CLOSED_HISTORY, 500)  # type: ignore # noqa: N806,F821
+            except Exception:
+                MAX_CLOSED_HISTORY = 500  # type: ignore # noqa: N806,F821
         try:
             self._pos_refresh_interval_ms = int(self.config.get("positions_refresh_interval_ms", 5000) or 5000)
         except Exception:
@@ -9996,12 +10007,19 @@ def _mw_update_position_history(self, positions_map: dict):
                 continue
             count = missing_counts.get(key, 0) + 1
             missing_counts[key] = count
-            threshold = 3
+            try:
+                threshold = int(self.config.get("positions_missing_threshold", 2) or 2)
+            except Exception:
+                threshold = 2
+            threshold = max(1, threshold)
             try:
                 if isinstance(pending_close_map, dict) and key in pending_close_map:
                     threshold = 1
             except Exception:
-                threshold = 3
+                try:
+                    threshold = int(self.config.get("positions_missing_threshold", 2) or 2)
+                except Exception:
+                    threshold = 2
             if count >= threshold:
                 candidates.append(key)
 
@@ -10068,6 +10086,8 @@ def _mw_update_position_history(self, positions_map: dict):
                 return None
 
         live_keys = _resolve_live_keys() if candidates else set()
+        # Default to True: if a position disappears from the exchange snapshot, record it as closed history.
+        allow_missing_autoclose = bool(self.config.get("positions_missing_autoclose", True))
 
         def _lookup_force_liquidation(symbol: str, side_key: str, update_hint_ms: int | None = None) -> dict | None:
             """Return metadata about a recent forced liquidation order for the given symbol/side."""
@@ -10141,7 +10161,12 @@ def _mw_update_position_history(self, positions_map: dict):
                     positions_map.setdefault(key, prev_records[key])
                 missing_counts[key] = 0
             else:
-                confirmed_closed.append(key)
+                if allow_missing_autoclose:
+                    confirmed_closed.append(key)
+                else:
+                    # Drop stale entries when not auto-closing; rely on live snapshot.
+                    prev_records.pop(key, None)
+                    missing_counts.pop(key, None)
 
         if confirmed_closed:
             from datetime import datetime as _dt
@@ -10965,57 +10990,13 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         str(item.get("entry_tf") or ""),
         -float(item.get("data", {}).get("qty") or item.get("data", {}).get("margin_usdt") or 0.0),
     ))
-    deduped: list[dict] = []
-    seen_keys: set[str] = set()
-    seen_ledger_keys: set[str] = set()
+    # Show every record (open and closed) without aggressive de-duplication, so per-trade view reflects all legs.
     for entry in records:
-        agg_key = str(entry.get("_aggregate_key") or "")
-        if agg_key:
-            signature = f"{agg_key}|{entry.get('status')}"
-        else:
-            indicator_sig = ",".join(_normalize_indicator_values(entry.get("indicators")))
-            signature = "|".join(
-                [
-                    str(entry.get("symbol") or "").upper(),
-                    str(entry.get("side_key") or "").upper(),
-                    str(entry.get("entry_tf") or "").lower(),
-                    str(entry.get("open_time") or ""),
-                    str(entry.get("close_time") or ""),
-                    indicator_sig,
-                ]
-            )
-        if signature in seen_keys:
-            continue
-        ledger_signature_parts: list[str] = []
-        for token in (
-            entry.get("ledger_id"),
-            (entry.get("data") or {}).get("ledger_id"),
-            entry.get("trade_id"),
-            entry.get("client_order_id"),
-            entry.get("order_id"),
-        ):
-            if token:
-                ledger_signature_parts.append(str(token))
-        ledger_signature_parts.extend(
-            [
-                str(entry.get("entry_tf") or "").strip().lower(),
-                ",".join(_normalize_indicator_values(entry.get("indicators"))),
-                str(entry.get("status") or "").strip().lower(),
-            ]
-        )
-        ledger_signature = "|".join(ledger_signature_parts).strip()
-        if ledger_signature and ledger_signature in seen_ledger_keys:
-            continue
-        seen_keys.add(signature)
-        if ledger_signature:
-            seen_ledger_keys.add(ledger_signature)
-        deduped.append(entry)
-    for entry in deduped:
         entry["_aggregated_entries"] = [entry]
-    return deduped
+    return records
 
 
-def _mw_positions_records_cumulative(entries: list[dict]) -> list[dict]:
+def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: list[dict] | None = None) -> list[dict]:
     grouped: dict[tuple[str, str], list[dict]] = {}
     for rec in entries or []:
         if not isinstance(rec, dict):
@@ -11074,7 +11055,16 @@ def _mw_positions_records_cumulative(entries: list[dict]) -> list[dict]:
         clone["data"] = agg_data
         clone["_aggregated_entries"] = bucket
         aggregated.append(clone)
-    aggregated.sort(key=lambda item: (item.get("symbol"), item.get("side_key"), item.get("entry_tf")))
+    closed_entries = list(closed_entries or [])
+    def _close_dt(entry: dict):
+        try:
+            dt_val = entry.get("close_time") or (entry.get("data") or {}).get("close_time")
+            return self._parse_any_datetime(dt_val)
+        except Exception:
+            return None
+    closed_entries.sort(key=lambda e: (_close_dt(e) or datetime.min), reverse=True)
+    aggregated.extend(closed_entries)
+    aggregated.sort(key=lambda item: (item.get("symbol"), item.get("side_key"), item.get("entry_tf") or "", item.get("status") or ""))
     return aggregated
 
 
@@ -11100,10 +11090,12 @@ def _mw_render_positions_table(self):
             display_records = _mw_positions_records_per_trade(self, open_records, closed_records)
         else:
             display_records = _mw_positions_records_cumulative(
+                self,
                 sorted(
                     open_records.values(),
                     key=lambda d: (d['symbol'], d.get('side_key'), d.get('entry_tf')),
-                )
+                ),
+                closed_records,
             )
         display_records = [rec for rec in (display_records or []) if isinstance(rec, dict)]
         snapshot_digest: list[tuple] = []
@@ -11560,10 +11552,15 @@ def _mw_clear_positions_selected(self):
 
 def _mw_clear_positions_all(self):
     try:
-        if hasattr(self, "_closed_position_records"):
-            self._closed_position_records = []
-        if hasattr(self, "_closed_trade_registry"):
-            self._closed_trade_registry = {}
+        if QtWidgets.QMessageBox.question(
+            self,
+            "Clear Closed History",
+            "Clear ALL closed position history? (Active positions remain untouched.)",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+        ) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self._closed_position_records = []
+        self._closed_trade_registry = {}
         self._render_positions_table()
     except Exception:
         pass
@@ -12346,8 +12343,8 @@ def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
     return result
 
 
-def stop_strategy_async(self, close_positions: bool = True, blocking: bool = False):
-    """Stop all StrategyEngine threads and then market-close ALL active positions."""
+def stop_strategy_async(self, close_positions: bool = False, blocking: bool = False):
+    """Stop all StrategyEngine threads without auto-closing positions unless explicitly requested."""
     def _process_stop_result(res):
         if not isinstance(res, dict):
             return res
