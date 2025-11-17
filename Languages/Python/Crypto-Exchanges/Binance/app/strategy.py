@@ -223,6 +223,8 @@ class StrategyEngine:
         self._oneway_overlap_warned: set[tuple[str, str, str]] = set()
         self.can_open_cb = can_open_callback
         self._stop = False
+        # Debounce liquidation reconciliation to avoid clearing state on transient API gaps.
+        self._reconcile_miss_counts: dict[str, int] = {}
         key = f"{str(self.config.get('symbol') or '').upper()}@{str(self.config.get('interval') or '').lower()}"
         h = abs(hash(key)) if key.strip('@') else 0
         self._phase_seed = (h % 997) / 997.0 if key.strip('@') else 0.0
@@ -1416,6 +1418,11 @@ class StrategyEngine:
         ledger_ids = [lid for lid in ledger_ids if lid]
         if not ledger_ids:
             ledger_ids = self._indicator_get_ledger_ids(symbol, interval, indicator_lookup_key, side_label)
+        indicator_scope_found = bool(ledger_ids)
+        if allow_hedge_close:
+            # Caller explicitly requested a scoped hedge close for this indicator/interval;
+            # allow exchange fallback even if no ledger entries are found.
+            indicator_scope_found = True
         if (not ledger_ids) and signature_hint:
             signature_hint = tuple(
                 str(token or "").strip().lower() for token in signature_hint if str(token or "").strip()
@@ -1542,6 +1549,7 @@ class StrategyEngine:
                         continue
                     targeted_entries.append((leg_key, entry))
             if targeted_entries:
+                indicator_scope_found = True
                 for leg_key, entry in targeted_entries:
                     if limit_remaining is not None and limit_remaining <= limit_tol:
                         break
@@ -1638,6 +1646,9 @@ class StrategyEngine:
                     except Exception:
                         continue
                     fallback_entries.append((leg_key, entry.get("ledger_id"), qty_val))
+            indicator_scope_found = indicator_scope_found or bool(fallback_entries)
+            if hedge_scope_only and not indicator_scope_found:
+                return closed_count, total_qty_closed
             live_qty = 0.0
             try:
                 live_qty = max(
@@ -3198,6 +3209,7 @@ class StrategyEngine:
         try:
             positions = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
         except Exception:
+            # Do not mutate miss counters on API failure; treat as inconclusive.
             return
         try:
             dual_mode = bool(self.binance.get_futures_dual_side())
@@ -3229,6 +3241,17 @@ class StrategyEngine:
                     long_active = True
                 elif amt_val < -tol:
                     short_active = True
+        # Debounce: require two consecutive "no exposure" reads before purging local state.
+        sym_norm = str(symbol or "").upper()
+        if long_active or short_active:
+            self._reconcile_miss_counts[sym_norm] = 0
+            return
+        miss_count = self._reconcile_miss_counts.get(sym_norm, 0) + 1
+        self._reconcile_miss_counts[sym_norm] = miss_count
+        if miss_count <= 1:
+            # First miss: wait for a confirming read before clearing.
+            return
+        self._reconcile_miss_counts[sym_norm] = 0
         for key in list(self._leg_ledger.keys()):
             leg_sym, _, leg_side = key
             if str(leg_sym or "").upper() != str(symbol or "").upper():
@@ -4281,20 +4304,29 @@ class StrategyEngine:
                             if fallback_live_qty > qty_tol_indicator:
                                 remaining_indicator_qty = fallback_live_qty
                         if remaining_indicator_qty <= qty_tol_indicator:
+                            # Only consider raw exchange qty when no other SELL legs for this indicator/interval are active.
+                            protect_other = False
                             try:
-                                exch_qty = max(
-                                    0.0,
-                                    float(
-                                        self._current_futures_position_qty(
-                                            cw["symbol"], "SELL", desired_ps_short
-                                        )
-                                        or 0.0
-                                    ),
+                                protect_other = self._symbol_side_has_other_positions(
+                                    cw["symbol"], interval_current, indicator_key, "SELL"
                                 )
                             except Exception:
-                                exch_qty = 0.0
-                            if exch_qty > qty_tol_indicator:
-                                remaining_indicator_qty = exch_qty
+                                protect_other = False
+                            if not protect_other:
+                                try:
+                                    exch_qty = max(
+                                        0.0,
+                                        float(
+                                            self._current_futures_position_qty(
+                                                cw["symbol"], "SELL", desired_ps_short
+                                            )
+                                            or 0.0
+                                        ),
+                                    )
+                                except Exception:
+                                    exch_qty = 0.0
+                                if exch_qty > qty_tol_indicator:
+                                    remaining_indicator_qty = exch_qty
                         if remaining_indicator_qty > qty_tol_indicator:
                             closed_short, _ = self._close_indicator_positions(
                                 cw,
@@ -4339,20 +4371,28 @@ class StrategyEngine:
                             if fallback_live_qty > qty_tol_indicator:
                                 remaining_long_qty = fallback_live_qty
                         if remaining_long_qty <= qty_tol_indicator:
+                            protect_other = False
                             try:
-                                exch_qty = max(
-                                    0.0,
-                                    float(
-                                        self._current_futures_position_qty(
-                                            cw["symbol"], "BUY", desired_ps_long
-                                        )
-                                        or 0.0
-                                    ),
+                                protect_other = self._symbol_side_has_other_positions(
+                                    cw["symbol"], interval_current, indicator_key, "BUY"
                                 )
                             except Exception:
-                                exch_qty = 0.0
-                            if exch_qty > qty_tol_indicator:
-                                remaining_long_qty = exch_qty
+                                protect_other = False
+                            if not protect_other:
+                                try:
+                                    exch_qty = max(
+                                        0.0,
+                                        float(
+                                            self._current_futures_position_qty(
+                                                cw["symbol"], "BUY", desired_ps_long
+                                            )
+                                            or 0.0
+                                        ),
+                                    )
+                                except Exception:
+                                    exch_qty = 0.0
+                                if exch_qty > qty_tol_indicator:
+                                    remaining_long_qty = exch_qty
                         if remaining_long_qty > qty_tol_indicator:
                             closed_long, _ = self._close_indicator_positions(
                                 cw,
