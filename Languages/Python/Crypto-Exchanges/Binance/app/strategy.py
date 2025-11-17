@@ -220,6 +220,8 @@ class StrategyEngine:
         self._trade_book_lock = threading.RLock()
         self._trade_book: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = {}
         self._ledger_index: dict[str, tuple[str, str, str]] = {}
+        self._close_guard_lock = threading.RLock()
+        self._close_inflight: dict[str, dict[str, object]] = {}
         self._oneway_overlap_warned: set[tuple[str, str, str]] = set()
         self.can_open_cb = can_open_callback
         self._stop = False
@@ -1061,7 +1063,7 @@ class StrategyEngine:
         *,
         ignore_hold: bool = False,
     ) -> bool:
-        if ignore_hold:
+        if ignore_hold and coerce_bool(self.config.get("allow_close_ignoring_hold"), False):
             return True
         base_hold = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
         try:
@@ -1142,6 +1144,18 @@ class StrategyEngine:
             pass
         return False
 
+    def _indicator_entry_matches_close(self, entry: dict, indicator_lookup_key: str) -> bool:
+        """Guard so a close only targets entries that match the closing indicator."""
+        tokens = self._extract_indicator_keys(entry)
+        if not tokens:
+            return False
+        if indicator_lookup_key not in tokens:
+            return False
+        allow_multi = coerce_bool(self.config.get("allow_multi_indicator_close"), False)
+        if len(tokens) > 1 and not allow_multi:
+            return False
+        return True
+
     def _guard_mark_leg_closed(self, leg_key: tuple[str, str, str]) -> None:
         guard_obj = getattr(self, "guard", None)
         if not guard_obj or not hasattr(guard_obj, "mark_closed"):
@@ -1152,6 +1166,51 @@ class StrategyEngine:
             guard_obj.mark_closed(symbol, interval, side_norm)
         except Exception:
             pass
+
+    def _enter_close_guard(self, symbol: str, side: str, label: str | None = None) -> bool:
+        """Serialize close operations per symbol to prevent long/short loops fighting each other."""
+        sym = (symbol or "").upper()
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        if not sym or side_norm not in {"BUY", "SELL"}:
+            return True
+        with self._close_guard_lock:
+            existing = self._close_inflight.get(sym)
+            if existing:
+                active_side = str(existing.get("side") or "").upper()
+                if active_side != side_norm:
+                    return False
+                existing["depth"] = int(existing.get("depth") or 0) + 1
+                return True
+            self._close_inflight[sym] = {"side": side_norm, "label": label or "", "depth": 1}
+            return True
+
+    def _exit_close_guard(self, symbol: str, side: str) -> None:
+        sym = (symbol or "").upper()
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        if not sym or side_norm not in {"BUY", "SELL"}:
+            return
+        with self._close_guard_lock:
+            entry = self._close_inflight.get(sym)
+            if not entry or str(entry.get("side") or "").upper() != side_norm:
+                return
+            depth = int(entry.get("depth") or 1) - 1
+            if depth <= 0:
+                self._close_inflight.pop(sym, None)
+            else:
+                entry["depth"] = depth
+
+    def _describe_close_guard(self, symbol: str) -> dict | None:
+        sym = (symbol or "").upper()
+        if not sym:
+            return None
+        with self._close_guard_lock:
+            entry = self._close_inflight.get(sym)
+            if not entry:
+                return None
+            return {
+                "side": str(entry.get("side") or ""),
+                "label": str(entry.get("label") or ""),
+            }
 
     def _indicator_cooldown_remaining(
         self,
@@ -1394,6 +1453,8 @@ class StrategyEngine:
         # In hedge mode, only allow closes that are explicitly permitted by the caller.
         if coerce_bool(self.config.get("allow_opposite_positions"), True) and not allow_hedge_close:
             return 0, 0.0
+        if not signature_hint and not coerce_bool(self.config.get("allow_indicator_close_without_signal"), False):
+            return 0, 0.0
         symbol = cw["symbol"]
         interval_text = str(interval or "").strip()
         indicator_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
@@ -1413,7 +1474,11 @@ class StrategyEngine:
             strict_interval = True
         interval_lower = interval_text.lower()
         interval_has_filter = interval_tokens != {"-"}
-        ledger_entries = self._trade_book_entries(symbol, interval, indicator_lookup_key, side_label)
+        ledger_entries = [
+            entry
+            for entry in self._trade_book_entries(symbol, interval, indicator_lookup_key, side_label)
+            if self._indicator_entry_matches_close(entry, indicator_lookup_key)
+        ]
         ledger_ids = [entry.get("ledger_id") for entry in ledger_entries if entry.get("ledger_id")]
         ledger_ids = [lid for lid in ledger_ids if lid]
         if not ledger_ids:
@@ -1450,6 +1515,20 @@ class StrategyEngine:
                     ledger_ids.extend(extra_ids)
         close_side = "SELL" if str(side_label).upper() in {"BUY", "LONG"} else "BUY"
         side_norm = "BUY" if str(side_label).upper() in {"BUY", "LONG"} else "SELL"
+        guard_label = f"{indicator_lookup_key}@{interval_text or 'default'}"
+        if not self._enter_close_guard(symbol, side_norm, guard_label):
+            try:
+                blocking = self._describe_close_guard(symbol) or {}
+                self.log(
+                    f"{symbol}@{interval_text or 'default'} close skipped: {guard_label} blocked by active "
+                    f"{blocking.get('side') or 'side'} close {blocking.get('label') or ''}".strip()
+                )
+            except Exception:
+                pass
+            return 0, 0.0
+        if strict_interval and interval_has_filter and not indicator_scope_found and not allow_hedge_close:
+            self._exit_close_guard(symbol, side_norm)
+            return 0, 0.0
         closed_count = 0
         total_qty_closed = 0.0
         limit_remaining = None
@@ -1482,6 +1561,10 @@ class StrategyEngine:
             if hedge_scope_only:
                 leg_iv_tokens = self._tokenize_interval_label(leg_key[1])
                 if interval_tokens != {"-"} and leg_iv_tokens != interval_tokens:
+                    continue
+            elif strict_interval and interval_has_filter:
+                leg_iv_tokens = self._tokenize_interval_label(leg_key[1])
+                if leg_iv_tokens != interval_tokens:
                     continue
             try:
                 interval_seconds_entry = self._interval_seconds_value(leg_key[1])
@@ -1535,6 +1618,8 @@ class StrategyEngine:
                 leg_interval_tokens = self._tokenize_interval_label(leg_interval_norm)
                 if interval_tokens != {'-'} and leg_interval_tokens.isdisjoint(interval_tokens):
                     continue
+                if strict_interval and interval_has_filter and leg_interval_tokens != interval_tokens:
+                    continue
                 leg_side_norm = str(leg_side or "").upper()
                 if leg_side_norm in {"LONG", "SHORT"}:
                     leg_side_norm = "BUY" if leg_side_norm == "LONG" else "SELL"
@@ -1544,8 +1629,7 @@ class StrategyEngine:
                 if not entries:
                     continue
                 for entry in entries:
-                    keys_for_entry = self._extract_indicator_keys(entry)
-                    if indicator_lookup_key not in keys_for_entry:
+                    if not self._indicator_entry_matches_close(entry, indicator_lookup_key):
                         continue
                     targeted_entries.append((leg_key, entry))
             if targeted_entries:
@@ -1600,7 +1684,13 @@ class StrategyEngine:
                     except Exception:
                         continue
                 if closed_count > 0:
+                    self._exit_close_guard(symbol, side_norm)
                     return closed_count, total_qty_closed
+
+        # If we still have nothing scoped to this indicator, stop instead of flattening other legs.
+        if closed_count <= 0 and not indicator_scope_found:
+            self._exit_close_guard(symbol, side_norm)
+            return closed_count, total_qty_closed
 
         if closed_count <= 0:
             fallback_entries: list[tuple[tuple[str, str, str], str | None, float]] = []
@@ -1615,6 +1705,8 @@ class StrategyEngine:
                     continue
                 if hedge_scope_only and interval_has_filter and leg_tokens != interval_tokens:
                     continue
+                if strict_interval and interval_has_filter and leg_tokens != interval_tokens:
+                    continue
                 leg_side_norm = "BUY" if str(leg_side or "").upper() in {"BUY", "LONG"} else "SELL"
                 if leg_side_norm != side_norm:
                     continue
@@ -1622,8 +1714,7 @@ class StrategyEngine:
                 if not entries:
                     continue
                 for entry in entries:
-                    keys_for_entry = self._extract_indicator_keys(entry)
-                    if indicator_lookup_key not in keys_for_entry:
+                    if not self._indicator_entry_matches_close(entry, indicator_lookup_key):
                         continue
                     try:
                         interval_seconds_entry = float(_interval_to_seconds(str(leg_key[1] or "1m")))
@@ -1648,6 +1739,7 @@ class StrategyEngine:
                     fallback_entries.append((leg_key, entry.get("ledger_id"), qty_val))
             indicator_scope_found = indicator_scope_found or bool(fallback_entries)
             if hedge_scope_only and not indicator_scope_found:
+                self._exit_close_guard(symbol, side_norm)
                 return closed_count, total_qty_closed
             live_qty = 0.0
             try:
@@ -1735,6 +1827,7 @@ class StrategyEngine:
                             )
                         except Exception:
                             pass
+        self._exit_close_guard(symbol, side_norm)
         return closed_count, total_qty_closed
 
 
@@ -3601,6 +3694,10 @@ class StrategyEngine:
         if self.stopped():
             return
         allow_opposite_enabled = coerce_bool(self.config.get("allow_opposite_positions"), True)
+        if allow_opposite_enabled and coerce_bool(self.config.get("hedge_preserve_opposites"), True):
+            allow_opposite_enabled = False  # keep both sides; do not auto-close opposite legs in hedge stacking
+        if allow_opposite_enabled and coerce_bool(self.config.get("hedge_preserve_opposites"), True):
+            allow_opposite_enabled = False  # keep both sides; do not auto-close opposite legs in hedge stacking
         stop_cfg = normalize_stop_loss_dict(cw.get("stop_loss"))
         stop_mode = str(stop_cfg.get("mode") or "usdt").lower()
         if stop_mode not in STOP_LOSS_MODE_ORDER:
@@ -5736,6 +5833,11 @@ class StrategyEngine:
                             if any(tuple(sorted(entry.get("trigger_signature") or [])) == signature for entry in existing_entries):
                                 _guard_abort()
                                 return
+                        # Stale guard reset: if no live qty on exchange, clear local guards to avoid permanent “duplicate” blocks.
+                        guard_stale_secs = max(30.0, secs * 3.0)
+                        if now_ts - last_ts > guard_stale_secs:
+                            self._last_order_time.pop(key_bar, None)
+                            self._leg_ledger.pop(key_bar, None)
                     except Exception:
                         pass
 

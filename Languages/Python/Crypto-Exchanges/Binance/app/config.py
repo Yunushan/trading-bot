@@ -44,6 +44,12 @@ DEFAULT_CONFIG = {
     "indicator_use_live_values": True,
     "indicator_min_position_hold_seconds": 12.0,
     "indicator_min_position_hold_bars": 1,
+    # When True, close paths may bypass the hold guard; keep False to prevent instant churn.
+    "allow_close_ignoring_hold": False,
+    # When False, a close triggered by one indicator will not flatten trades opened by multi-indicator signals.
+    "allow_multi_indicator_close": False,
+    # When False, an indicator close without an explicit opposite signal/signature is skipped.
+    "allow_indicator_close_without_signal": False,
     "indicator_flip_confirmation_bars": 2,
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "close_on_exit": False,

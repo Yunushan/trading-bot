@@ -10990,6 +10990,61 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         str(item.get("entry_tf") or ""),
         -float(item.get("data", {}).get("qty") or item.get("data", {}).get("margin_usdt") or 0.0),
     ))
+
+    def _merge_interval_labels(primary: dict, candidate: dict) -> None:
+        labels: list[str] = []
+        for rec in (primary, candidate):
+            if not isinstance(rec, dict):
+                continue
+            for key in ("entry_tf",):
+                value = rec.get(key)
+                if isinstance(value, str) and value.strip():
+                    labels.extend([part.strip() for part in value.split(",") if part.strip()])
+            data = rec.get("data") or {}
+            if isinstance(data, dict):
+                value = data.get("interval_display")
+                if isinstance(value, str) and value.strip():
+                    labels.extend([part.strip() for part in value.split(",") if part.strip()])
+        merged = ", ".join(dict.fromkeys(labels))
+        if merged:
+            primary["entry_tf"] = merged
+            data = dict(primary.get("data") or {})
+            data["interval_display"] = merged
+            primary["data"] = data
+
+    def _close_key(entry: dict) -> str:
+        data = entry.get("data") or {}
+        aggregate = str(entry.get("_aggregate_key") or data.get("_aggregate_key") or "").strip()
+        ledger = str(entry.get("ledger_id") or data.get("ledger_id") or "").strip()
+        close_time = entry.get("close_time") or data.get("close_time") or ""
+        symbol_key = str(entry.get("symbol") or data.get("symbol") or "").strip().upper()
+        side_key = str(entry.get("side_key") or data.get("side_key") or "").strip().upper()
+        try:
+            qty_key = f"{float(data.get('qty') or 0.0):.8f}"
+        except Exception:
+            qty_key = "0.0"
+        if aggregate:
+            return aggregate
+        if ledger:
+            return ledger
+        return f"{symbol_key}|{side_key}|{close_time}|{qty_key}"
+
+    deduped: list[dict] = []
+    seen_closed: dict[str, dict] = {}
+    for entry in records:
+        data = entry.get("data") or {}
+        status_flag = str(entry.get("status") or data.get("status") or "").strip().lower()
+        is_closed = status_flag in _CLOSED_RECORD_STATES
+        if is_closed:
+            key = _close_key(entry)
+            existing = seen_closed.get(key)
+            if existing:
+                _merge_interval_labels(existing, entry)
+                continue
+            seen_closed[key] = entry
+        deduped.append(entry)
+    records = deduped
+
     # Show every record (open and closed) without aggressive de-duplication, so per-trade view reflects all legs.
     for entry in records:
         entry["_aggregated_entries"] = [entry]
