@@ -204,6 +204,10 @@ class StrategyEngine:
         self.config.setdefault("indicator_flip_cooldown_seconds", 0.0)
         self.config.setdefault("indicator_use_live_values", True)
         self.config.setdefault("indicator_min_position_hold_seconds", 0.0)
+        self.config.setdefault("indicator_reentry_cooldown_seconds", 0.0)
+        self.config.setdefault("indicator_reentry_cooldown_bars", 1)
+        self.config.setdefault("require_indicator_flip_signal", True)
+        self.config.setdefault("strict_indicator_flip_enforcement", True)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.binance = binance_wrapper
         self.log = log_callback
@@ -254,6 +258,12 @@ class StrategyEngine:
         except Exception:
             self._indicator_min_hold_seconds = 0.0
         try:
+            self._indicator_reentry_cooldown_seconds = max(
+                0.0, float(self.config.get("indicator_reentry_cooldown_seconds") or 0.0)
+            )
+        except Exception:
+            self._indicator_reentry_cooldown_seconds = 0.0
+        try:
             self._indicator_flip_cooldown_seconds = max(
                 0.0, float(self.config.get("indicator_flip_cooldown_seconds") or 0.0)
             )
@@ -272,6 +282,12 @@ class StrategyEngine:
         except Exception:
             self._indicator_min_hold_bars = 0
         try:
+            self._indicator_reentry_cooldown_bars = max(
+                0, int(self.config.get("indicator_reentry_cooldown_bars") or 1)
+            )
+        except Exception:
+            self._indicator_reentry_cooldown_bars = 1
+        try:
             self._indicator_flip_confirm_bars = max(
                 1, int(self.config.get("indicator_flip_confirmation_bars") or 1)
             )
@@ -279,6 +295,7 @@ class StrategyEngine:
             self._indicator_flip_confirm_bars = 1
         self._indicator_last_action: dict[tuple[str, str, str], dict[str, float]] = {}
         self._indicator_signal_tracker: dict[tuple[str, str, str], dict[str, float | int | str]] = {}
+        self._reentry_blocks: dict[tuple[str, str, str], float] = {}
 
     def _notify_interval_closed(self, symbol: str, interval: str, position_side: str, **extra):
         if not self.trade_cb:
@@ -1156,14 +1173,58 @@ class StrategyEngine:
             return False
         return True
 
-    def _guard_mark_leg_closed(self, leg_key: tuple[str, str, str]) -> None:
+    def _record_reentry_block(self, symbol: str, interval: str | None, side: str) -> None:
+        base_window = max(0.0, getattr(self, "_indicator_reentry_cooldown_seconds", 0.0))
+        bars_window = max(0, getattr(self, "_indicator_reentry_cooldown_bars", 0))
+        interval_seconds = self._interval_seconds_value(interval)
+        window_seconds = max(base_window, bars_window * interval_seconds)
+        if window_seconds <= 0.0:
+            return
+        sym_norm = (symbol or "").upper()
+        interval_norm = (str(interval or "").strip().lower()) or "default"
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        self._reentry_blocks[(sym_norm, interval_norm, side_norm)] = time.time() + window_seconds
+
+    def _reentry_block_remaining(
+        self,
+        symbol: str,
+        interval: str | None,
+        side: str,
+        *,
+        now_ts: float | None = None,
+    ) -> float:
+        key = (
+            (symbol or "").upper(),
+            (str(interval or "").strip().lower()) or "default",
+            "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL",
+        )
+        block_until = self._reentry_blocks.get(key)
+        if not block_until:
+            return 0.0
+        if now_ts is None:
+            now_ts = time.time()
+        remaining = block_until - now_ts
+        if remaining <= 0.0:
+            self._reentry_blocks.pop(key, None)
+            return 0.0
+        return remaining
+
+    def _mark_guard_closed(self, symbol: str, interval: str | None, side: str) -> None:
+        side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
+        self._record_reentry_block(symbol, interval, side_norm)
         guard_obj = getattr(self, "guard", None)
         if not guard_obj or not hasattr(guard_obj, "mark_closed"):
             return
         try:
+            guard_obj.mark_closed(symbol, interval, side_norm)
+        except Exception:
+            pass
+
+    def _guard_mark_leg_closed(self, leg_key: tuple[str, str, str]) -> None:
+        try:
             symbol, interval, side = leg_key
             side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
-            guard_obj.mark_closed(symbol, interval, side_norm)
+            self._mark_guard_closed(symbol, interval, side_norm)
         except Exception:
             pass
 
@@ -1453,7 +1514,12 @@ class StrategyEngine:
         # In hedge mode, only allow closes that are explicitly permitted by the caller.
         if coerce_bool(self.config.get("allow_opposite_positions"), True) and not allow_hedge_close:
             return 0, 0.0
-        if not signature_hint and not coerce_bool(self.config.get("allow_indicator_close_without_signal"), False):
+        if (
+            not signature_hint
+            and coerce_bool(self.config.get("require_indicator_flip_signal"), True)
+            and coerce_bool(self.config.get("strict_indicator_flip_enforcement"), True)
+            and not coerce_bool(self.config.get("allow_indicator_close_without_signal"), False)
+        ):
             return 0, 0.0
         symbol = cw["symbol"]
         interval_text = str(interval or "").strip()
@@ -1599,11 +1665,7 @@ class StrategyEngine:
                     total_qty_closed += closed_qty
                     if limit_remaining is not None:
                         limit_remaining = max(0.0, limit_remaining - closed_qty)
-                    try:
-                        if hasattr(self, "guard") and hasattr(self.guard, "mark_closed"):
-                            self.guard.mark_closed(symbol, leg_key[1], close_side)
-                    except Exception:
-                        pass
+                    self._mark_guard_closed(symbol, leg_key[1], close_side)
             except Exception:
                 continue
             if limit_remaining is not None and limit_remaining <= limit_tol:
@@ -2420,12 +2482,8 @@ class StrategyEngine:
                 qty_recorded,
                 remaining_qty,
             )
-        try:
-            if hasattr(self.guard, "mark_closed"):
-                side_norm = 'BUY' if str(side_label).upper() in ('BUY', 'LONG', 'L') else 'SELL'
-                self.guard.mark_closed(symbol, interval, side_norm)
-        except Exception:
-            pass
+        side_norm = 'BUY' if str(side_label).upper() in ('BUY', 'LONG', 'L') else 'SELL'
+        self._mark_guard_closed(symbol, interval, side_norm)
         self._notify_interval_closed(
             symbol,
             interval,
@@ -2687,12 +2745,24 @@ class StrategyEngine:
         warn_key = (str(symbol or "").upper(), interval_norm_lower or "default", opp)
         warn_oneway_needed = bool(indicator_tokens and allow_opposite_requested and not dual)
         allow_hedge_scope_only = bool(allow_opposite_requested)
+        strict_flip_guard = coerce_bool(self.config.get("strict_indicator_flip_enforcement"), True)
 
-        # Hard isolation: when hedge stacking is enabled, never auto-close opposite legs.
+        # Hedge isolation: only close opposite legs when we have an explicit indicator+signature scope.
         if allow_opposite_requested:
+            if not indicator_tokens or not signature_hint_tokens:
+                try:
+                    self.log(
+                        f"{symbol}@{interval_norm or 'default'} close-opposite skipped (hedge isolation, missing indicator/signature)."
+                    )
+                except Exception:
+                    pass
+                return True
+        # In strict mode, never close indicator-scoped exposure without an explicit opposite signature.
+        if strict_flip_guard and indicator_tokens and not signature_hint_tokens:
             try:
                 self.log(
-                    f"{symbol}@{interval_norm or 'default'} close-opposite skipped (hedge mode isolation)."
+                    f"{symbol}@{interval_norm or 'default'} close-opposite skipped: missing opposite signature for "
+                    f"{', '.join(indicator_tokens)}."
                 )
             except Exception:
                 pass
@@ -2784,6 +2854,8 @@ class StrategyEngine:
                     )
                 except Exception:
                     live_opp_qty = 0.0
+            elif allow_opposite_requested and live_opp_qty <= qty_tol:
+                return True
             if (qty_goal is None and live_opp_qty <= qty_tol) or (qty_goal is not None and qty_goal <= qty_tol and live_opp_qty <= qty_tol):
                 return True
 
@@ -3146,8 +3218,7 @@ class StrategyEngine:
                     closed_any = True
                     _reduce_goal(qty_hint)
                     try:
-                        if hasattr(self, "guard") and hasattr(self.guard, "mark_closed"):
-                            self.guard.mark_closed(symbol, interval_norm, opp)
+                        self._mark_guard_closed(symbol, interval_norm, opp)
                         # Also clear any stale indicator tracking so future entries aren't suppressed.
                         self._purge_indicator_tracking(symbol, interval_norm, indicator_primary or indicator_tokens[0], opp)
                     except Exception:
@@ -3215,8 +3286,7 @@ class StrategyEngine:
                     payload = self._build_close_event_payload(symbol, interval, 'SELL', qty, res)
                     self._notify_interval_closed(symbol, interval, 'SELL', **payload)
                     try:
-                        if hasattr(self.guard, "mark_closed"):
-                            self.guard.mark_closed(symbol, interval, 'SELL')
+                        self._mark_guard_closed(symbol, interval, 'SELL')
                         self._purge_indicator_tracking(symbol, interval, indicator_tokens[0] if indicator_tokens else None, 'SELL')
                     except Exception:
                         pass
@@ -3242,8 +3312,7 @@ class StrategyEngine:
                     payload = self._build_close_event_payload(symbol, interval, 'BUY', qty, res)
                     self._notify_interval_closed(symbol, interval, 'BUY', **payload)
                     try:
-                        if hasattr(self.guard, "mark_closed"):
-                            self.guard.mark_closed(symbol, interval, 'BUY')
+                        self._mark_guard_closed(symbol, interval, 'BUY')
                         self._purge_indicator_tracking(symbol, interval, indicator_tokens[0] if indicator_tokens else None, 'BUY')
                     except Exception:
                         pass
@@ -4075,11 +4144,7 @@ class StrategyEngine:
                         for leg_key in list(self._leg_ledger.keys()):
                             if leg_key[0] == cw["symbol"] and leg_key[2] == target_side_label:
                                 self._remove_leg_entry(leg_key, None)
-                        try:
-                            if hasattr(self.guard, "mark_closed"):
-                                self.guard.mark_closed(cw["symbol"], cw.get("interval"), target_side_label)
-                        except Exception:
-                            pass
+                        self._mark_guard_closed(cw["symbol"], cw.get("interval"), target_side_label)
                         self._notify_interval_closed(
                             cw["symbol"],
                             cw.get("interval"),
@@ -4165,11 +4230,7 @@ class StrategyEngine:
                                 )
                                 self._remove_leg_entry(key_long, None)
                                 long_open = False
-                                try:
-                                    if hasattr(self.guard, "mark_closed"):
-                                        self.guard.mark_closed(cw["symbol"], cw.get("interval"), "BUY")
-                                except Exception:
-                                    pass
+                                self._mark_guard_closed(cw["symbol"], cw.get("interval"), "BUY")
                                 self._log_latency_metric(
                                     cw["symbol"],
                                     cw.get("interval"),
@@ -4252,11 +4313,7 @@ class StrategyEngine:
                                 )
                                 self._remove_leg_entry(key_short, None)
                                 short_open = False
-                                try:
-                                    if hasattr(self.guard, "mark_closed"):
-                                        self.guard.mark_closed(cw["symbol"], cw.get("interval"), "SELL")
-                                except Exception:
-                                    pass
+                                self._mark_guard_closed(cw["symbol"], cw.get("interval"), "SELL")
                                 self._log_latency_metric(
                                     cw["symbol"],
                                     cw.get("interval"),
@@ -4376,6 +4433,21 @@ class StrategyEngine:
                         self.log(
                             f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
                             f"{action_side_label} suppressed: cooldown {cooldown_remaining:.1f}s remaining."
+                        )
+                    except Exception:
+                        pass
+                    continue
+                reentry_remaining = self._reentry_block_remaining(
+                    cw["symbol"],
+                    interval_current,
+                    action_side_label,
+                    now_ts=now_indicator_ts,
+                )
+                if reentry_remaining > 0.0:
+                    try:
+                        self.log(
+                            f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
+                            f"{action_side_label} suppressed by re-entry guard ({reentry_remaining:.1f}s)."
                         )
                     except Exception:
                         pass
@@ -4726,6 +4798,21 @@ class StrategyEngine:
                     )
                     if current_long_qty > qty_tol_indicator:
                         continue
+                    reentry_remaining = self._reentry_block_remaining(
+                        cw["symbol"],
+                        interval_current,
+                        "BUY",
+                        now_ts=now_indicator_ts,
+                    )
+                    if reentry_remaining > 0.0:
+                        try:
+                            self.log(
+                                f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY suppressed by "
+                                f"re-entry guard ({reentry_remaining:.1f}s)."
+                            )
+                        except Exception:
+                            pass
+                        continue
                     indicator_order_requests.append(
                         {
                             "side": "BUY",
@@ -4948,6 +5035,21 @@ class StrategyEngine:
                     )
                     if current_short_qty > qty_tol_indicator:
                         continue
+                    reentry_remaining = self._reentry_block_remaining(
+                        cw["symbol"],
+                        interval_current,
+                        "SELL",
+                        now_ts=now_indicator_ts,
+                    )
+                    if reentry_remaining > 0.0:
+                        try:
+                            self.log(
+                                f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL suppressed by "
+                                f"re-entry guard ({reentry_remaining:.1f}s)."
+                            )
+                        except Exception:
+                            pass
+                        continue
                     indicator_order_requests.append(
                         {
                             "side": "SELL",
@@ -5001,6 +5103,21 @@ class StrategyEngine:
                                 except Exception:
                                     pass
                                 continue
+                        reentry_remaining = self._reentry_block_remaining(
+                            cw["symbol"],
+                            interval_current,
+                            "BUY",
+                            now_ts=now_indicator_ts,
+                        )
+                        if reentry_remaining > 0.0:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY suppressed by "
+                                    f"re-entry guard ({reentry_remaining:.1f}s)."
+                                )
+                            except Exception:
+                                pass
+                            continue
                         indicator_order_requests.append(
                             {
                                 "side": "BUY",
@@ -5028,6 +5145,21 @@ class StrategyEngine:
                                 except Exception:
                                     pass
                                 continue
+                        reentry_remaining = self._reentry_block_remaining(
+                            cw["symbol"],
+                            interval_current,
+                            "SELL",
+                            now_ts=now_indicator_ts,
+                        )
+                        if reentry_remaining > 0.0:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL suppressed by "
+                                    f"re-entry guard ({reentry_remaining:.1f}s)."
+                                )
+                            except Exception:
+                                pass
+                            continue
                         indicator_order_requests.append(
                             {
                                 "side": "SELL",
@@ -5604,6 +5736,18 @@ class StrategyEngine:
                         lev = int(self.config.get('leverage', 1))
                     if lev <= 0:
                         lev = 1
+                    filter_headroom = 0.0
+                    try:
+                        f_filters = self.binance.get_futures_symbol_filters(cw['symbol']) or {}
+                        min_notional_filter = float(f_filters.get('minNotional') or 0.0)
+                        min_qty_filter = float(f_filters.get('minQty') or 0.0)
+                        min_qty_margin = (min_qty_filter * price) / float(lev) if price > 0.0 else 0.0
+                        min_notional_margin = min_notional_filter / float(lev) if min_notional_filter > 0.0 else 0.0
+                        filter_margin_floor = max(min_qty_margin, min_notional_margin)
+                        if filter_margin_floor > 0.0:
+                            filter_headroom = max(filter_margin_floor * 0.25, 0.0)
+                    except Exception:
+                        filter_headroom = 0.0
 
                     per_indicator_margin_target = wallet_total * pct
                     if per_indicator_margin_target <= 0.0:
@@ -5749,7 +5893,10 @@ class StrategyEngine:
                     )
                     desired_slots_after = slot_count_existing + 1
                     context_key = f"{context_key}|slot{slot_count_existing}"
-                    max_indicator_margin = per_indicator_margin_target * desired_slots_after * (1.0 + margin_tolerance)
+                    max_indicator_margin = (
+                        per_indicator_margin_target * desired_slots_after * (1.0 + margin_tolerance)
+                        + filter_headroom
+                    )
                     if existing_margin_indicator_total >= max_indicator_margin - 1e-9:
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} capital guard: existing {side} margin for {slot_label} "
@@ -5836,7 +5983,10 @@ class StrategyEngine:
                         expected_slots_after += 1
                     expected_slots_after = max(1, expected_slots_after)
                     expected_slots_after = max(expected_slots_after, desired_slots_after)
-                    max_side_margin = per_indicator_margin_target * expected_slots_after * (1.0 + margin_tolerance)
+                    max_side_margin = (
+                        per_indicator_margin_target * expected_slots_after * (1.0 + margin_tolerance)
+                        + filter_headroom
+                    )
                     projected_total_margin = existing_margin_same_side + margin_est
                     side_soft_cap = max_side_margin * (1.0 + margin_filter_slippage)
                     if filter_min_margin > max_side_margin:
