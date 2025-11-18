@@ -1511,8 +1511,36 @@ class StrategyEngine:
         strict_interval: bool = False,
         allow_hedge_close: bool = False,
     ) -> tuple[int, float]:
+        symbol = cw["symbol"]
+        interval_text = str(interval or "").strip()
+        indicator_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
+        if not indicator_norm:
+            indicator_norm = str(indicator_key or "").strip().lower()
+        indicator_lookup_key = indicator_norm or indicator_key
+        hedge_scope_only = coerce_bool(self.config.get("allow_opposite_positions"), True)
+
+        if hedge_scope_only:
+            # In hedge mode, we must close *only* the quantity associated with the specific
+            # indicator and interval that triggered the close signal.
+            qty_for_indicator = self._indicator_open_qty(
+                symbol,
+                interval_text,
+                indicator_lookup_key,
+                side_label,
+                strict_interval=True,
+            )
+            qty_tol = 1e-9
+            if qty_for_indicator <= qty_tol:
+                return 0, 0.0  # Nothing to close for this specific indicator/interval combo.
+
+            # Enforce the quantity limit.
+            if qty_limit is None:
+                qty_limit = qty_for_indicator
+            else:
+                qty_limit = min(qty_limit, qty_for_indicator)
+
         # In hedge mode, only allow closes that are explicitly permitted by the caller.
-        if coerce_bool(self.config.get("allow_opposite_positions"), True) and not allow_hedge_close:
+        if hedge_scope_only and not allow_hedge_close:
             return 0, 0.0
         if (
             not signature_hint
@@ -1521,12 +1549,6 @@ class StrategyEngine:
             and not coerce_bool(self.config.get("allow_indicator_close_without_signal"), False)
         ):
             return 0, 0.0
-        symbol = cw["symbol"]
-        interval_text = str(interval or "").strip()
-        indicator_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
-        if not indicator_norm:
-            indicator_norm = str(indicator_key or "").strip().lower()
-        indicator_lookup_key = indicator_norm or indicator_key
         interval_tokens = self._tokenize_interval_label(interval_text)
         if not strict_interval and interval_aliases:
             for alias in interval_aliases:
@@ -1671,6 +1693,9 @@ class StrategyEngine:
             if limit_remaining is not None and limit_remaining <= limit_tol:
                 break
         if closed_count <= 0:
+            if hedge_scope_only:
+                self._exit_close_guard(symbol, side_norm)
+                return 0, 0.0
             targeted_entries: list[tuple[tuple[str, str, str], dict]] = []
             for leg_key, leg_state in list(self._leg_ledger.items()):
                 leg_sym, leg_interval, leg_side = leg_key
@@ -4437,17 +4462,23 @@ class StrategyEngine:
                     except Exception:
                         pass
                     continue
-                reentry_remaining = self._reentry_block_remaining(
-                    cw["symbol"],
-                    interval_current,
-                    action_side_label,
-                    now_ts=now_indicator_ts,
-                )
-                if reentry_remaining > 0.0:
+                # Prevent re-entry spam after a position is closed.
+                reentry_block = self._reentry_block_remaining(symbol, interval, side_label, now_ts=now_ts)
+                if reentry_block > 0.0:
                     try:
                         self.log(
-                            f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
-                            f"{action_side_label} suppressed by re-entry guard ({reentry_remaining:.1f}s)."
+                            f"{symbol}@{interval} {side_label} re-entry guard: waiting {reentry_block:.1f}s."
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+                # If a flip was intended (opposite side had quantity), ensure it was successful before opening a new position.
+                if opposite_qty > 0.0 and closed_count <= 0:
+                    try:
+                        self.log(
+                            f"{symbol}@{interval} {indicator_key} flip failed: could not close "
+                            f"opposite {opposite_side_label} position. Aborting new {side_label} entry."
                         )
                     except Exception:
                         pass
