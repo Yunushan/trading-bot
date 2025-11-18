@@ -5362,6 +5362,45 @@ class StrategyEngine:
                 )
             else:
                 guard_window = guard_window_base
+            # If a symbol looks flat locally but still has a stale guard/pending reservation, clear it.
+            try:
+                qty_tol_guard = 1e-9
+                live_qty_sym = 0.0
+                sym_upper = str(cw["symbol"] or "").upper()
+                for (sym_l, _iv_l, _side_l), leg_state in list(self._leg_ledger.items()):
+                    if str(sym_l or "").upper() != sym_upper:
+                        continue
+                    try:
+                        live_qty_sym = max(live_qty_sym, float(leg_state.get("qty") or 0.0))
+                    except Exception:
+                        pass
+                guard_key_symbol = (cw["symbol"], side)
+                state = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                if isinstance(state, dict):
+                    try:
+                        last_ts_guard = float(state.get("last") or 0.0)
+                    except Exception:
+                        last_ts_guard = 0.0
+                    pending_map = state.get("pending_map")
+                    if not isinstance(pending_map, dict):
+                        pending_map = {}
+                    sig_state = state.get("signatures")
+                    if not isinstance(sig_state, dict):
+                        sig_state = {}
+                    age = (time.time() - last_ts_guard) if last_ts_guard > 0.0 else float("inf")
+                    if live_qty_sym <= qty_tol_guard and age > guard_window * 2.0:
+                        state["pending_map"] = {}
+                        state["signatures"] = {}
+                        state["last"] = 0.0
+                        StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = state
+                        try:
+                            self.log(
+                                f"{cw['symbol']}@{interval_key} symbol guard reset after {age:.1f}s stale and no live qty."
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             if current_bar_marker is not None:
                 with StrategyEngine._BAR_GUARD_LOCK:
                     global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.get(bar_sig_key)
@@ -5553,6 +5592,10 @@ class StrategyEngine:
                     if margin_tolerance > 1.0:
                         margin_tolerance = margin_tolerance / 100.0
                     margin_tolerance = max(0.0, margin_tolerance)
+                    margin_filter_slippage = float(self.config.get("margin_filter_slippage", 0.1))
+                    if margin_filter_slippage > 1.0:
+                        margin_filter_slippage = margin_filter_slippage / 100.0
+                    margin_filter_slippage = max(0.0, margin_filter_slippage)
 
                     try:
                         lev_raw = cw.get('leverage', self.config.get('leverage', 1))
@@ -5744,6 +5787,26 @@ class StrategyEngine:
                         self._entry_margin_value(entry, lev) for _, entry in entries_side_all
                     )
 
+                    filters_for_symbol: dict | None = None
+                    filter_min_margin = 0.0
+                    try:
+                        filters_for_symbol = self.binance.get_futures_symbol_filters(cw['symbol']) or {}
+                        step_sz = float(filters_for_symbol.get('stepSize') or 0.0)
+                        min_qty_filter = float(filters_for_symbol.get('minQty') or 0.0)
+                        min_notional_filter = float(filters_for_symbol.get('minNotional') or 0.0)
+                        if price > 0.0 and lev > 0:
+                            qty_floor = max(min_qty_filter, 0.0)
+                            if min_notional_filter > 0.0:
+                                qty_needed = min_notional_filter / float(price)
+                                if step_sz > 0.0:
+                                    qty_needed = self.binance._ceil_to_step(qty_needed, step_sz)
+                                qty_floor = max(qty_floor, qty_needed)
+                            if qty_floor > 0.0:
+                                filter_min_margin = (qty_floor * price) / float(lev)
+                    except Exception:
+                        filters_for_symbol = None
+                        filter_min_margin = 0.0
+
                     qty_target = (target_margin * lev) / price
                     adj_qty, adj_err = self.binance.adjust_qty_to_filters_futures(cw['symbol'], qty_target, price)
                     if adj_err:
@@ -5756,10 +5819,13 @@ class StrategyEngine:
                         return
 
                     margin_est = (adj_qty * price) / float(lev)
-                    if existing_margin_indicator_total + margin_est > max_indicator_margin + 1e-6:
+                    indicator_soft_cap = max_indicator_margin * (1.0 + margin_filter_slippage)
+                    if filter_min_margin > max_indicator_margin:
+                        indicator_soft_cap = max(indicator_soft_cap, filter_min_margin * (1.0 + margin_filter_slippage))
+                    if existing_margin_indicator_total + margin_est > indicator_soft_cap + 1e-6:
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} capital guard: adding {margin_est:.4f} USDT to {slot_label} "
-                            f"would exceed cap {max_indicator_margin:.4f} USDT "
+                            f"would exceed cap {max_indicator_margin:.4f} USDT (soft cap {indicator_soft_cap:.4f}) "
                             f"({pct*100:.2f}% margin target → {per_indicator_notional_target:.4f} USDT notional @ {lev}x)."
                         )
                         _guard_abort()
@@ -5772,10 +5838,13 @@ class StrategyEngine:
                     expected_slots_after = max(expected_slots_after, desired_slots_after)
                     max_side_margin = per_indicator_margin_target * expected_slots_after * (1.0 + margin_tolerance)
                     projected_total_margin = existing_margin_same_side + margin_est
-                    if projected_total_margin > max_side_margin + 1e-6:
+                    side_soft_cap = max_side_margin * (1.0 + margin_filter_slippage)
+                    if filter_min_margin > max_side_margin:
+                        side_soft_cap = max(side_soft_cap, filter_min_margin * (1.0 + margin_filter_slippage))
+                    if projected_total_margin > side_soft_cap + 1e-6:
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} capital guard: projected total {side} margin {projected_total_margin:.4f} USDT "
-                            f"exceeds cap {max_side_margin:.4f} USDT for {expected_slots_after} slot(s) at "
+                            f"exceeds cap {max_side_margin:.4f} USDT (soft cap {side_soft_cap:.4f}) for {expected_slots_after} slot(s) at "
                             f"{pct*100:.2f}% margin each."
                         )
                         _guard_abort()
@@ -5783,7 +5852,7 @@ class StrategyEngine:
 
                     min_required_margin = 0.0
                     try:
-                        f_filters = self.binance.get_futures_symbol_filters(cw['symbol']) or {}
+                        f_filters = filters_for_symbol or self.binance.get_futures_symbol_filters(cw['symbol']) or {}
                         min_notional_filter = float(f_filters.get('minNotional') or 0.0)
                         if min_notional_filter > 0.0:
                             min_required_margin = max(min_required_margin, min_notional_filter / float(lev))
@@ -5792,10 +5861,10 @@ class StrategyEngine:
                             min_required_margin = max(min_required_margin, (min_qty_filter * price) / float(lev))
                     except Exception:
                         min_required_margin = max(min_required_margin, 0.0)
-                    if min_required_margin > 0.0 and min_required_margin > max_indicator_margin + 1e-9:
+                    if min_required_margin > 0.0 and min_required_margin > indicator_soft_cap + 1e-9:
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} sizing blocked: minimum contract margin {min_required_margin:.4f} "
-                            f"exceeds cap {max_indicator_margin:.4f} USDT for {slot_label} "
+                            f"exceeds cap {max_indicator_margin:.4f} USDT (soft cap {indicator_soft_cap:.4f}) for {slot_label} "
                             f"({pct*100:.2f}% margin target)."
                         )
                         _guard_abort()
