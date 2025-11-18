@@ -44,6 +44,13 @@ DEFAULT_CONFIG = {
     "indicator_use_live_values": True,
     "indicator_min_position_hold_seconds": 12.0,
     "indicator_min_position_hold_bars": 1,
+    # Prevent closing an indicator leg unless an explicit opposite signal/flip is present.
+    "require_indicator_flip_signal": True,
+    # Extra safety: skip indicator closes if no matching opposite signature is provided.
+    "strict_indicator_flip_enforcement": True,
+    # Blocks immediate re-entry on the same symbol/interval/side after a close to prevent ping-pong loops.
+    "indicator_reentry_cooldown_seconds": 0.0,
+    "indicator_reentry_cooldown_bars": 1,
     # When True, close paths may bypass the hold guard; keep False to prevent instant churn.
     "allow_close_ignoring_hold": False,
     # When False, a close triggered by one indicator will not flatten trades opened by multi-indicator signals.
