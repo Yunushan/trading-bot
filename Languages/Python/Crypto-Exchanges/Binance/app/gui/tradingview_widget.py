@@ -123,7 +123,17 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
             "locale": "en",
             "timeframes": self.DEFAULT_TIMEFRAMES,
         }
-        self._render()
+        self._rendered = False
+        # DO NOT render immediately - defer until widget is shown
+        # This prevents QtWebEngine from spawning helper processes during app startup
+        # self._render()
+    
+    def showEvent(self, event):
+        """Render chart only when the widget is actually shown"""
+        super().showEvent(event)
+        if not self._rendered:
+            self._rendered = True
+            self._render()
 
     def set_chart(
         self,

@@ -45,6 +45,28 @@ try:
             except Exception:
                 pass
             os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
+    
+    # Windows-specific QtWebEngine suppression to prevent helper process windows
+    if os.name == "nt":
+        flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+        flag_parts = [part for part in flags.split() if part]
+        # Critical flags to prevent window creation
+        windows_flags = [
+            "--single-process",  # Run everything in one process (no helpers)
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-gpu-process-crash-limit",
+            "--disable-logging",
+            "--in-process-gpu",  # Force GPU in main process
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+        ]
+        for flag in windows_flags:
+            if flag not in flag_parts:
+                flag_parts.append(flag)
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flag_parts).strip()
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 except Exception:
     # Never allow env-setup failures to abort app startup.
     pass

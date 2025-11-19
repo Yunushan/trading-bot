@@ -1021,21 +1021,38 @@ class StarterWindow(QtWidgets.QWidget):
         self.status_label.setText(start_message + launch_log_hint)
         try:
             popen_kwargs: dict[str, object] = {"cwd": str(cwd)}
-            create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            if create_no_window:
-                popen_kwargs["creationflags"] = create_no_window
+            # Unconditionally force no window creation for the subprocess
+            # This is the most reliable way to suppress console windows on Windows
+            create_no_window = 0x08000000  # CREATE_NO_WINDOW
+            popen_kwargs["creationflags"] = create_no_window
+
             if sys.platform == "win32":
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
                 startupinfo.wShowWindow = 0  # SW_HIDE
                 popen_kwargs["startupinfo"] = startupinfo
-                # Also request a detached process to avoid transient console flashes.
-                DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0)
-                if DETACHED_PROCESS:
-                    popen_kwargs["creationflags"] |= DETACHED_PROCESS
-            # Pass env hint to child to skip taskbar metadata (reduces transient window flashes).
+
+            # ALWAYS disable taskbar metadata to prevent window flashing
             env = os.environ.copy()
             env["BOT_DISABLE_TASKBAR"] = "1"
+            
+            # QtWebEngine suppression
+            env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+            
+            # Inject flags to suppress QtWebEngine external process windows
+            current_flags = env.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+            # --single-process is the critical fix here: it forces WebEngine to run in-thread
+            # rather than spawning 4-5 helper processes that appear as tiny windows.
+            extra_flags = (
+                "--single-process "
+                "--no-sandbox "
+                "--disable-gpu "
+                "--disable-logging "
+                "--window-position=-10000,-10000"
+            )
+            if extra_flags not in current_flags:
+                env["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{current_flags} {extra_flags}".strip()
+            
             popen_kwargs["env"] = env
             # Capture early stdout/stderr so failures are visible when using hidden window flags.
             try:
@@ -1104,7 +1121,7 @@ def main() -> None:
         icon_str = str(icon_location) if icon_location is not None else None
         relaunch_cmd = build_relaunch_command(Path(__file__))
 
-        def _attempt_taskbar(attempts_remaining: int = 4, delay_ms: int = 0) -> None:
+        def _attempt_taskbar(attempts_remaining: int = 1, delay_ms: int = 0) -> None:
             if attempts_remaining <= 0:
                 return
             def _run():
@@ -1115,9 +1132,9 @@ def main() -> None:
                     icon_path=icon_str,
                     relaunch_command=relaunch_cmd,
                 )
-                if not success:
+                if not success and attempts_remaining > 0:
                     QtCore.QTimer.singleShot(
-                        150,
+                        300,
                         lambda: _attempt_taskbar(attempts_remaining - 1, 0),
                     )
             if delay_ms > 0:
@@ -1125,7 +1142,7 @@ def main() -> None:
             else:
                 _run()
 
-        QtCore.QTimer.singleShot(0, lambda: _attempt_taskbar(4, 0))
+        QtCore.QTimer.singleShot(500, lambda: _attempt_taskbar(1, 0))
     sys.exit(app.exec())
 
 
