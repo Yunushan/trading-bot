@@ -9,8 +9,8 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
 
-_ICON_FILENAMES_WINDOWS = ("binance_icon.ico", "binance_icon.png")
-_ICON_FILENAMES_UNIX = ("binance_icon.png", "binance_icon.ico")
+_ICON_FILENAMES_WINDOWS = ("binance_icon.ico", "binance_icon.png", "crypto_forex_logo.ico", "crypto_forex_logo.png")
+_ICON_FILENAMES_UNIX = ("binance_icon.png", "binance_icon.ico", "crypto_forex_logo.png", "crypto_forex_logo.ico")
 _COMMON_FALLBACKS = ("binance_icon.svg",)
 
 FALLBACK_ICON_PNG = (
@@ -72,6 +72,12 @@ def _candidate_directories() -> list[Path]:
         Path.cwd() / "app" / "assets",
         Path.cwd() / "assets",
     ])
+    
+    # Try to find repo root assets (assuming standard structure)
+    # project_dir = .../Binance
+    # repo_root = .../trading-bot (4 levels up from Binance)
+    if len(project_dir.parents) >= 4:
+        candidates.append(project_dir.parents[3] / "assets")
 
     seen: set[Path] = set()
     ordered: list[Path] = []

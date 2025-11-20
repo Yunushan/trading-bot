@@ -111,6 +111,13 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
             raise RuntimeError(f"QtWebEngine is unavailable: {_IMPORT_ERROR}")
         super().__init__(parent)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
+        # Disable scrollbars - the chart should fill the entire widget
+        try:
+            from PyQt6.QtWidgets import QAbstractScrollArea
+            self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        except Exception:
+            pass
         try:
             self.settings().setAttribute(self.settings().WebAttribute.LocalStorageEnabled, True)
         except Exception:

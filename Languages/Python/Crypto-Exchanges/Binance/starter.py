@@ -305,7 +305,7 @@ class StarterWindow(QtWidgets.QWidget):
         self._launch_status_timer.setSingleShot(True)
         self._launch_status_timer.timeout.connect(self._mark_bot_ready)
         self._process_watch_timer = QtCore.QTimer(self)
-        self._process_watch_timer.setInterval(1000)
+        self._process_watch_timer.setInterval(250)  # Check every 250ms for faster response
         self._process_watch_timer.timeout.connect(self._monitor_bot_process)
         self._auto_launch_timer: QtCore.QTimer | None = None
 
@@ -1034,7 +1034,7 @@ class StarterWindow(QtWidgets.QWidget):
 
             # ALWAYS disable taskbar metadata to prevent window flashing
             env = os.environ.copy()
-            env["BOT_DISABLE_TASKBAR"] = "1"
+            # env["BOT_DISABLE_TASKBAR"] = "1"  <-- REMOVED to fix taskbar icon issue
             
             # QtWebEngine suppression
             env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"

@@ -86,8 +86,9 @@ def _install_qt_warning_filter():
 def main():
     _install_qt_warning_filter()
     
-    # Check if we should skip taskbar metadata (set by launcher to prevent flashing)
-    disable_taskbar = os.getenv("BOT_DISABLE_TASKBAR", "").strip() == "1"
+    # FORCE taskbar metadata enabled, ignoring the starter's flag.
+    # This ensures the icon is applied even if the starter wasn't restarted after the update.
+    disable_taskbar = False 
     
     # Only set app user model ID if taskbar metadata is enabled
     if not disable_taskbar:
@@ -104,17 +105,19 @@ def main():
     # Prevent app from quitting when windows are hidden
     app.setQuitOnLastWindowClosed(True)
     
+    # Force exit when last window is closed
+    app.lastWindowClosed.connect(lambda: os._exit(0))
+    
     icon = QtGui.QIcon()
-    if not disable_taskbar:
-        try:
-            app.setApplicationDisplayName("Binance Trading Bot")
-            icon = load_app_icon()
-            if not icon.isNull():
-                app.setApplicationName("Binance Trading Bot")
-                app.setWindowIcon(icon)
-                QtGui.QGuiApplication.setWindowIcon(icon)
-        except Exception:
-            icon = QtGui.QIcon()
+    try:
+        app.setApplicationDisplayName("Binance Trading Bot")
+        icon = load_app_icon()
+        if not icon.isNull():
+            app.setApplicationName("Binance Trading Bot")
+            app.setWindowIcon(icon)
+            QtGui.QGuiApplication.setWindowIcon(icon)
+    except Exception:
+        icon = QtGui.QIcon()
     
     # Create window - it will be constructed hidden
     win = MainWindow()
@@ -126,15 +129,32 @@ def main():
     win.setVisible(False)
     win.setWindowState(QtCore.Qt.WindowState.WindowMaximized)
     
-    if not disable_taskbar:
-        try:
-            if not icon.isNull():
-                win.setWindowIcon(icon)
-        except Exception:
-            pass
+    try:
+        if not icon.isNull():
+            win.setWindowIcon(icon)
+    except Exception:
+        pass
     
     # Get window ID (creates native window handle but stays hidden)
     win.winId()
+    
+    # CRITICAL: Override closeEvent to ensure immediate exit
+    # MainWindow has complex close logic that might prevent actual closing
+    original_close_event = win.closeEvent
+    def force_close_event(event):
+        """Force application exit when window is closed, bypassing complex cleanup logic."""
+        try:
+            # Call original close event but don't wait for it
+            try:
+                original_close_event(event)
+            except:
+                pass
+            # Force exit immediately
+            os._exit(0)
+        except:
+            os._exit(0)
+    
+    win.closeEvent = force_close_event
     
     if not disable_taskbar:
         if not icon.isNull():
@@ -157,6 +177,10 @@ def main():
                     QtCore.QTimer.singleShot(300, lambda: _apply_taskbar(attempts - 1))
 
             QtCore.QTimer.singleShot(500, _apply_taskbar)
+    else:
+        # Even if taskbar metadata is disabled, ensure window icon is set again after show
+        if not icon.isNull():
+            QtCore.QTimer.singleShot(0, lambda: win.setWindowIcon(icon))
     
     # Show window only after complete initialization
     def _show_window():
@@ -169,7 +193,17 @@ def main():
     # Longer delay to ensure everything is ready
     QtCore.QTimer.singleShot(300, _show_window)
     
-    sys.exit(app.exec())
+    # Force exit when app quits to ensure no lingering threads
+    def _force_exit():
+        try:
+            os._exit(0)
+        except:
+            pass
+
+    app.aboutToQuit.connect(_force_exit)
+    
+    app.exec()
+    _force_exit()
 
 if __name__ == "__main__":
     main()
