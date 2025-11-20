@@ -136,29 +136,10 @@ def _resolve_webengine_version():
             return _md.version(dist)
         except Exception:
             pass
-    try:
-        from PyQt6 import QtWebEngineCore as _QtWebEngineCore  # noqa: F401
-        ver = (
-            getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION_STR", None)
-            or getattr(_QtWebEngineCore, "QTWEBENGINE_VERSION_STR", None)
-            or getattr(_QtWebEngineCore, "PYQT_WEBENGINE_VERSION", None)
-        )
-        if not ver:
-            try:
-                from PyQt6 import QtWebEngineWidgets as _QtWebEngineWidgets  # noqa: F401
-                ver = getattr(_QtWebEngineWidgets, "PYQT_WEBENGINE_VERSION_STR", None)
-            except Exception:
-                pass
-        if isinstance(ver, int):
-            major = (ver >> 16) & 0xFF
-            minor = (ver >> 8) & 0xFF
-            patch = ver & 0xFF
-            ver = f"{major}.{minor}.{patch}"
-        if ver:
-            return str(ver)
-        return "installed"
-    except Exception:
-        return None
+    # Avoid importing QtWebEngine modules during startup on Windows.
+    # Importing them can spawn helper processes that briefly flash windows
+    # before the main UI appears. Rely on package metadata instead.
+    return "installed"
 
 _WEBENGINE_VER = _resolve_webengine_version()
 _WEBENGINE = f"PyQt6-WebEngine={_WEBENGINE_VER}" if _WEBENGINE_VER else "PyQt6-WebEngine=not-installed"

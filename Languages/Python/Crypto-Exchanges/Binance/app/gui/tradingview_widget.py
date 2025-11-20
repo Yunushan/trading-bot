@@ -19,14 +19,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <style>
-    html, body, #tv_container {
+    html, body {
       margin: 0;
       padding: 0;
       width: 100%;
       height: 100%;
+      overflow: hidden; /* Prevent any scrollbars */
       background-color: #0b0e11;
       color: #d1d4dc;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #tv_container {
+      position: absolute;
+      left: 0; top: 0; right: 0; bottom: 0;
+      width: 100%;
+      height: 100%;
     }
     #fallback {
       display: flex;
@@ -41,6 +48,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   </style>
 </head>
 <body>
+  <script type="text/javascript">
+    // Block popup windows; force any attempts to stay within this surface.
+    window.open = function(url) {
+      try { window.location.href = url || "#"; } catch (e) {}
+      return null;
+    };
+  </script>
   <div id="tv_container"></div>
   <div id="fallback" style="display:none;">Loading chart…</div>
   <script type="text/javascript">
@@ -165,6 +179,10 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
             "light" if str(theme or "").lower().startswith("light") else "dark"
         )
         self._render()
+
+    # Ensure TradingView popups stay inside this view instead of spawning new windows
+    def createWindow(self, _type):  # noqa: N802
+        return self
 
     def show_message(self, message: str, color: str = "#d1d4dc") -> None:
         safe_msg = _html.escape(str(message or ""))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import sys
 import json
 import math
@@ -62,11 +63,41 @@ from app.indicators import (
     sma as sma_indicator,
     ema as ema_indicator,
 )
-try:
-    from app.gui.tradingview_widget import TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
-except Exception:
-    TradingViewWidget = None  # type: ignore[assignment]
-    TRADINGVIEW_EMBED_AVAILABLE = False
+
+# Lazy import TradingView to avoid spawning QtWebEngine helper windows during startup.
+TradingViewWidget = None  # type: ignore[assignment]
+TRADINGVIEW_EMBED_AVAILABLE = False
+_TRADINGVIEW_IMPORT_ERROR = None
+
+def _load_tradingview_widget():
+    """Import TradingViewWidget only when the chart tab is needed."""
+    if _DISABLE_TRADINGVIEW or _DISABLE_CHARTS:
+        return None, False
+    global TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE, _TRADINGVIEW_IMPORT_ERROR
+    if TradingViewWidget is not None or _TRADINGVIEW_IMPORT_ERROR is not None:
+        return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
+    try:
+        from app.gui.tradingview_widget import TradingViewWidget as _TVW, TRADINGVIEW_EMBED_AVAILABLE as _EMBED  # type: ignore
+    except Exception as exc:
+        _TRADINGVIEW_IMPORT_ERROR = exc
+        TradingViewWidget = None  # type: ignore[assignment]
+        TRADINGVIEW_EMBED_AVAILABLE = False
+        return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
+    TradingViewWidget = _TVW  # type: ignore[assignment]
+    TRADINGVIEW_EMBED_AVAILABLE = bool(_EMBED and _TVW is not None)
+    return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
+
+def _tradingview_supported(*, probe: bool = False) -> bool:
+    if _DISABLE_TRADINGVIEW or _DISABLE_CHARTS:
+        return False
+    if TradingViewWidget is not None and TRADINGVIEW_EMBED_AVAILABLE:
+        return True
+    if _TRADINGVIEW_IMPORT_ERROR is not None:
+        return False
+    if not probe:
+        return False
+    tvw, available = _load_tradingview_widget()
+    return bool(available and tvw is not None)
 
 BINANCE_SUPPORTED_INTERVALS = {
     "1m", "3m", "5m", "15m", "30m",
@@ -251,6 +282,10 @@ for _parent in _THIS_FILE.parents:
         break
 else:
     _BASE_PROJECT_PATH = _THIS_FILE.parents[2]
+
+# Startup knobs to avoid slow/flashy QtWebEngine init on Windows
+_DISABLE_CHARTS = str(os.environ.get("BOT_DISABLE_CHARTS", "")).strip().lower() in {"1", "true", "yes", "on"}
+_DISABLE_TRADINGVIEW = str(os.environ.get("BOT_DISABLE_TRADINGVIEW", "")).strip().lower() in {"1", "true", "yes", "on"}
 
 LANGUAGE_PATHS = {
     "Python (PyQt)": "Languages/Python",
@@ -755,6 +790,96 @@ class SimpleCandlestickWidget(QtWidgets.QWidget):
             QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignRight,
             f"Low: {min_low:.4f}",
         )
+
+
+if QT_CHARTS_AVAILABLE and QChartView is not None:
+    class InteractiveChartView(QChartView):
+        """QChartView with scroll/zoom conveniences for the 'Original' chart view."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            try:
+                self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            except Exception:
+                pass
+            try:
+                self.setRubberBand(QChartView.RubberBand.RectangleRubberBand)
+            except Exception:
+                pass
+            try:
+                self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
+            except Exception:
+                pass
+            self.setMouseTracking(True)
+            self._panning = False
+            self._pan_start: QtCore.QPoint | None = None
+
+        def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # noqa: N802
+            chart = self.chart()
+            if chart is None:
+                return super().wheelEvent(event)
+            angle = event.angleDelta().y()
+            if angle == 0:
+                return super().wheelEvent(event)
+            factor = 1.15 if angle > 0 else 1 / 1.15
+            try:
+                chart.zoom(factor)
+            except Exception:
+                pass
+            event.accept()
+
+        def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+            if event.button() == QtCore.Qt.MouseButton.MiddleButton:
+                self._panning = True
+                self._pan_start = event.position().toPoint()
+                try:
+                    self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+                except Exception:
+                    pass
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+            if self._panning and self._pan_start is not None:
+                delta = event.position().toPoint() - self._pan_start
+                self._pan_start = event.position().toPoint()
+                chart = self.chart()
+                if chart is not None:
+                    try:
+                        chart.scroll(-delta.x(), delta.y())
+                    except Exception:
+                        pass
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+            if event.button() == QtCore.Qt.MouseButton.MiddleButton:
+                self._panning = False
+                self._pan_start = None
+                try:
+                    self.unsetCursor()
+                except Exception:
+                    pass
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+        def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+            chart = self.chart()
+            if chart is not None:
+                try:
+                    chart.zoomReset()
+                except Exception:
+                    pass
+            super().mouseDoubleClickEvent(event)
+else:  # QT_CHARTS_AVAILABLE is False
+    class InteractiveChartView(QtWidgets.QWidget):
+        """Fallback placeholder when PyQt6-Charts is unavailable."""
+
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyQt6-Charts is not installed; Original chart view is unavailable.")
 
 def _format_indicator_list(keys):
     if not keys:
@@ -2243,7 +2368,8 @@ class MainWindow(QtWidgets.QWidget):
         self.chart_auto_follow = bool(self.chart_config.get("auto_follow", True))
         self._chart_manual_override = False
         self._chart_updating = False
-        self.chart_enabled = ENABLE_CHART_TAB
+        self._pending_tradingview_mode = False  # Defer TradingView init to avoid startup window flashes
+        self.chart_enabled = ENABLE_CHART_TAB and not _DISABLE_CHARTS
         self._chart_worker = None
         self._chart_theme_signal_installed = False
         default_symbols = self.config.get("symbols") or ["BTCUSDT"]
@@ -2269,7 +2395,8 @@ class MainWindow(QtWidgets.QWidget):
             default_symbol = self._futures_display_symbol(default_symbol)
         self.chart_config.setdefault("symbol", default_symbol)
         self.chart_config.setdefault("interval", (default_intervals[0] if default_intervals else "1h"))
-        default_view_mode = "tradingview" if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None else "original"
+        # Default to Original view to keep the switch lightweight; TradingView stays opt-in
+        default_view_mode = "original"
         self.chart_config.setdefault("view_mode", default_view_mode)
         try:
             if self._normalize_chart_market(self.chart_config.get("market")) == "Futures":
@@ -6102,22 +6229,15 @@ class MainWindow(QtWidgets.QWidget):
         layout.addWidget(self.chart_view_stack, stretch=1)
 
         self.chart_tradingview = None
-        if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None:
-            try:
-                self.chart_tradingview = TradingViewWidget(self)
-                self._chart_view_widgets["tradingview"] = self.chart_tradingview
-                self.chart_view_stack.addWidget(self.chart_tradingview)
-            except Exception:
-                self.chart_tradingview = None
+        self._chart_view_tradingview_available = (_TRADINGVIEW_IMPORT_ERROR is None) and (not _DISABLE_TRADINGVIEW) and (not _DISABLE_CHARTS)
 
         self.chart_original_view = None
-        if QT_CHARTS_AVAILABLE:
-            view = QChartView()
+        if QT_CHARTS_AVAILABLE and QChartView is not None:
+            view = InteractiveChartView()
             try:
-                view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+                view.setMinimumHeight(300)
             except Exception:
                 pass
-            view.setMinimumHeight(300)
             self.chart_original_view = view
         else:
             self.chart_original_view = SimpleCandlestickWidget()
@@ -6126,7 +6246,7 @@ class MainWindow(QtWidgets.QWidget):
             self.chart_view_stack.addWidget(self.chart_original_view)
 
         self.chart_view_mode_combo.clear()
-        if self.chart_tradingview is not None:
+        if self._chart_view_tradingview_available:
             self.chart_view_mode_combo.addItem("TradingView", "tradingview")
         else:
             self.chart_view_mode_combo.addItem("TradingView", "tradingview")
@@ -6141,10 +6261,11 @@ class MainWindow(QtWidgets.QWidget):
 
         requested_mode = str(self.chart_config.get("view_mode") or "").strip().lower()
         if requested_mode not in ("tradingview", "original"):
-            requested_mode = "tradingview" if self.chart_tradingview is not None else "original"
-        if requested_mode == "tradingview" and self.chart_tradingview is None:
+            requested_mode = "tradingview" if self._chart_view_tradingview_available else "original"
+        if requested_mode == "tradingview" and not self._chart_view_tradingview_available:
             requested_mode = "original"
-        self._apply_chart_view_mode(requested_mode, initial=True)
+        self._pending_tradingview_mode = requested_mode == "tradingview" and self._chart_view_tradingview_available
+        self._apply_chart_view_mode(requested_mode, initial=True, allow_tradingview_init=False)
         self.chart_view_mode_combo.currentIndexChanged.connect(self._on_chart_view_mode_changed)
 
         self.chart_symbol_combo.currentTextChanged.connect(self._on_chart_controls_changed)
@@ -6167,19 +6288,56 @@ class MainWindow(QtWidgets.QWidget):
 
         return tab
 
-    def _apply_chart_view_mode(self, mode: str, initial: bool = False):
+    def _ensure_tradingview_widget(self):
+        """Lazily create the TradingView widget so QtWebEngine processes spawn only when needed."""
+        if self.chart_tradingview is not None:
+            return self.chart_tradingview
+        if not self._chart_view_tradingview_available:
+            return None
+        tv_class, _ = _load_tradingview_widget()
+        if tv_class is None:
+            self._chart_view_tradingview_available = False
+            return None
+        try:
+            widget = tv_class(self)
+        except Exception:
+            self.chart_tradingview = None
+            self._chart_view_tradingview_available = False
+            return None
+        self.chart_tradingview = widget
+        self._chart_view_widgets["tradingview"] = widget
+        self.chart_view_stack.addWidget(widget)
+        return widget
+
+    def _apply_chart_view_mode(self, mode: str, initial: bool = False, *, allow_tradingview_init: bool = True):
         if not getattr(self, "chart_enabled", False):
             return
-        mode_norm = str(mode or "").strip().lower()
-        if mode_norm != "tradingview" or self.chart_tradingview is None:
-            mode_norm = "original"
-        widget = self._chart_view_widgets.get(mode_norm)
+        requested_mode = str(mode or "").strip().lower()
+        actual_mode = requested_mode
+        widget = None
+
+        if requested_mode == "tradingview":
+            if not self._chart_view_tradingview_available:
+                actual_mode = "original"
+            elif allow_tradingview_init:
+                widget = self._ensure_tradingview_widget()
+                if widget is None:
+                    actual_mode = "original"
+            else:
+                # Defer TradingView creation until the chart tab is visible to avoid startup flicker.
+                self._pending_tradingview_mode = True
+                actual_mode = "original"
+        else:
+            actual_mode = "original"
+
+        if widget is None:
+            widget = self._chart_view_widgets.get(actual_mode)
         if widget is None:
             return
         self.chart_view = widget
         try:
             with QtCore.QSignalBlocker(self.chart_view_mode_combo):
-                idx = self.chart_view_mode_combo.findData(mode_norm)
+                idx = self.chart_view_mode_combo.findData(actual_mode)
                 if idx >= 0:
                     self.chart_view_mode_combo.setCurrentIndex(idx)
         except Exception:
@@ -6190,8 +6348,11 @@ class MainWindow(QtWidgets.QWidget):
                 self.chart_view_stack.setCurrentIndex(index)
         except Exception:
             pass
-        self.chart_config["view_mode"] = mode_norm
-        if mode_norm == "tradingview" and self.chart_tradingview is not None:
+        self.chart_config["view_mode"] = requested_mode or actual_mode
+        if actual_mode == "tradingview":
+            self._pending_tradingview_mode = False
+        tv_class, _ = _load_tradingview_widget()
+        if actual_mode == "tradingview" and tv_class is not None and isinstance(widget, tv_class):
             try:
                 self._on_chart_theme_changed()
             except Exception:
@@ -6248,7 +6409,7 @@ class MainWindow(QtWidgets.QWidget):
             self._set_chart_interval(CHART_INTERVAL_OPTIONS[0])
         view_mode_cfg = str(self.chart_config.get("view_mode") or "").strip().lower()
         if view_mode_cfg:
-            self._apply_chart_view_mode(view_mode_cfg, initial=True)
+            self._apply_chart_view_mode(view_mode_cfg, initial=True, allow_tradingview_init=False)
 
     def _update_chart_symbol_options(self, symbols=None):
         if not getattr(self, "chart_enabled", False):
@@ -7127,7 +7288,9 @@ class MainWindow(QtWidgets.QWidget):
                 except Exception:
                     pass
             view.setChart(chart)
-        elif TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None and isinstance(view, TradingViewWidget):
+            return
+        tv_class, _ = _load_tradingview_widget()
+        if tv_class is not None and isinstance(view, tv_class):
             try:
                 view.show_message(message, color=color)
             except Exception:
@@ -7220,7 +7383,8 @@ class MainWindow(QtWidgets.QWidget):
         if not getattr(self, "chart_enabled", False):
             return
         view = getattr(self, "chart_view", None)
-        if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None and isinstance(view, TradingViewWidget):
+        tv_class, _ = _load_tradingview_widget()
+        if tv_class is not None and isinstance(view, tv_class):
             try:
                 theme_name = (self.theme_combo.currentText() or "").strip()
             except Exception:
@@ -7252,6 +7416,8 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             return
         if widget is getattr(self, "chart_tab", None):
+            if self._pending_tradingview_mode:
+                self._apply_chart_view_mode("tradingview", allow_tradingview_init=True)
             if self._chart_pending_initial_load:
                 self.load_chart(auto=True)
             elif self.chart_auto_follow:
@@ -7300,7 +7466,8 @@ class MainWindow(QtWidgets.QWidget):
                 pass
         self._chart_worker = None
 
-        if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None and isinstance(view, TradingViewWidget):
+        tv_class, _ = _load_tradingview_widget()
+        if tv_class is not None and isinstance(view, tv_class):
             try:
                 theme_name = (self.theme_combo.currentText() or "").strip()
             except Exception:
@@ -8884,11 +9051,19 @@ def _init_code_language_tab(self):
 
     self._dep_version_labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel]] = {}
     versions_group = QtWidgets.QGroupBox("Environment Versions")
-    versions_group.setMinimumHeight(400)
-    versions_layout = QtWidgets.QGridLayout(versions_group)
-    versions_layout.setColumnStretch(0, 3)
-    versions_layout.setColumnStretch(1, 1)
-    versions_layout.setColumnStretch(2, 1)
+    versions_group.setSizePolicy(
+        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+    )
+    versions_group_layout = QtWidgets.QVBoxLayout(versions_group)
+    versions_group_layout.setContentsMargins(8, 12, 8, 8)
+    versions_group_layout.setSpacing(6)
+
+    versions_container = QtWidgets.QWidget()
+    versions_layout = QtWidgets.QGridLayout(versions_container)
+    versions_layout.setContentsMargins(6, 6, 6, 6)
+    versions_layout.setColumnStretch(0, 5)
+    versions_layout.setColumnStretch(1, 3)
+    versions_layout.setColumnStretch(2, 3)
     versions_layout.setVerticalSpacing(8)
     versions_layout.setHorizontalSpacing(12)
     header_dep = QtWidgets.QLabel("Dependency")
@@ -8916,7 +9091,29 @@ def _init_code_language_tab(self):
         versions_layout.addWidget(installed_widget, row, 1)
         versions_layout.addWidget(latest_widget, row, 2)
         self._dep_version_labels[target["label"]] = (installed_widget, latest_widget)
-    layout.addWidget(versions_group)
+
+    versions_scroll = QtWidgets.QScrollArea()
+    versions_scroll.setWidgetResizable(True)
+    versions_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    versions_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    versions_scroll.setWidget(versions_container)
+    # Size the scroll area so all dependencies are usually visible without scrolling.
+    rows = len(DEPENDENCY_VERSION_TARGETS) + 1  # +1 for header
+    row_height = 26
+    target_height = rows * row_height + 32
+    versions_container.setMinimumHeight(target_height)
+    versions_scroll.setMinimumHeight(min(700, max(420, target_height)))
+    versions_scroll.setSizePolicy(
+        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+    )
+    try:
+        versions_scroll.verticalScrollBar().setValue(0)
+    except Exception:
+        pass
+    versions_group_layout.addWidget(versions_scroll, 1)
+
+    versions_group.setMinimumHeight(min(800, max(480, target_height + 60)))
+    layout.addWidget(versions_group, 1)
     version_btn_row = QtWidgets.QHBoxLayout()
     version_btn_row.addStretch()
     self._version_refresh_btn = QtWidgets.QPushButton("Check Versions")
@@ -8924,8 +9121,6 @@ def _init_code_language_tab(self):
     version_btn_row.addWidget(self._version_refresh_btn)
     layout.addLayout(version_btn_row)
     self._refresh_dependency_versions()
-
-    layout.addStretch()
 
     self._sync_language_exchange_lists_from_config()
     self._update_bot_status()
@@ -12519,7 +12714,7 @@ def load_config(self):
         if getattr(self, "chart_enabled", False):
             self.chart_config.setdefault("auto_follow", True)
             self.chart_auto_follow = bool(self.chart_config.get("auto_follow", True))
-            default_view_mode = "tradingview" if TRADINGVIEW_EMBED_AVAILABLE and TradingViewWidget is not None else "original"
+            default_view_mode = "tradingview" if _tradingview_supported() else "original"
             self.chart_config.setdefault("view_mode", default_view_mode)
             self._restore_chart_controls_from_config()
             current_market_text = self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else "Futures"

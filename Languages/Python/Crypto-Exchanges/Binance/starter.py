@@ -1038,7 +1038,6 @@ class StarterWindow(QtWidgets.QWidget):
             
             # QtWebEngine suppression
             env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
-            
             # Inject flags to suppress QtWebEngine external process windows
             current_flags = env.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
             # --single-process is the critical fix here: it forces WebEngine to run in-thread
