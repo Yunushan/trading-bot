@@ -26,7 +26,7 @@ DEFAULT_CONFIG = {
     "symbols": ["BTCUSDT"],
     "intervals": ["1m"],
     "lookback": 200,
-    "leverage": 5,
+    "leverage": 20,
     "tif": "GTC",
     "gtd_minutes": 30,           # Only used when tif == 'GTD'
     "position_mode": "Hedge",    # "One-way" or "Hedge"
@@ -60,7 +60,10 @@ DEFAULT_CONFIG = {
     "indicator_flip_confirmation_bars": 2,
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "close_on_exit": False,
+    # Allow stacking long/short legs in hedge mode; per-indicator/interval closes will still target only
+    # the matching leg when a counter-signal arrives.
     "allow_opposite_positions": True,
+    "hedge_preserve_opposites": False,
     "indicators": {
         "ma":        {"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},
         "donchian":  {"enabled": False, "length": 20, "buy_value": None, "sell_value": None},
@@ -93,7 +96,7 @@ DEFAULT_CONFIG = {
         "assets_mode": "Single-Asset",
         "account_mode": "Classic Trading",
         "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
-        "leverage": 5,
+        "leverage": 20,
         "mdd_logic": MDD_LOGIC_DEFAULT,
         "template": copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT),
         "indicators": {},

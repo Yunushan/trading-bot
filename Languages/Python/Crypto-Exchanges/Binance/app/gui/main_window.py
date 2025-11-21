@@ -411,7 +411,10 @@ STARTER_FOREX_BROKERS = [
     },
 ]
 
-_REQUIREMENTS_PATH = _THIS_FILE.parents[3] / "requirements.txt"
+_REQUIREMENTS_PATHS = [
+    _THIS_FILE.parents[2] / "requirements.txt",
+    _THIS_FILE.parents[3] / "requirements.txt",
+]
 
 _DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "python-binance", "package": "python-binance"},
@@ -452,11 +455,57 @@ def _extract_requirement_name(line: str) -> str | None:
     return name_part or None
 
 
-def _dependency_targets_from_requirements() -> list[dict[str, str]]:
+def _iter_candidate_requirement_paths(config: dict | None = None) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path | None):
+        if path is None:
+            return
+        try:
+            resolved = Path(path).resolve()
+        except Exception:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        candidates.append(resolved)
+
+    base_path = _BASE_PROJECT_PATH
+    _add(base_path / "requirements.txt")
+    lang_rel = None
+    exch_rel = None
+    forex_rel = None
+    try:
+        if config:
+            lang_rel = LANGUAGE_PATHS.get(config.get("code_language"))
+            exch_rel = EXCHANGE_PATHS.get(config.get("selected_exchange"))
+            forex_rel = FOREX_BROKER_PATHS.get(config.get("selected_forex_broker"))
+    except Exception:
+        lang_rel = exch_rel = forex_rel = None
+
+    if lang_rel:
+        _add(base_path / lang_rel / "requirements.txt")
+        if exch_rel:
+            _add(base_path / lang_rel / exch_rel / "requirements.txt")
+        if forex_rel:
+            _add(base_path / lang_rel / forex_rel / "requirements.txt")
+    if exch_rel:
+        _add(base_path / exch_rel / "requirements.txt")
+
+    for legacy in _REQUIREMENTS_PATHS:
+        _add(legacy)
+
+    return candidates
+
+
+def _dependency_targets_from_requirements(paths: list[Path] | None = None) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     seen: set[str] = set()
-    path = _REQUIREMENTS_PATH
-    if path.is_file():
+    paths_to_check = paths or _REQUIREMENTS_PATHS
+    for path in paths_to_check:
+        if not path.is_file():
+            continue
         try:
             with path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -466,7 +515,7 @@ def _dependency_targets_from_requirements() -> list[dict[str, str]]:
                     entries.append({"label": pkg_name, "package": pkg_name})
                     seen.add(pkg_name)
         except Exception:
-            entries = []
+            continue
     if not entries:
         return copy.deepcopy(_DEFAULT_DEPENDENCY_VERSION_TARGETS)
     return entries
@@ -1408,9 +1457,10 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
     return deduped_results, interval_map
 
 
-def _collect_dependency_versions() -> list[tuple[str, str, str]]:
+def _collect_dependency_versions(targets: list[dict[str, str]] | None = None) -> list[tuple[str, str, str]]:
     versions: list[tuple[str, str, str]] = []
-    for target in DEPENDENCY_VERSION_TARGETS:
+    target_list = targets or DEPENDENCY_VERSION_TARGETS
+    for target in target_list:
         label = target["label"]
         installed_version = None
         if target.get("custom") == "qt":
@@ -2395,8 +2445,8 @@ class MainWindow(QtWidgets.QWidget):
             default_symbol = self._futures_display_symbol(default_symbol)
         self.chart_config.setdefault("symbol", default_symbol)
         self.chart_config.setdefault("interval", (default_intervals[0] if default_intervals else "1h"))
-        # Default to Original view to keep the switch lightweight; TradingView stays opt-in
-        default_view_mode = "original"
+        # Default to TradingView when available so the chart tab opens directly in TradingView mode.
+        default_view_mode = "tradingview" if _tradingview_supported() and not _DISABLE_TRADINGVIEW and not _DISABLE_CHARTS else "original"
         self.chart_config.setdefault("view_mode", default_view_mode)
         try:
             if self._normalize_chart_market(self.chart_config.get("market")) == "Futures":
@@ -6259,13 +6309,27 @@ class MainWindow(QtWidgets.QWidget):
                 pass
         self.chart_view_mode_combo.addItem("Original", "original")
 
-        requested_mode = str(self.chart_config.get("view_mode") or "").strip().lower()
-        if requested_mode not in ("tradingview", "original"):
-            requested_mode = "tradingview" if self._chart_view_tradingview_available else "original"
-        if requested_mode == "tradingview" and not self._chart_view_tradingview_available:
-            requested_mode = "original"
-        self._pending_tradingview_mode = requested_mode == "tradingview" and self._chart_view_tradingview_available
-        self._apply_chart_view_mode(requested_mode, initial=True, allow_tradingview_init=False)
+        requested_mode = "tradingview" if self._chart_view_tradingview_available else "original"
+        self.chart_config["view_mode"] = requested_mode
+
+        self._pending_tradingview_mode = False
+        if self._chart_view_tradingview_available:
+            # Preload TradingView widget so switching to the chart tab feels instant.
+            try:
+                self._ensure_tradingview_widget()
+            except Exception:
+                pass
+        # Pre-select the combo box to TradingView so the UI reflects the active view.
+        try:
+            idx = self.chart_view_mode_combo.findData(requested_mode)
+            if idx >= 0:
+                blocker = QtCore.QSignalBlocker(self.chart_view_mode_combo)
+                self.chart_view_mode_combo.setCurrentIndex(idx)
+                del blocker
+        except Exception:
+            pass
+
+        self._apply_chart_view_mode(requested_mode, initial=True, allow_tradingview_init=True)
         self.chart_view_mode_combo.currentIndexChanged.connect(self._on_chart_view_mode_changed)
 
         self.chart_symbol_combo.currentTextChanged.connect(self._on_chart_controls_changed)
@@ -8922,9 +8986,21 @@ class MainWindow(QtWidgets.QWidget):
 
 def _init_code_language_tab(self):
     tab = QtWidgets.QWidget()
-    layout = QtWidgets.QVBoxLayout(tab)
+    outer_layout = QtWidgets.QVBoxLayout(tab)
+    outer_layout.setContentsMargins(0, 0, 0, 0)
+    outer_layout.setSpacing(0)
+
+    scroll = QtWidgets.QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    outer_layout.addWidget(scroll)
+
+    content = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(content)
     layout.setContentsMargins(10, 10, 10, 10)
     layout.setSpacing(12)
+    scroll.setWidget(content)
 
     description = QtWidgets.QLabel(
         "Select your preferred code language, crypto exchange, and forex broker. "
@@ -9050,6 +9126,9 @@ def _init_code_language_tab(self):
     layout.addWidget(status_widget)
 
     self._dep_version_labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel]] = {}
+    self._dep_version_targets: list[dict[str, str]] = _dependency_targets_from_requirements(
+        _iter_candidate_requirement_paths(self.config)
+    )
     versions_group = QtWidgets.QGroupBox("Environment Versions")
     versions_group.setSizePolicy(
         QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
@@ -9066,53 +9145,23 @@ def _init_code_language_tab(self):
     versions_layout.setColumnStretch(2, 3)
     versions_layout.setVerticalSpacing(8)
     versions_layout.setHorizontalSpacing(12)
-    header_dep = QtWidgets.QLabel("Dependency")
-    header_dep.setStyleSheet("font-weight: 600; font-size: 12px;")
-    header_inst = QtWidgets.QLabel("Installed")
-    header_inst.setStyleSheet("font-weight: 600; font-size: 12px;")
-    header_latest = QtWidgets.QLabel("Latest")
-    header_latest.setStyleSheet("font-weight: 600; font-size: 12px;")
-    versions_layout.addWidget(header_dep, 0, 0)
-    versions_layout.addWidget(header_inst, 0, 1)
-    versions_layout.addWidget(header_latest, 0, 2)
-    for row, target in enumerate(DEPENDENCY_VERSION_TARGETS, start=1):
-        label_widget = QtWidgets.QLabel(target["label"])
-        label_widget.setStyleSheet("font-weight: 600; font-size: 11px; padding: 2px;")
-        label_widget.setMinimumHeight(20)
-        installed_widget = QtWidgets.QLabel("Checking...")
-        installed_widget.setStyleSheet("font-size: 11px; padding: 2px;")
-        installed_widget.setMinimumHeight(20)
-        installed_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        latest_widget = QtWidgets.QLabel("Checking...")
-        latest_widget.setStyleSheet("font-size: 11px; padding: 2px;")
-        latest_widget.setMinimumHeight(20)
-        latest_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        versions_layout.addWidget(label_widget, row, 0)
-        versions_layout.addWidget(installed_widget, row, 1)
-        versions_layout.addWidget(latest_widget, row, 2)
-        self._dep_version_labels[target["label"]] = (installed_widget, latest_widget)
 
     versions_scroll = QtWidgets.QScrollArea()
     versions_scroll.setWidgetResizable(True)
     versions_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     versions_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     versions_scroll.setWidget(versions_container)
-    # Size the scroll area so all dependencies are usually visible without scrolling.
-    rows = len(DEPENDENCY_VERSION_TARGETS) + 1  # +1 for header
-    row_height = 26
-    target_height = rows * row_height + 32
-    versions_container.setMinimumHeight(target_height)
-    versions_scroll.setMinimumHeight(min(700, max(420, target_height)))
     versions_scroll.setSizePolicy(
         QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
     )
-    try:
-        versions_scroll.verticalScrollBar().setValue(0)
-    except Exception:
-        pass
-    versions_group_layout.addWidget(versions_scroll, 1)
 
-    versions_group.setMinimumHeight(min(800, max(480, target_height + 60)))
+    self._dep_versions_container = versions_container
+    self._dep_versions_layout = versions_layout
+    self._dep_versions_scroll = versions_scroll
+    self._dep_versions_group = versions_group
+    self._rebuild_dependency_version_rows(self._dep_version_targets)
+
+    versions_group_layout.addWidget(versions_scroll, 1)
     layout.addWidget(versions_group, 1)
     version_btn_row = QtWidgets.QHBoxLayout()
     version_btn_row.addStretch()
@@ -9225,13 +9274,93 @@ def _refresh_code_tab_from_config(self) -> None:
     for key, card in forex_cards.items():
         card.setSelected(selected_forex is not None and key == selected_forex)
     self._update_code_tab_market_sections()
+    self._refresh_dependency_versions()
+
+
+def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None = None) -> None:
+    layout = getattr(self, "_dep_versions_layout", None)
+    container = getattr(self, "_dep_versions_container", None)
+    scroll = getattr(self, "_dep_versions_scroll", None)
+    group = getattr(self, "_dep_versions_group", None)
+    target_list = targets or getattr(self, "_dep_version_targets", []) or []
+    if layout is None or container is None or group is None:
+        return
+
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.deleteLater()
+
+    header_dep = QtWidgets.QLabel("Dependency")
+    header_dep.setStyleSheet("font-weight: 600; font-size: 12px;")
+    header_inst = QtWidgets.QLabel("Installed")
+    header_inst.setStyleSheet("font-weight: 600; font-size: 12px;")
+    header_latest = QtWidgets.QLabel("Latest")
+    header_latest.setStyleSheet("font-weight: 600; font-size: 12px;")
+    layout.addWidget(header_dep, 0, 0)
+    layout.addWidget(header_inst, 0, 1)
+    layout.addWidget(header_latest, 0, 2)
+
+    labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel]] = {}
+    for row, target in enumerate(target_list, start=1):
+        label_widget = QtWidgets.QLabel(target["label"])
+        label_widget.setStyleSheet("font-weight: 600; font-size: 11px; padding: 2px;")
+        label_widget.setMinimumHeight(20)
+
+        installed_widget = QtWidgets.QLabel("Checking...")
+        installed_widget.setStyleSheet("font-size: 11px; padding: 2px;")
+        installed_widget.setMinimumHeight(20)
+        installed_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        latest_widget = QtWidgets.QLabel("Checking...")
+        latest_widget.setStyleSheet("font-size: 11px; padding: 2px;")
+        latest_widget.setMinimumHeight(20)
+        latest_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        layout.addWidget(label_widget, row, 0)
+        layout.addWidget(installed_widget, row, 1)
+        layout.addWidget(latest_widget, row, 2)
+        labels[target["label"]] = (installed_widget, latest_widget)
+
+    self._dep_version_labels = labels
+    self._dep_version_targets = list(target_list)
+
+    rows = len(target_list) + 1  # +1 for header
+    try:
+        fm = container.fontMetrics()
+        row_height = max(30, fm.height() + 12)
+    except Exception:
+        row_height = 30
+    target_height = rows * row_height + 32
+    try:
+        container.setMinimumHeight(target_height)
+        group.setMinimumHeight(min(800, max(480, target_height + 60)))
+    except Exception:
+        pass
+
+    if scroll is not None:
+        scroll.setMinimumHeight(min(720, max(420, target_height)))
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        try:
+            scroll.verticalScrollBar().setValue(0)
+        except Exception:
+            pass
 
 
 def _refresh_dependency_versions(self) -> None:
+    try:
+        resolved_targets = _dependency_targets_from_requirements(_iter_candidate_requirement_paths(self.config))
+    except Exception:
+        resolved_targets = copy.deepcopy(DEPENDENCY_VERSION_TARGETS)
+    if resolved_targets and resolved_targets != getattr(self, "_dep_version_targets", None):
+        self._rebuild_dependency_version_rows(resolved_targets)
+
     labels = getattr(self, "_dep_version_labels", None)
+    targets = getattr(self, "_dep_version_targets", None)
     if not labels:
         return
-    for label, installed, latest in _collect_dependency_versions():
+    for label, installed, latest in _collect_dependency_versions(targets):
         widgets = labels.get(label)
         if widgets is None:
             continue
@@ -11128,6 +11257,7 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
         _emit_entries(rec, sym, side_key, meta_items)
 
     grouped: dict[tuple[str, str, str, tuple[str, ...]], dict[str, list[dict]]] = {}
+    dedupe_tracker: dict[tuple[str, str, str, tuple[str, ...]], set[tuple]] = {}
     for entry in raw_records:
         try:
             symbol_key = str(entry.get("symbol") or "").strip().upper()
@@ -11141,9 +11271,24 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                 )
             )
             status_key = str(entry.get("status") or "").strip().lower() or "active"
-            bucket = grouped.setdefault((symbol_key, side_key, interval_key, indicators_tuple), {})
+            group_key = (symbol_key, side_key, interval_key, indicators_tuple)
+            bucket = grouped.setdefault(group_key, {})
             status_bucket = bucket.setdefault(status_key, [])
             aggregate_key = entry.get("_aggregate_key")
+
+            # Stronger duplicate guard: collapse identical slot records even when aggregate_key differs.
+            data = entry.get("data") or {}
+            dedupe_key = (
+                status_key,
+                str(entry.get("open_time") or data.get("open_time") or "").strip(),
+                str(entry.get("close_time") or data.get("close_time") or "").strip(),
+                round(float(data.get("qty") or 0.0), 10),
+            )
+            seen = dedupe_tracker.setdefault(group_key, set())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
             if aggregate_key and any(existing.get("_aggregate_key") == aggregate_key for existing in status_bucket):
                 continue
             status_bucket.append(entry)
@@ -11328,6 +11473,19 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
 
 def _mw_render_positions_table(self):
     try:
+        table = self.pos_table
+        updates_prev = None
+        signals_prev = None
+        try:
+            updates_prev = table.updatesEnabled()
+            table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(table, "blockSignals"):
+                signals_prev = table.blockSignals(True)
+        except Exception:
+            pass
         open_records = getattr(self, "_open_position_records", {}) or {}
         closed_records = getattr(self, "_closed_position_records", []) or []
         view_mode = getattr(self, "_positions_view_mode", "cumulative")
@@ -11689,10 +11847,6 @@ def _mw_render_positions_table(self):
                 if str(status_txt).strip().lower() != 'active':
                     btn.setEnabled(False)
                 self.pos_table.setCellWidget(row, POS_CLOSE_COLUMN, btn)
-                try:
-                    self.pos_table.resizeRowToContents(row)
-                except Exception:
-                    pass
             except Exception:
                 pass
         summary_margin = total_margin if total_margin > 0.0 else None
@@ -11736,6 +11890,16 @@ def _mw_render_positions_table(self):
         try:
             self._last_positions_table_snapshot = snapshot_key
             self._last_positions_table_totals = (total_pnl if pnl_has_value else None, summary_margin)
+        except Exception:
+            pass
+        try:
+            if hasattr(self.pos_table, "blockSignals"):
+                self.pos_table.blockSignals(signals_prev if signals_prev is not None else False)
+        except Exception:
+            pass
+        try:
+            if updates_prev is not None:
+                self.pos_table.setUpdatesEnabled(updates_prev)
         except Exception:
             pass
 
@@ -12878,6 +13042,7 @@ try:
     MainWindow._init_code_language_tab = _init_code_language_tab
     MainWindow._sync_language_exchange_lists_from_config = _sync_language_exchange_lists_from_config
     MainWindow._ensure_language_exchange_paths = _ensure_language_exchange_paths
+    MainWindow._rebuild_dependency_version_rows = _rebuild_dependency_version_rows
     MainWindow._refresh_dependency_versions = _refresh_dependency_versions
     MainWindow._on_code_language_changed = _on_code_language_changed
     MainWindow._on_exchange_selection_changed = _on_exchange_selection_changed
