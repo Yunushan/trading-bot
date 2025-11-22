@@ -20,6 +20,7 @@ class IntervalPositionGuard:
         self.strict_symbol_side: bool = bool(strict_symbol_side)
         self.allow_opposite: bool = False
         self._bw = None  # late-attached binance wrapper
+        self.block_new: bool = False  # when stopping, disallow new opens immediately
         self._lock = threading.RLock()
 
     # ----- lifecycle / integration
@@ -32,6 +33,7 @@ class IntervalPositionGuard:
             self.ledger.clear()
             self.pending_attempts.clear()
             self.active.clear()
+            self.block_new = False
 
     # ----- internal
     def _expire_old_unlocked(self) -> None:
@@ -176,17 +178,31 @@ class IntervalPositionGuard:
             entry["__legacy__"] = time.time()
 
     # in-flight coalescer
+    def _pending_ttl(self, ttl: float) -> float:
+        """Shorten coalescing TTL on slower/demo environments so attempts don't stay queued too long."""
+        try:
+            bw = getattr(self, "_bw", None)
+            mode_text = str(getattr(bw, "mode", "") or "").lower()
+            if "demo" in mode_text or "test" in mode_text:
+                return min(12.0, float(ttl) if ttl is not None else 45.0)
+        except Exception:
+            pass
+        return float(ttl) if ttl is not None else 45.0
+
     def begin_open(self, symbol: str, interval: str, side: str, ttl: float=45.0, context: str | None = None) -> bool:
         sym = (symbol or '').upper()
         iv = interval or ''
         sd = (side or '').upper()
         now = time.time()
         ctx = str(context) if context is not None else "__legacy__"
+        ttl_use = self._pending_ttl(ttl)
         with self._lock:
+            if self.block_new:
+                return False
             self._expire_old_unlocked()
             # purge old attempts
             for k,(ts,_iv) in list(self.pending_attempts.items()):
-                if now - ts > float(ttl):
+                if now - ts > float(ttl_use):
                     self.pending_attempts.pop(k, None)
             key = (sym, sd, ctx)
             pending = self.pending_attempts.get(key)
@@ -214,6 +230,17 @@ class IntervalPositionGuard:
                 ctx_map[ctx] = time.time()
                 if is_new:
                     self._record_active(sym, interval or '', sd, delta=1)
+
+    def pause_new(self) -> None:
+        """Temporarily block new opens and clear pending attempts (used when stopping)."""
+        with self._lock:
+            self.block_new = True
+            self.pending_attempts.clear()
+
+    def resume_new(self) -> None:
+        """Allow new opens again."""
+        with self._lock:
+            self.block_new = False
 
     def snapshot_pending_attempts(self) -> List[dict]:
         """

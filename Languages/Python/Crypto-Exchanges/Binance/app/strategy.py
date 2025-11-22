@@ -2726,6 +2726,19 @@ class StrategyEngine:
     def stopped(self):
         return self._stop
 
+    def stop_blocking(self, timeout: float | None = 3.0):
+        """Signal stop and wait briefly for the thread to exit without hanging the UI."""
+        try:
+            self.stop()
+        except Exception:
+            pass
+        t = getattr(self, "_thread", None)
+        if t is not None:
+            try:
+                t.join(timeout=timeout if timeout is not None else 0.0)
+            except Exception:
+                pass
+
     def is_alive(self):
         try:
             thread = getattr(self, '_thread', None)
@@ -2800,6 +2813,15 @@ class StrategyEngine:
         warn_oneway_needed = bool(indicator_tokens and allow_opposite_requested and not dual)
         allow_hedge_scope_only = bool(allow_opposite_requested)
         strict_flip_guard = coerce_bool(self.config.get("strict_indicator_flip_enforcement"), True)
+        # Safety: in dual-side hedge accounts, never issue a broad symbol close without indicator/sig context.
+        if dual and not indicator_tokens and not signature_hint_tokens:
+            try:
+                self.log(
+                    f"{symbol}@{interval_norm or 'default'} close-opposite skipped (hedge scope missing)."
+                )
+            except Exception:
+                pass
+            return True
 
         # Hedge isolation: only close opposite legs when we have an explicit indicator+signature scope.
         if allow_opposite_requested:
@@ -6148,10 +6170,11 @@ class StrategyEngine:
                     except Exception:
                         min_required_margin = max(min_required_margin, 0.0)
                     if min_required_margin > 0.0 and min_required_margin > indicator_soft_cap + 1e-9:
+                        # Respect allocation: if min order margin is above our cap, skip instead of oversizing.
                         self.log(
                             f"{cw['symbol']}@{cw.get('interval')} sizing blocked: minimum contract margin {min_required_margin:.4f} "
                             f"exceeds cap {max_indicator_margin:.4f} USDT (soft cap {indicator_soft_cap:.4f}) for {slot_label} "
-                            f"({pct*100:.2f}% margin target)."
+                            f"({pct*100:.2f}% margin target). Skipping trade to avoid oversizing."
                         )
                         _guard_abort()
                         return
@@ -6289,6 +6312,14 @@ class StrategyEngine:
                                 return
                         except Exception:
                             pass
+                    # If a stop was requested after guard reservation but before order submit, abort immediately.
+                    if self.stopped():
+                        if guard_obj and hasattr(guard_obj, "end_open"):
+                            try:
+                                guard_obj.end_open(cw['symbol'], cw.get('interval'), guard_side, False, context=context_key)
+                            except Exception:
+                                pass
+                        return
                     try:
                         order_attempts = 0
                         order_success = False

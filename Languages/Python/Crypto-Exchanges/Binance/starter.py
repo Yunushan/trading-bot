@@ -12,10 +12,10 @@ from datetime import datetime
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 _chromium_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
 _dns_guard_flags = "--dns-prefetch-disable --disable-features=WinUseBrowserSignal"
-if _dns_guard_flags not in _chromium_flags:
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-        f"{_chromium_flags} {_dns_guard_flags}".strip()
-    )
+_gpu_flags = "--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy --use-gl=angle"
+if _dns_guard_flags not in _chromium_flags or _gpu_flags not in _chromium_flags:
+    merged_flags = f"{_chromium_flags} {_dns_guard_flags} {_gpu_flags}".strip()
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = merged_flags
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -1038,14 +1038,10 @@ class StarterWindow(QtWidgets.QWidget):
             
             # QtWebEngine suppression
             env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
-            # Inject flags to suppress QtWebEngine external process windows
+            # Inject flags to suppress QtWebEngine helper surface while keeping GPU on for TradingView
             current_flags = env.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-            # --single-process is the critical fix here: it forces WebEngine to run in-thread
-            # rather than spawning 4-5 helper processes that appear as tiny windows.
             extra_flags = (
-                "--single-process "
                 "--no-sandbox "
-                "--disable-gpu "
                 "--disable-logging "
                 "--window-position=-10000,-10000"
             )

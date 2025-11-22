@@ -11,12 +11,35 @@ def _floor_to_step(qty: float, step: float) -> float:
         return qty
     return math.floor(qty / step) * step
 
-def _get_lot_step(binance, sym: str) -> float:
+def _get_lot_limits(binance, sym: str) -> tuple[float, float, float]:
     try:
         f = binance.get_symbol_filters(sym)
-        return float((f.get('LOT_SIZE') or {}).get('stepSize') or 0.0)
+        lot = f.get("LOT_SIZE") or {}
+        step = float(lot.get("stepSize") or 0.0)
+        min_qty = float(lot.get("minQty") or 0.0)
+        max_qty = float(lot.get("maxQty") or 0.0)
+        return step, min_qty, max_qty
     except Exception:
-        return 0.0
+        return 0.0, 0.0, 0.0
+
+def _quantize_qty(qty_raw: float, step: float, min_qty: float, max_qty: float) -> float:
+    qty = float(qty_raw)
+    if max_qty > 0 and qty > max_qty:
+        qty = max_qty
+    try:
+        if step > 0:
+            dec_qty = Decimal(str(qty))
+            dec_step = Decimal(str(step))
+            qty = float((dec_qty // dec_step) * dec_step)
+    except Exception:
+        qty = _floor_to_step(qty, step)
+    if qty <= 0.0 and qty_raw > 0.0:
+        qty = qty_raw
+    if qty < min_qty and min_qty > 0:
+        qty = min_qty
+    if max_qty > 0 and qty > max_qty:
+        qty = max_qty
+    return max(qty, 0.0)
 
 def _cancel_all(binance, sym: str):
     try:
@@ -96,27 +119,19 @@ def close_all_futures_positions(binance) -> List[Dict[str, Any]]:
                     continue
                 side = 'SELL' if amt > 0 else 'BUY'
                 qty_raw = abs(amt)
-                step = _get_lot_step(binance, sym)
-                if step > 0:
-                    try:
-                        dec_qty = Decimal(str(qty_raw))
-                        dec_step = Decimal(str(step))
-                        quantized = (dec_qty // dec_step) * dec_step
-                        if quantized > 0:
-                            qty_str = format(quantized.normalize(), 'f')
-                        else:
-                            qty_str = format(dec_qty.normalize(), 'f')
-                    except Exception:
-                        qty_str = f"{qty_raw:.8f}"
-                else:
-                    qty_str = f"{qty_raw:.8f}"
+                step, min_qty, max_qty = _get_lot_limits(binance, sym)
+                qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
+                qty_str = f"{qty_float:.8f}"
+                # First attempt a closePosition order to bypass filter edge cases.
+                close_params = dict(symbol=sym, side=side, type='MARKET', closePosition=True)
+                if dual:
+                    close_params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
                 try:
-                    qty_float = float(qty_str)
-                except Exception:
-                    qty_float = qty_raw
-                if qty_float <= 0:
-                    qty_str = f"{qty_raw:.8f}"
-                    qty_float = qty_raw
+                    od = binance.client.futures_create_order(**close_params)
+                    results.append({'ok': True, 'symbol': sym, 'info': od, 'method': 'closePosition'})
+                    continue
+                except Exception as e:
+                    err_msg = str(e)
                 _cancel_all(binance, sym)
                 params = dict(symbol=sym, side=side, type='MARKET')
                 if dual:

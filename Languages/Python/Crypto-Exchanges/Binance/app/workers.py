@@ -9,20 +9,28 @@ class StopWorker(QThread):
     progress_signal = pyqtSignal(str)
     finished_ok = pyqtSignal(bool)
 
-    def __init__(self, strategy_threads: dict, binance_wrapper, close_only: bool=False):
+    def __init__(self, strategy_threads: dict, binance_wrapper, close_only: bool=False, guard=None):
         super().__init__()
         self.strategy_threads = strategy_threads or {}
         self.binance_wrapper = binance_wrapper
         self.close_only = bool(close_only)
+        self.guard = guard
 
     def _stop_threads(self) -> bool:
         try:
             if self.close_only:
                 return True
             threads = self.strategy_threads or {}
+            try:
+                guard = getattr(self, "guard", None)
+                if guard and hasattr(guard, "pause_new"):
+                    guard.pause_new()
+            except Exception:
+                pass
             for key, t in list(threads.items()):
                 try:
-                    if hasattr(t, "stop"): t.stop()
+                    if hasattr(t, "stop_blocking"): t.stop_blocking(timeout=2.5)
+                    elif hasattr(t, "stop"): t.stop()
                 except Exception: pass
             for key, t in list(threads.items()):
                 try:
@@ -130,10 +138,12 @@ class StartWorker(QThread):
                 try:
                     if hasattr(self.guard, 'attach_wrapper'): self.guard.attach_wrapper(self.bw)
                     if hasattr(self.guard, 'reset'): self.guard.reset()
+                    if hasattr(self.guard, 'resume_new'): self.guard.resume_new()
                     if hasattr(self.guard, 'reconcile_with_exchange'): self.guard.reconcile_with_exchange(self.bw, self.jobs, account_type=getattr(self.bw,'account_type','FUTURES'))
                 except Exception as _e:
                     self.log_signal.emit(f"Guard prep error: {_e}")
                 if hasattr(self.guard, "reset"): self.guard.reset()
+                if hasattr(self.guard, "resume_new"): self.guard.resume_new()
                 if hasattr(self.guard, "reconcile_with_exchange"):
                     self.guard.reconcile_with_exchange(self.bw, self.jobs, account_type=getattr(self.bw, 'account_type', 'Futures'))
             except Exception as e:

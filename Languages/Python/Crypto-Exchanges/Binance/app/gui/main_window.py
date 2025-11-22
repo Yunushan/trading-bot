@@ -2381,7 +2381,8 @@ class MainWindow(QtWidgets.QWidget):
         self._session_marker_active = False
         self._auto_close_on_restart_triggered = False
         self._ui_initialized = False
-        self.guard = IntervalPositionGuard(stale_ttl_sec=0, strict_symbol_side=False)
+        # Keep pending-attempt TTL finite to avoid stale queue entries delaying orders (esp. on testnet).
+        self.guard = IntervalPositionGuard(stale_ttl_sec=90, strict_symbol_side=False)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.config.setdefault('theme', 'Dark')
@@ -7493,6 +7494,15 @@ class MainWindow(QtWidgets.QWidget):
     def load_chart(self, auto: bool = False):
         if not getattr(self, "chart_enabled", False):
             return
+        # Throttle auto refreshes to avoid spamming TradingView reloads (which are heavy).
+        try:
+            now_ts = time.monotonic()
+            last_ts = float(getattr(self, "_last_chart_load_ts", 0.0) or 0.0)
+            min_gap = 5.0 if auto else 0.0
+            if auto and now_ts - last_ts < min_gap:
+                return
+        except Exception:
+            pass
         view = getattr(self, "chart_view", None)
         if view is None:
             if not auto:
@@ -7541,6 +7551,10 @@ class MainWindow(QtWidgets.QWidget):
             self._chart_pending_initial_load = False
             try:
                 view.set_chart(tv_symbol, interval_code, theme=theme_code, timezone="Etc/UTC")
+                try:
+                    self._last_chart_load_ts = time.monotonic()
+                except Exception:
+                    pass
                 self.chart_config["symbol"] = symbol_text
                 self.chart_config["interval"] = interval_text
                 self.chart_config["market"] = market_text
@@ -7695,9 +7709,9 @@ class MainWindow(QtWidgets.QWidget):
 
         grid.addWidget(QtWidgets.QLabel("Theme:"), 0, 4)
         self.theme_combo = QtWidgets.QComboBox()
-        self.theme_combo.addItems(["Light", "Dark"])
-        current_theme = self.config.get("theme") or "Dark"
-        if current_theme not in ("Light", "Dark"):
+        self.theme_combo.addItems(["Light", "Dark", "Blue", "Yellow", "Green", "Red"])
+        current_theme = (self.config.get("theme") or "Dark").title()
+        if current_theme not in {"Light", "Dark", "Blue", "Yellow", "Green", "Red"}:
             current_theme = "Dark"
         self.theme_combo.setCurrentText(current_theme)
         self.theme_combo.currentTextChanged.connect(self.apply_theme)
@@ -7808,12 +7822,36 @@ class MainWindow(QtWidgets.QWidget):
         self.gtd_minutes_spin.setRange(1, 1440)
         self.gtd_minutes_spin.setValue(self.config.get("gtd_minutes", 30))
         self.gtd_minutes_spin.setSuffix(" min (GTD)")
+        self.gtd_minutes_spin.setEnabled(False)
+        self.gtd_minutes_spin.setReadOnly(True)
+        try:
+            self.gtd_minutes_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+        except Exception:
+            pass
+        self.gtd_minutes_spin.setStyleSheet(
+            "QSpinBox { color: #5a5f70; background: #141824; }"
+            "QSpinBox:disabled { color: #5a5f70; background: #141824; }"
+        )
         grid.addWidget(self.gtd_minutes_spin, 3, 4)
         # Show GTD minutes only when TIF == 'GTD'
         def _update_gtd_visibility(text:str):
             is_gtd = (text == 'GTD')
-            self.gtd_minutes_spin.setVisible(is_gtd)
+            # Keep visible but disable when not GTD
             self.gtd_minutes_spin.setEnabled(is_gtd)
+            self.gtd_minutes_spin.setReadOnly(not is_gtd)
+            try:
+                self.gtd_minutes_spin.setButtonSymbols(
+                    QtWidgets.QAbstractSpinBox.ButtonSymbols.UpDownArrows if is_gtd else QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons
+                )
+            except Exception:
+                pass
+            if is_gtd:
+                self.gtd_minutes_spin.setStyleSheet("")
+            else:
+                self.gtd_minutes_spin.setStyleSheet(
+                    "QSpinBox { color: #5a5f70; background: #141824; }"
+                    "QSpinBox:disabled { color: #5a5f70; background: #141824; }"
+                )
         self.tif_combo.currentTextChanged.connect(_update_gtd_visibility)
         _update_gtd_visibility(self.tif_combo.currentText())
 
@@ -7986,9 +8024,29 @@ class MainWindow(QtWidgets.QWidget):
         )
         g.addWidget(self.cb_stop_without_close, 4, 0, 1, 6)
 
-        self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All On Window Close")
-        initial_close = bool(self.config.get('close_on_exit', False))
-        self.cb_close_on_exit.setChecked(initial_close)
+        self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All Active Positions On Window Close (Working in progress)")
+        self.cb_close_on_exit.setChecked(False)
+        self.cb_close_on_exit.setEnabled(False)
+        self.cb_close_on_exit.setCheckable(False)
+        try:
+            self.cb_close_on_exit.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        except Exception:
+            pass
+        try:
+            pal = self.cb_close_on_exit.palette()
+            disabled_color = pal.color(QtGui.QPalette.ColorGroup.Disabled, QtGui.QPalette.ColorRole.Text)
+            pal.setColor(QtGui.QPalette.ColorRole.WindowText, disabled_color)
+            self.cb_close_on_exit.setPalette(pal)
+            # Also dim the box itself
+            pal.setColor(QtGui.QPalette.ColorRole.ButtonText, disabled_color)
+            pal.setColor(QtGui.QPalette.ColorRole.Text, disabled_color)
+            self.cb_close_on_exit.setPalette(pal)
+            self.cb_close_on_exit.setStyleSheet("color: #5a5f70;")
+        except Exception:
+            pass
+        self.cb_close_on_exit.setToolTip("Disabled while improvements are in progress.")
+        # Keep config off even if previous sessions stored True
+        self.config["close_on_exit"] = False
         self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
         g.addWidget(self.cb_close_on_exit, 5, 0, 1, 6)
 
@@ -7997,11 +8055,11 @@ class MainWindow(QtWidgets.QWidget):
         stop_cfg = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.config["stop_loss"] = stop_cfg
 
-        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 5, 0)
+        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 6, 0)
         self.stop_loss_enable_cb = QtWidgets.QCheckBox("Enable")
         self.stop_loss_enable_cb.setToolTip("Toggle automatic stop-loss handling for live trades.")
         self.stop_loss_enable_cb.setChecked(stop_cfg.get("enabled", False))
-        g.addWidget(self.stop_loss_enable_cb, 5, 1)
+        g.addWidget(self.stop_loss_enable_cb, 6, 1)
 
         self.stop_loss_mode_combo = QtWidgets.QComboBox()
         for mode_key in STOP_LOSS_MODE_ORDER:
@@ -8010,7 +8068,7 @@ class MainWindow(QtWidgets.QWidget):
         if mode_idx < 0:
             mode_idx = 0
         self.stop_loss_mode_combo.setCurrentIndex(mode_idx)
-        g.addWidget(self.stop_loss_mode_combo, 5, 2, 1, 2)
+        g.addWidget(self.stop_loss_mode_combo, 6, 2, 1, 2)
 
         self.stop_loss_usdt_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_usdt_spin.setRange(0.0, 1_000_000_000.0)
@@ -8018,7 +8076,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_usdt_spin.setSingleStep(1.0)
         self.stop_loss_usdt_spin.setSuffix(" USDT")
         self.stop_loss_usdt_spin.setValue(float(stop_cfg.get("usdt", 0.0)))
-        g.addWidget(self.stop_loss_usdt_spin, 5, 4)
+        g.addWidget(self.stop_loss_usdt_spin, 6, 4)
 
         self.stop_loss_percent_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_percent_spin.setRange(0.0, 100.0)
@@ -8026,7 +8084,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_percent_spin.setSingleStep(0.5)
         self.stop_loss_percent_spin.setSuffix(" %")
         self.stop_loss_percent_spin.setValue(float(stop_cfg.get("percent", 0.0)))
-        g.addWidget(self.stop_loss_percent_spin, 5, 5)
+        g.addWidget(self.stop_loss_percent_spin, 6, 5)
 
         self.stop_loss_scope_combo = QtWidgets.QComboBox()
         for scope_key in STOP_LOSS_SCOPE_OPTIONS:
@@ -8036,8 +8094,8 @@ class MainWindow(QtWidgets.QWidget):
         if scope_idx < 0:
             scope_idx = 0
         self.stop_loss_scope_combo.setCurrentIndex(scope_idx)
-        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 6, 0)
-        g.addWidget(self.stop_loss_scope_combo, 6, 1, 1, 2)
+        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 7, 0)
+        g.addWidget(self.stop_loss_scope_combo, 7, 1, 1, 2)
 
         # Strategy templates
         self._dashboard_templates = {
@@ -8075,7 +8133,7 @@ class MainWindow(QtWidgets.QWidget):
                 },
             },
         }
-        g.addWidget(QtWidgets.QLabel("Template:"), 7, 0)
+        g.addWidget(QtWidgets.QLabel("Template:"), 8, 0)
         self.template_combo = QtWidgets.QComboBox()
         self.template_combo.addItem("No Template", "")
         for key, info in self._dashboard_templates.items():
@@ -8086,7 +8144,7 @@ class MainWindow(QtWidgets.QWidget):
             idx_template = 0
         self.template_combo.setCurrentIndex(idx_template)
         self.template_combo.currentIndexChanged.connect(self._on_dashboard_template_changed)
-        g.addWidget(self.template_combo, 7, 1, 1, 3)
+        g.addWidget(self.template_combo, 8, 1, 1, 3)
 
         self.stop_loss_enable_cb.toggled.connect(self._on_runtime_stop_loss_enabled)
         self.stop_loss_mode_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_mode_changed)
@@ -11853,7 +11911,12 @@ def _mw_render_positions_table(self):
         self._update_positions_pnl_summary(total_pnl if pnl_has_value else None, summary_margin)
         self._update_global_pnl_display(*self._compute_global_pnl_totals())
         try:
-            if getattr(self, "chart_enabled", False) and getattr(self, "chart_auto_follow", False) and not getattr(self, "_chart_manual_override", False):
+            if (
+                getattr(self, "chart_enabled", False)
+                and getattr(self, "chart_auto_follow", False)
+                and not getattr(self, "_chart_manual_override", False)
+                and self._is_chart_visible()
+            ):
                 self._sync_chart_to_active_positions()
         except Exception:
             pass
@@ -12677,12 +12740,18 @@ def start_strategy(self):
             pass
 
 
-def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
+def _stop_strategy_sync(self, close_positions: bool = True, auth: dict | None = None) -> dict:
     """Synchronous helper to stop engines and optionally close all positions."""
     result: dict = {"ok": True}
     try:
         try:
             self._is_stopping_engines = True
+        except Exception:
+            pass
+        try:
+            guard_obj = getattr(self, "guard", None)
+            if guard_obj and hasattr(guard_obj, "pause_new"):
+                guard_obj.pause_new()
         except Exception:
             pass
         engines = {}
@@ -12693,21 +12762,11 @@ def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
             self._is_stopping_engines = True
             for key, eng in engines.items():
                 try:
-                    eng.stop()
+                    eng.stop_blocking(timeout=2.5)
                 except Exception:
                     continue
-            try:
-                import time as _t
-                _t.sleep(0.05)
-            except Exception:
-                pass
             still_alive: list[str] = []
             for key, eng in engines.items():
-                try:
-                    if hasattr(eng, "join"):
-                        eng.join(timeout=2.5)
-                except Exception:
-                    pass
                 try:
                     alive = bool(getattr(eng, "is_alive", lambda: False)())
                 except Exception:
@@ -12729,21 +12788,14 @@ def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
         else:
             self.log("No engines to stop.")
 
-        shared = getattr(self, "shared_binance", None)
-        if shared is not None:
-            try:
-                setattr(shared, "_emergency_close_requested", False)
-                setattr(shared, "_network_emergency_dispatched", False)
-                setattr(shared, "_network_offline_hits", 0)
-                setattr(shared, "_network_offline", False)
-                setattr(shared, "_network_offline_since", 0.0)
-            except Exception:
-                pass
-
         close_result = None
         if close_positions:
             try:
-                close_result = self._close_all_positions_blocking()
+                # Always use a fresh wrapper for close-all to honor current mode (Live/Demo) and credentials.
+                if auth is None:
+                    auth = _snapshot_auth_state(self)
+                self.shared_binance = _build_wrapper_from_values(self, auth)
+                close_result = self._close_all_positions_blocking(auth=auth)
             except Exception as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
@@ -12767,6 +12819,7 @@ def _stop_strategy_sync(self, close_positions: bool = True) -> dict:
 
 def stop_strategy_async(self, close_positions: bool = False, blocking: bool = False):
     """Stop all StrategyEngine threads without auto-closing positions unless explicitly requested."""
+    auth_snapshot = _snapshot_auth_state(self) if close_positions else None
     def _process_stop_result(res):
         if not isinstance(res, dict):
             return res
@@ -12789,16 +12842,16 @@ def stop_strategy_async(self, close_positions: bool = False, blocking: bool = Fa
         return res
 
     if blocking:
-        return _process_stop_result(_stop_strategy_sync(self, close_positions=close_positions))
+        return _process_stop_result(_stop_strategy_sync(self, close_positions=close_positions, auth=auth_snapshot))
 
     try:
         from ..workers import CallWorker as _CallWorker
     except Exception:
         # fallback to synchronous if worker import fails
-        return _process_stop_result(_stop_strategy_sync(self, close_positions=close_positions))
+        return _process_stop_result(_stop_strategy_sync(self, close_positions=close_positions, auth=auth_snapshot))
 
     def _do():
-        return _stop_strategy_sync(self, close_positions=close_positions)
+        return _stop_strategy_sync(self, close_positions=close_positions, auth=auth_snapshot)
 
     def _done(res, err):
         if err:
@@ -13077,20 +13130,81 @@ try:
 except Exception:
     pass
 
-def _close_all_positions_sync(self):
+def _snapshot_auth_state(self) -> dict:
+    """Capture auth/mode state on the UI thread to avoid cross-thread UI access in workers."""
+    try:
+        api_key = self.api_key_edit.text().strip()
+    except Exception:
+        api_key = ""
+    try:
+        api_secret = self.api_secret_edit.text().strip()
+    except Exception:
+        api_secret = ""
+    try:
+        mode = self.mode_combo.currentText()
+    except Exception:
+        mode = "Live"
+    try:
+        account_type = self.account_combo.currentText()
+    except Exception:
+        account_type = "Futures"
+    try:
+        leverage_val = int(self.leverage_spin.value() or 1)
+    except Exception:
+        leverage_val = 1
+    try:
+        margin_mode = self.margin_mode_combo.currentText() or "Isolated"
+    except Exception:
+        margin_mode = "Isolated"
+    return {
+        "api_key": api_key,
+        "api_secret": api_secret,
+        "mode": mode,
+        "account_type": account_type,
+        "default_leverage": leverage_val,
+        "default_margin_mode": margin_mode,
+    }
+
+def _build_wrapper_from_values(self, auth: dict):
+    return self._create_binance_wrapper(
+        api_key=auth.get("api_key", ""),
+        api_secret=auth.get("api_secret", ""),
+        mode=auth.get("mode", "Live"),
+        account_type=auth.get("account_type", "Futures"),
+        default_leverage=int(auth.get("default_leverage", 1) or 1),
+        default_margin_mode=auth.get("default_margin_mode", "Isolated") or "Isolated",
+    )
+
+def _build_wrapper_from_ui(self):
+    """Always build a fresh wrapper using current UI values (mode, account, creds)."""
+    return _build_wrapper_from_values(self, _snapshot_auth_state(self))
+
+def _close_all_positions_sync(self, auth: dict | None = None):
     from ..close_all import close_all_futures_positions as _close_all_futures
-    if getattr(self, "shared_binance", None) is None:
-        self.shared_binance = self._create_binance_wrapper(
-            api_key=self.api_key_edit.text().strip(),
-            api_secret=self.api_secret_edit.text().strip(),
-            mode=self.mode_combo.currentText(),
-            account_type=self.account_combo.currentText(),
-            default_leverage=int(self.leverage_spin.value() or 1),
-            default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
-        )
-    acct_text = (self.account_combo.currentText() or '').upper()
+    # Rebuild wrapper each time so close-all uses latest mode/credentials even if launch-time wrapper was different.
+    if auth is None:
+        auth = _snapshot_auth_state(self)
+    self.shared_binance = _build_wrapper_from_values(self, auth)
+    acct_text = str(auth.get("account_type") or "").upper() or (self.account_combo.currentText().upper() if hasattr(self, "account_combo") else "")
     if acct_text.startswith('FUT'):
-        return _close_all_futures(self.shared_binance)
+        results = _close_all_futures(self.shared_binance) or []
+        # Verification loop: re-run close-all if any positions remain.
+        try:
+            for _ in range(3):
+                remaining = []
+                try:
+                    remaining = self.shared_binance.list_open_futures_positions(force_refresh=True) or []
+                except Exception:
+                    remaining = []
+                open_left = [p for p in remaining if abs(float(p.get("positionAmt") or 0.0)) > 0.0]
+                if not open_left:
+                    break
+                # Attempt another sweep
+                more = _close_all_futures(self.shared_binance) or []
+                results.extend(more)
+        except Exception:
+            pass
+        return results
     return self.shared_binance.close_all_spot_positions()
 
 def _handle_close_all_result(self, res):
@@ -13250,15 +13364,16 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
         pass
 
 
-def _close_all_positions_blocking(self):
-    return _close_all_positions_sync(self)
+def _close_all_positions_blocking(self, auth: dict | None = None):
+    return _close_all_positions_sync(self, auth=auth)
 
 def close_all_positions_async(self):
     """Close all open futures positions using reduce-only market orders in a worker."""
     try:
         from ..workers import CallWorker as _CallWorker
+        auth_snapshot = _snapshot_auth_state(self)
         def _do():
-            return _close_all_positions_sync(self)
+            return _close_all_positions_sync(self, auth=auth_snapshot)
         def _done(res, err):
             if err:
                 self.log(f"Close-all error: {err}")
@@ -13300,137 +13415,151 @@ except Exception:
 
 def update_balance_label(self):
     """Refresh the 'Total USDT balance' label safely after an order."""
+    from ..workers import CallWorker as _CallWorker
     btn = getattr(self, "refresh_balance_btn", None)
     old_btn_text = btn.text() if btn else None
-    total_balance_value = None
-    available_balance_value = None
-    try:
-        if btn:
+    if btn:
+        try:
             btn.setEnabled(False)
             btn.setText("Refreshing...")
-            try:
-                QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
-        try:
-            if getattr(self, "balance_label", None):
-                self.balance_label.setText("Refreshing...")
         except Exception:
             pass
+    try:
+        if getattr(self, "balance_label", None):
+            self.balance_label.setText("Refreshing...")
+    except Exception:
+        pass
 
-        if getattr(self, "shared_binance", None) is None:
-            api_key = ""
-            api_secret = ""
-            try:
-                if hasattr(self, "api_key_edit"):
-                    api_key = (self.api_key_edit.text() or "").strip()
-                if hasattr(self, "api_secret_edit"):
-                    api_secret = (self.api_secret_edit.text() or "").strip()
-            except Exception:
-                api_key = api_key or ""
-                api_secret = api_secret or ""
+    # Capture UI state up front (safe on UI thread).
+    try:
+        api_key = (self.api_key_edit.text() or "").strip()
+        api_secret = (self.api_secret_edit.text() or "").strip()
+    except Exception:
+        api_key = ""
+        api_secret = ""
+    try:
+        mode_value = getattr(self.mode_combo, "currentText", lambda: "Live")()
+    except Exception:
+        mode_value = "Live"
+    try:
+        account_value = getattr(self.account_combo, "currentText", lambda: "Futures")()
+    except Exception:
+        account_value = "Futures"
+    try:
+        default_leverage = int(self.leverage_spin.value() or 1)
+    except Exception:
+        default_leverage = 1
+    try:
+        default_margin_mode = self.margin_mode_combo.currentText() or "Isolated"
+    except Exception:
+        default_margin_mode = "Isolated"
 
-            if not api_key or not api_secret:
-                try:
-                    if getattr(self, "balance_label", None):
-                        self.balance_label.setText("API credentials missing")
-                except Exception:
-                    pass
-                self._update_positions_balance_labels(None, None)
-                return
-
+    if not api_key or not api_secret:
+        if getattr(self, "balance_label", None):
+            self.balance_label.setText("API credentials missing")
+        self._update_positions_balance_labels(None, None)
+        if btn:
             try:
-                default_leverage = int(self.leverage_spin.value() or 1)
-            except Exception:
-                default_leverage = 1
-            default_margin_mode = "Isolated"
-            try:
-                default_margin_mode = self.margin_mode_combo.currentText() or "Isolated"
+                btn.setEnabled(True)
+                if old_btn_text is not None:
+                    btn.setText(old_btn_text)
             except Exception:
                 pass
-            try:
-                mode_value = getattr(self.mode_combo, "currentText", lambda: "Live")()
-                account_value = getattr(self.account_combo, "currentText", lambda: "Futures")()
-                self.shared_binance = self._create_binance_wrapper(
-                    api_key=api_key,
-                    api_secret=api_secret,
-                    mode=mode_value,
-                    account_type=account_value,
-                    default_leverage=default_leverage,
-                    default_margin_mode=default_margin_mode,
-                )
-            except Exception as exc:
-                try:
-                    if getattr(self, "balance_label", None):
-                        self.balance_label.setText("Balance error")
-                    self.log(f"Balance setup error: {exc}")
-                except Exception:
-                    pass
-                self._update_positions_balance_labels(None, None)
-                return
+        return
 
+    def _do():
+        # Run network work off the UI thread to avoid freezing on bad credentials/slow responses.
+        wrapper = getattr(self, "shared_binance", None)
+        if wrapper is None:
+            wrapper = self._create_binance_wrapper(
+                api_key=api_key,
+                api_secret=api_secret,
+                mode=mode_value,
+                account_type=account_value,
+                default_leverage=default_leverage,
+                default_margin_mode=default_margin_mode,
+            )
+        total_balance_value = None
+        available_balance_value = None
         bal = 0.0
-        try:
-            account_text = (self.account_combo.currentText() or "").upper()
-        except Exception:
-            account_text = ""
-        try:
-            wrapper = getattr(self, "shared_binance", None)
-            if account_text.startswith("FUT"):
-                bal = float(wrapper.get_futures_balance_usdt(force_refresh=True) or 0.0)
+        acct_upper = str(account_value or "").upper()
+        if acct_upper.startswith("FUT"):
+            bal = float(wrapper.get_futures_balance_usdt(force_refresh=True) or 0.0)
+            try:
+                total_balance_value = float(wrapper.get_total_usdt_value(force_refresh=True) or bal)
+            except Exception:
+                total_balance_value = bal
+            try:
+                available_balance_value = float(wrapper.get_futures_available_balance(force_refresh=True) or total_balance_value)
+            except Exception:
+                available_balance_value = total_balance_value
+            if available_balance_value <= 0.0:
                 try:
-                    total_balance_value = float(wrapper.get_total_usdt_value(force_refresh=True) or bal)
-                except Exception:
-                    total_balance_value = bal
-                try:
-                    available_balance_value = float(wrapper.get_futures_available_balance(force_refresh=True) or total_balance_value)
+                    available_balance_value = float(wrapper.get_futures_balance_usdt(force_refresh=True) or total_balance_value)
                 except Exception:
                     available_balance_value = total_balance_value
-                if available_balance_value <= 0.0:
-                    try:
-                        available_balance_value = float(wrapper.get_futures_balance_usdt(force_refresh=True) or total_balance_value)
-                    except Exception:
-                        available_balance_value = total_balance_value
-            else:
-                bal = float(wrapper.get_spot_balance("USDT") or 0.0)
-                try:
-                    total_balance_value = float(wrapper.get_total_usdt_value() or bal)
-                except Exception:
-                    total_balance_value = bal
-                available_balance_value = bal
-        except Exception as exc:
+        else:
+            bal = float(wrapper.get_spot_balance("USDT") or 0.0)
             try:
-                self.log(f"Balance fetch error: {exc}")
+                total_balance_value = float(wrapper.get_total_usdt_value() or bal)
+            except Exception:
+                total_balance_value = bal
+            available_balance_value = bal
+        return {"total": total_balance_value, "available": available_balance_value, "bal": bal, "wrapper": wrapper}
+
+    def _done(res, err):
+        total_balance_value = None
+        available_balance_value = None
+        if err or not res:
+            try:
+                self.log(f"Balance error: {err or 'unknown error'}")
+            except Exception:
+                pass
+            try:
+                if getattr(self, "balance_label", None):
+                    self.balance_label.setText("Balance error")
+            except Exception:
+                pass
+            self._update_positions_balance_labels(None, None)
+        else:
+            total_balance_value = res.get("total")
+            available_balance_value = res.get("available")
+            bal = res.get("bal", 0.0)
+            try:
+                wrapper_obj = res.get("wrapper")
+                if wrapper_obj is not None:
+                    self.shared_binance = wrapper_obj
+            except Exception:
+                pass
+            try:
+                if getattr(self, "balance_label", None):
+                    total_txt = f"{(total_balance_value if total_balance_value is not None else bal):.3f}"
+                    avail_txt = f"{(available_balance_value if available_balance_value is not None else bal):.3f}"
+                    if abs(float(total_txt) - float(avail_txt)) > 1e-6:
+                        self.balance_label.setText(f"Total {total_txt} USDT | Available {avail_txt} USDT")
+                    else:
+                        self.balance_label.setText(f"{total_txt} USDT")
+            except Exception:
+                pass
+            try:
+                self._update_positions_balance_labels(total_balance_value, available_balance_value)
+            except Exception:
+                pass
+        if btn:
+            try:
+                btn.setEnabled(True)
+                if old_btn_text is not None:
+                    btn.setText(old_btn_text)
             except Exception:
                 pass
 
-        try:
-            if getattr(self, "balance_label", None):
-                total_txt = f"{(total_balance_value if total_balance_value is not None else bal):.3f}"
-                avail_txt = f"{(available_balance_value if available_balance_value is not None else bal):.3f}"
-                if abs(float(total_txt) - float(avail_txt)) > 1e-6:
-                    self.balance_label.setText(f"Total {total_txt} USDT | Available {avail_txt} USDT")
-                else:
-                    self.balance_label.setText(f"{total_txt} USDT")
-            self._update_positions_balance_labels(total_balance_value, available_balance_value)
-        except Exception:
-            # Fallback: log only
-            try:
-                self.log(f"Balance updated: total={total_balance_value} available={available_balance_value} (raw={bal})")
-            except Exception:
-                pass
-    except Exception as e:
-        try:
-            self.log(f"Balance label update error: {e}")
-        except Exception:
-            pass
-    finally:
-        if total_balance_value is None and available_balance_value is None:
-            self._update_positions_balance_labels(None, None)
-        if btn:
-            btn.setEnabled(True)
-            if old_btn_text is not None:
-                btn.setText(old_btn_text)
+    worker = _CallWorker(_do, parent=self)
+    try:
+        worker.progress.connect(self.log)
+    except Exception:
+        pass
+    worker.done.connect(_done)
+    worker.start()
 
 try:
     MainWindow.update_balance_label = update_balance_label
@@ -13486,27 +13615,7 @@ def closeEvent(self, event):
     close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
     should_wait = False
     if close_on_exit_enabled:
-        try:
-            should_wait = self._has_active_engines()
-        except Exception:
-            should_wait = False
-        if not should_wait:
-            try:
-                open_records = getattr(self, "_open_position_records", {}) or {}
-                for rec in open_records.values():
-                    data = rec.get("data") if isinstance(rec, dict) else {}
-                    qty_val = 0.0
-                    try:
-                        qty_val = abs(float((data or {}).get("qty") or 0.0))
-                    except Exception:
-                        qty_val = 0.0
-                    if qty_val > 0.0:
-                        should_wait = True
-                        break
-            except Exception:
-                should_wait = False
-
-    if should_wait:
+        # Always route through the close-on-exit sequence so loops stop and a popup is shown.
         event.ignore()
         self._begin_close_on_exit_sequence()
         return
@@ -13540,10 +13649,78 @@ except Exception:
 
 def _gui_apply_theme(self, name: str):
     theme = (name or '').strip().lower()
-    stylesheet = self.DARK_THEME if theme.startswith('dark') else self.LIGHT_THEME
-    self.setStyleSheet(stylesheet)
+    base_stylesheet = self.DARK_THEME if theme.startswith('dark') or theme in {"blue", "yellow", "green", "red"} else self.LIGHT_THEME
+
+    accents = {
+        "blue": "#2563eb",
+        "yellow": "#fbbf24",
+        "green": "#22c55e",
+        "red": "#ef4444",
+    }
+    accent = accents.get(theme)
+    accent_styles = ""
+    if accent:
+        try:
+            color = QtGui.QColor(accent)
+            hover = color.lighter(115).name()
+            pressed = color.darker(120).name()
+            accent_styles = f"""
+            /* Buttons */
+            QPushButton {{
+                background-color: {accent};
+                border: 1px solid {accent};
+                color: #ffffff;
+            }}
+            QPushButton:hover {{
+                background-color: {hover};
+                border-color: {hover};
+            }}
+            QPushButton:pressed {{
+                background-color: {pressed};
+                border-color: {pressed};
+            }}
+            /* Tool buttons */
+            QToolButton {{
+                background-color: {accent};
+                border: 1px solid {accent};
+                color: #ffffff;
+            }}
+            QToolButton:hover {{
+                background-color: {hover};
+                border-color: {hover};
+            }}
+            QToolButton:pressed {{
+                background-color: {pressed};
+                border-color: {pressed};
+            }}
+            /* Combo boxes */
+            QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
+                selection-background-color: {accent};
+                selection-color: #0c0f16;
+            }}
+            QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{
+                border: 1px solid {accent};
+            }}
+            QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
+                border: 1px solid {accent};
+                outline: none;
+            }}
+            QComboBox::drop-down {{
+                border-left: 1px solid {accent};
+                background-color: {accent};
+                width: 18px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {accent};
+            }}
+            """
+        except Exception:
+            accent_styles = ""
+
+    # Apply only stylesheet-based accents to avoid globally recoloring controls.
+    self.setStyleSheet(base_stylesheet + accent_styles)
     try:
-        self.config['theme'] = 'Dark' if theme.startswith('dark') else 'Light'
+        self.config['theme'] = name.title() if name else "Dark"
     except Exception:
         pass
 
@@ -14772,51 +14949,83 @@ def _derive_margin_snapshot(position: dict | None, qty_hint: float = 0.0, entry_
         maint_margin = margin_balance
     unrealized_loss = max(0.0, -unrealized_profit)
     return margin, margin_balance, maint_margin, unrealized_loss
-    def _begin_close_on_exit_sequence(self):
-        if getattr(self, "_close_in_progress", False):
-            return
-        self._close_in_progress = True
-        if not hasattr(self, "_bg_workers"):
-            self._bg_workers = []
+def _begin_close_on_exit_sequence(self):
+    if getattr(self, "_close_in_progress", False):
+        return
+    self._close_in_progress = True
+    auth_snapshot = _snapshot_auth_state(self)
+    if not hasattr(self, "_bg_workers"):
+        self._bg_workers = []
+    try:
+        message = QtWidgets.QMessageBox(self)
+        message.setWindowTitle("Closing Positions")
+        message.setText("Closing open positions before exit. Please wait.")
         try:
-            message = QtWidgets.QMessageBox(self)
-            message.setWindowTitle("Closing Positions")
-            message.setText("Closing open positions before exit. Please wait…")
-            try:
-                message.setIcon(QtWidgets.QMessageBox.Icon.Information)
-            except Exception:
-                pass
-            message.setStandardButtons(QtWidgets.QMessageBox.StandardButton.NoButton)
-            message.setModal(False)
-            message.show()
-            self._close_progress_dialog = message
+            message.setIcon(QtWidgets.QMessageBox.Icon.Information)
         except Exception:
-            self._close_progress_dialog = None
+            pass
+        message.setStandardButtons(QtWidgets.QMessageBox.StandardButton.NoButton)
+        message.setModal(False)
+        message.show()
+        self._close_progress_dialog = message
+    except Exception:
+        self._close_progress_dialog = None
 
-        def _do():
-            return _stop_strategy_sync(self, close_positions=True)
+    def _do():
+        return _stop_strategy_sync(self, close_positions=True, auth=auth_snapshot)
 
-        def _done(res, err):
+    def _done(res, err):
+        try:
+            if getattr(self, "_close_progress_dialog", None):
+                self._close_progress_dialog.close()
+        except Exception:
+            pass
+        self._close_progress_dialog = None
+        self._close_in_progress = False
+        def _positions_remaining() -> list:
             try:
-                if getattr(self, "_close_progress_dialog", None):
-                    self._close_progress_dialog.close()
+                acct_text = str(auth_snapshot.get("account_type") or "").upper()
+                if acct_text.startswith("FUT"):
+                    return [
+                        p for p in (self.shared_binance.list_open_futures_positions(force_refresh=True) or [])
+                        if abs(float(p.get("positionAmt") or 0.0)) > 0.0
+                    ]
+            except Exception:
+                return []
+            return []
+        if err:
+            try:
+                self.log(f"Stop error during exit: {err}")
             except Exception:
                 pass
-            self._close_progress_dialog = None
-            self._close_in_progress = False
-            if err:
+            remaining = _positions_remaining()
+            if remaining:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Close-all failed",
+                    "Some positions are still open. Please try closing them manually.",
+                )
+            return
+        else:
+            try:
+                if isinstance(res, dict) and res.get("close_all_result"):
+                    _handle_close_all_result(self, res.get("close_all_result"))
+            except Exception:
+                pass
+            remaining = _positions_remaining()
+            if remaining:
                 try:
-                    self.log(f"Stop error during exit: {err}")
+                    symbols_left = ", ".join(sorted({str(p.get('symbol') or '').upper() for p in remaining}))
                 except Exception:
-                    pass
-            else:
-                try:
-                    if isinstance(res, dict) and res.get("close_all_result"):
-                        _handle_close_all_result(self, res.get("close_all_result"))
-                except Exception:
-                    pass
-            self._force_close = True
-            QtWidgets.QWidget.close(self)
+                    symbols_left = "some positions"
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Positions still open",
+                    f"Could not close all positions automatically. Remaining: {symbols_left}. Please close manually.",
+                )
+                return
+        self._force_close = True
+        QtWidgets.QWidget.close(self)
 
         worker = CallWorker(_do, parent=self)
         try:

@@ -46,21 +46,24 @@ try:
                 pass
             os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
     
-    # Windows-specific QtWebEngine suppression to prevent helper process windows
+    # Windows-specific QtWebEngine tuning: keep GPU acceleration for TradingView
     if os.name == "nt":
         flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
-        flag_parts = [part for part in flags.split() if part]
-        # Critical flags to prevent window creation
-        windows_flags = [
-            "--single-process",  # Run everything in one process (no helpers)
-            "--no-sandbox",
+        flag_parts = [part for part in flags.split() if part and part not in {
+            "--single-process",
             "--disable-gpu",
             "--disable-software-rasterizer",
-            "--disable-gpu-process-crash-limit",
+            "--in-process-gpu",
+        }]
+        windows_flags = [
+            "--no-sandbox",
             "--disable-logging",
-            "--in-process-gpu",  # Force GPU in main process
             "--disable-renderer-backgrounding",
             "--disable-background-timer-throttling",
+            "--ignore-gpu-blocklist",
+            "--enable-gpu-rasterization",
+            "--enable-zero-copy",
+            "--use-gl=angle",
         ]
         for flag in windows_flags:
             if flag not in flag_parts:
@@ -73,7 +76,6 @@ except Exception:
 
 try:
     from PyQt6 import QtCore  # type: ignore[import]
-    QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 except Exception:
     pass

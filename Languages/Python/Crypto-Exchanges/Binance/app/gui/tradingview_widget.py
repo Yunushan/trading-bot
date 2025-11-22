@@ -134,6 +134,9 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
             pass
         try:
             self.settings().setAttribute(self.settings().WebAttribute.LocalStorageEnabled, True)
+            self.settings().setAttribute(self.settings().WebAttribute.Accelerated2dCanvasEnabled, True)
+            self.settings().setAttribute(self.settings().WebAttribute.WebGLEnabled, True)
+            self.settings().setAttribute(self.settings().WebAttribute.HyperlinkAuditingEnabled, False)
         except Exception:
             pass
         self._current_config: dict[str, str | list[str]] = {
@@ -145,6 +148,8 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
             "timeframes": self.DEFAULT_TIMEFRAMES,
         }
         self._rendered = False
+        self._render_pending = False
+        self._last_render_cfg: dict[str, str | list[str]] | None = None
         # DO NOT render immediately - defer until widget is shown
         # This prevents QtWebEngine from spawning helper processes during app startup
         # self._render()
@@ -152,9 +157,10 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
     def showEvent(self, event):
         """Render chart only when the widget is actually shown"""
         super().showEvent(event)
-        if not self._rendered:
-            self._rendered = True
+        if not self._rendered or self._render_pending:
+            self._render_pending = False
             self._render()
+            self._rendered = True
 
     def set_chart(
         self,
@@ -172,12 +178,18 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
             "timezone": timezone or "Etc/UTC",
             "locale": locale or "en",
         })
+        if not self.isVisible():
+            self._render_pending = True
+            return
         self._render()
 
     def apply_theme(self, theme: str) -> None:
         self._current_config["theme"] = (
             "light" if str(theme or "").lower().startswith("light") else "dark"
         )
+        if not self.isVisible():
+            self._render_pending = True
+            return
         self._render()
 
     # Ensure TradingView popups stay inside this view instead of spawning new windows
@@ -198,6 +210,9 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
     # Internal helpers -------------------------------------------------
     def _render(self) -> None:
         cfg = dict(self._current_config)
+        if self._last_render_cfg == cfg:
+            return
+        self._last_render_cfg = cfg
         html = _HTML_TEMPLATE.replace("__INIT_CONFIG__", json.dumps(cfg))
         self.setHtml(html, QtCore.QUrl("https://www.tradingview.com/"))
 
