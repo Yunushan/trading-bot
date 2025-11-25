@@ -383,10 +383,10 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _find_cpp_binance_executable(self) -> Path | None:
         candidate_names = {BINANCE_CPP_EXECUTABLE_BASENAME}
+        allowed_suffixes = {""}
         if sys.platform == "win32":
             candidate_names.add(f"{BINANCE_CPP_EXECUTABLE_BASENAME}.exe")
-        else:
-            candidate_names.add(BINANCE_CPP_EXECUTABLE_BASENAME)
+            allowed_suffixes.add(".exe")
 
         search_roots = [
             BINANCE_CPP_PROJECT,
@@ -421,11 +421,141 @@ class StarterWindow(QtWidgets.QWidget):
                 for path in root.rglob("*"):
                     if not path.is_file():
                         continue
+                    suffix = path.suffix.lower()
+                    if suffix not in allowed_suffixes:
+                        continue
                     if path.name in candidate_names or path.stem == BINANCE_CPP_EXECUTABLE_BASENAME:
                         return path
             except (PermissionError, OSError):
                 continue
         return None
+
+    def _detect_mingw_toolchain(self, prefix_path: Path) -> tuple[str | None, Path | None, Path | None]:
+        """
+        Heuristic to locate a bundled MinGW toolchain when the Qt prefix lives under a mingw_* path.
+        Returns (generator, make_path, cxx_path) or (None, None, None) if not found.
+        """
+        if "mingw" not in str(prefix_path).lower():
+            return None, None, None
+        search_roots = [prefix_path] + list(prefix_path.parents)[:5]
+        seen: set[Path] = set()
+        for root in search_roots:
+            if root in seen or not root.exists():
+                continue
+            seen.add(root)
+            try:
+                for make_path in root.rglob("mingw32-make.exe"):
+                    bin_dir = make_path.parent
+                    cxx_path = bin_dir / "g++.exe"
+                    if cxx_path.is_file():
+                        return "MinGW Makefiles", make_path, cxx_path
+            except (PermissionError, OSError):
+                continue
+        return None, None, None
+
+    @staticmethod
+    def _read_cache_value(cache_file: Path, key: str) -> str | None:
+        if not cache_file.is_file():
+            return None
+        needle = f"{key}:"
+        try:
+            for line in cache_file.read_text(errors="ignore").splitlines():
+                if line.startswith(needle):
+                    parts = line.split("=", 1)
+                    if len(parts) == 2:
+                        return parts[1].strip()
+        except Exception:
+            return None
+        return None
+
+    def _detect_cached_qt_prefix(self, build_dir: Path) -> Path | None:
+        cache_file = build_dir / "CMakeCache.txt"
+        qt_dir = self._read_cache_value(cache_file, "Qt6_DIR")
+        if qt_dir:
+            qt_path = Path(qt_dir)
+            if qt_path.exists():
+                return qt_path
+        return None
+
+    def _detect_default_qt_prefix(self) -> Path | None:
+        candidates = [
+            Path("C:/Qt"),
+            Path.home() / "Qt",
+        ]
+        for base in candidates:
+            if not base.exists():
+                continue
+            try:
+                for version_dir in sorted(base.glob("6.*"), reverse=True):
+                    for kit_dir in sorted(version_dir.iterdir(), reverse=True):
+                        if "mingw" not in kit_dir.name.lower():
+                            continue
+                        qt_cmake = kit_dir / "lib" / "cmake" / "Qt6"
+                        if qt_cmake.is_dir():
+                            return qt_cmake
+            except Exception:
+                continue
+        return None
+
+    def _candidate_qt_prefixes(self) -> list[Path]:
+        prefixes: list[Path] = []
+        env_prefix = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
+        if env_prefix:
+            for token in env_prefix.split(os.pathsep):
+                token = token.strip()
+                if token:
+                    prefixes.append(Path(token))
+        cached = self._detect_cached_qt_prefix(BINANCE_CPP_BUILD_ROOT)
+        if cached:
+            prefixes.append(cached)
+        detected = self._detect_default_qt_prefix()
+        if detected:
+            prefixes.append(detected)
+        # Deduplicate while preserving order
+        seen: set[Path] = set()
+        unique: list[Path] = []
+        for p in prefixes:
+            rp = p.resolve()
+            if rp in seen:
+                continue
+            seen.add(rp)
+            unique.append(rp)
+        return unique
+
+    def _discover_qt_bin_dirs(self) -> list[Path]:
+        bin_dirs: list[Path] = []
+        for prefix in self._candidate_qt_prefixes():
+            for base in [prefix] + list(prefix.parents):
+                candidate = base / "bin"
+                if not candidate.is_dir():
+                    continue
+                if (candidate / "Qt6Core.dll").is_file() or (candidate / "Qt6Widgets.dll").is_file():
+                    bin_dirs.append(candidate.resolve())
+                    break
+        # Add the build output dir to pick up local DLLs if present
+        build_bin = BINANCE_CPP_BUILD_ROOT / "bin"
+        if build_bin.is_dir():
+            bin_dirs.append(build_bin.resolve())
+        seen: set[Path] = set()
+        unique: list[Path] = []
+        for b in bin_dirs:
+            if b in seen:
+                continue
+            seen.add(b)
+            unique.append(b)
+        return unique
+
+    def _reset_conflicting_cmake_cache(self, build_dir: Path, desired_generator: str | None) -> None:
+        cache_file = build_dir / "CMakeCache.txt"
+        if not cache_file.exists() or not desired_generator:
+            return
+        cached_gen = self._read_cache_value(cache_file, "CMAKE_GENERATOR")
+        if cached_gen and cached_gen != desired_generator:
+            _debug_log(f"Generator mismatch: cached='{cached_gen}', desired='{desired_generator}'. Resetting build dir.")
+            try:
+                shutil.rmtree(build_dir)
+            except Exception as exc:
+                _debug_log(f"Failed to clear build dir '{build_dir}': {exc}")
 
     def _ensure_cpp_binance_executable(self) -> tuple[Path | None, str | None]:
         exe_path = self._resolve_cpp_binance_executable(refresh=True)
@@ -448,9 +578,58 @@ class StarterWindow(QtWidgets.QWidget):
             return None, f"Could not create build directory '{build_dir}': {exc}"
 
         prefix_env = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
+        if not prefix_env:
+            cached_qt_prefix = self._detect_cached_qt_prefix(build_dir)
+            if cached_qt_prefix:
+                prefix_env = str(cached_qt_prefix)
+                _debug_log(f"Using Qt prefix from previous cache: {prefix_env}")
+        if not prefix_env:
+            auto_qt_prefix = self._detect_default_qt_prefix()
+            if auto_qt_prefix:
+                prefix_env = str(auto_qt_prefix)
+                _debug_log(f"Auto-detected Qt prefix: {prefix_env}")
+
+        generator_override = os.environ.get("CMAKE_GENERATOR")
+        make_override: Path | None = None
+        cxx_override: Path | None = None
+        if generator_override is None and prefix_env:
+            gen, make_path, cxx_path = self._detect_mingw_toolchain(Path(prefix_env))
+            if gen:
+                generator_override = gen
+                make_override = make_path
+                cxx_override = cxx_path
+                _debug_log(
+                    f"Detected MinGW Qt toolchain; forcing generator '{gen}' "
+                    f"(make={make_override}, cxx={cxx_override})"
+                )
+        elif prefix_env:
+            gen, make_path, cxx_path = self._detect_mingw_toolchain(Path(prefix_env))
+            if gen and "mingw" in gen.lower() and generator_override and "visual studio" in generator_override.lower():
+                generator_override = gen
+                make_override = make_path
+                cxx_override = cxx_path
+                _debug_log(
+                    f"Overriding Visual Studio generator with MinGW because Qt prefix is MinGW: '{gen}' "
+                    f"(make={make_override}, cxx={cxx_override})"
+                )
+
+        self._reset_conflicting_cmake_cache(build_dir, generator_override)
+        build_dir.mkdir(parents=True, exist_ok=True)
+
         configure_cmd = ["cmake", "-S", str(BINANCE_CPP_PROJECT), "-B", str(build_dir)]
+        if generator_override:
+            configure_cmd.extend(["-G", generator_override])
         if prefix_env:
             configure_cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
+        if make_override:
+            configure_cmd.append(f"-DCMAKE_MAKE_PROGRAM={make_override}")
+        if cxx_override:
+            gcc_path = cxx_override.parent / "gcc.exe"
+            configure_cmd.append(f"-DCMAKE_C_COMPILER={gcc_path}")
+            configure_cmd.append(f"-DCMAKE_CXX_COMPILER={cxx_override}")
+        single_config_generator = bool(generator_override and generator_override.lower().startswith("mingw"))
+        if single_config_generator and not any(arg.startswith("-DCMAKE_BUILD_TYPE=") for arg in configure_cmd):
+            configure_cmd.append("-DCMAKE_BUILD_TYPE=Release")
 
         ok, error = self._run_command_capture(configure_cmd)
         if not ok:
@@ -458,7 +637,9 @@ class StarterWindow(QtWidgets.QWidget):
 
         build_cmd = ["cmake", "--build", str(build_dir)]
         build_configs = []
-        if sys.platform == "win32":
+        if single_config_generator:
+            build_configs = [None]
+        elif sys.platform == "win32":
             preferred = os.environ.get("CMAKE_BUILD_CONFIG") or "Release"
             build_configs = [preferred, "Debug"] if preferred.lower() != "debug" else ["Debug", "Release"]
         else:
@@ -969,7 +1150,7 @@ class StarterWindow(QtWidgets.QWidget):
             exe_path = self._resolve_cpp_binance_executable(refresh=True)
             if exe_path is None or not exe_path.is_file():
                 self.status_label.setText(
-                    "Building Qt C++ Binance backtest tab (this may take a minute—requires Qt + CMake)..."
+                    "Building Qt C++ Binance backtest tab (this may take a minute-requires Qt + CMake)..."
                 )
                 QtWidgets.QApplication.processEvents()
                 self.primary_button.setEnabled(False)
@@ -1046,7 +1227,13 @@ class StarterWindow(QtWidgets.QWidget):
             )
             if extra_flags not in current_flags:
                 env["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{current_flags} {extra_flags}".strip()
-            
+
+            if self.selected_language == "cpp":
+                qt_bins = self._discover_qt_bin_dirs()
+                if qt_bins:
+                    env["PATH"] = os.pathsep.join([*(str(p) for p in qt_bins), env.get("PATH", "")])
+                    _debug_log(f"Augmented PATH with Qt bin dirs: {qt_bins}")
+
             popen_kwargs["env"] = env
             # Capture early stdout/stderr so failures are visible when using hidden window flags.
             try:

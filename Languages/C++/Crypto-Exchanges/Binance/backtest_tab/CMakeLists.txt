@@ -20,4 +20,6 @@ add_executable(binance_backtest_tab
 
 target_link_libraries(binance_backtest_tab PRIVATE Qt6::Widgets)
 
-target_compile_definitions(binance_backtest_tab PRIVATE QT_NO_KEYWORDS)
+if (MSVC)
+    target_compile_options(binance_backtest_tab PRIVATE /Zc:__cplusplus)
+endif()
