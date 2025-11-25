@@ -329,10 +329,9 @@ STARTER_LANGUAGE_OPTIONS = [
     {
         "config_key": "C++ (Qt/C++23)",
         "title": "C++",
-        "subtitle": "Qt native - coming soon",
+        "subtitle": "Qt native desktop (preview)",
         "accent": "#38bdf8",
-        "badge": "Coming Soon",
-        "disabled": True,
+        "badge": "Preview",
     },
     {
         "config_key": "Rust",

@@ -79,10 +79,9 @@ LANGUAGE_OPTIONS = [
     {
         "key": "cpp",
         "title": "C++",
-        "subtitle": "Qt native - coming soon",
+        "subtitle": "Qt native desktop (preview)",
         "accent": "#38bdf8",
-        "badge": "Coming Soon",
-        "disabled": True,
+        "badge": "Preview",
     },
     {
         "key": "rust",
