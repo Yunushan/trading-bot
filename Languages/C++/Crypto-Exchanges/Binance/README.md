@@ -14,14 +14,14 @@ This directory contains a standalone Qt Widgets application that recreates the B
 2. Configure and build with CMake:
 
 ```bash
-cmake -S Languages/C++/Crypto-Exchanges/Binance/backtest_tab -B build/backtest_tab -DCMAKE_PREFIX_PATH="path/to/Qt/6.x/gcc_64"
-cmake --build build/backtest_tab
+cmake -S Languages/C++/Crypto-Exchanges/Binance -B build/binance_cpp -DCMAKE_PREFIX_PATH="path/to/Qt/6.x/gcc_64"
+cmake --build build/binance_cpp
 ```
 
 3. Run the demo executable:
 
 ```bash
-build/backtest_tab/binance_backtest_tab
+build/binance_cpp/binance_backtest_tab
 ```
 
 The resulting window mirrors the Python UI and is ready for wiring into the actual trading engine logic.

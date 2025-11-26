@@ -60,7 +60,7 @@ Languages/
 │  └─ Forex-Brokers/
 ├─ C++/
 │  └─ Crypto-Exchanges/
-│     └─ Binance/backtest_tab    # Qt C++ prototype for the Backtest UI
+│     └─ Binance/src             # Qt C++ prototype for the Backtest UI
 ├─ C/
 └─ Rust/
 starter.py                    # language & exchange launcher (wizard)

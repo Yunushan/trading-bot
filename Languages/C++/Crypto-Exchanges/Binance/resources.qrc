@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="binance.ico">../../../Python/Crypto-Exchanges/Binance/app/assets/binance_icon.ico</file>
+    <file alias="binance.png">../../../Python/Crypto-Exchanges/Binance/app/assets/binance_icon.png</file>
+  </qresource>
+</RCC>

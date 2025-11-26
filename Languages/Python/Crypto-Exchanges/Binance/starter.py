@@ -36,10 +36,8 @@ apply_taskbar_metadata = windows_taskbar.apply_taskbar_metadata
 build_relaunch_command = windows_taskbar.build_relaunch_command
 ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
 BINANCE_MAIN = WINDOWS_TASKBAR_DIR / "main.py"
-BINANCE_CPP_PROJECT = (
-    REPO_ROOT / "Languages" / "C++" / "Crypto-Exchanges" / "Binance" / "backtest_tab"
-)
-BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "backtest_tab"
+BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++" / "Crypto-Exchanges" / "Binance"
+BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "binance_cpp"
 BINANCE_CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
 APP_ICON_BASENAME = "crypto_forex_logo"
 APP_ICON_PATH = REPO_ROOT / "assets" / f"{APP_ICON_BASENAME}.ico"

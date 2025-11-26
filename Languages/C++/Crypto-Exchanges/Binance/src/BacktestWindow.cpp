@@ -10,6 +10,7 @@
 #include <QFormLayout>
 #include <QCoreApplication>
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
@@ -123,17 +124,335 @@ QWidget *BacktestWindow::createPlaceholderTab(const QString &title, const QStrin
 }
 
 QWidget *BacktestWindow::createDashboardTab() {
-    auto *page = createPlaceholderTab(
-        "Dashboard",
-        "Overview that mirrors the Python Binance dashboard. Add PnL, bot health, and KPI summaries here."
+    auto *page = new QWidget(this);
+    page->setObjectName("dashboardPage");
+    page->setStyleSheet(
+        "#dashboardPage { background: #0b0f16; }"
+        "#dashboardPage QLabel { color: #e5e7eb; }"
+        "#dashboardPage QGroupBox { background: #0f1624; border: 1px solid #1f2937; border-radius: 8px; "
+        "margin-top: 12px; }"
+        "#dashboardPage QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; "
+        "color: #cbd5e1; }"
+        "#dashboardPage QLineEdit, #dashboardPage QComboBox, #dashboardPage QDoubleSpinBox, "
+        "#dashboardPage QSpinBox, #dashboardPage QDateEdit { background: #0d1117; color: #e5e7eb; "
+        "border: 1px solid #1f2937; border-radius: 4px; padding: 4px 6px; }"
+        "#dashboardPage QListWidget { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; }"
+        "#dashboardPage QPushButton { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; "
+        "border-radius: 4px; padding: 6px 10px; }"
+        "#dashboardPage QPushButton:hover { background: #1f2937; }"
     );
-    if (auto *layout = qobject_cast<QVBoxLayout *>(page->layout())) {
-        auto *table = new QTableWidget(0, 6, page);
-        table->setHorizontalHeaderLabels({"Symbol", "Interval", "Logic", "PnL (USDT)", "ROI (%)", "Status"});
-        table->horizontalHeader()->setStretchLastSection(true);
-        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        layout->addWidget(table, 1);
+
+    auto *root = new QVBoxLayout(page);
+    root->setContentsMargins(10, 10, 10, 10);
+    root->setSpacing(12);
+
+    auto *accountBox = new QGroupBox("Account & Status", page);
+    auto *accountGrid = new QGridLayout(accountBox);
+    accountGrid->setHorizontalSpacing(10);
+    accountGrid->setVerticalSpacing(8);
+    accountGrid->setContentsMargins(12, 12, 12, 12);
+    root->addWidget(accountBox);
+
+    auto addPair = [accountGrid, accountBox](int row, int &col, const QString &label, QWidget *widget, int span = 1) {
+        accountGrid->addWidget(new QLabel(label, accountBox), row, col++);
+        accountGrid->addWidget(widget, row, col, 1, span);
+        col += span;
+    };
+
+    int col = 0;
+    auto *apiKeyEdit = new QLineEdit(accountBox);
+    apiKeyEdit->setPlaceholderText("API Key");
+    apiKeyEdit->setMinimumWidth(240);
+    addPair(0, col, "API Key:", apiKeyEdit, 2);
+
+    auto *modeCombo = new QComboBox(accountBox);
+    modeCombo->addItems({"Live", "Paper (Testnet)"});
+    addPair(0, col, "Mode:", modeCombo);
+
+    auto *themeCombo = new QComboBox(accountBox);
+    themeCombo->addItems({"Dark", "Light"});
+    addPair(0, col, "Theme:", themeCombo);
+
+    auto *pnlActive = new QLabel("--", accountBox);
+    pnlActive->setStyleSheet("color: #a5b4fc;");
+    addPair(0, col, "Total PNL Active Positions:", pnlActive);
+
+    auto *pnlClosed = new QLabel("--", accountBox);
+    pnlClosed->setStyleSheet("color: #a5b4fc;");
+    addPair(0, col, "Total PNL Closed Positions:", pnlClosed);
+
+    auto *botStatus = new QLabel("OFF", accountBox);
+    botStatus->setStyleSheet("color: #ef4444; font-weight: 700;");
+    addPair(0, col, "Bot Status:", botStatus);
+
+    accountGrid->addWidget(new QLabel("Bot Active Time:", accountBox), 0, col++);
+    auto *botTime = new QLabel("--", accountBox);
+    botTime->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    accountGrid->addWidget(botTime, 0, col, 1, 2);
+    accountGrid->setColumnStretch(col, 1);
+
+    col = 0;
+    auto *apiSecretEdit = new QLineEdit(accountBox);
+    apiSecretEdit->setEchoMode(QLineEdit::Password);
+    apiSecretEdit->setPlaceholderText("API Secret Key");
+    apiSecretEdit->setMinimumWidth(240);
+    addPair(1, col, "API Secret Key:", apiSecretEdit, 2);
+
+    auto *accountTypeCombo = new QComboBox(accountBox);
+    accountTypeCombo->addItems({"Futures", "Spot"});
+    addPair(1, col, "Account Type:", accountTypeCombo);
+
+    auto *accountModeCombo = new QComboBox(accountBox);
+    accountModeCombo->addItems({"Classic Trading", "Multi-Asset Mode"});
+    addPair(1, col, "Account Mode:", accountModeCombo);
+
+    auto *connectorCombo = new QComboBox(accountBox);
+    connectorCombo->addItems({
+        "Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)",
+        "Binance Gateway",
+        "Custom Connector"
+    });
+    connectorCombo->setMinimumWidth(260);
+    addPair(1, col, "Connector:", connectorCombo, 3);
+
+    col = 0;
+    auto *balanceLabel = new QLabel("N/A", accountBox);
+    balanceLabel->setStyleSheet("color: #fbbf24; font-weight: 700;");
+    addPair(2, col, "Total USDT balance:", balanceLabel);
+
+    auto *refreshBalanceBtn = new QPushButton("Refresh Balance", accountBox);
+    accountGrid->addWidget(refreshBalanceBtn, 2, col++);
+
+    auto *leverageSpin = new QSpinBox(accountBox);
+    leverageSpin->setRange(1, 125);
+    leverageSpin->setValue(20);
+    addPair(2, col, "Leverage (Futures):", leverageSpin);
+
+    auto *marginModeCombo = new QComboBox(accountBox);
+    marginModeCombo->addItems({"Isolated", "Cross"});
+    addPair(2, col, "Margin Mode (Futures):", marginModeCombo);
+
+    auto *positionModeCombo = new QComboBox(accountBox);
+    positionModeCombo->addItems({"Hedge", "One-way"});
+    addPair(2, col, "Position Mode:", positionModeCombo);
+
+    auto *assetsModeCombo = new QComboBox(accountBox);
+    assetsModeCombo->addItems({"Single-Asset Mode", "Multi-Asset Mode"});
+    addPair(2, col, "Assets Mode:", assetsModeCombo);
+
+    col = 0;
+    auto *indicatorSourceCombo = new QComboBox(accountBox);
+    indicatorSourceCombo->addItems({"Binance futures", "Binance spot", "Testnet futures"});
+    indicatorSourceCombo->setMinimumWidth(180);
+    addPair(3, col, "Indicator Source:", indicatorSourceCombo, 2);
+
+    auto *orderTypeCombo = new QComboBox(accountBox);
+    orderTypeCombo->addItems({"GTC", "IOC", "FOK"});
+    addPair(3, col, "Order Type:", orderTypeCombo);
+
+    auto *expiryCombo = new QComboBox(accountBox);
+    expiryCombo->addItems({"30 min (GTD)", "1h (GTD)", "4h (GTD)", "GTC"});
+    addPair(3, col, "Expiry / TIF:", expiryCombo);
+
+    for (int stretchCol : {1, 2, 4, 6, 8, 10, 12}) {
+        accountGrid->setColumnStretch(stretchCol, 1);
     }
+    accountGrid->setColumnStretch(13, 2);
+
+    auto *marketsBox = new QGroupBox("Markets / Intervals", page);
+    auto *marketsLayout = new QVBoxLayout(marketsBox);
+    marketsLayout->setSpacing(8);
+    marketsLayout->setContentsMargins(12, 12, 12, 12);
+
+    auto *indicatorRow = new QHBoxLayout();
+    indicatorRow->setSpacing(10);
+    indicatorRow->addWidget(new QLabel("Indicator Source:", marketsBox));
+    auto *indicatorSource = new QComboBox(marketsBox);
+    indicatorSource->addItems({"Binance futures", "Binance spot", "Combined watchlist"});
+    indicatorRow->addWidget(indicatorSource);
+    indicatorRow->addSpacing(8);
+    indicatorRow->addWidget(new QLabel("TIF:", marketsBox));
+    auto *tifCombo = new QComboBox(marketsBox);
+    tifCombo->addItems({"GTC", "IOC", "FOK"});
+    indicatorRow->addWidget(tifCombo);
+    indicatorRow->addSpacing(8);
+    indicatorRow->addWidget(new QLabel("Expiry:", marketsBox));
+    auto *expiryTif = new QComboBox(marketsBox);
+    expiryTif->addItems({"30 min (GTD)", "1h (GTD)", "4h (GTD)", "GTC"});
+    indicatorRow->addWidget(expiryTif);
+    indicatorRow->addStretch();
+    marketsLayout->addLayout(indicatorRow);
+
+    auto *listsGrid = new QGridLayout();
+    listsGrid->setHorizontalSpacing(12);
+    listsGrid->setVerticalSpacing(8);
+    listsGrid->addWidget(new QLabel("Symbols (select 1 or more):", marketsBox), 0, 0);
+    listsGrid->addWidget(new QLabel("Intervals (select 1 or more):", marketsBox), 0, 1);
+
+    auto *dashboardSymbolList = new QListWidget(marketsBox);
+    dashboardSymbolList->setSelectionMode(QAbstractItemView::MultiSelection);
+    dashboardSymbolList->addItems({"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"});
+    listsGrid->addWidget(dashboardSymbolList, 1, 0, 2, 1);
+
+    auto *dashboardIntervalList = new QListWidget(marketsBox);
+    dashboardIntervalList->setSelectionMode(QAbstractItemView::MultiSelection);
+    dashboardIntervalList->addItems({
+        "1m", "3m", "5m", "10m", "15m", "20m", "30m", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h"
+    });
+    listsGrid->addWidget(dashboardIntervalList, 1, 1, 2, 1);
+
+    auto *refreshSymbolsBtn = new QPushButton("Refresh Symbols", marketsBox);
+    listsGrid->addWidget(refreshSymbolsBtn, 3, 0, 1, 1);
+
+    auto *customIntervalEdit = new QLineEdit(marketsBox);
+    customIntervalEdit->setPlaceholderText("e.g., 45s or 7m or 90m, comma-separated");
+    listsGrid->addWidget(customIntervalEdit, 3, 1, 1, 1);
+    auto *customButton = new QPushButton("Add Custom Interval(s)", marketsBox);
+    listsGrid->addWidget(customButton, 3, 2, 1, 1);
+    marketsLayout->addLayout(listsGrid);
+
+    auto *marketsHint = new QLabel("Pre-load your Binance futures symbols and multi-timeframe intervals.", marketsBox);
+    marketsHint->setStyleSheet("color: #94a3b8; font-size: 12px;");
+    marketsLayout->addWidget(marketsHint);
+    root->addWidget(marketsBox);
+
+    connect(customButton, &QPushButton::clicked, this, [customIntervalEdit, dashboardIntervalList]() {
+        const auto parts = customIntervalEdit->text().split(',', Qt::SkipEmptyParts);
+        for (QString interval : parts) {
+            interval = interval.trimmed();
+            if (interval.isEmpty()) {
+                continue;
+            }
+            bool exists = false;
+            for (int i = 0; i < dashboardIntervalList->count(); ++i) {
+                if (dashboardIntervalList->item(i)->text().compare(interval, Qt::CaseInsensitive) == 0) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                dashboardIntervalList->addItem(interval);
+            }
+        }
+        customIntervalEdit->clear();
+    });
+
+    auto *strategyBox = new QGroupBox("Strategy Controls", page);
+    auto *strategyGrid = new QGridLayout(strategyBox);
+    strategyGrid->setHorizontalSpacing(12);
+    strategyGrid->setVerticalSpacing(8);
+    strategyGrid->setContentsMargins(12, 12, 12, 12);
+    root->addWidget(strategyBox);
+
+    int row = 0;
+    strategyGrid->addWidget(new QLabel("Side:", strategyBox), row, 0);
+    auto *sideCombo = new QComboBox(strategyBox);
+    sideCombo->addItems({"Both (Long/Short)", "Long Only", "Short Only"});
+    strategyGrid->addWidget(sideCombo, row, 1);
+
+    strategyGrid->addWidget(new QLabel("Position % of Balance:", strategyBox), row, 2);
+    auto *positionPct = new QDoubleSpinBox(strategyBox);
+    positionPct->setRange(0.1, 100.0);
+    positionPct->setSingleStep(0.1);
+    positionPct->setValue(2.0);
+    positionPct->setSuffix(" %");
+    strategyGrid->addWidget(positionPct, row, 3);
+
+    strategyGrid->addWidget(new QLabel("Loop Interval Override:", strategyBox), row, 4);
+    auto *loopOverride = new QComboBox(strategyBox);
+    loopOverride->addItems({"Off", "30 seconds", "1 minute", "5 minutes"});
+    loopOverride->setCurrentText("1 minute");
+    strategyGrid->addWidget(loopOverride, row, 5);
+
+    ++row;
+    auto *enableLeadTrader = new QCheckBox("Enable Lead Trader", strategyBox);
+    strategyGrid->addWidget(enableLeadTrader, row, 0, 1, 2);
+    auto *leadTraderCombo = new QComboBox(strategyBox);
+    leadTraderCombo->addItems({"Futures Public Lead Trader", "Signals Feed", "Manual Lead"});
+    leadTraderCombo->setEnabled(false);
+    connect(enableLeadTrader, &QCheckBox::toggled, leadTraderCombo, &QWidget::setEnabled);
+    strategyGrid->addWidget(leadTraderCombo, row, 2, 1, 2);
+
+    ++row;
+    auto *oneWayCheck = new QCheckBox("Add-only in current net direction (one-way)", strategyBox);
+    strategyGrid->addWidget(oneWayCheck, row, 0, 1, 3);
+    auto *hedgeStackCheck = new QCheckBox("Allow simultaneous long / short positions (hedge stacking)", strategyBox);
+    strategyGrid->addWidget(hedgeStackCheck, row, 3, 1, 3);
+
+    ++row;
+    auto *stopWithoutCloseCheck = new QCheckBox("Stop Bot Without Closing Active Positions", strategyBox);
+    stopWithoutCloseCheck->setToolTip(
+        "When checked, the Stop button will halt strategy threads but keep existing positions open."
+    );
+    strategyGrid->addWidget(stopWithoutCloseCheck, row, 0, 1, 3);
+    auto *windowCloseCheck = new QCheckBox("Market Close All Active Positions On Window Close (WIP)", strategyBox);
+    windowCloseCheck->setEnabled(false);
+    strategyGrid->addWidget(windowCloseCheck, row, 3, 1, 3);
+
+    ++row;
+    strategyGrid->addWidget(new QLabel("Stop Loss:", strategyBox), row, 0);
+    auto *stopLossEnable = new QCheckBox("Enable", strategyBox);
+    strategyGrid->addWidget(stopLossEnable, row, 1);
+
+    auto *stopScopeCombo = new QComboBox(strategyBox);
+    stopScopeCombo->addItems({"Per Trade Stop Loss", "Global Portfolio Stop", "Trailing Stop"});
+    strategyGrid->addWidget(stopScopeCombo, row, 2, 1, 2);
+
+    auto *stopUsdtSpin = new QDoubleSpinBox(strategyBox);
+    stopUsdtSpin->setRange(0.0, 1'000'000.0);
+    stopUsdtSpin->setDecimals(2);
+    stopUsdtSpin->setSuffix(" USDT");
+    stopUsdtSpin->setEnabled(false);
+    strategyGrid->addWidget(stopUsdtSpin, row, 4);
+
+    auto *stopPctSpin = new QDoubleSpinBox(strategyBox);
+    stopPctSpin->setRange(0.0, 100.0);
+    stopPctSpin->setDecimals(2);
+    stopPctSpin->setSuffix(" %");
+    stopPctSpin->setEnabled(false);
+    strategyGrid->addWidget(stopPctSpin, row, 5);
+
+    connect(stopLossEnable, &QCheckBox::toggled, stopScopeCombo, &QWidget::setEnabled);
+    connect(stopLossEnable, &QCheckBox::toggled, stopUsdtSpin, &QWidget::setEnabled);
+    connect(stopLossEnable, &QCheckBox::toggled, stopPctSpin, &QWidget::setEnabled);
+
+    ++row;
+    strategyGrid->addWidget(new QLabel("Template:", strategyBox), row, 0);
+    auto *templateCombo = new QComboBox(strategyBox);
+    templateCombo->addItems({"No Template", "Futures Public Lead Trader", "Volume Top 50", "RSI Reversal"});
+    strategyGrid->addWidget(templateCombo, row, 1, 1, 2);
+
+    strategyGrid->setColumnStretch(1, 1);
+    strategyGrid->setColumnStretch(3, 1);
+    strategyGrid->setColumnStretch(5, 1);
+
+    auto *indicatorsBox = new QGroupBox("Indicators", page);
+    auto *indGrid = new QGridLayout(indicatorsBox);
+    indGrid->setHorizontalSpacing(10);
+    indGrid->setVerticalSpacing(6);
+    indGrid->setContentsMargins(12, 12, 12, 12);
+
+    auto addIndicatorRow = [indicatorsBox, indGrid](int rowIndex, const QString &name) {
+        auto *cb = new QCheckBox(name, indicatorsBox);
+        auto *btn = new QPushButton("Buy-Sell Values", indicatorsBox);
+        btn->setEnabled(false);
+        QObject::connect(cb, &QCheckBox::toggled, btn, &QWidget::setEnabled);
+        indGrid->addWidget(cb, rowIndex, 0);
+        indGrid->addWidget(btn, rowIndex, 1);
+    };
+
+    QStringList indicators = {
+        "Moving Average (MA)", "Donchian Channels (DC)", "Parabolic SAR (PSAR)", "Bollinger Bands (BB)",
+        "Relative Strength Index (RSI)", "Volume", "Stochastic RSI", "Williams %R", "MACD",
+        "Ultimate Oscillator", "ADX", "DMI", "SuperTrend", "EMA Cross"
+    };
+    for (int i = 0; i < indicators.size(); ++i) {
+        addIndicatorRow(i, indicators[i]);
+    }
+    indGrid->setColumnStretch(0, 1);
+    root->addWidget(indicatorsBox);
+
+    root->addStretch();
     return page;
 }
 
