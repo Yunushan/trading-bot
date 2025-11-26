@@ -22,6 +22,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parents[3] if len(BASE_DIR.parents) >= 4 else BASE_DIR
 WINDOWS_TASKBAR_DIR = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "Binance"
+PREFERRED_QT_VERSION = os.environ.get("STARTER_QT_VERSION") or "6.5.3"
 
 _WINDOWS_TASKBAR_SPEC = importlib.util.spec_from_file_location(
     "windows_taskbar", WINDOWS_TASKBAR_DIR / "windows_taskbar.py"
@@ -453,6 +454,34 @@ class StarterWindow(QtWidgets.QWidget):
                 continue
         return None, None, None
 
+    def _detect_msvc_generator(self, prefix_path: Path) -> tuple[str | None, str | None]:
+        """
+        If the Qt prefix comes from an MSVC kit, hint CMake to use the matching generator.
+        """
+        name = prefix_path.name.lower()
+        if "msvc" not in name:
+            return None, None
+        return "Visual Studio 17 2022", "x64"
+
+    @staticmethod
+    def _qt_prefix_has_webengine(prefix_path: Path) -> bool:
+        try:
+            return (prefix_path.parent / "Qt6WebEngineWidgets").is_dir()
+        except Exception:
+            return False
+
+    def _qt_prefix_from_cache(self, build_dir: Path) -> Path | None:
+        cache_file = build_dir / "CMakeCache.txt"
+        qt_dir = self._read_cache_value(cache_file, "Qt6_DIR")
+        if qt_dir:
+            try:
+                qt_path = Path(qt_dir).resolve()
+                if qt_path.exists():
+                    return qt_path
+            except Exception:
+                return None
+        return None
+
     @staticmethod
     def _read_cache_value(cache_file: Path, key: str) -> str | None:
         if not cache_file.is_file():
@@ -482,20 +511,46 @@ class StarterWindow(QtWidgets.QWidget):
             Path("C:/Qt"),
             Path.home() / "Qt",
         ]
+
+        def iter_kits(base: Path) -> list[tuple[Path, bool, str]]:
+            found: list[tuple[Path, bool, str]] = []
+            for version_dir in sorted(base.glob("6.*"), reverse=True):
+                version_str = version_dir.name
+                for kit_dir in sorted(version_dir.iterdir(), reverse=True):
+                    qt_cmake = kit_dir / "lib" / "cmake" / "Qt6"
+                    if not qt_cmake.is_dir():
+                        continue
+                    has_webengine = (qt_cmake.parent / "Qt6WebEngineWidgets").is_dir()
+                    found.append((qt_cmake, has_webengine, version_str))
+            return found
+
+        best: Path | None = None
+        preferred_versions = [v for v in {PREFERRED_QT_VERSION, os.environ.get("STARTER_QT_VERSION")} if v]
         for base in candidates:
             if not base.exists():
                 continue
             try:
-                for version_dir in sorted(base.glob("6.*"), reverse=True):
-                    for kit_dir in sorted(version_dir.iterdir(), reverse=True):
-                        if "mingw" not in kit_dir.name.lower():
-                            continue
-                        qt_cmake = kit_dir / "lib" / "cmake" / "Qt6"
-                        if qt_cmake.is_dir():
-                            return qt_cmake
+                kits = iter_kits(base)
+                if not kits:
+                    continue
+                # Prefer preferred_versions with WebEngine, then preferred_versions without,
+                # then newest with WebEngine, then newest overall.
+                for pref in preferred_versions:
+                    for path, has_webengine, ver in kits:
+                        if pref in ver and has_webengine:
+                            return path
+                for pref in preferred_versions:
+                    for path, has_webengine, ver in kits:
+                        if pref in ver:
+                            return path
+                for path, has_webengine, _ in kits:
+                    if has_webengine:
+                        return path
+                if best is None and kits:
+                    best = kits[0][0]
             except Exception:
                 continue
-        return None
+        return best
 
     def _candidate_qt_prefixes(self) -> list[Path]:
         prefixes: list[Path] = []
@@ -524,7 +579,13 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _discover_qt_bin_dirs(self) -> list[Path]:
         bin_dirs: list[Path] = []
-        for prefix in self._candidate_qt_prefixes():
+        preferred_prefix = self._qt_prefix_from_cache(BINANCE_CPP_BUILD_ROOT)
+        candidate_prefixes = [preferred_prefix] if preferred_prefix else []
+        candidate_prefixes += self._candidate_qt_prefixes()
+
+        for prefix in candidate_prefixes:
+            if not prefix:
+                continue
             for base in [prefix] + list(prefix.parents):
                 candidate = base / "bin"
                 if not candidate.is_dir():
@@ -532,6 +593,9 @@ class StarterWindow(QtWidgets.QWidget):
                 if (candidate / "Qt6Core.dll").is_file() or (candidate / "Qt6Widgets.dll").is_file():
                     bin_dirs.append(candidate.resolve())
                     break
+            if bin_dirs:
+                break
+
         # Add the build output dir to pick up local DLLs if present
         build_bin = BINANCE_CPP_BUILD_ROOT / "bin"
         if build_bin.is_dir():
@@ -545,13 +609,27 @@ class StarterWindow(QtWidgets.QWidget):
             unique.append(b)
         return unique
 
-    def _reset_conflicting_cmake_cache(self, build_dir: Path, desired_generator: str | None) -> None:
+    def _reset_conflicting_cmake_cache(
+        self, build_dir: Path, desired_generator: str | None, desired_qt_prefix: str | None
+    ) -> None:
         cache_file = build_dir / "CMakeCache.txt"
-        if not cache_file.exists() or not desired_generator:
+        if not cache_file.exists():
             return
         cached_gen = self._read_cache_value(cache_file, "CMAKE_GENERATOR")
-        if cached_gen and cached_gen != desired_generator:
-            _debug_log(f"Generator mismatch: cached='{cached_gen}', desired='{desired_generator}'. Resetting build dir.")
+        cached_qt = self._read_cache_value(cache_file, "Qt6_DIR")
+        desired_qt = Path(desired_qt_prefix).resolve() if desired_qt_prefix else None
+        mismatch_gen = bool(cached_gen and desired_generator and cached_gen != desired_generator)
+        mismatch_qt = False
+        if cached_qt and desired_qt:
+            try:
+                mismatch_qt = Path(cached_qt).resolve() != desired_qt
+            except Exception:
+                mismatch_qt = True
+        if mismatch_gen or mismatch_qt:
+            _debug_log(
+                f"CMake cache mismatch (gen: {cached_gen} vs {desired_generator}, "
+                f"qt: {cached_qt} vs {desired_qt}). Resetting build dir."
+            )
             try:
                 shutil.rmtree(build_dir)
             except Exception as exc:
@@ -578,18 +656,43 @@ class StarterWindow(QtWidgets.QWidget):
             return None, f"Could not create build directory '{build_dir}': {exc}"
 
         prefix_env = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
+
         if not prefix_env:
             cached_qt_prefix = self._detect_cached_qt_prefix(build_dir)
-            if cached_qt_prefix:
-                prefix_env = str(cached_qt_prefix)
-                _debug_log(f"Using Qt prefix from previous cache: {prefix_env}")
-        if not prefix_env:
             auto_qt_prefix = self._detect_default_qt_prefix()
-            if auto_qt_prefix:
-                prefix_env = str(auto_qt_prefix)
-                _debug_log(f"Auto-detected Qt prefix: {prefix_env}")
+
+            def choose_prefix(cached: Path | None, auto: Path | None) -> Path | None:
+                preferred_versions = [v for v in {PREFERRED_QT_VERSION, os.environ.get("STARTER_QT_VERSION")} if v]
+                candidates = [p for p in (auto, cached) if p]
+                # Prefer preferred_versions first
+                for pref in preferred_versions:
+                    for p in candidates:
+                        if pref in str(p):
+                            return p
+                # Prefer WebEngine if available
+                for p in candidates:
+                    if self._qt_prefix_has_webengine(p):
+                        return p
+                return candidates[0] if candidates else None
+
+            chosen = choose_prefix(cached_qt_prefix, auto_qt_prefix)
+            if chosen:
+                prefix_env = str(chosen)
+                _debug_log(
+                    f"Selected Qt prefix: {prefix_env} "
+                    f"(webengine={'yes' if self._qt_prefix_has_webengine(chosen) else 'no'})"
+                )
+
+        # If user points to an MSVC kit but MSVC compiler is missing, drop it and fall back.
+        if prefix_env and "msvc" in prefix_env.lower() and shutil.which("cl") is None:
+            _debug_log(
+                f"MSVC Qt kit detected ({prefix_env}) but MSVC compiler not found in PATH. "
+                "Falling back to auto-detected Qt kit (likely MinGW)."
+            )
+            prefix_env = None
 
         generator_override = os.environ.get("CMAKE_GENERATOR")
+        generator_platform: str | None = None
         make_override: Path | None = None
         cxx_override: Path | None = None
         if generator_override is None and prefix_env:
@@ -602,6 +705,12 @@ class StarterWindow(QtWidgets.QWidget):
                     f"Detected MinGW Qt toolchain; forcing generator '{gen}' "
                     f"(make={make_override}, cxx={cxx_override})"
                 )
+            else:
+                gen, platform = self._detect_msvc_generator(Path(prefix_env))
+                if gen and shutil.which("cl"):
+                    generator_override = gen
+                    generator_platform = platform
+                    _debug_log(f"Detected MSVC Qt toolchain; using generator '{gen}' platform '{platform}'")
         elif prefix_env:
             gen, make_path, cxx_path = self._detect_mingw_toolchain(Path(prefix_env))
             if gen and "mingw" in gen.lower() and generator_override and "visual studio" in generator_override.lower():
@@ -613,12 +722,14 @@ class StarterWindow(QtWidgets.QWidget):
                     f"(make={make_override}, cxx={cxx_override})"
                 )
 
-        self._reset_conflicting_cmake_cache(build_dir, generator_override)
+        self._reset_conflicting_cmake_cache(build_dir, generator_override, prefix_env)
         build_dir.mkdir(parents=True, exist_ok=True)
 
         configure_cmd = ["cmake", "-S", str(BINANCE_CPP_PROJECT), "-B", str(build_dir)]
         if generator_override:
             configure_cmd.extend(["-G", generator_override])
+        if generator_platform:
+            configure_cmd.extend(["-A", generator_platform])
         if prefix_env:
             configure_cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
         if make_override:
@@ -1201,12 +1312,11 @@ class StarterWindow(QtWidgets.QWidget):
         self.status_label.setText(start_message + launch_log_hint)
         try:
             popen_kwargs: dict[str, object] = {"cwd": str(cwd)}
-            # Unconditionally force no window creation for the subprocess
-            # This is the most reliable way to suppress console windows on Windows
-            create_no_window = 0x08000000  # CREATE_NO_WINDOW
-            popen_kwargs["creationflags"] = create_no_window
-
-            if sys.platform == "win32":
+            # Hide only the Python console window; keep the Qt/C++ UI visible
+            hide_console = sys.platform == "win32" and self.selected_language == "python"
+            if hide_console:
+                create_no_window = 0x08000000  # CREATE_NO_WINDOW
+                popen_kwargs["creationflags"] = create_no_window
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
                 startupinfo.wShowWindow = 0  # SW_HIDE

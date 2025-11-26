@@ -13,6 +13,7 @@ class QDoubleSpinBox;
 class QSpinBox;
 class QDateEdit;
 class QTimer;
+class QTabWidget;
 
 class BacktestWindow final : public QMainWindow {
     Q_OBJECT
@@ -31,6 +32,13 @@ private:
     QWidget *createParametersGroup();
     QWidget *createIndicatorsGroup();
     QWidget *createResultsGroup();
+    QWidget *createDashboardTab();
+    QWidget *createChartTab();
+    QWidget *createPositionsTab();
+    QWidget *createBacktestTab();
+    QWidget *createCodeTab();
+    QWidget *createPlaceholderTab(const QString &title, const QString &body);
+    void launchPythonBot();
     void populateDefaults();
     void wireSignals();
     void ensureBotTimer(bool running);
@@ -51,4 +59,6 @@ private:
     QTableWidget *resultsTable_;
     QTimer *botTimer_;
     std::chrono::steady_clock::time_point botStart_;
+    QTabWidget *tabs_;
+    QWidget *backtestTab_;
 };
