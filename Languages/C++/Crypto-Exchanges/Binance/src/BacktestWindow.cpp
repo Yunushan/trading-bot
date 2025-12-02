@@ -24,6 +24,7 @@
 #include <QStandardPaths>
 #include <QScrollArea>
 #include <QSpinBox>
+#include <QSizePolicy>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTabWidget>
@@ -79,7 +80,10 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       resultsTable_(nullptr),
       botTimer_(nullptr),
       tabs_(nullptr),
-      backtestTab_(nullptr) {
+      backtestTab_(nullptr),
+      dashboardThemeCombo_(nullptr),
+      dashboardPage_(nullptr),
+      codePage_(nullptr) {
     setWindowTitle("Binance Trading Bot");
     resize(1350, 900);
 
@@ -103,6 +107,11 @@ BacktestWindow::BacktestWindow(QWidget *parent)
 
     populateDefaults();
     wireSignals();
+
+    // Ensure the initial theme applies after all tabs/widgets exist.
+    if (dashboardThemeCombo_) {
+        applyDashboardTheme(dashboardThemeCombo_->currentText());
+    }
 }
 
 QWidget *BacktestWindow::createPlaceholderTab(const QString &title, const QString &body) {
@@ -126,23 +135,22 @@ QWidget *BacktestWindow::createPlaceholderTab(const QString &title, const QStrin
 QWidget *BacktestWindow::createDashboardTab() {
     auto *page = new QWidget(this);
     page->setObjectName("dashboardPage");
-    page->setStyleSheet(
-        "#dashboardPage { background: #0b0f16; }"
-        "#dashboardPage QLabel { color: #e5e7eb; }"
-        "#dashboardPage QGroupBox { background: #0f1624; border: 1px solid #1f2937; border-radius: 8px; "
-        "margin-top: 12px; }"
-        "#dashboardPage QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; "
-        "color: #cbd5e1; }"
-        "#dashboardPage QLineEdit, #dashboardPage QComboBox, #dashboardPage QDoubleSpinBox, "
-        "#dashboardPage QSpinBox, #dashboardPage QDateEdit { background: #0d1117; color: #e5e7eb; "
-        "border: 1px solid #1f2937; border-radius: 4px; padding: 4px 6px; }"
-        "#dashboardPage QListWidget { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; }"
-        "#dashboardPage QPushButton { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; "
-        "border-radius: 4px; padding: 6px 10px; }"
-        "#dashboardPage QPushButton:hover { background: #1f2937; }"
-    );
+    dashboardPage_ = page;
 
-    auto *root = new QVBoxLayout(page);
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->setSpacing(0);
+
+    auto *scrollArea = new QScrollArea(page);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    pageLayout->addWidget(scrollArea);
+
+    auto *content = new QWidget(scrollArea);
+    scrollArea->setWidget(content);
+
+    auto *root = new QVBoxLayout(content);
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(12);
 
@@ -169,9 +177,10 @@ QWidget *BacktestWindow::createDashboardTab() {
     modeCombo->addItems({"Live", "Paper (Testnet)"});
     addPair(0, col, "Mode:", modeCombo);
 
-    auto *themeCombo = new QComboBox(accountBox);
-    themeCombo->addItems({"Dark", "Light"});
-    addPair(0, col, "Theme:", themeCombo);
+    dashboardThemeCombo_ = new QComboBox(accountBox);
+    dashboardThemeCombo_->addItems({"Dark", "Light"});
+    addPair(0, col, "Theme:", dashboardThemeCombo_);
+    connect(dashboardThemeCombo_, &QComboBox::currentTextChanged, this, &BacktestWindow::applyDashboardTheme);
 
     auto *pnlActive = new QLabel("--", accountBox);
     pnlActive->setStyleSheet("color: #a5b4fc;");
@@ -428,13 +437,15 @@ QWidget *BacktestWindow::createDashboardTab() {
 
     auto *indicatorsBox = new QGroupBox("Indicators", page);
     auto *indGrid = new QGridLayout(indicatorsBox);
-    indGrid->setHorizontalSpacing(10);
-    indGrid->setVerticalSpacing(6);
+    indGrid->setHorizontalSpacing(14);
+    indGrid->setVerticalSpacing(8);
     indGrid->setContentsMargins(12, 12, 12, 12);
 
     auto addIndicatorRow = [indicatorsBox, indGrid](int rowIndex, const QString &name) {
         auto *cb = new QCheckBox(name, indicatorsBox);
         auto *btn = new QPushButton("Buy-Sell Values", indicatorsBox);
+        btn->setMinimumWidth(150);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         btn->setEnabled(false);
         QObject::connect(cb, &QCheckBox::toggled, btn, &QWidget::setEnabled);
         indGrid->addWidget(cb, rowIndex, 0);
@@ -450,14 +461,113 @@ QWidget *BacktestWindow::createDashboardTab() {
         addIndicatorRow(i, indicators[i]);
     }
     indGrid->setColumnStretch(0, 1);
+    indGrid->setColumnStretch(1, 1);
     root->addWidget(indicatorsBox);
 
     root->addStretch();
+
+    applyDashboardTheme(dashboardThemeCombo_ ? dashboardThemeCombo_->currentText() : QString());
     return page;
+}
+
+void BacktestWindow::applyDashboardTheme(const QString &themeName) {
+    if (!dashboardPage_) {
+        return;
+    }
+
+    const bool isLight = themeName.compare("Light", Qt::CaseInsensitive) == 0;
+    const QString darkCss = R"(
+        #dashboardPage { background: #0b0f16; }
+        #dashboardPage QLabel { color: #e5e7eb; }
+        #dashboardPage QGroupBox { background: #0f1624; border: 1px solid #1f2937; border-radius: 8px; margin-top: 12px; }
+        #dashboardPage QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #cbd5e1; }
+        #dashboardPage QLineEdit, #dashboardPage QComboBox, #dashboardPage QDoubleSpinBox, #dashboardPage QSpinBox, #dashboardPage QDateEdit {
+            background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 4px 6px;
+        }
+        #dashboardPage QListWidget { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; }
+        #dashboardPage QPushButton { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 6px 10px; }
+        #dashboardPage QPushButton:hover { background: #1f2937; }
+    )";
+
+    const QString lightCss = R"(
+        #dashboardPage { background: #f5f7fb; }
+        #dashboardPage QLabel { color: #0f172a; }
+        #dashboardPage QGroupBox { background: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; margin-top: 12px; }
+        #dashboardPage QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #111827; }
+        #dashboardPage QLineEdit, #dashboardPage QComboBox, #dashboardPage QDoubleSpinBox, #dashboardPage QSpinBox, #dashboardPage QDateEdit {
+            background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 6px;
+        }
+        #dashboardPage QListWidget { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }
+        #dashboardPage QPushButton { background: #e5e7eb; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; }
+        #dashboardPage QPushButton:hover { background: #dbeafe; }
+    )";
+
+    const QString darkGlobal = R"(
+        QMainWindow { background: #0b0f16; }
+        QTabWidget::pane { border: 1px solid #1f2937; background: #0b0f16; }
+        QTabBar::tab { background: #111827; color: #e5e7eb; padding: 6px 10px; }
+        QTabBar::tab:selected { background: #1f2937; }
+        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage { background: #0b0f16; color: #e5e7eb; }
+        QScrollArea#backtestScrollArea { background: #0b0f16; border: none; }
+        QWidget#backtestScrollWidget { background: #0b0f16; }
+        QGroupBox { color: #e5e7eb; border-color: #1f2937; }
+        QLabel { color: #e5e7eb; }
+        QLabel:disabled, QCheckBox:disabled, QComboBox:disabled, QLineEdit:disabled { color: #9ca3af; }
+        QGroupBox::title { color: #e5e7eb; }
+        QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QDateEdit { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 3px 6px; }
+        QListWidget { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; }
+        QPushButton { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 6px 10px; }
+        QPushButton:hover { background: #1f2937; }
+        QTableWidget { background: #0d1117; color: #e5e7eb; gridline-color: #1f2937; selection-background-color: #1f2937; selection-color: #e5e7eb; }
+        QHeaderView::section { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; }
+    )";
+
+    const QString lightGlobal = R"(
+        QMainWindow { background: #f5f7fb; }
+        QTabWidget::pane { border: 1px solid #d1d5db; background: #f5f7fb; }
+        QTabBar::tab { background: #e5e7eb; color: #0f172a; padding: 6px 10px; }
+        QTabBar::tab:selected { background: #ffffff; }
+        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage { background: #f5f7fb; color: #0f172a; }
+        QScrollArea#backtestScrollArea { background: #f5f7fb; border: none; }
+        QWidget#backtestScrollWidget { background: #f5f7fb; }
+        QGroupBox { color: #0f172a; border-color: #d1d5db; }
+        QLabel { color: #0f172a; }
+        QLabel:disabled, QCheckBox:disabled, QComboBox:disabled, QLineEdit:disabled { color: #6b7280; }
+        QGroupBox::title { color: #0f172a; }
+        QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QDateEdit { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 3px 6px; }
+        QListWidget { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }
+        QPushButton { background: #e5e7eb; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; }
+        QPushButton:hover { background: #dbeafe; }
+        QTableWidget { background: #ffffff; color: #0f172a; gridline-color: #d1d5db; selection-background-color: #dbeafe; selection-color: #0f172a; }
+        QHeaderView::section { background: #e5e7eb; color: #0f172a; border: 1px solid #d1d5db; }
+    )";
+
+    // Apply to the whole window (covers Chart/Positions/Backtest/Code tabs)
+    this->setStyleSheet(isLight ? lightGlobal : darkGlobal);
+
+    // Apply dashboard-specific overrides
+    dashboardPage_->setStyleSheet(isLight ? lightCss : darkCss);
+
+    // Apply code tab readability (headings + content on matching background)
+    if (codePage_) {
+        const QString codeCss = isLight
+                                    ? QStringLiteral(
+                                          "QWidget#codePage { background: #f5f7fb; color: #0f172a; }"
+                                          "QLabel { color: #0f172a; }"
+                                          "QTableWidget { background: #ffffff; color: #0f172a; gridline-color: #d1d5db; }"
+                                          "QHeaderView::section { background: #e5e7eb; color: #0f172a; }")
+                                    : QStringLiteral(
+                                          "QWidget#codePage { background: #0b0f16; color: #e5e7eb; }"
+                                          "QLabel { color: #e5e7eb; }"
+                                          "QTableWidget { background: #0d1117; color: #e5e7eb; gridline-color: #1f2937; }"
+                                          "QHeaderView::section { background: #111827; color: #e5e7eb; }");
+        codePage_->setStyleSheet(codeCss);
+    }
 }
 
 QWidget *BacktestWindow::createChartTab() {
     auto *page = new QWidget(this);
+    page->setObjectName("chartPage");
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(10);
@@ -547,6 +657,7 @@ QWidget *BacktestWindow::createChartTab() {
 
 QWidget *BacktestWindow::createPositionsTab() {
     auto *page = new QWidget(this);
+    page->setObjectName("positionsPage");
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(12);
@@ -574,15 +685,18 @@ QWidget *BacktestWindow::createPositionsTab() {
 
 QWidget *BacktestWindow::createBacktestTab() {
     auto *page = new QWidget(this);
+    page->setObjectName("backtestPage");
     auto *rootLayout = new QVBoxLayout(page);
     rootLayout->setContentsMargins(0, 0, 0, 0);
 
     auto *scrollArea = new QScrollArea(page);
+    scrollArea->setObjectName("backtestScrollArea");
     scrollArea->setWidgetResizable(true);
     scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     rootLayout->addWidget(scrollArea);
 
     auto *scrollWidget = new QWidget(scrollArea);
+    scrollWidget->setObjectName("backtestScrollWidget");
     scrollArea->setWidget(scrollWidget);
     auto *contentLayout = new QVBoxLayout(scrollWidget);
     contentLayout->setContentsMargins(12, 12, 12, 12);
@@ -654,6 +768,8 @@ void BacktestWindow::launchPythonBot() {
 
 QWidget *BacktestWindow::createCodeTab() {
     auto *page = new QWidget(this);
+    page->setObjectName("codePage");
+    codePage_ = page;
     auto *outer = new QVBoxLayout(page);
     outer->setContentsMargins(16, 16, 16, 16);
     outer->setSpacing(10);
@@ -933,8 +1049,10 @@ QWidget *BacktestWindow::createParametersGroup() {
 QWidget *BacktestWindow::createIndicatorsGroup() {
     auto *group = new QGroupBox("Indicators", this);
     auto *grid = new QGridLayout(group);
-    grid->setColumnStretch(0, 1);
-    grid->setColumnStretch(1, 0);
+    grid->setHorizontalSpacing(14);
+    grid->setVerticalSpacing(8);
+    grid->setColumnStretch(0, 2);
+    grid->setColumnStretch(1, 1);
 
     const QStringList indicators = {
         "Moving Average (MA)", "Donchian Channels", "Parabolic SAR", "Bollinger Bands",
@@ -946,6 +1064,8 @@ QWidget *BacktestWindow::createIndicatorsGroup() {
     for (const auto &ind : indicators) {
         auto *cb = new QCheckBox(ind, group);
         auto *btn = new QPushButton("Params...", group);
+        btn->setMinimumWidth(140);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         btn->setEnabled(false);
         connect(cb, &QCheckBox::toggled, btn, &QWidget::setEnabled);
         grid->addWidget(cb, row, 0);

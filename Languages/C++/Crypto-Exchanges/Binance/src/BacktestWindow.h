@@ -14,6 +14,7 @@ class QSpinBox;
 class QDateEdit;
 class QTimer;
 class QTabWidget;
+class QWidget;
 
 class BacktestWindow final : public QMainWindow {
     Q_OBJECT
@@ -26,6 +27,7 @@ private slots:
     void handleRunBacktest();
     void handleStopBacktest();
     void updateBotActiveTime();
+    void applyDashboardTheme(const QString &themeName);
 
 private:
     QWidget *createMarketsGroup();
@@ -61,4 +63,7 @@ private:
     std::chrono::steady_clock::time_point botStart_;
     QTabWidget *tabs_;
     QWidget *backtestTab_;
+    QComboBox *dashboardThemeCombo_;
+    QWidget *dashboardPage_;
+    QWidget *codePage_;
 };
