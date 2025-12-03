@@ -7,6 +7,8 @@
 #include <QDateEdit>
 #include <QDesktopServices>
 #include <QDoubleSpinBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QCoreApplication>
 #include <QGridLayout>
@@ -14,15 +16,22 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
+#include <QDebug>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QMessageBox>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QVariant>
 #include <QScrollArea>
+#include <QSet>
 #include <QSpinBox>
 #include <QSizePolicy>
 #include <QTableWidget>
@@ -132,10 +141,510 @@ QWidget *BacktestWindow::createPlaceholderTab(const QString &title, const QStrin
     return page;
 }
 
+void BacktestWindow::showIndicatorDialog(const QString &indicatorName) {
+    const bool isLight = dashboardThemeCombo_
+        && dashboardThemeCombo_->currentText().compare("Light", Qt::CaseInsensitive) == 0;
+    const QString bg = isLight ? "#ffffff" : "#0f1624";
+    const QString fg = isLight ? "#0f172a" : "#e5e7eb";
+    const QString fieldBg = isLight ? "#ffffff" : "#0d1117";
+    const QString fieldFg = fg;
+    const QString border = isLight ? "#cbd5e1" : "#1f2937";
+    const QString btnBg = isLight ? "#e5e7eb" : "#111827";
+    const QString btnFg = fg;
+    const QString btnHover = isLight ? "#dbeafe" : "#1f2937";
+
+    struct FieldSpec {
+        QString key;
+        QString label;
+        enum Kind { IntField, DoubleField, ComboField } kind;
+        double min = -999999;
+        double max = 999999;
+        double step = 1.0;
+        QVariant defaultValue;
+        QStringList options;
+    };
+
+    auto indicatorKey = indicatorName.toLower();
+    auto normalize = [](QString s) {
+        s.replace(" ", "").replace("(", "").replace(")", "").replace("%", "").replace("-", "").replace("_", "");
+        return s;
+    };
+    const auto norm = normalize(indicatorKey);
+    QString key = norm.contains("stochrsi")          ? "stoch_rsi"
+                 : norm.contains("stochastic")        ? "stochastic"
+                 : norm.contains("movingaverage")     ? "ma"
+                 : norm.contains("donchian")          ? "donchian"
+                 : norm.contains("psar")              ? "psar"
+                 : norm.contains("bollinger")         ? "bb"
+                 : norm.contains("relative") || norm.contains("rsi") ? "rsi"
+                 : norm.contains("volume")            ? "volume"
+                 : norm.contains("willr") || norm.contains("williams") ? "willr"
+                 : norm.contains("macd")              ? "macd"
+                 : norm.contains("ultimate")          ? "uo"
+                 : norm.contains("adx")               ? "adx"
+                 : norm.contains("dmi")               ? "dmi"
+                 : norm.contains("supertrend")        ? "supertrend"
+                 : norm.contains("ema")               ? "ema"
+                 : "generic";
+
+    QVector<FieldSpec> fields;
+    auto addBuySell = [&fields]() {
+        fields.push_back({"buy_value", "buy_value", FieldSpec::DoubleField, -999999, 999999, 0.1, QVariant()});
+        fields.push_back({"sell_value", "sell_value", FieldSpec::DoubleField, -999999, 999999, 0.1, QVariant()});
+    };
+
+    if (key == "ma") {
+        fields = {
+            {"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 20},
+            {"type", "type", FieldSpec::ComboField, 0, 0, 0, "SMA", {"SMA", "EMA", "WMA", "VWMA"}}
+        };
+        addBuySell();
+    } else if (key == "donchian") {
+        fields = {{"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 20}};
+        addBuySell();
+    } else if (key == "psar") {
+        fields = {
+            {"af", "af", FieldSpec::DoubleField, 0.0, 10.0, 0.01, 0.02},
+            {"max_af", "max_af", FieldSpec::DoubleField, 0.0, 10.0, 0.01, 0.2}
+        };
+        addBuySell();
+    } else if (key == "bb") {
+        fields = {
+            {"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 20},
+            {"std", "std", FieldSpec::DoubleField, 0.1, 50.0, 0.1, 2.0}
+        };
+        addBuySell();
+    } else if (key == "rsi") {
+        fields = {{"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 14}};
+        addBuySell();
+    } else if (key == "volume") {
+        addBuySell();
+    } else if (key == "stoch_rsi") {
+        fields = {
+            {"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 14},
+            {"smooth_k", "smooth_k", FieldSpec::IntField, 1, 10000, 1.0, 3},
+            {"smooth_d", "smooth_d", FieldSpec::IntField, 1, 10000, 1.0, 3}
+        };
+        addBuySell();
+    } else if (key == "stochastic") {
+        fields = {
+            {"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 14},
+            {"smooth_k", "smooth_k", FieldSpec::IntField, 1, 10000, 1.0, 3},
+            {"smooth_d", "smooth_d", FieldSpec::IntField, 1, 10000, 1.0, 3}
+        };
+        addBuySell();
+    } else if (key == "willr") {
+        fields = {{"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 14}};
+        addBuySell();
+    } else if (key == "macd") {
+        fields = {
+            {"fast", "fast", FieldSpec::IntField, 1, 10000, 1.0, 12},
+            {"slow", "slow", FieldSpec::IntField, 1, 10000, 1.0, 26},
+            {"signal", "signal", FieldSpec::IntField, 1, 10000, 1.0, 9}
+        };
+        addBuySell();
+    } else if (key == "uo") {
+        fields = {
+            {"short", "short", FieldSpec::IntField, 1, 10000, 1.0, 7},
+            {"medium", "medium", FieldSpec::IntField, 1, 10000, 1.0, 14},
+            {"long", "long", FieldSpec::IntField, 1, 10000, 1.0, 28}
+        };
+        addBuySell();
+    } else if (key == "adx" || key == "dmi") {
+        fields = {{"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 14}};
+        addBuySell();
+    } else if (key == "supertrend") {
+        fields = {
+            {"atr_period", "atr_period", FieldSpec::IntField, 1, 10000, 1.0, 10},
+            {"multiplier", "multiplier", FieldSpec::DoubleField, 0.1, 50.0, 0.1, 3.0}
+        };
+        addBuySell();
+    } else { // ema / ema cross / generic
+        fields = {{"length", "length", FieldSpec::IntField, 1, 10000, 1.0, 20}};
+        addBuySell();
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setWindowTitle(tr("Params: %1").arg(indicatorName));
+    dialog->setModal(true);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *form = new QFormLayout();
+    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    form->setFormAlignment(Qt::AlignTop | Qt::AlignLeft);
+    form->setHorizontalSpacing(10);
+    form->setVerticalSpacing(10);
+    form->setContentsMargins(16, 16, 16, 8);
+
+    for (const auto &spec : fields) {
+        QWidget *fieldWidget = nullptr;
+        switch (spec.kind) {
+            case FieldSpec::IntField: {
+                auto *spin = new QSpinBox(dialog);
+                spin->setRange(static_cast<int>(spec.min), static_cast<int>(spec.max));
+                spin->setSingleStep(static_cast<int>(spec.step));
+                spin->setValue(spec.defaultValue.isValid() ? spec.defaultValue.toInt() : 0);
+                spin->setMinimumWidth(160);
+                fieldWidget = spin;
+                break;
+            }
+            case FieldSpec::DoubleField: {
+                auto *dspin = new QDoubleSpinBox(dialog);
+                dspin->setRange(spec.min, spec.max);
+                dspin->setDecimals(6);
+                dspin->setSingleStep(spec.step);
+                dspin->setValue(spec.defaultValue.isValid() ? spec.defaultValue.toDouble() : 0.0);
+                dspin->setMinimumWidth(160);
+                dspin->setSpecialValueText(tr("None"));
+                fieldWidget = dspin;
+                break;
+            }
+            case FieldSpec::ComboField: {
+                auto *combo = new QComboBox(dialog);
+                combo->addItems(spec.options);
+                if (spec.defaultValue.isValid()) {
+                    int idx = combo->findText(spec.defaultValue.toString(), Qt::MatchFixedString);
+                    if (idx >= 0) combo->setCurrentIndex(idx);
+                }
+                combo->setMinimumWidth(160);
+                fieldWidget = combo;
+                break;
+            }
+        }
+
+        if (!fieldWidget) {
+            fieldWidget = new QLineEdit(dialog);
+            static_cast<QLineEdit *>(fieldWidget)->setPlaceholderText(tr("None"));
+        }
+
+        // If this is a buy/sell field, prefer plain line edits to allow None text.
+        if (spec.key == "buy_value" || spec.key == "sell_value") {
+            auto *edit = new QLineEdit(dialog);
+            edit->setPlaceholderText(tr("None"));
+            edit->setMinimumWidth(160);
+            fieldWidget = edit;
+        }
+
+        form->addRow(spec.label, fieldWidget);
+    }
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->addLayout(form);
+    layout->addWidget(buttons, 0, Qt::AlignRight);
+
+    dialog->setStyleSheet(QStringLiteral(
+        "QDialog { background-color: %1; color: %2; }"
+        "QLabel { color: %2; font-weight: 500; }"
+        "QSpinBox, QComboBox, QLineEdit { background: %3; color: %4; border: 1px solid %5; border-radius: 4px; padding: 4px 6px; }"
+        "QComboBox QAbstractItemView { background: %3; color: %4; selection-background-color: %5; }"
+        "QDialogButtonBox QPushButton { background: %6; color: %7; border: 1px solid %5; border-radius: 4px; padding: 4px 12px; min-width: 68px; }"
+        "QDialogButtonBox QPushButton:hover { background: %8; }"
+    ).arg(bg, fg, fieldBg, fieldFg, border, btnBg, btnFg, btnHover));
+
+    dialog->resize(360, dialog->sizeHint().height());
+    dialog->exec();
+}
+
+void BacktestWindow::refreshDashboardBalance() {
+    if (!dashboardRefreshBtn_) {
+        return;
+    }
+    dashboardRefreshBtn_->setEnabled(false);
+    dashboardRefreshBtn_->setText("Refreshing...");
+    auto resetButton = [this]() {
+        if (dashboardRefreshBtn_) {
+            dashboardRefreshBtn_->setEnabled(true);
+            dashboardRefreshBtn_->setText("Refresh Balance");
+        }
+    };
+
+    const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
+    const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
+    if (apiKey.isEmpty() || apiSecret.isEmpty()) {
+        if (dashboardBalanceLabel_) {
+            dashboardBalanceLabel_->setText("API credentials missing");
+        }
+        resetButton();
+        return;
+    }
+    const QString accountType = dashboardAccountTypeCombo_ ? dashboardAccountTypeCombo_->currentText() : "Futures";
+    const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : "Live";
+
+    if (dashboardBalanceLabel_) {
+        dashboardBalanceLabel_->setText("Refreshing...");
+    }
+
+    // Lightweight Python helper using REST; avoids adding a C++ HTTP/signature dependency.
+    const QString script = R"PY(
+import os, time, hmac, hashlib, urllib.parse, json, sys
+import requests
+
+api_key = os.environ.get("API_KEY") or ""
+api_secret = os.environ.get("API_SECRET") or ""
+account = (os.environ.get("ACCOUNT") or "Futures").lower()
+mode = (os.environ.get("MODE") or "Live").lower()
+
+if not api_key or not api_secret:
+    print(json.dumps({"error": "missing credentials"}))
+    sys.exit(0)
+
+is_futures = account.startswith("fut")
+is_testnet = mode.startswith("paper") or mode.startswith("test")
+if is_futures:
+    base = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
+    endpoint = "/fapi/v2/account"
+else:
+    base = "https://testnet.binance.vision" if is_testnet else "https://api.binance.com"
+    endpoint = "/api/v3/account"
+
+params = {"timestamp": int(time.time() * 1000)}
+query = urllib.parse.urlencode(params)
+sig = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+url = f"{base}{endpoint}?{query}&signature={sig}"
+headers = {"X-MBX-APIKEY": api_key}
+
+try:
+    resp = requests.get(url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    balance = None
+    if is_futures:
+        for asset in data.get("assets", []):
+            if asset.get("asset") == "USDT":
+                balance = asset.get("walletBalance") or asset.get("marginBalance") or asset.get("availableBalance")
+                break
+    else:
+        for bal in data.get("balances", []):
+            if bal.get("asset") == "USDT":
+                balance = bal.get("free")
+                break
+    if balance is None:
+        print(json.dumps({"error": "USDT balance not found"}))
+    else:
+        print(json.dumps({"balance": balance}))
+except Exception as exc:  # noqa: BLE001
+    print(json.dumps({"error": str(exc)}))
+    sys.exit(0)
+)PY";
+
+    QProcess proc;
+    QString program = "python";
+#ifdef Q_OS_WIN
+    // Prefer pythonw to avoid stray console popups.
+    program = "pythonw";
+#endif
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("API_KEY", apiKey);
+    env.insert("API_SECRET", apiSecret);
+    env.insert("ACCOUNT", accountType);
+    env.insert("MODE", mode);
+    proc.setProcessEnvironment(env);
+    proc.start(program, {"-c", script});
+    if (!proc.waitForStarted(3000)) {
+        // Fallback to python if pythonw is missing.
+        proc.start("python", {"-c", script});
+        if (!proc.waitForStarted(3000)) {
+            if (dashboardBalanceLabel_) {
+                dashboardBalanceLabel_->setText("Python not found");
+            }
+            resetButton();
+            return;
+        }
+    }
+
+    if (!proc.waitForFinished(15000)) {
+        proc.kill();
+        if (dashboardBalanceLabel_) {
+            dashboardBalanceLabel_->setText("Timeout contacting Binance");
+        }
+        resetButton();
+        return;
+    }
+
+    const QByteArray output = proc.readAllStandardOutput();
+    QString err = QString::fromUtf8(proc.readAllStandardError());
+    if (!err.isEmpty()) {
+        qWarning() << "balance refresh stderr:" << err;
+    }
+
+    QJsonParseError parseErr{};
+    const QJsonDocument doc = QJsonDocument::fromJson(output, &parseErr);
+    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
+        if (dashboardBalanceLabel_) {
+            dashboardBalanceLabel_->setText("Unexpected response");
+        }
+        resetButton();
+        return;
+    }
+
+    const QJsonObject obj = doc.object();
+    if (obj.contains("error")) {
+        if (dashboardBalanceLabel_) {
+            dashboardBalanceLabel_->setText(QString("Error: %1").arg(obj.value("error").toString()));
+        }
+        resetButton();
+        return;
+    }
+
+    const QVariant balVar = obj.value("balance").toVariant();
+    QString balStr = balVar.toString();
+    if ((balStr.isEmpty() || balStr == "0") && balVar.canConvert<double>()) {
+        balStr = QString::number(balVar.toDouble(), 'f', 4);
+    }
+    if (dashboardBalanceLabel_) {
+        dashboardBalanceLabel_->setText(balStr.isEmpty() ? "0" : balStr);
+        dashboardBalanceLabel_->setStyleSheet("color: #22c55e; font-weight: 700;");
+    }
+    resetButton();
+}
+
+void BacktestWindow::refreshDashboardSymbols() {
+    if (!dashboardRefreshSymbolsBtn_) {
+        return;
+    }
+    dashboardRefreshSymbolsBtn_->setEnabled(false);
+    dashboardRefreshSymbolsBtn_->setText("Refreshing...");
+    auto resetButton = [this]() {
+        if (dashboardRefreshSymbolsBtn_) {
+            dashboardRefreshSymbolsBtn_->setEnabled(true);
+            dashboardRefreshSymbolsBtn_->setText("Refresh Symbols");
+        }
+    };
+
+    if (!dashboardSymbolList_) {
+        resetButton();
+        return;
+    }
+
+    const QString accountType = dashboardAccountTypeCombo_ ? dashboardAccountTypeCombo_->currentText() : "Futures";
+    const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : "Live";
+
+    const QString script = R"PY(
+import os, json, requests
+
+account = (os.environ.get("ACCOUNT") or "Futures").lower()
+mode = (os.environ.get("MODE") or "Live").lower()
+
+is_futures = account.startswith("fut")
+is_testnet = mode.startswith("paper") or mode.startswith("test")
+
+if is_futures:
+    base = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
+    endpoint = "/fapi/v1/exchangeInfo"
+else:
+    base = "https://testnet.binance.vision" if is_testnet else "https://api.binance.com"
+    endpoint = "/api/v3/exchangeInfo"
+
+try:
+    resp = requests.get(base + endpoint, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    symbols = []
+    for sym in data.get("symbols", []):
+        if sym.get("quoteAsset") != "USDT":
+            continue
+        if sym.get("status", "").upper() not in {"TRADING", "PENDING_TRADING"}:
+            continue
+        if is_futures:
+            if sym.get("contractType", "").upper() not in {"PERPETUAL", "CURRENT_QUARTER", "NEXT_QUARTER"}:
+                continue
+        symbols.append(sym.get("symbol"))
+    symbols = sorted({s for s in symbols if s})
+    print(json.dumps({"symbols": symbols}))
+except Exception as exc:  # noqa: BLE001
+    print(json.dumps({"error": str(exc)}))
+)PY";
+
+    QProcess proc;
+    QString program = "python";
+#ifdef Q_OS_WIN
+    program = "pythonw";
+#endif
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("ACCOUNT", accountType);
+    env.insert("MODE", mode);
+    proc.setProcessEnvironment(env);
+    proc.start(program, {"-c", script});
+    if (!proc.waitForStarted(3000)) {
+        proc.start("python", {"-c", script});
+        if (!proc.waitForStarted(3000)) {
+            QMessageBox::warning(this, tr("Refresh symbols failed"), tr("Python not found to fetch symbols."));
+            resetButton();
+            return;
+        }
+    }
+
+    if (!proc.waitForFinished(15000)) {
+        proc.kill();
+        QMessageBox::warning(this, tr("Refresh symbols failed"), tr("Timeout contacting Binance."));
+        resetButton();
+        return;
+    }
+
+    const QByteArray output = proc.readAllStandardOutput();
+    QJsonParseError parseErr{};
+    const QJsonDocument doc = QJsonDocument::fromJson(output, &parseErr);
+    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
+        QMessageBox::warning(this, tr("Refresh symbols failed"), tr("Unexpected response from Binance."));
+        resetButton();
+        return;
+    }
+
+    const QJsonObject obj = doc.object();
+    if (obj.contains("error")) {
+        QMessageBox::warning(this, tr("Refresh symbols failed"), obj.value("error").toString());
+        resetButton();
+        return;
+    }
+
+    const QJsonArray symbolsArr = obj.value("symbols").toArray();
+    QSet<QString> previousSelections;
+    if (dashboardSymbolList_) {
+        for (auto *item : dashboardSymbolList_->selectedItems()) {
+            previousSelections.insert(item->text());
+        }
+        dashboardSymbolList_->clear();
+    }
+
+    QStringList symbols;
+    symbols.reserve(symbolsArr.size());
+    for (const auto &val : symbolsArr) {
+        symbols.append(val.toString());
+    }
+    dashboardSymbolList_->addItems(symbols);
+
+    // Restore previous selections if still present; otherwise select first to hint usability.
+    bool anySelected = false;
+    for (int i = 0; i < dashboardSymbolList_->count(); ++i) {
+        auto *item = dashboardSymbolList_->item(i);
+        if (previousSelections.contains(item->text())) {
+            item->setSelected(true);
+            anySelected = true;
+        }
+    }
+    if (!anySelected && dashboardSymbolList_->count() > 0) {
+        dashboardSymbolList_->item(0)->setSelected(true);
+    }
+
+    resetButton();
+}
 QWidget *BacktestWindow::createDashboardTab() {
     auto *page = new QWidget(this);
     page->setObjectName("dashboardPage");
     dashboardPage_ = page;
+    dashboardApiKey_ = nullptr;
+    dashboardApiSecret_ = nullptr;
+    dashboardBalanceLabel_ = nullptr;
+    dashboardRefreshBtn_ = nullptr;
+    dashboardAccountTypeCombo_ = nullptr;
+    dashboardModeCombo_ = nullptr;
+    dashboardSymbolList_ = nullptr;
+    dashboardIntervalList_ = nullptr;
+    dashboardRefreshSymbolsBtn_ = nullptr;
 
     auto *pageLayout = new QVBoxLayout(page);
     pageLayout->setContentsMargins(0, 0, 0, 0);
@@ -145,9 +654,11 @@ QWidget *BacktestWindow::createDashboardTab() {
     scrollArea->setWidgetResizable(true);
     scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setObjectName("dashboardScrollArea");
     pageLayout->addWidget(scrollArea);
 
     auto *content = new QWidget(scrollArea);
+    content->setObjectName("dashboardScrollWidget");
     scrollArea->setWidget(content);
 
     auto *root = new QVBoxLayout(content);
@@ -168,14 +679,14 @@ QWidget *BacktestWindow::createDashboardTab() {
     };
 
     int col = 0;
-    auto *apiKeyEdit = new QLineEdit(accountBox);
-    apiKeyEdit->setPlaceholderText("API Key");
-    apiKeyEdit->setMinimumWidth(240);
-    addPair(0, col, "API Key:", apiKeyEdit, 2);
+    dashboardApiKey_ = new QLineEdit(accountBox);
+    dashboardApiKey_->setPlaceholderText("API Key");
+    dashboardApiKey_->setMinimumWidth(240);
+    addPair(0, col, "API Key:", dashboardApiKey_, 2);
 
-    auto *modeCombo = new QComboBox(accountBox);
-    modeCombo->addItems({"Live", "Paper (Testnet)"});
-    addPair(0, col, "Mode:", modeCombo);
+    dashboardModeCombo_ = new QComboBox(accountBox);
+    dashboardModeCombo_->addItems({"Live", "Paper (Testnet)"});
+    addPair(0, col, "Mode:", dashboardModeCombo_);
 
     dashboardThemeCombo_ = new QComboBox(accountBox);
     dashboardThemeCombo_->addItems({"Dark", "Light"});
@@ -201,15 +712,15 @@ QWidget *BacktestWindow::createDashboardTab() {
     accountGrid->setColumnStretch(col, 1);
 
     col = 0;
-    auto *apiSecretEdit = new QLineEdit(accountBox);
-    apiSecretEdit->setEchoMode(QLineEdit::Password);
-    apiSecretEdit->setPlaceholderText("API Secret Key");
-    apiSecretEdit->setMinimumWidth(240);
-    addPair(1, col, "API Secret Key:", apiSecretEdit, 2);
+    dashboardApiSecret_ = new QLineEdit(accountBox);
+    dashboardApiSecret_->setEchoMode(QLineEdit::Password);
+    dashboardApiSecret_->setPlaceholderText("API Secret Key");
+    dashboardApiSecret_->setMinimumWidth(240);
+    addPair(1, col, "API Secret Key:", dashboardApiSecret_, 2);
 
-    auto *accountTypeCombo = new QComboBox(accountBox);
-    accountTypeCombo->addItems({"Futures", "Spot"});
-    addPair(1, col, "Account Type:", accountTypeCombo);
+    dashboardAccountTypeCombo_ = new QComboBox(accountBox);
+    dashboardAccountTypeCombo_->addItems({"Futures", "Spot"});
+    addPair(1, col, "Account Type:", dashboardAccountTypeCombo_);
 
     auto *accountModeCombo = new QComboBox(accountBox);
     accountModeCombo->addItems({"Classic Trading", "Multi-Asset Mode"});
@@ -225,12 +736,13 @@ QWidget *BacktestWindow::createDashboardTab() {
     addPair(1, col, "Connector:", connectorCombo, 3);
 
     col = 0;
-    auto *balanceLabel = new QLabel("N/A", accountBox);
-    balanceLabel->setStyleSheet("color: #fbbf24; font-weight: 700;");
-    addPair(2, col, "Total USDT balance:", balanceLabel);
+    dashboardBalanceLabel_ = new QLabel("N/A", accountBox);
+    dashboardBalanceLabel_->setStyleSheet("color: #fbbf24; font-weight: 700;");
+    addPair(2, col, "Total USDT balance:", dashboardBalanceLabel_);
 
-    auto *refreshBalanceBtn = new QPushButton("Refresh Balance", accountBox);
-    accountGrid->addWidget(refreshBalanceBtn, 2, col++);
+    dashboardRefreshBtn_ = new QPushButton("Refresh Balance", accountBox);
+    connect(dashboardRefreshBtn_, &QPushButton::clicked, this, &BacktestWindow::refreshDashboardBalance);
+    accountGrid->addWidget(dashboardRefreshBtn_, 2, col++);
 
     auto *leverageSpin = new QSpinBox(accountBox);
     leverageSpin->setRange(1, 125);
@@ -301,6 +813,9 @@ QWidget *BacktestWindow::createDashboardTab() {
     auto *dashboardSymbolList = new QListWidget(marketsBox);
     dashboardSymbolList->setSelectionMode(QAbstractItemView::MultiSelection);
     dashboardSymbolList->addItems({"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"});
+    dashboardSymbolList->setMinimumHeight(220);
+    dashboardSymbolList->setMaximumHeight(260);
+    dashboardSymbolList_ = dashboardSymbolList;
     listsGrid->addWidget(dashboardSymbolList, 1, 0, 2, 1);
 
     auto *dashboardIntervalList = new QListWidget(marketsBox);
@@ -308,10 +823,14 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardIntervalList->addItems({
         "1m", "3m", "5m", "10m", "15m", "20m", "30m", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h"
     });
+    dashboardIntervalList->setMinimumHeight(220);
+    dashboardIntervalList->setMaximumHeight(260);
+    dashboardIntervalList_ = dashboardIntervalList;
     listsGrid->addWidget(dashboardIntervalList, 1, 1, 2, 1);
 
-    auto *refreshSymbolsBtn = new QPushButton("Refresh Symbols", marketsBox);
-    listsGrid->addWidget(refreshSymbolsBtn, 3, 0, 1, 1);
+    dashboardRefreshSymbolsBtn_ = new QPushButton("Refresh Symbols", marketsBox);
+    connect(dashboardRefreshSymbolsBtn_, &QPushButton::clicked, this, &BacktestWindow::refreshDashboardSymbols);
+    listsGrid->addWidget(dashboardRefreshSymbolsBtn_, 3, 0, 1, 1);
 
     auto *customIntervalEdit = new QLineEdit(marketsBox);
     customIntervalEdit->setPlaceholderText("e.g., 45s or 7m or 90m, comma-separated");
@@ -441,13 +960,14 @@ QWidget *BacktestWindow::createDashboardTab() {
     indGrid->setVerticalSpacing(8);
     indGrid->setContentsMargins(12, 12, 12, 12);
 
-    auto addIndicatorRow = [indicatorsBox, indGrid](int rowIndex, const QString &name) {
+    auto addIndicatorRow = [indicatorsBox, indGrid, this](int rowIndex, const QString &name) {
         auto *cb = new QCheckBox(name, indicatorsBox);
         auto *btn = new QPushButton("Buy-Sell Values", indicatorsBox);
         btn->setMinimumWidth(150);
         btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         btn->setEnabled(false);
         QObject::connect(cb, &QCheckBox::toggled, btn, &QWidget::setEnabled);
+        QObject::connect(btn, &QPushButton::clicked, this, [this, name]() { showIndicatorDialog(name); });
         indGrid->addWidget(cb, rowIndex, 0);
         indGrid->addWidget(btn, rowIndex, 1);
     };
@@ -507,13 +1027,20 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         QTabWidget::pane { border: 1px solid #1f2937; background: #0b0f16; }
         QTabBar::tab { background: #111827; color: #e5e7eb; padding: 6px 10px; }
         QTabBar::tab:selected { background: #1f2937; }
-        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage { background: #0b0f16; color: #e5e7eb; }
+        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage, QWidget#dashboardPage { background: #0b0f16; color: #e5e7eb; }
+        QScrollArea#dashboardScrollArea { background: #0b0f16; border: none; }
+        QWidget#dashboardScrollWidget { background: #0b0f16; }
         QScrollArea#backtestScrollArea { background: #0b0f16; border: none; }
         QWidget#backtestScrollWidget { background: #0b0f16; }
         QGroupBox { color: #e5e7eb; border-color: #1f2937; }
         QLabel { color: #e5e7eb; }
         QLabel:disabled, QCheckBox:disabled, QComboBox:disabled, QLineEdit:disabled { color: #9ca3af; }
         QGroupBox::title { color: #e5e7eb; }
+        QCheckBox { color: #e5e7eb; spacing: 8px; }
+        QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #1f2937; background: #0d1117; }
+        QCheckBox::indicator:hover { border-color: #2563eb; }
+        QCheckBox::indicator:checked { background: #2563eb; border-color: #2563eb; }
+        QCheckBox::indicator:disabled { background: #111827; border-color: #1f2937; }
         QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QDateEdit { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 3px 6px; }
         QListWidget { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; }
         QPushButton { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 6px 10px; }
@@ -527,13 +1054,20 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         QTabWidget::pane { border: 1px solid #d1d5db; background: #f5f7fb; }
         QTabBar::tab { background: #e5e7eb; color: #0f172a; padding: 6px 10px; }
         QTabBar::tab:selected { background: #ffffff; }
-        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage { background: #f5f7fb; color: #0f172a; }
+        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage, QWidget#dashboardPage { background: #f5f7fb; color: #0f172a; }
+        QScrollArea#dashboardScrollArea { background: #f5f7fb; border: none; }
+        QWidget#dashboardScrollWidget { background: #f5f7fb; }
         QScrollArea#backtestScrollArea { background: #f5f7fb; border: none; }
         QWidget#backtestScrollWidget { background: #f5f7fb; }
         QGroupBox { color: #0f172a; border-color: #d1d5db; }
         QLabel { color: #0f172a; }
         QLabel:disabled, QCheckBox:disabled, QComboBox:disabled, QLineEdit:disabled { color: #6b7280; }
         QGroupBox::title { color: #0f172a; }
+        QCheckBox { color: #0f172a; spacing: 8px; }
+        QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #cbd5e1; background: #ffffff; }
+        QCheckBox::indicator:hover { border-color: #2563eb; }
+        QCheckBox::indicator:checked { background: #2563eb; border-color: #2563eb; }
+        QCheckBox::indicator:disabled { background: #f1f5f9; border-color: #d1d5db; }
         QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QDateEdit { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 3px 6px; }
         QListWidget { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }
         QPushButton { background: #e5e7eb; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; }

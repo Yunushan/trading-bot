@@ -42,6 +42,9 @@ private:
     QWidget *createPlaceholderTab(const QString &title, const QString &body);
     void launchPythonBot();
     void populateDefaults();
+    void showIndicatorDialog(const QString &indicatorName);
+    void refreshDashboardBalance();
+    void refreshDashboardSymbols();
     void wireSignals();
     void ensureBotTimer(bool running);
     void updateStatusMessage(const QString &message);
@@ -66,4 +69,13 @@ private:
     QComboBox *dashboardThemeCombo_;
     QWidget *dashboardPage_;
     QWidget *codePage_;
+    QLineEdit *dashboardApiKey_;
+    QLineEdit *dashboardApiSecret_;
+    QLabel *dashboardBalanceLabel_;
+    QPushButton *dashboardRefreshBtn_;
+    QComboBox *dashboardAccountTypeCombo_;
+    QComboBox *dashboardModeCombo_;
+    QListWidget *dashboardSymbolList_;
+    QListWidget *dashboardIntervalList_;
+    QPushButton *dashboardRefreshSymbolsBtn_;
 };

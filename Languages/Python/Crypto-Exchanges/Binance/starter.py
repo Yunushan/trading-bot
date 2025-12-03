@@ -17,6 +17,28 @@ if _dns_guard_flags not in _chromium_flags or _gpu_flags not in _chromium_flags:
     merged_flags = f"{_chromium_flags} {_dns_guard_flags} {_gpu_flags}".strip()
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = merged_flags
 
+
+def _strip_foreign_site_packages() -> None:
+    """
+    Remove site-packages entries from other Python versions that can shadow the venv.
+    Fixes ModuleNotFoundError for compiled wheels (e.g., PyQt6.sip) when PYTHONPATH
+    points at a different interpreter's user site.
+    """
+    expected = f"python{sys.version_info.major}{sys.version_info.minor}"
+    cleaned: list[str] = []
+    removed: list[str] = []
+    for path in sys.path:
+        lower = path.lower()
+        if "site-packages" in lower and "python" in lower and expected not in lower:
+            removed.append(path)
+            continue
+        cleaned.append(path)
+    if removed:
+        sys.path[:] = cleaned
+        os.environ.pop("PYTHONPATH", None)
+
+
+_strip_foreign_site_packages()
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 BASE_DIR = Path(__file__).resolve().parent
