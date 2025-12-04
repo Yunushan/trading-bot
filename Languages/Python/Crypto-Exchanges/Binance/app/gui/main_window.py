@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import traceback
+import concurrent.futures
 import importlib.metadata as importlib_metadata
 import urllib.request
 import pandas as pd
@@ -522,7 +523,7 @@ def _dependency_targets_from_requirements(paths: list[Path] | None = None) -> li
 
 DEPENDENCY_VERSION_TARGETS = _dependency_targets_from_requirements()
 
-def _latest_version_from_pypi(package: str) -> str | None:
+def _latest_version_from_pypi(package: str, timeout: float = 8.0) -> str | None:
     if not package:
         return None
     cache_entry = _LATEST_VERSION_CACHE.get(package)
@@ -530,16 +531,58 @@ def _latest_version_from_pypi(package: str) -> str | None:
     if cache_entry and now - cache_entry[1] < 1800:
         return cache_entry[0]
     url = f"https://pypi.org/pypi/{package}/json"
+    timeout_val = max(2.0, float(timeout or 8.0))
+    latest = None
+
+    # Preferred: requests with verification (respects proxies)
     try:
-        with urllib.request.urlopen(url, timeout=6) as resp:
-            payload = json.load(resp)
+        import requests  # type: ignore
+
+        resp = requests.get(url, timeout=timeout_val, headers={"User-Agent": "trading-bot-starter/1.0"})
+        if resp.status_code == 200:
+            payload = resp.json()
             latest = payload.get("info", {}).get("version")
-            if latest:
-                _LATEST_VERSION_CACHE[package] = (latest, now)
-                return latest
     except Exception:
         pass
-    _LATEST_VERSION_CACHE[package] = (None, now)
+
+    # Fallback: requests with verify=False (for environments with intercepting proxies)
+    if latest is None:
+        try:
+            import requests  # type: ignore
+
+            resp = requests.get(
+                url,
+                timeout=timeout_val,
+                headers={"User-Agent": "trading-bot-starter/1.0"},
+                verify=False,  # noqa: S501
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                latest = payload.get("info", {}).get("version")
+        except Exception:
+            pass
+
+    # Final fallback: urllib without verification
+    if latest is None:
+        try:
+            import ssl
+
+            req = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
+            ctx = ssl.create_default_context()
+            try:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            except Exception:
+                pass
+            with urllib.request.urlopen(req, timeout=timeout_val, context=ctx) as resp:
+                payload = json.load(resp)
+                latest = payload.get("info", {}).get("version")
+        except Exception:
+            latest = None
+
+    if latest:
+        _LATEST_VERSION_CACHE[package] = (latest, now)
+        return latest
     return None
 
 BACKTEST_TEMPLATE_DEFINITIONS = {
@@ -1456,9 +1499,15 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
     return deduped_results, interval_map
 
 
-def _collect_dependency_versions(targets: list[dict[str, str]] | None = None) -> list[tuple[str, str, str]]:
+def _collect_dependency_versions(
+    targets: list[dict[str, str]] | None = None,
+    *,
+    include_latest: bool = True,
+) -> list[tuple[str, str, str]]:
     versions: list[tuple[str, str, str]] = []
     target_list = targets or DEPENDENCY_VERSION_TARGETS
+
+    installed_map: dict[str, str] = {}
     for target in target_list:
         label = target["label"]
         installed_version = None
@@ -1471,14 +1520,32 @@ def _collect_dependency_versions(targets: list[dict[str, str]] | None = None) ->
                     installed_version = importlib_metadata.version(package)
                 except Exception:
                     installed_version = None
-        installed_display = installed_version or "Not installed"
-        latest_display = "Unknown"
-        if target.get("custom") != "qt":
-            pypi_name = target.get("pypi") or target.get("package")
-            if pypi_name:
-                latest = _latest_version_from_pypi(pypi_name)
-                if latest:
-                    latest_display = latest
+        installed_map[label] = installed_version or "Not installed"
+
+    latest_map: dict[str, str] = {}
+    if include_latest:
+        # Fetch latest versions concurrently to avoid long waits on slow networks/PyPI.
+        max_workers = min(6, max(1, len(target_list)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map: dict[str, concurrent.futures.Future] = {}
+            for target in target_list:
+                if target.get("custom") == "qt":
+                    continue
+                pypi_name = target.get("pypi") or target.get("package")
+                if not pypi_name:
+                    continue
+                future_map[target["label"]] = pool.submit(_latest_version_from_pypi, pypi_name)
+            for label, fut in future_map.items():
+                try:
+                    latest_val = fut.result(timeout=10.0)
+                except Exception:
+                    latest_val = None
+                latest_map[label] = latest_val or "Unknown"
+
+    for target in target_list:
+        label = target["label"]
+        installed_display = installed_map.get(label, "Not installed")
+        latest_display = latest_map.get(label, "Not checked" if not include_latest else "Unknown")
         versions.append((label, installed_display, latest_display))
     return versions
 
@@ -2218,6 +2285,26 @@ class _PositionsWorker(QtCore.QObject):
                         if last <= 0.0:
                             continue
                         value = total * last
+                        cost_snap = None
+                        try:
+                            cost_snap = self._wrapper.get_spot_position_cost(sym)
+                        except Exception:
+                            cost_snap = None
+                        if cost_snap and cost_snap.get("qty", 0.0) > 0.0:
+                            snap_qty = float(cost_snap.get("qty") or 0.0)
+                            snap_cost = float(cost_snap.get("cost") or 0.0)
+                            if snap_qty > 0.0 and snap_cost > 0.0:
+                                cost_per_unit = snap_cost / snap_qty
+                                margin_usdt = cost_per_unit * total
+                            else:
+                                margin_usdt = value
+                        else:
+                            margin_usdt = value
+                        if margin_usdt <= 0.0:
+                            margin_usdt = value
+                        pnl_value = value - margin_usdt
+                        roi = (pnl_value / margin_usdt * 100.0) if margin_usdt > 0 else 0.0
+                        pnl_roi = f"{pnl_value:+.2f} USDT ({roi:+.2f}%)"
                         filters = self._spot_filter_cache.get(sym)
                         if filters is None:
                             try:
@@ -2237,11 +2324,15 @@ class _PositionsWorker(QtCore.QObject):
                             'qty': total,
                             'mark': last,
                             'value': value,
-                            'size_usdt': 0.0,
-                            'margin_usdt': 0.0,
-                            'pnl_roi': "-",
-                            'side_key': 'SPOT',
-                            'raw_position': None,
+                            'size_usdt': value,
+                            'margin_usdt': margin_usdt,
+                            'pnl_roi': pnl_roi,
+                            'pnl_value': pnl_value,
+                            'side_key': 'L',  # treat spot as long for aggregation/indicators
+                            'raw_position': {
+                                'cost_usdt': margin_usdt,
+                                'qty_total': total,
+                            },
                             'stop_loss_enabled': False,
                         })
                     except Exception:
@@ -2458,6 +2549,8 @@ class MainWindow(QtWidgets.QWidget):
         self._indicator_runtime_controls = []
         self._runtime_lock_widgets = []
         self._runtime_active_exemptions = set()
+        self._dep_version_refresh_inflight = False
+        self._dep_version_refresh_pending = False
         self.backtest_indicator_widgets = {}
         self.backtest_results = []
         self.backtest_worker = None
@@ -2909,6 +3002,9 @@ class MainWindow(QtWidgets.QWidget):
                         leverage_val = int(self.leverage_spin.value())
                     except Exception:
                         leverage_val = None
+                acct_text = str(self.config.get("account_type") or "")
+                if not acct_text.strip().upper().startswith("FUT"):
+                    leverage_val = 1
                 if leverage_val is not None:
                     controls["leverage"] = leverage_val
                 account_mode_val = None
@@ -6563,34 +6659,106 @@ class MainWindow(QtWidgets.QWidget):
             return "Portfolio Margin"
         return "Classic Trading"
 
-    def _ensure_runtime_connector_for_account(self, account_type: str, *, force_default: bool = False, suppress_refresh: bool = False) -> str:
-        account_key = "FUTURES" if str(account_type or "Futures").upper().startswith("FUT") else "SPOT"
+    def _update_leverage_enabled(self):
+        """Disable leverage control when Spot is selected."""
+        try:
+            acct = str(self.config.get("account_type") or "")
+            is_futures = acct.strip().upper().startswith("FUT")
+        except Exception:
+            is_futures = True
+        try:
+            spin = getattr(self, "leverage_spin", None)
+            if spin is not None:
+                if not is_futures:
+                    spin.setValue(1)
+                spin.setEnabled(is_futures)
+        except Exception:
+            pass
+        # Futures-only controls
+        futures_only_widgets = []
+        try:
+            futures_only_widgets.extend([
+                getattr(self, "margin_mode_combo", None),
+                getattr(self, "position_mode_combo", None),
+                getattr(self, "assets_mode_combo", None),
+                getattr(self, "account_mode_combo", None),
+                getattr(self, "allow_opposite_checkbox", None),
+                getattr(self, "cb_add_only", None),
+                getattr(self, "lead_trader_enable_cb", None),
+                getattr(self, "lead_trader_combo", None),
+            ])
+        except Exception:
+            pass
+        for widget in futures_only_widgets:
+            try:
+                if widget is None:
+                    continue
+                widget.setEnabled(is_futures)
+            except Exception:
+                pass
+        # Force side to BUY when on spot; disable other options.
+        try:
+            side_combo = getattr(self, "side_combo", None)
+            if side_combo is not None:
+                if not is_futures:
+                    label_buy = SIDE_LABELS["BUY"]
+                    idx_buy = side_combo.findText(label_buy)
+                    if idx_buy >= 0:
+                        blocker = None
+                        try:
+                            blocker = QtCore.QSignalBlocker(side_combo)
+                        except Exception:
+                            blocker = None
+                        side_combo.setCurrentIndex(idx_buy)
+                        if blocker is not None:
+                            del blocker
+                    side_combo.setEnabled(False)
+                else:
+                    side_combo.setEnabled(True)
+        except Exception:
+            pass
+
+    def _rebuild_connector_combo_for_account(self, account_key: str, *, force_default: bool = False, current_backend: str | None = None) -> str:
+        """Ensure the connector dropdown matches the selected account type (spot vs futures)."""
         allowed = FUTURES_CONNECTOR_KEYS if account_key == "FUTURES" else SPOT_CONNECTOR_KEYS
         recommended = _recommended_connector_for_key(account_key)
-        current_backend = _normalize_connector_backend(self.config.get("connector_backend"))
-        if force_default or current_backend not in allowed:
-            current_backend = recommended
-            self.config["connector_backend"] = current_backend
-        if hasattr(self, "connector_combo") and self.connector_combo is not None:
-            idx = self.connector_combo.findData(current_backend)
-            if idx < 0:
-                idx = self.connector_combo.findData(recommended)
-            if idx < 0 and self.connector_combo.count():
-                idx = 0
-                current_backend = _normalize_connector_backend(self.connector_combo.itemData(idx))
-                self.config["connector_backend"] = current_backend
-            if idx >= 0:
+        target = _normalize_connector_backend(current_backend or self.config.get("connector_backend"))
+        if force_default or target not in allowed:
+            target = recommended
+        combo = getattr(self, "connector_combo", None)
+        chosen = target
+        if combo is not None:
+            try:
+                blocker = QtCore.QSignalBlocker(combo)
+            except Exception:
                 blocker = None
+            combo.clear()
+            for label, value in CONNECTOR_OPTIONS:
+                if value in allowed:
+                    combo.addItem(label, value)
+            if combo.count():
+                idx = combo.findData(target)
+                if idx < 0:
+                    idx = combo.findData(recommended)
+                if idx < 0:
+                    idx = 0
+                combo.setCurrentIndex(max(0, idx))
                 try:
-                    blocker = QtCore.QSignalBlocker(self.connector_combo)
+                    chosen = _normalize_connector_backend(combo.itemData(combo.currentIndex()))
                 except Exception:
-                    blocker = None
-                self.connector_combo.setCurrentIndex(idx)
-                if blocker is not None:
-                    del blocker
+                    chosen = target
+            if blocker is not None:
+                del blocker
+        self.config["connector_backend"] = chosen
+        return chosen
+
+    def _ensure_runtime_connector_for_account(self, account_type: str, *, force_default: bool = False, suppress_refresh: bool = False) -> str:
+        account_key = "FUTURES" if str(account_type or "Futures").upper().startswith("FUT") else "SPOT"
+        current_backend = _normalize_connector_backend(self.config.get("connector_backend"))
+        chosen = self._rebuild_connector_combo_for_account(account_key, force_default=force_default, current_backend=current_backend)
         if not suppress_refresh:
             self._update_connector_labels()
-        return self.config.get("connector_backend", current_backend)
+        return self.config.get("connector_backend", chosen)
 
     def _runtime_connector_backend(self, *, suppress_refresh: bool = False) -> str:
         account_type = str(self.config.get("account_type", "Futures") or "Futures")
@@ -6690,6 +6858,7 @@ class MainWindow(QtWidgets.QWidget):
         self.config["account_type"] = normalized
         self._invalidate_shared_binance("account_type_changed")
         self._ensure_runtime_connector_for_account(normalized, force_default=False)
+        self._update_leverage_enabled()
         desired_spot = "Binance spot"
         desired_futures = "Binance futures"
         try:
@@ -7787,6 +7956,7 @@ class MainWindow(QtWidgets.QWidget):
         self.leverage_spin.setValue(self.config.get('leverage', 5))
         self.leverage_spin.valueChanged.connect(self.on_leverage_changed)
         grid.addWidget(self.leverage_spin, 2, 4)
+        self._update_leverage_enabled()
 
         grid.addWidget(QtWidgets.QLabel("Margin Mode (Futures):"), 2, 5)
         self.margin_mode_combo = QtWidgets.QComboBox()
@@ -9406,24 +9576,124 @@ def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None 
 
 
 def _refresh_dependency_versions(self) -> None:
+    if getattr(self, "_dep_version_refresh_inflight", False):
+        self._dep_version_refresh_pending = True
+        return
+
+    self._dep_version_refresh_inflight = True
+    self._dep_version_refresh_pending = False
+    self._dep_version_watchdog_token = time.monotonic()
+
     try:
         resolved_targets = _dependency_targets_from_requirements(_iter_candidate_requirement_paths(self.config))
     except Exception:
         resolved_targets = copy.deepcopy(DEPENDENCY_VERSION_TARGETS)
-    if resolved_targets and resolved_targets != getattr(self, "_dep_version_targets", None):
-        self._rebuild_dependency_version_rows(resolved_targets)
+
+    # Ensure the UI rows exist for the resolved targets before applying values.
+    try:
+        if resolved_targets and resolved_targets != getattr(self, "_dep_version_targets", None):
+            self._rebuild_dependency_version_rows(resolved_targets)
+        else:
+            try:
+                self._dep_version_targets = list(resolved_targets or [])
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     labels = getattr(self, "_dep_version_labels", None)
-    targets = getattr(self, "_dep_version_targets", None)
-    if not labels:
-        return
-    for label, installed, latest in _collect_dependency_versions(targets):
-        widgets = labels.get(label)
-        if widgets is None:
-            continue
-        installed_widget, latest_widget = widgets
-        installed_widget.setText(installed)
-        latest_widget.setText(latest)
+    if labels:
+        for installed_widget, latest_widget in labels.values():
+            try:
+                latest_widget.setText("Checking...")
+            except Exception:
+                pass
+
+    # Phase 1: populate installed versions immediately (no network).
+    try:
+        installed_snapshot = _collect_dependency_versions(resolved_targets, include_latest=False)
+    except Exception:
+        installed_snapshot = []
+    if labels and installed_snapshot:
+        for label, installed, _ in installed_snapshot:
+            widgets = labels.get(label)
+            if not widgets:
+                continue
+            installed_widget, _ = widgets
+            try:
+                installed_widget.setText(installed)
+            except Exception:
+                pass
+
+    def _watchdog(token: float):
+        try:
+            if not getattr(self, "_dep_version_refresh_inflight", False):
+                return
+            if token != getattr(self, "_dep_version_watchdog_token", None):
+                return
+            labels_local = getattr(self, "_dep_version_labels", None)
+            if labels_local:
+                for installed_widget, latest_widget in labels_local.values():
+                    try:
+                        latest_widget.setText("Unknown")
+                    except Exception:
+                        pass
+            self._dep_version_refresh_inflight = False
+        except Exception:
+            self._dep_version_refresh_inflight = False
+
+    QtCore.QTimer.singleShot(20000, lambda t=self._dep_version_watchdog_token: _watchdog(t))
+
+    # Phase 2: fetch latest versions in the background without blocking the UI.
+    def _run_latest():
+        try:
+            installed_snapshot = list(_collect_dependency_versions(resolved_targets, include_latest=False))
+        except Exception:
+            installed_snapshot = []
+
+        try:
+            results = list(_collect_dependency_versions(resolved_targets, include_latest=True))
+        except Exception:
+            results = []
+        if not results:
+            # Fall back to installed values with Unknown latest so the UI never stays at "Checking..."
+            if installed_snapshot:
+                results = [(label, inst, "Unknown") for (label, inst, _) in installed_snapshot]
+            else:
+                results = [(target["label"], "Not installed", "Unknown") for target in (resolved_targets or [])]
+
+        def _apply_results():
+            labels_local = getattr(self, "_dep_version_labels", None)
+            if labels_local:
+                installed_map = {}
+                latest_map = {}
+                for label, installed, latest in results:
+                    installed_map[label] = installed
+                    latest_map[label] = latest
+
+                for label, widgets in labels_local.items():
+                    if widgets is None:
+                        continue
+                    installed_widget, latest_widget = widgets
+                    try:
+                        if label in installed_map:
+                            installed_widget.setText(installed_map[label])
+                    except Exception:
+                        pass
+                    try:
+                        latest_widget.setText(latest_map.get(label, "Unknown"))
+                    except Exception:
+                        pass
+
+            self._dep_version_refresh_inflight = False
+            if getattr(self, "_dep_version_refresh_pending", False):
+                self._dep_version_refresh_pending = False
+                QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
+
+        # Queue the UI update on the main thread even though we collected results in a worker thread.
+        QtCore.QTimer.singleShot(0, _apply_results)
+
+    threading.Thread(target=_run_latest, daemon=True).start()
 
 
 def _update_code_tab_market_sections(self) -> None:
@@ -12416,6 +12686,7 @@ def start_strategy(self):
         default_loop_override = self._loop_choice_value(getattr(self, "loop_combo", None))
         runtime_ctx = self._override_ctx("runtime")
         account_type_text = (self.account_combo.currentText() or "Futures").strip()
+        is_futures_account = account_type_text.upper().startswith("FUT")
         pair_entries: list[dict] = []
         table = runtime_ctx.get("table") if runtime_ctx else None
         if table is not None:
@@ -12559,22 +12830,29 @@ def start_strategy(self):
                     guard_obj.attach_wrapper(self.shared_binance)
             except Exception as guard_attach_err:
                 self.log(f"Guard attach error: {guard_attach_err}")
-            try:
-                dual_enabled = False
-                if self.shared_binance is not None and hasattr(self.shared_binance, "get_futures_dual_side"):
-                    dual_enabled = bool(self.shared_binance.get_futures_dual_side())
-                allow_opposite_cfg = coerce_bool(self.config.get("allow_opposite_positions"), True)
-                if hasattr(guard_obj, "allow_opposite"):
-                    guard_obj.allow_opposite = dual_enabled and allow_opposite_cfg
-                if hasattr(guard_obj, "strict_symbol_side"):
-                    guard_obj.strict_symbol_side = False
-                if dual_enabled and not allow_opposite_cfg:
-                    self.log(
-                        "Hedge mode detected on Binance account; opposite-side entries are disabled so the bot will close "
-                        "existing positions before flipping."
-                    )
-            except Exception:
-                pass
+            if is_futures_account:
+                try:
+                    dual_enabled = False
+                    if self.shared_binance is not None and hasattr(self.shared_binance, "get_futures_dual_side"):
+                        dual_enabled = bool(self.shared_binance.get_futures_dual_side())
+                    allow_opposite_cfg = coerce_bool(self.config.get("allow_opposite_positions"), True)
+                    if hasattr(guard_obj, "allow_opposite"):
+                        guard_obj.allow_opposite = dual_enabled and allow_opposite_cfg
+                    if hasattr(guard_obj, "strict_symbol_side"):
+                        guard_obj.strict_symbol_side = False
+                    if dual_enabled and not allow_opposite_cfg:
+                        self.log(
+                            "Hedge mode detected on Binance account; opposite-side entries are disabled so the bot will close "
+                            "existing positions before flipping."
+                        )
+                except Exception:
+                    pass
+            else:
+                try:
+                    if hasattr(guard_obj, "allow_opposite"):
+                        guard_obj.allow_opposite = True
+                except Exception:
+                    pass
             try:
                 if hasattr(guard_obj, "reset"):
                     guard_obj.reset()

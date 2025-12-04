@@ -1,14 +1,17 @@
 
-from collections import deque
-from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 import copy
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import math
 from enum import Enum
 import re
-import time
 import threading
+import time
 import types
+import urllib.parse
+from collections import deque
+from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 from typing import Any
 import requests
 
@@ -1545,14 +1548,18 @@ class BinanceWrapper:
                 continue
         try:
             # raw client request method (available on python-binance Client)
-            self.client._request_futures_api('post', 'multiAssetsMargin', data=payload)
+            self.client._request_futures_api('post', 'multiAssetsMargin', signed=True, data=payload)
             return True
         except Exception:
             try:
-                import requests
-                headers = {'X-MBX-APIKEY': getattr(self.client, 'API_KEY', '')}
-                url = 'https://fapi.binance.com/fapi/v1/multiAssetsMargin'
-                requests.post(url, params=payload, headers=headers, timeout=5)
+                headers = {'X-MBX-APIKEY': getattr(self.client, 'API_KEY', self.api_key)}
+                ts = int(time.time() * 1000)
+                params = dict(payload)
+                params["timestamp"] = ts
+                query = urllib.parse.urlencode(params)
+                signature = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+                url = f"{self._futures_base()}/v1/multiAssetsMargin"
+                requests.post(url, params={**params, "signature": signature}, headers=headers, timeout=5)
                 return True
             except Exception:
                 return False
@@ -1727,6 +1734,51 @@ class BinanceWrapper:
         # Public REST base for FUTURES depending on testnet/production
         return "https://testnet.binancefuture.com/fapi" if ("demo" in self.mode.lower() or "test" in self.mode.lower()) else "https://fapi.binance.com/fapi"
 
+    def _http_signed_spot(self, path: str, params: dict | None = None, *, timeout: float = 8.0) -> dict:
+        """Lightweight signed REST helper for spot (works on testnet and prod)."""
+        base = self._spot_base().rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if not self.api_key or not self.api_secret:
+            return {}
+        try:
+            payload = dict(params or {})
+            if "timestamp" not in payload:
+                payload["timestamp"] = int(time.time() * 1000)
+            if "recvWindow" not in payload:
+                payload["recvWindow"] = 5000
+            query = urllib.parse.urlencode(payload)
+            sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+            full_params = dict(payload)
+            full_params["signature"] = sig
+            resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _http_signed_spot_list(self, path: str, params: dict | None = None, *, timeout: float = 8.0) -> list:
+        base = self._spot_base().rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if not self.api_key or not self.api_secret:
+            return []
+        try:
+            payload = dict(params or {})
+            if "timestamp" not in payload:
+                payload["timestamp"] = int(time.time() * 1000)
+            if "recvWindow" not in payload:
+                payload["recvWindow"] = 5000
+            query = urllib.parse.urlencode(payload)
+            sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+            full_params = dict(payload)
+            full_params["signature"] = sig
+            resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
     def _build_client(self):
         backend = _normalize_connector_choice(getattr(self, "_connector_backend", DEFAULT_CONNECTOR_BACKEND))
         if backend == "binance-connector" and _OfficialSpotClient is not None and _OfficialAPIBase is not None:
@@ -1753,7 +1805,7 @@ class BinanceWrapper:
             except Exception as exc:
                 self._log(f"Spot SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
                 self._connector_backend = "python-binance"
-        return Client(self.api_key, self.api_secret)
+        return Client(self.api_key, self.api_secret, testnet=_is_testnet_mode(self.mode))
 
     def __init__(self, api_key="", api_secret="", mode="Demo/Testnet", account_type="Spot", *, default_leverage: int | None = None, default_margin_mode: str | None = None, connector_backend: str | None = None):
         self.api_key = api_key or ""
@@ -1869,7 +1921,22 @@ class BinanceWrapper:
     def get_symbol_info_spot(self, symbol: str) -> dict:
         key = symbol.upper()
         if key not in self._symbol_info_cache_spot:
-            info = self.client.get_symbol_info(key)
+            info = None
+            try:
+                info = self.client.get_symbol_info(key)
+            except Exception:
+                info = None
+            if not info:
+                try:
+                    resp = requests.get(f"{self._spot_base()}/v3/exchangeInfo", params={"symbol": key}, timeout=8)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, dict):
+                            syms = data.get("symbols") or []
+                            if syms:
+                                info = syms[0]
+                except Exception:
+                    info = None
             if not info:
                 raise ValueError(f"No spot symbol info for {symbol}")
             self._symbol_info_cache_spot[key] = info
@@ -2081,14 +2148,87 @@ class BinanceWrapper:
         return effective
 
     # ---- balances
-    def get_spot_balance(self, asset="USDT") -> float:
+    def _spot_account_dict(self, *, force_refresh: bool = False) -> dict:
+        if not force_refresh:
+            try:
+                cache = getattr(self, "_spot_acct_cache", None)
+                ts = getattr(self, "_spot_acct_cache_ts", 0.0)
+                if cache and (time.time() - ts) <= 2.0:
+                    return cache
+            except Exception:
+                pass
+        data = None
+        # Prefer lightweight REST to avoid client-specific quirks/timeouts on testnet.
+        data = self._http_signed_spot("/v3/account")
+        if not data:
+            try:
+                data = self.client.get_account()
+            except Exception:
+                data = {}
+        if isinstance(data, dict):
+            self._spot_acct_cache = data
+            self._spot_acct_cache_ts = time.time()
+        return data or {}
+
+    def get_spot_position_cost(self, symbol: str, *, max_age: float = 10.0) -> dict | None:
+        """
+        Approximate spot position cost basis from recent trades.
+        Returns {'qty': net_qty, 'cost': cost_usdt} or None if no position.
+        """
+        sym = (symbol or "").upper()
+        if not sym.endswith("USDT"):
+            return None
+        cache = getattr(self, "_spot_cost_cache", {})
+        cache_ts = getattr(self, "_spot_cost_cache_ts", {})
         try:
-            info = self.client.get_account()
+            ts = cache_ts.get(sym, 0.0)
+            if cache and sym in cache and (time.time() - ts) <= max_age:
+                return cache.get(sym)
+        except Exception:
+            pass
+
+        trades = []
+        try:
+            trades = self.client.get_my_trades(symbol=sym, limit=1000) or []
+        except Exception:
+            trades = self._http_signed_spot_list("/v3/myTrades", {"symbol": sym, "limit": 1000}) or []
+        net_qty = 0.0
+        cost = 0.0
+        for t in trades or []:
+            try:
+                qty = float(t.get("qty") or t.get("executedQty") or 0.0)
+                px = float(t.get("price") or 0.0)
+                quote_qty = float(t.get("quoteQty") or (px * qty) or 0.0)
+                is_buyer = bool(t.get("isBuyer"))
+                if is_buyer:
+                    net_qty += qty
+                    cost += quote_qty
+                else:
+                    net_qty -= qty
+                    cost -= quote_qty
+            except Exception:
+                continue
+        if net_qty <= 0.0 or cost <= 0.0:
+            result = None
+        else:
+            result = {"qty": net_qty, "cost": cost}
+        try:
+            cache.setdefault(sym, result)
+            cache_ts[sym] = time.time()
+            self._spot_cost_cache = cache
+            self._spot_cost_cache_ts = cache_ts
+        except Exception:
+            pass
+        return result
+
+    def get_spot_balance(self, asset="USDT") -> float:
+        info = self._spot_account_dict(force_refresh=True)
+        try:
             for b in info.get('balances', []):
                 if b.get('asset') == asset:
                     return float(b.get('free', 0.0))
         except Exception:
-            pass
+            return 0.0
         return 0.0
 
     def get_balances(self) -> list[dict]:
@@ -2114,8 +2254,8 @@ class BinanceWrapper:
             except Exception:
                 rows = []
         else:
+            info = self._spot_account_dict(force_refresh=True)
             try:
-                info = self.client.get_account()
                 for b in info.get('balances', []):
                     asset = b.get('asset')
                     if not asset:
@@ -2139,8 +2279,8 @@ class BinanceWrapper:
     def list_spot_non_usdt_balances(self):
         """Return list of dicts with non-zero free balances for assets (excluding USDT)."""
         out = []
+        info = self._spot_account_dict(force_refresh=True)
         try:
-            info = self.client.get_account()
             for b in info.get('balances', []):
                 asset = b.get('asset')
                 if not asset or asset == 'USDT':
@@ -2533,6 +2673,15 @@ class BinanceWrapper:
                 price = float(t.get('price', 0.0))
         except Exception:
             price = 0.0
+        if price <= 0.0 and self.account_type != "FUTURES" and sym:
+            try:
+                resp = requests.get(f"{self._spot_base()}/v3/ticker/price", params={"symbol": sym}, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict):
+                        price = float(data.get("price") or 0.0)
+            except Exception:
+                pass
         if cache is not None and sym and price:
             cache[sym] = (price, time.time())
         return price
