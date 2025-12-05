@@ -7,3 +7,4 @@ build/
 aqtinstall.log
 CMakeFiles/
 .venv/
+.trading_bot_allocations.json

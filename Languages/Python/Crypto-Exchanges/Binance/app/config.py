@@ -42,7 +42,7 @@ DEFAULT_CONFIG = {
     "indicator_flip_cooldown_bars": 1,
     "indicator_flip_cooldown_seconds": 0.0,
     "indicator_use_live_values": True,
-    "indicator_min_position_hold_seconds": 12.0,
+    "indicator_min_position_hold_seconds": 0.0,
     "indicator_min_position_hold_bars": 1,
     # Prevent closing an indicator leg unless an explicit opposite signal/flip is present.
     "require_indicator_flip_signal": True,
@@ -57,7 +57,7 @@ DEFAULT_CONFIG = {
     "allow_multi_indicator_close": False,
     # When False, an indicator close without an explicit opposite signal/signature is skipped.
     "allow_indicator_close_without_signal": False,
-    "indicator_flip_confirmation_bars": 2,
+    "indicator_flip_confirmation_bars": 1,
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "close_on_exit": False,
     # Allow stacking long/short legs in hedge mode; per-indicator/interval closes will still target only

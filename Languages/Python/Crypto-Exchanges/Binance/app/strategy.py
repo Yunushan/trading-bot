@@ -2374,6 +2374,7 @@ class StrategyEngine:
         side_norm = "BUY" if str(side_label or "").upper() in {"BUY", "LONG"} else "SELL"
         desired_pos_side = str(position_side or "").upper() if position_side else None
         best_qty = 0.0
+        qty_tol = 1e-6
         for pos in rows or []:
             try:
                 if str(pos.get("symbol") or "").upper() != sym_norm:
@@ -2403,7 +2404,7 @@ class StrategyEngine:
                     best_qty = qty_val
             except Exception:
                 continue
-        return best_qty if best_qty > 0.0 else 0.0
+        return best_qty if best_qty > qty_tol else 0.0
 
     def _purge_flat_futures_legs(
         self,
@@ -3927,7 +3928,8 @@ class StrategyEngine:
             desired_ps_long_guard = "LONG" if dual_side else None
             desired_ps_short_guard = "SHORT" if dual_side else None
         allow_opposite_enabled = coerce_bool(self.config.get("allow_opposite_positions"), True)
-        hedge_overlap_allowed = bool(dual_side and allow_opposite_enabled)
+        # In one-way mode, allow a new order to reduce/flip an opposite leg instead of skipping.
+        hedge_overlap_allowed = bool(allow_opposite_enabled)
 
         # Exit thresholds
         try:
@@ -4738,7 +4740,16 @@ class StrategyEngine:
                                 closed_short = retry_count
                                 closed_short_qty = retry_qty
                                 closed_count = retry_count
-                        if closed_short <= 0:
+                    if closed_short <= 0:
+                        if hedge_overlap_allowed:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY: "
+                                    "short leg still live on exchange but overlap allowed; proceeding."
+                                )
+                            except Exception:
+                                pass
+                        else:
                             try:
                                 self.log(
                                     f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} BUY skipped:"
@@ -4980,6 +4991,15 @@ class StrategyEngine:
                             closed_long_qty = retry_qty
                             closed_count = retry_count
                     if closed_long <= 0:
+                        if hedge_overlap_allowed:
+                            try:
+                                self.log(
+                                    f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL: "
+                                    "long leg still live on exchange but overlap allowed; proceeding."
+                                )
+                            except Exception:
+                                pass
+                        else:
                             try:
                                 self.log(
                                     f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} SELL skipped:"
@@ -5257,6 +5277,10 @@ class StrategyEngine:
                 )
                 signature = signature_parts or tuple(sorted(lbl.lower() for lbl in label_list))
                 if self._symbol_signature_active(cw["symbol"], side_value, signature, cw.get("interval")):
+                    try:
+                        self.log(f"{cw['symbol']}@{cw.get('interval')} {side_value} skipped: signature active on this bar.")
+                    except Exception:
+                        pass
                     continue
                 if signature in seen_signatures:
                     continue
@@ -5428,9 +5452,17 @@ class StrategyEngine:
                     }
                 )
 
+        initial_orders_count = len(orders_to_execute)
         orders_to_execute = filtered_orders
         if not cw.get('trade_on_signal', True):
             orders_to_execute = []
+        if initial_orders_count > 0 and not orders_to_execute:
+            try:
+                self.log(
+                    f"{cw['symbol']}@{cw.get('interval')} order candidates={initial_orders_count} but all were filtered (guards/duplicates)."
+                )
+            except Exception:
+                pass
 
         order_batch_total = len(orders_to_execute)
         order_batch_counter = 0
@@ -6363,12 +6395,19 @@ class StrategyEngine:
                                 order_res = {'ok': False, 'symbol': cw['symbol'], 'error': str(exc_order)}
                             finally:
                                 StrategyEngine._release_order_slot()
+
                             order_success = bool(order_res.get('ok', True))
                             if self.stopped():
                                 order_success = False
                                 break
                             if order_success:
                                 break
+                            else:
+                                try:
+                                    err_text = order_res.get("error") or order_res
+                                    self.log(f"{cw['symbol']}@{cw.get('interval')} order error: {err_text}")
+                                except Exception:
+                                    pass
                             err_text = str(order_res.get('error') or '').lower()
                             if order_attempts < 3 and any(token in err_text for token in rate_limit_tokens):
                                 wait_time = min(5.0, backoff_base * order_attempts)

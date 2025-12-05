@@ -990,6 +990,186 @@ _INDICATOR_SHORT_LABEL_OVERRIDES = {
 }
 
 
+# ============== Persistence for Position Allocations ==============
+# These functions persist the _entry_allocations and _open_position_records
+# across bot restarts so interval/indicator data is not lost.
+
+_ALLOCATIONS_FILE_NAME = ".trading_bot_allocations.json"
+
+
+def _get_allocations_file_path() -> Path:
+    """Get the path to the allocations persistence file."""
+    return _THIS_FILE.parents[2] / _ALLOCATIONS_FILE_NAME
+
+
+def _serialize_allocation_key(key: tuple) -> str:
+    """Convert a (symbol, side_key) tuple to a string for JSON serialization."""
+    return f"{key[0]}:{key[1]}"
+
+
+def _deserialize_allocation_key(key_str: str) -> tuple:
+    """Convert a serialized key back to a (symbol, side_key) tuple."""
+    parts = key_str.split(":", 1)
+    return (parts[0], parts[1]) if len(parts) == 2 else (key_str, "")
+
+
+def _save_position_allocations(
+    entry_allocations: dict,
+    open_position_records: dict,
+    mode: str | None = None,
+) -> bool:
+    """
+    Save the entry allocations and position records to a JSON file.
+    Returns True on success, False on failure.
+    """
+    try:
+        file_path = _get_allocations_file_path()
+        
+        # Convert tuple keys to string keys for JSON serialization
+        serialized_allocations = {}
+        for key, entries in (entry_allocations or {}).items():
+            str_key = _serialize_allocation_key(key)
+            # Deep copy and ensure all values are JSON-serializable
+            if isinstance(entries, list):
+                serialized_allocations[str_key] = [
+                    {k: v for k, v in e.items() if _is_json_serializable(v)}
+                    for e in entries if isinstance(e, dict)
+                ]
+            elif isinstance(entries, dict):
+                entries_list = list(entries.values())
+                serialized_allocations[str_key] = [
+                    {k: v for k, v in e.items() if _is_json_serializable(v)}
+                    for e in entries_list if isinstance(e, dict)
+                ]
+        
+        serialized_records = {}
+        for key, record in (open_position_records or {}).items():
+            if not isinstance(record, dict):
+                continue
+            str_key = _serialize_allocation_key(key)
+            # Only save active records
+            if str(record.get("status", "")).lower() != "active":
+                continue
+            serialized_records[str_key] = _make_json_serializable(record)
+        
+        data = {
+            "version": 1,
+            "mode": mode or "unknown",
+            "timestamp": time.time(),
+            "entry_allocations": serialized_allocations,
+            "open_position_records": serialized_records,
+        }
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        return True
+    except Exception:
+        return False
+
+
+def _is_json_serializable(value) -> bool:
+    """Check if a value can be JSON serialized."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_json_serializable(v) for v in value)
+    if isinstance(value, dict):
+        return all(
+            isinstance(k, str) and _is_json_serializable(v)
+            for k, v in value.items()
+        )
+    return False
+
+
+def _make_json_serializable(obj: dict) -> dict:
+    """Convert a dict to be JSON serializable, converting unsupported types to strings."""
+    result = {}
+    for k, v in obj.items():
+        if not isinstance(k, str):
+            continue
+        if v is None or isinstance(v, (str, int, float, bool)):
+            result[k] = v
+        elif isinstance(v, (list, tuple)):
+            result[k] = [
+                _make_json_serializable(item) if isinstance(item, dict) else item
+                for item in v
+                if _is_json_serializable(item) or isinstance(item, dict)
+            ]
+        elif isinstance(v, dict):
+            result[k] = _make_json_serializable(v)
+        else:
+            result[k] = str(v)
+    return result
+
+
+def _load_position_allocations(mode: str | None = None) -> tuple[dict, dict]:
+    """
+    Load entry allocations and position records from the JSON file.
+    Returns (entry_allocations, open_position_records) dicts.
+    If file doesn't exist or is invalid, returns empty dicts.
+    """
+    entry_allocations = {}
+    open_position_records = {}
+    
+    try:
+        file_path = _get_allocations_file_path()
+        if not file_path.exists():
+            return entry_allocations, open_position_records
+        
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        if not isinstance(data, dict):
+            return entry_allocations, open_position_records
+        
+        # Check mode compatibility - only load if mode matches or mode is not specified
+        saved_mode = data.get("mode")
+        if mode and saved_mode and saved_mode != mode:
+            # Mode mismatch - don't load incompatible data (e.g., live vs testnet)
+            return entry_allocations, open_position_records
+        
+        # Check data age - only load if less than 24 hours old
+        saved_ts = data.get("timestamp", 0)
+        if time.time() - saved_ts > 86400:  # 24 hours
+            return entry_allocations, open_position_records
+        
+        # Deserialize entry_allocations
+        for str_key, entries in data.get("entry_allocations", {}).items():
+            if not isinstance(entries, list):
+                continue
+            key = _deserialize_allocation_key(str_key)
+            # Ensure each entry has a valid 'data' field
+            validated_entries = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                # Ensure 'data' field exists and is a dict
+                if not isinstance(entry.get("data"), dict):
+                    entry["data"] = {}
+                validated_entries.append(entry)
+            entry_allocations[key] = validated_entries
+        
+        # Deserialize open_position_records
+        for str_key, record in data.get("open_position_records", {}).items():
+            if not isinstance(record, dict):
+                continue
+            key = _deserialize_allocation_key(str_key)
+            # Ensure 'data' field exists and is a dict
+            if not isinstance(record.get("data"), dict):
+                record["data"] = {}
+            # Ensure allocations field is a list
+            if not isinstance(record.get("allocations"), list):
+                record["allocations"] = []
+            open_position_records[key] = record
+        
+    except Exception:
+        pass
+    
+    return entry_allocations, open_position_records
+
+
+
+
 def _indicator_short_label(indicator_key: str) -> str:
     key_norm = str(indicator_key or "").strip().lower()
     if not key_norm:
@@ -2283,7 +2463,8 @@ class _PositionsWorker(QtCore.QObject):
                             continue
                         last = float(self._wrapper.get_last_price(sym, max_age=8.0) or 0.0)
                         if last <= 0.0:
-                            continue
+                            # If price is missing, don't skip the position. Use 0.0 but keep it to prevent UI auto-close.
+                            pass
                         value = total * last
                         cost_snap = None
                         try:
@@ -2317,8 +2498,10 @@ class _PositionsWorker(QtCore.QObject):
                             min_notional = float(filters.get('minNotional', 0.0) or 0.0)
                         except Exception:
                             min_notional = 0.0
-                        if min_notional > 0.0 and value < min_notional:
-                            continue
+                        # Don't skip if value < min_notional, just log or allow it. 
+                        # Skipping causes the UI to think the position is closed.
+                        # if min_notional > 0.0 and value < min_notional:
+                        #    continue
                         rows.append({
                             'symbol': sym,
                             'qty': total,
@@ -7870,8 +8053,21 @@ class MainWindow(QtWidgets.QWidget):
 
         grid.addWidget(QtWidgets.QLabel("Mode:"), 0, 2)
         self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(["Live", "Demo/Testnet"])
-        self.mode_combo.setCurrentText(self.config.get('mode', 'Live'))
+        mode_options = [
+            "Live",
+            "Demo",
+            "Testnet",
+            "Futures WebSocket (live market data)",
+            "Testnet WebSocket",
+        ]
+        self.mode_combo.addItems(mode_options)
+        loaded_mode = self.config.get('mode', 'Live') or 'Live'
+        # Backward compatibility for legacy label
+        if loaded_mode == "Demo/Testnet":
+            loaded_mode = "Demo"
+        if loaded_mode not in mode_options:
+            loaded_mode = "Live"
+        self.mode_combo.setCurrentText(loaded_mode)
         grid.addWidget(self.mode_combo, 0, 3)
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
@@ -8520,13 +8716,21 @@ class MainWindow(QtWidgets.QWidget):
             self.chart_view_stack = None
             self.chart_tradingview = None
             self.chart_original_view = None
-        # Map symbol -> {'L': set(), 'S': set()} for intervals shown in Positions tab
         self._entry_intervals = {}
         self._entry_times = {}  # (sym, 'L'/'S') -> last trade time string
         self._entry_times_by_iv = {}
-        self._entry_allocations = {}
+        
+        # Try to load persisted allocation data for interval/indicator column persistence
+        _persisted_mode = None
+        try:
+            _mode_text = self.mode_combo.currentText() if hasattr(self, 'mode_combo') else None
+            _persisted_mode = _mode_text
+        except Exception:
+            pass
+        _loaded_allocations, _loaded_records = _load_position_allocations(mode=_persisted_mode)
+        self._entry_allocations = _loaded_allocations or {}
         self._pending_close_times = {}
-        self._open_position_records = {}
+        self._open_position_records = _loaded_records or {}
         self._closed_position_records = []
         self._engine_indicator_map = {}
         self._live_indicator_cache: dict[tuple[str, str], dict] = {}
@@ -9662,38 +9866,53 @@ def _refresh_dependency_versions(self) -> None:
             else:
                 results = [(target["label"], "Not installed", "Unknown") for target in (resolved_targets or [])]
 
-        def _apply_results():
-            labels_local = getattr(self, "_dep_version_labels", None)
-            if labels_local:
-                installed_map = {}
-                latest_map = {}
-                for label, installed, latest in results:
-                    installed_map[label] = installed
-                    latest_map[label] = latest
-
-                for label, widgets in labels_local.items():
-                    if widgets is None:
-                        continue
-                    installed_widget, latest_widget = widgets
-                    try:
-                        if label in installed_map:
-                            installed_widget.setText(installed_map[label])
-                    except Exception:
-                        pass
-                    try:
-                        latest_widget.setText(latest_map.get(label, "Unknown"))
-                    except Exception:
-                        pass
-
-            self._dep_version_refresh_inflight = False
-            if getattr(self, "_dep_version_refresh_pending", False):
-                self._dep_version_refresh_pending = False
-                QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-
-        # Queue the UI update on the main thread even though we collected results in a worker thread.
-        QtCore.QTimer.singleShot(0, _apply_results)
+        # Queue the UI update on the main thread using QMetaObject.invokeMethod for thread safety.
+        # QTimer.singleShot can fail silently when called from a non-main thread in PyQt6.
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_apply_dependency_version_results",
+            QtCore.Qt.ConnectionType.QueuedConnection,
+            QtCore.Q_ARG(object, results),
+        )
 
     threading.Thread(target=_run_latest, daemon=True).start()
+
+
+@QtCore.pyqtSlot(object)
+def _apply_dependency_version_results(self, results: list) -> None:
+    """
+    Apply the fetched dependency version results to the UI.
+    This method is designed to be called via QMetaObject.invokeMethod from a background thread.
+    """
+    try:
+        labels_local = getattr(self, "_dep_version_labels", None)
+        if labels_local:
+            installed_map = {}
+            latest_map = {}
+            for label, installed, latest in results:
+                installed_map[label] = installed
+                latest_map[label] = latest
+
+            for label, widgets in labels_local.items():
+                if widgets is None:
+                    continue
+                installed_widget, latest_widget = widgets
+                try:
+                    if label in installed_map:
+                        installed_widget.setText(installed_map[label])
+                except Exception:
+                    pass
+                try:
+                    latest_widget.setText(latest_map.get(label, "Unknown"))
+                except Exception:
+                    pass
+
+        self._dep_version_refresh_inflight = False
+        if getattr(self, "_dep_version_refresh_pending", False):
+            self._dep_version_refresh_pending = False
+            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
+    except Exception:
+        self._dep_version_refresh_inflight = False
 
 
 def _update_code_tab_market_sections(self) -> None:
@@ -10558,6 +10777,21 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                             interval_lookup.get(key) or interval_display.get(key)
                             for key in (ordered_keys if interval_display else [])
                         ]
+                        # Prefer explicit allocation open times first.
+                        for alloc in allocations_existing or []:
+                            if not isinstance(alloc, dict):
+                                continue
+                            alloc_open = alloc.get("open_time")
+                            if not alloc_open:
+                                continue
+                            dt_obj = self._parse_any_datetime(alloc_open)
+                            if dt_obj:
+                                try:
+                                    epoch = dt_obj.timestamp()
+                                except Exception:
+                                    epoch = None
+                                if epoch is not None:
+                                    open_times.append((epoch, dt_obj))
                         for iv in ordered_lookup:
                             if not iv:
                                 continue
@@ -10594,6 +10828,23 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                                     epoch = None
                                 if epoch is not None:
                                     open_times.append((epoch, dt_obj))
+                        if not open_times and allocations_existing:
+                            for alloc in allocations_existing:
+                                if not isinstance(alloc, dict):
+                                    continue
+                                alloc_open = alloc.get("open_time")
+                                if not alloc_open:
+                                    continue
+                                dt_obj = self._parse_any_datetime(alloc_open)
+                                if dt_obj:
+                                    try:
+                                        epoch = dt_obj.timestamp()
+                                    except Exception:
+                                        epoch = None
+                                    if epoch is not None:
+                                        open_times.append((epoch, dt_obj))
+                            if open_times:
+                                open_times.sort(key=lambda item: item[0])
                         if open_times:
                             open_times.sort(key=lambda item: item[0])
                             rec['open_time'] = self._format_display_time(open_times[0][1])
@@ -10711,8 +10962,20 @@ def _mw_update_position_history(self, positions_map: dict):
                 if bw is None:
                     return None
                 live = set()
-                need_futures = any(side in ("L", "S") for _, side in candidates)
-                need_spot = any(side == "SPOT" for _, side in candidates)
+                try:
+                    acct_text = self.account_combo.currentText()
+                except Exception:
+                    acct_text = str(self.config.get("account_type") or "")
+                acct_upper = str(acct_text or "").upper()
+                acct_is_futures = acct_upper.startswith("FUT")
+                acct_is_spot = acct_upper.startswith("SPOT")
+
+                # Only probe the relevant venue for the active account type. Spot keys
+                # reuse the "L" side for long-only holdings, so include it in the spot
+                # probe to avoid falsely auto-closing them when testnet snapshots omit
+                # per-symbol rows.
+                need_futures = acct_is_futures and any(side in ("L", "S") for _, side in candidates)
+                need_spot = acct_is_spot and any(side in ("L", "S", "SPOT") for _, side in candidates)
                 if need_futures:
                     try:
                         for pos in bw.list_open_futures_positions() or []:
@@ -10737,7 +11000,9 @@ def _mw_update_position_history(self, positions_map: dict):
                             if not asset or total <= 0:
                                 continue
                             sym = f"{asset}USDT"
-                            live.add((sym.strip().upper(), "SPOT"))
+                            sym_upper = sym.strip().upper()
+                            live.add((sym_upper, "SPOT"))
+                            live.add((sym_upper, "L"))
                     except Exception:
                         pass
                 return live
@@ -11747,15 +12012,33 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
             key=lambda r: float((r.get("data") or {}).get("qty") or (r.get("data") or {}).get("margin_usdt") or 0.0),
         )
         clone = copy.deepcopy(primary)
+        open_time_candidates: list[datetime] = []
+
+        def _clean_interval_label(value: object) -> str:
+            """Normalize interval labels by stripping placeholder values like '-'."""
+            try:
+                text = str(value or "").strip()
+            except Exception:
+                return ""
+            return text if text and text not in {"-"} else ""
+
         intervals: list[str] = []
         total_qty = 0.0
         total_margin = 0.0
         total_pnl = 0.0
         for entry in bucket:
-            label = str(entry.get("entry_tf") or entry.get("data", {}).get("interval_display") or "").strip()
+            label = _clean_interval_label(entry.get("entry_tf")) or _clean_interval_label(
+                (entry.get("data") or {}).get("interval_display")
+            )
             if label and label not in intervals:
                 intervals.append(label)
             data = entry.get("data") or {}
+            # Track earliest open time across merged legs so cumulative view shows a stable timestamp.
+            for ts_key in ("open_time",):
+                ts_val = entry.get(ts_key) or data.get(ts_key)
+                dt_obj = self._parse_any_datetime(ts_val) if hasattr(self, "_parse_any_datetime") else None
+                if dt_obj:
+                    open_time_candidates.append(dt_obj)
             try:
                 total_qty += max(0.0, float(data.get("qty") or 0.0))
             except Exception:
@@ -11770,6 +12053,23 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
                 pass
         if intervals:
             clone["entry_tf"] = ", ".join(intervals)
+            # Prefer the first normalized interval for downstream rendering.
+            clone.setdefault("data", {}).setdefault("interval_display", intervals[0])
+        else:
+            # Fallback: pull intervals from allocations if exchange rows didn't carry them.
+            allocations = clone.get("allocations") or []
+            if isinstance(allocations, list):
+                for alloc in allocations:
+                    if not isinstance(alloc, dict):
+                        continue
+                    label = _clean_interval_label(alloc.get("interval_display")) or _clean_interval_label(
+                        alloc.get("interval")
+                    )
+                    if label and label not in intervals:
+                        intervals.append(label)
+                if intervals:
+                    clone["entry_tf"] = ", ".join(intervals)
+                    clone.setdefault("data", {}).setdefault("interval_display", intervals[0])
         agg_data = dict(clone.get("data") or {})
         if total_qty > 0.0:
             agg_data["qty"] = total_qty
@@ -11780,6 +12080,18 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
         if total_margin > 0.0:
             try:
                 agg_data["roi_percent"] = (total_pnl / total_margin) * 100.0
+            except Exception:
+                pass
+        if open_time_candidates:
+            try:
+                earliest = min(open_time_candidates)
+                open_fmt = (
+                    self._format_display_time(earliest)
+                    if hasattr(self, "_format_display_time")
+                    else earliest.isoformat()
+                )
+                clone["open_time"] = open_fmt
+                agg_data.setdefault("open_time", open_fmt)
             except Exception:
                 pass
         clone["data"] = agg_data
@@ -11872,6 +12184,12 @@ def _mw_render_positions_table(self):
             status_flag = str(rec.get('status') or data.get('status') or "").strip().lower()
             record_is_closed = status_flag in _CLOSED_RECORD_STATES
             indicators_list = tuple(_normalize_indicator_values(rec.get('indicators')))
+            if not indicators_list:
+                inferred = _resolve_trigger_indicators(
+                    data.get('trigger_indicators'),
+                    data.get('trigger_desc') or rec.get('trigger_desc'),
+                )
+                indicators_list = tuple(_normalize_indicator_values(inferred))
             interval_hint = (
                 rec.get('entry_tf')
                 or data.get('interval_display')
@@ -13374,6 +13692,7 @@ try:
     MainWindow._ensure_language_exchange_paths = _ensure_language_exchange_paths
     MainWindow._rebuild_dependency_version_rows = _rebuild_dependency_version_rows
     MainWindow._refresh_dependency_versions = _refresh_dependency_versions
+    MainWindow._apply_dependency_version_results = _apply_dependency_version_results
     MainWindow._on_code_language_changed = _on_code_language_changed
     MainWindow._on_exchange_selection_changed = _on_exchange_selection_changed
     MainWindow._on_forex_selection_changed = _on_forex_selection_changed
@@ -14565,6 +14884,18 @@ def _mw_on_trade_signal(self, order_info: dict):
         else:
             alloc_map.pop((sym_upper, side_key), None)
             entries = []
+        
+        # Persist allocation data after close
+        try:
+            _mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
+            _save_position_allocations(
+                getattr(self, "_entry_allocations", {}),
+                getattr(self, "_open_position_records", {}),
+                mode=_mode,
+            )
+        except Exception:
+            pass
+        
         if sym_upper:
             from datetime import datetime as _dt
             close_time_val = order_info.get("time")
@@ -15004,6 +15335,18 @@ def _mw_on_trade_signal(self, order_info: dict):
                 existing_entry = trade_entry
             alloc_map[(sym_upper, side_key_local)] = alloc_list
             pending_close.pop((sym_upper, side_key_local), None)
+            
+            # Persist allocation data so it survives restarts
+            try:
+                _mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else None
+                _save_position_allocations(
+                    getattr(self, "_entry_allocations", {}),
+                    getattr(self, "_open_position_records", {}),
+                    mode=_mode,
+                )
+            except Exception:
+                pass
+            
             snapshot_entry = existing_entry or trade_entry
             _sync_open_position_snapshot(
                 sym_upper,
