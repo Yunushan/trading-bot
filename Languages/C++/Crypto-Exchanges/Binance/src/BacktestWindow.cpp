@@ -1319,8 +1319,43 @@ QWidget *BacktestWindow::createCodeTab() {
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(14);
 
+    // Pick readable colors based on the actual background luminance, not just theme name.
+    QPalette pal = scroll->palette();
+    QColor bg = pal.color(QPalette::Base);
+    if (!bg.isValid()) {
+        bg = pal.color(QPalette::Window);
+    }
+    double luma = 0.0;
+    if (bg.isValid()) {
+        const double r = bg.red() / 255.0;
+        const double g = bg.green() / 255.0;
+        const double b = bg.blue() / 255.0;
+        luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+    // If palette is light, force a dark code-tab surface for contrast.
+    const bool forceDarkSurface = (luma > 0.6) || !bg.isValid();
+    const QString surfaceColor = forceDarkSurface ? QString("#0b1220") : bg.name();
+    auto recalcText = [&](const QString &hex) {
+        QColor c(hex);
+        double lr = c.red() / 255.0;
+        double lg = c.green() / 255.0;
+        double lb = c.blue() / 255.0;
+        double ll = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+        return ll > 0.6;
+    };
+    const bool surfIsLight = recalcText(surfaceColor);
+    const QString textColor = surfIsLight ? QString("#0b1220") : QString("#e6edf3");
+    const QString mutedColor = surfIsLight ? QString("#1f2937") : QString("#cbd5e1");
+    // Apply surface background to container/scroll so dark theme stays dark even if palette is light.
+    QString surfaceStyle = QString(
+        "QWidget#codeContent { background: %1; }"
+        "QScrollArea { background: %1; border: none; }").arg(surfaceColor);
+    container->setObjectName("codeContent");
+    container->setStyleSheet(surfaceStyle);
+    scroll->setStyleSheet(surfaceStyle);
+
     auto *heading = new QLabel("Code Languages And Exchanges", container);
-    heading->setStyleSheet("font-size: 20px; font-weight: 700;");
+    heading->setStyleSheet(QString("font-size: 20px; font-weight: 700; color: %1;").arg(textColor));
     layout->addWidget(heading);
 
     auto *sub = new QLabel(
@@ -1328,7 +1363,7 @@ QWidget *BacktestWindow::createCodeTab() {
         "automatically to keep related assets organized.",
         container);
     sub->setWordWrap(true);
-    sub->setStyleSheet("color: #cbd5e1;");
+    sub->setStyleSheet(QString("color: %1;").arg(mutedColor));
     layout->addWidget(sub);
 
     auto makeBadge = [](const QString &text, const QString &bg) {
@@ -1395,7 +1430,7 @@ QWidget *BacktestWindow::createCodeTab() {
 
     auto addSection = [&](const QString &title, const QList<QWidget *> &cards) {
         auto *titleLbl = new QLabel(title, container);
-        titleLbl->setStyleSheet("font-size: 16px; font-weight: 700;");
+        titleLbl->setStyleSheet(QString("font-size: 16px; font-weight: 700; color: %1;").arg(textColor));
         layout->addWidget(titleLbl);
 
         auto *row = new QGridLayout();
@@ -1426,7 +1461,7 @@ QWidget *BacktestWindow::createCodeTab() {
                 makeCard("OKX", "Options + spot - coming soon", "#1f2937", "Coming Soon", "#1f2937", true)});
 
     auto *envTitle = new QLabel("Environment Versions", container);
-    envTitle->setStyleSheet("font-size: 14px; font-weight: 700;");
+    envTitle->setStyleSheet(QString("font-size: 14px; font-weight: 700; color: %1;").arg(textColor));
     layout->addWidget(envTitle);
 
     auto *table = new QTableWidget(container);
@@ -1444,11 +1479,11 @@ QWidget *BacktestWindow::createCodeTab() {
         const char *latest;
     };
     const Row rows[] = {
-        {"python-binance", "1.0.19", "1.0.32"}, {"binance-connector", "3.12.0", "3.12.0"},
-        {"PyQt6", "6.9.1", "6.10.0"},          {"PyQt6-Qt6", "6.9.2", "6.10.0"},
-        {"PyQt6-WebEngine", "6.9.0", "6.10.0"}, {"numba", "0.61.2", "0.62.1"},
-        {"llvmlite", "0.44.0", "0.45.1"},       {"numpy", "2.2.6", "2.3.5"},
-        {"pandas", "2.3.2", "2.3.3"},           {"pandas-ta", "0.4.7b0", "0.4.7b0"},
+        {"python-binance", "1.0.32", "1.0.32"}, {"binance-connector", "3.12.0", "3.12.0"},
+        {"PyQt6", "6.10.0", "6.10.0"},          {"PyQt6-Qt6", "6.10.0", "6.10.0"},
+        {"PyQt6-WebEngine", "6.10.0", "6.10.0"}, {"numba", "0.62.1", "0.62.1"},
+        {"llvmlite", "0.45.1", "0.45.1"},       {"numpy", "2.3.5", "2.3.5"},
+        {"pandas", "2.3.3", "2.3.3"},           {"pandas-ta", "0.4.7b0", "0.4.7b0"},
         {"requests", "2.32.3", "2.32.3"}};
     table->setRowCount(static_cast<int>(std::size(rows)));
     for (int i = 0; i < static_cast<int>(std::size(rows)); ++i) {
