@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import math
+import os
 from enum import Enum
 import re
 import threading
@@ -18,6 +19,10 @@ import requests
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
+try:
+    from binance.streams import ThreadedWebsocketManager as _TWM
+except Exception:
+    _TWM = None
 try:
     from binance.spot import Spot as _OfficialSpotClient
     from binance.api import API as _OfficialAPIBase
@@ -259,6 +264,16 @@ def _maybe_int(value: Any) -> int | None:
             return int(float(value))
         except Exception:
             return None
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """
+    Read a boolean-ish environment variable. Accepts 1/true/yes/on/live (case-insensitive).
+    """
+    val = os.getenv(name)
+    if val is None or val == "":
+        return bool(default)
+    return str(val).strip().lower() in {"1", "true", "yes", "on", "live"}
 
 
 def _enum_value(enum_cls: Any, value: Any):
@@ -1119,6 +1134,47 @@ class BinanceWrapper:
         except Exception:
             pass
 
+    def _testnet_order_fallback_client(self):
+        """
+        Lazily build a python-binance Client for testnet so we can retry signed order
+        placement when the SDK connector refuses the request (a common testnet-only quirk).
+        Returns None outside testnet or when creation fails.
+        """
+        try:
+            if not _is_testnet_mode(self.mode):
+                return None
+            backend = _normalize_connector_choice(getattr(self, "_connector_backend", ""))
+            if "sdk" not in backend:
+                return None
+        except Exception:
+            return None
+        if self._fallback_py_client is None:
+            try:
+                self._fallback_py_client = Client(self.api_key, self.api_secret, testnet=True)
+                setattr(self._fallback_py_client, "_bw_throttled", True)
+            except Exception:
+            self._fallback_py_client = None
+        return self._fallback_py_client
+
+    def _futures_create_order_with_fallback(self, params: dict):
+        """
+        Try primary client futures_create_order; on error in testnet + SDK mode, retry with
+        python-binance fallback. Raises if both fail.
+        """
+        order_via = "primary"
+        try:
+            return self.client.futures_create_order(**params), order_via
+        except Exception as primary_err:
+            fb_client = self._testnet_order_fallback_client()
+            if fb_client is None:
+                raise
+            try:
+                order = fb_client.futures_create_order(**params)
+                order_via = "fallback-pybinance"
+                return order, order_via
+            except Exception as fb_err:
+                raise RuntimeError(f"{primary_err}; fallback failed: {fb_err}") from fb_err
+
     def _get_cached_futures_positions(self, max_age: float) -> list | None:
         if max_age is None or max_age <= 0:
             return None
@@ -1734,6 +1790,133 @@ class BinanceWrapper:
         # Public REST base for FUTURES depending on testnet/production
         return "https://testnet.binancefuture.com/fapi" if ("demo" in self.mode.lower() or "test" in self.mode.lower()) else "https://fapi.binance.com/fapi"
 
+    def _futures_base_live(self) -> str:
+        """Production futures base (always live, even when running in testnet mode)."""
+        return "https://fapi.binance.com/fapi"
+
+    def _use_live_futures_data_for_indicators(self) -> bool:
+        """
+        When True, indicator klines are pulled from live futures REST even if running on testnet.
+        Enabled by default for testnet futures; can override with BINANCE_INDICATOR_LIVE_DATA.
+        """
+        try:
+            if not str(getattr(self, "account_type", "") or "").upper().startswith("FUT"):
+                return False
+            # Default to True on testnet unless explicitly disabled.
+            default_live = _is_testnet_mode(self.mode)
+            return _env_flag("BINANCE_INDICATOR_LIVE_DATA", default_live)
+        except Exception:
+            return False
+
+    def _live_futures_symbol_set(self) -> set:
+        """Cache and return the set of live USDT-margined futures symbols."""
+        now = time.time()
+        if self._live_fut_symbols_cache and (now - self._live_fut_symbols_ts) < 900:
+            return self._live_fut_symbols_cache
+        try:
+            url = f"{self._futures_base_live().rstrip('/')}/v1/exchangeInfo"
+            data = requests.get(url, timeout=10).json() or {}
+            symbols = {str(s.get("symbol") or "").upper() for s in data.get("symbols", []) if s.get("status") == "TRADING"}
+            if symbols:
+                self._live_fut_symbols_cache = symbols
+                self._live_fut_symbols_ts = now
+                return symbols
+        except Exception:
+            pass
+        return self._live_fut_symbols_cache or set()
+
+    def _symbol_available_on_live_futures(self, symbol: str) -> bool:
+        try:
+            sym = (symbol or "").upper()
+            if not sym:
+                return False
+            return sym in self._live_futures_symbol_set()
+        except Exception:
+            return False
+
+    # --- WebSocket kline support (optional, for faster intrabar indicators)
+    def _ensure_ws_manager(self):
+        if not self._ws_enabled or _TWM is None:
+            return
+        if self._ws_twm is not None:
+            return
+        try:
+            self._ws_twm = _TWM(
+                api_key=self.api_key or "",
+                api_secret=self.api_secret or "",
+                futures=True,
+                testnet=_is_testnet_mode(self.mode),
+            )
+            self._ws_twm.start()
+        except Exception as e:
+            try:
+                self._log(f"WebSocket manager init failed; disabling fast indicators ({e})", lvl="warn")
+            except Exception:
+                pass
+            self._ws_twm = None
+            self._ws_enabled = False
+
+    def _ws_kline_handler(self, msg):
+        try:
+            if not isinstance(msg, dict):
+                return
+            k = msg.get("k") or msg.get("data", {}).get("k")
+            if not k:
+                return
+            sym = str(k.get("s") or "").upper()
+            interval = str(k.get("i") or "")
+            if not sym or not interval:
+                return
+            open_time = int(k.get("t") or 0)
+            row = {
+                "open_time": open_time,
+                "open": float(k.get("o") or 0.0),
+                "high": float(k.get("h") or 0.0),
+                "low": float(k.get("l") or 0.0),
+                "close": float(k.get("c") or 0.0),
+                "volume": float(k.get("v") or 0.0),
+                "closed": bool(k.get("x") or False),
+                "event_time": int(msg.get("E") or 0),
+            }
+            key = (sym, interval)
+            with self._ws_lock:
+                self._ws_kline_cache[key] = row
+        except Exception:
+            pass
+
+    def _ensure_ws_stream(self, symbol: str, interval: str):
+        if not self._ws_enabled or _TWM is None:
+            return
+        self._ensure_ws_manager()
+        if self._ws_twm is None:
+            return
+        sym = (symbol or "").upper()
+        key = (sym, interval)
+        with self._ws_lock:
+            if key in self._ws_streams:
+                return
+        try:
+            stream_id = self._ws_twm.start_kline_futures_socket(
+                callback=self._ws_kline_handler,
+                symbol=sym,
+                interval=interval,
+            )
+            with self._ws_lock:
+                self._ws_streams[key] = stream_id
+        except Exception:
+            try:
+                self._log(f"WebSocket subscribe failed for {sym}@{interval}; continuing without WS.", lvl="warn")
+            except Exception:
+                pass
+
+    def _ws_latest_candle(self, symbol: str, interval: str):
+        if not self._ws_enabled:
+            return None
+        sym = (symbol or "").upper()
+        key = (sym, interval)
+        with self._ws_lock:
+            return self._ws_kline_cache.get(key)
+
     def _http_signed_spot(self, path: str, params: dict | None = None, *, timeout: float = 8.0) -> dict:
         """Lightweight signed REST helper for spot (works on testnet and prod)."""
         base = self._spot_base().rstrip("/")
@@ -1831,6 +2014,14 @@ class BinanceWrapper:
         self._futures_max_leverage_cache = {}
         self._leverage_cap_notified = set()
         self._connector_backend = _normalize_connector_choice(connector_backend)
+        # Testnet reliability: default to python-binance on testnet even if SDK is selected,
+        # because some SDK builds intermittently reject signed orders on the futures testnet.
+        try:
+            if _is_testnet_mode(self.mode) and self.account_type.startswith("FUT") and "sdk" in self._connector_backend:
+                self._log(f"Switching connector backend to python-binance for testnet reliability (was {self._connector_backend}).", lvl="warn")
+                self._connector_backend = "python-binance"
+        except Exception:
+            pass
         env_tag = self._environment_tag(self.mode)
         acct_tag = self._account_tag(self.account_type)
         self._limiter_key = f"{env_tag}:{acct_tag}"
@@ -1868,6 +2059,13 @@ class BinanceWrapper:
         self._futures_account_cache = None
         self._futures_account_cache_ts = 0.0
         self._futures_account_balance_cache = None
+        self._live_fut_symbols_cache = set()
+        self._live_fut_symbols_ts = 0.0
+        self._ws_enabled = _env_flag("BINANCE_WS_INDICATORS", False)
+        self._ws_twm = None
+        self._ws_streams = {}
+        self._ws_kline_cache = {}
+        self._ws_lock = threading.Lock()
         self._futures_account_balance_cache_ts = 0.0
         self._futures_account_cache_lock = threading.Lock()
         self._last_ban_log = 0.0
@@ -1881,6 +2079,7 @@ class BinanceWrapper:
         self._network_offline_since = 0.0
         self._network_offline_hits = 0
         self._network_emergency_dispatched = False
+        self._fallback_py_client = None  # testnet-only python-binance order fallback
         getcontext().prec = 28
 
     # ---- internal helper for futures methods with recvWindow compatibility
@@ -2737,6 +2936,20 @@ class BinanceWrapper:
             except Exception:
                 pass
 
+    def _fetch_futures_klines_rest(self, params: dict, *, live: bool = False):
+        """
+        Fetch klines directly from REST. When live=True, always hit production futures
+        (fapi) even if the bot is running in testnet mode.
+        """
+        p = dict(params or {})
+        if "symbol" in p:
+            p["symbol"] = str(p["symbol"]).upper()
+        base = self._futures_base_live() if live else self._futures_base()
+        url = f"{base.rstrip('/')}/v1/klines"
+        r = requests.get(url, params=p, timeout=10)
+        r.raise_for_status()
+        return r.json()
+
     def get_klines(self, symbol, interval, limit=500):
         source = (getattr(self, "indicator_source", "") or "").strip().lower()
         acct = str(getattr(self, "account_type", "") or "").upper()
@@ -2799,7 +3012,31 @@ class BinanceWrapper:
                 params = {"symbol": symbol, "interval": interval, "limit": limit}
                 client = self.client
                 method = None
-                if source in ("", "binance futures", "binance_futures", "futures"):
+                use_live_fut = source in ("", "binance futures", "binance_futures", "futures") and self._use_live_futures_data_for_indicators()
+                if use_live_fut:
+                    self._ensure_ws_stream(symbol, interval)
+                    if not self._symbol_available_on_live_futures(symbol):
+                        try:
+                            self._log(f"{symbol} not on live futures; falling back to testnet data for indicators.", lvl="warn")
+                        except Exception:
+                            pass
+                        method = getattr(client, "futures_klines", None) or getattr(client, "get_klines", None)
+                    else:
+                        try:
+                            raw = self._fetch_futures_klines_rest(params, live=True)
+                        except Exception as e:
+                            try:
+                                self._log(f"Live futures klines fetch failed for {symbol}@{interval}: {e}; falling back to testnet", lvl="warn")
+                            except Exception:
+                                pass
+                            raw = None
+                        if not raw:
+                            try:
+                                self._log(f"Live futures klines empty for {symbol}@{interval}; falling back to testnet", lvl="warn")
+                            except Exception:
+                                pass
+                            method = getattr(client, "futures_klines", None) or getattr(client, "get_klines", None)
+                elif source in ("", "binance futures", "binance_futures", "futures"):
                     method = getattr(client, "futures_klines", None)
                     if method is None:
                         method = getattr(client, "get_klines", None)
@@ -2825,7 +3062,7 @@ class BinanceWrapper:
                             method = getattr(client, "get_klines", None)
                     else:
                         method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
-                if method is not None:
+                if raw is None and method is not None:
                     raw = method(**params)
                 elif raw is None and source not in ("bybit", "tradingview", "trading view"):
                     raise AttributeError("Connector does not provide a klines method")
@@ -2865,6 +3102,20 @@ class BinanceWrapper:
         for c in ['open','high','low','close','volume']:
             df[c] = pd.to_numeric(df[c], errors='coerce')
         trimmed = df[['open','high','low','close','volume']].copy(deep=True)
+        # Optionally patch the latest candle with live websocket kline (intrabar)
+        ws_row = self._ws_latest_candle(symbol, interval) if use_live_fut else None
+        if ws_row:
+            try:
+                ts = pd.to_datetime(ws_row['open_time'], unit='ms')
+                patch = pd.DataFrame(
+                    [[ws_row['open'], ws_row['high'], ws_row['low'], ws_row['close'], ws_row['volume']]],
+                    index=[ts],
+                    columns=['open','high','low','close','volume'],
+                )
+                trimmed.loc[ts] = patch.iloc[0]
+                trimmed = trimmed.sort_index()
+            except Exception:
+                pass
         with self._kline_cache_lock:
             self._kline_cache[cache_key] = {'df': trimmed.copy(deep=True), 'ts': time.time()}
         self._last_network_error_log = 0.0
@@ -2934,15 +3185,42 @@ class BinanceWrapper:
                         "limit": limit,
                     }
                     client = self.client
-                    if acct == "FUTURES" or source in ("binance futures", "binance_futures", "futures", ""):
-                        method = getattr(client, "futures_klines", None)
-                        if method is None:
-                            method = getattr(client, "get_klines", None)
+                    use_live_fut = (acct == "FUTURES" or source in ("binance futures", "binance_futures", "futures", "")) and self._use_live_futures_data_for_indicators()
+                    if use_live_fut:
+                        self._ensure_ws_stream(symbol, interval)
+                        if not self._symbol_available_on_live_futures(symbol):
+                            try:
+                                self._log(f"{symbol} not on live futures; falling back to testnet data for indicators.", lvl="warn")
+                            except Exception:
+                                pass
+                            method = getattr(client, "futures_klines", None) or getattr(client, "get_klines", None)
+                            if method is None:
+                                raise AttributeError("Connector does not provide a klines method")
+                            raw = method(**params)
+                        else:
+                            try:
+                                raw = self._fetch_futures_klines_rest(params, live=True)
+                            except Exception as e:
+                                try:
+                                    self._log(f"Live futures klines range failed for {symbol}@{interval}: {e}; falling back to testnet", lvl="warn")
+                                except Exception:
+                                    pass
+                                raw = None
+                            if not raw:
+                                method = getattr(client, "futures_klines", None) or getattr(client, "get_klines", None)
+                                if method is None:
+                                    raise AttributeError("Connector does not provide a klines method")
+                                raw = method(**params)
                     else:
-                        method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
-                    if method is None:
-                        raise AttributeError("Connector does not provide a klines method")
-                    raw = method(**params)
+                        if acct == "FUTURES" or source in ("binance futures", "binance_futures", "futures", ""):
+                            method = getattr(client, "futures_klines", None)
+                            if method is None:
+                                method = getattr(client, "get_klines", None)
+                        else:
+                            method = getattr(client, "get_klines", None) or getattr(client, "klines", None)
+                        if method is None:
+                            raise AttributeError("Connector does not provide a klines method")
+                        raw = method(**params)
                     break
                 except (BinanceAPIException, OfficialConnectorError) as exc:
                     ban_until = self._handle_potential_ban(exc)
@@ -2986,6 +3264,21 @@ class BinanceWrapper:
                 break
 
             frame = self._klines_raw_to_df(raw)
+            # Patch last candle with live websocket kline if available
+            if use_live_fut:
+                ws_row = self._ws_latest_candle(symbol, interval)
+                if ws_row:
+                    try:
+                        ts = pd.to_datetime(ws_row['open_time'], unit='ms')
+                        patch = pd.DataFrame(
+                            [[ws_row['open'], ws_row['high'], ws_row['low'], ws_row['close'], ws_row['volume']]],
+                            index=[ts],
+                            columns=['open','high','low','close','volume'],
+                        )
+                        frame.loc[ts] = patch.iloc[0]
+                        frame = frame.sort_index()
+                    except Exception:
+                        pass
             all_frames.append(frame)
 
             last_open = int(raw[-1][0])
@@ -3348,7 +3641,7 @@ class BinanceWrapper:
             if dual and pos_side:
                 params['positionSide'] = pos_side
 
-            order = self.client.futures_create_order(**params)
+            order, order_via = self._futures_create_order_with_fallback(params)
             fills_summary = {}
             try:
                 fills_summary = self._summarize_futures_order_fills(sym, (order or {}).get("orderId"))
@@ -3367,6 +3660,8 @@ class BinanceWrapper:
                 'computed': {'qty': qty, 'px': px, 'step': step, 'minQty': minQty, 'minNotional': minNotional, 'lev': lev},
                 'mode': mode,
             }
+            if order_via != "primary":
+                result["via"] = order_via
             if fills_summary:
                 result['fills'] = fills_summary
             return result
@@ -3398,7 +3693,7 @@ class BinanceWrapper:
                 params.setdefault('newClientOrderId', f"close-{sym}-{int(_t.time()*1000)}")
             except Exception:
                 pass
-            info = self.client.futures_create_order(**params)
+            info, via = self._futures_create_order_with_fallback(params)
             fills_summary = {}
             try:
                 fills_summary = self._summarize_futures_order_fills(sym, (info or {}).get("orderId"))
@@ -3412,6 +3707,8 @@ class BinanceWrapper:
                     pass
             self._invalidate_futures_positions_cache()
             res = {'ok': True, 'info': info}
+            if via and via != "primary":
+                res["via"] = via
             if fills_summary:
                 res['fills'] = fills_summary
             return res
@@ -3447,7 +3744,7 @@ class BinanceWrapper:
                 else:
                     params['reduceOnly'] = True
                 try:
-                    self.client.futures_create_order(**params)
+                    self._futures_create_order_with_fallback(params)
                     self._invalidate_futures_positions_cache()
                     closed += 1
                 except Exception as e:
@@ -3494,9 +3791,12 @@ class BinanceWrapper:
                     params = dict(symbol=sym, side=side, type='MARKET', quantity=qty_str)
                     if dual:
                         params['positionSide'] = 'LONG' if amt > 0 else 'SHORT'
-                    info = self.client.futures_create_order(**params)
+                    info, via = self._futures_create_order_with_fallback(params)
                     self._invalidate_futures_positions_cache()
-                    results.append({'symbol': sym, 'ok': True, 'info': info})
+                    row = {'symbol': sym, 'ok': True, 'info': info}
+                    if via and via != "primary":
+                        row["via"] = via
+                    results.append(row)
                 except Exception as e:
                     results.append({'symbol': p.get('symbol'), 'ok': False, 'error': str(e)})
         except Exception as e:
@@ -4010,9 +4310,12 @@ def _bw_place_futures_market_order(self, symbol: str, side: str, percent_balance
         if dual:
             params['positionSide'] = (position_side or ('LONG' if side.upper()=='BUY' else 'SHORT'))
         try:
-            info = self.client.futures_create_order(**params)
+            info, via = self._futures_create_order_with_fallback(params)
             self._invalidate_futures_positions_cache()
-            return {'ok': True, 'info': info, 'computed': {'qty': qty, 'price': px}}
+            res = {'ok': True, 'info': info, 'computed': {'qty': qty, 'price': px}}
+            if via and via != "primary":
+                res["via"] = via
+            return res
         except Exception as e:
             return {'ok': False, 'error': str(e), 'computed': {'qty': qty, 'price': px}}
 
@@ -4081,7 +4384,7 @@ def _bw_close_futures_position(self, symbol: str):
         else:
             params['reduceOnly'] = True
         try:
-            self.client.futures_create_order(**params)
+            self._futures_create_order_with_fallback(params)
             self._invalidate_futures_positions_cache()
             closed += 1
             continue
@@ -4100,7 +4403,7 @@ def _bw_close_futures_position(self, symbol: str):
                         alt['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
                     else:
                         alt['reduceOnly'] = True
-                    self.client.futures_create_order(**alt)
+                    self._futures_create_order_with_fallback(alt)
                     self._invalidate_futures_positions_cache()
                     closed += 1
                     continue
@@ -4250,9 +4553,9 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
 
     # Place order
     try:
-        info = self.client.futures_create_order(**params)
+        info, via = self._futures_create_order_with_fallback(params)
         self._invalidate_futures_positions_cache()
-        return {
+        res = {
             'ok': True,
             'info': info,
             'computed': {
@@ -4265,6 +4568,9 @@ def _place_futures_market_order_STRICT(self, symbol: str, side: str,
             },
             'mode': mode,
         }
+        if via and via != "primary":
+            res["via"] = via
+        return res
     except Exception as e:
         return {
             'ok': False,
@@ -4429,9 +4735,9 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
         params['reduceOnly'] = True
 
     try:
-        order = self.client.futures_create_order(**params)
+        order, via = self._futures_create_order_with_fallback(params)
         self._invalidate_futures_positions_cache()
-        return {
+        res = {
             'ok': True,
             'info': order,
             'computed': {
@@ -4444,6 +4750,9 @@ def _place_futures_market_order_FLEX(self, symbol: str, side: str,
             },
             'mode': mode,
         }
+        if via and via != "primary":
+            res["via"] = via
+        return res
     except Exception as e:
         return {
             'ok': False,
@@ -4458,18 +4767,5 @@ try:
     BinanceWrapper.place_futures_market_order = _place_futures_market_order_FLEX
 except Exception:
     pass
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

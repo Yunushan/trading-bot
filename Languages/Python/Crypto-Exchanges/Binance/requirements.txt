@@ -1,5 +1,5 @@
 
-python-binance==1.0.32
+python-binance==1.0.33
 binance-connector==3.12.0
 PyQt6==6.10.0
 PyQt6-Qt6==6.10.0

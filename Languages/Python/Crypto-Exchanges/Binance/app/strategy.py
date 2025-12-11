@@ -6401,11 +6401,11 @@ class StrategyEngine:
                                 order_success = False
                                 break
                             if order_success:
-                                break
-                            else:
-                                try:
-                                    err_text = order_res.get("error") or order_res
-                                    self.log(f"{cw['symbol']}@{cw.get('interval')} order error: {err_text}")
+                            break
+                        else:
+                            try:
+                                err_text = order_res.get("error") or order_res
+                                self.log(f"{cw['symbol']}@{cw.get('interval')} order error: {err_text}")
                                 except Exception:
                                     pass
                             err_text = str(order_res.get('error') or '').lower()
@@ -6422,6 +6422,18 @@ class StrategyEngine:
                                 pass
                     if self.stopped():
                         return
+                    if order_success:
+                        try:
+                            via = order_res.get("via") or getattr(order_res.get("info", {}), "get", lambda *_: None)("via")
+                            qty_dbg = order_res.get("computed", {}).get("qty") or order_res.get("info", {}).get("origQty")
+                            self.log(f"{cw['symbol']}@{cw.get('interval')} order placed {side} qty={qty_dbg} via={via or 'primary'}")
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            self.log(f"{cw['symbol']}@{cw.get('interval')} order failed: {order_res}", lvl="error")
+                        except Exception:
+                            pass
                     try:
                         qty_emit = float(order_res.get('computed',{}).get('qty') or 0.0)
                         if qty_emit <= 0:
