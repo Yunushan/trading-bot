@@ -1153,7 +1153,7 @@ class BinanceWrapper:
                 self._fallback_py_client = Client(self.api_key, self.api_secret, testnet=True)
                 setattr(self._fallback_py_client, "_bw_throttled", True)
             except Exception:
-            self._fallback_py_client = None
+                self._fallback_py_client = None
         return self._fallback_py_client
 
     def _futures_create_order_with_fallback(self, params: dict):
@@ -4767,5 +4767,3 @@ try:
     BinanceWrapper.place_futures_market_order = _place_futures_market_order_FLEX
 except Exception:
     pass
-
-

@@ -2643,9 +2643,15 @@ class MainWindow(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         try:
-            self.setWindowFlag(QtCore.Qt.WindowType.WindowMinimizeButtonHint, True)
-            self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint, True)
-            self.setWindowFlag(QtCore.Qt.WindowType.WindowTitleHint, True)
+            # Avoid repeated native window re-creation (can cause Windows flicker during startup).
+            current_flags = self.windowFlags()
+            desired_flags = current_flags | (
+                QtCore.Qt.WindowType.WindowMinimizeButtonHint
+                | QtCore.Qt.WindowType.WindowMaximizeButtonHint
+                | QtCore.Qt.WindowType.WindowTitleHint
+            )
+            if desired_flags != current_flags:
+                self.setWindowFlags(desired_flags)
         except Exception:
             pass
         self._state_path = APP_STATE_PATH
@@ -2720,7 +2726,11 @@ class MainWindow(QtWidgets.QWidget):
         self.chart_config.setdefault("symbol", default_symbol)
         self.chart_config.setdefault("interval", (default_intervals[0] if default_intervals else "1h"))
         # Default to TradingView when available so the chart tab opens directly in TradingView mode.
-        default_view_mode = "tradingview" if _tradingview_supported() and not _DISABLE_TRADINGVIEW and not _DISABLE_CHARTS else "original"
+        # On Windows, TradingView (QtWebEngine) can spawn helper windows that briefly flash during startup,
+        # so default to the lightweight original chart unless the user explicitly opts in.
+        default_view_mode = "original"
+        if sys.platform != "win32" and _tradingview_supported() and not _DISABLE_TRADINGVIEW and not _DISABLE_CHARTS:
+            default_view_mode = "tradingview"
         self.chart_config.setdefault("view_mode", default_view_mode)
         try:
             if self._normalize_chart_market(self.chart_config.get("market")) == "Futures":
@@ -2798,7 +2808,8 @@ class MainWindow(QtWidgets.QWidget):
         self._backtest_futures_widgets = []
         self.config.setdefault("runtime_symbol_interval_pairs", [])
         self.config.setdefault("backtest_symbol_interval_pairs", [])
-        self.config.setdefault("debug_override_verbose", True)
+        # Verbose override debugging can generate a lot of log traffic and make the UI feel frozen on startup.
+        self.config.setdefault("debug_override_verbose", False)
         self._override_refresh_depth = 0
         self.symbol_interval_table = None
         self.pair_add_btn = None
@@ -6588,12 +6599,16 @@ class MainWindow(QtWidgets.QWidget):
                 pass
         self.chart_view_mode_combo.addItem("Original", "original")
 
-        requested_mode = "tradingview" if self._chart_view_tradingview_available else "original"
+        requested_mode = str(self.chart_config.get("view_mode") or "").strip().lower()
+        if requested_mode not in {"tradingview", "original"}:
+            requested_mode = "tradingview" if self._chart_view_tradingview_available else "original"
         self.chart_config["view_mode"] = requested_mode
 
         self._pending_tradingview_mode = False
-        if self._chart_view_tradingview_available:
+        if self._chart_view_tradingview_available and sys.platform != "win32":
             # Preload TradingView widget so switching to the chart tab feels instant.
+            # On Windows this can spawn helper windows that briefly flash during startup,
+            # so we defer creation until the chart tab is shown.
             try:
                 self._ensure_tradingview_widget()
             except Exception:
@@ -6608,7 +6623,8 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        self._apply_chart_view_mode(requested_mode, initial=True, allow_tradingview_init=True)
+        allow_tradingview_init = sys.platform != "win32"
+        self._apply_chart_view_mode(requested_mode, initial=True, allow_tradingview_init=allow_tradingview_init)
         self.chart_view_mode_combo.currentIndexChanged.connect(self._on_chart_view_mode_changed)
 
         self.chart_symbol_combo.currentTextChanged.connect(self._on_chart_controls_changed)
@@ -6694,12 +6710,12 @@ class MainWindow(QtWidgets.QWidget):
         self.chart_config["view_mode"] = requested_mode or actual_mode
         if actual_mode == "tradingview":
             self._pending_tradingview_mode = False
-        tv_class, _ = _load_tradingview_widget()
-        if actual_mode == "tradingview" and tv_class is not None and isinstance(widget, tv_class):
-            try:
-                self._on_chart_theme_changed()
-            except Exception:
-                pass
+            tv_class, _ = _load_tradingview_widget()
+            if tv_class is not None and isinstance(widget, tv_class):
+                try:
+                    self._on_chart_theme_changed()
+                except Exception:
+                    pass
         self._chart_needs_render = True
         status_text = "Chart view ready."
         if initial:
@@ -7705,10 +7721,10 @@ class MainWindow(QtWidgets.QWidget):
                     pass
             view.setChart(chart)
             return
-        tv_class, _ = _load_tradingview_widget()
-        if tv_class is not None and isinstance(view, tv_class):
+        tv_view = getattr(self, "chart_tradingview", None)
+        if tv_view is not None and view is tv_view:
             try:
-                view.show_message(message, color=color)
+                tv_view.show_message(message, color=color)
             except Exception:
                 pass
         elif isinstance(view, SimpleCandlestickWidget):
@@ -7799,14 +7815,14 @@ class MainWindow(QtWidgets.QWidget):
         if not getattr(self, "chart_enabled", False):
             return
         view = getattr(self, "chart_view", None)
-        tv_class, _ = _load_tradingview_widget()
-        if tv_class is not None and isinstance(view, tv_class):
+        tv_view = getattr(self, "chart_tradingview", None)
+        if tv_view is not None and view is tv_view:
             try:
                 theme_name = (self.theme_combo.currentText() or "").strip()
             except Exception:
                 theme_name = self.config.get("theme", "Dark")
             try:
-                view.apply_theme(theme_name)
+                tv_view.apply_theme(theme_name)
             except Exception:
                 pass
 
@@ -7833,7 +7849,14 @@ class MainWindow(QtWidgets.QWidget):
             return
         if widget is getattr(self, "chart_tab", None):
             if self._pending_tradingview_mode:
-                self._apply_chart_view_mode("tradingview", allow_tradingview_init=True)
+                # On Windows, do not auto-initialize TradingView/QtWebEngine just because the
+                # chart tab becomes visible; it can spawn multiple helper windows that flash.
+                # Users can still opt in by selecting "TradingView" in the view-mode combo.
+                allow_tradingview_init = sys.platform != "win32"
+                if not allow_tradingview_init:
+                    allow_flag = str(os.environ.get("BOT_ALLOW_TRADINGVIEW_WINDOWS", "")).strip().lower()
+                    allow_tradingview_init = allow_flag in {"1", "true", "yes", "on"}
+                self._apply_chart_view_mode("tradingview", allow_tradingview_init=allow_tradingview_init)
             if self._chart_pending_initial_load:
                 self.load_chart(auto=True)
             elif self.chart_auto_follow:
@@ -7891,8 +7914,8 @@ class MainWindow(QtWidgets.QWidget):
                 pass
         self._chart_worker = None
 
-        tv_class, _ = _load_tradingview_widget()
-        if tv_class is not None and isinstance(view, tv_class):
+        tv_view = getattr(self, "chart_tradingview", None)
+        if tv_view is not None and view is tv_view:
             try:
                 theme_name = (self.theme_combo.currentText() or "").strip()
             except Exception:
@@ -7901,7 +7924,7 @@ class MainWindow(QtWidgets.QWidget):
             theme_code = "light" if str(theme_name or "").lower().startswith("light") else "dark"
             self._chart_pending_initial_load = False
             try:
-                view.set_chart(tv_symbol, interval_code, theme=theme_code, timezone="Etc/UTC")
+                tv_view.set_chart(tv_symbol, interval_code, theme=theme_code, timezone="Etc/UTC")
                 try:
                     self._last_chart_load_ts = time.monotonic()
                 except Exception:
@@ -7916,7 +7939,7 @@ class MainWindow(QtWidgets.QWidget):
                 if not auto:
                     self.log(f"Chart load failed: {exc}")
                 try:
-                    view.show_message("Failed to load TradingView chart.", color="#f75467")
+                    tv_view.show_message("Failed to load TradingView chart.", color="#f75467")
                 except Exception:
                     pass
             return
@@ -9600,7 +9623,8 @@ def _init_code_language_tab(self):
     self._version_refresh_btn.clicked.connect(self._refresh_dependency_versions)
     version_btn_row.addWidget(self._version_refresh_btn)
     layout.addLayout(version_btn_row)
-    self._refresh_dependency_versions()
+    # Do not auto-refresh versions on startup; collecting package metadata can be slow on Windows
+    # and will make the UI appear frozen. Users can click "Check Versions" when needed.
 
     self._sync_language_exchange_lists_from_config()
     self._update_bot_status()
@@ -9705,7 +9729,7 @@ def _refresh_code_tab_from_config(self) -> None:
     for key, card in forex_cards.items():
         card.setSelected(selected_forex is not None and key == selected_forex)
     self._update_code_tab_market_sections()
-    self._refresh_dependency_versions()
+    # Keep the version table static until the user explicitly requests a refresh.
 
 
 def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None = None) -> None:

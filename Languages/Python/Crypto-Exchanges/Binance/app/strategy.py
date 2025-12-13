@@ -6401,19 +6401,19 @@ class StrategyEngine:
                                 order_success = False
                                 break
                             if order_success:
-                            break
-                        else:
-                            try:
-                                err_text = order_res.get("error") or order_res
-                                self.log(f"{cw['symbol']}@{cw.get('interval')} order error: {err_text}")
+                                break
+                            else:
+                                try:
+                                    err_text = order_res.get("error") or order_res
+                                    self.log(f"{cw['symbol']}@{cw.get('interval')} order error: {err_text}")
                                 except Exception:
                                     pass
-                            err_text = str(order_res.get('error') or '').lower()
-                            if order_attempts < 3 and any(token in err_text for token in rate_limit_tokens):
-                                wait_time = min(5.0, backoff_base * order_attempts)
-                                time.sleep(wait_time)
-                                continue
-                            break
+                                err_text = str(order_res.get('error') or '').lower()
+                                if order_attempts < 3 and any(token in err_text for token in rate_limit_tokens):
+                                    wait_time = min(5.0, backoff_base * order_attempts)
+                                    time.sleep(wait_time)
+                                    continue
+                                break
                     finally:
                         if guard_obj and hasattr(guard_obj, "end_open"):
                             try:
