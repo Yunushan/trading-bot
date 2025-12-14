@@ -287,6 +287,11 @@ else:
 # Startup knobs to avoid slow/flashy QtWebEngine init on Windows
 _DISABLE_CHARTS = str(os.environ.get("BOT_DISABLE_CHARTS", "")).strip().lower() in {"1", "true", "yes", "on"}
 _DISABLE_TRADINGVIEW = str(os.environ.get("BOT_DISABLE_TRADINGVIEW", "")).strip().lower() in {"1", "true", "yes", "on"}
+try:
+    _SYMBOL_FETCH_TOP_N = int(os.environ.get("BOT_SYMBOL_FETCH_TOP_N") or 200)
+except Exception:
+    _SYMBOL_FETCH_TOP_N = 200
+_SYMBOL_FETCH_TOP_N = max(50, min(_SYMBOL_FETCH_TOP_N, 5000))
 
 LANGUAGE_PATHS = {
     "Python (PyQt)": "Languages/Python",
@@ -2861,8 +2866,8 @@ class MainWindow(QtWidgets.QWidget):
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
-        QtCore.QTimer.singleShot(0, self._handle_post_init_state)
-        QtCore.QTimer.singleShot(0, self._update_connector_labels)
+        QtCore.QTimer.singleShot(250, self._handle_post_init_state)
+        QtCore.QTimer.singleShot(50, self._update_connector_labels)
 
     def _update_positions_balance_labels(
         self,
@@ -3030,39 +3035,89 @@ class MainWindow(QtWidgets.QWidget):
                 if not getattr(self, "_auto_close_on_restart_triggered", False):
                     self._auto_close_on_restart_triggered = True
                     self._previous_session_unclosed = False
-                    self.log("Previous session ended unexpectedly with close-on-exit enabled; triggering emergency close of all positions.")
+                    self.log(
+                        "Previous session ended unexpectedly with close-on-exit enabled; scheduling emergency close of all positions."
+                    )
+
+                    api_key = ""
+                    api_secret = ""
+                    mode = ""
+                    account = ""
+                    margin_mode = "Isolated"
+                    leverage = 1
+                    connector_backend = DEFAULT_CONNECTOR_BACKEND
+
                     try:
-                        api_key_ready = bool(getattr(self, "api_key_edit", None) and self.api_key_edit.text().strip())
-                        api_secret_ready = bool(getattr(self, "api_secret_edit", None) and self.api_secret_edit.text().strip())
-                        if api_key_ready and api_secret_ready:
-                            try:
-                                self.stop_strategy_async(close_positions=False, blocking=True)
-                            except Exception:
-                                pass
-                            wrapper = getattr(self, "shared_binance", None)
-                            if wrapper is None:
-                                wrapper = self._create_binance_wrapper(
-                                    api_key=self.api_key_edit.text().strip(),
-                                    api_secret=self.api_secret_edit.text().strip(),
-                                    mode=self.mode_combo.currentText(),
-                                    account_type=self.account_combo.currentText(),
-                                    default_leverage=int(self.leverage_spin.value() or 1),
-                                    default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
-                                )
-                                self.shared_binance = wrapper
-                            else:
-                                wrapper = self.shared_binance
-                            try:
-                                wrapper.trigger_emergency_close_all(reason="restart_recovery", source="startup")
-                            except Exception as exc_inner:
-                                self.log(f"Emergency close scheduling error: {exc_inner}")
-                        else:
-                            self.log("Emergency close skipped: API credentials are missing.")
-                    except Exception as exc:
+                        api_key = self.api_key_edit.text().strip() if getattr(self, "api_key_edit", None) else ""
+                        api_secret = self.api_secret_edit.text().strip() if getattr(self, "api_secret_edit", None) else ""
+                    except Exception:
+                        api_key = ""
+                        api_secret = ""
+
+                    try:
+                        mode = str(self.mode_combo.currentText() or "") if getattr(self, "mode_combo", None) else ""
+                    except Exception:
+                        mode = ""
+                    try:
+                        account = str(self.account_combo.currentText() or "") if getattr(self, "account_combo", None) else ""
+                    except Exception:
+                        account = ""
+                    try:
+                        margin_mode = str(self.margin_mode_combo.currentText() or "Isolated") if getattr(self, "margin_mode_combo", None) else "Isolated"
+                    except Exception:
+                        margin_mode = "Isolated"
+                    try:
+                        leverage = int(self.leverage_spin.value() or 1) if getattr(self, "leverage_spin", None) else 1
+                    except Exception:
+                        leverage = 1
+                    try:
+                        connector_backend = _normalize_connector_backend(self.config.get("connector_backend") or DEFAULT_CONNECTOR_BACKEND)
+                    except Exception:
+                        connector_backend = DEFAULT_CONNECTOR_BACKEND
+
+                    if api_key and api_secret:
                         try:
-                            self.log(f"Emergency close scheduling error: {exc}")
+                            self.stop_strategy_async(close_positions=False, blocking=False)
                         except Exception:
                             pass
+
+                        def _run_emergency_close(
+                            api_key_val: str,
+                            api_secret_val: str,
+                            mode_val: str,
+                            account_val: str,
+                            connector_backend_val: str,
+                            leverage_val: int,
+                            margin_mode_val: str,
+                        ) -> None:
+                            try:
+                                wrapper = self._create_binance_wrapper(
+                                    api_key=api_key_val,
+                                    api_secret=api_secret_val,
+                                    mode=mode_val,
+                                    account_type=account_val,
+                                    connector_backend=connector_backend_val,
+                                    default_leverage=max(1, int(leverage_val or 1)),
+                                    default_margin_mode=str(margin_mode_val or "Isolated"),
+                                )
+                                wrapper.trigger_emergency_close_all(reason="restart_recovery", source="startup")
+                                try:
+                                    self.log("Emergency close request submitted.")
+                                except Exception:
+                                    pass
+                            except Exception as exc_inner:
+                                try:
+                                    self.log(f"Emergency close scheduling error: {exc_inner}")
+                                except Exception:
+                                    pass
+
+                        threading.Thread(
+                            target=_run_emergency_close,
+                            args=(api_key, api_secret, mode, account, connector_backend, leverage, margin_mode),
+                            daemon=True,
+                        ).start()
+                    else:
+                        self.log("Emergency close skipped: API credentials are missing.")
                     try:
                         data = dict(getattr(self, "_app_state", {}) or {})
                         data['session_active'] = True
@@ -5339,12 +5394,26 @@ class MainWindow(QtWidgets.QWidget):
                 selected = list(unique_candidates)
             if not selected and unique_candidates:
                 selected = [unique_candidates[0]]
-            with QtCore.QSignalBlocker(self.backtest_symbol_list):
-                self.backtest_symbol_list.clear()
-                for sym in unique_candidates:
-                    item = QtWidgets.QListWidgetItem(sym)
-                    item.setSelected(sym in selected)
-                    self.backtest_symbol_list.addItem(item)
+            selected_set = {str(sym).upper() for sym in (selected or []) if sym}
+            try:
+                self.backtest_symbol_list.setUpdatesEnabled(False)
+            except Exception:
+                pass
+            try:
+                with QtCore.QSignalBlocker(self.backtest_symbol_list):
+                    self.backtest_symbol_list.clear()
+                    if unique_candidates:
+                        self.backtest_symbol_list.addItems(unique_candidates)
+                        if selected_set:
+                            for i in range(self.backtest_symbol_list.count()):
+                                item = self.backtest_symbol_list.item(i)
+                                if item and item.text().upper() in selected_set:
+                                    item.setSelected(True)
+            finally:
+                try:
+                    self.backtest_symbol_list.setUpdatesEnabled(True)
+                except Exception:
+                    pass
             self.backtest_symbols_all = list(unique_candidates)
             self.backtest_config["symbols"] = list(selected)
             cfg = self.config.setdefault("backtest", {})
@@ -5458,7 +5527,7 @@ class MainWindow(QtWidgets.QWidget):
                 account_type=acct,
                 connector_backend=self._backtest_connector_backend(),
             )
-            return wrapper.fetch_symbols(sort_by_volume=True)
+            return wrapper.fetch_symbols(sort_by_volume=True, top_n=_SYMBOL_FETCH_TOP_N)
 
         worker = CallWorker(_do, parent=self)
         try:
@@ -7295,7 +7364,7 @@ class MainWindow(QtWidgets.QWidget):
                 mode=mode,
                 account_type=account_type,
             )
-            syms = tmp_wrapper.fetch_symbols(sort_by_volume=True)
+            syms = tmp_wrapper.fetch_symbols(sort_by_volume=True, top_n=_SYMBOL_FETCH_TOP_N)
             cleaned = []
             seen_local = set()
             for sym in syms or []:
@@ -12934,7 +13003,7 @@ def refresh_symbols(self):
             mode=self.mode_combo.currentText(),
             account_type=self.account_combo.currentText(),
         )
-        syms = tmp_wrapper.fetch_symbols(sort_by_volume=True)
+        syms = tmp_wrapper.fetch_symbols(sort_by_volume=True, top_n=_SYMBOL_FETCH_TOP_N)
         return syms
     def _done(res, err):
         try:

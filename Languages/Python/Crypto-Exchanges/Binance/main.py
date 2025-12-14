@@ -101,6 +101,66 @@ def _install_cbt_startup_window_suppression() -> None:
     user32.UnhookWindowsHookEx.restype = wintypes.BOOL
     user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
     user32.CallNextHookEx.restype = LRESULT
+    try:
+        user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetClassNameW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+    except Exception:
+        pass
+
+    _QT_INTERNAL_WINDOW_SUFFIXES = (
+        "PowerDummyWindow",
+        "ClipboardView",
+        "ScreenChangeObserverWindow",
+        "ThemeChangeObserverWindow",
+    )
+
+    def _read_cs_string(value) -> str:  # noqa: ANN001
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            text = (value or "").strip()
+            # Sometimes lpszClass/lpszName is an atom and ctypes can expose it as a single
+            # control character; treat that as "no usable string".
+            if len(text) == 1 and ord(text) < 32:
+                return ""
+            return text
+        addr = None
+        if isinstance(value, int):
+            addr = int(value)
+        else:
+            try:
+                addr = int(ctypes.cast(value, ctypes.c_void_p).value or 0)
+            except Exception:
+                addr = 0
+        if not addr:
+            return ""
+        # MAKEINTATOM uses values < 0x10000.
+        if addr < 0x10000:
+            return ""
+        try:
+            return str(ctypes.wstring_at(addr) or "").strip()
+        except Exception:
+            return ""
+
+    def _read_hwnd_class(hwnd_val: int) -> str:
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(wintypes.HWND(int(hwnd_val)), buf, 256)
+            return str(buf.value or "").strip()
+        except Exception:
+            return ""
+
+    def _looks_like_qt_internal_helper_window(*, class_name: str, title: str) -> bool:
+        name = str(class_name or "").strip()
+        if name.startswith("Qt") and any(name.endswith(suffix) for suffix in _QT_INTERNAL_WINDOW_SUFFIXES):
+            return True
+        ttl = str(title or "").strip()
+        # Titles often omit the version digits (e.g., "QtPowerDummyWindow").
+        if ttl.startswith("Qt") and any(ttl.endswith(suffix) for suffix in _QT_INTERNAL_WINDOW_SUFFIXES):
+            return True
+        return False
 
     def _cbt_proc(n_code, w_param, l_param):  # noqa: ANN001
         try:
@@ -120,11 +180,34 @@ def _install_cbt_startup_window_suppression() -> None:
             height = int(cs.cy)
             if width <= 0 or height <= 0:
                 return user32.CallNextHookEx(0, n_code, w_param, l_param)
-            # Never touch anything that looks like the actual app window.
-            if width >= 500 and height >= 300:
-                return user32.CallNextHookEx(0, n_code, w_param, l_param)
+            cs_class = _read_cs_string(cs.lpszClass)
+            cs_title = _read_cs_string(cs.lpszName)
             style = int(cs.style) & 0xFFFFFFFF
             if style & WS_CHILD:
+                return user32.CallNextHookEx(0, n_code, w_param, l_param)
+            # Some Qt 6.10+ internal helper windows can appear full-size briefly on Windows 11.
+            # Hide them at create-time to avoid visible flashes before the main UI shows.
+            class_name = cs_class or _read_hwnd_class(hwnd_val)
+            if class_name.startswith("QEventDispatcherWin32_Internal_Widget"):
+                return user32.CallNextHookEx(0, n_code, w_param, l_param)
+            if _looks_like_qt_internal_helper_window(class_name=class_name, title=cs_title):
+                cs.style = int(style & ~WS_VISIBLE)
+                ex_style = int(cs.dwExStyle) & 0xFFFFFFFF
+                cs.dwExStyle = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
+                cs.x = -32000
+                cs.y = -32000
+                if debug_window_events:
+                    try:
+                        with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
+                            fh.write(
+                                f"cbt-hide-qt-helper hwnd={hwnd_val} size={width}x{height} class={class_name!r} title={cs_title!r} "
+                                f"style=0x{style:08X} exstyle=0x{ex_style:08X}\n"
+                            )
+                    except Exception:
+                        pass
+                return user32.CallNextHookEx(0, n_code, w_param, l_param)
+            # Never touch anything that looks like the actual app window.
+            if width >= 500 and height >= 300:
                 return user32.CallNextHookEx(0, n_code, w_param, l_param)
             # Target only tiny top-level helpers that can flash (titlebar-sized).
             if height <= 120 and width <= 4000:
@@ -137,7 +220,7 @@ def _install_cbt_startup_window_suppression() -> None:
                     try:
                         with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
                             fh.write(
-                                f"cbt-hide hwnd={hwnd_val} size={width}x{height} "
+                                f"cbt-hide hwnd={hwnd_val} size={width}x{height} class={class_name!r} title={cs_title!r} "
                                 f"style=0x{style:08X} exstyle=0x{ex_style:08X}\n"
                             )
                     except Exception:
@@ -170,8 +253,6 @@ def _install_cbt_startup_window_suppression() -> None:
         if not thread_id:
             return
         if _CBT_STARTUP_WINDOW_PROC is None or _CBT_STARTUP_WINDOW_LOCK is None:
-            return
-        if not _thread_has_message_queue(thread_id):
             return
         with _CBT_STARTUP_WINDOW_LOCK:
             if thread_id in _CBT_STARTUP_WINDOW_HOOKS:
@@ -414,25 +495,12 @@ def _install_startup_window_suppression() -> None:
             height = int(rect.bottom - rect.top)
             if width <= 0 or height <= 0:
                 return False
-            if width >= 500 and height >= 300:
-                return False
 
             class_buf = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd_obj, class_buf, 256)
             class_name = (class_buf.value or "").strip()
 
-            if class_name in {"ConsoleWindowClass", "PseudoConsoleWindow"}:
-                return True
-            if class_name.startswith("_q_"):
-                return height <= 260 and width <= 3200
-            if class_name.startswith("QEventDispatcherWin32_Internal_Widget"):
-                return height <= 260 and width <= 4000
-            if class_name == "Intermediate D3D Window":
-                return height <= 500 and width <= 4000
-            if class_name.startswith("Chrome_WidgetWin_"):
-                return height <= 400 and width <= 4000
-
-            # Generic tiny top-level surfaces that can flash briefly.
+            # Skip child windows early.
             try:
                 GWL_STYLE = -16
                 WS_CHILD = 0x40000000
@@ -442,11 +510,47 @@ def _install_startup_window_suppression() -> None:
                     return False
             except Exception:
                 pass
+
+            if class_name.startswith("Qt") and any(
+                class_name.endswith(suffix)
+                for suffix in (
+                    "PowerDummyWindow",
+                    "ClipboardView",
+                    "ScreenChangeObserverWindow",
+                    "ThemeChangeObserverWindow",
+                )
+            ):
+                return True
+            if class_name in {"ConsoleWindowClass", "PseudoConsoleWindow"}:
+                return True
+            if class_name.startswith("_q_"):
+                return height <= 260 and width <= 3200
+            if class_name == "Intermediate D3D Window":
+                return height <= 500 and width <= 4000
+            if class_name.startswith("Chrome_WidgetWin_"):
+                return height <= 400 and width <= 4000
+            if width >= 500 and height >= 300:
+                return False
+
+            # Generic tiny top-level surfaces that can flash briefly.
             return height <= 80 and width <= 4000
         except Exception:
             return False
 
     def _hide_hwnd(hwnd_obj) -> None:  # noqa: ANN001
+        try:
+            GWL_EXSTYLE = -20
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_APPWINDOW = 0x00040000
+            WS_EX_NOACTIVATE = 0x08000000
+            get_exstyle = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+            set_exstyle = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+            ex_style = int(get_exstyle(hwnd_obj, GWL_EXSTYLE))
+            new_ex_style = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
+            if new_ex_style != ex_style:
+                set_exstyle(hwnd_obj, GWL_EXSTYLE, new_ex_style)
+        except Exception:
+            pass
         try:
             SWP_NOSIZE = 0x0001
             SWP_NOZORDER = 0x0004
@@ -489,6 +593,11 @@ def _install_startup_window_suppression() -> None:
                 return
             # Extra guard: only touch windows belonging to this process.
             if _get_hwnd_pid(hwnd_obj) != pid:
+                return
+            try:
+                if not user32.IsWindowVisible(hwnd_obj):
+                    return
+            except Exception:
                 return
             if not _is_transient_startup_window(hwnd_obj):
                 return
@@ -550,6 +659,11 @@ def _install_startup_window_suppression() -> None:
         def _enum_cb(hwnd_obj, _lparam):  # noqa: ANN001
             try:
                 if _get_hwnd_pid(hwnd_obj) != pid:
+                    return True
+                try:
+                    if not user32.IsWindowVisible(hwnd_obj):
+                        return True
+                except Exception:
                     return True
                 if _is_transient_startup_window(hwnd_obj):
                     _hide_hwnd(hwnd_obj)
@@ -704,6 +818,21 @@ def main() -> int:
         QtCore.QTimer.singleShot(800, _apply_taskbar)
 
     win.showMaximized()
+
+    ready_signal = os.environ.get("BOT_STARTER_READY_FILE")
+    if ready_signal:
+        try:
+            ready_path = Path(str(ready_signal)).expanduser()
+            try:
+                ready_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                ready_path.write_text(str(os.getpid()), encoding="utf-8", errors="ignore")
+            except Exception:
+                ready_path.touch(exist_ok=True)
+        except Exception:
+            pass
 
     try:
         suppress_ms = int(os.environ.get("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS") or 8000)
