@@ -281,6 +281,74 @@ def _env_float(name: str, default: float) -> float:
     parsed = _maybe_float(os.getenv(name))
     return float(default) if parsed is None else float(parsed)
 
+def _requests_timeout() -> tuple[float, float]:
+    """
+    Build a (connect, read) timeout tuple for requests/urllib3.
+
+    Why tuple timeouts?
+    - A single large timeout can make stalled connects/reads take minutes.
+    - Separating connect vs read keeps the UI responsive while still allowing
+      slower responses when needed.
+
+    Environment variables:
+    - BINANCE_HTTP_CONNECT_TIMEOUT (default: 5)
+    - BINANCE_HTTP_READ_TIMEOUT    (default: BINANCE_HTTP_TIMEOUT or 20)
+    - BINANCE_HTTP_TIMEOUT         (legacy read timeout; default: 20)
+    """
+    connect_timeout = _env_float("BINANCE_HTTP_CONNECT_TIMEOUT", 5.0)
+    read_timeout = _env_float("BINANCE_HTTP_READ_TIMEOUT", _env_float("BINANCE_HTTP_TIMEOUT", 20.0))
+    try:
+        connect_timeout = float(connect_timeout)
+    except Exception:
+        connect_timeout = 5.0
+    try:
+        read_timeout = float(read_timeout)
+    except Exception:
+        read_timeout = 20.0
+    # Clamp defensively; extremely large values tend to mask connectivity issues.
+    connect_timeout = max(0.5, min(connect_timeout, 30.0))
+    read_timeout = max(1.0, min(read_timeout, 60.0))
+    return (connect_timeout, read_timeout)
+
+
+def _auth_error_hint_for(mode: str | None, account_type: str | None, code: int | None) -> str | None:
+    try:
+        c = int(code) if code is not None else None
+    except Exception:
+        c = None
+    if c not in {-2014, -2015}:
+        return None
+    mode_text = str(mode or "").lower()
+    acct = str(account_type or "").upper()
+    is_testnet = any(tag in mode_text for tag in ("demo", "test", "sandbox"))
+    if acct.startswith("FUT") and is_testnet:
+        return (
+            "Use Binance FUTURES TESTNET keys from testnet.binancefuture.com "
+            "(spot/live keys won't work). If you enabled IP restriction, "
+            "disable it or whitelist your current public IP (VPN changes it)."
+        )
+    if is_testnet:
+        return "Testnet requires testnet API keys (live keys won't work)."
+    if acct.startswith("FUT"):
+        return "Ensure your API key has Futures permissions enabled and IP whitelist allows your current IP."
+    return "Ensure your API key permissions and IP whitelist allow this request."
+
+
+def _http_timeout_seconds() -> float:
+    """Convenience for helpers that accept a single timeout float."""
+    _, read_timeout = _requests_timeout()
+    return float(read_timeout)
+
+def _http_debug_enabled() -> bool:
+    return _env_flag("BINANCE_DEBUG_HTTP", False) or _env_flag("BINANCE_DEBUG_HTTP_TIMING", False)
+
+
+def _http_slow_seconds() -> float:
+    try:
+        return max(0.0, float(_env_float("BINANCE_DEBUG_HTTP_SLOW_SECONDS", 2.0)))
+    except Exception:
+        return 2.0
+
 
 def _enum_value(enum_cls: Any, value: Any):
     if value is None or enum_cls is None:
@@ -336,8 +404,29 @@ def _sdk_to_plain(obj: Any) -> Any:
     return obj
 
 
+def _is_binance_error_payload(obj: Any) -> bool:
+    """
+    Detect Binance-style error payloads like {"code": -2015, "msg": "..."} that some
+    connectors may surface as plain dicts instead of raising exceptions.
+    """
+    if not isinstance(obj, dict):
+        return False
+    if "code" not in obj:
+        return False
+    msg = obj.get("msg", obj.get("message"))
+    if msg is None:
+        return False
+    try:
+        int(obj.get("code"))
+    except Exception:
+        return False
+    return True
+
+
 def _as_futures_balance_entries(data: Any):
     if isinstance(data, dict):
+        if _is_binance_error_payload(data):
+            return []
         for key in ("balances", "accountBalance", "data"):
             entries = data.get(key)
             if entries is not None:
@@ -348,10 +437,14 @@ def _as_futures_balance_entries(data: Any):
 
 def _as_futures_account_dict(data: Any) -> dict:
     if isinstance(data, dict):
+        if _is_binance_error_payload(data):
+            return {}
         return data
     if isinstance(data, list) and data:
         first = data[0]
         if isinstance(first, dict):
+            if _is_binance_error_payload(first):
+                return {}
             return first
     return {}
 
@@ -1156,21 +1249,21 @@ class BinanceWrapper:
             return None
         if self._fallback_py_client is None:
             try:
-                timeout_s = _env_float("BINANCE_HTTP_TIMEOUT", 120.0)
-                try:
-                    timeout_s = max(1.0, min(float(timeout_s), 120.0))
-                except Exception:
-                    timeout_s = 120.0
-                requests_params = {"timeout": timeout_s}
+                requests_params = {"timeout": _requests_timeout()}
                 try:
                     self._fallback_py_client = Client(
                         self.api_key,
                         self.api_secret,
                         testnet=True,
                         requests_params=requests_params,
+                        ping=False,
                     )
                 except TypeError:
-                    self._fallback_py_client = Client(self.api_key, self.api_secret, testnet=True)
+                    # Older python-binance builds may not accept `requests_params` or `ping`.
+                    try:
+                        self._fallback_py_client = Client(self.api_key, self.api_secret, testnet=True, ping=False)
+                    except TypeError:
+                        self._fallback_py_client = Client(self.api_key, self.api_secret, testnet=True)
                     try:
                         setattr(self._fallback_py_client, "requests_params", requests_params)
                     except Exception:
@@ -1240,8 +1333,12 @@ class BinanceWrapper:
                     return copy.deepcopy(self._futures_account_cache)
         acct_dict = {}
         try:
-            acct = self._futures_call("futures_account", allow_recv=True)
-            acct_dict = _as_futures_account_dict(acct)
+            if not self.api_key or not self.api_secret:
+                acct_dict = {}
+            else:
+                # Prefer lightweight REST (faster failure/less client overhead on testnet/VPN DNS issues).
+                acct = self._http_signed_futures("/v2/account")
+                acct_dict = _as_futures_account_dict(acct)
         except Exception:
             acct_dict = {}
         with self._futures_account_cache_lock:
@@ -1264,8 +1361,12 @@ class BinanceWrapper:
                     return copy.deepcopy(self._futures_account_balance_cache)
         entries: list = []
         try:
-            bals = self._futures_call("futures_account_balance", allow_recv=True)
-            entries = list(_as_futures_balance_entries(bals))
+            if not self.api_key or not self.api_secret:
+                entries = []
+            else:
+                # Prefer lightweight REST (faster failure/less client overhead on testnet/VPN DNS issues).
+                bals = self._http_signed_futures_list("/v2/balance")
+                entries = list(_as_futures_balance_entries(bals))
         except Exception:
             entries = []
         with self._futures_account_cache_lock:
@@ -1941,13 +2042,20 @@ class BinanceWrapper:
         with self._ws_lock:
             return self._ws_kline_cache.get(key)
 
-    def _http_signed_spot(self, path: str, params: dict | None = None, *, timeout: float = 8.0) -> dict:
+    def _http_signed_spot(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> dict:
         """Lightweight signed REST helper for spot (works on testnet and prod)."""
         base = self._spot_base().rstrip("/")
         url = f"{base}/{path.lstrip('/')}"
         if not self.api_key or not self.api_secret:
             return {}
         try:
+            timeout_val = timeout or _requests_timeout()
             payload = dict(params or {})
             if "timestamp" not in payload:
                 payload["timestamp"] = int(time.time() * 1000)
@@ -1957,19 +2065,26 @@ class BinanceWrapper:
             sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
             full_params = dict(payload)
             full_params["signature"] = sig
-            resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout)
+            resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout_val)
             resp.raise_for_status()
             data = resp.json()
             return data if isinstance(data, dict) else {}
         except Exception:
             return {}
 
-    def _http_signed_spot_list(self, path: str, params: dict | None = None, *, timeout: float = 8.0) -> list:
+    def _http_signed_spot_list(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> list:
         base = self._spot_base().rstrip("/")
         url = f"{base}/{path.lstrip('/')}"
         if not self.api_key or not self.api_secret:
             return []
         try:
+            timeout_val = timeout or _requests_timeout()
             payload = dict(params or {})
             if "timestamp" not in payload:
                 payload["timestamp"] = int(time.time() * 1000)
@@ -1979,12 +2094,178 @@ class BinanceWrapper:
             sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
             full_params = dict(payload)
             full_params["signature"] = sig
-            resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout)
+            resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout_val)
             resp.raise_for_status()
             data = resp.json()
             return data if isinstance(data, list) else []
         except Exception:
             return []
+
+    def _http_signed_futures(self, path: str, params: dict | None = None, *, timeout: tuple[float, float] | None = None) -> dict:
+        """Lightweight signed REST helper for futures (works on testnet and prod)."""
+        base = self._futures_base().rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if not self.api_key or not self.api_secret:
+            return {}
+        timeout_pair = timeout or _requests_timeout()
+        for attempt in range(2):
+            t0 = time.perf_counter()
+            try:
+                payload = dict(params or {})
+                if "timestamp" not in payload:
+                    payload["timestamp"] = self._futures_timestamp_ms()
+                if "recvWindow" not in payload:
+                    payload["recvWindow"] = int(getattr(self, "recv_window", 5000) or 5000)
+                query = urllib.parse.urlencode(payload)
+                sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+                full_params = dict(payload)
+                full_params["signature"] = sig
+                resp = requests.get(
+                    url,
+                    params=full_params,
+                    headers={"X-MBX-APIKEY": self.api_key},
+                    timeout=timeout_pair,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict) and _is_binance_error_payload(data):
+                        err_code = None
+                        try:
+                            raw_code = data.get("code")
+                            if raw_code is not None:
+                                err_code = int(raw_code)
+                        except Exception:
+                            err_code = None
+                        err_msg = str(data.get("msg") or data.get("message") or data)
+                        if attempt == 0 and (err_code == -1021 or ("timestamp" in err_msg.lower())):
+                            self._sync_futures_time_offset(force=True)
+                            continue
+                        self._record_futures_http_error(path, status_code=resp.status_code, code=err_code, message=err_msg)
+                        return {}
+
+                    self._clear_futures_http_error()
+                    if _http_debug_enabled():
+                        dt = time.perf_counter() - t0
+                        if dt >= _http_slow_seconds():
+                            try:
+                                self._log(f"Futures REST {path} took {dt:.2f}s", lvl="warn")
+                            except Exception:
+                                pass
+                    return data if isinstance(data, dict) else {}
+
+                err_code = None
+                err_msg = None
+                try:
+                    err = resp.json()
+                    if isinstance(err, dict):
+                        raw_code = err.get("code")
+                        if raw_code is not None:
+                            try:
+                                err_code = int(raw_code)
+                            except Exception:
+                                err_code = None
+                        err_msg = str(err.get("msg") or err)
+                    else:
+                        err_msg = str(err)
+                except Exception:
+                    err_msg = (resp.text or "").strip() or f"http_status:{resp.status_code}"
+
+                # Timestamp drift: resync once and retry.
+                if attempt == 0 and (err_code == -1021 or ("timestamp" in (err_msg or "").lower())):
+                    self._sync_futures_time_offset(force=True)
+                    continue
+
+                self._record_futures_http_error(path, status_code=resp.status_code, code=err_code, message=err_msg)
+                return {}
+            except requests.exceptions.RequestException as exc:
+                self._record_futures_http_error(path, message=str(exc))
+                return {}
+            except Exception as exc:
+                self._record_futures_http_error(path, message=str(exc))
+                return {}
+
+    def _http_signed_futures_list(
+        self, path: str, params: dict | None = None, *, timeout: tuple[float, float] | None = None
+    ) -> list:
+        base = self._futures_base().rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if not self.api_key or not self.api_secret:
+            return []
+        timeout_pair = timeout or _requests_timeout()
+        for attempt in range(2):
+            t0 = time.perf_counter()
+            try:
+                payload = dict(params or {})
+                if "timestamp" not in payload:
+                    payload["timestamp"] = self._futures_timestamp_ms()
+                if "recvWindow" not in payload:
+                    payload["recvWindow"] = int(getattr(self, "recv_window", 5000) or 5000)
+                query = urllib.parse.urlencode(payload)
+                sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+                full_params = dict(payload)
+                full_params["signature"] = sig
+                resp = requests.get(
+                    url,
+                    params=full_params,
+                    headers={"X-MBX-APIKEY": self.api_key},
+                    timeout=timeout_pair,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict) and _is_binance_error_payload(data):
+                        err_code = None
+                        try:
+                            raw_code = data.get("code")
+                            if raw_code is not None:
+                                err_code = int(raw_code)
+                        except Exception:
+                            err_code = None
+                        err_msg = str(data.get("msg") or data.get("message") or data)
+                        if attempt == 0 and (err_code == -1021 or ("timestamp" in err_msg.lower())):
+                            self._sync_futures_time_offset(force=True)
+                            continue
+                        self._record_futures_http_error(path, status_code=resp.status_code, code=err_code, message=err_msg)
+                        return []
+
+                    self._clear_futures_http_error()
+                    if _http_debug_enabled():
+                        dt = time.perf_counter() - t0
+                        if dt >= _http_slow_seconds():
+                            try:
+                                self._log(f"Futures REST {path} took {dt:.2f}s", lvl="warn")
+                            except Exception:
+                                pass
+                    return data if isinstance(data, list) else []
+
+                err_code = None
+                err_msg = None
+                try:
+                    err = resp.json()
+                    if isinstance(err, dict):
+                        raw_code = err.get("code")
+                        if raw_code is not None:
+                            try:
+                                err_code = int(raw_code)
+                            except Exception:
+                                err_code = None
+                        err_msg = str(err.get("msg") or err)
+                    else:
+                        err_msg = str(err)
+                except Exception:
+                    err_msg = (resp.text or "").strip() or f"http_status:{resp.status_code}"
+
+                if attempt == 0 and (err_code == -1021 or ("timestamp" in (err_msg or "").lower())):
+                    self._sync_futures_time_offset(force=True)
+                    continue
+
+                self._record_futures_http_error(path, status_code=resp.status_code, code=err_code, message=err_msg)
+                return []
+            except requests.exceptions.RequestException as exc:
+                self._record_futures_http_error(path, message=str(exc))
+                return []
+            except Exception as exc:
+                self._record_futures_http_error(path, message=str(exc))
+                return []
 
     def _build_client(self):
         backend = _normalize_connector_choice(getattr(self, "_connector_backend", DEFAULT_CONNECTOR_BACKEND))
@@ -2012,22 +2293,21 @@ class BinanceWrapper:
             except Exception as exc:
                 self._log(f"Spot SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
                 self._connector_backend = "python-binance"
-        timeout_s = _env_float("BINANCE_HTTP_TIMEOUT", 120.0)
-        try:
-            timeout_s = max(1.0, min(float(timeout_s), 120.0))
-        except Exception:
-            timeout_s = 120.0
-        requests_params = {"timeout": timeout_s}
+        requests_params = {"timeout": _requests_timeout()}
         try:
             return Client(
                 self.api_key,
                 self.api_secret,
                 testnet=_is_testnet_mode(self.mode),
                 requests_params=requests_params,
+                ping=False,  # avoid slow startup when ping route is impaired
             )
         except TypeError:
             # Older python-binance builds may not accept `requests_params` in the constructor.
-            client = Client(self.api_key, self.api_secret, testnet=_is_testnet_mode(self.mode))
+            try:
+                client = Client(self.api_key, self.api_secret, testnet=_is_testnet_mode(self.mode), ping=False)
+            except TypeError:
+                client = Client(self.api_key, self.api_secret, testnet=_is_testnet_mode(self.mode))
             try:
                 setattr(client, "requests_params", requests_params)
             except Exception:
@@ -2035,8 +2315,8 @@ class BinanceWrapper:
             return client
 
     def __init__(self, api_key="", api_secret="", mode="Demo/Testnet", account_type="Spot", *, default_leverage: int | None = None, default_margin_mode: str | None = None, connector_backend: str | None = None):
-        self.api_key = api_key or ""
-        self.api_secret = api_secret or ""
+        self.api_key = (api_key or "").strip()
+        self.api_secret = (api_secret or "").strip()
         self.mode = (mode or "Demo/Testnet").strip()
         initial_leverage = int(default_leverage) if (default_leverage is not None) else 20
         if initial_leverage < 1:
@@ -2058,11 +2338,18 @@ class BinanceWrapper:
         self._futures_max_leverage_cache = {}
         self._leverage_cap_notified = set()
         self._connector_backend = _normalize_connector_choice(connector_backend)
-        # Testnet reliability: default to python-binance on testnet even if SDK is selected,
-        # because some SDK builds intermittently reject signed orders on the futures testnet.
+        # Optional override for testnet reliability. Off by default; enable via env if needed.
         try:
-            if _is_testnet_mode(self.mode) and self.account_type.startswith("FUT") and "sdk" in self._connector_backend:
-                self._log(f"Switching connector backend to python-binance for testnet reliability (was {self._connector_backend}).", lvl="warn")
+            if (
+                _env_flag("BINANCE_TESTNET_FORCE_PYBINANCE", False)
+                and _is_testnet_mode(self.mode)
+                and self.account_type.startswith("FUT")
+                and "sdk" in self._connector_backend
+            ):
+                self._log(
+                    f"Switching connector backend to python-binance for testnet reliability (was {self._connector_backend}).",
+                    lvl="warn",
+                )
                 self._connector_backend = "python-binance"
         except Exception:
             pass
@@ -2072,17 +2359,36 @@ class BinanceWrapper:
         limiter_settings = self._limiter_settings_for(env_tag, acct_tag)
         self._request_limiter = self._acquire_rate_limiter(self._limiter_key, limiter_settings)
 
-        # Set base URLs BEFORE creating Client
-        if "demo" in self.mode.lower() or "test" in self.mode.lower():
-            if self.account_type == "FUTURES":
-                Client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
-            else:
-                Client.API_URL = "https://testnet.binance.vision/api"
-        else:
-            if self.account_type == "FUTURES":
-                Client.FUTURES_URL = "https://fapi.binance.com/fapi"
-            else:
-                Client.API_URL = "https://api.binance.com/api"
+        # Set base URLs BEFORE creating Client (supports older python-binance builds too).
+        # Note: python-binance will prefer *_TESTNET_URL when `testnet=True`, but we set both
+        # families explicitly for consistency across versions and modes.
+        is_testnet = _is_testnet_mode(self.mode)
+        spot_rest = "https://testnet.binance.vision/api" if is_testnet else "https://api.binance.com/api"
+        futures_rest = "https://testnet.binancefuture.com/fapi" if is_testnet else "https://fapi.binance.com/fapi"
+        try:
+            Client.API_URL = spot_rest
+            if hasattr(Client, "API_TESTNET_URL") and is_testnet:
+                Client.API_TESTNET_URL = spot_rest  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            Client.FUTURES_URL = futures_rest
+            if hasattr(Client, "FUTURES_TESTNET_URL") and is_testnet:
+                Client.FUTURES_TESTNET_URL = futures_rest  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            futures_data_rest = (
+                "https://testnet.binancefuture.com/futures/data"
+                if is_testnet
+                else "https://fapi.binance.com/futures/data"
+            )
+            if hasattr(Client, "FUTURES_DATA_URL"):
+                Client.FUTURES_DATA_URL = futures_data_rest  # type: ignore[attr-defined]
+            if hasattr(Client, "FUTURES_DATA_TESTNET_URL") and is_testnet:
+                Client.FUTURES_DATA_TESTNET_URL = futures_data_rest  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
         self.client = self._build_client()
         try:
@@ -2123,8 +2429,123 @@ class BinanceWrapper:
         self._network_offline_since = 0.0
         self._network_offline_hits = 0
         self._network_emergency_dispatched = False
+        self._futures_time_offset_ms = 0
+        self._futures_time_offset_ts = 0.0
+        self._last_futures_http_error: dict | None = None
         self._fallback_py_client = None  # testnet-only python-binance order fallback
+        self._testnet_key_scope: str | None = None
+        self._testnet_key_scope_ts = 0.0
         getcontext().prec = 28
+
+    def _record_futures_http_error(
+        self,
+        path: str | None,
+        *,
+        status_code: int | None = None,
+        code: int | None = None,
+        message: str | None = None,
+    ) -> None:
+        try:
+            self._last_futures_http_error = {
+                "ts": time.time(),
+                "path": str(path or ""),
+                "status_code": int(status_code) if status_code is not None else None,
+                "code": int(code) if code is not None else None,
+                "message": str(message or ""),
+            }
+        except Exception:
+            pass
+
+    def _clear_futures_http_error(self) -> None:
+        try:
+            self._last_futures_http_error = None
+        except Exception:
+            pass
+
+    def _diagnose_testnet_key_scope(self) -> str | None:
+        """
+        Best-effort hinting for common testnet key mixups.
+
+        Returns:
+            "spot"    -> keys work on Spot Testnet signed endpoint
+            None      -> unknown (spot test also failed)
+        """
+        try:
+            if not _is_testnet_mode(self.mode) or not (self.api_key and self.api_secret):
+                return None
+        except Exception:
+            return None
+        try:
+            now = time.time()
+            ts = float(getattr(self, "_testnet_key_scope_ts", 0.0) or 0.0)
+            cached = getattr(self, "_testnet_key_scope", None)
+            if cached and ts and (now - ts) < 600.0:
+                return str(cached)
+        except Exception:
+            pass
+        scope = None
+        try:
+            acct = self._http_signed_spot("/v3/account", timeout=_requests_timeout()) or {}
+            if isinstance(acct, dict) and "balances" in acct:
+                scope = "spot"
+        except Exception:
+            scope = None
+        try:
+            self._testnet_key_scope = scope
+            self._testnet_key_scope_ts = time.time() if scope else 0.0
+        except Exception:
+            pass
+        return scope
+
+    def _sync_futures_time_offset(self, *, force: bool = False) -> None:
+        """
+        Sync local<->Binance futures server time offset (ms) to avoid -1021 timestamp errors.
+        """
+        now = time.time()
+        last = float(getattr(self, "_futures_time_offset_ts", 0.0) or 0.0)
+        if not force and last and (now - last) < 1800.0:
+            return
+        try:
+            base = self._futures_base().rstrip("/")
+            url = f"{base}/v1/time"
+            resp = requests.get(url, timeout=_requests_timeout())
+            if resp.status_code != 200:
+                return
+            data = resp.json() or {}
+            server_time = int(float(data.get("serverTime") or 0))
+            if server_time <= 0:
+                return
+            local_ms = int(time.time() * 1000)
+            offset_ms = int(server_time - local_ms)
+            self._futures_time_offset_ms = offset_ms
+            self._futures_time_offset_ts = now
+            # Keep python-binance client signing in sync too.
+            try:
+                client = getattr(self, "client", None)
+                if client is not None and hasattr(client, "timestamp_offset"):
+                    setattr(client, "timestamp_offset", offset_ms)
+            except Exception:
+                pass
+            try:
+                fb = getattr(self, "_fallback_py_client", None)
+                if fb is not None and hasattr(fb, "timestamp_offset"):
+                    setattr(fb, "timestamp_offset", offset_ms)
+            except Exception:
+                pass
+        except Exception:
+            return
+
+    def _futures_timestamp_ms(self) -> int:
+        try:
+            if not float(getattr(self, "_futures_time_offset_ts", 0.0) or 0.0):
+                self._sync_futures_time_offset(force=False)
+        except Exception:
+            pass
+        try:
+            offset = int(getattr(self, "_futures_time_offset_ms", 0) or 0)
+        except Exception:
+            offset = 0
+        return int(time.time() * 1000 + offset)
 
     # ---- internal helper for futures methods with recvWindow compatibility
     def _futures_call(self, method_name: str, allow_recv=True, **kwargs):
@@ -2750,6 +3171,217 @@ class BinanceWrapper:
                         except Exception:
                             continue
         return 0.0
+
+    def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
+        """
+        Fetch a single snapshot of key futures balances with minimal API calls.
+
+        Returns:
+            {
+              "asset": "USDT",
+              "available": float,   # availableBalance / maxWithdrawAmount
+              "wallet": float,      # walletBalance / totalWalletBalance
+              "total": float,       # max(wallet, available)
+            }
+        """
+        preferred_assets = ("USDT", "BUSD", "USD")
+        asset = "USDT"
+        available: float | None = None
+        wallet: float | None = None
+        acct_dict: dict | None = None
+
+        # Ensure timestamp offset is available for signed futures endpoints.
+        if self.api_key and self.api_secret:
+            try:
+                self._sync_futures_time_offset(force=False)
+            except Exception:
+                pass
+
+        entries = self._get_futures_account_balance_cached(force_refresh=force_refresh) or []
+        chosen_row = None
+        try:
+            candidates: dict[str, dict] = {}
+            for row in entries:
+                if not isinstance(row, dict):
+                    continue
+                code = str(row.get("asset") or "").upper()
+                if code in preferred_assets and code not in candidates:
+                    candidates[code] = row
+            for code in preferred_assets:
+                if code in candidates:
+                    asset = code
+                    chosen_row = candidates[code]
+                    break
+        except Exception:
+            chosen_row = None
+
+        if isinstance(chosen_row, dict) and chosen_row:
+            def _pick_float(keys: tuple[str, ...]) -> float | None:
+                for k in keys:
+                    val = chosen_row.get(k)
+                    if val is None or val == "":
+                        continue
+                    try:
+                        parsed = float(val)
+                    except Exception:
+                        continue
+                    if math.isfinite(parsed):
+                        return parsed
+                return None
+
+            available = _pick_float(("availableBalance", "maxWithdrawAmount", "crossWalletBalance"))
+            wallet = _pick_float(("walletBalance", "marginBalance", "balance", "crossWalletBalance"))
+
+        if available is None or wallet is None:
+            acct_dict = self._get_futures_account_cached(force_refresh=force_refresh) or {}
+            if isinstance(acct_dict, dict):
+                if available is None:
+                    for key in ("availableBalance", "maxWithdrawAmount"):
+                        val = acct_dict.get(key)
+                        if val is None:
+                            continue
+                        try:
+                            parsed = float(val)
+                        except Exception:
+                            continue
+                        if math.isfinite(parsed):
+                            available = parsed
+                            break
+                if wallet is None:
+                    for key in (
+                        "totalWalletBalance",
+                        "totalMarginBalance",
+                        "totalCrossWalletBalance",
+                        "totalCrossBalance",
+                    ):
+                        val = acct_dict.get(key)
+                        if val is None:
+                            continue
+                        try:
+                            parsed = float(val)
+                        except Exception:
+                            continue
+                        if math.isfinite(parsed):
+                            wallet = parsed
+                            break
+
+                if available is None or wallet is None:
+                    assets_list = acct_dict.get("assets")
+                    if isinstance(assets_list, list) and assets_list:
+                        try:
+                            assets_map: dict[str, dict] = {}
+                            for a in assets_list:
+                                if not isinstance(a, dict):
+                                    continue
+                                code = str(a.get("asset") or "").upper()
+                                if code in preferred_assets and code not in assets_map:
+                                    assets_map[code] = a
+                            chosen_asset = None
+                            for code in preferred_assets:
+                                if code in assets_map:
+                                    asset = code
+                                    chosen_asset = assets_map[code]
+                                    break
+                            if isinstance(chosen_asset, dict) and chosen_asset:
+                                if available is None:
+                                    for key in ("availableBalance", "maxWithdrawAmount", "crossWalletBalance"):
+                                        val = chosen_asset.get(key)
+                                        if val is None:
+                                            continue
+                                        try:
+                                            parsed = float(val)
+                                        except Exception:
+                                            continue
+                                        if math.isfinite(parsed):
+                                            available = parsed
+                                            break
+                                if wallet is None:
+                                    for key in ("walletBalance", "marginBalance", "balance", "crossWalletBalance"):
+                                        val = chosen_asset.get(key)
+                                        if val is None:
+                                            continue
+                                        try:
+                                            parsed = float(val)
+                                        except Exception:
+                                            continue
+                                        if math.isfinite(parsed):
+                                            wallet = parsed
+                                            break
+                        except Exception:
+                            pass
+
+        if (
+            self.api_key
+            and self.api_secret
+            and available is None
+            and wallet is None
+            and isinstance(chosen_row, dict)
+            and chosen_row
+        ):
+            err = getattr(self, "_last_futures_http_error", None)
+            if isinstance(err, dict):
+                msg = str(err.get("message") or "unknown error")
+                code = err.get("code")
+                status = err.get("status_code")
+                path = err.get("path")
+                suffix = ""
+                if code is not None:
+                    suffix += f" code={code}"
+                if status is not None:
+                    suffix += f" http={status}"
+                if path:
+                    suffix += f" path={path}"
+                hint = _auth_error_hint_for(self.mode, self.account_type, code)
+                if hint:
+                    suffix += f" | hint: {hint}"
+                try:
+                    if _is_testnet_mode(self.mode) and str(getattr(self, "account_type", "") or "").upper().startswith("FUT"):
+                        scope = self._diagnose_testnet_key_scope()
+                        if scope == "spot":
+                            suffix += " | hint2: These keys appear to be Spot Testnet keys; Futures Testnet uses different API keys."
+                except Exception:
+                    pass
+                raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
+            raise RuntimeError("Futures balance fetch failed: unrecognized balance response format")
+
+        if (
+            self.api_key
+            and self.api_secret
+            and not entries
+            and (not acct_dict)
+            and available is None
+            and wallet is None
+        ):
+            err = getattr(self, "_last_futures_http_error", None)
+            if isinstance(err, dict):
+                msg = str(err.get("message") or "unknown error")
+                code = err.get("code")
+                status = err.get("status_code")
+                path = err.get("path")
+                suffix = ""
+                if code is not None:
+                    suffix += f" code={code}"
+                if status is not None:
+                    suffix += f" http={status}"
+                if path:
+                    suffix += f" path={path}"
+                hint = _auth_error_hint_for(self.mode, self.account_type, code)
+                if hint:
+                    suffix += f" | hint: {hint}"
+                try:
+                    if _is_testnet_mode(self.mode) and str(getattr(self, "account_type", "") or "").upper().startswith("FUT"):
+                        scope = self._diagnose_testnet_key_scope()
+                        if scope == "spot":
+                            suffix += " | hint2: These keys appear to be Spot Testnet keys; Futures Testnet uses different API keys."
+                except Exception:
+                    pass
+                raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
+            raise RuntimeError("Futures balance fetch failed: empty response")
+
+        available_val = float(available or 0.0)
+        wallet_val = float(wallet or 0.0)
+        total_val = max(available_val, wallet_val)
+        return {"asset": asset, "available": available_val, "wallet": wallet_val, "total": total_val}
     def get_futures_available_balance(self, *, force_refresh: bool = False) -> float:
         val = self.get_futures_balance_usdt(force_refresh=force_refresh)
         if val:
@@ -3852,19 +4484,24 @@ class BinanceWrapper:
             cached = self._get_cached_futures_positions(max_age)
             if cached is not None:
                 return cached
+        # Fetch positions once (avoid duplicate /positionRisk calls which can stall on testnet).
         infos = None
+        risk_infos = None
         try:
-            infos = self.client.futures_position_information()
+            risk_method = getattr(self.client, "futures_position_risk", None)
+            if callable(risk_method):
+                risk_infos = risk_method()
+                infos = risk_infos
+            else:
+                infos = self.client.futures_position_information()
         except Exception:
             try:
-                infos = self.client.futures_position_risk()
+                infos = self.client.futures_position_information()
             except Exception:
                 infos = None
         risk_lookup = {}
-        try:
-            risk_infos = self.client.futures_position_risk()
-        except Exception:
-            risk_infos = None
+        if risk_infos is None and infos is not None:
+            risk_infos = infos
         if isinstance(risk_infos, list):
             for risk in risk_infos:
                 try:

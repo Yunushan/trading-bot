@@ -1802,8 +1802,6 @@ def _calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict) -
 
 def _ensure_shared_wrapper(window) -> BinanceWrapper | None:
     bw = getattr(window, "shared_binance", None)
-    if bw is not None:
-        return bw
     if not hasattr(window, "_create_binance_wrapper"):
         return None
     try:
@@ -1811,7 +1809,33 @@ def _ensure_shared_wrapper(window) -> BinanceWrapper | None:
         api_secret = window.api_secret_edit.text().strip()
         mode = window.mode_combo.currentText()
         account = window.account_combo.currentText()
-        backend = window._runtime_connector_backend(suppress_refresh=True)
+        backend_raw = None
+        try:
+            combo = getattr(window, "connector_combo", None)
+            if combo is not None:
+                backend_raw = combo.currentData()
+                if backend_raw is None:
+                    backend_raw = combo.currentText()
+        except Exception:
+            backend_raw = None
+        backend = _normalize_connector_backend(backend_raw)
+        if bw is not None:
+            try:
+                bw_key = str(getattr(bw, "api_key", "") or "")
+                bw_secret = str(getattr(bw, "api_secret", "") or "")
+                bw_mode = str(getattr(bw, "mode", "") or "")
+                bw_acct = str(getattr(bw, "account_type", "") or "")
+                bw_backend = str(getattr(bw, "_connector_backend", "") or "")
+                if (
+                    bw_key == api_key
+                    and bw_secret == api_secret
+                    and bw_mode == mode
+                    and bw_acct.upper() == str(account or "").strip().upper()
+                    and bw_backend == backend
+                ):
+                    return bw
+            except Exception:
+                pass
         bw = window._create_binance_wrapper(
             api_key=api_key,
             api_secret=api_secret,
@@ -14154,6 +14178,15 @@ def update_balance_label(self):
         default_margin_mode = self.margin_mode_combo.currentText() or "Isolated"
     except Exception:
         default_margin_mode = "Isolated"
+    try:
+        connector_raw = None
+        if hasattr(self, "connector_combo") and self.connector_combo is not None:
+            connector_raw = self.connector_combo.currentData()
+            if connector_raw is None:
+                connector_raw = self.connector_combo.currentText()
+        connector_backend = _normalize_connector_backend(connector_raw)
+    except Exception:
+        connector_backend = None
 
     if not api_key or not api_secret:
         if getattr(self, "balance_label", None):
@@ -14172,37 +14205,58 @@ def update_balance_label(self):
                 pass
         return
 
+    wrapper_holder: dict[str, object | None] = {"wrapper": None}
+
     def _do():
         # Run network work off the UI thread to avoid freezing on bad credentials/slow responses.
         wrapper = getattr(self, "shared_binance", None)
-        if wrapper is None:
+        needs_rebuild = True
+        if wrapper is not None:
+            try:
+                needs_rebuild = (
+                    str(getattr(wrapper, "api_key", "") or "") != api_key
+                    or str(getattr(wrapper, "api_secret", "") or "") != api_secret
+                    or str(getattr(wrapper, "mode", "") or "") != str(mode_value or "")
+                    or str(getattr(wrapper, "account_type", "") or "").upper()
+                    != str(account_value or "").strip().upper()
+                    or (
+                        connector_backend is not None
+                        and str(getattr(wrapper, "_connector_backend", "") or "") != str(connector_backend or "")
+                    )
+                )
+            except Exception:
+                needs_rebuild = True
+        if wrapper is None or needs_rebuild:
             wrapper = self._create_binance_wrapper(
                 api_key=api_key,
                 api_secret=api_secret,
                 mode=mode_value,
                 account_type=account_value,
+                connector_backend=connector_backend,
                 default_leverage=default_leverage,
                 default_margin_mode=default_margin_mode,
             )
+        try:
+            wrapper_holder["wrapper"] = wrapper
+        except Exception:
+            pass
         total_balance_value = None
         available_balance_value = None
         bal = 0.0
         acct_upper = str(account_value or "").upper()
         if acct_upper.startswith("FUT"):
-            bal = float(wrapper.get_futures_balance_usdt(force_refresh=True) or 0.0)
+            snap = wrapper.get_futures_balance_snapshot(force_refresh=True) or {}
+            if not isinstance(snap, dict):
+                raise RuntimeError(f"Unexpected futures balance snapshot type: {type(snap).__name__}")
             try:
-                total_balance_value = float(wrapper.get_total_usdt_value(force_refresh=True) or bal)
+                total_balance_value = float(snap.get("total") or snap.get("wallet") or 0.0)
             except Exception:
-                total_balance_value = bal
+                total_balance_value = 0.0
             try:
-                available_balance_value = float(wrapper.get_futures_available_balance(force_refresh=True) or total_balance_value)
+                available_balance_value = float(snap.get("available") or 0.0)
             except Exception:
-                available_balance_value = total_balance_value
-            if available_balance_value <= 0.0:
-                try:
-                    available_balance_value = float(wrapper.get_futures_balance_usdt(force_refresh=True) or total_balance_value)
-                except Exception:
-                    available_balance_value = total_balance_value
+                available_balance_value = 0.0
+            bal = available_balance_value if available_balance_value > 0.0 else total_balance_value
         else:
             bal = float(wrapper.get_spot_balance("USDT") or 0.0)
             try:
@@ -14228,12 +14282,42 @@ def update_balance_label(self):
         available_balance_value = None
         if err or not res:
             try:
+                wrapper_obj = wrapper_holder.get("wrapper")
+                if wrapper_obj is not None:
+                    self.shared_binance = wrapper_obj
+            except Exception:
+                pass
+            try:
                 self.log(f"Balance error: {err or 'unknown error'}")
             except Exception:
                 pass
             try:
                 if getattr(self, "balance_label", None):
-                    self.balance_label.setText("Balance error")
+                    msg = str(err or "unknown error").replace("\n", " ").strip()
+                    label_text = None
+                    try:
+                        import re as _re
+                        m = _re.search(r"\\bcode=([-]?[0-9]+)\\b", msg)
+                        code_val = int(m.group(1)) if m else None
+                    except Exception:
+                        code_val = None
+                    if code_val in (-2014, -2015):
+                        mode_txt = str(mode_value or "").lower()
+                        is_test = ("test" in mode_txt) or ("demo" in mode_txt) or ("sandbox" in mode_txt)
+                        acct_txt = str(account_value or "").upper()
+                        if acct_txt.startswith("FUT") and is_test:
+                            label_text = (
+                                "API key rejected for Futures Testnet. "
+                                "Check key source/permissions/IP (see Log)."
+                            )
+                        elif is_test:
+                            label_text = "API key rejected for Testnet (see Log)."
+                        else:
+                            label_text = "API key rejected (see Log)."
+                    if label_text is None:
+                        short = msg if len(msg) <= 120 else (msg[:117] + "...")
+                        label_text = f"Balance error: {short}"
+                    self.balance_label.setText(label_text)
             except Exception:
                 pass
             self._update_positions_balance_labels(None, None)

@@ -5783,7 +5783,19 @@ class StrategyEngine:
                     pass
             try:
                 account_type = str((self.config.get('account_type') or self.binance.account_type)).upper()
-                usdt_bal = self.binance.get_total_usdt_value()
+                futures_balance_snap = None
+                if account_type == "FUTURES" and hasattr(self.binance, "get_futures_balance_snapshot"):
+                    try:
+                        futures_balance_snap = self.binance.get_futures_balance_snapshot(force_refresh=True) or {}
+                    except Exception:
+                        futures_balance_snap = None
+                if isinstance(futures_balance_snap, dict) and futures_balance_snap:
+                    try:
+                        usdt_bal = float(futures_balance_snap.get("total") or futures_balance_snap.get("wallet") or 0.0)
+                    except Exception:
+                        usdt_bal = 0.0
+                else:
+                    usdt_bal = self.binance.get_total_usdt_value()
                 pct_raw = float(cw.get('position_pct', 100.0))
                 pct_units_raw = str(
                     cw.get('position_pct_units')
@@ -5806,11 +5818,17 @@ class StrategyEngine:
                         _guard_abort()
                         return
                     try:
-                        available_total = float(self.binance.get_futures_balance_usdt())
+                        if isinstance(futures_balance_snap, dict) and futures_balance_snap:
+                            available_total = float(futures_balance_snap.get("available") or 0.0)
+                        else:
+                            available_total = float(self.binance.get_futures_balance_usdt())
                     except Exception:
                         available_total = 0.0
                     try:
-                        wallet_total = float(self.binance.get_total_wallet_balance())
+                        if isinstance(futures_balance_snap, dict) and futures_balance_snap:
+                            wallet_total = float(futures_balance_snap.get("wallet") or 0.0)
+                        else:
+                            wallet_total = float(self.binance.get_total_wallet_balance())
                     except Exception:
                         wallet_total = 0.0
                     available_total = max(0.0, available_total)
