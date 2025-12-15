@@ -802,9 +802,13 @@ def main() -> int:
         icon_path = find_primary_icon_file()
         relaunch_cmd = build_relaunch_command()
 
-        def _apply_taskbar(attempts: int = 3) -> None:
+        def _apply_taskbar(attempts: int = 12) -> None:
             if attempts <= 0:
                 return
+            try:
+                win.winId()
+            except Exception:
+                pass
             success = apply_taskbar_metadata(
                 win,
                 app_id=APP_USER_MODEL_ID,
@@ -813,11 +817,17 @@ def main() -> int:
                 relaunch_command=relaunch_cmd,
             )
             if not success and attempts > 1:
-                QtCore.QTimer.singleShot(350, lambda: _apply_taskbar(attempts - 1))
+                QtCore.QTimer.singleShot(250, lambda: _apply_taskbar(attempts - 1))
 
-        QtCore.QTimer.singleShot(800, _apply_taskbar)
+        QtCore.QTimer.singleShot(0, _apply_taskbar)
 
     win.showMaximized()
+    try:
+        win.winId()
+    except Exception:
+        pass
+    if not icon.isNull():
+        QtCore.QTimer.singleShot(0, lambda: win.setWindowIcon(icon))
 
     ready_signal = os.environ.get("BOT_STARTER_READY_FILE")
     if ready_signal:

@@ -276,6 +276,12 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on", "live"}
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float-ish environment variable with a safe fallback."""
+    parsed = _maybe_float(os.getenv(name))
+    return float(default) if parsed is None else float(parsed)
+
+
 def _enum_value(enum_cls: Any, value: Any):
     if value is None or enum_cls is None:
         return None
@@ -1150,7 +1156,25 @@ class BinanceWrapper:
             return None
         if self._fallback_py_client is None:
             try:
-                self._fallback_py_client = Client(self.api_key, self.api_secret, testnet=True)
+                timeout_s = _env_float("BINANCE_HTTP_TIMEOUT", 120.0)
+                try:
+                    timeout_s = max(1.0, min(float(timeout_s), 120.0))
+                except Exception:
+                    timeout_s = 120.0
+                requests_params = {"timeout": timeout_s}
+                try:
+                    self._fallback_py_client = Client(
+                        self.api_key,
+                        self.api_secret,
+                        testnet=True,
+                        requests_params=requests_params,
+                    )
+                except TypeError:
+                    self._fallback_py_client = Client(self.api_key, self.api_secret, testnet=True)
+                    try:
+                        setattr(self._fallback_py_client, "requests_params", requests_params)
+                    except Exception:
+                        pass
                 setattr(self._fallback_py_client, "_bw_throttled", True)
             except Exception:
                 self._fallback_py_client = None
@@ -1988,7 +2012,27 @@ class BinanceWrapper:
             except Exception as exc:
                 self._log(f"Spot SDK unavailable ({exc}); falling back to python-binance.", lvl="warn")
                 self._connector_backend = "python-binance"
-        return Client(self.api_key, self.api_secret, testnet=_is_testnet_mode(self.mode))
+        timeout_s = _env_float("BINANCE_HTTP_TIMEOUT", 120.0)
+        try:
+            timeout_s = max(1.0, min(float(timeout_s), 120.0))
+        except Exception:
+            timeout_s = 120.0
+        requests_params = {"timeout": timeout_s}
+        try:
+            return Client(
+                self.api_key,
+                self.api_secret,
+                testnet=_is_testnet_mode(self.mode),
+                requests_params=requests_params,
+            )
+        except TypeError:
+            # Older python-binance builds may not accept `requests_params` in the constructor.
+            client = Client(self.api_key, self.api_secret, testnet=_is_testnet_mode(self.mode))
+            try:
+                setattr(client, "requests_params", requests_params)
+            except Exception:
+                pass
+            return client
 
     def __init__(self, api_key="", api_secret="", mode="Demo/Testnet", account_type="Spot", *, default_leverage: int | None = None, default_margin_mode: str | None = None, connector_backend: str | None = None):
         self.api_key = api_key or ""

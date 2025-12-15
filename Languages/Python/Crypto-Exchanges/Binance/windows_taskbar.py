@@ -155,11 +155,13 @@ def _co_initialize_once() -> bool:
     if _COM_INITIALISED:
         return True
     try:  # pragma: no cover - Windows only
-        hr = _ole32.CoInitialize(None)
+        hr = int(_ole32.CoInitialize(None))
     except Exception:
         return False
-    # S_OK (0) or S_FALSE (1) both signal success
-    if hr not in (0, 1):
+    # S_OK (0) or S_FALSE (1) both signal success.
+    # RPC_E_CHANGED_MODE (0x80010106) means COM is already initialised with a different
+    # concurrency model (often by Qt); treat it as usable to avoid intermittent failures.
+    if hr not in (0, 1) and (hr & 0xFFFFFFFF) != 0x80010106:  # RPC_E_CHANGED_MODE
         return False
     _COM_INITIALISED = True
     return True

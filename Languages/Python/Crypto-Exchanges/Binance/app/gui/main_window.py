@@ -2749,6 +2749,7 @@ class MainWindow(QtWidgets.QWidget):
         self._runtime_active_exemptions = set()
         self._dep_version_refresh_inflight = False
         self._dep_version_refresh_pending = False
+        self._dep_version_auto_refresh_done = False
         self.backtest_indicator_widgets = {}
         self.backtest_results = []
         self.backtest_worker = None
@@ -2843,6 +2844,7 @@ class MainWindow(QtWidgets.QWidget):
         self.bot_time_label_tab3 = None
         self.bot_time_label_chart = None
         self.bot_time_label_code_tab = None
+        self.code_tab = None
         self._bot_active = False
         self._bot_active_since = None
         self._bot_time_timer = None
@@ -7933,6 +7935,10 @@ class MainWindow(QtWidgets.QWidget):
             elif self._chart_needs_render:
                 self.load_chart(auto=True)
             self._chart_pending_initial_load = False
+        elif widget is getattr(self, "code_tab", None):
+            if not getattr(self, "_dep_version_auto_refresh_done", False):
+                self._dep_version_auto_refresh_done = True
+                QtCore.QTimer.singleShot(100, self._refresh_dependency_versions)
 
     def load_chart(self, auto: bool = False):
         if not getattr(self, "chart_enabled", False):
@@ -9487,6 +9493,7 @@ class MainWindow(QtWidgets.QWidget):
 
         code_tab = self._init_code_language_tab()
         if code_tab is not None:
+            self.code_tab = code_tab
             self.tabs.addTab(code_tab, "Code Languages And Exchanges")
 
         self._refresh_symbol_interval_pairs("runtime")
@@ -9692,8 +9699,8 @@ def _init_code_language_tab(self):
     self._version_refresh_btn.clicked.connect(self._refresh_dependency_versions)
     version_btn_row.addWidget(self._version_refresh_btn)
     layout.addLayout(version_btn_row)
-    # Do not auto-refresh versions on startup; collecting package metadata can be slow on Windows
-    # and will make the UI appear frozen. Users can click "Check Versions" when needed.
+    # Refresh dependency versions lazily the first time this tab is opened (see _on_tab_changed),
+    # so the table doesn't stay at "Checking..." without slowing down initial startup.
 
     self._sync_language_exchange_lists_from_config()
     self._update_bot_status()
@@ -9798,7 +9805,7 @@ def _refresh_code_tab_from_config(self) -> None:
     for key, card in forex_cards.items():
         card.setSelected(selected_forex is not None and key == selected_forex)
     self._update_code_tab_market_sections()
-    # Keep the version table static until the user explicitly requests a refresh.
+    # Dependency versions refresh lazily the first time this tab is opened (see _on_tab_changed).
 
 
 def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None = None) -> None:
@@ -14107,6 +14114,11 @@ def update_balance_label(self):
     from ..workers import CallWorker as _CallWorker
     btn = getattr(self, "refresh_balance_btn", None)
     old_btn_text = btn.text() if btn else None
+    refresh_token = time.monotonic()
+    try:
+        self._balance_refresh_token = refresh_token
+    except Exception:
+        pass
     if btn:
         try:
             btn.setEnabled(False)
@@ -14147,6 +14159,10 @@ def update_balance_label(self):
         if getattr(self, "balance_label", None):
             self.balance_label.setText("API credentials missing")
         self._update_positions_balance_labels(None, None)
+        try:
+            self._balance_refresh_token = None
+        except Exception:
+            pass
         if btn:
             try:
                 btn.setEnabled(True)
@@ -14197,6 +14213,17 @@ def update_balance_label(self):
         return {"total": total_balance_value, "available": available_balance_value, "bal": bal, "wrapper": wrapper}
 
     def _done(res, err):
+        if getattr(self, "_balance_refresh_token", None) != refresh_token:
+            return
+        try:
+            self._balance_refresh_token = None
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_balance_refresh_worker", None) is worker:
+                self._balance_refresh_worker = None
+        except Exception:
+            pass
         total_balance_value = None
         available_balance_value = None
         if err or not res:
@@ -14244,11 +14271,55 @@ def update_balance_label(self):
 
     worker = _CallWorker(_do, parent=self)
     try:
+        self._balance_refresh_worker = worker
+    except Exception:
+        pass
+    try:
         worker.progress.connect(self.log)
     except Exception:
         pass
     worker.done.connect(_done)
     worker.start()
+
+    def _watchdog(expected_token: float):
+        if getattr(self, "_balance_refresh_token", None) != expected_token:
+            return
+        try:
+            running = bool(worker.isRunning())
+        except Exception:
+            running = False
+        if not running:
+            return
+        try:
+            self._balance_refresh_token = None
+        except Exception:
+            pass
+        try:
+            self._balance_refresh_worker = None
+        except Exception:
+            pass
+        try:
+            self.log("Balance refresh timed out; please check testnet connectivity/credentials and try again.")
+        except Exception:
+            pass
+        try:
+            if getattr(self, "balance_label", None):
+                self.balance_label.setText("Balance timeout")
+        except Exception:
+            pass
+        try:
+            self._update_positions_balance_labels(None, None)
+        except Exception:
+            pass
+        if btn:
+            try:
+                btn.setEnabled(True)
+                if old_btn_text is not None:
+                    btn.setText(old_btn_text)
+            except Exception:
+                pass
+
+    QtCore.QTimer.singleShot(120000, lambda t=refresh_token: _watchdog(t))
 
 try:
     MainWindow.update_balance_label = update_balance_label
