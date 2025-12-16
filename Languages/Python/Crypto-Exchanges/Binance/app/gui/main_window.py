@@ -1745,7 +1745,7 @@ def _sanitize_interval_hint(interval_hint: str | None) -> str:
     return primary
 
 
-def _calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict) -> float | None:
+def _calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict, *, use_live_values: bool = True) -> float | None:
     if df is None or df.empty:
         return None
     key = str(indicator_key or "").strip().lower()
@@ -1759,28 +1759,34 @@ def _calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict) -
     if close.empty:
         return None
     cfg = indicator_cfg or {}
+    def _pick(series) -> float | None:
+        try:
+            s = series.dropna()
+        except Exception:
+            s = series
+        if s is None or len(s) == 0:
+            return None
+        if use_live_values:
+            return float(s.iloc[-1])
+        return float(s.iloc[-2]) if len(s) >= 2 else float(s.iloc[-1])
     try:
         if key == "rsi":
             length = int(cfg.get("length") or cfg.get("period") or 14)
             series = rsi_indicator(close, length=length).dropna()
-            if not series.empty:
-                return float(series.iloc[-1])
+            return _pick(series)
         elif key == "stoch_rsi":
             length = int(cfg.get("length") or cfg.get("rsi_length") or 14)
             smooth_k = int(cfg.get("smooth_k") or 3)
             smooth_d = int(cfg.get("smooth_d") or 3)
             k_series, _ = stoch_rsi_indicator(close, length=length, smooth_k=smooth_k, smooth_d=smooth_d)
-            k_series = k_series.dropna()
-            if not k_series.empty:
-                return float(k_series.iloc[-1])
+            return _pick(k_series)
         elif key == "willr":
             length = int(cfg.get("length") or 14)
             high = pd.to_numeric(df["high"], errors="coerce")
             low = pd.to_numeric(df["low"], errors="coerce")
             price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
             wr_series = williams_r_indicator(price_frame, length=length).dropna()
-            if not wr_series.empty:
-                return float(wr_series.iloc[-1])
+            return _pick(wr_series)
         elif key == "ma":
             length = int(cfg.get("length") or 20)
             kind = str(cfg.get("type") or "SMA").upper()
@@ -1788,13 +1794,11 @@ def _calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict) -
                 series = ema_indicator(close, length).dropna()
             else:
                 series = sma_indicator(close, length).dropna()
-            if not series.empty:
-                return float(series.iloc[-1])
+            return _pick(series)
         elif key == "ema":
             length = int(cfg.get("length") or 20)
             series = ema_indicator(close, length).dropna()
-            if not series.empty:
-                return float(series.iloc[-1])
+            return _pick(series)
     except Exception:
         return None
     return None
@@ -1870,6 +1874,10 @@ def _collect_current_indicator_live_strings(
         indicators_cfg = (window.config or {}).get("indicators", {}) or {}
     except Exception:
         indicators_cfg = {}
+    try:
+        use_live_values = bool((window.config or {}).get("indicator_use_live_values", False))
+    except Exception:
+        use_live_values = True
     buy_thresholds = {
         "stoch_rsi": float((indicators_cfg.get("stoch_rsi", {}).get("buy_value") or 20.0)),
         "willr": float((indicators_cfg.get("willr", {}).get("buy_value") or -80.0)),
@@ -1930,7 +1938,12 @@ def _collect_current_indicator_live_strings(
             if value is None:
                 frame = cache_entry.get("df")
                 if frame is not None and not getattr(frame, "empty", True):
-                    value = _calc_indicator_value_from_df(frame, key, indicators_cfg.get(key, {}))
+                    value = _calc_indicator_value_from_df(
+                        frame,
+                        key,
+                        indicators_cfg.get(key, {}),
+                        use_live_values=use_live_values,
+                    )
                     values_cache[key] = value
                 else:
                     values_cache[key] = None
@@ -8484,10 +8497,25 @@ class MainWindow(QtWidgets.QWidget):
         self.lead_trader_enable_cb.toggled.connect(self._on_lead_trader_toggled)
         self.lead_trader_combo.currentIndexChanged.connect(self._on_lead_trader_option_changed)
 
+        self.cb_live_indicator_values = QtWidgets.QCheckBox("Use live candle values for signals (repaints)")
+        live_values_enabled = bool(self.config.get("indicator_use_live_values", False))
+        self.config["indicator_use_live_values"] = live_values_enabled
+        self.cb_live_indicator_values.setChecked(live_values_enabled)
+        self.cb_live_indicator_values.setToolTip(
+            "When unchecked, signals use the previous closed candle (no repaint), which matches candle-close backtests "
+            "and TradingView values on bar close."
+        )
+        self.cb_live_indicator_values.stateChanged.connect(
+            lambda state: self.config.__setitem__(
+                "indicator_use_live_values", bool(state == QtCore.Qt.CheckState.Checked)
+            )
+        )
+        g.addWidget(self.cb_live_indicator_values, 2, 0, 1, 6)
+
         # Add-only (One-way guard) option
         self.cb_add_only = QtWidgets.QCheckBox("Add-only in current net direction (one-way)")
         self.cb_add_only.setChecked(bool(self.config.get('add_only', False)))
-        g.addWidget(self.cb_add_only, 2, 0, 1, 6)
+        g.addWidget(self.cb_add_only, 3, 0, 1, 6)
 
         self.allow_opposite_checkbox = QtWidgets.QCheckBox("Allow simultaneous long & short positions (hedge stacking)")
         allow_opposite_enabled = coerce_bool(self.config.get("allow_opposite_positions", True), True)
@@ -8498,7 +8526,7 @@ class MainWindow(QtWidgets.QWidget):
             "Leave disabled to force the bot to close the opposite side before opening a new trade."
         )
         self.allow_opposite_checkbox.stateChanged.connect(self._on_allow_opposite_changed)
-        g.addWidget(self.allow_opposite_checkbox, 3, 0, 1, 6)
+        g.addWidget(self.allow_opposite_checkbox, 4, 0, 1, 6)
 
         self.cb_stop_without_close = QtWidgets.QCheckBox("Stop Bot Without Closing Active Positions")
         stop_without_close = bool(self.config.get("stop_without_close", False))
@@ -8509,7 +8537,7 @@ class MainWindow(QtWidgets.QWidget):
         self.cb_stop_without_close.stateChanged.connect(
             lambda state: self.config.__setitem__("stop_without_close", bool(state == QtCore.Qt.CheckState.Checked))
         )
-        g.addWidget(self.cb_stop_without_close, 4, 0, 1, 6)
+        g.addWidget(self.cb_stop_without_close, 5, 0, 1, 6)
 
         self.cb_close_on_exit = QtWidgets.QCheckBox("Market Close All Active Positions On Window Close (Working in progress)")
         self.cb_close_on_exit.setChecked(False)
@@ -8535,18 +8563,18 @@ class MainWindow(QtWidgets.QWidget):
         # Keep config off even if previous sessions stored True
         self.config["close_on_exit"] = False
         self.cb_close_on_exit.stateChanged.connect(self._on_close_on_exit_changed)
-        g.addWidget(self.cb_close_on_exit, 5, 0, 1, 6)
+        g.addWidget(self.cb_close_on_exit, 6, 0, 1, 6)
 
         self._apply_lead_trader_state(lead_trader_enabled)
 
         stop_cfg = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.config["stop_loss"] = stop_cfg
 
-        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 6, 0)
+        g.addWidget(QtWidgets.QLabel("Stop Loss:"), 7, 0)
         self.stop_loss_enable_cb = QtWidgets.QCheckBox("Enable")
         self.stop_loss_enable_cb.setToolTip("Toggle automatic stop-loss handling for live trades.")
         self.stop_loss_enable_cb.setChecked(stop_cfg.get("enabled", False))
-        g.addWidget(self.stop_loss_enable_cb, 6, 1)
+        g.addWidget(self.stop_loss_enable_cb, 7, 1)
 
         self.stop_loss_mode_combo = QtWidgets.QComboBox()
         for mode_key in STOP_LOSS_MODE_ORDER:
@@ -8555,7 +8583,7 @@ class MainWindow(QtWidgets.QWidget):
         if mode_idx < 0:
             mode_idx = 0
         self.stop_loss_mode_combo.setCurrentIndex(mode_idx)
-        g.addWidget(self.stop_loss_mode_combo, 6, 2, 1, 2)
+        g.addWidget(self.stop_loss_mode_combo, 7, 2, 1, 2)
 
         self.stop_loss_usdt_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_usdt_spin.setRange(0.0, 1_000_000_000.0)
@@ -8563,7 +8591,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_usdt_spin.setSingleStep(1.0)
         self.stop_loss_usdt_spin.setSuffix(" USDT")
         self.stop_loss_usdt_spin.setValue(float(stop_cfg.get("usdt", 0.0)))
-        g.addWidget(self.stop_loss_usdt_spin, 6, 4)
+        g.addWidget(self.stop_loss_usdt_spin, 7, 4)
 
         self.stop_loss_percent_spin = QtWidgets.QDoubleSpinBox()
         self.stop_loss_percent_spin.setRange(0.0, 100.0)
@@ -8571,7 +8599,7 @@ class MainWindow(QtWidgets.QWidget):
         self.stop_loss_percent_spin.setSingleStep(0.5)
         self.stop_loss_percent_spin.setSuffix(" %")
         self.stop_loss_percent_spin.setValue(float(stop_cfg.get("percent", 0.0)))
-        g.addWidget(self.stop_loss_percent_spin, 6, 5)
+        g.addWidget(self.stop_loss_percent_spin, 7, 5)
 
         self.stop_loss_scope_combo = QtWidgets.QComboBox()
         for scope_key in STOP_LOSS_SCOPE_OPTIONS:
@@ -8581,8 +8609,8 @@ class MainWindow(QtWidgets.QWidget):
         if scope_idx < 0:
             scope_idx = 0
         self.stop_loss_scope_combo.setCurrentIndex(scope_idx)
-        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 7, 0)
-        g.addWidget(self.stop_loss_scope_combo, 7, 1, 1, 2)
+        g.addWidget(QtWidgets.QLabel("Stop Loss Scope:"), 8, 0)
+        g.addWidget(self.stop_loss_scope_combo, 8, 1, 1, 2)
 
         # Strategy templates
         self._dashboard_templates = {
@@ -8620,7 +8648,7 @@ class MainWindow(QtWidgets.QWidget):
                 },
             },
         }
-        g.addWidget(QtWidgets.QLabel("Template:"), 8, 0)
+        g.addWidget(QtWidgets.QLabel("Template:"), 9, 0)
         self.template_combo = QtWidgets.QComboBox()
         self.template_combo.addItem("No Template", "")
         for key, info in self._dashboard_templates.items():
@@ -8631,7 +8659,7 @@ class MainWindow(QtWidgets.QWidget):
             idx_template = 0
         self.template_combo.setCurrentIndex(idx_template)
         self.template_combo.currentIndexChanged.connect(self._on_dashboard_template_changed)
-        g.addWidget(self.template_combo, 8, 1, 1, 3)
+        g.addWidget(self.template_combo, 9, 1, 1, 3)
 
         self.stop_loss_enable_cb.toggled.connect(self._on_runtime_stop_loss_enabled)
         self.stop_loss_mode_combo.currentIndexChanged.connect(self._on_runtime_stop_loss_mode_changed)
@@ -14294,6 +14322,10 @@ def update_balance_label(self):
             try:
                 if getattr(self, "balance_label", None):
                     msg = str(err or "unknown error").replace("\n", " ").strip()
+                    try:
+                        self.balance_label.setToolTip(msg)
+                    except Exception:
+                        pass
                     label_text = None
                     try:
                         import re as _re
@@ -14306,14 +14338,47 @@ def update_balance_label(self):
                         is_test = ("test" in mode_txt) or ("demo" in mode_txt) or ("sandbox" in mode_txt)
                         acct_txt = str(account_value or "").upper()
                         if acct_txt.startswith("FUT") and is_test:
-                            label_text = (
-                                "API key rejected for Futures Testnet. "
-                                "Check key source/permissions/IP (see Log)."
-                            )
+                            if ("Spot Testnet keys" in msg) or ("accepted on Spot Testnet" in msg):
+                                label_text = (
+                                    f"Wrong API key for Futures Testnet (code {code_val}). "
+                                    "Use FUTURES Testnet keys."
+                                )
+                            elif ("rejected by both Spot/Futures Testnet" in msg) or ("rejected by both Spot and Futures Testnet" in msg):
+                                label_text = (
+                                    f"API key rejected by Testnet (code {code_val}). "
+                                    "Check permissions/IP."
+                                )
+                            else:
+                                label_text = (
+                                    f"Futures Testnet key rejected (code {code_val}). "
+                                    "Check permissions/IP: testnet.binancefuture.com (see Log)."
+                                )
+                                try:
+                                    now_ts = float(time.time())
+                                    last_ts = float(getattr(self, "_last_auth_help_ts", 0.0) or 0.0)
+                                    if (now_ts - last_ts) > 60.0:
+                                        self._last_auth_help_ts = now_ts
+                                        self.log("Futures Testnet auth error (-2015/-2014). Checklist:")
+                                        self.log("1) Use FUTURES Testnet keys from https://testnet.binancefuture.com (not Spot Testnet / live).")
+                                        self.log("2) In API Key settings enable Futures + Reading; disable IP restriction or whitelist your IP.")
+                                        self.log("3) If using VPN, your public IP changes; whitelist the current one.")
+                                        try:
+                                            ip = None
+                                            with urllib.request.urlopen("https://api.ipify.org", timeout=5) as resp:
+                                                ip = (resp.read(64) or b"").decode("utf-8", "ignore").strip()
+                                            if ip and re.match(r"^[0-9]{1,3}(\\.[0-9]{1,3}){3}$", ip):
+                                                self.log(f"Detected public IP: {ip}")
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
                         elif is_test:
-                            label_text = "API key rejected for Testnet (see Log)."
+                            label_text = (
+                                f"Testnet key rejected (code {code_val}). "
+                                "Spot keys: testnet.binance.vision (see Log)."
+                            )
                         else:
-                            label_text = "API key rejected (see Log)."
+                            label_text = f"API key rejected (code {code_val}). Check permissions/IP (see Log)."
                     if label_text is None:
                         short = msg if len(msg) <= 120 else (msg[:117] + "...")
                         label_text = f"Balance error: {short}"
@@ -14333,6 +14398,10 @@ def update_balance_label(self):
                 pass
             try:
                 if getattr(self, "balance_label", None):
+                    try:
+                        self.balance_label.setToolTip("")
+                    except Exception:
+                        pass
                     total_txt = f"{(total_balance_value if total_balance_value is not None else bal):.3f}"
                     avail_txt = f"{(available_balance_value if available_balance_value is not None else bal):.3f}"
                     if abs(float(total_txt) - float(avail_txt)) > 1e-6:

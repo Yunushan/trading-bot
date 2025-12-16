@@ -324,8 +324,8 @@ def _auth_error_hint_for(mode: str | None, account_type: str | None, code: int |
     if acct.startswith("FUT") and is_testnet:
         return (
             "Use Binance FUTURES TESTNET keys from testnet.binancefuture.com "
-            "(spot/live keys won't work). If you enabled IP restriction, "
-            "disable it or whitelist your current public IP (VPN changes it)."
+            "(spot/live keys won't work). In the key settings, enable Futures/Reading permissions. "
+            "If you enabled IP restriction, disable it or whitelist your current public IP (VPN changes it)."
         )
     if is_testnet:
         return "Testnet requires testnet API keys (live keys won't work)."
@@ -1339,6 +1339,10 @@ class BinanceWrapper:
                 # Prefer lightweight REST (faster failure/less client overhead on testnet/VPN DNS issues).
                 acct = self._http_signed_futures("/v2/account")
                 acct_dict = _as_futures_account_dict(acct)
+                # Some connectors/environments may restrict v2; fall back to v3 if needed.
+                if not acct_dict:
+                    acct = self._http_signed_futures("/v3/account")
+                    acct_dict = _as_futures_account_dict(acct)
         except Exception:
             acct_dict = {}
         with self._futures_account_cache_lock:
@@ -1367,6 +1371,9 @@ class BinanceWrapper:
                 # Prefer lightweight REST (faster failure/less client overhead on testnet/VPN DNS issues).
                 bals = self._http_signed_futures_list("/v2/balance")
                 entries = list(_as_futures_balance_entries(bals))
+                if not entries:
+                    bals = self._http_signed_futures_list("/v3/balance")
+                    entries = list(_as_futures_balance_entries(bals))
         except Exception:
             entries = []
         with self._futures_account_cache_lock:
@@ -1966,11 +1973,20 @@ class BinanceWrapper:
         if self._ws_twm is not None:
             return
         try:
+            ws_testnet = _is_testnet_mode(self.mode)
+            # If we're intentionally using LIVE futures market data for indicators while in
+            # testnet mode, also use LIVE websockets so the intrabar candle patch matches
+            # the REST source (avoid mixing live REST + testnet WS).
+            try:
+                if ws_testnet and self._use_live_futures_data_for_indicators():
+                    ws_testnet = False
+            except Exception:
+                pass
             self._ws_twm = _TWM(
                 api_key=self.api_key or "",
                 api_secret=self.api_secret or "",
                 futures=True,
-                testnet=_is_testnet_mode(self.mode),
+                testnet=ws_testnet,
             )
             self._ws_twm.start()
         except Exception as e:
@@ -2116,16 +2132,12 @@ class BinanceWrapper:
                     payload["timestamp"] = self._futures_timestamp_ms()
                 if "recvWindow" not in payload:
                     payload["recvWindow"] = int(getattr(self, "recv_window", 5000) or 5000)
-                query = urllib.parse.urlencode(payload)
+                # Build the exact query string we sign and send it verbatim to avoid any
+                # subtle re-ordering/encoding differences between urllib + requests.
+                query = urllib.parse.urlencode(payload, doseq=True)
                 sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
-                full_params = dict(payload)
-                full_params["signature"] = sig
-                resp = requests.get(
-                    url,
-                    params=full_params,
-                    headers={"X-MBX-APIKEY": self.api_key},
-                    timeout=timeout_pair,
-                )
+                full_url = f"{url}?{query}&signature={sig}"
+                resp = requests.get(full_url, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout_pair)
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, dict) and _is_binance_error_payload(data):
@@ -2200,16 +2212,10 @@ class BinanceWrapper:
                     payload["timestamp"] = self._futures_timestamp_ms()
                 if "recvWindow" not in payload:
                     payload["recvWindow"] = int(getattr(self, "recv_window", 5000) or 5000)
-                query = urllib.parse.urlencode(payload)
+                query = urllib.parse.urlencode(payload, doseq=True)
                 sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
-                full_params = dict(payload)
-                full_params["signature"] = sig
-                resp = requests.get(
-                    url,
-                    params=full_params,
-                    headers={"X-MBX-APIKEY": self.api_key},
-                    timeout=timeout_pair,
-                )
+                full_url = f"{url}?{query}&signature={sig}"
+                resp = requests.get(full_url, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout_pair)
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, dict) and _is_binance_error_payload(data):
@@ -2446,9 +2452,15 @@ class BinanceWrapper:
         message: str | None = None,
     ) -> None:
         try:
+            base_url = None
+            try:
+                base_url = str(self._futures_base() or "")
+            except Exception:
+                base_url = None
             self._last_futures_http_error = {
                 "ts": time.time(),
                 "path": str(path or ""),
+                "base": base_url,
                 "status_code": int(status_code) if status_code is not None else None,
                 "code": int(code) if code is not None else None,
                 "message": str(message or ""),
@@ -2496,6 +2508,173 @@ class BinanceWrapper:
         except Exception:
             pass
         return scope
+
+    def _probe_testnet_key_acceptance(self) -> dict | None:
+        """
+        Best-effort check to see whether the provided API key is accepted by
+        Spot Testnet and/or Futures Testnet *without* requiring the secret.
+
+        This helps distinguish:
+        - Spot Testnet keys pasted into Futures mode (common)
+        - Live keys pasted into Testnet mode (common)
+        - IP restriction / missing permissions (common)
+
+        Returns a cached dict like:
+          {
+            "spot_ok": bool,
+            "spot_http": int|None,
+            "spot_code": int|None,
+            "spot_msg": str|None,
+            "futures_ok": bool,
+            "futures_http": int|None,
+            "futures_code": int|None,
+            "futures_msg": str|None,
+          }
+        """
+        try:
+            if not _is_testnet_mode(self.mode) or not self.api_key:
+                return None
+        except Exception:
+            return None
+        try:
+            now = time.time()
+            ts = float(getattr(self, "_testnet_key_probe_ts", 0.0) or 0.0)
+            cached = getattr(self, "_testnet_key_probe", None)
+            if isinstance(cached, dict) and ts and (now - ts) < 600.0:
+                return dict(cached)
+        except Exception:
+            cached = None
+
+        def _probe(method: str, url: str) -> tuple[bool, int | None, int | None, str | None]:
+            try:
+                resp = requests.request(
+                    method,
+                    url,
+                    headers={"X-MBX-APIKEY": self.api_key},
+                    timeout=_requests_timeout(),
+                )
+                if resp.status_code == 200:
+                    return True, 200, None, None
+                code = None
+                msg = None
+                try:
+                    payload = resp.json()
+                    if isinstance(payload, dict):
+                        raw = payload.get("code")
+                        if raw is not None:
+                            try:
+                                code = int(raw)
+                            except Exception:
+                                code = None
+                        msg = str(payload.get("msg") or payload.get("message") or payload)
+                    else:
+                        msg = str(payload)
+                except Exception:
+                    msg = (resp.text or "").strip() or f"http_status:{resp.status_code}"
+                return False, int(resp.status_code), code, msg
+            except Exception as exc:
+                return False, None, None, str(exc)
+
+        spot_ok = False
+        futures_ok = False
+        spot_http = spot_code = None
+        futures_http = futures_code = None
+        spot_msg = futures_msg = None
+        try:
+            spot_url = f"{self._spot_base().rstrip('/')}/v3/userDataStream"
+            spot_ok, spot_http, spot_code, spot_msg = _probe("POST", spot_url)
+        except Exception:
+            pass
+        try:
+            fut_url = f"{self._futures_base().rstrip('/')}/v1/listenKey"
+            futures_ok, futures_http, futures_code, futures_msg = _probe("POST", fut_url)
+        except Exception:
+            pass
+
+        result = {
+            "spot_ok": bool(spot_ok),
+            "spot_http": spot_http,
+            "spot_code": spot_code,
+            "spot_msg": spot_msg,
+            "futures_ok": bool(futures_ok),
+            "futures_http": futures_http,
+            "futures_code": futures_code,
+            "futures_msg": futures_msg,
+        }
+        try:
+            self._testnet_key_probe = dict(result)
+            self._testnet_key_probe_ts = time.time()
+        except Exception:
+            pass
+        return dict(result)
+
+    def _testnet_auth_hint(self, code: int | None) -> str | None:
+        """
+        Enrich auth errors (-2014/-2015) in testnet mode with an actionable hint.
+        """
+        try:
+            c = int(code) if code is not None else None
+        except Exception:
+            c = None
+        if c not in (-2014, -2015):
+            return None
+        if not _is_testnet_mode(self.mode):
+            return None
+        try:
+            probe = self._probe_testnet_key_acceptance()
+        except Exception:
+            probe = None
+        if not isinstance(probe, dict):
+            return None
+        spot_ok = bool(probe.get("spot_ok"))
+        futures_ok = bool(probe.get("futures_ok"))
+        try:
+            spot_http = probe.get("spot_http")
+            spot_code = probe.get("spot_code")
+            futures_http = probe.get("futures_http")
+            futures_code = probe.get("futures_code")
+            probe_summary = (
+                f"probe spot_ok={spot_ok} http={spot_http} code={spot_code} | "
+                f"futures_ok={futures_ok} http={futures_http} code={futures_code}"
+            )
+        except Exception:
+            probe_summary = None
+        if probe_summary:
+            probe_summary = f"{probe_summary}. "
+        else:
+            probe_summary = ""
+        if spot_ok and not futures_ok:
+            fut_http = probe.get("futures_http")
+            fut_code = probe.get("futures_code")
+            if fut_http == 401 and fut_code in (-2014, -2015):
+                return (
+                    f"{probe_summary}"
+                    "These keys are accepted on Spot Testnet but rejected on Futures Testnet; "
+                    "use FUTURES Testnet keys from testnet.binancefuture.com."
+                )
+            if fut_http in (408, 504) or fut_code in (-1007,):
+                return (
+                    f"{probe_summary}"
+                    "Spot Testnet accepts this API key, but the Futures Testnet probe timed out/unreachable; "
+                    "if you are running Futures Testnet, ensure you use FUTURES Testnet keys (and check network/DNS)."
+                )
+            return (
+                f"{probe_summary}"
+                "Spot Testnet accepts this API key, but the Futures Testnet probe failed; "
+                "if you are running Futures Testnet, ensure you use FUTURES Testnet keys from testnet.binancefuture.com "
+                "and check permissions/IP whitelist."
+            )
+        if futures_ok and not spot_ok:
+            return (
+                f"{probe_summary}"
+                "API key is accepted by Futures Testnet; check Futures/Reading permissions and IP whitelist (VPN changes it)."
+            )
+        if not spot_ok and not futures_ok:
+            return (
+                f"{probe_summary}"
+                "API key is rejected by both Spot/Futures Testnet; likely wrong key type/environment or IP restriction/permissions."
+            )
+        return None
 
     def _sync_futures_time_offset(self, *, force: bool = False) -> None:
         """
@@ -3324,6 +3503,7 @@ class BinanceWrapper:
                 code = err.get("code")
                 status = err.get("status_code")
                 path = err.get("path")
+                base_url = err.get("base")
                 suffix = ""
                 if code is not None:
                     suffix += f" code={code}"
@@ -3331,6 +3511,8 @@ class BinanceWrapper:
                     suffix += f" http={status}"
                 if path:
                     suffix += f" path={path}"
+                if base_url:
+                    suffix += f" base={base_url}"
                 hint = _auth_error_hint_for(self.mode, self.account_type, code)
                 if hint:
                     suffix += f" | hint: {hint}"
@@ -3339,6 +3521,12 @@ class BinanceWrapper:
                         scope = self._diagnose_testnet_key_scope()
                         if scope == "spot":
                             suffix += " | hint2: These keys appear to be Spot Testnet keys; Futures Testnet uses different API keys."
+                except Exception:
+                    pass
+                try:
+                    extra_hint = self._testnet_auth_hint(code)
+                    if extra_hint:
+                        suffix += f" | hint3: {extra_hint}"
                 except Exception:
                     pass
                 raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
@@ -3358,6 +3546,7 @@ class BinanceWrapper:
                 code = err.get("code")
                 status = err.get("status_code")
                 path = err.get("path")
+                base_url = err.get("base")
                 suffix = ""
                 if code is not None:
                     suffix += f" code={code}"
@@ -3365,6 +3554,8 @@ class BinanceWrapper:
                     suffix += f" http={status}"
                 if path:
                     suffix += f" path={path}"
+                if base_url:
+                    suffix += f" base={base_url}"
                 hint = _auth_error_hint_for(self.mode, self.account_type, code)
                 if hint:
                     suffix += f" | hint: {hint}"
@@ -3373,6 +3564,12 @@ class BinanceWrapper:
                         scope = self._diagnose_testnet_key_scope()
                         if scope == "spot":
                             suffix += " | hint2: These keys appear to be Spot Testnet keys; Futures Testnet uses different API keys."
+                except Exception:
+                    pass
+                try:
+                    extra_hint = self._testnet_auth_hint(code)
+                    if extra_hint:
+                        suffix += f" | hint3: {extra_hint}"
                 except Exception:
                     pass
                 raise RuntimeError(f"Futures balance fetch failed: {msg}{suffix}")
