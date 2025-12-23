@@ -1994,10 +1994,10 @@ class StarterWindow(QtWidgets.QWidget):
         duration_ms = max(1000, min(duration_ms, 20000))
 
         try:
-            poll_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_MS") or 2500)
+            poll_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_MS") or duration_ms)
         except Exception:
-            poll_ms = 2500
-        poll_ms = max(200, min(poll_ms, 5000))
+            poll_ms = duration_ms
+        poll_ms = max(200, min(poll_ms, duration_ms))
         try:
             interval_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_INTERVAL_MS") or 30)
         except Exception:
@@ -2144,7 +2144,10 @@ class StarterWindow(QtWidgets.QWidget):
                 class_buf = ctypes.create_unicode_buffer(256)
                 user32.GetClassNameW(hwnd_obj, class_buf, 256)
                 class_name = (class_buf.value or "").strip()
-                if not class_name:
+                title_buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd_obj, title_buf, 256)
+                title = (title_buf.value or "").strip()
+                if class_name in {"Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW"}:
                     return False
                 # Skip child windows early.
                 try:
@@ -2167,6 +2170,10 @@ class StarterWindow(QtWidgets.QWidget):
                     )
                 ):
                     return True
+                if "QWindowPopup" in class_name or "QWindowToolTip" in class_name:
+                    return False
+                if class_name in {"ComboLBox", "#32768"}:
+                    return False
                 if class_name in {"ConsoleWindowClass", "PseudoConsoleWindow"}:
                     return True
                 if class_name.startswith("_q_"):
@@ -2175,27 +2182,22 @@ class StarterWindow(QtWidgets.QWidget):
                     return height <= 500 and width <= 4000
                 if class_name.startswith("Chrome_WidgetWin_"):
                     return height <= 400 and width <= 4000
+                try:
+                    GW_OWNER = 4
+                    owner = user32.GetWindow(hwnd_obj, GW_OWNER)
+                    if owner:
+                        return False
+                except Exception:
+                    pass
                 if width >= 500 and height >= 300:
                     return False
 
-                return height <= 80 and width <= 4000
+                # Only treat truly tiny top-level windows as transient.
+                return height <= 120 and width <= 4000
             except Exception:
                 return False
 
         def _hide_hwnd(hwnd_obj) -> None:  # noqa: ANN001
-            try:
-                GWL_EXSTYLE = -20
-                WS_EX_TOOLWINDOW = 0x00000080
-                WS_EX_APPWINDOW = 0x00040000
-                WS_EX_NOACTIVATE = 0x08000000
-                get_exstyle = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
-                set_exstyle = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
-                ex_style = int(get_exstyle(hwnd_obj, GWL_EXSTYLE))
-                new_ex_style = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
-                if new_ex_style != ex_style:
-                    set_exstyle(hwnd_obj, GWL_EXSTYLE, new_ex_style)
-            except Exception:
-                pass
             try:
                 SWP_NOSIZE = 0x0001
                 SWP_NOZORDER = 0x0004
@@ -2235,22 +2237,119 @@ class StarterWindow(QtWidgets.QWidget):
         tracked_pids = {int(root_pid)}
         tracked_lock = threading.Lock()
         hooks: dict[int, int] = {}
+        pid_snapshot = {"ts": 0.0, "pids": set(tracked_pids)}
+        related_pids: set[int] = set(tracked_pids)
+        path_cache: dict[int, tuple[float, str]] = {}
+
+        python_exe = Path(sys.executable).resolve()
+        venv_root = python_exe.parent.parent if python_exe.parent.name.lower() in {"scripts", "bin"} else python_exe.parent
+        allowed_roots = [
+            str(python_exe.parent.resolve()),
+            str(venv_root.resolve()),
+            str(REPO_ROOT.resolve()),
+        ]
+        allowed_roots_lower = [root.lower() for root in allowed_roots if root]
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        try:
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.QueryFullProcessImageNameW.argtypes = [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                wintypes.LPWSTR,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+        except Exception:
+            pass
+
+        def _get_process_path(pid_val: int) -> str:
+            if pid_val <= 0:
+                return ""
+            now = time.monotonic()
+            cached = path_cache.get(pid_val)
+            if cached and (now - cached[0]) < 1.0:
+                return cached[1]
+            handle = None
+            try:
+                handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid_val))
+                if not handle:
+                    return ""
+                buf_len = wintypes.DWORD(260)
+                buf = ctypes.create_unicode_buffer(buf_len.value)
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_len)):
+                    path = str(buf.value or "")
+                else:
+                    path = ""
+            except Exception:
+                path = ""
+            finally:
+                if handle:
+                    try:
+                        kernel32.CloseHandle(handle)
+                    except Exception:
+                        pass
+            if path:
+                path_cache[pid_val] = (now, path)
+            return path
+
+        def _refresh_descendants(force: bool = False) -> set[int]:
+            now = time.monotonic()
+            if not force and (now - float(pid_snapshot["ts"])) < 0.2:
+                return set(pid_snapshot["pids"])
+            try:
+                pid_snapshot["pids"] = _enum_descendant_pids(int(root_pid))
+                pid_snapshot["ts"] = now
+            except Exception:
+                pass
+            return set(pid_snapshot["pids"])
+
+        def _pid_is_related(pid_val: int) -> bool:
+            if not pid_val:
+                return False
+            with tracked_lock:
+                if pid_val in tracked_pids:
+                    return True
+                if pid_val in related_pids:
+                    return True
+            if pid_val not in _refresh_descendants():
+                exe_path = _get_process_path(pid_val)
+                if not exe_path:
+                    return False
+                exe_lower = exe_path.lower()
+                if not any(root in exe_lower for root in allowed_roots_lower):
+                    return False
+                related_pids.add(pid_val)
+                return True
+            return True
+
+        def _maybe_track_pid(pid_val: int) -> bool:
+            if not _pid_is_related(pid_val):
+                return False
+            with tracked_lock:
+                if pid_val not in tracked_pids:
+                    tracked_pids.add(pid_val)
+                    _install_hook_for_pid(pid_val)
+            return True
 
         def _maybe_hide(hwnd_obj) -> None:  # noqa: ANN001
             if not hwnd_obj:
                 return
             pid_val = _get_hwnd_pid(hwnd_obj)
-            with tracked_lock:
-                if pid_val not in tracked_pids:
-                    return
             try:
                 if not user32.IsWindowVisible(hwnd_obj):
                     return
             except Exception:
                 return
-            if _is_transient_window(hwnd_obj):
-                _log_window(hwnd_obj, "starter-hide-startup")
-                _hide_hwnd(hwnd_obj)
+            if not _is_transient_window(hwnd_obj):
+                return
+            if not _maybe_track_pid(pid_val):
+                return
+            _log_window(hwnd_obj, "starter-hide-startup")
+            _hide_hwnd(hwnd_obj)
 
         def _win_event_proc(_hook, _event, hwnd_obj, id_object, _id_child, _thread, _time):  # noqa: ANN001
             try:
@@ -2264,6 +2363,21 @@ class StarterWindow(QtWidgets.QWidget):
         self._child_startup_suppress_proc = proc
         stop_event = threading.Event()
         self._child_startup_suppress_stop = stop_event
+
+        try:
+            global_hook = user32.SetWinEventHook(
+                EVENT_OBJECT_CREATE,
+                EVENT_OBJECT_SHOW,
+                0,
+                proc,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            )
+            if global_hook:
+                hooks[0] = int(global_hook)
+        except Exception:
+            pass
 
         def _install_hook_for_pid(pid_val: int) -> None:
             if not pid_val or pid_val in hooks:
@@ -2288,17 +2402,17 @@ class StarterWindow(QtWidgets.QWidget):
 
             def _enum_cb(hwnd_obj, _lparam):  # noqa: ANN001
                 try:
-                    pid_val = _get_hwnd_pid(hwnd_obj)
-                    with tracked_lock:
-                        if pid_val not in tracked_pids:
-                            return True
                     try:
                         if not user32.IsWindowVisible(hwnd_obj):
                             return True
                     except Exception:
                         return True
-                    if _is_transient_window(hwnd_obj):
-                        _hide_hwnd(hwnd_obj)
+                    if not _is_transient_window(hwnd_obj):
+                        return True
+                    pid_val = _get_hwnd_pid(hwnd_obj)
+                    if not _maybe_track_pid(pid_val):
+                        return True
+                    _hide_hwnd(hwnd_obj)
                 except Exception:
                     return True
                 return True
@@ -2341,10 +2455,8 @@ class StarterWindow(QtWidgets.QWidget):
             return found
 
         def _run() -> None:
-            main_seen_at = None
             started = time.monotonic()
             deadline = started + (duration_ms / 1000.0)
-            poll_deadline = started + (poll_ms / 1000.0)
             fast_deadline = started + (fast_ms / 1000.0)
             next_process_scan = 0.0
 
@@ -2354,6 +2466,8 @@ class StarterWindow(QtWidgets.QWidget):
                     next_process_scan = now + 0.25
                     try:
                         new_pids = _enum_descendant_pids(int(root_pid))
+                        pid_snapshot["pids"] = set(new_pids)
+                        pid_snapshot["ts"] = now
                         with tracked_lock:
                             for pid_val in new_pids:
                                 if pid_val not in tracked_pids:
@@ -2361,12 +2475,7 @@ class StarterWindow(QtWidgets.QWidget):
                                     _install_hook_for_pid(pid_val)
                     except Exception:
                         pass
-                if now < poll_deadline:
-                    _poll_once()
-                if main_seen_at is None and _main_window_visible():
-                    main_seen_at = now
-                if main_seen_at is not None and (now - main_seen_at) >= 1.5:
-                    break
+                _poll_once()
                 if now < fast_deadline:
                     time.sleep(fast_interval_ms / 1000.0)
                 else:

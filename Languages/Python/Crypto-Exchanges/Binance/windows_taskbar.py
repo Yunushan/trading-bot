@@ -167,6 +167,33 @@ def _co_initialize_once() -> bool:
     return True
 
 
+def _get_hwnd(window) -> int:
+    if sys.platform != "win32" or window is None:
+        return 0
+    try:
+        win_id = None
+        if hasattr(window, "effectiveWinId"):
+            try:
+                win_id = window.effectiveWinId()
+            except Exception:
+                win_id = None
+        if win_id is None and hasattr(window, "winId"):
+            try:
+                win_id = window.winId()
+            except Exception:
+                win_id = None
+        if win_id is None and hasattr(window, "windowHandle"):
+            handle = window.windowHandle()
+            if handle is not None:
+                try:
+                    win_id = handle.winId()
+                except Exception:
+                    win_id = None
+        return int(win_id) if win_id is not None else 0
+    except Exception:
+        return 0
+
+
 def _propvariant_from_string(value: str) -> PROPVARIANT:
     buffer = value or ""
     encoded = ctypes.create_unicode_buffer(buffer)
@@ -205,30 +232,7 @@ def apply_taskbar_metadata(
     """Assign relaunch metadata so the Windows taskbar shows the correct label and icon."""
     if sys.platform != "win32":
         return False
-    if window is None:
-        return False
-    try:
-        win_id = None
-        if hasattr(window, "effectiveWinId"):
-            try:
-                win_id = window.effectiveWinId()
-            except Exception:
-                win_id = None
-        if win_id is None and hasattr(window, "winId"):
-            try:
-                win_id = window.winId()
-            except Exception:
-                win_id = None
-        if win_id is None and hasattr(window, "windowHandle"):
-            handle = window.windowHandle()
-            if handle is not None:
-                try:
-                    win_id = handle.winId()
-                except Exception:
-                    win_id = None
-        hwnd = int(win_id) if win_id is not None else 0
-    except Exception:
-        return False
+    hwnd = _get_hwnd(window)
     if hwnd == 0:
         return False
     ensure_app_user_model_id(app_id)
@@ -261,6 +265,52 @@ def apply_taskbar_metadata(
     finally:
         release = store.contents.lpVtbl.contents.Release
         release(store)
+    return True
+
+
+def ensure_taskbar_visible(window) -> bool:
+    """Force a window to show in the Windows taskbar (clears WS_EX_TOOLWINDOW)."""
+    if sys.platform != "win32":
+        return False
+    hwnd = _get_hwnd(window)
+    if hwnd == 0:
+        return False
+    try:  # pragma: no cover - Windows only
+        user32 = ctypes.windll.user32
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_APPWINDOW = 0x00040000
+        get_exstyle = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        set_exstyle = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        ex_style = int(get_exstyle(hwnd, GWL_EXSTYLE))
+        new_ex_style = int((ex_style | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW)
+        if new_ex_style != ex_style:
+            set_exstyle(hwnd, GWL_EXSTYLE, new_ex_style)
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010
+            SWP_FRAMECHANGED = 0x0020
+            user32.SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                SW_SHOWNOACTIVATE = 4
+                if getattr(user32, "ShowWindowAsync", None):
+                    user32.ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE)
+                else:
+                    user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        except Exception:
+            pass
+    except Exception:
+        return False
     return True
 
 

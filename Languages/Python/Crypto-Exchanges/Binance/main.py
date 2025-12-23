@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from pathlib import Path
 
 # Ensure repo root is importable so shared helpers can be used when launched directly.
@@ -539,19 +540,6 @@ def _install_startup_window_suppression() -> None:
 
     def _hide_hwnd(hwnd_obj) -> None:  # noqa: ANN001
         try:
-            GWL_EXSTYLE = -20
-            WS_EX_TOOLWINDOW = 0x00000080
-            WS_EX_APPWINDOW = 0x00040000
-            WS_EX_NOACTIVATE = 0x08000000
-            get_exstyle = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
-            set_exstyle = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
-            ex_style = int(get_exstyle(hwnd_obj, GWL_EXSTYLE))
-            new_ex_style = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
-            if new_ex_style != ex_style:
-                set_exstyle(hwnd_obj, GWL_EXSTYLE, new_ex_style)
-        except Exception:
-            pass
-        try:
             SWP_NOSIZE = 0x0001
             SWP_NOZORDER = 0x0004
             SWP_NOACTIVATE = 0x0010
@@ -733,7 +721,12 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from app.gui.app_icon import find_primary_icon_file, load_app_icon  # noqa: E402
 from app.gui.main_window import MainWindow  # noqa: E402
-from windows_taskbar import apply_taskbar_metadata, build_relaunch_command, ensure_app_user_model_id  # noqa: E402
+from windows_taskbar import (  # noqa: E402
+    apply_taskbar_metadata,
+    build_relaunch_command,
+    ensure_app_user_model_id,
+    ensure_taskbar_visible,
+)
 
 APP_USER_MODEL_ID = "Binance.TradingBot"
 _previous_qt_message_handler = None
@@ -816,6 +809,10 @@ def main() -> int:
                 icon_path=icon_path,
                 relaunch_command=relaunch_cmd,
             )
+            try:
+                ensure_taskbar_visible(win)
+            except Exception:
+                pass
             if not success and attempts > 1:
                 QtCore.QTimer.singleShot(250, lambda: _apply_taskbar(attempts - 1))
 
@@ -828,6 +825,38 @@ def main() -> int:
         pass
     if not icon.isNull():
         QtCore.QTimer.singleShot(0, lambda: win.setWindowIcon(icon))
+    if sys.platform == "win32" and not disable_taskbar:
+        try:
+            controller_ms = int(os.environ.get("BOT_TASKBAR_ENSURE_MS") or 30000)
+        except Exception:
+            controller_ms = 30000
+        try:
+            interval_ms = int(os.environ.get("BOT_TASKBAR_ENSURE_INTERVAL_MS") or 250)
+        except Exception:
+            interval_ms = 250
+        controller_ms = max(1000, min(controller_ms, 30000))
+        interval_ms = max(100, min(interval_ms, 2000))
+        start_ts = time.monotonic()
+
+        def _tick_taskbar() -> None:
+            try:
+                ensure_taskbar_visible(win)
+            except Exception:
+                pass
+            try:
+                apply_taskbar_metadata(
+                    win,
+                    app_id=APP_USER_MODEL_ID,
+                    display_name="Binance Trading Bot",
+                    icon_path=icon_path,
+                    relaunch_command=relaunch_cmd,
+                )
+            except Exception:
+                pass
+            if (time.monotonic() - start_ts) * 1000.0 < controller_ms:
+                QtCore.QTimer.singleShot(interval_ms, _tick_taskbar)
+
+        QtCore.QTimer.singleShot(0, _tick_taskbar)
 
     ready_signal = os.environ.get("BOT_STARTER_READY_FILE")
     if ready_signal:
