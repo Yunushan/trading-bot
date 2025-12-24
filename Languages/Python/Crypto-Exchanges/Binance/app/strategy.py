@@ -6491,73 +6491,81 @@ class StrategyEngine:
                                 })
                         except Exception:
                             pass
-                            if order_res.get('ok'):
-                                if current_bar_marker is not None:
-                                    tracker = self._bar_order_tracker.setdefault(
+
+                        try:
+                            order_ok = bool(order_res.get('ok', True))
+                        except Exception:
+                            order_ok = True
+
+                        if order_ok:
+                            if current_bar_marker is not None:
+                                tracker = self._bar_order_tracker.setdefault(
+                                    bar_sig_key,
+                                    {"bar": current_bar_marker, "signatures": set()},
+                                )
+                                if tracker.get("bar") != current_bar_marker:
+                                    tracker["bar"] = current_bar_marker
+                                    tracker["signatures"] = set()
+                                tracker.setdefault("signatures", set()).add(sig_sorted)
+                                with StrategyEngine._BAR_GUARD_LOCK:
+                                    global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.setdefault(
                                         bar_sig_key,
                                         {"bar": current_bar_marker, "signatures": set()},
                                     )
-                                    if tracker.get("bar") != current_bar_marker:
-                                        tracker["bar"] = current_bar_marker
-                                        tracker["signatures"] = set()
-                                    tracker.setdefault("signatures", set()).add(sig_sorted)
-                                    with StrategyEngine._BAR_GUARD_LOCK:
-                                        global_tracker = StrategyEngine._BAR_GLOBAL_SIGNATURES.setdefault(
-                                            bar_sig_key,
-                                            {"bar": current_bar_marker, "signatures": set()},
-                                        )
-                                        if global_tracker.get("bar") != current_bar_marker:
-                                            global_tracker["bar"] = current_bar_marker
-                                            global_tracker["signatures"] = set()
-                                        global_tracker.setdefault("signatures", set()).add(sig_sorted)
-                                success_ts = time.time()
-                                if guard_claimed:
-                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
-                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol, {})
-                                        if isinstance(entry_guard, dict):
-                                            signatures_state = entry_guard.get("signatures")
-                                            if not isinstance(signatures_state, dict):
-                                                signatures_state = {}
-                                            signatures_state[signature_guard_key] = success_ts
-                                            entry_guard["signatures"] = signatures_state
-                                            pending_map = entry_guard.get("pending_map")
-                                            if not isinstance(pending_map, dict):
-                                                pending_map = {}
-                                            pending_map.pop(signature_guard_key, None)
-                                            entry_guard["pending_map"] = pending_map
-                                            entry_guard["last"] = success_ts
-                                            entry_guard["window"] = guard_window
-                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
-                                else:
-                                    with StrategyEngine._SYMBOL_GUARD_LOCK:
-                                        entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
-                                        if isinstance(entry_guard, dict):
-                                            signatures_state = entry_guard.get("signatures")
-                                            if not isinstance(signatures_state, dict):
-                                                signatures_state = {}
-                                            signatures_state[signature_guard_key] = success_ts
-                                            entry_guard["signatures"] = signatures_state
-                                            pending_map = entry_guard.get("pending_map")
-                                            if not isinstance(pending_map, dict):
-                                                pending_map = {}
-                                            pending_map.pop(signature_guard_key, None)
-                                            entry_guard["pending_map"] = pending_map
-                                            entry_guard["last"] = success_ts
-                                            entry_guard["window"] = guard_window
-                                            StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
-                            else:
-                                failure_ts = time.time()
+                                    if global_tracker.get("bar") != current_bar_marker:
+                                        global_tracker["bar"] = current_bar_marker
+                                        global_tracker["signatures"] = set()
+                                    global_tracker.setdefault("signatures", set()).add(sig_sorted)
+                            success_ts = time.time()
+                            if guard_claimed:
                                 with StrategyEngine._SYMBOL_GUARD_LOCK:
-                                    entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                                    entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol, {})
                                     if isinstance(entry_guard, dict):
+                                        signatures_state = entry_guard.get("signatures")
+                                        if not isinstance(signatures_state, dict):
+                                            signatures_state = {}
+                                        signatures_state[signature_guard_key] = success_ts
+                                        entry_guard["signatures"] = signatures_state
                                         pending_map = entry_guard.get("pending_map")
                                         if not isinstance(pending_map, dict):
                                             pending_map = {}
                                         pending_map.pop(signature_guard_key, None)
                                         entry_guard["pending_map"] = pending_map
-                                        entry_guard["last"] = max(float(entry_guard.get("last") or 0.0), failure_ts)
+                                        entry_guard["last"] = success_ts
+                                        entry_guard["window"] = guard_window
                                         StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
-                                key = (cw['symbol'], cw.get('interval'), side)
+                            else:
+                                with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                    entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                                    if isinstance(entry_guard, dict):
+                                        signatures_state = entry_guard.get("signatures")
+                                        if not isinstance(signatures_state, dict):
+                                            signatures_state = {}
+                                        signatures_state[signature_guard_key] = success_ts
+                                        entry_guard["signatures"] = signatures_state
+                                        pending_map = entry_guard.get("pending_map")
+                                        if not isinstance(pending_map, dict):
+                                            pending_map = {}
+                                        pending_map.pop(signature_guard_key, None)
+                                        entry_guard["pending_map"] = pending_map
+                                        entry_guard["last"] = success_ts
+                                        entry_guard["window"] = guard_window
+                                        StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
+                        else:
+                            failure_ts = time.time()
+                            with StrategyEngine._SYMBOL_GUARD_LOCK:
+                                entry_guard = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
+                                if isinstance(entry_guard, dict):
+                                    pending_map = entry_guard.get("pending_map")
+                                    if not isinstance(pending_map, dict):
+                                        pending_map = {}
+                                    pending_map.pop(signature_guard_key, None)
+                                    entry_guard["pending_map"] = pending_map
+                                    entry_guard["last"] = max(float(entry_guard.get("last") or 0.0), failure_ts)
+                                    StrategyEngine._SYMBOL_ORDER_STATE[guard_key_symbol] = entry_guard
+
+                        key = (cw['symbol'], cw.get('interval'), side)
+                        if order_ok:
                             qty = float(order_res.get('info',{}).get('origQty') or order_res.get('computed',{}).get('qty') or 0)
                             exec_qty = self._order_field(order_res, 'executedQty', 'cumQty', 'cumQuantity')
                             if exec_qty is not None:
@@ -6665,7 +6673,7 @@ class StrategyEngine:
                                     )
                                     self.log(
                                         f"{cw['symbol']}@{cw['interval']} OPEN {side}: qty={qty_logged:.6f}, "
-                                        f"size≈{size_logged:.2f} USDT, margin≈{margin_logged:.2f} USDT "
+                                        f"size?{size_logged:.2f} USDT, margin?{margin_logged:.2f} USDT "
                                         f"(context={indicator_label})."
                                     )
                                 except Exception:

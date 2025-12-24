@@ -228,6 +228,7 @@ CONNECTOR_OPTIONS = [
     ("Binance SDK Derivatives Trading COIN-M Futures", "binance-sdk-derivatives-trading-coin-futures"),
     ("Binance SDK Spot (Official Recommended)", "binance-sdk-spot"),
     ("Binance Connector Python", "binance-connector"),
+    ("CCXT (Unified)", "ccxt"),
     ("python-binance (Community)", "python-binance"),
 ]
 DEFAULT_CONNECTOR_BACKEND = CONNECTOR_OPTIONS[0][1]
@@ -236,12 +237,14 @@ FUTURES_CONNECTOR_KEYS = {
     "binance-sdk-derivatives-trading-usds-futures",
     "binance-sdk-derivatives-trading-coin-futures",
     "binance-connector",
+    "ccxt",
     "python-binance",
 }
 
 SPOT_CONNECTOR_KEYS = {
     "binance-sdk-spot",
     "binance-connector",
+    "ccxt",
     "python-binance",
 }
 
@@ -267,6 +270,8 @@ def _normalize_connector_backend(value) -> str:
         return "binance-sdk-derivatives-trading-coin-futures"
     if text in {"binance-sdk-spot", "binance_sdk_spot"} or ("sdk" in text and "spot" in text):
         return "binance-sdk-spot"
+    if text == "ccxt" or "ccxt" in text:
+        return "ccxt"
     if "connector" in text or "official" in text or text == "binance-connector":
         return "binance-connector"
     if "python" in text and "binance" in text:
@@ -424,6 +429,7 @@ _REQUIREMENTS_PATHS = [
 _DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "python-binance", "package": "python-binance"},
     {"label": "binance-connector", "package": "binance-connector"},
+    {"label": "ccxt", "package": "ccxt"},
     {"label": "PyQt6", "package": "PyQt6"},
     {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6"},
     {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},

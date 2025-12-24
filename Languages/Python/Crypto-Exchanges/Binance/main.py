@@ -19,11 +19,72 @@ def _env_flag(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _suppress_subprocess_console_windows() -> None:
+    """Hide transient console windows from subprocess calls on Windows."""
+    if sys.platform != "win32" or _env_flag("BOT_ALLOW_SUBPROCESS_CONSOLE"):
+        return
+    try:
+        import subprocess
+    except Exception:
+        return
+    if getattr(subprocess, "_bot_no_console_patch", False):
+        return
+    try:
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        startf_use_show = getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+        sw_hide = 0
+        original_popen = subprocess.Popen
+        original_run = subprocess.run
+
+        if isinstance(original_popen, type):
+            class _NoConsolePopen(original_popen):  # type: ignore[misc, valid-type]
+                def __init__(self, *args, **kwargs):
+                    if "creationflags" not in kwargs:
+                        kwargs["creationflags"] = create_no_window
+                    if "startupinfo" not in kwargs:
+                        si = subprocess.STARTUPINFO()
+                        si.dwFlags |= startf_use_show
+                        si.wShowWindow = sw_hide
+                        kwargs["startupinfo"] = si
+                    super().__init__(*args, **kwargs)
+
+            subprocess.Popen = _NoConsolePopen  # type: ignore[assignment]
+        else:
+            def _patched_popen(*args, **kwargs):
+                if "creationflags" not in kwargs:
+                    kwargs["creationflags"] = create_no_window
+                if "startupinfo" not in kwargs:
+                    si = subprocess.STARTUPINFO()
+                    si.dwFlags |= startf_use_show
+                    si.wShowWindow = sw_hide
+                    kwargs["startupinfo"] = si
+                return original_popen(*args, **kwargs)
+
+            subprocess.Popen = _patched_popen  # type: ignore[assignment]
+
+        def _patched_run(*args, **kwargs):
+            if "creationflags" not in kwargs:
+                kwargs["creationflags"] = create_no_window
+            if "startupinfo" not in kwargs:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= startf_use_show
+                si.wShowWindow = sw_hide
+                kwargs["startupinfo"] = si
+            return original_run(*args, **kwargs)
+
+        subprocess.run = _patched_run  # type: ignore[assignment]
+        subprocess._bot_no_console_patch = True  # type: ignore[attr-defined]
+    except Exception:
+        return
+
+
 # Windows: optionally force software rendering (can reduce GPU probe/helper windows, but may be slower).
 if sys.platform == "win32" and _env_flag("BOT_FORCE_SOFTWARE_OPENGL"):
     os.environ.setdefault("QT_OPENGL", "software")
     os.environ.setdefault("QSG_RHI_BACKEND", "software")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
+
+_suppress_subprocess_console_windows()
 
 
 # --- Windows startup transient window suppression --------------------------------
@@ -821,6 +882,47 @@ def main() -> int:
     win.showMaximized()
     try:
         win.winId()
+    except Exception:
+        pass
+    class _StartupInputUnblocker(QtCore.QObject):
+        def __init__(self, app_instance: QApplication):
+            super().__init__(app_instance)
+            self._app = app_instance
+            self._armed = True
+
+        def eventFilter(self, obj, event):  # noqa: N802
+            if not self._armed:
+                return False
+            try:
+                ev_type = event.type()
+            except Exception:
+                return False
+            if ev_type in {
+                QtCore.QEvent.Type.MouseButtonPress,
+                QtCore.QEvent.Type.MouseButtonRelease,
+                QtCore.QEvent.Type.MouseButtonDblClick,
+                QtCore.QEvent.Type.KeyPress,
+                QtCore.QEvent.Type.Wheel,
+                QtCore.QEvent.Type.TouchBegin,
+            }:
+                self._armed = False
+                try:
+                    _uninstall_startup_window_suppression()
+                except Exception:
+                    pass
+                try:
+                    _uninstall_cbt_startup_window_suppression()
+                except Exception:
+                    pass
+                try:
+                    self._app.removeEventFilter(self)
+                except Exception:
+                    pass
+            return False
+
+    try:
+        app._startup_input_unblocker = _StartupInputUnblocker(app)
+        app.installEventFilter(app._startup_input_unblocker)
     except Exception:
         pass
     if not icon.isNull():

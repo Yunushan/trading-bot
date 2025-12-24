@@ -148,6 +148,7 @@ _WEBENGINE = f"PyQt6-WebEngine={_WEBENGINE_VER}" if _WEBENGINE_VER else "PyQt6-W
 
 _PYBINANCE_VER = _resolve_module_version("python-binance", "python_binance", "binance")
 _BINANCE_CONNECTOR_VER = _resolve_module_version("binance-connector", "binance_connector")
+_CCXT_VER = _resolve_module_version("ccxt")
 _SDK_USDS_VER = _resolve_module_version("binance-sdk-derivatives-trading-usds-futures", "binance_sdk_derivatives_trading_usds_futures")
 _SDK_COIN_VER = _resolve_module_version("binance-sdk-derivatives-trading-coin-futures", "binance_sdk_derivatives_trading_coin_futures")
 _SDK_SPOT_VER = _resolve_module_version("binance-sdk-spot", "binance_sdk_spot")
@@ -156,7 +157,7 @@ _REQUESTS_VER = _resolve_module_version("requests")
 
 print(
     f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}, {_WEBENGINE}, "
-    f"python-binance={_PYBINANCE_VER}, binance-connector={_BINANCE_CONNECTOR_VER}, "
+    f"python-binance={_PYBINANCE_VER}, binance-connector={_BINANCE_CONNECTOR_VER}, ccxt={_CCXT_VER}, "
     f"binance-sdk-derivatives-trading-usds-futures={_SDK_USDS_VER}, "
     f"binance-sdk-derivatives-trading-coin-futures={_SDK_COIN_VER}, "
     f"binance-sdk-spot={_SDK_SPOT_VER}, "

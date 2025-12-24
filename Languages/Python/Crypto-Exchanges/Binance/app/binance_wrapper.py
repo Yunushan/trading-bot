@@ -16,6 +16,16 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 from typing import Any
 import requests
 
+_ccxt = None
+
+
+def _load_ccxt():
+    global _ccxt
+    if _ccxt is None:
+        import ccxt as _ccxt_mod
+        _ccxt = _ccxt_mod
+    return _ccxt
+
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -417,8 +427,10 @@ def _is_binance_error_payload(obj: Any) -> bool:
     if msg is None:
         return False
     try:
-        int(obj.get("code"))
+        code = int(obj.get("code"))
     except Exception:
+        return False
+    if code == 0:
         return False
     return True
 
@@ -520,6 +532,8 @@ def _normalize_connector_choice(value) -> str:
         return "binance-sdk-derivatives-trading-coin-futures"
     if text in {"binance-sdk-spot", "binance_sdk_spot"} or ("sdk" in text and "spot" in text):
         return "binance-sdk-spot"
+    if text == "ccxt" or "ccxt" in text:
+        return "ccxt"
     if "connector" in text or "official" in text or text == "binance-connector":
         return "binance-connector"
     if "python" in text and "binance" in text:
@@ -665,6 +679,225 @@ else:
     class OfficialConnectorAdapter:
         def __init__(self, *_, **__):
             raise RuntimeError("binance-connector library is not available")
+
+
+class CcxtConnectorError(Exception):
+    def __init__(self, code=None, status_code=None, message="", response=None):
+        self.code = code if code is not None else 0
+        self.status_code = status_code if status_code is not None else 0
+        self.message = message or ""
+        self.response = response
+        super().__init__(self.message)
+
+
+def _wrap_ccxt_exception(exc: Exception) -> CcxtConnectorError:
+    message = str(exc)
+    code = getattr(exc, "code", None)
+    status = getattr(exc, "status", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    if code is None and message:
+        match = re.search(r'"code"\s*:\s*(-?\d+)', message)
+        if match is None:
+            match = re.search(r"code\s*=\s*(-?\d+)", message)
+        if match is not None:
+            try:
+                code = int(match.group(1))
+            except Exception:
+                code = None
+    if status is None and message:
+        match = re.search(r"\b(4\d\d|5\d\d)\b", message)
+        if match is not None:
+            try:
+                status = int(match.group(1))
+            except Exception:
+                status = None
+    response = getattr(exc, "response", None)
+    return CcxtConnectorError(code=code, status_code=status, message=message, response=response)
+
+
+def _ccxt_method_name(prefix: str, http_method: str, path: str) -> str:
+    method = (http_method or "").strip().lower()
+    parts = [part for part in re.split(r"[\\/_-]", str(path or "")) if part]
+    cap = "".join(part[:1].upper() + part[1:] for part in parts)
+    return f"{prefix}{method.title()}{cap}"
+
+
+class CcxtBinanceAdapter:
+    def __init__(self, api_key, api_secret, *, mode="Live", account_type="Spot"):
+        try:
+            ccxt = _load_ccxt()
+        except Exception as exc:
+            raise RuntimeError("ccxt library is not available") from exc
+        self.API_KEY = api_key or ""
+        self.API_SECRET = api_secret or ""
+        self.mode = mode
+        self.account_type = str(account_type or "Spot").strip().upper()
+        self._bw_throttled = True
+        self._bw_throttle = None
+        self._exchange = ccxt.binance(
+            {
+                "apiKey": self.API_KEY,
+                "secret": self.API_SECRET,
+                "enableRateLimit": True,
+            }
+        )
+        try:
+            default_type = "future" if self.account_type.startswith("FUT") else "spot"
+            self._exchange.options["defaultType"] = default_type
+        except Exception:
+            pass
+        if _is_testnet_mode(self.mode):
+            try:
+                self._exchange.set_sandbox_mode(True)
+            except Exception:
+                pass
+            self._apply_testnet_urls()
+
+    def _apply_testnet_urls(self) -> None:
+        try:
+            urls = getattr(self._exchange, "urls", None)
+            if not isinstance(urls, dict):
+                return
+            api = urls.get("api")
+            if not isinstance(api, dict):
+                return
+            spot_base = "https://testnet.binance.vision"
+            futures_base = "https://testnet.binancefuture.com"
+
+            def _swap(key: str, value: str) -> None:
+                if key in api and isinstance(api.get(key), str):
+                    api[key] = value
+
+            _swap("public", f"{spot_base}/api/v3")
+            _swap("private", f"{spot_base}/api/v3")
+            _swap("fapiPublic", f"{futures_base}/fapi/v1")
+            _swap("fapiPrivate", f"{futures_base}/fapi/v1")
+            _swap("dapiPublic", f"{futures_base}/dapi/v1")
+            _swap("dapiPrivate", f"{futures_base}/dapi/v1")
+        except Exception:
+            pass
+
+    def _throttle(self, path: str | None) -> None:
+        cb = getattr(self, "_bw_throttle", None)
+        if callable(cb):
+            try:
+                cb(path)
+            except Exception:
+                pass
+
+    def _call(self, func, *args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            raise _wrap_ccxt_exception(exc) from exc
+
+    def _call_ccxt_method(self, method_name: str, params: dict | None = None, *, path: str | None = None):
+        self._throttle(path or method_name)
+        func = getattr(self._exchange, method_name, None)
+        if func is None:
+            raise RuntimeError(f"ccxt method missing: {method_name}")
+        clean_params = {key: val for key, val in (params or {}).items() if val is not None}
+        if clean_params:
+            return self._call(func, clean_params)
+        return self._call(func)
+
+    def _call_ccxt_request(self, api_prefix: str, http_method: str, path: str, params: dict | None = None):
+        method_name = _ccxt_method_name(api_prefix, http_method, path)
+        func = getattr(self._exchange, method_name, None)
+        if func is not None:
+            return self._call_ccxt_method(method_name, params, path=path)
+        return self._call(
+            self._exchange.request,
+            path,
+            api=api_prefix,
+            method=http_method.upper(),
+            params=params or {},
+        )
+
+    # Spot methods
+    def get_account(self, **params):
+        return self._call_ccxt_method("privateGetAccount", params, path="/api/v3/account")
+
+    def get_symbol_info(self, symbol: str):
+        payload = {"symbol": symbol}
+        data = self._call_ccxt_method("publicGetExchangeInfo", payload, path="/api/v3/exchangeInfo")
+        symbols = (data or {}).get("symbols") if isinstance(data, dict) else None
+        if symbols:
+            return symbols[0]
+        return None
+
+    def get_exchange_info(self, **params):
+        return self._call_ccxt_method("publicGetExchangeInfo", params, path="/api/v3/exchangeInfo")
+
+    def get_symbol_ticker(self, **params):
+        return self._call_ccxt_method("publicGetTickerPrice", params, path="/api/v3/ticker/price")
+
+    def get_klines(self, **params):
+        return self._call_ccxt_method("publicGetKlines", params, path="/api/v3/klines")
+
+    def create_order(self, **params):
+        return self._call_ccxt_method("privatePostOrder", params, path="/api/v3/order")
+
+    def get_my_trades(self, **params):
+        return self._call_ccxt_method("privateGetMyTrades", params, path="/api/v3/myTrades")
+
+    # Futures methods
+    def futures_klines(self, **params):
+        return self._call_ccxt_method("fapiPublicGetKlines", params, path="/fapi/v1/klines")
+
+    def futures_exchange_info(self, **params):
+        return self._call_ccxt_method("fapiPublicGetExchangeInfo", params, path="/fapi/v1/exchangeInfo")
+
+    def futures_leverage_bracket(self, **params):
+        return self._call_ccxt_method("fapiPrivateGetLeverageBracket", params, path="/fapi/v1/leverageBracket")
+
+    def futures_account(self, **params):
+        return self._call_ccxt_method("fapiPrivateGetAccount", params, path="/fapi/v2/account")
+
+    def futures_account_balance(self, **params):
+        return self._call_ccxt_method("fapiPrivateGetBalance", params, path="/fapi/v2/balance")
+
+    def futures_position_information(self, **params):
+        return self._call_ccxt_method("fapiPrivateGetPositionRisk", params, path="/fapi/v2/positionRisk")
+
+    def futures_position_risk(self, **params):
+        return self.futures_position_information(**params)
+
+    def futures_create_order(self, **params):
+        return self._call_ccxt_method("fapiPrivatePostOrder", params, path="/fapi/v1/order")
+
+    def futures_symbol_ticker(self, **params):
+        return self._call_ccxt_method("fapiPublicGetTickerPrice", params, path="/fapi/v1/ticker/price")
+
+    def futures_get_position_mode(self, **params):
+        return self._call_ccxt_method("fapiPrivateGetPositionSideDual", params, path="/fapi/v1/positionSide/dual")
+
+    def futures_change_position_mode(self, **params):
+        return self._call_ccxt_method("fapiPrivatePostPositionSideDual", params, path="/fapi/v1/positionSide/dual")
+
+    def futures_cancel_all_open_orders(self, **params):
+        return self._call_ccxt_method("fapiPrivateDeleteAllOpenOrders", params, path="/fapi/v1/allOpenOrders")
+
+    def futures_get_open_orders(self, **params):
+        return self._call_ccxt_method("fapiPrivateGetOpenOrders", params, path="/fapi/v1/openOrders")
+
+    def futures_change_margin_type(self, **params):
+        return self._call_ccxt_method("fapiPrivatePostMarginType", params, path="/fapi/v1/marginType")
+
+    def futures_change_leverage(self, **params):
+        return self._call_ccxt_method("fapiPrivatePostLeverage", params, path="/fapi/v1/leverage")
+
+    def futures_book_ticker(self, **params):
+        return self._call_ccxt_method("fapiPublicGetTickerBookTicker", params, path="/fapi/v1/ticker/bookTicker")
+
+    def futures_account_trades(self, **params):
+        return self._call_ccxt_method("fapiPrivateGetUserTrades", params, path="/fapi/v1/userTrades")
+
+    def _request_futures_api(self, method, path, signed=False, version=1, **kwargs):
+        payload = dict(kwargs.get("data") or kwargs.get("params") or {})
+        api_prefix = "fapiPrivate" if signed else "fapiPublic"
+        return self._call_ccxt_request(api_prefix, method, path, payload)
 
 
 class _SDKBaseClient:
@@ -1275,22 +1508,129 @@ class BinanceWrapper:
 
     def _futures_create_order_with_fallback(self, params: dict):
         """
-        Try primary client futures_create_order; on error in testnet + SDK mode, retry with
-        python-binance fallback. Raises if both fail.
+        Try primary client futures_create_order; on error in testnet, retry with python-binance
+        and raw REST fallbacks. Raises if all attempts fail.
         """
         order_via = "primary"
+        def _order_has_id(order_obj: dict) -> bool:
+            return any(
+                order_obj.get(key)
+                for key in ("orderId", "order_id", "id", "clientOrderId", "client_order_id", "clientOrderID")
+            )
+
+        def _raise_if_error_payload(order_obj, *, allow_last_error: bool = False):
+            def _raise_from_last_error(default_msg: str) -> None:
+                if allow_last_error:
+                    try:
+                        err = getattr(self, "_last_futures_http_error", None)
+                    except Exception:
+                        err = None
+                    if isinstance(err, dict):
+                        err_msg = str(err.get("message") or "").strip()
+                        err_code = err.get("code")
+                        if err_msg:
+                            if err_code is None:
+                                raise RuntimeError(f"order rejected: {err_msg}")
+                            raise RuntimeError(f"order rejected (code={err_code}): {err_msg}")
+                raise RuntimeError(default_msg)
+
+            if order_obj is None:
+                _raise_from_last_error("order rejected: empty response")
+            if isinstance(order_obj, (list, tuple)):
+                if not order_obj:
+                    _raise_from_last_error("order rejected: empty response")
+                return
+            if not isinstance(order_obj, dict):
+                return
+            err_obj = order_obj.get("error")
+            if isinstance(err_obj, dict) and _is_binance_error_payload(err_obj):
+                code = err_obj.get("code")
+                msg = err_obj.get("msg") or err_obj.get("message") or "order rejected"
+                raise RuntimeError(f"order rejected (code={code}): {msg}")
+            if _is_binance_error_payload(order_obj):
+                code = order_obj.get("code")
+                msg = order_obj.get("msg") or order_obj.get("message") or "order rejected"
+                raise RuntimeError(f"order rejected (code={code}): {msg}")
+            success_val = order_obj.get("success")
+            if isinstance(success_val, str):
+                success_val = success_val.strip().lower() in ("true", "1", "yes")
+            if success_val is False:
+                msg = order_obj.get("msg") or order_obj.get("message") or "order rejected"
+                raise RuntimeError(f"order rejected: {msg}")
+            status = str(order_obj.get("status") or "").upper()
+            if status in {"REJECTED", "EXPIRED", "CANCELED"}:
+                msg = order_obj.get("msg") or order_obj.get("message") or status.lower()
+                raise RuntimeError(f"order rejected (status={status}): {msg}")
+            data_obj = order_obj.get("data")
+            if isinstance(data_obj, dict):
+                if _is_binance_error_payload(data_obj):
+                    code = data_obj.get("code")
+                    msg = data_obj.get("msg") or data_obj.get("message") or "order rejected"
+                    raise RuntimeError(f"order rejected (code={code}): {msg}")
+                if _order_has_id(data_obj) or data_obj.get("status"):
+                    order_obj.clear()
+                    order_obj.update(data_obj)
+            if not _order_has_id(order_obj) and not order_obj.get("status"):
+                _raise_from_last_error("order rejected: empty response")
         try:
-            return self.client.futures_create_order(**params), order_via
+            order = self.client.futures_create_order(**params)
+            _raise_if_error_payload(order)
+            return order, order_via
         except Exception as primary_err:
             fb_client = self._testnet_order_fallback_client()
-            if fb_client is None:
-                raise
-            try:
-                order = fb_client.futures_create_order(**params)
-                order_via = "fallback-pybinance"
-                return order, order_via
-            except Exception as fb_err:
-                raise RuntimeError(f"{primary_err}; fallback failed: {fb_err}") from fb_err
+            fb_err = None
+            if fb_client is not None:
+                try:
+                    order = fb_client.futures_create_order(**params)
+                    _raise_if_error_payload(order)
+                    order_via = "fallback-pybinance"
+                    return order, order_via
+                except Exception as exc:
+                    fb_err = exc
+
+            rest_err = None
+            if _is_testnet_mode(self.mode):
+                try:
+                    self._clear_futures_http_error()
+                    order = self._http_signed_futures_request(
+                        "POST",
+                        "/v1/order",
+                        params,
+                        prefix=self._futures_api_prefix(),
+                    )
+                    _raise_if_error_payload(order, allow_last_error=True)
+                    order_via = "fallback-rest"
+                    return order, order_via
+                except Exception as exc:
+                    rest_err = exc
+                    try:
+                        last_err = getattr(self, "_last_futures_http_error", None)
+                        err_code = last_err.get("code") if isinstance(last_err, dict) else None
+                    except Exception:
+                        err_code = None
+                    alt_prefix = self._alternate_futures_prefix() if err_code in (-2014, -2015) else None
+                    if alt_prefix:
+                        try:
+                            self._clear_futures_http_error()
+                            order = self._http_signed_futures_request(
+                                "POST",
+                                "/v1/order",
+                                params,
+                                prefix=alt_prefix,
+                            )
+                            _raise_if_error_payload(order, allow_last_error=True)
+                            self._futures_api_prefix_override = alt_prefix
+                            order_via = "fallback-rest-alt"
+                            return order, order_via
+                        except Exception as alt_exc:
+                            rest_err = alt_exc
+
+            msg = str(primary_err)
+            if fb_err is not None:
+                msg += f"; fallback failed: {fb_err}"
+            if rest_err is not None:
+                msg += f"; rest fallback failed: {rest_err}"
+            raise RuntimeError(msg) from (rest_err or fb_err or primary_err)
 
     def _get_cached_futures_positions(self, max_age: float) -> list | None:
         if max_age is None or max_age <= 0:
@@ -1322,6 +1662,64 @@ class BinanceWrapper:
             self._futures_account_balance_cache = None
             self._futures_account_balance_cache_ts = 0.0
 
+    def _fallback_futures_account(self) -> dict:
+        try:
+            if hasattr(self.client, "futures_account"):
+                return self._futures_call("futures_account", allow_recv=True) or {}
+        except Exception as exc:
+            self._record_futures_http_error("/v2/account", message=str(exc))
+        return {}
+
+    def _fallback_futures_balance(self) -> list:
+        try:
+            if hasattr(self.client, "futures_account_balance"):
+                data = self._futures_call("futures_account_balance", allow_recv=True) or []
+                return list(_as_futures_balance_entries(data))
+        except Exception as exc:
+            self._record_futures_http_error("/v2/balance", message=str(exc))
+        return []
+
+    def _try_alt_futures_prefix_on_auth_error(self, path: str, *, list_mode: bool = False):
+        if not _is_testnet_mode(self.mode):
+            return None
+        err = getattr(self, "_last_futures_http_error", None)
+        if not isinstance(err, dict):
+            return None
+        if str(err.get("path") or "") != str(path):
+            return None
+        code = err.get("code")
+        if code not in (-2014, -2015):
+            return None
+        alt_prefix = self._alternate_futures_prefix()
+        if not alt_prefix:
+            return None
+        try:
+            current_override = getattr(self, "_futures_api_prefix_override", None)
+        except Exception:
+            current_override = None
+        if current_override == alt_prefix:
+            return None
+        err_snapshot = dict(err)
+        alt_path = str(path)
+        tail = alt_path.rsplit("/", 1)[-1]
+        if tail in {"account", "balance"}:
+            if alt_prefix == "/dapi" and alt_path.startswith(("/v2/", "/v3/")):
+                alt_path = f"/v1/{tail}"
+            elif alt_prefix == "/fapi" and alt_path.startswith("/v1/"):
+                alt_path = f"/v2/{tail}"
+        if list_mode:
+            data = self._http_signed_futures_list(alt_path, prefix=alt_prefix)
+        else:
+            data = self._http_signed_futures(alt_path, prefix=alt_prefix)
+        if data:
+            self._futures_api_prefix_override = alt_prefix
+            return data
+        try:
+            self._last_futures_http_error = err_snapshot
+        except Exception:
+            pass
+        return None
+
     def _get_futures_account_cached(self, max_age: float = 2.5, *, force_refresh: bool = False) -> dict:
         now = time.time()
         if not force_refresh:
@@ -1337,12 +1735,24 @@ class BinanceWrapper:
                 acct_dict = {}
             else:
                 # Prefer lightweight REST (faster failure/less client overhead on testnet/VPN DNS issues).
-                acct = self._http_signed_futures("/v2/account")
+                api_prefix = self._futures_api_prefix()
+                acct_path = "/v1/account" if api_prefix == "/dapi" else "/v2/account"
+                acct = self._http_signed_futures(acct_path)
                 acct_dict = _as_futures_account_dict(acct)
-                # Some connectors/environments may restrict v2; fall back to v3 if needed.
                 if not acct_dict:
+                    alt = self._try_alt_futures_prefix_on_auth_error(acct_path)
+                    if alt:
+                        acct_dict = _as_futures_account_dict(alt)
+                # Some connectors/environments may restrict v2; fall back to v3 if needed.
+                if not acct_dict and api_prefix != "/dapi":
                     acct = self._http_signed_futures("/v3/account")
                     acct_dict = _as_futures_account_dict(acct)
+                    if not acct_dict:
+                        alt = self._try_alt_futures_prefix_on_auth_error("/v3/account")
+                        if alt:
+                            acct_dict = _as_futures_account_dict(alt)
+                if not acct_dict:
+                    acct_dict = _as_futures_account_dict(self._fallback_futures_account())
         except Exception:
             acct_dict = {}
         with self._futures_account_cache_lock:
@@ -1369,11 +1779,23 @@ class BinanceWrapper:
                 entries = []
             else:
                 # Prefer lightweight REST (faster failure/less client overhead on testnet/VPN DNS issues).
-                bals = self._http_signed_futures_list("/v2/balance")
+                api_prefix = self._futures_api_prefix()
+                balance_path = "/v1/balance" if api_prefix == "/dapi" else "/v2/balance"
+                bals = self._http_signed_futures_list(balance_path)
                 entries = list(_as_futures_balance_entries(bals))
                 if not entries:
+                    alt = self._try_alt_futures_prefix_on_auth_error(balance_path, list_mode=True)
+                    if alt is not None:
+                        entries = list(_as_futures_balance_entries(alt))
+                if not entries and api_prefix != "/dapi":
                     bals = self._http_signed_futures_list("/v3/balance")
                     entries = list(_as_futures_balance_entries(bals))
+                    if not entries:
+                        alt = self._try_alt_futures_prefix_on_auth_error("/v3/balance", list_mode=True)
+                        if alt is not None:
+                            entries = list(_as_futures_balance_entries(alt))
+                if not entries:
+                    entries = self._fallback_futures_balance()
         except Exception:
             entries = []
         with self._futures_account_cache_lock:
@@ -1916,15 +2338,60 @@ class BinanceWrapper:
     
     def _spot_base(self) -> str:
         # Public REST base for SPOT depending on testnet/production
-        return "https://testnet.binance.vision/api" if ("demo" in self.mode.lower() or "test" in self.mode.lower()) else "https://api.binance.com/api"
+        return "https://testnet.binance.vision/api" if _is_testnet_mode(self.mode) else "https://api.binance.com/api"
 
-    def _futures_base(self) -> str:
-        # Public REST base for FUTURES depending on testnet/production
-        return "https://testnet.binancefuture.com/fapi" if ("demo" in self.mode.lower() or "test" in self.mode.lower()) else "https://fapi.binance.com/fapi"
+    def _normalize_futures_prefix(self, prefix: str | None) -> str | None:
+        text = str(prefix or "").strip().lower()
+        if not text:
+            return None
+        if not text.startswith("/"):
+            text = f"/{text}"
+        if text in {"/fapi", "/dapi"}:
+            return text
+        return None
 
-    def _futures_base_live(self) -> str:
+    def _futures_api_prefix(self) -> str:
+        override = self._normalize_futures_prefix(getattr(self, "_futures_api_prefix_override", None))
+        if override:
+            return override
+        client = getattr(self, "client", None)
+        for attr in ("_api_prefix", "api_prefix", "API_PREFIX"):
+            try:
+                candidate = self._normalize_futures_prefix(getattr(client, attr, None))
+            except Exception:
+                candidate = None
+            if candidate:
+                return candidate
+        backend = str(getattr(self, "_connector_backend", "") or "").lower()
+        if "coin" in backend and "future" in backend:
+            return "/dapi"
+        return "/fapi"
+
+    def _alternate_futures_prefix(self, prefix: str | None = None) -> str | None:
+        current = self._normalize_futures_prefix(prefix) or self._futures_api_prefix()
+        if current == "/fapi":
+            return "/dapi"
+        if current == "/dapi":
+            return "/fapi"
+        return None
+
+    def _futures_base(self, prefix: str | None = None) -> str:
+        # Public REST base for FUTURES depending on testnet/production.
+        api_prefix = self._normalize_futures_prefix(prefix) or self._futures_api_prefix()
+        if _is_testnet_mode(self.mode):
+            host = "https://testnet.binancefuture.com"
+        else:
+            host = "https://dapi.binance.com" if api_prefix == "/dapi" else "https://fapi.binance.com"
+        base = host.rstrip("/")
+        if base.endswith(api_prefix):
+            return base
+        return f"{base}{api_prefix}"
+
+    def _futures_base_live(self, prefix: str | None = None) -> str:
         """Production futures base (always live, even when running in testnet mode)."""
-        return "https://fapi.binance.com/fapi"
+        api_prefix = self._normalize_futures_prefix(prefix) or self._futures_api_prefix()
+        host = "https://dapi.binance.com" if api_prefix == "/dapi" else "https://fapi.binance.com"
+        return f"{host}{api_prefix}"
 
     def _use_live_futures_data_for_indicators(self) -> bool:
         """
@@ -1932,8 +2399,6 @@ class BinanceWrapper:
         Enabled by default for testnet futures; can override with BINANCE_INDICATOR_LIVE_DATA.
         """
         try:
-            if not str(getattr(self, "account_type", "") or "").upper().startswith("FUT"):
-                return False
             # Default to True on testnet unless explicitly disabled.
             default_live = _is_testnet_mode(self.mode)
             return _env_flag("BINANCE_INDICATOR_LIVE_DATA", default_live)
@@ -1962,7 +2427,10 @@ class BinanceWrapper:
             sym = (symbol or "").upper()
             if not sym:
                 return False
-            return sym in self._live_futures_symbol_set()
+            live_symbols = self._live_futures_symbol_set()
+            if not live_symbols and _is_testnet_mode(self.mode):
+                return True
+            return sym in live_symbols
         except Exception:
             return False
 
@@ -2117,9 +2585,106 @@ class BinanceWrapper:
         except Exception:
             return []
 
-    def _http_signed_futures(self, path: str, params: dict | None = None, *, timeout: tuple[float, float] | None = None) -> dict:
+    def _http_signed_futures_request(
+        self,
+        method: str,
+        path: str,
+        params: dict | None = None,
+        *,
+        timeout: tuple[float, float] | None = None,
+        prefix: str | None = None,
+    ):
+        """Signed REST helper for futures (supports GET/POST/DELETE)."""
+        base = self._futures_base(prefix=prefix).rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if not self.api_key or not self.api_secret:
+            return {}
+        timeout_pair = timeout or _requests_timeout()
+        http_method = (method or "GET").strip().upper()
+        for attempt in range(2):
+            t0 = time.perf_counter()
+            try:
+                payload = dict(params or {})
+                if "timestamp" not in payload:
+                    payload["timestamp"] = self._futures_timestamp_ms()
+                if "recvWindow" not in payload:
+                    payload["recvWindow"] = int(getattr(self, "recv_window", 5000) or 5000)
+                query = urllib.parse.urlencode(payload, doseq=True)
+                sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+                full_url = f"{url}?{query}&signature={sig}"
+                resp = requests.request(
+                    http_method,
+                    full_url,
+                    headers={"X-MBX-APIKEY": self.api_key},
+                    timeout=timeout_pair,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict) and _is_binance_error_payload(data):
+                        err_code = None
+                        try:
+                            raw_code = data.get("code")
+                            if raw_code is not None:
+                                err_code = int(raw_code)
+                        except Exception:
+                            err_code = None
+                        err_msg = str(data.get("msg") or data.get("message") or data)
+                        if attempt == 0 and (err_code == -1021 or ("timestamp" in err_msg.lower())):
+                            self._sync_futures_time_offset(force=True)
+                            continue
+                        self._record_futures_http_error(path, status_code=resp.status_code, code=err_code, message=err_msg)
+                        return {}
+
+                    self._clear_futures_http_error()
+                    if _http_debug_enabled():
+                        dt = time.perf_counter() - t0
+                        if dt >= _http_slow_seconds():
+                            try:
+                                self._log(f"Futures REST {path} took {dt:.2f}s", lvl="warn")
+                            except Exception:
+                                pass
+                    return data if isinstance(data, (dict, list)) else {}
+
+                err_code = None
+                err_msg = None
+                try:
+                    err = resp.json()
+                    if isinstance(err, dict):
+                        raw_code = err.get("code")
+                        if raw_code is not None:
+                            try:
+                                err_code = int(raw_code)
+                            except Exception:
+                                err_code = None
+                        err_msg = str(err.get("msg") or err)
+                    else:
+                        err_msg = str(err)
+                except Exception:
+                    err_msg = (resp.text or "").strip() or f"http_status:{resp.status_code}"
+
+                if attempt == 0 and (err_code == -1021 or ("timestamp" in (err_msg or "").lower())):
+                    self._sync_futures_time_offset(force=True)
+                    continue
+
+                self._record_futures_http_error(path, status_code=resp.status_code, code=err_code, message=err_msg)
+                return {}
+            except requests.exceptions.RequestException as exc:
+                self._record_futures_http_error(path, message=str(exc))
+                return {}
+            except Exception as exc:
+                self._record_futures_http_error(path, message=str(exc))
+                return {}
+
+    def _http_signed_futures(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        timeout: tuple[float, float] | None = None,
+        prefix: str | None = None,
+    ) -> dict:
         """Lightweight signed REST helper for futures (works on testnet and prod)."""
-        base = self._futures_base().rstrip("/")
+        base = self._futures_base(prefix=prefix).rstrip("/")
         url = f"{base}/{path.lstrip('/')}"
         if not self.api_key or not self.api_secret:
             return {}
@@ -2197,9 +2762,14 @@ class BinanceWrapper:
                 return {}
 
     def _http_signed_futures_list(
-        self, path: str, params: dict | None = None, *, timeout: tuple[float, float] | None = None
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        timeout: tuple[float, float] | None = None,
+        prefix: str | None = None,
     ) -> list:
-        base = self._futures_base().rstrip("/")
+        base = self._futures_base(prefix=prefix).rstrip("/")
         url = f"{base}/{path.lstrip('/')}"
         if not self.api_key or not self.api_secret:
             return []
@@ -2280,6 +2850,17 @@ class BinanceWrapper:
                 return OfficialConnectorAdapter(self.api_key, self.api_secret, mode=self.mode)
             except Exception as exc:
                 self._log(f"Official connector unavailable ({exc}); falling back to python-binance.", lvl="warn")
+                self._connector_backend = "python-binance"
+        if backend == "ccxt":
+            try:
+                return CcxtBinanceAdapter(
+                    self.api_key,
+                    self.api_secret,
+                    mode=self.mode,
+                    account_type=self.account_type,
+                )
+            except Exception as exc:
+                self._log(f"ccxt connector unavailable ({exc}); falling back to python-binance.", lvl="warn")
                 self._connector_backend = "python-binance"
         if backend == "binance-sdk-derivatives-trading-usds-futures":
             try:
@@ -2441,6 +3022,7 @@ class BinanceWrapper:
         self._fallback_py_client = None  # testnet-only python-binance order fallback
         self._testnet_key_scope: str | None = None
         self._testnet_key_scope_ts = 0.0
+        self._futures_api_prefix_override: str | None = None
         getcontext().prec = 28
 
     def _record_futures_http_error(
@@ -2729,7 +3311,8 @@ class BinanceWrapper:
     # ---- internal helper for futures methods with recvWindow compatibility
     def _futures_call(self, method_name: str, allow_recv=True, **kwargs):
         try:
-            self._throttle_request(f"/fapi/{method_name}")
+            api_prefix = self._futures_api_prefix()
+            self._throttle_request(f"{api_prefix}/{method_name}")
         except Exception:
             pass
         method = getattr(self.client, method_name)
@@ -3940,7 +4523,7 @@ class BinanceWrapper:
                 elif raw is None and source not in ("bybit", "tradingview", "trading view"):
                     raise AttributeError("Connector does not provide a klines method")
                 break
-            except (BinanceAPIException, OfficialConnectorError) as exc:
+            except (BinanceAPIException, OfficialConnectorError, CcxtConnectorError) as exc:
                 ban_until = self._handle_potential_ban(exc)
                 if cached_df is not None and ban_until:
                     if (time.time() - getattr(self, "_last_ban_log", 0.0)) > 15.0:
@@ -4095,7 +4678,7 @@ class BinanceWrapper:
                             raise AttributeError("Connector does not provide a klines method")
                         raw = method(**params)
                     break
-                except (BinanceAPIException, OfficialConnectorError) as exc:
+                except (BinanceAPIException, OfficialConnectorError, CcxtConnectorError) as exc:
                     ban_until = self._handle_potential_ban(exc)
                     if ban_until:
                         delay = max(1.0, ban_until - time.time())
