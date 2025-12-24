@@ -3899,8 +3899,14 @@ class StrategyEngine:
             self._reconcile_liquidations(cw["symbol"])
         except Exception:
             pass
+        if self.stopped():
+            return
         df = self.binance.get_klines(cw['symbol'], cw['interval'], limit=cw.get('lookback', 200))
+        if self.stopped():
+            return
         ind = self.compute_indicators(df)
+        if self.stopped():
+            return
         signal, trigger_desc, trigger_price, trigger_sources, trigger_actions = self.generate_signal(df, ind)
         signal_timestamp = time.time() if signal else None
         try:

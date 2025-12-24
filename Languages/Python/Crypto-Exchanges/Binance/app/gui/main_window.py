@@ -13513,9 +13513,19 @@ def _stop_strategy_sync(self, close_positions: bool = True, auth: dict | None = 
 
         if engines:
             self._is_stopping_engines = True
-            for key, eng in engines.items():
+            stop_deadline = time.time() + 2.5
+            for _, eng in engines.items():
                 try:
-                    eng.stop_blocking(timeout=2.5)
+                    if hasattr(eng, "stop"):
+                        eng.stop()
+                except Exception:
+                    pass
+            for _, eng in engines.items():
+                try:
+                    remaining = max(0.0, stop_deadline - time.time())
+                    if remaining <= 0.0:
+                        break
+                    eng.join(timeout=min(0.25, remaining))
                 except Exception:
                     continue
             still_alive: list[str] = []
@@ -13547,8 +13557,14 @@ def _stop_strategy_sync(self, close_positions: bool = True, auth: dict | None = 
                 # Always use a fresh wrapper for close-all to honor current mode (Live/Demo) and credentials.
                 if auth is None:
                     auth = _snapshot_auth_state(self)
+                fast_close = False
+                try:
+                    mode_txt = str(auth.get("mode") or "").lower()
+                    fast_close = any(tag in mode_txt for tag in ("demo", "test", "sandbox"))
+                except Exception:
+                    fast_close = False
                 self.shared_binance = _build_wrapper_from_values(self, auth)
-                close_result = self._close_all_positions_blocking(auth=auth)
+                close_result = self._close_all_positions_blocking(auth=auth, fast=fast_close)
             except Exception as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
@@ -13933,33 +13949,53 @@ def _build_wrapper_from_ui(self):
     """Always build a fresh wrapper using current UI values (mode, account, creds)."""
     return _build_wrapper_from_values(self, _snapshot_auth_state(self))
 
-def _close_all_positions_sync(self, auth: dict | None = None):
+def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = False):
     from ..close_all import close_all_futures_positions as _close_all_futures
     # Rebuild wrapper each time so close-all uses latest mode/credentials even if launch-time wrapper was different.
     if auth is None:
         auth = _snapshot_auth_state(self)
-    self.shared_binance = _build_wrapper_from_values(self, auth)
-    acct_text = str(auth.get("account_type") or "").upper() or (self.account_combo.currentText().upper() if hasattr(self, "account_combo") else "")
-    if acct_text.startswith('FUT'):
-        results = _close_all_futures(self.shared_binance) or []
-        # Verification loop: re-run close-all if any positions remain.
-        try:
-            for _ in range(3):
-                remaining = []
+    timeout_override = None
+    if fast:
+        timeout_override = {
+            "BINANCE_HTTP_CONNECT_TIMEOUT": os.environ.get("BINANCE_HTTP_CONNECT_TIMEOUT"),
+            "BINANCE_HTTP_READ_TIMEOUT": os.environ.get("BINANCE_HTTP_READ_TIMEOUT"),
+        }
+        os.environ["BINANCE_HTTP_CONNECT_TIMEOUT"] = "2"
+        os.environ["BINANCE_HTTP_READ_TIMEOUT"] = "6"
+    try:
+        self.shared_binance = _build_wrapper_from_values(self, auth)
+        acct_text = str(auth.get("account_type") or "").upper() or (self.account_combo.currentText().upper() if hasattr(self, "account_combo") else "")
+        if acct_text.startswith('FUT'):
+            results = _close_all_futures(self.shared_binance) or []
+            if not fast:
+                # Verification loop: re-run close-all if any positions remain.
                 try:
-                    remaining = self.shared_binance.list_open_futures_positions(force_refresh=True) or []
+                    for _ in range(3):
+                        remaining = []
+                        try:
+                            remaining = self.shared_binance.list_open_futures_positions(force_refresh=True) or []
+                        except Exception:
+                            remaining = []
+                        open_left = [p for p in remaining if abs(float(p.get("positionAmt") or 0.0)) > 0.0]
+                        if not open_left:
+                            break
+                        # Attempt another sweep
+                        more = _close_all_futures(self.shared_binance) or []
+                        results.extend(more)
                 except Exception:
-                    remaining = []
-                open_left = [p for p in remaining if abs(float(p.get("positionAmt") or 0.0)) > 0.0]
-                if not open_left:
-                    break
-                # Attempt another sweep
-                more = _close_all_futures(self.shared_binance) or []
-                results.extend(more)
-        except Exception:
-            pass
-        return results
-    return self.shared_binance.close_all_spot_positions()
+                    pass
+            return results
+        return self.shared_binance.close_all_spot_positions()
+    finally:
+        if timeout_override is not None:
+            for key, old_val in timeout_override.items():
+                if old_val is None:
+                    try:
+                        os.environ.pop(key, None)
+                    except Exception:
+                        pass
+                else:
+                    os.environ[key] = old_val
 
 def _handle_close_all_result(self, res):
     try:
@@ -14118,8 +14154,8 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
         pass
 
 
-def _close_all_positions_blocking(self, auth: dict | None = None):
-    return _close_all_positions_sync(self, auth=auth)
+def _close_all_positions_blocking(self, auth: dict | None = None, *, fast: bool = False):
+    return _close_all_positions_sync(self, auth=auth, fast=fast)
 
 def close_all_positions_async(self):
     """Close all open futures positions using reduce-only market orders in a worker."""
