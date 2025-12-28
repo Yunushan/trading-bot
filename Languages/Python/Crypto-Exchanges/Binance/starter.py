@@ -2462,6 +2462,11 @@ class StarterWindow(QtWidgets.QWidget):
 
             while time.monotonic() < deadline and not stop_event.is_set():
                 now = time.monotonic()
+                try:
+                    if now - started > 0.6 and _main_window_visible():
+                        break
+                except Exception:
+                    pass
                 if now >= next_process_scan:
                     next_process_scan = now + 0.25
                     try:
@@ -2817,18 +2822,9 @@ class StarterWindow(QtWidgets.QWidget):
                     self._child_ready_file = None
                     _debug_log(f"Ready signal file setup failed: {ready_exc}")
  
-            if sys.platform == "win32" and self.selected_language == "python":
-                # Suppress Qt transient helper windows during startup (avoid flash/flicker).
-                env.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
-                env.setdefault("BOT_CBT_THREAD_HOOK_SCAN_MS", "6000")
-                env.setdefault("BOT_CBT_THREAD_HOOK_SCAN_INTERVAL_MS", "30")
-                env.setdefault("BOT_CBT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "6000")
-                env.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "12000")
-                env.setdefault("BOT_STARTUP_WINDOW_POLL_MS", "2500")
-                env.setdefault("BOT_STARTUP_WINDOW_POLL_INTERVAL_MS", "30")
-                env.setdefault("BOT_STARTUP_WINDOW_POLL_FAST_MS", "800")
-                env.setdefault("BOT_STARTUP_WINDOW_POLL_FAST_INTERVAL_MS", "10")
-               
+            # Startup window suppression stays configurable in main.py. Avoid forcing CBT
+            # hooks here because they can interfere with QtWebEngine window creation.
+
             # QtWebEngine suppression
             env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
             # Inject flags to suppress QtWebEngine helper surface while keeping GPU on for TradingView

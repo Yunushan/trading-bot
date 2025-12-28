@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, importlib
+import os, importlib, sys
 from importlib import metadata as _md
 
 # Must be set BEFORE any Qt object exists. Force the value so Qt picks it up even if the
@@ -46,25 +46,66 @@ try:
                 pass
             os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
     
-    # Windows-specific QtWebEngine tuning: keep GPU acceleration for TradingView
+    # Windows-specific QtWebEngine tuning: favor software rendering for stability
     if os.name == "nt":
         flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
-        flag_parts = [part for part in flags.split() if part and part not in {
+        gpu_flag = str(os.environ.get("BOT_TRADINGVIEW_DISABLE_GPU", "")).strip().lower()
+        force_gpu = str(os.environ.get("BOT_TRADINGVIEW_FORCE_GPU", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if gpu_flag:
+            disable_gpu = gpu_flag in {"1", "true", "yes", "on"}
+        elif force_gpu:
+            disable_gpu = False
+        else:
+            disable_gpu = True
+
+        drop_flags = {
             "--single-process",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
             "--in-process-gpu",
-        }]
+        }
+        if disable_gpu:
+            drop_flags |= {
+                "--ignore-gpu-blocklist",
+                "--enable-gpu-rasterization",
+                "--enable-zero-copy",
+                "--use-gl=angle",
+                "--disable-software-rasterizer",
+            }
+        else:
+            drop_flags |= {
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+            }
+
+        flag_parts = [part for part in flags.split() if part and part not in drop_flags]
         windows_flags = [
             "--no-sandbox",
             "--disable-logging",
             "--disable-renderer-backgrounding",
             "--disable-background-timer-throttling",
-            "--ignore-gpu-blocklist",
-            "--enable-gpu-rasterization",
-            "--enable-zero-copy",
-            "--use-gl=angle",
         ]
+        if disable_gpu:
+            windows_flags += [
+                "--disable-gpu",
+                "--disable-gpu-compositing",
+                "--disable-features=Vulkan,UseSkiaRenderer",
+            ]
+            os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
+            os.environ.setdefault("QT_OPENGL", "software")
+            os.environ.setdefault("QSG_RHI_BACKEND", "software")
+            os.environ.setdefault("QT_QUICK_BACKEND", "software")
+            os.environ.setdefault("BOT_FORCE_SOFTWARE_OPENGL", "1")
+        else:
+            windows_flags += [
+                "--ignore-gpu-blocklist",
+                "--enable-gpu-rasterization",
+                "--enable-zero-copy",
+                "--use-gl=angle",
+            ]
         for flag in windows_flags:
             if flag not in flag_parts:
                 flag_parts.append(flag)

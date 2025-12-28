@@ -12,6 +12,7 @@ import traceback
 import concurrent.futures
 import importlib.metadata as importlib_metadata
 import urllib.request
+import urllib.parse
 import pandas as pd
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
@@ -63,19 +64,195 @@ from app.indicators import (
     williams_r as williams_r_indicator,
     sma as sma_indicator,
     ema as ema_indicator,
+    donchian_high as donchian_high_indicator,
+    donchian_low as donchian_low_indicator,
+    bollinger_bands as bollinger_bands_indicator,
+    parabolic_sar as psar_indicator,
+    macd as macd_indicator,
+    ultimate_oscillator as uo_indicator,
+    adx as adx_indicator,
+    dmi as dmi_indicator,
+    supertrend as supertrend_indicator,
+    stochastic as stochastic_indicator,
 )
 
 # Lazy import TradingView to avoid spawning QtWebEngine helper windows during startup.
 TradingViewWidget = None  # type: ignore[assignment]
 TRADINGVIEW_EMBED_AVAILABLE = False
 _TRADINGVIEW_IMPORT_ERROR = None
+_TRADINGVIEW_ENV_CONFIGURED = False
+_TRADINGVIEW_EXTERNAL_PREFERRED = None
+BinanceWebWidget = None  # type: ignore[assignment]
+BINANCE_WEB_AVAILABLE = False
+_BINANCE_IMPORT_ERROR = None
+LightweightChartWidget = None  # type: ignore[assignment]
+LIGHTWEIGHT_CHART_AVAILABLE = False
+_LIGHTWEIGHT_IMPORT_ERROR = None
+_WEBENGINE_DISABLED_REASON = (
+    "WebEngine charts are disabled on Windows. "
+    "Unset BOT_DISABLE_WEBENGINE_CHARTS or set it to 0 to enable."
+)
+
+
+def _configure_tradingview_webengine_env() -> None:
+    """Best-effort tweaks to stabilize QtWebEngine on Windows before importing it."""
+    global _TRADINGVIEW_ENV_CONFIGURED
+    if _TRADINGVIEW_ENV_CONFIGURED:
+        return
+    _TRADINGVIEW_ENV_CONFIGURED = True
+    if sys.platform != "win32":
+        return
+    flag = str(os.environ.get("BOT_TRADINGVIEW_DISABLE_GPU", "")).strip().lower()
+    if flag:
+        disable_gpu = flag in {"1", "true", "yes", "on"}
+    else:
+        force_gpu = str(os.environ.get("BOT_TRADINGVIEW_FORCE_GPU", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if force_gpu:
+            disable_gpu = False
+        else:
+            disable_gpu = True
+    if not disable_gpu:
+        return
+    flags = str(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") or "").strip()
+    parts = [part for part in flags.split() if part]
+    drop_flags = {
+        "--ignore-gpu-blocklist",
+        "--enable-zero-copy",
+        "--disable-software-rasterizer",
+        "--in-process-gpu",
+        "--single-process",
+    }
+    cleaned = []
+    for part in parts:
+        lower = part.lower()
+        if part in drop_flags:
+            continue
+        if lower.startswith("--use-gl=") or lower.startswith("--use-angle="):
+            continue
+        if lower.startswith("--enable-gpu"):
+            continue
+        if lower.startswith("--enable-features=") and ("vulkan" in lower or "useskiarenderer" in lower):
+            continue
+        cleaned.append(part)
+    required = [
+        "--disable-gpu",
+        "--disable-gpu-compositing",
+        "--disable-features=Vulkan,UseSkiaRenderer",
+    ]
+    use_swiftshader = str(os.environ.get("BOT_TRADINGVIEW_USE_SWIFTSHADER", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if use_swiftshader:
+        required.append("--use-gl=swiftshader")
+    for part in required:
+        if part not in cleaned:
+            cleaned.append(part)
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(cleaned).strip()
+    os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
+    os.environ.setdefault("QT_OPENGL", "software")
+    os.environ.setdefault("QSG_RHI_BACKEND", "software")
+    os.environ.setdefault("QT_QUICK_BACKEND", "software")
+
+
+def _webengine_charts_allowed() -> bool:
+    if sys.platform != "win32":
+        return True
+    flag = str(os.environ.get("BOT_DISABLE_WEBENGINE_CHARTS", "")).strip().lower()
+    if flag:
+        return flag not in {"1", "true", "yes", "on"}
+    return True
+
+
+def _chart_safe_mode_enabled() -> bool:
+    if sys.platform != "win32":
+        return False
+    flag = str(os.environ.get("BOT_SAFE_CHART_TAB", "")).strip().lower()
+    if flag:
+        return flag in {"1", "true", "yes", "on"}
+    return False
+
+def _resolve_dist_version(*names: str) -> str | None:
+    for name in names:
+        try:
+            return importlib_metadata.version(name)
+        except Exception:
+            continue
+    return None
+
+def _tradingview_embed_health() -> tuple[bool, str]:
+    if sys.platform != "win32":
+        return True, ""
+    pyqt_ver = _resolve_dist_version("PyQt6", "pyqt6")
+    web_ver = _resolve_dist_version("PyQt6-WebEngine", "pyqt6-webengine", "PyQt6_WebEngine")
+    if pyqt_ver and web_ver:
+        pyqt_norm = pyqt_ver.split("+", 1)[0]
+        web_norm = web_ver.split("+", 1)[0]
+        if pyqt_norm != web_norm:
+            return False, f"TradingView embed disabled: PyQt6 {pyqt_ver} and PyQt6-WebEngine {web_ver} must match."
+    exec_dir = ""
+    try:
+        exec_dir = QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.LibraryExecutablesPath)
+    except Exception:
+        try:
+            exec_dir = QtCore.QLibraryInfo.location(QtCore.QLibraryInfo.LibraryLocation.LibraryExecutablesPath)
+        except Exception:
+            exec_dir = ""
+    if exec_dir:
+        exe_name = "QtWebEngineProcess.exe" if sys.platform == "win32" else "QtWebEngineProcess"
+        exe_path = Path(exec_dir) / exe_name
+        if not exe_path.is_file():
+            return False, f"TradingView embed disabled: {exe_name} not found in {exec_dir}."
+    return True, ""
+
+def _tradingview_unavailable_reason() -> str:
+    if sys.platform == "win32" and not _webengine_charts_allowed():
+        return _WEBENGINE_DISABLED_REASON
+    err = _TRADINGVIEW_IMPORT_ERROR
+    if err is not None:
+        return str(err)
+    return "TradingView embed unavailable."
+
+def _binance_unavailable_reason() -> str:
+    if sys.platform == "win32" and not _webengine_charts_allowed():
+        return _WEBENGINE_DISABLED_REASON
+    err = _BINANCE_IMPORT_ERROR
+    if err is not None:
+        return str(err)
+    return "Binance web embed unavailable."
+
+def _lightweight_unavailable_reason() -> str:
+    if sys.platform == "win32" and not _webengine_charts_allowed():
+        return _WEBENGINE_DISABLED_REASON
+    err = _LIGHTWEIGHT_IMPORT_ERROR
+    if err is not None:
+        return str(err)
+    return "Lightweight chart embed unavailable."
 
 def _load_tradingview_widget():
     """Import TradingViewWidget only when the chart tab is needed."""
+    global TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE, _TRADINGVIEW_IMPORT_ERROR
     if _DISABLE_TRADINGVIEW or _DISABLE_CHARTS:
         return None, False
-    global TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE, _TRADINGVIEW_IMPORT_ERROR
+    if sys.platform == "win32" and not _webengine_charts_allowed():
+        if _TRADINGVIEW_IMPORT_ERROR is None:
+            _TRADINGVIEW_IMPORT_ERROR = RuntimeError(_WEBENGINE_DISABLED_REASON)
+        return None, False
+    _configure_tradingview_webengine_env()
     if TradingViewWidget is not None or _TRADINGVIEW_IMPORT_ERROR is not None:
+        return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
+    ok, reason = _tradingview_embed_health()
+    if not ok:
+        _TRADINGVIEW_IMPORT_ERROR = RuntimeError(reason)
+        TradingViewWidget = None  # type: ignore[assignment]
+        TRADINGVIEW_EMBED_AVAILABLE = False
         return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
     try:
         from app.gui.tradingview_widget import TradingViewWidget as _TVW, TRADINGVIEW_EMBED_AVAILABLE as _EMBED  # type: ignore
@@ -88,6 +265,64 @@ def _load_tradingview_widget():
     TRADINGVIEW_EMBED_AVAILABLE = bool(_EMBED and _TVW is not None)
     return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
 
+def _load_binance_widget():
+    """Import BinanceWebWidget only when the chart tab is needed."""
+    global BinanceWebWidget, BINANCE_WEB_AVAILABLE, _BINANCE_IMPORT_ERROR
+    if _DISABLE_CHARTS:
+        return None, False
+    if sys.platform == "win32" and not _webengine_charts_allowed():
+        if _BINANCE_IMPORT_ERROR is None:
+            _BINANCE_IMPORT_ERROR = RuntimeError(_WEBENGINE_DISABLED_REASON)
+        return None, False
+    _configure_tradingview_webengine_env()
+    if BinanceWebWidget is not None or _BINANCE_IMPORT_ERROR is not None:
+        return BinanceWebWidget, BINANCE_WEB_AVAILABLE
+    ok, reason = _tradingview_embed_health()
+    if not ok:
+        _BINANCE_IMPORT_ERROR = RuntimeError(reason)
+        BinanceWebWidget = None  # type: ignore[assignment]
+        BINANCE_WEB_AVAILABLE = False
+        return BinanceWebWidget, BINANCE_WEB_AVAILABLE
+    try:
+        from app.gui.binance_web_widget import BinanceWebWidget as _BW  # type: ignore
+    except Exception as exc:
+        _BINANCE_IMPORT_ERROR = exc
+        BinanceWebWidget = None  # type: ignore[assignment]
+        BINANCE_WEB_AVAILABLE = False
+        return BinanceWebWidget, BINANCE_WEB_AVAILABLE
+    BinanceWebWidget = _BW  # type: ignore[assignment]
+    BINANCE_WEB_AVAILABLE = bool(_BW is not None)
+    return BinanceWebWidget, BINANCE_WEB_AVAILABLE
+
+def _load_lightweight_widget():
+    """Import LightweightChartWidget only when the chart tab is needed."""
+    global LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE, _LIGHTWEIGHT_IMPORT_ERROR
+    if _DISABLE_CHARTS:
+        return None, False
+    if sys.platform == "win32" and not _webengine_charts_allowed():
+        if _LIGHTWEIGHT_IMPORT_ERROR is None:
+            _LIGHTWEIGHT_IMPORT_ERROR = RuntimeError(_WEBENGINE_DISABLED_REASON)
+        return None, False
+    _configure_tradingview_webengine_env()
+    if LightweightChartWidget is not None or _LIGHTWEIGHT_IMPORT_ERROR is not None:
+        return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
+    ok, reason = _tradingview_embed_health()
+    if not ok:
+        _LIGHTWEIGHT_IMPORT_ERROR = RuntimeError(reason)
+        LightweightChartWidget = None  # type: ignore[assignment]
+        LIGHTWEIGHT_CHART_AVAILABLE = False
+        return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
+    try:
+        from app.gui.lightweight_widget import LightweightChartWidget as _LW  # type: ignore
+    except Exception as exc:
+        _LIGHTWEIGHT_IMPORT_ERROR = exc
+        LightweightChartWidget = None  # type: ignore[assignment]
+        LIGHTWEIGHT_CHART_AVAILABLE = False
+        return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
+    LightweightChartWidget = _LW  # type: ignore[assignment]
+    LIGHTWEIGHT_CHART_AVAILABLE = bool(_LW is not None)
+    return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
+
 def _tradingview_supported(*, probe: bool = False) -> bool:
     if _DISABLE_TRADINGVIEW or _DISABLE_CHARTS:
         return False
@@ -99,6 +334,45 @@ def _tradingview_supported(*, probe: bool = False) -> bool:
         return False
     tvw, available = _load_tradingview_widget()
     return bool(available and tvw is not None)
+
+def _binance_supported(*, probe: bool = False) -> bool:
+    if _DISABLE_CHARTS:
+        return False
+    if BinanceWebWidget is not None and BINANCE_WEB_AVAILABLE:
+        return True
+    if _BINANCE_IMPORT_ERROR is not None:
+        return False
+    if not probe:
+        return False
+    bw, available = _load_binance_widget()
+    return bool(available and bw is not None)
+
+def _lightweight_supported(*, probe: bool = False) -> bool:
+    if _DISABLE_CHARTS:
+        return False
+    if LightweightChartWidget is not None and LIGHTWEIGHT_CHART_AVAILABLE:
+        return True
+    if _LIGHTWEIGHT_IMPORT_ERROR is not None:
+        return False
+    if not probe:
+        return False
+    lw, available = _load_lightweight_widget()
+    return bool(available and lw is not None)
+
+def _tradingview_external_preferred() -> bool:
+    global _TRADINGVIEW_EXTERNAL_PREFERRED
+    if _TRADINGVIEW_EXTERNAL_PREFERRED is not None:
+        return bool(_TRADINGVIEW_EXTERNAL_PREFERRED)
+    flag = str(os.environ.get("BOT_TRADINGVIEW_EXTERNAL", "")).strip().lower()
+    if flag:
+        _TRADINGVIEW_EXTERNAL_PREFERRED = flag in {"1", "true", "yes", "on"}
+        return bool(_TRADINGVIEW_EXTERNAL_PREFERRED)
+    _TRADINGVIEW_EXTERNAL_PREFERRED = False
+    return False
+
+def _build_tradingview_url(symbol: str, interval: str) -> str:
+    params = urllib.parse.urlencode({"symbol": symbol, "interval": interval}, safe=":")
+    return f"https://www.tradingview.com/chart/?{params}"
 
 BINANCE_SUPPORTED_INTERVALS = {
     "1m", "3m", "5m", "15m", "30m",
@@ -795,11 +1069,26 @@ class SimpleCandlestickWidget(QtWidgets.QWidget):
         self._message: str | None = "Charts unavailable."
         self._message_color: str = "#f75467"
         self.setMinimumHeight(320)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self._view_start = 0
+        self._view_end = 0
+        self._min_visible = 10
+        self._manual_view = False
+        self._pan_active = False
+        self._pan_last_pos: QtCore.QPointF | None = None
+        self._fib_start: float | None = None
+        self._fib_end: float | None = None
+        self._fib_dragging = False
+        self._show_hint = True
 
     def set_message(self, message: str, color: str = "#d1d4dc") -> None:
         self._candles = []
         self._message = message
         self._message_color = color
+        self._fib_start = None
+        self._fib_end = None
+        self._reset_view()
         self.update()
 
     def set_candles(self, candles: list[dict]) -> None:
@@ -807,9 +1096,75 @@ class SimpleCandlestickWidget(QtWidgets.QWidget):
         if not self._candles:
             self._message = "No data available."
             self._message_color = "#f75467"
+            self._fib_start = None
+            self._fib_end = None
+            self._reset_view()
         else:
             self._message = None
+            if self._manual_view:
+                self._clamp_view()
+            else:
+                self._reset_view()
         self.update()
+
+    def _reset_view(self) -> None:
+        self._view_start = 0
+        self._view_end = len(self._candles)
+        self._manual_view = False
+
+    def _clamp_view(self) -> None:
+        total = len(self._candles)
+        if total <= 0:
+            self._view_start = 0
+            self._view_end = 0
+            return
+        start = int(self._view_start)
+        end = int(self._view_end) if self._view_end else total
+        start = max(0, min(start, total - 1))
+        end = max(start + 1, min(end, total))
+        self._view_start = start
+        self._view_end = end
+
+    def _get_visible_range(self) -> tuple[int, int]:
+        if not self._candles:
+            return 0, 0
+        self._clamp_view()
+        return self._view_start, self._view_end
+
+    def _chart_rect(self) -> QtCore.QRect:
+        rect = self.rect()
+        margin_x = max(int(rect.width() * 0.05), 40)
+        margin_y = max(int(rect.height() * 0.1), 30)
+        return rect.adjusted(margin_x, margin_y, -margin_x, -margin_y)
+
+    def _visible_min_max(self, candles: list[dict]) -> tuple[float, float] | None:
+        highs = [float(c.get("high", 0.0)) for c in candles]
+        lows = [float(c.get("low", 0.0)) for c in candles]
+        if not highs or not lows:
+            return None
+        max_high = max(highs)
+        min_low = min(lows)
+        if max_high <= min_low:
+            max_high = min_low + 1.0
+        return min_low, max_high
+
+    def _pos_to_price(self, pos: QtCore.QPointF) -> float | None:
+        if not self._candles:
+            return None
+        start, end = self._get_visible_range()
+        visible = self._candles[start:end]
+        if not visible:
+            return None
+        chart_rect = self._chart_rect()
+        if chart_rect.width() <= 0 or chart_rect.height() <= 0:
+            return None
+        min_max = self._visible_min_max(visible)
+        if min_max is None:
+            return None
+        min_low, max_high = min_max
+        y = min(max(pos.y(), chart_rect.top()), chart_rect.bottom())
+        ratio = (chart_rect.bottom() - y) / chart_rect.height()
+        return min_low + ratio * (max_high - min_low)
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
         painter = QtGui.QPainter(self)
@@ -827,26 +1182,23 @@ class SimpleCandlestickWidget(QtWidgets.QWidget):
                 )
             return
 
-        highs = [float(c.get("high", 0.0)) for c in self._candles]
-        lows = [float(c.get("low", 0.0)) for c in self._candles]
-        if not highs or not lows:
+        start, end = self._get_visible_range()
+        visible = self._candles[start:end]
+        if not visible:
             return
+        min_max = self._visible_min_max(visible)
+        if min_max is None:
+            return
+        min_low, max_high = min_max
 
-        max_high = max(highs)
-        min_low = min(lows)
-        if max_high <= min_low:
-            max_high = min_low + 1.0
-
-        margin_x = max(int(rect.width() * 0.05), 40)
-        margin_y = max(int(rect.height() * 0.1), 30)
-        chart_rect = rect.adjusted(margin_x, margin_y, -margin_x, -margin_y)
+        chart_rect = self._chart_rect()
         if chart_rect.width() <= 0 or chart_rect.height() <= 0:
             return
 
         painter.setPen(QtGui.QColor("#1f2326"))
         painter.drawRect(chart_rect)
 
-        count = len(self._candles)
+        count = len(visible)
         spacing = chart_rect.width() / max(count, 1)
         body_width = max(4.0, spacing * 0.6)
 
@@ -854,7 +1206,7 @@ class SimpleCandlestickWidget(QtWidgets.QWidget):
             ratio = (price - min_low) / (max_high - min_low)
             return chart_rect.bottom() - ratio * chart_rect.height()
 
-        for idx, candle in enumerate(self._candles):
+        for idx, candle in enumerate(visible):
             try:
                 open_ = float(candle.get("open", 0.0))
                 close = float(candle.get("close", 0.0))
@@ -892,6 +1244,201 @@ class SimpleCandlestickWidget(QtWidgets.QWidget):
             QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignRight,
             f"Low: {min_low:.4f}",
         )
+        if self._fib_start is not None and self._fib_end is not None:
+            self._draw_fib_levels(painter, chart_rect, price_to_y)
+        if self._show_hint:
+            painter.setPen(QtGui.QColor("#3b434a"))
+            hint = "Wheel: zoom | Drag: pan | Shift+Drag: fib | Double-click: reset"
+            painter.drawText(
+                chart_rect.adjusted(4, 4, -4, -4),
+                QtCore.Qt.AlignmentFlag.AlignBottom | QtCore.Qt.AlignmentFlag.AlignLeft,
+                hint,
+            )
+
+    def _draw_fib_levels(
+        self,
+        painter: QtGui.QPainter,
+        chart_rect: QtCore.QRect,
+        price_to_y,
+    ) -> None:
+        start_price = self._fib_start
+        end_price = self._fib_end
+        if start_price is None or end_price is None:
+            return
+        if abs(end_price - start_price) <= 0:
+            return
+        levels = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+        line_pen = QtGui.QPen(QtGui.QColor("#3b82f6"))
+        line_pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+        line_pen.setWidthF(1.0)
+        text_pen = QtGui.QPen(QtGui.QColor("#7dd3fc"))
+        span = end_price - start_price
+        for level in levels:
+            price = start_price + span * level
+            y = price_to_y(price)
+            if y < chart_rect.top() - 1 or y > chart_rect.bottom() + 1:
+                continue
+            painter.setPen(line_pen)
+            painter.drawLine(
+                QtCore.QPointF(chart_rect.left(), y),
+                QtCore.QPointF(chart_rect.right(), y),
+            )
+            label = f"{level:.3f}  {price:.4f}"
+            painter.setPen(text_pen)
+            painter.drawText(
+                QtCore.QRectF(chart_rect.left() + 4, y - 9, chart_rect.width() - 8, 18),
+                QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
+
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # noqa: N802
+        if not self._candles:
+            return super().wheelEvent(event)
+        angle = event.angleDelta().y()
+        if angle == 0:
+            return super().wheelEvent(event)
+        steps = angle / 120.0
+        start, end = self._get_visible_range()
+        total = len(self._candles)
+        current_count = max(1, end - start)
+        min_visible = min(self._min_visible, total) if total > 0 else 1
+        scale = 1.2 ** steps
+        new_count = int(round(current_count / scale))
+        new_count = max(min_visible, min(total, new_count))
+        if new_count == current_count:
+            return super().wheelEvent(event)
+        chart_rect = self._chart_rect()
+        if chart_rect.width() <= 0:
+            return super().wheelEvent(event)
+        pos = event.position()
+        ratio = (pos.x() - chart_rect.left()) / chart_rect.width()
+        ratio = max(0.0, min(1.0, ratio))
+        center = start + ratio * current_count
+        new_start = int(round(center - ratio * new_count))
+        new_start = max(0, min(new_start, total - new_count))
+        self._view_start = new_start
+        self._view_end = new_start + new_count
+        self._manual_view = True
+        self._show_hint = False
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            try:
+                self.setFocus(QtCore.Qt.FocusReason.MouseFocusReason)
+            except Exception:
+                pass
+            chart_rect = self._chart_rect()
+            if chart_rect.contains(event.position().toPoint()):
+                if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                    price = self._pos_to_price(event.position())
+                    if price is not None:
+                        self._fib_start = price
+                        self._fib_end = price
+                        self._fib_dragging = True
+                        self._show_hint = False
+                        self.update()
+                    event.accept()
+                    return
+                self._pan_active = True
+                self._pan_last_pos = event.position()
+                try:
+                    self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+                except Exception:
+                    pass
+                self._show_hint = False
+                event.accept()
+                return
+        if event.button() == QtCore.Qt.MouseButton.RightButton:
+            if self._fib_start is not None or self._fib_end is not None:
+                self._fib_start = None
+                self._fib_end = None
+                self._fib_dragging = False
+                self._show_hint = False
+                self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if self._pan_active and self._pan_last_pos is not None:
+            start, end = self._get_visible_range()
+            count = max(1, end - start)
+            chart_rect = self._chart_rect()
+            spacing = chart_rect.width() / max(count, 1)
+            if spacing > 0:
+                delta_x = event.position().x() - self._pan_last_pos.x()
+                delta_candles = int(round(delta_x / spacing))
+                if delta_candles != 0:
+                    total = len(self._candles)
+                    new_start = start - delta_candles
+                    new_start = max(0, min(new_start, total - count))
+                    self._view_start = new_start
+                    self._view_end = new_start + count
+                    self._manual_view = True
+                    self.update()
+            self._pan_last_pos = event.position()
+            event.accept()
+            return
+        if self._fib_dragging:
+            price = self._pos_to_price(event.position())
+            if price is not None:
+                self._fib_end = price
+                self._show_hint = False
+                self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            if self._pan_active:
+                self._pan_active = False
+                self._pan_last_pos = None
+                try:
+                    self.unsetCursor()
+                except Exception:
+                    pass
+                event.accept()
+                return
+            if self._fib_dragging:
+                self._fib_dragging = False
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._reset_view()
+            self._show_hint = False
+            self.update()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
+        key = event.key()
+        if key in (
+            QtCore.Qt.Key.Key_Escape,
+            QtCore.Qt.Key.Key_Delete,
+            QtCore.Qt.Key.Key_Backspace,
+        ):
+            if self._fib_start is not None or self._fib_end is not None:
+                self._fib_start = None
+                self._fib_end = None
+                self._fib_dragging = False
+                self._show_hint = False
+                self.update()
+            event.accept()
+            return
+        if key == QtCore.Qt.Key.Key_R:
+            self._reset_view()
+            self._show_hint = False
+            self.update()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 if QT_CHARTS_AVAILABLE and QChartView is not None:
@@ -2747,6 +3294,25 @@ class MainWindow(QtWidgets.QWidget):
         self._chart_manual_override = False
         self._chart_updating = False
         self._pending_tradingview_mode = False  # Defer TradingView init to avoid startup window flashes
+        self._pending_tradingview_switch = False
+        self._pending_webengine_mode = None
+        self._tradingview_ready_connected = False
+        self._chart_switch_overlay = None
+        self._chart_switch_overlay_active = False
+        self._chart_view_stack_event_filter_installed = False
+        self._tradingview_first_switch_done = False
+        self._tradingview_prewarm_scheduled = False
+        self._tradingview_prewarmed = False
+        self._tv_window_suppress_active = False
+        self._tv_window_suppress_timer = None
+        self._tv_visibility_guard_active = False
+        self._tv_visibility_guard_timer = None
+        self._tv_close_guard_until = 0.0
+        self._tv_close_guard_active = False
+        self._tv_visibility_watchdog_active = False
+        self._tv_visibility_watchdog_timer = None
+        self._tradingview_external_last_open_ts = 0.0
+        self._chart_debug_log_path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
         self.chart_enabled = ENABLE_CHART_TAB and not _DISABLE_CHARTS
         self._chart_worker = None
         self._chart_theme_signal_installed = False
@@ -2774,8 +3340,7 @@ class MainWindow(QtWidgets.QWidget):
         self.chart_config.setdefault("symbol", default_symbol)
         self.chart_config.setdefault("interval", (default_intervals[0] if default_intervals else "1h"))
         # Default to TradingView when available so the chart tab opens directly in TradingView mode.
-        # On Windows, TradingView (QtWebEngine) can spawn helper windows that briefly flash during startup,
-        # so default to the lightweight original chart unless the user explicitly opts in.
+        # On Windows, avoid auto-opening TradingView during startup; keep the Original selection by default.
         default_view_mode = "original"
         if sys.platform != "win32" and _tradingview_supported() and not _DISABLE_TRADINGVIEW and not _DISABLE_CHARTS:
             default_view_mode = "tradingview"
@@ -6681,9 +7246,43 @@ class MainWindow(QtWidgets.QWidget):
         self._chart_view_widgets = {}
         self.chart_view_stack = QtWidgets.QStackedWidget()
         layout.addWidget(self.chart_view_stack, stretch=1)
+        try:
+            self._chart_switch_overlay = QtWidgets.QLabel(self.chart_view_stack)
+            self._chart_switch_overlay.setVisible(False)
+            self._chart_switch_overlay.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            self._chart_switch_overlay.setScaledContents(True)
+            self._chart_switch_overlay.setStyleSheet(
+                "background-color: #0b0e11; color: #94a3b8; font-size: 15px;"
+            )
+            self._chart_switch_overlay.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+            )
+            self._update_chart_overlay_geometry()
+            if not self._chart_view_stack_event_filter_installed:
+                self.chart_view_stack.installEventFilter(self)
+                self._chart_view_stack_event_filter_installed = True
+        except Exception:
+            self._chart_switch_overlay = None
 
         self.chart_tradingview = None
-        self._chart_view_tradingview_available = (_TRADINGVIEW_IMPORT_ERROR is None) and (not _DISABLE_TRADINGVIEW) and (not _DISABLE_CHARTS)
+        self._chart_view_tradingview_available = (
+            (_TRADINGVIEW_IMPORT_ERROR is None)
+            and (not _DISABLE_TRADINGVIEW)
+            and (not _DISABLE_CHARTS)
+            and _webengine_charts_allowed()
+        )
+        self.chart_binance = None
+        self.chart_lightweight = None
+        self._chart_view_binance_available = (
+            (_BINANCE_IMPORT_ERROR is None)
+            and (not _DISABLE_CHARTS)
+            and _webengine_charts_allowed()
+        )
+        self._chart_view_lightweight_available = (
+            (_LIGHTWEIGHT_IMPORT_ERROR is None)
+            and (not _DISABLE_CHARTS)
+            and _webengine_charts_allowed()
+        )
 
         self.chart_original_view = None
         if QT_CHARTS_AVAILABLE and QChartView is not None:
@@ -6696,26 +7295,63 @@ class MainWindow(QtWidgets.QWidget):
         else:
             self.chart_original_view = SimpleCandlestickWidget()
         if self.chart_original_view is not None:
-            self._chart_view_widgets["original"] = self.chart_original_view
+            self._chart_view_widgets["legacy"] = self.chart_original_view
             self.chart_view_stack.addWidget(self.chart_original_view)
 
         self.chart_view_mode_combo.clear()
+        tv_label = "TradingView"
         if self._chart_view_tradingview_available:
-            self.chart_view_mode_combo.addItem("TradingView", "tradingview")
+            self.chart_view_mode_combo.addItem(tv_label, "tradingview")
         else:
-            self.chart_view_mode_combo.addItem("TradingView", "tradingview")
+            self.chart_view_mode_combo.addItem(tv_label, "tradingview")
             try:
                 idx = self.chart_view_mode_combo.findData("tradingview")
                 if idx >= 0:
                     model = self.chart_view_mode_combo.model()
                     model.setData(model.index(idx, 0), QtCore.Qt.ItemDataRole.EnabledRole, False)
+                    model.setData(
+                        model.index(idx, 0),
+                        _tradingview_unavailable_reason(),
+                        QtCore.Qt.ItemDataRole.ToolTipRole,
+                    )
             except Exception:
                 pass
         self.chart_view_mode_combo.addItem("Original", "original")
+        if not self._chart_view_binance_available:
+            try:
+                idx = self.chart_view_mode_combo.findData("original")
+                if idx >= 0:
+                    model = self.chart_view_mode_combo.model()
+                    model.setData(model.index(idx, 0), QtCore.Qt.ItemDataRole.EnabledRole, False)
+                    model.setData(
+                        model.index(idx, 0),
+                        _binance_unavailable_reason(),
+                        QtCore.Qt.ItemDataRole.ToolTipRole,
+                    )
+            except Exception:
+                pass
+        self.chart_view_mode_combo.addItem("TradingView Lightweight", "lightweight")
+        if not self._chart_view_lightweight_available:
+            try:
+                idx = self.chart_view_mode_combo.findData("lightweight")
+                if idx >= 0:
+                    model = self.chart_view_mode_combo.model()
+                    model.setData(model.index(idx, 0), QtCore.Qt.ItemDataRole.EnabledRole, False)
+                    model.setData(
+                        model.index(idx, 0),
+                        _lightweight_unavailable_reason(),
+                        QtCore.Qt.ItemDataRole.ToolTipRole,
+                    )
+            except Exception:
+                pass
 
         requested_mode = str(self.chart_config.get("view_mode") or "").strip().lower()
-        if requested_mode not in {"tradingview", "original"}:
+        if requested_mode not in {"tradingview", "original", "lightweight"}:
             requested_mode = "tradingview" if self._chart_view_tradingview_available else "original"
+        if requested_mode == "tradingview" and not self._chart_view_tradingview_available:
+            requested_mode = "original"
+        if requested_mode == "lightweight" and not self._chart_view_lightweight_available:
+            requested_mode = "original"
         self.chart_config["view_mode"] = requested_mode
 
         self._pending_tradingview_mode = False
@@ -6759,11 +7395,14 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 pass
 
+        self._schedule_tradingview_prewarm()
+
         return tab
 
     def _ensure_tradingview_widget(self):
         """Lazily create the TradingView widget so QtWebEngine processes spawn only when needed."""
         if self.chart_tradingview is not None:
+            self._bind_tradingview_ready(self.chart_tradingview)
             return self.chart_tradingview
         if not self._chart_view_tradingview_available:
             return None
@@ -6772,7 +7411,8 @@ class MainWindow(QtWidgets.QWidget):
             self._chart_view_tradingview_available = False
             return None
         try:
-            widget = tv_class(self)
+            parent = getattr(self, "chart_view_stack", None) or self
+            widget = tv_class(parent)
         except Exception:
             self.chart_tradingview = None
             self._chart_view_tradingview_available = False
@@ -6780,37 +7420,655 @@ class MainWindow(QtWidgets.QWidget):
         self.chart_tradingview = widget
         self._chart_view_widgets["tradingview"] = widget
         self.chart_view_stack.addWidget(widget)
+        self._bind_tradingview_ready(widget)
         return widget
 
-    def _apply_chart_view_mode(self, mode: str, initial: bool = False, *, allow_tradingview_init: bool = True):
-        if not getattr(self, "chart_enabled", False):
+    def _bind_tradingview_ready(self, widget):
+        if widget is None:
             return
-        requested_mode = str(mode or "").strip().lower()
-        actual_mode = requested_mode
-        widget = None
+        if getattr(self, "_tradingview_ready_connected", False):
+            return
+        try:
+            if hasattr(widget, "ready"):
+                widget.ready.connect(self._on_tradingview_ready)
+                self._tradingview_ready_connected = True
+        except Exception:
+            pass
 
-        if requested_mode == "tradingview":
-            if not self._chart_view_tradingview_available:
-                actual_mode = "original"
-            elif allow_tradingview_init:
-                widget = self._ensure_tradingview_widget()
-                if widget is None:
-                    actual_mode = "original"
+    def _ensure_binance_widget(self):
+        """Lazily create the Binance web widget so QtWebEngine spawns only when needed."""
+        if self.chart_binance is not None:
+            return self.chart_binance
+        if not self._chart_view_binance_available:
+            return None
+        bw_class, available = _load_binance_widget()
+        if bw_class is None or not available:
+            self._chart_view_binance_available = False
+            return None
+        try:
+            parent = getattr(self, "chart_view_stack", None) or self
+            widget = bw_class(parent)
+        except Exception:
+            self._chart_view_binance_available = False
+            return None
+        self.chart_binance = widget
+        self._chart_view_widgets["original"] = widget
+        try:
+            self.chart_view_stack.addWidget(widget)
+        except Exception:
+            pass
+        return widget
+
+    def _ensure_lightweight_widget(self):
+        """Lazily create the lightweight chart widget so QtWebEngine spawns only when needed."""
+        if self.chart_lightweight is not None:
+            return self.chart_lightweight
+        if not self._chart_view_lightweight_available:
+            return None
+        lw_class, available = _load_lightweight_widget()
+        if lw_class is None or not available:
+            self._chart_view_lightweight_available = False
+            return None
+        try:
+            parent = getattr(self, "chart_view_stack", None) or self
+            widget = lw_class(parent)
+        except Exception:
+            self._chart_view_lightweight_available = False
+            return None
+        self.chart_lightweight = widget
+        self._chart_view_widgets["lightweight"] = widget
+        try:
+            self.chart_view_stack.addWidget(widget)
+        except Exception:
+            pass
+        return widget
+
+    def _update_chart_overlay_geometry(self):
+        overlay = getattr(self, "_chart_switch_overlay", None)
+        stack = getattr(self, "chart_view_stack", None)
+        if overlay is None or stack is None:
+            return
+        try:
+            overlay.setGeometry(stack.rect())
+        except Exception:
+            pass
+
+    def _show_chart_switch_overlay(self):
+        if getattr(self, "_chart_switch_overlay_active", False):
+            return
+        overlay = getattr(self, "_chart_switch_overlay", None)
+        stack = getattr(self, "chart_view_stack", None)
+        if overlay is None or stack is None:
+            return
+        self._update_chart_overlay_geometry()
+        pixmap = None
+        try:
+            source = stack.currentWidget()
+            if source is not None:
+                pixmap = source.grab()
+        except Exception:
+            pixmap = None
+        try:
+            if pixmap is not None and not pixmap.isNull():
+                overlay.setPixmap(pixmap)
+                overlay.setText("")
             else:
-                # Defer TradingView creation until the chart tab is visible to avoid startup flicker.
-                self._pending_tradingview_mode = True
-                actual_mode = "original"
-        else:
-            actual_mode = "original"
+                overlay.setPixmap(QtGui.QPixmap())
+                overlay.setText("Loading TradingView...")
+            overlay.setVisible(True)
+            overlay.raise_()
+            self._chart_switch_overlay_active = True
+        except Exception:
+            pass
 
-        if widget is None:
-            widget = self._chart_view_widgets.get(actual_mode)
+    def _hide_chart_switch_overlay(self, delay_ms: int = 0):
+        overlay = getattr(self, "_chart_switch_overlay", None)
+        if overlay is None or not getattr(self, "_chart_switch_overlay_active", False):
+            return
+
+        def _do_hide():
+            try:
+                overlay.setVisible(False)
+                overlay.setPixmap(QtGui.QPixmap())
+                overlay.setText("")
+            except Exception:
+                pass
+            self._chart_switch_overlay_active = False
+
+        if delay_ms and delay_ms > 0:
+            QtCore.QTimer.singleShot(int(delay_ms), _do_hide)
+        else:
+            _do_hide()
+
+    def _schedule_tradingview_prewarm(self):
+        if getattr(self, "_tradingview_prewarm_scheduled", False) or getattr(self, "_tradingview_prewarmed", False):
+            return
+        if not getattr(self, "_chart_view_tradingview_available", False):
+            return
+        if sys.platform != "win32":
+            return
+        flag = str(os.environ.get("BOT_PREWARM_TRADINGVIEW", "0")).strip().lower()
+        if flag in {"0", "false", "no", "off"}:
+            return
+        try:
+            delay_ms = int(os.environ.get("BOT_PREWARM_TRADINGVIEW_DELAY_MS") or 1200)
+        except Exception:
+            delay_ms = 1200
+        delay_ms = max(100, min(delay_ms, 10000))
+        self._tradingview_prewarm_scheduled = True
+        QtCore.QTimer.singleShot(delay_ms, self._prewarm_tradingview)
+
+    def _prewarm_tradingview(self):
+        self._tradingview_prewarm_scheduled = False
+        if getattr(self, "_tradingview_prewarmed", False):
+            return
+        if not getattr(self, "_chart_view_tradingview_available", False):
+            return
+        widget = self._ensure_tradingview_widget()
         if widget is None:
             return
+        self._tradingview_prewarmed = True
+        self._prime_tradingview_chart(widget)
+
+    def _start_tradingview_visibility_guard(self):
+        if sys.platform != "win32":
+            return
+        if getattr(self, "_tv_visibility_guard_active", False):
+            return
+        try:
+            duration_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_GUARD_MS") or 2500)
+        except Exception:
+            duration_ms = 2500
+        duration_ms = max(500, min(duration_ms, 8000))
+        try:
+            interval_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_GUARD_INTERVAL_MS") or 50)
+        except Exception:
+            interval_ms = 50
+        interval_ms = max(20, min(interval_ms, 200))
+
+        timer = QtCore.QTimer(self)
+        timer.setInterval(interval_ms)
+        start_ts = time.monotonic()
+        self._tv_visibility_guard_active = True
+        self._tv_visibility_guard_timer = timer
+
+        def _tick():
+            if (time.monotonic() - start_ts) * 1000.0 >= duration_ms:
+                self._stop_tradingview_visibility_guard()
+                return
+            try:
+                if not self.isVisible():
+                    self.showNormal()
+                    self.raise_()
+                    self.activateWindow()
+                elif self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
+                    self.showNormal()
+                    self.raise_()
+                    self.activateWindow()
+            except Exception:
+                pass
+
+        timer.timeout.connect(_tick)
+        timer.start()
+        _tick()
+
+    def _start_tradingview_visibility_watchdog(self):
+        if sys.platform != "win32":
+            return
+        if getattr(self, "_tv_visibility_watchdog_active", False):
+            return
+        flag = str(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_WATCHDOG", "1")).strip().lower()
+        if flag in {"0", "false", "no", "off"}:
+            return
+        try:
+            interval_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_WATCHDOG_INTERVAL_MS") or 200)
+        except Exception:
+            interval_ms = 200
+        interval_ms = max(50, min(interval_ms, 1000))
+        timer = QtCore.QTimer(self)
+        timer.setInterval(interval_ms)
+        self._tv_visibility_watchdog_active = True
+        self._tv_visibility_watchdog_timer = timer
+
+        def _tick():
+            try:
+                if not self.isVisible() or self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
+                    self.showNormal()
+                    self.raise_()
+                    self.activateWindow()
+            except Exception:
+                pass
+
+        timer.timeout.connect(_tick)
+        timer.start()
+        _tick()
+
+    def _start_tradingview_close_guard(self):
+        if sys.platform != "win32":
+            return
+        try:
+            duration_ms = int(os.environ.get("BOT_TRADINGVIEW_CLOSE_GUARD_MS") or 2500)
+        except Exception:
+            duration_ms = 2500
+        duration_ms = max(500, min(duration_ms, 8000))
+        try:
+            self._tv_close_guard_until = time.monotonic() + (duration_ms / 1000.0)
+        except Exception:
+            self._tv_close_guard_until = 0.0
+        self._tv_close_guard_active = True
+
+    def _stop_tradingview_visibility_guard(self):
+        timer = getattr(self, "_tv_visibility_guard_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            try:
+                timer.deleteLater()
+            except Exception:
+                pass
+        self._tv_visibility_guard_timer = None
+        self._tv_visibility_guard_active = False
+
+    def _stop_tradingview_visibility_watchdog(self):
+        timer = getattr(self, "_tv_visibility_watchdog_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            try:
+                timer.deleteLater()
+            except Exception:
+                pass
+        self._tv_visibility_watchdog_timer = None
+        self._tv_visibility_watchdog_active = False
+
+    def _start_tradingview_window_suppression(self):
+        if sys.platform != "win32":
+            return
+        flag = str(os.environ.get("BOT_TRADINGVIEW_WINDOW_SUPPRESS", "")).strip().lower()
+        if flag not in {"1", "true", "yes", "on"}:
+            return
+        if getattr(self, "_tv_window_suppress_active", False):
+            return
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+        except Exception:
+            return
+        self._tv_window_suppress_active = True
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        try:
+            pid = int(kernel32.GetCurrentProcessId())
+        except Exception:
+            pid = 0
+
+        TH32CS_SNAPPROCESS = 0x00000002
+        SW_HIDE = 0
+        debug_windows = str(os.environ.get("BOT_DEBUG_TRADINGVIEW_WINDOWS", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        debug_log_path = Path(os.getenv("TEMP") or ".").resolve() / "binance_tv_windows.log"
+
+        def _get_hwnd_pid(hwnd_obj):  # noqa: ANN001
+            try:
+                out_pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd_obj, ctypes.byref(out_pid))
+                return int(out_pid.value)
+            except Exception:
+                return 0
+
+        def _class_name(hwnd_obj):  # noqa: ANN001
+            try:
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd_obj, buf, 256)
+                return str(buf.value or "").strip()
+            except Exception:
+                return ""
+
+        def _is_transient(hwnd_obj, class_name: str | None = None):  # noqa: ANN001
+            try:
+                rect = wintypes.RECT()
+                if not user32.GetWindowRect(hwnd_obj, ctypes.byref(rect)):
+                    return False
+                width = int(rect.right - rect.left)
+                height = int(rect.bottom - rect.top)
+                if width <= 0 or height <= 0:
+                    return False
+                class_name = class_name or _class_name(hwnd_obj)
+                try:
+                    GWL_STYLE = -16
+                    WS_CHILD = 0x40000000
+                    get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+                    style = int(get_style(hwnd_obj, GWL_STYLE))
+                    if style & WS_CHILD:
+                        return False
+                except Exception:
+                    pass
+                if class_name.startswith("Qt") and class_name.endswith(
+                    (
+                        "PowerDummyWindow",
+                        "ClipboardView",
+                        "ScreenChangeObserverWindow",
+                        "ThemeChangeObserverWindow",
+                    )
+                ):
+                    return True
+                if class_name.startswith("_q_"):
+                    return height <= 260 and width <= 4000
+                if class_name == "Intermediate D3D Window":
+                    return height <= 500 and width <= 4000
+                if class_name.startswith("Chrome_WidgetWin_"):
+                    return height <= 500 and width <= 4000
+                if width >= 500 and height >= 300:
+                    return False
+                return height <= 120 and width <= 4000
+            except Exception:
+                return False
+
+        def _hide(hwnd_obj):  # noqa: ANN001
+            try:
+                SWP_NOSIZE = 0x0001
+                SWP_NOZORDER = 0x0004
+                SWP_NOACTIVATE = 0x0010
+                SWP_HIDEWINDOW = 0x0080
+                SWP_ASYNCWINDOWPOS = 0x4000
+                user32.SetWindowPos(
+                    hwnd_obj,
+                    0,
+                    -32000,
+                    -32000,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW | SWP_ASYNCWINDOWPOS,
+                )
+            except Exception:
+                pass
+            try:
+                if getattr(user32, "ShowWindowAsync", None):
+                    user32.ShowWindowAsync(hwnd_obj, SW_HIDE)
+                else:
+                    user32.ShowWindow(hwnd_obj, SW_HIDE)
+            except Exception:
+                pass
+
+        def _window_size(hwnd_obj):  # noqa: ANN001
+            try:
+                rect = wintypes.RECT()
+                if not user32.GetWindowRect(hwnd_obj, ctypes.byref(rect)):
+                    return None, None
+                return int(rect.right - rect.left), int(rect.bottom - rect.top)
+            except Exception:
+                return None, None
+
+        def _log_window(hwnd_obj, reason: str, pid_val: int, class_name: str) -> None:  # noqa: ANN001
+            if not debug_windows:
+                return
+            try:
+                width, height = _window_size(hwnd_obj)
+                with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
+                    fh.write(
+                        f"{reason} hwnd={int(hwnd_obj)} pid={pid_val} class={class_name!r} "
+                        f"size={width}x{height}\n"
+                    )
+            except Exception:
+                return
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", wintypes.ULONG_PTR),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        def _snapshot_processes():
+            entries = []
+            try:
+                kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+                kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+                kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+                kernel32.Process32FirstW.restype = wintypes.BOOL
+                kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+                kernel32.Process32NextW.restype = wintypes.BOOL
+                kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+                kernel32.CloseHandle.restype = wintypes.BOOL
+            except Exception:
+                pass
+            try:
+                snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            except Exception:
+                snapshot = 0
+            if snapshot in (0, ctypes.c_void_p(-1).value):
+                return entries
+
+            try:
+                entry = PROCESSENTRY32()
+                entry.dwSize = ctypes.sizeof(entry)
+                if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                    return entries
+                while True:
+                    entries.append((
+                        int(entry.th32ProcessID),
+                        int(entry.th32ParentProcessID),
+                        str(entry.szExeFile or "").strip(),
+                    ))
+                    if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                        break
+            finally:
+                try:
+                    kernel32.CloseHandle(snapshot)
+                except Exception:
+                    pass
+            return entries
+
+        def _collect_related_pids(root_pid: int):
+            entries = _snapshot_processes()
+            if not entries:
+                return {root_pid} if root_pid else set(), set()
+            children = {}
+            exe_map = {}
+            for proc_pid, parent_pid, exe in entries:
+                exe_map[proc_pid] = exe
+                children.setdefault(parent_pid, []).append(proc_pid)
+            tree = set()
+            stack = [root_pid] if root_pid else []
+            while stack:
+                cur = stack.pop()
+                if cur in tree:
+                    continue
+                tree.add(cur)
+                stack.extend(children.get(cur, []))
+            qt_roots = {
+                proc_pid
+                for proc_pid in tree
+                if "qtwebengineprocess" in (exe_map.get(proc_pid, "") or "").lower()
+            }
+            qt_tree = set()
+            for root in qt_roots:
+                stack = [root]
+                while stack:
+                    cur = stack.pop()
+                    if cur in qt_tree:
+                        continue
+                    qt_tree.add(cur)
+                    stack.extend(children.get(cur, []))
+            return tree if tree else ({root_pid} if root_pid else set()), qt_tree
+
+        pid_cache = {"ts": 0.0, "pids": {pid} if pid else set(), "qt_pids": set()}
+
+        def _get_pid_sets():
+            now = time.monotonic()
+            if now - pid_cache["ts"] < 0.25:
+                return pid_cache["pids"], pid_cache["qt_pids"]
+            tree, qt_tree = _collect_related_pids(pid)
+            pid_cache["ts"] = now
+            pid_cache["pids"] = tree
+            pid_cache["qt_pids"] = qt_tree
+            return tree, qt_tree
+
+        EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def _poll_once():
+            allowed_pids, qt_pids = _get_pid_sets()
+
+            def _enum_cb(hwnd_obj, _lparam):  # noqa: ANN001
+                try:
+                    pid_val = _get_hwnd_pid(hwnd_obj)
+                    if allowed_pids and pid_val not in allowed_pids:
+                        return True
+                    try:
+                        if not user32.IsWindowVisible(hwnd_obj):
+                            return True
+                    except Exception:
+                        return True
+                    class_name = _class_name(hwnd_obj)
+                    if qt_pids and pid_val in qt_pids:
+                        if _is_transient(hwnd_obj, class_name=class_name):
+                            _log_window(hwnd_obj, "hide-qtwebengine", pid_val, class_name)
+                            _hide(hwnd_obj)
+                        return True
+                except Exception:
+                    return True
+                return True
+
+            cb = EnumWindowsProc(_enum_cb)
+            try:
+                user32.EnumWindows(cb, 0)
+            except Exception:
+                pass
+
+        try:
+            duration_ms = int(os.environ.get("BOT_TRADINGVIEW_WINDOW_SUPPRESS_MS") or 1800)
+        except Exception:
+            duration_ms = 1800
+        duration_ms = max(300, min(duration_ms, 5000))
+        try:
+            interval_ms = int(os.environ.get("BOT_TRADINGVIEW_WINDOW_SUPPRESS_INTERVAL_MS") or 30)
+        except Exception:
+            interval_ms = 30
+        interval_ms = max(15, min(interval_ms, 120))
+
+        timer = QtCore.QTimer(self)
+        timer.setInterval(interval_ms)
+        start_ts = time.monotonic()
+
+        def _tick():
+            if (time.monotonic() - start_ts) * 1000.0 >= duration_ms:
+                try:
+                    timer.stop()
+                except Exception:
+                    pass
+                try:
+                    timer.deleteLater()
+                except Exception:
+                    pass
+                self._tv_window_suppress_timer = None
+                self._tv_window_suppress_active = False
+                return
+            _poll_once()
+
+        timer.timeout.connect(_tick)
+        timer.start()
+        self._tv_window_suppress_timer = timer
+        _tick()
+
+    def _prime_tradingview_chart(self, widget):
+        if widget is None:
+            return
+        try:
+            symbol_text = (self.chart_symbol_combo.currentText() or "").strip().upper()
+            interval_text = (self.chart_interval_combo.currentText() or "").strip()
+        except Exception:
+            return
+        if not symbol_text or not interval_text:
+            return
+        interval_code = self._map_chart_interval(interval_text)
+        if not interval_code:
+            return
+        market_text = self._normalize_chart_market(
+            self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else None
+        )
+        tv_symbol = self._format_chart_symbol(symbol_text, market_text)
+        try:
+            theme_name = (self.theme_combo.currentText() or "").strip()
+        except Exception:
+            theme_name = self.config.get("theme", "Dark")
+        theme_code = "light" if str(theme_name or "").lower().startswith("light") else "dark"
+        try:
+            widget.set_chart(tv_symbol, interval_code, theme=theme_code, timezone="Etc/UTC")
+        except Exception:
+            return
+        try:
+            if hasattr(widget, "warmup"):
+                widget.warmup()
+        except Exception:
+            pass
+
+    def _open_tradingview_external(self) -> bool:
+        try:
+            symbol_text = (self.chart_symbol_combo.currentText() or "").strip().upper()
+            interval_text = (self.chart_interval_combo.currentText() or "").strip()
+        except Exception:
+            return False
+        if not symbol_text or not interval_text:
+            return False
+        interval_code = self._map_chart_interval(interval_text)
+        if not interval_code:
+            interval_code = "60"
+        market_text = self._normalize_chart_market(
+            self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else None
+        )
+        tv_symbol = self._format_chart_symbol(symbol_text, market_text)
+        try:
+            now = time.monotonic()
+        except Exception:
+            now = 0.0
+        if now and (now - float(getattr(self, "_tradingview_external_last_open_ts", 0.0) or 0.0)) < 1.0:
+            return False
+        self._tradingview_external_last_open_ts = now
+        url = _build_tradingview_url(tv_symbol, interval_code)
+        try:
+            return bool(QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)))
+        except Exception:
+            return False
+
+    def _on_tradingview_ready(self):
+        if not getattr(self, "_pending_tradingview_switch", False):
+            return
+        desired_mode = str(self.chart_config.get("view_mode") or "").strip().lower()
+        if desired_mode != "tradingview":
+            self._pending_tradingview_switch = False
+            return
+        widget = getattr(self, "chart_tradingview", None)
+        if widget is None:
+            self._pending_tradingview_switch = False
+            return
+        try:
+            if hasattr(widget, "is_ready") and not widget.is_ready():
+                return
+        except Exception:
+            pass
+        if not self._is_chart_visible():
+            return
+        self._pending_tradingview_switch = False
         self.chart_view = widget
         try:
             with QtCore.QSignalBlocker(self.chart_view_mode_combo):
-                idx = self.chart_view_mode_combo.findData(actual_mode)
+                idx = self.chart_view_mode_combo.findData("tradingview")
                 if idx >= 0:
                     self.chart_view_mode_combo.setCurrentIndex(idx)
         except Exception:
@@ -6821,7 +8079,168 @@ class MainWindow(QtWidgets.QWidget):
                 self.chart_view_stack.setCurrentIndex(index)
         except Exception:
             pass
-        self.chart_config["view_mode"] = requested_mode or actual_mode
+        try:
+            self._on_chart_theme_changed()
+        except Exception:
+            pass
+        self._chart_needs_render = True
+        self._tradingview_first_switch_done = True
+        self._hide_chart_switch_overlay(delay_ms=200)
+        self._stop_tradingview_visibility_guard()
+        if self._is_chart_visible():
+            self.load_chart(auto=True)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        try:
+            if obj is getattr(self, "chart_view_stack", None):
+                ev_type = event.type()
+                if ev_type in {QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Show}:
+                    self._update_chart_overlay_geometry()
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def _apply_chart_view_mode(self, mode: str, initial: bool = False, *, allow_tradingview_init: bool = True):
+        if not getattr(self, "chart_enabled", False):
+            return
+        requested_mode = str(mode or "").strip().lower()
+        if requested_mode not in {"tradingview", "original", "lightweight"}:
+            requested_mode = "original"
+        self._pending_webengine_mode = None
+        try:
+            self._chart_debug_log(
+                f"apply_chart_view_mode requested={requested_mode} initial={int(bool(initial))} "
+                f"allow_tv_init={int(bool(allow_tradingview_init))}"
+            )
+        except Exception:
+            pass
+        actual_mode = requested_mode
+        widget = None
+        defer_switch = False
+        external_opened = False
+        if requested_mode == "tradingview" and _tradingview_external_preferred():
+            if not initial:
+                try:
+                    external_opened = self._open_tradingview_external()
+                except Exception:
+                    external_opened = False
+            requested_mode = "original"
+            actual_mode = "original"
+        if requested_mode == "tradingview":
+            self._start_tradingview_close_guard()
+            self._start_tradingview_visibility_watchdog()
+            if not getattr(self, "_tradingview_first_switch_done", False):
+                if self._is_chart_visible():
+                    self._show_chart_switch_overlay()
+                self._start_tradingview_window_suppression()
+                self._start_tradingview_visibility_guard()
+            if not self._chart_view_tradingview_available:
+                actual_mode = "original"
+            elif allow_tradingview_init:
+                widget = self._ensure_tradingview_widget()
+                if widget is None:
+                    actual_mode = "original"
+                else:
+                    self._bind_tradingview_ready(widget)
+                    try:
+                        if hasattr(widget, "is_ready") and not widget.is_ready():
+                            defer_switch = True
+                    except Exception:
+                        pass
+            else:
+                # Defer TradingView creation until the chart tab is visible to avoid startup flicker.
+                self._pending_tradingview_mode = True
+                actual_mode = "original"
+        elif requested_mode == "lightweight":
+            self._pending_tradingview_mode = False
+            self._pending_tradingview_switch = False
+            if not allow_tradingview_init and not self._is_chart_visible():
+                self._pending_webengine_mode = "lightweight"
+                actual_mode = "legacy"
+            else:
+                widget = self._ensure_lightweight_widget()
+                if widget is None:
+                    actual_mode = "original"
+        elif requested_mode == "original":
+            self._pending_tradingview_mode = False
+            self._pending_tradingview_switch = False
+            if not allow_tradingview_init and not self._is_chart_visible():
+                self._pending_webengine_mode = "original"
+                actual_mode = "legacy"
+            else:
+                widget = self._ensure_binance_widget()
+                if widget is None:
+                    actual_mode = "legacy"
+        else:
+            self._pending_tradingview_mode = False
+            actual_mode = "legacy"
+            self._pending_tradingview_switch = False
+        if actual_mode != "tradingview":
+            self._pending_tradingview_switch = False
+            self._hide_chart_switch_overlay()
+            self._stop_tradingview_visibility_guard()
+            self._stop_tradingview_visibility_watchdog()
+            self._tv_close_guard_active = False
+
+        fallback_reason = None
+        config_mode = requested_mode or actual_mode
+        if requested_mode == "tradingview" and actual_mode != "tradingview" and not defer_switch:
+            if not getattr(self, "_pending_tradingview_mode", False):
+                fallback_reason = _tradingview_unavailable_reason()
+                config_mode = "original"
+        elif requested_mode == "lightweight" and actual_mode != "lightweight":
+            if getattr(self, "_pending_webengine_mode", None) != "lightweight":
+                fallback_reason = _lightweight_unavailable_reason()
+                config_mode = "original"
+        elif requested_mode == "original" and actual_mode != "original":
+            if getattr(self, "_pending_webengine_mode", None) != "original":
+                fallback_reason = _binance_unavailable_reason()
+                config_mode = "original"
+
+        if widget is None and actual_mode == "original":
+            widget = self._ensure_binance_widget()
+            if widget is None:
+                actual_mode = "legacy"
+        if widget is None:
+            widget = self._chart_view_widgets.get(actual_mode)
+        if widget is None:
+            return
+        combo_mode = "tradingview" if defer_switch else actual_mode
+        if combo_mode == "legacy":
+            combo_mode = "original"
+        if defer_switch:
+            self._pending_tradingview_mode = False
+            self._pending_tradingview_switch = True
+            if not getattr(self, "_tradingview_first_switch_done", False):
+                self._show_chart_switch_overlay()
+            try:
+                with QtCore.QSignalBlocker(self.chart_view_mode_combo):
+                    idx = self.chart_view_mode_combo.findData(combo_mode)
+                    if idx >= 0:
+                        self.chart_view_mode_combo.setCurrentIndex(idx)
+            except Exception:
+                pass
+            self.chart_config["view_mode"] = config_mode
+            self._chart_needs_render = True
+            self._prime_tradingview_chart(widget)
+            return
+
+        self._pending_tradingview_switch = False
+        self.chart_view = widget
+        try:
+            with QtCore.QSignalBlocker(self.chart_view_mode_combo):
+                idx = self.chart_view_mode_combo.findData(combo_mode)
+                if idx >= 0:
+                    self.chart_view_mode_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        try:
+            index = self.chart_view_stack.indexOf(widget)
+            if index >= 0:
+                self.chart_view_stack.setCurrentIndex(index)
+        except Exception:
+            pass
+        self.chart_config["view_mode"] = config_mode
         if actual_mode == "tradingview":
             self._pending_tradingview_mode = False
             tv_class, _ = _load_tradingview_widget()
@@ -6831,6 +8250,28 @@ class MainWindow(QtWidgets.QWidget):
                 except Exception:
                     pass
         self._chart_needs_render = True
+        if fallback_reason and not initial:
+            if requested_mode == "tradingview":
+                opened = False
+                try:
+                    opened = self._open_tradingview_external()
+                except Exception:
+                    opened = False
+                if opened:
+                    try:
+                        self._show_chart_status("TradingView opened in your browser.", color="#94a3b8")
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self._show_chart_status(fallback_reason, color="#f59e0b")
+                    except Exception:
+                        pass
+            else:
+                try:
+                    self._show_chart_status(fallback_reason, color="#f59e0b")
+                except Exception:
+                    pass
         status_text = "Chart view ready."
         if initial:
             self._show_chart_status(status_text, color="#d1d4dc")
@@ -6839,6 +8280,21 @@ class MainWindow(QtWidgets.QWidget):
             self.load_chart(auto=True)
         else:
             self._show_chart_status(status_text, color="#d1d4dc")
+        if external_opened:
+            try:
+                self._show_chart_status("TradingView opened in your browser.", color="#94a3b8")
+            except Exception:
+                pass
+        if actual_mode == "tradingview" and not defer_switch and not getattr(self, "_tradingview_first_switch_done", False):
+            self._tradingview_first_switch_done = True
+            self._hide_chart_switch_overlay(delay_ms=200)
+        try:
+            self._chart_debug_log(
+                f"apply_chart_view_mode done actual={actual_mode} defer={int(bool(defer_switch))} "
+                f"fallback={str(fallback_reason or '')}"
+            )
+        except Exception:
+            pass
 
     def _on_chart_view_mode_changed(self, index: int):
         try:
@@ -6847,6 +8303,60 @@ class MainWindow(QtWidgets.QWidget):
             mode = None
         if not mode:
             mode = self.chart_view_mode_combo.currentText()
+        try:
+            self._chart_debug_log(f"chart_view_mode_changed mode={str(mode or '').strip().lower()}")
+        except Exception:
+            pass
+        mode_norm = str(mode or "").strip().lower()
+        if _chart_safe_mode_enabled() and mode_norm in {"tradingview", "original", "lightweight"}:
+            try:
+                self._chart_debug_log(f"chart_view_mode_safe_blocked mode={mode_norm}")
+            except Exception:
+                pass
+            if mode_norm == "tradingview":
+                opened = False
+                try:
+                    opened = self._open_tradingview_external()
+                except Exception:
+                    opened = False
+                if opened:
+                    self._show_chart_status(
+                        "TradingView opened in your browser. Set BOT_SAFE_CHART_TAB=0 to embed.",
+                        color="#94a3b8",
+                    )
+                else:
+                    self._show_chart_status(
+                        "TradingView embed disabled. Set BOT_SAFE_CHART_TAB=0 to embed.",
+                        color="#f59e0b",
+                    )
+            else:
+                self._show_chart_status(
+                    "Web charts disabled for stability. Set BOT_SAFE_CHART_TAB=0 to enable.",
+                    color="#f59e0b",
+                )
+            legacy = self._chart_view_widgets.get("legacy")
+            if legacy is not None:
+                try:
+                    self.chart_view = legacy
+                    idx = self.chart_view_stack.indexOf(legacy)
+                    if idx >= 0:
+                        self.chart_view_stack.setCurrentIndex(idx)
+                except Exception:
+                    pass
+            try:
+                with QtCore.QSignalBlocker(self.chart_view_mode_combo):
+                    fallback_idx = self.chart_view_mode_combo.findData("original")
+                    if fallback_idx >= 0:
+                        self.chart_view_mode_combo.setCurrentIndex(fallback_idx)
+            except Exception:
+                pass
+            try:
+                self.chart_config["view_mode"] = "original"
+            except Exception:
+                pass
+            if self._is_chart_visible():
+                self.load_chart(auto=True)
+            return
         self._apply_chart_view_mode(mode)
 
     def _restore_chart_controls_from_config(self):
@@ -6949,6 +8459,21 @@ class MainWindow(QtWidgets.QWidget):
                 combo.setEditText(current)
         elif display_symbols:
             combo.setCurrentIndex(0)
+
+    def _chart_debug_log(self, message: str) -> None:
+        try:
+            ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            ts = "unknown-time"
+        try:
+            path = getattr(self, "_chart_debug_log_path", None)
+            if path is None:
+                path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
+                self._chart_debug_log_path = path
+            with open(path, "a", encoding="utf-8", errors="ignore") as fh:
+                fh.write(f"[{ts}] {message}\n")
+        except Exception:
+            return
 
     @staticmethod
     def _normalize_chart_market(market):
@@ -7835,6 +9360,20 @@ class MainWindow(QtWidgets.QWidget):
                     pass
             view.setChart(chart)
             return
+        bw_view = getattr(self, "chart_binance", None)
+        if bw_view is not None and view is bw_view:
+            try:
+                bw_view.show_message(message, color=color)
+            except Exception:
+                pass
+            return
+        lw_view = getattr(self, "chart_lightweight", None)
+        if lw_view is not None and view is lw_view:
+            try:
+                lw_view.show_message(message, color=color)
+            except Exception:
+                pass
+            return
         tv_view = getattr(self, "chart_tradingview", None)
         if tv_view is not None and view is tv_view:
             try:
@@ -7925,6 +9464,218 @@ class MainWindow(QtWidgets.QWidget):
         else:
             return
 
+    def _build_lightweight_payload(
+        self,
+        df: pd.DataFrame,
+        times: list[int],
+        candles: list[dict],
+        indicators_cfg: dict,
+        theme_name: str,
+    ) -> dict:
+        theme_code = "light" if str(theme_name or "").lower().startswith("light") else "dark"
+
+        def _series_from_values(values) -> list[dict]:
+            data = []
+            for t_val, v_val in zip(times, values):
+                try:
+                    if v_val is None or pd.isna(v_val):
+                        continue
+                    data.append({"time": int(t_val), "value": float(v_val)})
+                except Exception:
+                    continue
+            return data
+
+        def _add_overlay(key: str, label: str, data: list[dict], color: str, line_style: int = 0, line_width: int = 2):
+            if not data:
+                return
+            overlays.append({
+                "key": key,
+                "label": label,
+                "type": "line",
+                "data": data,
+                "color": color,
+                "lineStyle": int(line_style),
+                "lineWidth": int(line_width),
+            })
+
+        def _add_pane(key: str, label: str, series: list[dict], height: int = 80):
+            if not series:
+                return
+            panes.append({
+                "key": key,
+                "label": label,
+                "height": int(height),
+                "series": series,
+            })
+
+        overlays: list[dict] = []
+        panes: list[dict] = []
+
+        volume_series = []
+        try:
+            opens = df["open"].tolist()
+            closes = df["close"].tolist()
+            volumes = df["volume"].tolist()
+            for t_val, o_val, c_val, v_val in zip(times, opens, closes, volumes):
+                if v_val is None or pd.isna(v_val):
+                    continue
+                color = "#0ebb7a" if float(c_val) >= float(o_val) else "#f75467"
+                volume_series.append({"time": int(t_val), "value": float(v_val), "color": color})
+        except Exception:
+            volume_series = []
+
+        indicators_cfg = indicators_cfg or {}
+        enabled_map = {
+            str(k).strip().lower(): v for k, v in (indicators_cfg or {}).items()
+            if isinstance(v, dict) and v.get("enabled")
+        }
+
+        if enabled_map.get("volume"):
+            _add_pane("volume", INDICATOR_DISPLAY_NAMES.get("volume", "Volume"), [
+                {"type": "histogram", "data": volume_series, "color": "#94a3b8", "priceFormat": {"type": "volume"}},
+            ], height=90)
+
+        if enabled_map.get("ma"):
+            cfg = enabled_map.get("ma", {})
+            length = int(cfg.get("length") or 20)
+            ma_type = str(cfg.get("type") or "SMA").strip().upper()
+            if ma_type == "EMA":
+                series = ema_indicator(df["close"], length)
+                label = f"EMA({length})"
+                color = "#38bdf8"
+            else:
+                series = sma_indicator(df["close"], length)
+                label = f"SMA({length})"
+                color = "#f59e0b"
+            _add_overlay("ma", label, _series_from_values(series.tolist()), color)
+
+        if enabled_map.get("ema"):
+            cfg = enabled_map.get("ema", {})
+            length = int(cfg.get("length") or 20)
+            series = ema_indicator(df["close"], length)
+            _add_overlay("ema", f"EMA({length})", _series_from_values(series.tolist()), "#22c55e")
+
+        if enabled_map.get("bb"):
+            cfg = enabled_map.get("bb", {})
+            length = int(cfg.get("length") or 20)
+            std = float(cfg.get("std") or 2)
+            upper, mid, lower = bollinger_bands_indicator(df, length=length, std=std)
+            _add_overlay("bb_upper", f"BB Upper({length})", _series_from_values(upper.tolist()), "#60a5fa", line_style=2)
+            _add_overlay("bb_mid", f"BB Mid({length})", _series_from_values(mid.tolist()), "#fbbf24")
+            _add_overlay("bb_lower", f"BB Lower({length})", _series_from_values(lower.tolist()), "#60a5fa", line_style=2)
+
+        if enabled_map.get("donchian"):
+            cfg = enabled_map.get("donchian", {})
+            length = int(cfg.get("length") or 20)
+            high_series = donchian_high_indicator(df, length)
+            low_series = donchian_low_indicator(df, length)
+            _add_overlay("donchian_high", f"DC High({length})", _series_from_values(high_series.tolist()), "#f59e0b", line_style=2)
+            _add_overlay("donchian_low", f"DC Low({length})", _series_from_values(low_series.tolist()), "#22c55e", line_style=2)
+
+        if enabled_map.get("psar"):
+            cfg = enabled_map.get("psar", {})
+            af = float(cfg.get("af") or 0.02)
+            max_af = float(cfg.get("max_af") or 0.2)
+            psar_series = psar_indicator(df, af=af, max_af=max_af)
+            _add_overlay("psar", "PSAR", _series_from_values(psar_series.tolist()), "#f472b6", line_style=1)
+
+        if enabled_map.get("supertrend"):
+            cfg = enabled_map.get("supertrend", {})
+            atr_period = int(cfg.get("atr_period") or 10)
+            multiplier = float(cfg.get("multiplier") or 3.0)
+            st_delta = supertrend_indicator(df, atr_period=atr_period, multiplier=multiplier)
+            try:
+                st_line = df["close"] - st_delta
+            except Exception:
+                st_line = st_delta
+            _add_overlay("supertrend", "SuperTrend", _series_from_values(st_line.tolist()), "#a855f7", line_style=2)
+
+        if enabled_map.get("rsi"):
+            cfg = enabled_map.get("rsi", {})
+            length = int(cfg.get("length") or 14)
+            series = rsi_indicator(df["close"], length=length)
+            _add_pane("rsi", INDICATOR_DISPLAY_NAMES.get("rsi", "RSI"), [
+                {"type": "line", "data": _series_from_values(series.tolist()), "color": "#f97316"},
+            ])
+
+        if enabled_map.get("stoch_rsi"):
+            cfg = enabled_map.get("stoch_rsi", {})
+            length = int(cfg.get("length") or 14)
+            smooth_k = int(cfg.get("smooth_k") or 3)
+            smooth_d = int(cfg.get("smooth_d") or 3)
+            k_series, d_series = stoch_rsi_indicator(df["close"], length=length, smooth_k=smooth_k, smooth_d=smooth_d)
+            _add_pane("stoch_rsi", INDICATOR_DISPLAY_NAMES.get("stoch_rsi", "Stoch RSI"), [
+                {"type": "line", "data": _series_from_values(k_series.tolist()), "color": "#22c55e"},
+                {"type": "line", "data": _series_from_values(d_series.tolist()), "color": "#ef4444"},
+            ])
+
+        if enabled_map.get("willr"):
+            cfg = enabled_map.get("willr", {})
+            length = int(cfg.get("length") or 14)
+            series = williams_r_indicator(df, length=length)
+            _add_pane("willr", INDICATOR_DISPLAY_NAMES.get("willr", "Williams %R"), [
+                {"type": "line", "data": _series_from_values(series.tolist()), "color": "#60a5fa"},
+            ])
+
+        if enabled_map.get("macd"):
+            cfg = enabled_map.get("macd", {})
+            fast = int(cfg.get("fast") or 12)
+            slow = int(cfg.get("slow") or 26)
+            signal = int(cfg.get("signal") or 9)
+            macd_line, signal_line, hist = macd_indicator(df["close"], fast=fast, slow=slow, signal=signal)
+            _add_pane("macd", INDICATOR_DISPLAY_NAMES.get("macd", "MACD"), [
+                {"type": "line", "data": _series_from_values(macd_line.tolist()), "color": "#22c55e"},
+                {"type": "line", "data": _series_from_values(signal_line.tolist()), "color": "#ef4444"},
+                {"type": "histogram", "data": _series_from_values(hist.tolist()), "color": "#94a3b8"},
+            ])
+
+        if enabled_map.get("uo"):
+            cfg = enabled_map.get("uo", {})
+            short = int(cfg.get("short") or 7)
+            medium = int(cfg.get("medium") or 14)
+            long = int(cfg.get("long") or 28)
+            series = uo_indicator(df, short=short, medium=medium, long=long)
+            _add_pane("uo", INDICATOR_DISPLAY_NAMES.get("uo", "Ultimate Oscillator"), [
+                {"type": "line", "data": _series_from_values(series.tolist()), "color": "#8b5cf6"},
+            ])
+
+        if enabled_map.get("adx"):
+            cfg = enabled_map.get("adx", {})
+            length = int(cfg.get("length") or 14)
+            series = adx_indicator(df, length=length)
+            _add_pane("adx", INDICATOR_DISPLAY_NAMES.get("adx", "ADX"), [
+                {"type": "line", "data": _series_from_values(series.tolist()), "color": "#f59e0b"},
+            ])
+
+        if enabled_map.get("dmi"):
+            cfg = enabled_map.get("dmi", {})
+            length = int(cfg.get("length") or 14)
+            plus_di, minus_di, adx_series = dmi_indicator(df, length=length)
+            _add_pane("dmi", INDICATOR_DISPLAY_NAMES.get("dmi", "DMI"), [
+                {"type": "line", "data": _series_from_values(plus_di.tolist()), "color": "#22c55e"},
+                {"type": "line", "data": _series_from_values(minus_di.tolist()), "color": "#ef4444"},
+                {"type": "line", "data": _series_from_values(adx_series.tolist()), "color": "#f59e0b"},
+            ])
+
+        if enabled_map.get("stochastic"):
+            cfg = enabled_map.get("stochastic", {})
+            length = int(cfg.get("length") or 14)
+            smooth_k = int(cfg.get("smooth_k") or 3)
+            smooth_d = int(cfg.get("smooth_d") or 3)
+            k_series, d_series = stochastic_indicator(df, length=length, smooth_k=smooth_k, smooth_d=smooth_d)
+            _add_pane("stochastic", INDICATOR_DISPLAY_NAMES.get("stochastic", "Stochastic"), [
+                {"type": "line", "data": _series_from_values(k_series.tolist()), "color": "#22c55e"},
+                {"type": "line", "data": _series_from_values(d_series.tolist()), "color": "#ef4444"},
+            ])
+
+        return {
+            "candles": candles,
+            "volume": volume_series if enabled_map.get("volume") else [],
+            "overlays": overlays,
+            "panes": panes,
+            "theme": theme_code,
+        }
+
     def _on_chart_theme_changed(self, *_args):
         if not getattr(self, "chart_enabled", False):
             return
@@ -7937,6 +9688,18 @@ class MainWindow(QtWidgets.QWidget):
                 theme_name = self.config.get("theme", "Dark")
             try:
                 tv_view.apply_theme(theme_name)
+            except Exception:
+                pass
+            return
+        lw_view = getattr(self, "chart_lightweight", None)
+        if lw_view is not None and view is lw_view:
+            try:
+                theme_name = (self.theme_combo.currentText() or "").strip()
+            except Exception:
+                theme_name = self.config.get("theme", "Dark")
+            theme_code = "light" if str(theme_name or "").lower().startswith("light") else "dark"
+            try:
+                lw_view.set_chart_data({"theme": theme_code})
             except Exception:
                 pass
 
@@ -7962,6 +9725,66 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             return
         if widget is getattr(self, "chart_tab", None):
+            try:
+                combo_mode = self.chart_view_mode_combo.currentData()
+            except Exception:
+                combo_mode = None
+            if not combo_mode:
+                try:
+                    combo_mode = self.chart_view_mode_combo.currentText()
+                except Exception:
+                    combo_mode = ""
+            combo_mode = str(combo_mode or "").strip().lower()
+            try:
+                env_disable = str(os.environ.get("BOT_DISABLE_WEBENGINE_CHARTS", "")).strip()
+                env_safe = str(os.environ.get("BOT_SAFE_CHART_TAB", "")).strip()
+                tv_flag = str(os.environ.get("BOT_TRADINGVIEW_WINDOW_SUPPRESS", "")).strip()
+                self._chart_debug_log(
+                    f"chart_tab_selected mode={combo_mode} webengine_allowed={int(_webengine_charts_allowed())} "
+                    f"safe_mode={int(_chart_safe_mode_enabled())} disable_env={env_disable!r} "
+                    f"safe_env={env_safe!r} tv_suppress={tv_flag!r}"
+                )
+            except Exception:
+                pass
+            if _chart_safe_mode_enabled() and combo_mode in {"tradingview", "original", "lightweight"}:
+                try:
+                    self._chart_debug_log("chart_tab_safe_mode_redirect=1")
+                except Exception:
+                    pass
+                if combo_mode == "tradingview":
+                    opened = False
+                    try:
+                        opened = self._open_tradingview_external()
+                    except Exception:
+                        opened = False
+                    if opened:
+                        self._show_chart_status(
+                            "TradingView opened in your browser. Set BOT_SAFE_CHART_TAB=0 to embed.",
+                            color="#94a3b8",
+                        )
+                    else:
+                        self._show_chart_status(
+                            "TradingView embed disabled. Set BOT_SAFE_CHART_TAB=0 to embed.",
+                            color="#f59e0b",
+                        )
+                else:
+                    self._show_chart_status(
+                        "Web charts disabled for stability. Set BOT_SAFE_CHART_TAB=0 to enable.",
+                        color="#f59e0b",
+                    )
+                legacy = self._chart_view_widgets.get("legacy")
+                if legacy is not None:
+                    try:
+                        self.chart_view = legacy
+                        idx = self.chart_view_stack.indexOf(legacy)
+                        if idx >= 0:
+                            self.chart_view_stack.setCurrentIndex(idx)
+                    except Exception:
+                        pass
+                if self._chart_needs_render or self._chart_pending_initial_load:
+                    self.load_chart(auto=True)
+                self._chart_pending_initial_load = False
+                return
             if self._pending_tradingview_mode:
                 # On Windows, do not auto-initialize TradingView/QtWebEngine just because the
                 # chart tab becomes visible; it can spawn multiple helper windows that flash.
@@ -7971,6 +9794,12 @@ class MainWindow(QtWidgets.QWidget):
                     allow_flag = str(os.environ.get("BOT_ALLOW_TRADINGVIEW_WINDOWS", "")).strip().lower()
                     allow_tradingview_init = allow_flag in {"1", "true", "yes", "on"}
                 self._apply_chart_view_mode("tradingview", allow_tradingview_init=allow_tradingview_init)
+            pending_web = getattr(self, "_pending_webengine_mode", None)
+            if pending_web:
+                self._pending_webengine_mode = None
+                self._apply_chart_view_mode(str(pending_web), allow_tradingview_init=True)
+            if getattr(self, "_pending_tradingview_switch", False):
+                self._on_tradingview_ready()
             if self._chart_pending_initial_load:
                 self.load_chart(auto=True)
             elif self.chart_auto_follow:
@@ -7986,6 +9815,10 @@ class MainWindow(QtWidgets.QWidget):
     def load_chart(self, auto: bool = False):
         if not getattr(self, "chart_enabled", False):
             return
+        try:
+            self._chart_debug_log(f"load_chart auto={int(bool(auto))}")
+        except Exception:
+            pass
         # Throttle auto refreshes to avoid spamming TradingView reloads (which are heavy).
         try:
             now_ts = time.monotonic()
@@ -8062,7 +9895,34 @@ class MainWindow(QtWidgets.QWidget):
                     pass
             return
 
-        if not QT_CHARTS_AVAILABLE and not isinstance(view, SimpleCandlestickWidget):
+        bw_view = getattr(self, "chart_binance", None)
+        if bw_view is not None and view is bw_view:
+            try:
+                self._chart_pending_initial_load = False
+                bw_view.set_chart(symbol_text, interval_text, market_text)
+                try:
+                    self._last_chart_load_ts = time.monotonic()
+                except Exception:
+                    pass
+                self.chart_config["symbol"] = symbol_text
+                self.chart_config["interval"] = interval_text
+                self.chart_config["market"] = market_text
+                self.chart_config["auto_follow"] = bool(self.chart_auto_follow and market_text == "Futures")
+                self._chart_needs_render = False
+            except Exception as exc:
+                self._chart_needs_render = True
+                if not auto:
+                    self.log(f"Chart load failed: {exc}")
+                try:
+                    bw_view.show_message("Failed to load Binance chart.", color="#f75467")
+                except Exception:
+                    pass
+            return
+
+        lw_view = getattr(self, "chart_lightweight", None)
+        is_lightweight = lw_view is not None and view is lw_view
+
+        if not is_lightweight and not QT_CHARTS_AVAILABLE and not isinstance(view, SimpleCandlestickWidget):
             if not auto:
                 self.log("Charts unavailable: install PyQt6-Charts for visualization.")
             self._show_chart_status("Charts unavailable.", color="#f75467")
@@ -8071,6 +9931,11 @@ class MainWindow(QtWidgets.QWidget):
         api_key = self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") else ""
         api_secret = self.api_secret_edit.text().strip() if hasattr(self, "api_secret_edit") else ""
         mode = self.mode_combo.currentText() if hasattr(self, "mode_combo") else "Live"
+        indicators_cfg = copy.deepcopy(self.config.get("indicators", {}) or {})
+        try:
+            theme_name = (self.theme_combo.currentText() or "").strip()
+        except Exception:
+            theme_name = self.config.get("theme", "Dark")
 
         def _do():
             thread = QtCore.QThread.currentThread()
@@ -8091,6 +9956,8 @@ class MainWindow(QtWidgets.QWidget):
                 raise RuntimeError("no_kline_data")
             df = df.tail(400)
             candles = []
+            times = []
+            index_used = []
             for ts, row in df.iterrows():
                 if thread.isInterruptionRequested():
                     return None
@@ -8113,12 +9980,24 @@ class MainWindow(QtWidgets.QWidget):
                         "low": float(row.get('low', 0.0)),
                         "close": float(row.get('close', 0.0)),
                     })
+                    times.append(epoch)
+                    index_used.append(ts)
                 except Exception:
                     continue
             if thread.isInterruptionRequested():
                 return None
             if not candles:
                 raise RuntimeError("no_valid_candles")
+            if is_lightweight:
+                df_used = df.loc[index_used] if index_used else df
+                payload = self._build_lightweight_payload(
+                    df_used,
+                    times,
+                    candles,
+                    indicators_cfg,
+                    theme_name,
+                )
+                return {"candles": candles, "payload": payload}
             return {"candles": candles}
 
         def _done(res, err, worker_ref=None):
@@ -8133,14 +10012,29 @@ class MainWindow(QtWidgets.QWidget):
                 self._show_chart_status("Failed to load chart data.", color="#f75467")
                 return
             candles = res.get("candles") or []
-            self._render_candlestick_chart(symbol_text, interval_code, candles)
+            if is_lightweight and lw_view is not None:
+                payload = res.get("payload") or {}
+                try:
+                    if payload:
+                        lw_view.set_chart_data(payload)
+                except Exception as exc:
+                    if not auto:
+                        self.log(f"Chart load failed: {exc}")
+                    self._show_chart_status("Failed to load lightweight chart.", color="#f75467")
+                    return
+            else:
+                self._render_candlestick_chart(symbol_text, interval_code, candles)
+            try:
+                self._last_chart_load_ts = time.monotonic()
+            except Exception:
+                pass
             self.chart_config["symbol"] = symbol_text
             self.chart_config["interval"] = interval_text
             self.chart_config["market"] = market_text
             self.chart_config["auto_follow"] = bool(self.chart_auto_follow and market_text == "Futures")
             self._chart_needs_render = False
 
-        self._show_chart_status("Loading chartâ€¦", color="#d1d4dc")
+        self._show_chart_status("Loading chart...", color="#d1d4dc")
         self._chart_needs_render = True
         worker = CallWorker(_do, parent=self)
         self._chart_worker = worker
@@ -8871,6 +10765,8 @@ class MainWindow(QtWidgets.QWidget):
             self.chart_view = None
             self.chart_view_stack = None
             self.chart_tradingview = None
+            self.chart_binance = None
+            self.chart_lightweight = None
             self.chart_original_view = None
         self._entry_intervals = {}
         self._entry_times = {}  # (sym, 'L'/'S') -> last trade time string
@@ -14543,7 +16439,39 @@ def _teardown_positions_thread(self):
     except Exception:
         pass
 
+def _log_window_event(self, name: str, event=None) -> None:
+    try:
+        visible = int(bool(self.isVisible()))
+    except Exception:
+        visible = -1
+    try:
+        minimized = int(bool(self.windowState() & QtCore.Qt.WindowState.WindowMinimized))
+    except Exception:
+        minimized = -1
+    try:
+        spontaneous = int(bool(event.spontaneous())) if event is not None else -1
+    except Exception:
+        spontaneous = -1
+    msg = f"window_event {name} visible={visible} minimized={minimized} spontaneous={spontaneous}"
+    try:
+        logger = getattr(self, "_chart_debug_log", None)
+        if callable(logger):
+            logger(msg)
+            return
+    except Exception:
+        pass
+    try:
+        path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
+        with open(path, "a", encoding="utf-8", errors="ignore") as fh:
+            fh.write(f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
 def closeEvent(self, event):
+    try:
+        _log_window_event(self, "closeEvent", event=event)
+    except Exception:
+        pass
     close_guard = getattr(self, "_close_in_progress", False)
     if close_guard:
         event.ignore()
@@ -14565,6 +16493,39 @@ def closeEvent(self, event):
                 event.accept()
             except Exception:
                 pass
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                setattr(app, "_exiting", True)
+                app.quit()
+        except Exception:
+            pass
+        return
+    try:
+        guard_active = bool(getattr(self, "_tv_close_guard_active", False))
+    except Exception:
+        guard_active = False
+    if guard_active:
+        event.ignore()
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+        return
+    try:
+        guard_until = float(getattr(self, "_tv_close_guard_until", 0.0) or 0.0)
+    except Exception:
+        guard_until = 0.0
+    if guard_until and time.monotonic() < guard_until:
+        event.ignore()
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
         return
 
     close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
@@ -14594,10 +16555,53 @@ def closeEvent(self, event):
             event.accept()
         except Exception:
             pass
+    try:
+        if event.isAccepted():
+            try:
+                spontaneous = bool(event.spontaneous())
+            except Exception:
+                spontaneous = False
+            if spontaneous:
+                app = QtWidgets.QApplication.instance()
+                if app is not None:
+                    setattr(app, "_exiting", True)
+                    app.quit()
+    except Exception:
+        pass
+
+def hideEvent(self, event):  # noqa: N802
+    try:
+        _log_window_event(self, "hideEvent", event=event)
+    except Exception:
+        pass
+    try:
+        guard_active = bool(getattr(self, "_tv_close_guard_active", False))
+    except Exception:
+        guard_active = False
+    if guard_active:
+        try:
+            event.ignore()
+        except Exception:
+            pass
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+        return
+    try:
+        super(MainWindow, self).hideEvent(event)
+    except Exception:
+        try:
+            event.accept()
+        except Exception:
+            pass
 
 try:
     MainWindow._teardown_positions_thread = _teardown_positions_thread
     MainWindow.closeEvent = closeEvent
+    MainWindow.hideEvent = hideEvent
 except Exception:
     pass
 
@@ -14619,6 +16623,8 @@ def _gui_apply_theme(self, name: str):
             color = QtGui.QColor(accent)
             hover = color.lighter(115).name()
             pressed = color.darker(120).name()
+            accent_text = "#0c0f16" if color.lightness() >= 160 else "#ffffff"
+            outline = color.darker(170).name()
             accent_styles = f"""
             /* Buttons */
             QPushButton {{
@@ -14648,10 +16654,10 @@ def _gui_apply_theme(self, name: str):
                 background-color: {pressed};
                 border-color: {pressed};
             }}
-            /* Combo boxes */
-            QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
+            /* Inputs */
+            QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit, QPlainTextEdit {{
                 selection-background-color: {accent};
-                selection-color: #0c0f16;
+                selection-color: {accent_text};
             }}
             QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{
                 border: 1px solid {accent};
@@ -14665,8 +16671,71 @@ def _gui_apply_theme(self, name: str):
                 background-color: {accent};
                 width: 18px;
             }}
+            /* Checkboxes / radios */
+            QCheckBox::indicator:checked {{
+                background-color: {accent};
+                border-color: {accent};
+                image: url(:/qt-project.org/styles/commonstyle/images/checkboxchecked.png);
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {accent};
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: {accent};
+                border: 1px solid {accent};
+            }}
+            QRadioButton::indicator:hover {{
+                border: 1px solid {accent};
+            }}
+            /* Tabs / group boxes */
+            QTabBar::tab:selected {{
+                background-color: {accent};
+                border: 1px solid {accent};
+                color: {accent_text};
+            }}
+            QTabBar::tab:hover {{
+                border: 1px solid {accent};
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {outline};
+            }}
+            QGroupBox::title {{
+                color: {accent};
+            }}
+            QGroupBox {{
+                border: 1px solid {outline};
+            }}
+            /* Selection / tables */
+            QAbstractItemView::item:selected {{
+                background-color: {accent};
+                color: {accent_text};
+            }}
+            QAbstractItemView::item:hover {{
+                background-color: {hover};
+                color: {accent_text};
+            }}
+            QHeaderView::section {{
+                border: 1px solid {outline};
+            }}
             QProgressBar::chunk {{
                 background-color: {accent};
+            }}
+            /* Sliders / scrollbars */
+            QSlider::handle:horizontal, QSlider::handle:vertical {{
+                background: {accent};
+                border: 1px solid {outline};
+            }}
+            QSlider::sub-page:horizontal, QSlider::sub-page:vertical {{
+                background: {accent};
+            }}
+            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+                background: {accent};
+                border: 1px solid {outline};
+                border-radius: 4px;
+            }}
+            QMenu::item:selected {{
+                background-color: {accent};
+                color: {accent_text};
             }}
             """
         except Exception:

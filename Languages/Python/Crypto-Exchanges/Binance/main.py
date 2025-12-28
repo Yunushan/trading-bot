@@ -832,6 +832,12 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Binance Trading Bot")
     app.setApplicationDisplayName("Binance Trading Bot")
+    app._exiting = False  # type: ignore[attr-defined]
+    if sys.platform == "win32":
+        try:
+            app.setQuitOnLastWindowClosed(False)
+        except Exception:
+            pass
 
     icon = QtGui.QIcon()
     try:
@@ -846,6 +852,10 @@ def main() -> int:
             pass
 
     win = MainWindow()
+    try:
+        win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+    except Exception:
+        pass
     if not icon.isNull():
         try:
             win.setWindowIcon(icon)
@@ -882,6 +892,66 @@ def main() -> int:
     win.showMaximized()
     try:
         win.winId()
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            watchdog_flag = str(os.environ.get("BOT_TRADINGVIEW_APP_WATCHDOG", "1")).strip().lower()
+        except Exception:
+            watchdog_flag = "1"
+        if watchdog_flag not in {"0", "false", "no", "off"}:
+            try:
+                timer = QtCore.QTimer(app)
+                timer.setInterval(200)
+
+                def _tv_watchdog():  # noqa: N802
+                    try:
+                        if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
+                            return
+                    except Exception:
+                        pass
+                    try:
+                        guard_active = bool(
+                            getattr(win, "_tv_close_guard_active", False)
+                            or getattr(win, "_tv_visibility_watchdog_active", False)
+                        )
+                    except Exception:
+                        guard_active = False
+                    if not guard_active:
+                        return
+                    try:
+                        if not win.isVisible() or win.windowState() & QtCore.Qt.WindowState.WindowMinimized:
+                            win.showNormal()
+                            win.raise_()
+                            win.activateWindow()
+                    except Exception:
+                        pass
+
+                timer.timeout.connect(_tv_watchdog)
+                timer.start()
+                app._tradingview_app_watchdog = timer  # type: ignore[attr-defined]
+            except Exception:
+                pass
+    try:
+        def _restore_main_window():  # noqa: N802
+            try:
+                if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
+                    return
+            except Exception:
+                pass
+            try:
+                if win is None or win.isVisible():
+                    return
+            except Exception:
+                return
+            try:
+                win.showNormal()
+                win.raise_()
+                win.activateWindow()
+            except Exception:
+                pass
+
+        app.lastWindowClosed.connect(_restore_main_window)
     except Exception:
         pass
     class _StartupInputUnblocker(QtCore.QObject):
