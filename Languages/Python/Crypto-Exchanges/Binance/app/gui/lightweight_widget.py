@@ -5,13 +5,16 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from PyQt6 import QtCore
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineCore import QWebEnginePage
 except Exception as exc:  # pragma: no cover - environment without WebEngine
     QWebEngineView = None  # type: ignore[assignment]
+    QWebEnginePage = None  # type: ignore[assignment]
     _IMPORT_ERROR = exc
 else:
     _IMPORT_ERROR = None
@@ -23,12 +26,24 @@ _LIB_CDN_SOURCES = [
 ]
 
 
-def _resolve_lightweight_lib_sources() -> list[str]:
-    sources: list[str] = []
+def _resolve_lightweight_local_lib() -> Path | None:
     try:
         local_path = Path(__file__).resolve().parent.parent / "assets" / "lightweight-charts.standalone.production.js"
         if local_path.is_file():
-            sources.append(local_path.as_uri())
+            return local_path
+    except Exception:
+        return None
+    return None
+
+
+_LOCAL_LIB_PATH = _resolve_lightweight_local_lib()
+
+
+def _resolve_lightweight_lib_sources() -> list[str]:
+    sources: list[str] = []
+    try:
+        if _LOCAL_LIB_PATH is not None and _LOCAL_LIB_PATH.is_file():
+            sources.append(_LOCAL_LIB_PATH.as_uri())
     except Exception:
         pass
     sources.extend(_LIB_CDN_SOURCES)
@@ -37,6 +52,50 @@ def _resolve_lightweight_lib_sources() -> list[str]:
 
 _LIB_SOURCES = _resolve_lightweight_lib_sources()
 _LIB_SOURCES_JSON = json.dumps(_LIB_SOURCES, ensure_ascii=True)
+_INLINE_LIB_CACHE: str | None = None
+
+
+def _resolve_lightweight_base_url() -> QtCore.QUrl:
+    """
+    Use a file:// origin when possible so local JS assets load even when HTTPS
+    access is blocked or intercepted on Windows.
+    """
+    try:
+        if _LOCAL_LIB_PATH is not None and _LOCAL_LIB_PATH.is_file():
+            return QtCore.QUrl.fromLocalFile(str(_LOCAL_LIB_PATH))
+        return QtCore.QUrl.fromLocalFile(str(Path(__file__).resolve()))
+    except Exception:
+        return QtCore.QUrl("https://localhost/")
+
+
+_BASE_URL = _resolve_lightweight_base_url()
+
+
+def _resolve_lightweight_html_path() -> Path | None:
+    try:
+        temp_root = Path(os.getenv("TEMP") or ".").resolve()
+        temp_root.mkdir(parents=True, exist_ok=True)
+        return temp_root / f"binance_lightweight_{uuid4().hex}.html"
+    except Exception:
+        return None
+
+
+def _load_inline_library() -> str:
+    global _INLINE_LIB_CACHE
+    if _INLINE_LIB_CACHE is not None:
+        return _INLINE_LIB_CACHE
+    if _LOCAL_LIB_PATH is None or not _LOCAL_LIB_PATH.is_file():
+        _INLINE_LIB_CACHE = ""
+        return _INLINE_LIB_CACHE
+    try:
+        content = _LOCAL_LIB_PATH.read_text(encoding="utf-8", errors="ignore")
+        _INLINE_LIB_CACHE = f"<script>\n{content}\n</script>"
+        _log_chart_event(f"LightweightChartWidget inline lib loaded size={len(content)}")
+        return _INLINE_LIB_CACHE
+    except Exception as exc:
+        _INLINE_LIB_CACHE = ""
+        _log_chart_event(f"LightweightChartWidget inline lib failed: {exc}")
+        return _INLINE_LIB_CACHE
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html>
@@ -90,6 +149,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     <div id="indicator_root"></div>
   </div>
   <div id="fallback">Loading chart...</div>
+  __LIB_INLINE__
   <script type="text/javascript">
     (function() {{
       const initPayload = __INIT_PAYLOAD__ || {{}};
@@ -439,6 +499,11 @@ class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
         super().__init__(parent)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
         try:
+            if QWebEnginePage is not None:
+                self.setPage(_DebugWebEnginePage(self))
+        except Exception:
+            pass
+        try:
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         except Exception:
@@ -446,6 +511,7 @@ class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
         try:
             settings = self.settings()
             settings.setAttribute(settings.WebAttribute.LocalStorageEnabled, True)
+            settings.setAttribute(settings.WebAttribute.JavascriptEnabled, True)
             settings.setAttribute(settings.WebAttribute.Accelerated2dCanvasEnabled, True)
             settings.setAttribute(settings.WebAttribute.WebGLEnabled, True)
             settings.setAttribute(settings.WebAttribute.HyperlinkAuditingEnabled, False)
@@ -472,12 +538,17 @@ class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
         except Exception:
             pass
         try:
+            self.loadStarted.connect(self._on_load_started)
+        except Exception:
+            pass
+        try:
             page = self.page()
             if hasattr(page, "renderProcessTerminated"):
                 page.renderProcessTerminated.connect(self._on_render_process_terminated)
         except Exception:
             pass
         _log_chart_event("LightweightChartWidget init")
+        self._html_path = _resolve_lightweight_html_path()
 
     def set_chart_data(self, payload: dict) -> None:
         if not payload:
@@ -512,8 +583,26 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
             return
         self._rendered = True
         payload_json = json.dumps(payload or {}, ensure_ascii=True)
-        html = _HTML_TEMPLATE.replace("__INIT_PAYLOAD__", payload_json).replace("__LIB_SOURCES__", _LIB_SOURCES_JSON)
-        self.setHtml(html, QtCore.QUrl("https://localhost/"))
+        template = _HTML_TEMPLATE.replace("{{", "{").replace("}}", "}")
+        html = template.replace("__INIT_PAYLOAD__", payload_json).replace("__LIB_SOURCES__", _LIB_SOURCES_JSON)
+        html = html.replace("__LIB_INLINE__", _load_inline_library())
+        html_path = getattr(self, "_html_path", None)
+        if isinstance(html_path, Path):
+            try:
+                html_path.write_text(html, encoding="utf-8", errors="ignore")
+                self._page_ready = False
+                self.load(QtCore.QUrl.fromLocalFile(str(html_path)))
+                _log_chart_event(f"LightweightChartWidget loadHtmlFile path={html_path}")
+                return
+            except Exception as exc:
+                _log_chart_event(f"LightweightChartWidget loadHtmlFile failed: {exc}")
+        self.setHtml(html, _BASE_URL)
+
+    def _on_load_started(self) -> None:
+        try:
+            _log_chart_event("LightweightChartWidget loadStarted")
+        except Exception:
+            pass
 
     def _on_load_finished(self, ok: bool) -> None:
         self._page_ready = bool(ok)
@@ -561,3 +650,18 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
             self.page().runJavaScript(f"window.__lw_apply_payload({payload_json});")
         except Exception:
             pass
+
+
+if QWebEnginePage is not None:
+    class _DebugWebEnginePage(QWebEnginePage):  # pragma: no cover - logging only
+        def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+            try:
+                _log_chart_event(
+                    f"Lightweight JS console level={int(level)} line={int(line_number)} source={source_id} msg={message}"
+                )
+            except Exception:
+                pass
+            try:
+                super().javaScriptConsoleMessage(level, message, line_number, source_id)
+            except Exception:
+                pass

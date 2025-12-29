@@ -16505,19 +16505,25 @@ def closeEvent(self, event):
         guard_active = bool(getattr(self, "_tv_close_guard_active", False))
     except Exception:
         guard_active = False
-    if guard_active:
-        event.ignore()
-        try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-        return
     try:
         guard_until = float(getattr(self, "_tv_close_guard_until", 0.0) or 0.0)
     except Exception:
         guard_until = 0.0
+    if guard_active:
+        if guard_until and time.monotonic() < guard_until:
+            event.ignore()
+            try:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+            return
+        try:
+            self._tv_close_guard_active = False
+        except Exception:
+            pass
+        guard_active = False
     if guard_until and time.monotonic() < guard_until:
         event.ignore()
         try:
@@ -16580,16 +16586,25 @@ def hideEvent(self, event):  # noqa: N802
         guard_active = False
     if guard_active:
         try:
-            event.ignore()
+            guard_until = float(getattr(self, "_tv_close_guard_until", 0.0) or 0.0)
         except Exception:
-            pass
+            guard_until = 0.0
+        if guard_until and time.monotonic() < guard_until:
+            try:
+                event.ignore()
+            except Exception:
+                pass
+            try:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+            return
         try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
+            self._tv_close_guard_active = False
         except Exception:
             pass
-        return
     try:
         super(MainWindow, self).hideEvent(event)
     except Exception:
