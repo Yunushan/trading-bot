@@ -66,7 +66,10 @@ APP_ICON_BASENAME = "crypto_forex_logo"
 APP_ICON_PATH = REPO_ROOT / "assets" / f"{APP_ICON_BASENAME}.ico"
 APP_ICON_FALLBACK = REPO_ROOT / "assets" / f"{APP_ICON_BASENAME}.png"
 WINDOWS_APP_ID = "com.tradingbot.starter"
-DEBUG_LOG_PATH = Path(os.getenv("TEMP") or ".").resolve() / "starter_debug.log"
+TEMP_DIR = Path(os.getenv("TEMP") or ".").resolve()
+DEBUG_LOG_PATH = TEMP_DIR / "starter_debug.log"
+STARTER_CHILD_WINDOW_EVENTS_LOG_PATH = TEMP_DIR / "starter_child_window_events.log"
+BINANCE_WINDOW_EVENTS_LOG_PATH = TEMP_DIR / "binance_window_events.log"
 
 
 def _debug_log(message: str) -> None:
@@ -408,10 +411,19 @@ class LaunchOverlay(QtWidgets.QWidget):
         message: str,
         *,
         parent_window: QtWidgets.QWidget | None = None,
+        owner_window: QtWidgets.QWidget | None = None,
+        cover_owner: bool | None = None,
         fullscreen: bool | None = None,
         all_screens: bool | None = None,
         background_mode: str | None = None,
     ) -> None:
+        if cover_owner is None:
+            cover_owner = str(os.environ.get("BOT_LAUNCH_OVERLAY_COVER_OWNER", "")).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
         if fullscreen is None:
             fullscreen = str(os.environ.get("BOT_LAUNCH_OVERLAY_FULLSCREEN", "")).strip().lower() in {
                 "1",
@@ -430,20 +442,25 @@ class LaunchOverlay(QtWidgets.QWidget):
             background_mode = str(os.environ.get("BOT_LAUNCH_OVERLAY_BACKGROUND", "")).strip().lower() or None
         flags = QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.Tool
         # Only stay-topmost when explicitly requested (full-screen flicker masking).
-        if fullscreen:
+        if fullscreen or cover_owner:
             flags |= QtCore.Qt.WindowType.WindowStaysOnTopHint
         super().__init__(parent_window, flags)
         self._fullscreen = bool(fullscreen)
         self._all_screens = bool(all_screens)
+        self._cover_owner = bool(cover_owner)
+        self._owner_window = owner_window or parent_window
         self._background_mode = (
             str(background_mode or "").strip().lower()
             if str(background_mode or "").strip().lower() in {"solid", "snapshot"}
             else "solid"
         )
         self._background_pixmap: QtGui.QPixmap | None = None
+        self._topmost_timer: QtCore.QTimer | None = None
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        if self._fullscreen or self._cover_owner:
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self._bg_color = QtGui.QColor(13, 17, 23, 255)
 
         self._panel = QtWidgets.QFrame(self)
@@ -478,7 +495,6 @@ class LaunchOverlay(QtWidgets.QWidget):
         hint.setStyleSheet("color: #94a3b8; font-size: 13px;")
         panel_layout.addWidget(hint)
 
-        self._parent_window = parent_window
         self._spinner.start()
         self._reposition()
         if self._fullscreen and self._background_mode == "snapshot":
@@ -499,11 +515,11 @@ class LaunchOverlay(QtWidgets.QWidget):
     def _env_flag(name: str) -> bool:
         return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
-    def _fullscreen_overlay_enabled(self) -> bool:
-        # Default: show only the centered panel (do not cover the whole screen).
+    def _mask_overlay_enabled(self) -> bool:
+        # Default: show only the centered panel (do not cover the whole window).
         # Enable full-screen masking with BOT_LAUNCH_OVERLAY_FULLSCREEN=1.
         try:
-            return bool(getattr(self, "_fullscreen", False))
+            return bool(getattr(self, "_fullscreen", False) or getattr(self, "_cover_owner", False))
         except Exception:
             return False
 
@@ -515,8 +531,8 @@ class LaunchOverlay(QtWidgets.QWidget):
 
     def _target_screen_geometry(self) -> QtCore.QRect:
         try:
-            if self._parent_window is not None:
-                pos = self._parent_window.mapToGlobal(self._parent_window.rect().center())
+            if self._owner_window is not None:
+                pos = self._owner_window.mapToGlobal(self._owner_window.rect().center())
                 screen = QtGui.QGuiApplication.screenAt(pos)
                 if screen is not None:
                     return screen.geometry()
@@ -539,7 +555,27 @@ class LaunchOverlay(QtWidgets.QWidget):
             pass
         return self._target_screen_geometry()
 
+    def _owner_geometry(self) -> QtCore.QRect | None:
+        try:
+            if self._owner_window is None:
+                return None
+            try:
+                frame = self._owner_window.frameGeometry()
+                if frame.isValid():
+                    return frame
+            except Exception:
+                pass
+            rect = self._owner_window.rect()
+            top_left = self._owner_window.mapToGlobal(rect.topLeft())
+            return QtCore.QRect(top_left, rect.size())
+        except Exception:
+            return None
+
     def _overlay_geometry(self) -> QtCore.QRect:
+        if bool(getattr(self, "_cover_owner", False)):
+            owner_geo = self._owner_geometry()
+            if owner_geo is not None and owner_geo.isValid():
+                return owner_geo
         if bool(getattr(self, "_all_screens", False)) or self._env_flag("BOT_LAUNCH_OVERLAY_ALL_SCREENS"):
             return self._virtual_geometry()
         return self._target_screen_geometry()
@@ -568,7 +604,7 @@ class LaunchOverlay(QtWidgets.QWidget):
         x_global = int(screen_geo.x() + (screen_geo.width() - panel_w) / 2)
         y_global = int(screen_geo.y() + (screen_geo.height() - panel_h) / 2)
 
-        if self._fullscreen_overlay_enabled():
+        if self._mask_overlay_enabled():
             overlay_geo = self._overlay_geometry()
             self.setGeometry(overlay_geo)
             x = int(x_global - overlay_geo.x())
@@ -582,7 +618,7 @@ class LaunchOverlay(QtWidgets.QWidget):
     def _force_topmost(self) -> None:
         if sys.platform != "win32":
             return
-        if not self._fullscreen_overlay_enabled():
+        if not self._mask_overlay_enabled():
             return
         try:
             import ctypes
@@ -607,7 +643,33 @@ class LaunchOverlay(QtWidgets.QWidget):
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )
         except Exception:
+            self._set_launch_mask(False)
             return
+
+    def _start_topmost_timer(self) -> None:
+        if not self._mask_overlay_enabled():
+            return
+        if self._topmost_timer is not None:
+            return
+        timer = QtCore.QTimer(self)
+        timer.setInterval(200)
+        timer.timeout.connect(self._force_topmost)
+        timer.start()
+        self._topmost_timer = timer
+
+    def _stop_topmost_timer(self) -> None:
+        timer = self._topmost_timer
+        if timer is None:
+            return
+        try:
+            timer.stop()
+        except Exception:
+            pass
+        try:
+            timer.deleteLater()
+        except Exception:
+            pass
+        self._topmost_timer = None
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
@@ -615,12 +677,20 @@ class LaunchOverlay(QtWidgets.QWidget):
             self._reposition()
             self.raise_()
             self._force_topmost()
+            self._start_topmost_timer()
         except Exception:
             pass
 
+    def hideEvent(self, event: QtGui.QHideEvent) -> None:  # noqa: N802
+        try:
+            self._stop_topmost_timer()
+        except Exception:
+            pass
+        super().hideEvent(event)
+
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
         super().paintEvent(event)
-        if not self._fullscreen_overlay_enabled():
+        if not self._mask_overlay_enabled():
             return
         try:
             painter = QtGui.QPainter(self)
@@ -643,6 +713,10 @@ class LaunchOverlay(QtWidgets.QWidget):
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
         try:
             self._spinner.stop()
+        except Exception:
+            pass
+        try:
+            self._stop_topmost_timer()
         except Exception:
             pass
         super().closeEvent(event)
@@ -687,6 +761,10 @@ class StarterWindow(QtWidgets.QWidget):
         self._win32_topmost_timer: QtCore.QTimer | None = None
         self._win32_last_child_main_hwnd: int = 0
         self._child_ready_file: Path | None = None
+        self._verbose_launch_logging = False
+        self._verbose_launch_session_id = ""
+        self._launch_mask_active = False
+        self._launch_mask_prev_opacity: float | None = None
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(40, 32, 40, 32)
@@ -746,6 +824,10 @@ class StarterWindow(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            self._set_launch_mask(False)
+        except Exception:
+            pass
+        try:
             self._end_launch_focus_shield()
         except Exception:
             pass
@@ -769,6 +851,120 @@ class StarterWindow(QtWidgets.QWidget):
             "QPushButton:hover {background-color: #1d4ed8;}"
             "QPushButton:disabled {background-color: #1f2a44; color: #6b7280;}"
         )
+
+    def _verbose_log(self, message: str) -> None:
+        if not self._verbose_launch_logging:
+            return
+        session_id = self._verbose_launch_session_id or "unknown"
+        _debug_log(f"[verbose:{session_id}] {message}")
+
+    def _write_verbose_log_header(self, reason: str) -> None:
+        session_id = self._verbose_launch_session_id or "unknown"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _debug_log(f"[verbose:{session_id}] session-start time={timestamp} reason={reason}")
+        _debug_log(
+            f"[verbose:{session_id}] starter pid={os.getpid()} exe={sys.executable} cwd={Path.cwd()} "
+            f"platform={sys.platform} qt_pref={PREFERRED_QT_VERSION}"
+        )
+        _debug_log(
+            f"[verbose:{session_id}] selection language={self.selected_language} "
+            f"market={self.selected_market} exchange={self.selected_exchange}"
+        )
+        _debug_log(
+            f"[verbose:{session_id}] log paths: starter={DEBUG_LOG_PATH} "
+            f"window_parent={STARTER_CHILD_WINDOW_EVENTS_LOG_PATH} window_child={BINANCE_WINDOW_EVENTS_LOG_PATH}"
+        )
+        env_keys = [
+            "BOT_DEBUG_WINDOW_EVENTS",
+            "BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS",
+            "BOT_NO_STARTUP_WINDOW_SUPPRESS",
+            "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS",
+            "BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS",
+            "BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS",
+            "BOT_STARTUP_WINDOW_POLL_MS",
+            "BOT_STARTUP_WINDOW_POLL_INTERVAL_MS",
+            "BOT_STARTUP_WINDOW_POLL_FAST_MS",
+            "BOT_STARTUP_WINDOW_POLL_FAST_INTERVAL_MS",
+            "BOT_LAUNCH_OVERLAY_FULLSCREEN",
+            "BOT_LAUNCH_OVERLAY_ALL_SCREENS",
+            "BOT_LAUNCH_OVERLAY_BACKGROUND",
+            "BOT_LAUNCH_OVERLAY_COVER_OWNER",
+            "BOT_FORCE_SOFTWARE_OPENGL",
+            "BOT_STARTER_TOPMOST_SHIELD_MS",
+            "QTWEBENGINE_DISABLE_SANDBOX",
+            "QTWEBENGINE_CHROMIUM_FLAGS",
+            "QT_OPENGL",
+            "QSG_RHI_BACKEND",
+            "QT_QUICK_BACKEND",
+            "PYTHONPATH",
+        ]
+        for key in env_keys:
+            _debug_log(f"[verbose:{session_id}] env {key}={os.environ.get(key, '')!r}")
+        header = f"\n=== verbose session {session_id} @ {timestamp} ({reason}) ===\n"
+        for path in (STARTER_CHILD_WINDOW_EVENTS_LOG_PATH, BINANCE_WINDOW_EVENTS_LOG_PATH):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "a", encoding="utf-8", errors="ignore") as fh:
+                    fh.write(header)
+            except Exception:
+                pass
+
+    def _enable_verbose_launch_logging(self, reason: str) -> None:
+        if self._verbose_launch_logging:
+            return
+        self._verbose_launch_logging = True
+        self._verbose_launch_session_id = uuid4().hex[:8]
+        os.environ["BOT_DEBUG_WINDOW_EVENTS"] = "1"
+        session_id = self._verbose_launch_session_id
+        _debug_log(f"[verbose:{session_id}] enabled (reason={reason})")
+        self._write_verbose_log_header(reason)
+
+    @staticmethod
+    def _merge_chromium_flags(current: str, extra_flags: list[str]) -> str:
+        parts = [part for part in current.split() if part]
+        for flag in extra_flags:
+            if flag not in parts:
+                parts.append(flag)
+        return " ".join(parts)
+
+    def _set_launch_mask(self, active: bool) -> None:
+        if sys.platform != "win32":
+            return
+        if self.selected_language != "python" or self.selected_exchange != "binance":
+            return
+        if active:
+            if self._launch_mask_active:
+                return
+            self._launch_mask_active = True
+            try:
+                self._launch_mask_prev_opacity = float(self.windowOpacity())
+            except Exception:
+                self._launch_mask_prev_opacity = 1.0
+            try:
+                self.setWindowOpacity(0.0)
+            except Exception:
+                pass
+            try:
+                self.setEnabled(False)
+            except Exception:
+                pass
+            self._verbose_log("launch mask enabled")
+            return
+        if not self._launch_mask_active:
+            return
+        prev = self._launch_mask_prev_opacity
+        if prev is None:
+            prev = 1.0
+        try:
+            self.setWindowOpacity(prev)
+        except Exception:
+            pass
+        try:
+            self.setEnabled(True)
+        except Exception:
+            pass
+        self._launch_mask_active = False
+        self._verbose_log("launch mask disabled")
 
     def _resolve_cpp_binance_executable(self, refresh: bool = False) -> Path | None:
         if not refresh and self._cpp_binance_executable and self._cpp_binance_executable.is_file():
@@ -1330,6 +1526,9 @@ class StarterWindow(QtWidgets.QWidget):
         allow_auto = getattr(self, "_allow_language_auto_advance", True)
         auto_advance = (self.stack.currentIndex() == 0) and allow_auto
         self.selected_language = key
+        if key == "python" and self.selected_exchange == "binance":
+            self._enable_verbose_launch_logging("language-selected")
+        self._verbose_log(f"language selection: {key} auto_advance={auto_advance}")
         for card_key, card in self.language_cards.items():
             card.setSelected(card_key == key)
         if auto_advance:
@@ -1373,6 +1572,7 @@ class StarterWindow(QtWidgets.QWidget):
         if key not in self.market_cards:
             return
         self.selected_market = key
+        self._verbose_log(f"market selection: {key}")
         for card_key, card in self.market_cards.items():
             card.setSelected(card_key == key)
         self.crypto_exchange_group.setVisible(key == "crypto")
@@ -1397,6 +1597,9 @@ class StarterWindow(QtWidgets.QWidget):
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Coming soon")
             return
         self.selected_exchange = key
+        if self.selected_language == "python" and key == "binance":
+            self._enable_verbose_launch_logging("exchange-selected")
+        self._verbose_log(f"exchange selection: {key}")
         for card_key, card in self.exchange_cards.items():
             card.setSelected(card_key == key)
         self._update_status_message()
@@ -1439,7 +1642,14 @@ class StarterWindow(QtWidgets.QWidget):
         if self.stack.currentIndex() == 0:
             self._show_market_page()
             return
-        if self._can_launch_selected():
+        can_launch = self._can_launch_selected()
+        self._verbose_log(
+            f"primary click: page={self.stack.currentIndex()} can_launch={can_launch} "
+            f"language={self.selected_language} market={self.selected_market} exchange={self.selected_exchange}"
+        )
+        if can_launch and self.selected_language == "python" and self.selected_exchange == "binance":
+            self._enable_verbose_launch_logging("launch-clicked")
+        if can_launch:
             self.launch_selected_bot()
         else:
             self._update_status_message()
@@ -1485,6 +1695,7 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _mark_bot_ready(self) -> None:
         if self._active_bot_process and self._active_bot_process.poll() is None:
+            self._verbose_log("bot marked ready")
             self._bot_ready = True
             message = self._running_ready_message or "Selected bot is running. Close it to relaunch."
             self.status_label.setText(message)
@@ -1502,16 +1713,65 @@ class StarterWindow(QtWidgets.QWidget):
                 pass
             self._update_nav_state()
 
+    def _launch_overlay_options(self) -> dict[str, object]:
+        if sys.platform != "win32":
+            return {}
+        if self.selected_language != "python" or self.selected_exchange != "binance":
+            return {}
+        options: dict[str, object] = {}
+        fullscreen_env = os.environ.get("BOT_LAUNCH_OVERLAY_FULLSCREEN")
+        if fullscreen_env is not None:
+            options["fullscreen"] = str(fullscreen_env).strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            cover_env = os.environ.get("BOT_LAUNCH_OVERLAY_COVER_OWNER")
+            if cover_env is None:
+                options["cover_owner"] = True
+            else:
+                options["cover_owner"] = str(cover_env).strip().lower() in {"1", "true", "yes", "on"}
+        if options.get("fullscreen"):
+            if os.environ.get("BOT_LAUNCH_OVERLAY_ALL_SCREENS") is None:
+                options["all_screens"] = True
+            if os.environ.get("BOT_LAUNCH_OVERLAY_BACKGROUND") is None:
+                options["background_mode"] = "solid"
+        if options:
+            self._verbose_log(
+                "launch overlay options: "
+                f"fullscreen={options.get('fullscreen')} "
+                f"cover_owner={options.get('cover_owner')} "
+                f"all_screens={options.get('all_screens')} "
+                f"background={options.get('background_mode')}"
+            )
+        return options
+
     def _show_launch_overlay(self, message: str) -> None:
         if sys.platform != "win32":
+            self._verbose_log("launch overlay skipped: non-win32")
             return
         if str(os.environ.get("BOT_NO_LAUNCH_OVERLAY", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            self._verbose_log("launch overlay skipped: BOT_NO_LAUNCH_OVERLAY")
             return
+        self._verbose_log(f"launch overlay show: {message}")
         try:
             if self._launch_overlay is None:
+                overlay_kwargs = self._launch_overlay_options()
+                fullscreen_env = str(os.environ.get("BOT_LAUNCH_OVERLAY_FULLSCREEN", "")).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                fullscreen_requested = bool(overlay_kwargs.get("fullscreen")) or fullscreen_env
+                cover_requested = bool(overlay_kwargs.get("cover_owner"))
+                overlay_parent = self
+                if fullscreen_requested or cover_requested:
+                    overlay_parent = None
+                overlay_kwargs["owner_window"] = self
+                overlay_kwargs["parent_window"] = overlay_parent
+                if fullscreen_requested:
+                    self._set_launch_mask(True)
                 self._launch_overlay = LaunchOverlay(
                     str(message),
-                    parent_window=self,
+                    **overlay_kwargs,
                 )
             else:
                 self._launch_overlay.set_message(str(message))
@@ -1525,6 +1785,8 @@ class StarterWindow(QtWidgets.QWidget):
         overlay = getattr(self, "_launch_overlay", None)
         if overlay is None:
             return
+        self._verbose_log("launch overlay hide")
+        self._set_launch_mask(False)
         try:
             overlay.hide()
         except Exception:
@@ -1587,8 +1849,10 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _begin_launch_focus_shield(self) -> None:
         if sys.platform != "win32":
+            self._verbose_log("focus shield skipped: non-win32")
             return
         if str(os.environ.get("BOT_NO_STARTER_TOPMOST_SHIELD", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            self._verbose_log("focus shield skipped: BOT_NO_STARTER_TOPMOST_SHIELD")
             return
         if self._win32_topmost_timer is not None:
             try:
@@ -1613,6 +1877,7 @@ class StarterWindow(QtWidgets.QWidget):
         except Exception:
             shield_ms = 2500
         shield_ms = max(250, min(shield_ms, 15000))
+        self._verbose_log(f"focus shield enabled: duration_ms={shield_ms}")
         timer = QtCore.QTimer(self)
         timer.setSingleShot(True)
         timer.setInterval(shield_ms)
@@ -1636,6 +1901,7 @@ class StarterWindow(QtWidgets.QWidget):
             self._win32_topmost_timer = None
         if bool(getattr(self, "_win32_topmost_prev", False)):
             return
+        self._verbose_log("focus shield ended")
         try:
             self._win32_set_topmost(False)
         except Exception:
@@ -1643,9 +1909,11 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _focus_child_main_window(self) -> None:
         if sys.platform != "win32":
+            self._verbose_log("focus child skipped: non-win32")
             return
         proc = getattr(self, "_active_bot_process", None)
         if proc is None or getattr(proc, "poll", lambda: 0)() is not None:
+            self._verbose_log("focus child skipped: no active process")
             return
         try:
             pid_val = int(proc.pid)
@@ -1657,7 +1925,9 @@ class StarterWindow(QtWidgets.QWidget):
             pass
         hwnd_val = int(getattr(self, "_win32_last_child_main_hwnd", 0) or 0)
         if not hwnd_val:
+            self._verbose_log(f"focus child skipped: no main hwnd pid={pid_val}")
             return
+        self._verbose_log(f"focus child window: pid={pid_val} hwnd={hwnd_val}")
         try:
             import ctypes
             import ctypes.wintypes as wintypes
@@ -1933,6 +2203,11 @@ class StarterWindow(QtWidgets.QWidget):
             self._process_watch_timer.stop()
             return
         if self._active_bot_process.poll() is not None:
+            try:
+                exit_code = int(self._active_bot_process.returncode)
+            except Exception:
+                exit_code = -1
+            self._verbose_log(f"process exited: code={exit_code}")
             message = self._closed_message or "Selected bot closed. Launch it again anytime."
             try:
                 self._stop_child_startup_window_suppression()
@@ -1954,6 +2229,7 @@ class StarterWindow(QtWidgets.QWidget):
                             self._launch_status_timer.stop()
                         except Exception:
                             pass
+                        self._verbose_log(f"ready file detected: {ready_file}")
                         self._mark_bot_ready()
                         return
                 except Exception:
@@ -1967,13 +2243,16 @@ class StarterWindow(QtWidgets.QWidget):
                     self._launch_status_timer.stop()
                 except Exception:
                     pass
+                self._verbose_log(f"main window detected: pid={pid_val}")
                 self._mark_bot_ready()
 
     def _start_child_startup_window_suppression(self, root_pid: int) -> None:
         """Hide transient startup windows created by the launched bot (Windows only)."""
         if sys.platform != "win32" or not root_pid:
+            self._verbose_log("child window suppression skipped: non-win32 or missing pid")
             return
         if str(os.environ.get("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            self._verbose_log("child window suppression skipped: BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS")
             return
         try:
             self._stop_child_startup_window_suppression()
@@ -2038,7 +2317,13 @@ class StarterWindow(QtWidgets.QWidget):
         OBJID_WINDOW = 0
         SW_HIDE = 0
         debug_window_events = str(os.environ.get("BOT_DEBUG_WINDOW_EVENTS", "")).strip().lower() in {"1", "true", "yes", "on"}
-        debug_log_path = Path(os.getenv("TEMP") or ".").resolve() / "starter_child_window_events.log"
+        debug_log_path = STARTER_CHILD_WINDOW_EVENTS_LOG_PATH
+
+        self._verbose_log(
+            "child window suppression config: "
+            f"root_pid={root_pid} duration_ms={duration_ms} poll_ms={poll_ms} "
+            f"interval_ms={interval_ms} fast_ms={fast_ms} fast_interval_ms={fast_interval_ms}"
+        )
 
         def _get_hwnd_pid(hwnd_obj) -> int:  # noqa: ANN001
             try:
@@ -2073,9 +2358,10 @@ class StarterWindow(QtWidgets.QWidget):
                 width = int(rect.right - rect.left)
                 height = int(rect.bottom - rect.top)
                 pid_val = _get_hwnd_pid(hwnd_obj)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
                 with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
                     fh.write(
-                        f"{reason} hwnd={int(hwnd_obj)} pid={pid_val} "
+                        f"[{timestamp}] {reason} hwnd={int(hwnd_obj)} pid={pid_val} "
                         f"class={class_buf.value!r} size={width}x{height} "
                         f"vis={vis} style=0x{style_val:08X} exstyle=0x{exstyle_val:08X}\n"
                     )
@@ -2340,15 +2626,17 @@ class StarterWindow(QtWidgets.QWidget):
                 return
             pid_val = _get_hwnd_pid(hwnd_obj)
             try:
-                if not user32.IsWindowVisible(hwnd_obj):
-                    return
+                is_visible = bool(user32.IsWindowVisible(hwnd_obj))
             except Exception:
-                return
+                is_visible = False
             if not _is_transient_window(hwnd_obj):
                 return
             if not _maybe_track_pid(pid_val):
                 return
-            _log_window(hwnd_obj, "starter-hide-startup")
+            if is_visible:
+                _log_window(hwnd_obj, "starter-hide-startup")
+            else:
+                _log_window(hwnd_obj, "starter-prehide-startup")
             _hide_hwnd(hwnd_obj)
 
         def _win_event_proc(_hook, _event, hwnd_obj, id_object, _id_child, _thread, _time):  # noqa: ANN001
@@ -2501,11 +2789,13 @@ class StarterWindow(QtWidgets.QWidget):
         thread = threading.Thread(target=_run, name="starter-child-window-suppress", daemon=True)
         self._child_startup_suppress_thread = thread
         self._child_startup_suppress_hooks = hooks
+        self._verbose_log("child window suppression thread started")
         thread.start()
 
     def _stop_child_startup_window_suppression(self) -> None:
         if sys.platform != "win32":
             return
+        self._verbose_log("child window suppression stop requested")
         stop_event = getattr(self, "_child_startup_suppress_stop", None)
         try:
             if stop_event is not None:
@@ -2536,6 +2826,7 @@ class StarterWindow(QtWidgets.QWidget):
         self._child_startup_suppress_hooks = {}
 
     def _schedule_auto_launch(self) -> None:
+        self._verbose_log("auto-launch schedule requested")
         if self._auto_launch_timer is not None:
             try:
                 self._auto_launch_timer.stop()
@@ -2562,6 +2853,7 @@ class StarterWindow(QtWidgets.QWidget):
         if self._active_bot_process and self._active_bot_process.poll() is None:
             return
         if self._can_launch_selected():
+            self._verbose_log("auto-launch triggered")
             self.launch_selected_bot()
 
     def _reset_launch_tracking(self) -> None:
@@ -2683,6 +2975,12 @@ class StarterWindow(QtWidgets.QWidget):
             _debug_log("Launch blocked: _can_launch_selected returned False.")
             self._update_status_message()
             return
+        if self.selected_language == "python" and self.selected_exchange == "binance":
+            self._enable_verbose_launch_logging("launch-start")
+        self._verbose_log(
+            f"launch requested: language={self.selected_language} "
+            f"market={self.selected_market} exchange={self.selected_exchange}"
+        )
         if self._active_bot_process and self._active_bot_process.poll() is None:
             label = self._active_launch_label or "Selected bot"
             _debug_log(f"Launch blocked: {label} already running (pid={self._active_bot_process.pid}).")
@@ -2718,6 +3016,7 @@ class StarterWindow(QtWidgets.QWidget):
             ready_message = "Binance Python bot is running. Close it to relaunch."
             closed_message = "Binance Python bot closed. Launch it again anytime."
             _debug_log(f"Launching Python bot: exec={python_exec}, cwd={cwd}")
+            self._verbose_log(f"python launch command: {command} cwd={cwd}")
         elif self.selected_language == "cpp":
             exe_path = self._resolve_cpp_binance_executable(refresh=True)
             if exe_path is None or not exe_path.is_file():
@@ -2799,10 +3098,36 @@ class StarterWindow(QtWidgets.QWidget):
             if hide_console:
                 create_no_window = 0x08000000  # CREATE_NO_WINDOW
                 popen_kwargs["creationflags"] = create_no_window
+            self._verbose_log(
+                f"popen config: hide_console={hide_console} "
+                f"creationflags={popen_kwargs.get('creationflags', 0)}"
+            )
 
             # ALWAYS disable taskbar metadata to prevent window flashing
             env = os.environ.copy()
             # env["BOT_DISABLE_TASKBAR"] = "1"  <-- REMOVED to fix taskbar icon issue
+            if self._verbose_launch_logging:
+                env["BOT_DEBUG_WINDOW_EVENTS"] = "1"
+                self._verbose_log("child env BOT_DEBUG_WINDOW_EVENTS=1")
+            if self.selected_language == "python":
+                no_cbt = str(env.get("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "")).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                no_startup = str(env.get("BOT_NO_STARTUP_WINDOW_SUPPRESS", "")).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                if not (no_cbt or no_startup):
+                    env.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+                    self._verbose_log(
+                        "child env BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS="
+                        f"{env.get('BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS', '')!r}"
+                    )
 
             # Starter->child "ready" handshake (prevents the starter from getting stuck in
             # "Bot is starting..." if Win32 window detection misses the main window).
@@ -2818,24 +3143,32 @@ class StarterWindow(QtWidgets.QWidget):
                     env["BOT_STARTER_READY_FILE"] = str(ready_path)
                     self._child_ready_file = ready_path
                     _debug_log(f"Ready signal file: {ready_path}")
+                    self._verbose_log(f"ready file path: {ready_path}")
                 except Exception as ready_exc:
                     self._child_ready_file = None
                     _debug_log(f"Ready signal file setup failed: {ready_exc}")
- 
+
             # Startup window suppression stays configurable in main.py. Avoid forcing CBT
             # hooks here because they can interfere with QtWebEngine window creation.
 
             # QtWebEngine suppression
             env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+            self._verbose_log(
+                f"child env QTWEBENGINE_DISABLE_SANDBOX={env.get('QTWEBENGINE_DISABLE_SANDBOX', '')!r}"
+            )
             # Inject flags to suppress QtWebEngine helper surface while keeping GPU on for TradingView
             current_flags = env.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-            extra_flags = (
-                "--no-sandbox "
-                "--disable-logging "
-                "--window-position=-10000,-10000"
-            )
-            if extra_flags not in current_flags:
-                env["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{current_flags} {extra_flags}".strip()
+            extra_flags = ["--no-sandbox", "--window-position=-10000,-10000"]
+            if self._verbose_launch_logging:
+                current_flags = " ".join(
+                    flag for flag in current_flags.split() if flag != "--disable-logging"
+                )
+                extra_flags.extend(["--enable-logging=stderr", "--v=1"])
+            else:
+                extra_flags.append("--disable-logging")
+            merged_flags = self._merge_chromium_flags(current_flags, extra_flags)
+            env["QTWEBENGINE_CHROMIUM_FLAGS"] = merged_flags
+            self._verbose_log(f"child env QTWEBENGINE_CHROMIUM_FLAGS={merged_flags!r}")
 
             if self.selected_language == "cpp":
                 qt_bins = self._discover_qt_bin_dirs()
@@ -2852,16 +3185,20 @@ class StarterWindow(QtWidgets.QWidget):
                 popen_kwargs["stdout"] = open(self._launch_log_path, "w", encoding="utf-8", errors="ignore")
                 popen_kwargs["stderr"] = subprocess.STDOUT
                 _debug_log(f"Child stdout/stderr redirected to {self._launch_log_path}")
+                self._verbose_log(f"child launch log path: {self._launch_log_path}")
             except Exception as log_exc:
                 self._launch_log_path = None
                 _debug_log(f"Failed to attach launch log: {log_exc}")
+                self._verbose_log(f"child launch log attach failed: {log_exc}")
             self._active_bot_process = subprocess.Popen(command, **popen_kwargs)
             _debug_log(f"Spawned process pid={self._active_bot_process.pid}")
+            self._verbose_log(f"spawned process pid={self._active_bot_process.pid}")
             if sys.platform == "win32" and self.selected_language == "python":
                 try:
                     self._start_child_startup_window_suppression(int(self._active_bot_process.pid))
                 except Exception as suppress_exc:
                     _debug_log(f"Child window suppression failed: {suppress_exc}")
+                    self._verbose_log(f"child window suppression failed: {suppress_exc}")
             # If the child dies immediately, surface the error instead of leaving the user waiting.
             if self._active_bot_process.poll() is not None:
                 rc = self._active_bot_process.returncode
@@ -2876,6 +3213,7 @@ class StarterWindow(QtWidgets.QWidget):
                     _debug_log(f"Reading launch log failed: {tail_exc}")
                     log_tail = ""
                 _debug_log(f"Process exited immediately code={rc}. Tail:\n{log_tail}")
+                self._verbose_log(f"process exited immediately: code={rc}")
                 QtWidgets.QMessageBox.critical(
                     self,
                     "Bot failed to start",
@@ -2886,6 +3224,7 @@ class StarterWindow(QtWidgets.QWidget):
         except Exception as exc:  # pragma: no cover - UI only
             self._reset_launch_tracking()
             _debug_log(f"Launch exception: {exc}")
+            self._verbose_log(f"launch exception: {exc}")
             QtWidgets.QMessageBox.critical(self, "Launch failed", str(exc))
             self._update_status_message()
             return
