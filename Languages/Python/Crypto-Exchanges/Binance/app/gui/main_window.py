@@ -2406,6 +2406,257 @@ def _ensure_shared_wrapper(window) -> BinanceWrapper | None:
         return None
 
 
+def _snapshot_live_indicator_context(window) -> dict:
+    try:
+        auth = _snapshot_auth_state(window)
+    except Exception:
+        auth = {}
+    try:
+        backend = window._runtime_connector_backend(suppress_refresh=True)
+    except Exception:
+        backend = None
+    try:
+        indicator_source = str(window.ind_source_combo.currentText() or "").strip()
+    except Exception:
+        indicator_source = ""
+    return {
+        "auth": auth,
+        "connector_backend": backend,
+        "indicator_source": indicator_source,
+    }
+
+
+def _get_live_indicator_wrapper(window, context: dict) -> BinanceWrapper | None:
+    try:
+        auth = context.get("auth") or {}
+    except Exception:
+        auth = {}
+    try:
+        backend = _normalize_connector_backend(context.get("connector_backend"))
+    except Exception:
+        backend = None
+    api_key = str(auth.get("api_key") or "")
+    api_secret = str(auth.get("api_secret") or "")
+    mode = str(auth.get("mode") or "Live")
+    account_type = str(auth.get("account_type") or "Futures")
+    signature = (api_key, api_secret, mode, account_type, str(backend or ""))
+    wrapper = getattr(window, "_live_indicator_wrapper", None)
+    if wrapper is None or signature != getattr(window, "_live_indicator_wrapper_signature", None):
+        try:
+            wrapper = BinanceWrapper(
+                api_key,
+                api_secret,
+                mode=mode,
+                account_type=account_type,
+                connector_backend=backend,
+                default_leverage=int(auth.get("default_leverage", 1) or 1),
+                default_margin_mode=str(auth.get("default_margin_mode") or "Isolated"),
+            )
+        except Exception:
+            wrapper = None
+        window._live_indicator_wrapper = wrapper
+        window._live_indicator_wrapper_signature = signature
+    indicator_source = context.get("indicator_source") or ""
+    if wrapper is not None and indicator_source:
+        try:
+            wrapper.indicator_source = indicator_source
+        except Exception:
+            pass
+    return wrapper
+
+
+def _start_live_indicator_refresh_worker(window, entry: dict) -> None:
+    cache_key = entry.get("cache_key")
+    symbol = entry.get("symbol")
+    interval = entry.get("interval")
+    indicator_keys = sorted({str(k).strip().lower() for k in (entry.get("indicator_keys") or []) if str(k).strip()})
+    if not cache_key or not symbol or not interval or not indicator_keys:
+        return
+    indicators_cfg = entry.get("indicators_cfg") or {}
+    use_live_values = bool(entry.get("use_live_values", True))
+    context = entry.get("context") or {}
+    indicator_source = context.get("indicator_source") or ""
+
+    cache = getattr(window, "_live_indicator_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        window._live_indicator_cache = cache
+    cache_entry = cache.get(cache_key)
+    if cache_entry is None:
+        cache_entry = {"df": None, "values": {}, "error": False, "df_ts": 0.0, "error_ts": 0.0}
+        cache[cache_key] = cache_entry
+    cache_entry["refreshing"] = True
+
+    wrapper = _get_live_indicator_wrapper(window, context)
+    auth = context.get("auth") or {}
+    backend = _normalize_connector_backend(context.get("connector_backend"))
+
+    def _do():
+        bw = wrapper
+        if bw is None:
+            bw = BinanceWrapper(
+                str(auth.get("api_key") or ""),
+                str(auth.get("api_secret") or ""),
+                mode=str(auth.get("mode") or "Live"),
+                account_type=str(auth.get("account_type") or "Futures"),
+                connector_backend=backend,
+                default_leverage=int(auth.get("default_leverage", 1) or 1),
+                default_margin_mode=str(auth.get("default_margin_mode") or "Isolated"),
+            )
+        if indicator_source:
+            try:
+                bw.indicator_source = indicator_source
+            except Exception:
+                pass
+        frame = bw.get_klines(symbol, interval, limit=200)
+        if frame is None or getattr(frame, "empty", True):
+            raise RuntimeError("no_kline_data")
+        values = {}
+        for key in indicator_keys:
+            values[key] = _calc_indicator_value_from_df(
+                frame,
+                key,
+                indicators_cfg.get(key, {}),
+                use_live_values=use_live_values,
+            )
+        return {"df": frame, "values": values}
+
+    worker = CallWorker(_do, parent=window)
+
+    def _done(res, err, key=cache_key):
+        try:
+            cache_local = getattr(window, "_live_indicator_cache", None)
+        except Exception:
+            cache_local = None
+        if not isinstance(cache_local, dict):
+            cache_local = {}
+            try:
+                window._live_indicator_cache = cache_local
+            except Exception:
+                pass
+        cache_entry_local = cache_local.get(key) or {}
+        cache_entry_local["refreshing"] = False
+        now_ts = time.monotonic()
+        if err or not isinstance(res, dict):
+            cache_entry_local["error"] = True
+            cache_entry_local["error_ts"] = now_ts
+        else:
+            cache_entry_local["error"] = False
+            cache_entry_local["error_ts"] = 0.0
+            cache_entry_local["df"] = res.get("df")
+            cache_entry_local["df_ts"] = now_ts
+            values_cache = cache_entry_local.setdefault("values", {})
+            values_cache.update(res.get("values") or {})
+            cache_entry_local["use_live_values"] = use_live_values
+            if indicator_source:
+                cache_entry_local["indicator_source"] = indicator_source
+            cache_entry_local.pop("pending_keys", None)
+        cache_local[key] = cache_entry_local
+        try:
+            inflight = getattr(window, "_live_indicator_refresh_inflight", None)
+            if isinstance(inflight, set):
+                inflight.discard(key)
+        except Exception:
+            pass
+        try:
+            active = int(getattr(window, "_live_indicator_refresh_active", 0) or 0)
+            if active > 0:
+                active -= 1
+            window._live_indicator_refresh_active = active
+        except Exception:
+            pass
+        try:
+            QtCore.QTimer.singleShot(0, lambda w=window: _process_live_indicator_refresh_queue(w))
+        except Exception:
+            pass
+
+    worker.done.connect(_done)
+    workers = getattr(window, "_live_indicator_refresh_workers", None)
+    if not isinstance(workers, list):
+        workers = []
+        window._live_indicator_refresh_workers = workers
+    workers.append(worker)
+    worker.finished.connect(lambda: workers.remove(worker) if worker in workers else None)
+    worker.start()
+
+
+def _process_live_indicator_refresh_queue(window) -> None:
+    try:
+        window._live_indicator_refresh_scheduled = False
+    except Exception:
+        pass
+    queue = getattr(window, "_live_indicator_refresh_queue", None)
+    if not queue:
+        return
+    inflight = getattr(window, "_live_indicator_refresh_inflight", None)
+    if not isinstance(inflight, set):
+        inflight = set()
+        window._live_indicator_refresh_inflight = inflight
+    active = int(getattr(window, "_live_indicator_refresh_active", 0) or 0)
+    limit = int(getattr(window, "_live_indicator_refresh_limit", 2) or 2)
+    while queue and active < limit:
+        entry = queue.popleft()
+        cache_key = entry.get("cache_key")
+        if not cache_key or cache_key in inflight:
+            continue
+        inflight.add(cache_key)
+        active += 1
+        window._live_indicator_refresh_active = active
+        _start_live_indicator_refresh_worker(window, entry)
+
+
+def _queue_live_indicator_refresh(
+    window,
+    cache: dict,
+    cache_key: tuple,
+    symbol: str,
+    interval: str,
+    indicator_keys: set[str],
+    indicators_cfg: dict,
+    use_live_values: bool,
+    indicator_source: str,
+) -> None:
+    if not cache_key or not symbol or not interval or not indicator_keys:
+        return
+    inflight = getattr(window, "_live_indicator_refresh_inflight", None)
+    if not isinstance(inflight, set):
+        inflight = set()
+        window._live_indicator_refresh_inflight = inflight
+    queue = getattr(window, "_live_indicator_refresh_queue", None)
+    if queue is None:
+        from collections import deque
+        queue = deque()
+        window._live_indicator_refresh_queue = queue
+    cache_entry = cache.get(cache_key)
+    if cache_entry is None:
+        cache_entry = {"df": None, "values": {}, "error": False, "df_ts": 0.0, "error_ts": 0.0}
+        cache[cache_key] = cache_entry
+    pending = cache_entry.setdefault("pending_keys", set())
+    pending.update(indicator_keys)
+    if cache_key in inflight:
+        return
+    for existing in queue:
+        if existing.get("cache_key") == cache_key:
+            existing.setdefault("indicator_keys", set()).update(indicator_keys)
+            return
+    context = _snapshot_live_indicator_context(window)
+    if indicator_source and not context.get("indicator_source"):
+        context["indicator_source"] = indicator_source
+    entry = {
+        "cache_key": cache_key,
+        "symbol": symbol,
+        "interval": interval,
+        "indicator_keys": set(indicator_keys),
+        "indicators_cfg": indicators_cfg,
+        "use_live_values": use_live_values,
+        "context": context,
+    }
+    queue.append(entry)
+    if not getattr(window, "_live_indicator_refresh_scheduled", False):
+        window._live_indicator_refresh_scheduled = True
+        QtCore.QTimer.singleShot(0, lambda w=window: _process_live_indicator_refresh_queue(w))
+
+
 def _collect_current_indicator_live_strings(
     window,
     symbol,
@@ -2418,9 +2669,6 @@ def _collect_current_indicator_live_strings(
     if not symbol or not keys:
         return []
     default_interval = _sanitize_interval_hint(default_interval_hint) or "1m"
-    bw = _ensure_shared_wrapper(window)
-    if bw is None:
-        return []
     symbol_norm = str(symbol).strip().upper()
 
     try:
@@ -2431,6 +2679,10 @@ def _collect_current_indicator_live_strings(
         use_live_values = bool((window.config or {}).get("indicator_use_live_values", False))
     except Exception:
         use_live_values = True
+    try:
+        indicator_source = str(window.ind_source_combo.currentText() or "").strip()
+    except Exception:
+        indicator_source = ""
     buy_thresholds = {
         "stoch_rsi": float((indicators_cfg.get("stoch_rsi", {}).get("buy_value") or 20.0)),
         "willr": float((indicators_cfg.get("willr", {}).get("buy_value") or -80.0)),
@@ -2445,6 +2697,7 @@ def _collect_current_indicator_live_strings(
     now_ts = time.monotonic()
 
     entries: list[str] = []
+    refresh_requests: dict[tuple, dict] = {}
     for key in keys:
         intervals = []
         if isinstance(interval_map, dict):
@@ -2470,37 +2723,28 @@ def _collect_current_indicator_live_strings(
             except Exception:
                 frame_ts = 0.0
             needs_refresh = frame is None or (now_ts - frame_ts) >= ttl
+            cached_mode = cache_entry.get("use_live_values")
+            if cached_mode is None or cached_mode != use_live_values:
+                needs_refresh = True
+            cached_source = str(cache_entry.get("indicator_source") or "")
+            if indicator_source and cached_source != indicator_source:
+                needs_refresh = True
             try:
                 error_ts = float(cache_entry.get("error_ts") or 0.0)
             except Exception:
                 error_ts = 0.0
             recently_failed = bool(cache_entry.get("error")) and (now_ts - error_ts) < ttl
-            if needs_refresh and not recently_failed:
-                try:
-                    frame = bw.get_klines(symbol_norm, interval_clean, limit=200)
-                    cache_entry["df"] = frame
-                    cache_entry["df_ts"] = now_ts
-                    cache_entry["values"] = {}
-                    cache_entry["error"] = False
-                except Exception:
-                    cache_entry["error"] = True
-                    cache_entry["error_ts"] = now_ts
-                    frame = cache_entry.get("df")
+            if needs_refresh and not recently_failed and not cache_entry.get("refreshing"):
+                req = refresh_requests.setdefault(
+                    cache_key,
+                    {"symbol": symbol_norm, "interval": interval_clean, "keys": set()},
+                )
+                req["keys"].add(key)
             values_cache = cache_entry.setdefault("values", {})
             value = values_cache.get(key)
             if value is None:
-                frame = cache_entry.get("df")
-                if frame is not None and not getattr(frame, "empty", True):
-                    value = _calc_indicator_value_from_df(
-                        frame,
-                        key,
-                        indicators_cfg.get(key, {}),
-                        use_live_values=use_live_values,
-                    )
-                    values_cache[key] = value
-                else:
-                    values_cache[key] = None
-                    value = None
+                values_cache[key] = None
+                value = None
 
             label = _indicator_short_label(key)
             interval_tag = f"@{interval_clean.upper()}" if interval_clean else ""
@@ -2529,6 +2773,19 @@ def _collect_current_indicator_live_strings(
                         action = "-Sell"
             entry = f"{label}{interval_tag} {value_text}{action}".strip()
             entries.append(entry)
+    if refresh_requests:
+        for cache_key, req in refresh_requests.items():
+            _queue_live_indicator_refresh(
+                window,
+                cache,
+                cache_key,
+                req.get("symbol") or symbol_norm,
+                req.get("interval") or default_interval,
+                req.get("keys") or set(),
+                indicators_cfg,
+                use_live_values,
+                indicator_source,
+            )
     return entries
 
 
@@ -15053,6 +15310,10 @@ def start_strategy(self):
     if shared is not None and getattr(shared, '_emergency_close_requested', False):
         self.log('Emergency close-all in progress; wait for it to finish before starting.')
         return
+    try:
+        StrategyEngine.resume_trading()
+    except Exception:
+        pass
     started = 0
     try:
         default_loop_override = self._loop_choice_value(getattr(self, "loop_combo", None))
@@ -15398,6 +15659,10 @@ def _stop_strategy_sync(self, close_positions: bool = True, auth: dict | None = 
         except Exception:
             pass
         try:
+            StrategyEngine.pause_trading()
+        except Exception:
+            pass
+        try:
             guard_obj = getattr(self, "guard", None)
             if guard_obj and hasattr(guard_obj, "pause_new"):
                 guard_obj.pause_new()
@@ -15460,7 +15725,21 @@ def _stop_strategy_sync(self, close_positions: bool = True, auth: dict | None = 
                 except Exception:
                     fast_close = False
                 self.shared_binance = _build_wrapper_from_values(self, auth)
+                try:
+                    acct_text = str(auth.get("account_type") or "").upper()
+                    if acct_text.startswith("FUT") and self.shared_binance is not None:
+                        cancel_res = self.shared_binance.cancel_all_open_futures_orders()
+                        result["cancel_open_orders_result"] = cancel_res
+                except Exception as cancel_exc:
+                    self.log(f"Cancel open orders failed: {cancel_exc}")
                 close_result = self._close_all_positions_blocking(auth=auth, fast=fast_close)
+                try:
+                    acct_text = str(auth.get("account_type") or "").upper()
+                    if acct_text.startswith("FUT") and self.shared_binance is not None:
+                        cancel_res = self.shared_binance.cancel_all_open_futures_orders()
+                        result["cancel_open_orders_after_close"] = cancel_res
+                except Exception:
+                    pass
             except Exception as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
@@ -15862,7 +16141,7 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
         self.shared_binance = _build_wrapper_from_values(self, auth)
         acct_text = str(auth.get("account_type") or "").upper() or (self.account_combo.currentText().upper() if hasattr(self, "account_combo") else "")
         if acct_text.startswith('FUT'):
-            results = _close_all_futures(self.shared_binance) or []
+            results = _close_all_futures(self.shared_binance, fast=fast) or []
             if not fast:
                 # Verification loop: re-run close-all if any positions remain.
                 try:
@@ -16058,8 +16337,14 @@ def close_all_positions_async(self):
     try:
         from ..workers import CallWorker as _CallWorker
         auth_snapshot = _snapshot_auth_state(self)
+        fast_close = False
+        try:
+            mode_txt = str(auth_snapshot.get("mode") or "").lower()
+            fast_close = any(tag in mode_txt for tag in ("demo", "test", "sandbox"))
+        except Exception:
+            fast_close = False
         def _do():
-            return _close_all_positions_sync(self, auth=auth_snapshot)
+            return _close_all_positions_sync(self, auth=auth_snapshot, fast=fast_close)
         def _done(res, err):
             if err:
                 self.log(f"Close-all error: {err}")
@@ -16176,61 +16461,64 @@ def update_balance_label(self):
     def _do():
         # Run network work off the UI thread to avoid freezing on bad credentials/slow responses.
         wrapper = getattr(self, "shared_binance", None)
-        needs_rebuild = True
-        if wrapper is not None:
-            try:
-                needs_rebuild = (
-                    str(getattr(wrapper, "api_key", "") or "") != api_key
-                    or str(getattr(wrapper, "api_secret", "") or "") != api_secret
-                    or str(getattr(wrapper, "mode", "") or "") != str(mode_value or "")
-                    or str(getattr(wrapper, "account_type", "") or "").upper()
-                    != str(account_value or "").strip().upper()
-                    or (
-                        connector_backend is not None
-                        and str(getattr(wrapper, "_connector_backend", "") or "") != str(connector_backend or "")
-                    )
-                )
-            except Exception:
-                needs_rebuild = True
-        if wrapper is None or needs_rebuild:
-            wrapper = self._create_binance_wrapper(
-                api_key=api_key,
-                api_secret=api_secret,
-                mode=mode_value,
-                account_type=account_value,
-                connector_backend=connector_backend,
-                default_leverage=default_leverage,
-                default_margin_mode=default_margin_mode,
-            )
         try:
-            wrapper_holder["wrapper"] = wrapper
-        except Exception:
-            pass
-        total_balance_value = None
-        available_balance_value = None
-        bal = 0.0
-        acct_upper = str(account_value or "").upper()
-        if acct_upper.startswith("FUT"):
-            snap = wrapper.get_futures_balance_snapshot(force_refresh=True) or {}
-            if not isinstance(snap, dict):
-                raise RuntimeError(f"Unexpected futures balance snapshot type: {type(snap).__name__}")
+            needs_rebuild = True
+            if wrapper is not None:
+                try:
+                    needs_rebuild = (
+                        str(getattr(wrapper, "api_key", "") or "") != api_key
+                        or str(getattr(wrapper, "api_secret", "") or "") != api_secret
+                        or str(getattr(wrapper, "mode", "") or "") != str(mode_value or "")
+                        or str(getattr(wrapper, "account_type", "") or "").upper()
+                        != str(account_value or "").strip().upper()
+                        or (
+                            connector_backend is not None
+                            and str(getattr(wrapper, "_connector_backend", "") or "") != str(connector_backend or "")
+                        )
+                    )
+                except Exception:
+                    needs_rebuild = True
+            if wrapper is None or needs_rebuild:
+                wrapper = self._create_binance_wrapper(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    mode=mode_value,
+                    account_type=account_value,
+                    connector_backend=connector_backend,
+                    default_leverage=default_leverage,
+                    default_margin_mode=default_margin_mode,
+                )
             try:
-                total_balance_value = float(snap.get("total") or snap.get("wallet") or 0.0)
+                wrapper_holder["wrapper"] = wrapper
             except Exception:
-                total_balance_value = 0.0
-            try:
-                available_balance_value = float(snap.get("available") or 0.0)
-            except Exception:
-                available_balance_value = 0.0
-            bal = available_balance_value if available_balance_value > 0.0 else total_balance_value
-        else:
-            bal = float(wrapper.get_spot_balance("USDT") or 0.0)
-            try:
-                total_balance_value = float(wrapper.get_total_usdt_value() or bal)
-            except Exception:
-                total_balance_value = bal
-            available_balance_value = bal
-        return {"total": total_balance_value, "available": available_balance_value, "bal": bal, "wrapper": wrapper}
+                pass
+            total_balance_value = None
+            available_balance_value = None
+            bal = 0.0
+            acct_upper = str(account_value or "").upper()
+            if acct_upper.startswith("FUT"):
+                snap = wrapper.get_futures_balance_snapshot(force_refresh=True) or {}
+                if not isinstance(snap, dict):
+                    raise RuntimeError(f"Unexpected futures balance snapshot type: {type(snap).__name__}")
+                try:
+                    total_balance_value = float(snap.get("total") or snap.get("wallet") or 0.0)
+                except Exception:
+                    total_balance_value = 0.0
+                try:
+                    available_balance_value = float(snap.get("available") or 0.0)
+                except Exception:
+                    available_balance_value = 0.0
+                bal = available_balance_value if available_balance_value > 0.0 else total_balance_value
+            else:
+                bal = float(wrapper.get_spot_balance("USDT") or 0.0)
+                try:
+                    total_balance_value = float(wrapper.get_total_usdt_value() or bal)
+                except Exception:
+                    total_balance_value = bal
+                available_balance_value = bal
+            return {"total": total_balance_value, "available": available_balance_value, "bal": bal, "wrapper": wrapper}
+        except Exception as exc:
+            return {"error": str(exc), "wrapper": wrapper}
 
     def _done(res, err):
         if getattr(self, "_balance_refresh_token", None) != refresh_token:
@@ -16246,7 +16534,12 @@ def update_balance_label(self):
             pass
         total_balance_value = None
         available_balance_value = None
-        if err or not res:
+        err_msg = None
+        if err:
+            err_msg = str(err)
+        elif isinstance(res, dict) and res.get("error"):
+            err_msg = str(res.get("error"))
+        if err_msg or not res:
             try:
                 wrapper_obj = wrapper_holder.get("wrapper")
                 if wrapper_obj is not None:
@@ -16254,12 +16547,12 @@ def update_balance_label(self):
             except Exception:
                 pass
             try:
-                self.log(f"Balance error: {err or 'unknown error'}")
+                self.log(f"Balance error: {err_msg or 'unknown error'}")
             except Exception:
                 pass
             try:
                 if getattr(self, "balance_label", None):
-                    msg = str(err or "unknown error").replace("\n", " ").strip()
+                    msg = str(err_msg or "unknown error").replace("\n", " ").strip()
                     try:
                         self.balance_label.setToolTip(msg)
                     except Exception:
@@ -16479,6 +16772,10 @@ def closeEvent(self, event):
     if getattr(self, "_force_close", False):
         self._force_close = False
         try:
+            StrategyEngine.request_shutdown()
+        except Exception:
+            pass
+        try:
             _teardown_positions_thread(self)
         except Exception:
             pass
@@ -16534,6 +16831,17 @@ def closeEvent(self, event):
             pass
         return
 
+    try:
+        StrategyEngine.request_shutdown()
+    except Exception:
+        pass
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            setattr(app, "_exiting", True)
+    except Exception:
+        pass
+
     close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
     should_wait = False
     if close_on_exit_enabled:
@@ -16563,15 +16871,9 @@ def closeEvent(self, event):
             pass
     try:
         if event.isAccepted():
-            try:
-                spontaneous = bool(event.spontaneous())
-            except Exception:
-                spontaneous = False
-            if spontaneous:
-                app = QtWidgets.QApplication.instance()
-                if app is not None:
-                    setattr(app, "_exiting", True)
-                    app.quit()
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.quit()
     except Exception:
         pass
 

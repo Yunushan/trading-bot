@@ -134,6 +134,11 @@ class StartWorker(QThread):
         ok = True
         try:
             try:
+                from .strategy import StrategyEngine as _StrategyEngine
+                _StrategyEngine.resume_trading()
+            except Exception:
+                pass
+            try:
                 self.progress_signal.emit("Reconciling with exchange...")
                 try:
                     if hasattr(self.guard, 'attach_wrapper'): self.guard.attach_wrapper(self.bw)

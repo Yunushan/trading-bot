@@ -159,6 +159,8 @@ def _canonical_indicator_token(token: str | None) -> str | None:
 class StrategyEngine:
     _RUN_GATE = threading.BoundedSemaphore(_MAX_PARALLEL_RUNS)
     _MAX_ACTIVE = _MAX_PARALLEL_RUNS
+    _GLOBAL_SHUTDOWN = threading.Event()
+    _GLOBAL_PAUSE = threading.Event()
     _ORDER_THROTTLE_LOCK = threading.Lock()
     _ORDER_LAST_TS = 0.0
     _ORDER_MIN_SPACING = 0.35  # seconds between order submissions by default
@@ -2725,7 +2727,39 @@ class StrategyEngine:
             self._stop_time = 0.0
 
     def stopped(self):
+        try:
+            if StrategyEngine._GLOBAL_SHUTDOWN.is_set():
+                return True
+        except Exception:
+            pass
+        try:
+            if StrategyEngine._GLOBAL_PAUSE.is_set():
+                return True
+        except Exception:
+            pass
         return self._stop
+
+    @classmethod
+    def request_shutdown(cls) -> None:
+        try:
+            cls._GLOBAL_SHUTDOWN.set()
+        except Exception:
+            pass
+
+    @classmethod
+    def pause_trading(cls) -> None:
+        try:
+            cls._GLOBAL_PAUSE.set()
+        except Exception:
+            pass
+
+    @classmethod
+    def resume_trading(cls) -> None:
+        try:
+            if not cls._GLOBAL_SHUTDOWN.is_set():
+                cls._GLOBAL_PAUSE.clear()
+        except Exception:
+            pass
 
     def stop_blocking(self, timeout: float | None = 3.0):
         """Signal stop and wait briefly for the thread to exit without hanging the UI."""

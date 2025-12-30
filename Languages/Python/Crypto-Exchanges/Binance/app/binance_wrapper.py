@@ -2945,6 +2945,12 @@ class BinanceWrapper:
         self._limiter_key = f"{env_tag}:{acct_tag}"
         limiter_settings = self._limiter_settings_for(env_tag, acct_tag)
         self._request_limiter = self._acquire_rate_limiter(self._limiter_key, limiter_settings)
+        # Demo/testnet fast-path to reduce per-order overhead; can disable via env.
+        self._fast_order_mode = _env_flag("BINANCE_FAST_TESTNET_ORDERS", _is_testnet_mode(self.mode))
+        self._fast_order_cache_ttl = _env_float("BINANCE_FAST_ORDER_CACHE_TTL", 75.0)
+        self._futures_settings_cache = {}
+        self._futures_settings_cache_lock = threading.Lock()
+        self._fast_positions_cache_ttl = _env_float("BINANCE_FAST_POSITIONS_CACHE_TTL", 1.2)
 
         # Set base URLs BEFORE creating Client (supports older python-binance builds too).
         # Note: python-binance will prefer *_TESTNET_URL when `testnet=True`, but we set both
@@ -5006,7 +5012,12 @@ class BinanceWrapper:
         assert self.account_type == "FUTURES", "Futures order called while account_type != FUTURES"
 
         sym = (symbol or '').upper()
-        self._ensure_margin_and_leverage_or_block(sym, kwargs.get('margin_mode') or getattr(self,'_default_margin_mode','ISOLATED'), kwargs.get('leverage'))
+        fast_mode = bool(getattr(self, "_fast_order_mode", False))
+        self._ensure_margin_and_leverage_or_block(
+            sym,
+            kwargs.get('margin_mode') or getattr(self, '_default_margin_mode', 'ISOLATED'),
+            kwargs.get('leverage'),
+        )
 
 
         # --- helpers ---
@@ -5047,10 +5058,22 @@ class BinanceWrapper:
             # Respect cap PER SYMBOL across intervals: subtract current margin already tied to this symbol
             try:
                 used_usd = 0.0
-                for p in (self.list_open_futures_positions() or []):
-                    if (p or {}).get('symbol','').upper() == sym:
+                positions = None
+                if fast_mode:
+                    try:
+                        positions = self._get_cached_futures_positions(max_age=8.0)
+                    except Exception:
+                        positions = None
+                if positions is None and not fast_mode:
+                    positions = self.list_open_futures_positions() or []
+                for p in (positions or []):
+                    if (p or {}).get('symbol', '').upper() == sym:
                         # prefer isolatedWallet, then initialMargin, else notional/leverage
-                        used_usd += float(p.get('isolatedWallet') or p.get('initialMargin') or (abs(p.get('notional') or 0.0) / max(lev, 1) ))
+                        used_usd += float(
+                            p.get('isolatedWallet')
+                            or p.get('initialMargin')
+                            or (abs(p.get('notional') or 0.0) / max(lev, 1))
+                        )
                 margin_budget = max(margin_budget - used_usd, 0.0)
             except Exception:
                 # if anything goes wrong, fall back to original budget
@@ -5099,10 +5122,11 @@ class BinanceWrapper:
 
             order, order_via = self._futures_create_order_with_fallback(params)
             fills_summary = {}
-            try:
-                fills_summary = self._summarize_futures_order_fills(sym, (order or {}).get("orderId"))
-            except Exception:
-                fills_summary = {}
+            if not fast_mode:
+                try:
+                    fills_summary = self._summarize_futures_order_fills(sym, (order or {}).get("orderId"))
+                except Exception:
+                    fills_summary = {}
             if isinstance(order, dict) and fills_summary:
                 try:
                     if not float(order.get("avgPrice") or 0.0) and float(fills_summary.get("avg_price") or 0.0):
@@ -5210,6 +5234,47 @@ class BinanceWrapper:
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
+    def cancel_all_open_futures_orders(self) -> dict:
+        results: dict = {"ok": True, "canceled_symbols": 0, "errors": []}
+        try:
+            try:
+                self.client.futures_cancel_all_open_orders()
+                return results
+            except Exception:
+                pass
+            orders = []
+            try:
+                orders = self.client.futures_get_open_orders() or []
+            except Exception:
+                orders = []
+            symbols = set()
+            for order in orders:
+                try:
+                    sym = str(order.get("symbol") or "").upper()
+                except Exception:
+                    sym = ""
+                if sym:
+                    symbols.add(sym)
+            if not symbols:
+                try:
+                    positions = self.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
+                    for pos in positions:
+                        sym = str(pos.get("symbol") or "").upper()
+                        if sym:
+                            symbols.add(sym)
+                except Exception:
+                    symbols = set()
+            for sym in sorted(symbols):
+                try:
+                    self.client.futures_cancel_all_open_orders(symbol=sym)
+                    results["canceled_symbols"] += 1
+                except Exception as exc:
+                    results["ok"] = False
+                    results["errors"].append(f"{sym}: {exc}")
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        return results
+
     def close_all_futures_positions(self):
         results = []
         try:
@@ -5260,6 +5325,14 @@ class BinanceWrapper:
         return results
 
     def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bool = False):
+        if force_refresh and bool(getattr(self, "_fast_order_mode", False)):
+            try:
+                fast_ttl = float(getattr(self, "_fast_positions_cache_ttl", 0.0) or 0.0)
+            except Exception:
+                fast_ttl = 0.0
+            if fast_ttl > 0.0:
+                max_age = max(float(max_age or 0.0), fast_ttl)
+                force_refresh = False
         if not force_refresh:
             cached = self._get_cached_futures_positions(max_age)
             if cached is not None:
@@ -5546,6 +5619,36 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
     sym = (symbol or '').upper()
     want_mm = (desired_mm or getattr(self, '_default_margin_mode','ISOLATED') or 'ISOLATED').upper()
     want_mm = 'CROSSED' if want_mm in ('CROSS', 'CROSSED') else 'ISOLATED'
+    fast_mode = bool(getattr(self, "_fast_order_mode", False))
+    try:
+        desired_lev_norm = int(desired_lev) if desired_lev is not None else None
+    except Exception:
+        desired_lev_norm = None
+    if fast_mode and sym:
+        try:
+            cache = getattr(self, "_futures_settings_cache", None)
+            if cache is None:
+                cache = {}
+                self._futures_settings_cache = cache
+            ttl = float(getattr(self, "_fast_order_cache_ttl", 60.0) or 60.0)
+            entry = None
+            try:
+                lock = getattr(self, "_futures_settings_cache_lock", None)
+            except Exception:
+                lock = None
+            if lock:
+                with lock:
+                    entry = cache.get(sym)
+            else:
+                entry = cache.get(sym)
+            if isinstance(entry, dict):
+                cached_mm = str(entry.get("margin_mode") or "").upper()
+                cached_lev = entry.get("leverage")
+                age = time.time() - float(entry.get("ts") or 0.0)
+                if cached_mm == want_mm and (desired_lev_norm is None or cached_lev == desired_lev_norm) and age < ttl:
+                    return
+        except Exception:
+            pass
 
     # If there are open positions and current is not desired, block immediately
     cur = (self.get_symbol_margin_type(sym) or '').upper()
@@ -5621,6 +5724,20 @@ def _ensure_margin_and_leverage_or_block(self, symbol: str, desired_mm: str, des
             self.futures_leverage = lev
         except Exception:
             pass
+    try:
+        cache = getattr(self, "_futures_settings_cache", None)
+        if cache is None:
+            cache = {}
+            self._futures_settings_cache = cache
+        lock = getattr(self, "_futures_settings_cache_lock", None)
+        payload = {"margin_mode": want_mm, "leverage": desired_lev_norm, "ts": time.time()}
+        if lock:
+            with lock:
+                cache[sym] = payload
+        else:
+            cache[sym] = payload
+    except Exception:
+        pass
 
 
     def ensure_futures_settings(self, symbol: str, leverage: int | None = None,
