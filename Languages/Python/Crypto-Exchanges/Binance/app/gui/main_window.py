@@ -172,12 +172,15 @@ def _webengine_charts_allowed() -> bool:
 
 
 def _chart_safe_mode_enabled() -> bool:
-    if sys.platform != "win32":
-        return False
     flag = str(os.environ.get("BOT_SAFE_CHART_TAB", "")).strip().lower()
     if flag:
         return flag in {"1", "true", "yes", "on"}
-    return False
+    if sys.platform == "win32":
+        return False
+    try:
+        return bool(os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0)
+    except Exception:
+        return False
 
 def _resolve_dist_version(*names: str) -> str | None:
     for name in names:
@@ -7658,6 +7661,8 @@ class MainWindow(QtWidgets.QWidget):
 
     def _ensure_tradingview_widget(self):
         """Lazily create the TradingView widget so QtWebEngine processes spawn only when needed."""
+        if _chart_safe_mode_enabled():
+            return None
         if self.chart_tradingview is not None:
             self._bind_tradingview_ready(self.chart_tradingview)
             return self.chart_tradingview
@@ -7694,6 +7699,8 @@ class MainWindow(QtWidgets.QWidget):
 
     def _ensure_binance_widget(self):
         """Lazily create the Binance web widget so QtWebEngine spawns only when needed."""
+        if _chart_safe_mode_enabled():
+            return None
         if self.chart_binance is not None:
             return self.chart_binance
         if not self._chart_view_binance_available:
@@ -7718,6 +7725,8 @@ class MainWindow(QtWidgets.QWidget):
 
     def _ensure_lightweight_widget(self):
         """Lazily create the lightweight chart widget so QtWebEngine spawns only when needed."""
+        if _chart_safe_mode_enabled():
+            return None
         if self.chart_lightweight is not None:
             return self.chart_lightweight
         if not self._chart_view_lightweight_available:
