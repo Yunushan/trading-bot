@@ -25,14 +25,32 @@ def _strip_foreign_site_packages() -> None:
     Fixes ModuleNotFoundError for compiled wheels (e.g., PyQt6.sip) when PYTHONPATH
     points at a different interpreter's user site.
     """
-    expected = f"python{sys.version_info.major}{sys.version_info.minor}"
+    expected_tokens = (
+        f"python{sys.version_info.major}.{sys.version_info.minor}",
+        f"python{sys.version_info.major}{sys.version_info.minor}",
+    )
+    prefix = Path(sys.prefix).resolve()
+    base_prefix = Path(getattr(sys, "base_prefix", sys.prefix)).resolve()
     cleaned: list[str] = []
     removed: list[str] = []
     for path in sys.path:
         lower = path.lower()
-        if "site-packages" in lower and "python" in lower and expected not in lower:
-            removed.append(path)
-            continue
+        if "site-packages" in lower:
+            keep = False
+            try:
+                resolved = Path(path).resolve()
+            except Exception:
+                resolved = None
+            if resolved is not None:
+                if resolved == prefix or prefix in resolved.parents:
+                    keep = True
+                elif resolved == base_prefix or base_prefix in resolved.parents:
+                    keep = True
+            if not keep and "python" in lower and any(token in lower for token in expected_tokens):
+                keep = True
+            if not keep:
+                removed.append(path)
+                continue
         cleaned.append(path)
     if removed:
         sys.path[:] = cleaned
