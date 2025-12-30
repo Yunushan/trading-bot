@@ -1,7 +1,7 @@
 
 python-binance==1.0.34
 binance-connector==3.12.0
-ccxt==4.5.29
+ccxt==4.5.30
 PyQt6==6.10.0
 PyQt6-Qt6==6.10.0
 PyQt6-WebEngine==6.10.0
