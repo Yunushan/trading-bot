@@ -3621,6 +3621,7 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_indicator_widgets = {}
         self.backtest_results = []
         self.backtest_worker = None
+        self.backtest_scan_worker = None
         self._backtest_symbol_worker = None
         self.backtest_symbols_all = []
         self._backtest_wrappers = {}
@@ -6801,6 +6802,11 @@ class MainWindow(QtWidgets.QWidget):
                 print(f"[Backtest] {msg}", flush=True)
 
         try:
+            scan_worker = getattr(self, "backtest_scan_worker", None)
+            if scan_worker is not None and scan_worker.isRunning():
+                self.backtest_status_label.setText("Scan in progress; stop it before starting a backtest.")
+                dbg("Scan worker running; aborting backtest request.")
+                return
             if self.backtest_worker and self.backtest_worker.isRunning():
                 self.backtest_status_label.setText("Backtest already running...")
                 dbg("Existing worker already running; aborting request.")
@@ -7061,6 +7067,324 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 print(tb, flush=True)
 
+    def _run_backtest_scan(self):
+        try:
+            if self.backtest_worker and self.backtest_worker.isRunning():
+                self.backtest_status_label.setText("Backtest running; stop it before scanning.")
+                return
+            scan_worker = getattr(self, "backtest_scan_worker", None)
+            if scan_worker is not None and scan_worker.isRunning():
+                self.backtest_status_label.setText("Scan already running...")
+                return
+
+            symbols_all = list(self.backtest_symbols_all or [])
+            if not symbols_all:
+                self.backtest_status_label.setText("No symbols loaded. Click Refresh Symbols first.")
+                return
+            try:
+                top_n = int(self.backtest_scan_top_spin.value())
+            except Exception:
+                top_n = int(self.backtest_config.get("scan_top_n", _SYMBOL_FETCH_TOP_N) or _SYMBOL_FETCH_TOP_N)
+            if top_n <= 0:
+                self.backtest_status_label.setText("Scan Top N must be at least 1.")
+                return
+            if len(symbols_all) < top_n:
+                self.backtest_status_label.setText(
+                    f"Only {len(symbols_all)} symbols loaded; lower Scan Top N or refresh."
+                )
+                return
+            symbols = symbols_all[:top_n]
+
+            intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv]
+            if not intervals:
+                self.backtest_status_label.setText("Select at least one interval to scan.")
+                return
+
+            indicators_cfg = self.backtest_config.get("indicators", {}) or {}
+            indicators: list[IndicatorDefinition] = []
+            for key, params in indicators_cfg.items():
+                if not params or not params.get("enabled"):
+                    continue
+                clean_params = copy.deepcopy(params)
+                clean_params.pop("enabled", None)
+                indicators.append(IndicatorDefinition(key=key, params=clean_params))
+            if not indicators:
+                self.backtest_status_label.setText("Enable at least one indicator to scan.")
+                return
+
+            start_qdt = self.backtest_start_edit.dateTime()
+            end_qdt = self.backtest_end_edit.dateTime()
+            if start_qdt > end_qdt:
+                self.backtest_status_label.setText("Start date/time must be before end date/time.")
+                return
+            start_dt = start_qdt.toPyDateTime()
+            end_dt = end_qdt.toPyDateTime()
+            if start_dt >= end_dt:
+                self.backtest_status_label.setText("Backtest range must span a positive duration.")
+                return
+
+            capital = float(self.backtest_capital_spin.value())
+            if capital <= 0.0:
+                self.backtest_status_label.setText("Margin capital must be positive.")
+                return
+
+            position_pct = float(self.backtest_pospct_spin.value())
+            position_pct_units = "percent"
+            side_value = self._canonical_side_from_text(self.backtest_side_combo.currentText())
+            margin_mode = (self.backtest_margin_mode_combo.currentText() or "Isolated").strip()
+            position_mode = (self.backtest_position_mode_combo.currentText() or "Hedge").strip()
+            assets_mode = self._normalize_assets_mode(
+                self.backtest_assets_mode_combo.currentData() or self.backtest_assets_mode_combo.currentText()
+            )
+            account_mode = self._normalize_account_mode(
+                self.backtest_account_mode_combo.currentData() or self.backtest_account_mode_combo.currentText()
+            )
+            leverage_value = int(self.backtest_leverage_spin.value() or 1)
+
+            logic = (self.backtest_logic_combo.currentText() or "AND").upper()
+            self._update_backtest_config("logic", logic)
+            self._update_backtest_config("capital", capital)
+            self._update_backtest_config("position_pct", position_pct)
+            self._update_backtest_config("position_pct_units", position_pct_units)
+            self._update_backtest_config("side", side_value)
+            self._update_backtest_config("margin_mode", margin_mode)
+            self._update_backtest_config("position_mode", position_mode)
+            self._update_backtest_config("assets_mode", assets_mode)
+            self._update_backtest_config("account_mode", account_mode)
+            self._update_backtest_config("leverage", leverage_value)
+
+            indicator_keys_order = [ind.key for ind in indicators]
+            expected_runs = []
+            if logic == "SEPARATE":
+                for sym in symbols:
+                    for iv in intervals:
+                        for ind in indicators:
+                            expected_runs.append((sym, iv, [ind.key]))
+            else:
+                for sym in symbols:
+                    for iv in intervals:
+                        expected_runs.append((sym, iv, list(indicator_keys_order)))
+            self._backtest_expected_runs = expected_runs
+            self._backtest_dates_changed()
+
+            symbol_source = (self.backtest_symbol_source_combo.currentText() or "Futures").strip()
+            self._update_backtest_config("symbol_source", symbol_source)
+            account_type = "Spot" if symbol_source.lower().startswith("spot") else "Futures"
+
+            api_key = self.api_key_edit.text().strip()
+            api_secret = self.api_secret_edit.text().strip()
+            mode = self.mode_combo.currentText()
+
+            stop_cfg = normalize_stop_loss_dict(self.backtest_config.get("stop_loss"))
+            self.backtest_config["stop_loss"] = stop_cfg
+            self.config.setdefault("backtest", {})["stop_loss"] = copy.deepcopy(stop_cfg)
+
+            mdd_logic_value = self._get_selected_mdd_logic()
+            request = BacktestRequest(
+                symbols=symbols,
+                intervals=intervals,
+                indicators=indicators,
+                logic=logic,
+                symbol_source=symbol_source,
+                start=start_dt,
+                end=end_dt,
+                capital=capital,
+                side=side_value,
+                position_pct=position_pct,
+                position_pct_units=position_pct_units,
+                leverage=leverage_value,
+                margin_mode=margin_mode,
+                position_mode=position_mode,
+                assets_mode=assets_mode,
+                account_mode=account_mode,
+                mdd_logic=mdd_logic_value,
+                stop_loss_enabled=bool(stop_cfg.get("enabled")),
+                stop_loss_mode=str(stop_cfg.get("mode") or "usdt"),
+                stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
+                stop_loss_percent=float(stop_cfg.get("percent", 0.0) or 0.0),
+                stop_loss_scope=str(stop_cfg.get("scope") or "per_trade"),
+            )
+
+            signature = (mode, api_key, api_secret)
+            wrapper_entry = self._backtest_wrappers.get(account_type)
+            wrapper = None
+            if isinstance(wrapper_entry, dict) and wrapper_entry.get("signature") == signature:
+                wrapper = wrapper_entry.get("wrapper")
+            if wrapper is None:
+                wrapper = self._create_binance_wrapper(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    mode=mode,
+                    account_type=account_type,
+                    connector_backend=self._backtest_connector_backend(),
+                )
+                self._backtest_wrappers[account_type] = {"signature": signature, "wrapper": wrapper}
+            else:
+                try:
+                    wrapper.account_type = account_type
+                except Exception:
+                    pass
+
+            try:
+                wrapper.indicator_source = self.ind_source_combo.currentText()
+            except Exception:
+                pass
+
+            engine = BacktestEngine(wrapper)
+            self.backtest_scan_worker = _BacktestWorker(engine, request, self)
+            self.backtest_scan_worker.progress.connect(self._on_backtest_progress)
+            self.backtest_scan_worker.finished.connect(self._on_backtest_scan_finished)
+            self.backtest_results_table.setRowCount(0)
+            self.backtest_status_label.setText(f"Scanning top {len(symbols)} symbols...")
+            self.backtest_run_btn.setEnabled(False)
+            try:
+                self.backtest_scan_btn.setEnabled(False)
+            except Exception:
+                pass
+            try:
+                self.backtest_stop_btn.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self._backtest_scan_mdd_limit = float(self.backtest_scan_mdd_spin.value())
+            except Exception:
+                self._backtest_scan_mdd_limit = float(self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0)
+            self.backtest_scan_worker.start()
+        except Exception as exc:
+            tb = traceback.format_exc()
+            try:
+                self.backtest_status_label.setText(f"Scan failed: {exc}")
+                self.log(f"[Backtest Scan] error: {exc}\n{tb}")
+            except Exception:
+                print(tb, flush=True)
+
+    def _select_backtest_scan_best(self, runs, mdd_limit: float):
+        best = None
+        best_score = None
+        for run in runs or []:
+            if is_dataclass(run):
+                data = asdict(run)
+            elif isinstance(run, dict):
+                data = dict(run)
+            else:
+                data = {
+                    "symbol": getattr(run, "symbol", ""),
+                    "interval": getattr(run, "interval", ""),
+                    "indicator_keys": getattr(run, "indicator_keys", []),
+                    "trades": getattr(run, "trades", 0),
+                    "roi_percent": getattr(run, "roi_percent", 0.0),
+                    "roi_value": getattr(run, "roi_value", 0.0),
+                    "max_drawdown_percent": getattr(run, "max_drawdown_percent", 0.0),
+                    "mdd_logic": getattr(run, "mdd_logic", None),
+                }
+            try:
+                trades = int(data.get("trades", 0) or 0)
+            except Exception:
+                trades = 0
+            if trades <= 0:
+                continue
+            try:
+                mdd = float(data.get("max_drawdown_percent", 0.0) or 0.0)
+            except Exception:
+                mdd = 0.0
+            if mdd > mdd_limit:
+                continue
+            try:
+                roi_pct = float(data.get("roi_percent", 0.0) or 0.0)
+            except Exception:
+                roi_pct = 0.0
+            try:
+                roi_val = float(data.get("roi_value", 0.0) or 0.0)
+            except Exception:
+                roi_val = 0.0
+            symbol = str(data.get("symbol") or "").strip().upper()
+            interval = str(data.get("interval") or "").strip()
+            if not symbol or not interval:
+                continue
+            score = (roi_pct, roi_val, -mdd)
+            if best_score is None or score > best_score:
+                best_score = score
+                best = {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "roi_percent": roi_pct,
+                    "roi_value": roi_val,
+                    "max_drawdown_percent": mdd,
+                    "trades": trades,
+                    "indicator_keys": list(data.get("indicator_keys") or []),
+                    "mdd_logic": data.get("mdd_logic"),
+                }
+        return best
+
+    def _select_backtest_scan_row(self, symbol: str, interval: str, indicator_keys: list | None = None) -> None:
+        try:
+            symbol = str(symbol or "").upper()
+            interval = str(interval or "")
+            if not symbol or not interval:
+                return
+            for row in range(self.backtest_results_table.rowCount()):
+                item = self.backtest_results_table.item(row, 0)
+                if item is None:
+                    continue
+                data = item.data(QtCore.Qt.ItemDataRole.UserRole) or {}
+                sym_val = str(data.get("symbol") or "").upper()
+                iv_val = str(data.get("interval") or "")
+                if sym_val != symbol or iv_val != interval:
+                    continue
+                if indicator_keys:
+                    row_keys = data.get("indicator_keys") or []
+                    if set(row_keys) != set(indicator_keys):
+                        continue
+                self.backtest_results_table.selectRow(row)
+                try:
+                    self.backtest_results_table.scrollToItem(item)
+                except Exception:
+                    pass
+                break
+        except Exception:
+            pass
+
+    def _apply_backtest_scan_best(self, best: dict) -> None:
+        symbol = str(best.get("symbol") or "").upper()
+        interval = str(best.get("interval") or "")
+        if symbol:
+            self._set_backtest_symbol_selection([symbol])
+        if interval:
+            self._set_backtest_interval_selection([interval])
+        self._select_backtest_scan_row(symbol, interval, best.get("indicator_keys"))
+
+    def _on_backtest_scan_finished(self, result: dict, error: object):
+        self.backtest_scan_worker = None
+        self._on_backtest_finished(result, error)
+        try:
+            self.backtest_scan_btn.setEnabled(True)
+        except Exception:
+            pass
+        if error:
+            return
+        if not isinstance(result, dict):
+            return
+        runs_raw = result.get("runs", []) or []
+        try:
+            mdd_limit = float(getattr(self, "_backtest_scan_mdd_limit", 0.0) or 0.0)
+        except Exception:
+            mdd_limit = 0.0
+        best = self._select_backtest_scan_best(runs_raw, mdd_limit)
+        if not best:
+            self.backtest_status_label.setText(
+                f"Scan complete, but no runs met MDD <= {mdd_limit:.2f}% with trades."
+            )
+            return
+        auto_apply = bool(self.backtest_scan_apply_cb.isChecked()) if hasattr(self, "backtest_scan_apply_cb") else True
+        if auto_apply:
+            self._apply_backtest_scan_best(best)
+        summary = (
+            f"Scan best: {best['symbol']}@{best['interval']} "
+            f"ROI {best['roi_percent']:+.2f}% | MDD {best['max_drawdown_percent']:.2f}% "
+            f"| trades {best['trades']}"
+        )
+        self.backtest_status_label.setText(summary)
+
     def _stop_backtest(self):
         try:
             worker = getattr(self, 'backtest_worker', None)
@@ -7068,6 +7392,16 @@ class MainWindow(QtWidgets.QWidget):
                 if hasattr(worker, 'request_stop'):
                     worker.request_stop()
                 self.backtest_status_label.setText('Stopping backtest...')
+                try:
+                    self.backtest_stop_btn.setEnabled(False)
+                except Exception:
+                    pass
+                return
+            scan_worker = getattr(self, 'backtest_scan_worker', None)
+            if scan_worker and scan_worker.isRunning():
+                if hasattr(scan_worker, 'request_stop'):
+                    scan_worker.request_stop()
+                self.backtest_status_label.setText('Stopping scan...')
                 try:
                     self.backtest_stop_btn.setEnabled(False)
                 except Exception:
@@ -11618,17 +11952,58 @@ class MainWindow(QtWidgets.QWidget):
         self._register_pnl_summary_labels(self.pnl_active_label_tab3, self.pnl_closed_label_tab3)
         controls_layout.addWidget(tab3_status_widget)
         output_group_layout.addLayout(controls_layout)
+        scan_controls_layout = QtWidgets.QHBoxLayout()
+        scan_controls_layout.setSpacing(8)
+        scan_controls_layout.addWidget(QtWidgets.QLabel("Scan Top N:"))
+        self.backtest_scan_top_spin = QtWidgets.QSpinBox()
+        self.backtest_scan_top_spin.setRange(1, max(1, int(_SYMBOL_FETCH_TOP_N)))
+        scan_top_default = int(self.backtest_config.get("scan_top_n", _SYMBOL_FETCH_TOP_N) or _SYMBOL_FETCH_TOP_N)
+        if scan_top_default < 1:
+            scan_top_default = 1
+        if scan_top_default > _SYMBOL_FETCH_TOP_N:
+            scan_top_default = _SYMBOL_FETCH_TOP_N
+        self.backtest_scan_top_spin.setValue(scan_top_default)
+        self.backtest_scan_top_spin.valueChanged.connect(
+            lambda v: self._update_backtest_config("scan_top_n", int(v))
+        )
+        scan_controls_layout.addWidget(self.backtest_scan_top_spin)
+        scan_controls_layout.addWidget(QtWidgets.QLabel("MDD <= %:"))
+        self.backtest_scan_mdd_spin = QtWidgets.QDoubleSpinBox()
+        self.backtest_scan_mdd_spin.setRange(0.0, 100.0)
+        self.backtest_scan_mdd_spin.setDecimals(2)
+        self.backtest_scan_mdd_spin.setSingleStep(0.5)
+        scan_mdd_default = float(self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0)
+        if scan_mdd_default < 0.0:
+            scan_mdd_default = 0.0
+        self.backtest_scan_mdd_spin.setValue(scan_mdd_default)
+        self.backtest_scan_mdd_spin.valueChanged.connect(
+            lambda v: self._update_backtest_config("scan_mdd_limit", float(v))
+        )
+        scan_controls_layout.addWidget(self.backtest_scan_mdd_spin)
+        self.backtest_scan_apply_cb = QtWidgets.QCheckBox("Auto-apply best")
+        scan_apply_default = bool(self.backtest_config.get("scan_auto_apply", True))
+        self.backtest_scan_apply_cb.setChecked(scan_apply_default)
+        self.backtest_scan_apply_cb.toggled.connect(
+            lambda v: self._update_backtest_config("scan_auto_apply", bool(v))
+        )
+        scan_controls_layout.addWidget(self.backtest_scan_apply_cb)
+        self.backtest_scan_btn = QtWidgets.QPushButton("Scan Symbols")
+        self.backtest_scan_btn.clicked.connect(self._run_backtest_scan)
+        scan_controls_layout.addWidget(self.backtest_scan_btn)
+        scan_controls_layout.addStretch()
+        output_group_layout.addLayout(scan_controls_layout)
         self._update_bot_status()
         try:
             for widget in (
                 self.backtest_run_btn,
                 self.backtest_stop_btn,
+                self.backtest_scan_btn,
                 self.backtest_add_to_dashboard_btn,
                 self.backtest_add_all_to_dashboard_btn,
             ):
                 if widget and widget not in self._runtime_lock_widgets:
                     self._runtime_lock_widgets.append(widget)
-                if widget in (self.backtest_run_btn, self.backtest_stop_btn):
+                if widget in (self.backtest_run_btn, self.backtest_stop_btn, self.backtest_scan_btn):
                     self._register_runtime_active_exemption(widget)
         except Exception:
             pass

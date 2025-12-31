@@ -43,6 +43,19 @@ except Exception:
     _OfficialClientError = None
     _OfficialServerError = None
 
+_USDS_REST_PROD = None
+_USDS_REST_TESTNET = None
+_UsdsRestAPI = None
+_UsdsConfig = None
+_UsdsEnums = None
+_UsdsMarginTypeEnum = None
+_UsdsOrderSideEnum = None
+_UsdsPositionSideEnum = None
+_UsdsTimeInForceEnum = None
+_UsdsWorkingTypeEnum = None
+_UsdsOrderRespEnum = None
+_UsdsPriceMatchEnum = None
+_UsdsStpEnum = None
 try:
     from binance_sdk_derivatives_trading_usds_futures import (
         DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL as _USDS_REST_PROD,
@@ -54,29 +67,21 @@ try:
     from binance_sdk_derivatives_trading_usds_futures.rest_api.rest_api import (
         ConfigurationRestAPI as _UsdsConfig,
     )
-    from binance_sdk_derivatives_trading_usds_futures.rest_api.models.enums import (
-        ChangeMarginTypeMarginTypeEnum as _UsdsMarginTypeEnum,
-        NewOrderSideEnum as _UsdsOrderSideEnum,
-        NewOrderPositionSideEnum as _UsdsPositionSideEnum,
-        NewOrderTimeInForceEnum as _UsdsTimeInForceEnum,
-        NewOrderWorkingTypeEnum as _UsdsWorkingTypeEnum,
-        NewOrderNewOrderRespTypeEnum as _UsdsOrderRespEnum,
-        NewOrderPriceMatchEnum as _UsdsPriceMatchEnum,
-        NewOrderSelfTradePreventionModeEnum as _UsdsStpEnum,
-    )
+    try:
+        from binance_sdk_derivatives_trading_usds_futures.rest_api.models import enums as _UsdsEnums
+    except Exception:
+        _UsdsEnums = None
+    if _UsdsEnums is not None:
+        _UsdsMarginTypeEnum = getattr(_UsdsEnums, "ChangeMarginTypeMarginTypeEnum", None)
+        _UsdsOrderSideEnum = getattr(_UsdsEnums, "NewOrderSideEnum", None)
+        _UsdsPositionSideEnum = getattr(_UsdsEnums, "NewOrderPositionSideEnum", None)
+        _UsdsTimeInForceEnum = getattr(_UsdsEnums, "NewOrderTimeInForceEnum", None)
+        _UsdsWorkingTypeEnum = getattr(_UsdsEnums, "NewOrderWorkingTypeEnum", None)
+        _UsdsOrderRespEnum = getattr(_UsdsEnums, "NewOrderNewOrderRespTypeEnum", None)
+        _UsdsPriceMatchEnum = getattr(_UsdsEnums, "NewOrderPriceMatchEnum", None)
+        _UsdsStpEnum = getattr(_UsdsEnums, "NewOrderSelfTradePreventionModeEnum", None)
 except Exception:
-    _USDS_REST_PROD = None
-    _USDS_REST_TESTNET = None
-    _UsdsRestAPI = None
-    _UsdsConfig = None
-    _UsdsMarginTypeEnum = None
-    _UsdsOrderSideEnum = None
-    _UsdsPositionSideEnum = None
-    _UsdsTimeInForceEnum = None
-    _UsdsWorkingTypeEnum = None
-    _UsdsOrderRespEnum = None
-    _UsdsPriceMatchEnum = None
-    _UsdsStpEnum = None
+    pass
 
 try:
     from binance_sdk_derivatives_trading_coin_futures import (
