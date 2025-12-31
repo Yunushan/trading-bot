@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+import time
 from decimal import Decimal, ROUND_DOWN, getcontext
 
 getcontext().prec = 28
@@ -58,17 +59,44 @@ def _cancel_all(binance, sym: str):
     except Exception:
         pass
 
-def _gather_positions(binance) -> List[Dict[str, Any]]:
+def _normalize_position_side(value: str | None) -> str:
+    side = str(value or "").strip().upper()
+    return side if side else "BOTH"
+
+def _is_unknown_execution_error(err: object) -> bool:
+    if err is None:
+        return False
+    try:
+        code = getattr(err, "code", None)
+    except Exception:
+        code = None
+    if code in (-1007,):
+        return True
+    text = str(err)
+    lower = text.lower()
+    if "-1007" in lower:
+        return True
+    if "execution status unknown" in lower or "send status unknown" in lower:
+        return True
+    if "timeout waiting for response" in lower:
+        return True
+    return False
+
+def _gather_positions(binance) -> tuple[List[Dict[str, Any]], bool]:
     # Try position info first
     infos = None
+    ok = False
     try:
         infos = binance.client.futures_position_information()
+        ok = True
     except Exception:
         try:
             acct = binance.client.futures_account() or {}
             infos = acct.get('positions', [])
+            ok = True
         except Exception:
             infos = []
+            ok = False
     out: List[Dict[str, Any]] = []
     for p in infos or []:
         try:
@@ -80,9 +108,9 @@ def _gather_positions(binance) -> List[Dict[str, Any]]:
         out.append({
             'symbol': (p.get('symbol') or '').upper(),
             'positionAmt': amt,
-            'positionSide': (p.get('positionSide') or '').upper(),
+            'positionSide': _normalize_position_side(p.get('positionSide')),
         })
-    return out
+    return out, ok
 
 def _is_testnet_wrapper(binance) -> bool:
     try:
@@ -123,7 +151,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 pass
         except Exception:
             pass
-        positions = _gather_positions(binance)
+        positions, _ = _gather_positions(binance)
         if not positions:
             return results
         if max_workers is None:
@@ -131,12 +159,19 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
 
         def _attempt_close_position(p):
             sym = p.get('symbol')
+            pos_side = _normalize_position_side(p.get('positionSide'))
             try:
                 amt = float(p.get('positionAmt') or 0.0)
             except Exception:
                 amt = 0.0
             if abs(amt) <= 0:
-                return {'ok': True, 'symbol': sym, 'skipped': True, 'reason': 'zero-qty'}
+                return {
+                    'ok': True,
+                    'symbol': sym,
+                    'positionSide': pos_side,
+                    'skipped': True,
+                    'reason': 'zero-qty',
+                }
             side = 'SELL' if amt > 0 else 'BUY'
             if use_close_position:
                 close_params = dict(symbol=sym, side=side, type='MARKET', closePosition=True)
@@ -144,15 +179,27 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     close_params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
                 try:
                     od = binance.client.futures_create_order(**close_params)
-                    return {'ok': True, 'symbol': sym, 'info': od, 'method': 'closePosition'}
+                    return {'ok': True, 'symbol': sym, 'positionSide': pos_side, 'info': od, 'method': 'closePosition'}
                 except Exception as e:
-                    return {'ok': False, 'symbol': sym, 'error': str(e), 'positionAmt': amt}
+                    return {
+                        'ok': False,
+                        'symbol': sym,
+                        'positionSide': pos_side,
+                        'error': str(e),
+                        'positionAmt': amt,
+                    }
             try:
                 qty_raw = abs(amt)
                 step, min_qty, max_qty = _get_lot_limits(binance, sym)
                 qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
                 if qty_float <= 0.0:
-                    return {'ok': True, 'symbol': sym, 'skipped': True, 'reason': 'zero-qty'}
+                    return {
+                        'ok': True,
+                        'symbol': sym,
+                        'positionSide': pos_side,
+                        'skipped': True,
+                        'reason': 'zero-qty',
+                    }
                 qty_str = f"{qty_float:.8f}"
                 params = dict(symbol=sym, side=side, type='MARKET')
                 if dual:
@@ -162,9 +209,15 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     params['reduceOnly'] = True
                     params['quantity'] = str(qty_str)
                 od = binance.client.futures_create_order(**params)
-                return {'ok': True, 'symbol': sym, 'info': od, 'method': 'reduceOnly'}
+                return {'ok': True, 'symbol': sym, 'positionSide': pos_side, 'info': od, 'method': 'reduceOnly'}
             except Exception as e:
-                return {'ok': False, 'symbol': sym, 'error': str(e), 'positionAmt': amt}
+                return {
+                    'ok': False,
+                    'symbol': sym,
+                    'positionSide': pos_side,
+                    'error': str(e),
+                    'positionAmt': amt,
+                }
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_attempt_close_position, p) for p in positions]
@@ -196,20 +249,85 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                         params['quantity'] = str(qty_str)
                     try:
                         od = binance.client.futures_create_order(**params)
-                        results.append({'ok': True, 'symbol': sym, 'info': od})
+                        results.append({'ok': True, 'symbol': sym, 'positionSide': r.get('positionSide'), 'info': od})
                     except Exception as e:
-                        results.append({'ok': False, 'symbol': sym, 'error': str(e), 'params': params})
+                        results.append({
+                            'ok': False,
+                            'symbol': sym,
+                            'positionSide': r.get('positionSide'),
+                            'error': str(e),
+                            'params': params,
+                        })
                 except Exception as e:
-                    results.append({'ok': False, 'symbol': sym, 'error': str(e)})
+                    results.append({
+                        'ok': False,
+                        'symbol': sym,
+                        'positionSide': r.get('positionSide'),
+                        'error': str(e),
+                    })
+        failures = [r for r in results if not r.get('ok')]
+        if failures:
+            result_index: dict[tuple[str, str], int] = {}
+            def _result_key(res: dict) -> tuple[str, str] | None:
+                sym = str(res.get('symbol') or '').upper()
+                if not sym:
+                    return None
+                side = _normalize_position_side(res.get('positionSide'))
+                return (sym, side)
+
+            for idx, res in enumerate(results):
+                key = _result_key(res)
+                if key is not None:
+                    result_index[key] = idx
+
+            def _upsert_result(res: dict) -> None:
+                key = _result_key(res)
+                if key is None:
+                    results.append(res)
+                    return
+                idx = result_index.get(key)
+                if idx is None:
+                    result_index[key] = len(results)
+                    results.append(res)
+                else:
+                    results[idx] = res
+
+            if any(_is_unknown_execution_error(r.get('error')) for r in failures):
+                time.sleep(0.35)
+            for _ in range(2):
+                remaining, remaining_ok = _gather_positions(binance)
+                if not remaining_ok or not remaining:
+                    break
+                for p in remaining:
+                    _upsert_result(_attempt_close_position(p))
+                if any(
+                    _is_unknown_execution_error(r.get('error'))
+                    for r in results
+                    if not r.get('ok')
+                ):
+                    time.sleep(0.35)
+            remaining, remaining_ok = _gather_positions(binance)
+            if remaining_ok:
+                open_symbols = {str(p.get('symbol') or '').upper() for p in remaining}
+                for r in results:
+                    if r.get('ok'):
+                        continue
+                    if not _is_unknown_execution_error(r.get('error')):
+                        continue
+                    sym = str(r.get('symbol') or '').upper()
+                    if sym and sym not in open_symbols:
+                        r['ok'] = True
+                        r['reconciled'] = True
         return results
 
     # up to 3 passes: handle partial fills / changes
     for _ in range(3):
-        positions = _gather_positions(binance)
+        positions, _ = _gather_positions(binance)
         if not positions:
             break
         for p in positions:
             sym = p.get('symbol')
+            pos_side = _normalize_position_side(p.get('positionSide'))
             try:
                 amt = float(p.get('positionAmt') or 0.0)
                 if abs(amt) <= 0:
@@ -225,7 +343,13 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     close_params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
                 try:
                     od = binance.client.futures_create_order(**close_params)
-                    results.append({'ok': True, 'symbol': sym, 'info': od, 'method': 'closePosition'})
+                    results.append({
+                        'ok': True,
+                        'symbol': sym,
+                        'positionSide': pos_side,
+                        'info': od,
+                        'method': 'closePosition',
+                    })
                     continue
                 except Exception as e:
                     err_msg = str(e)
@@ -239,7 +363,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     params['quantity'] = str(qty_str)
                 try:
                     od = binance.client.futures_create_order(**params)
-                    results.append({'ok': True, 'symbol': sym, 'info': od})
+                    results.append({'ok': True, 'symbol': sym, 'positionSide': pos_side, 'info': od})
                     continue
                 except Exception as e:
                     err_msg = str(e)
@@ -247,13 +371,31 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                         fallback_params = dict(symbol=sym, side=side, type='MARKET', closePosition=True)
                         try:
                             od = binance.client.futures_create_order(**fallback_params)
-                            results.append({'ok': True, 'symbol': sym, 'info': od, 'method': 'closePosition'})
+                            results.append({
+                                'ok': True,
+                                'symbol': sym,
+                                'positionSide': pos_side,
+                                'info': od,
+                                'method': 'closePosition',
+                            })
                             continue
                         except Exception as e2:
                             err_msg = f"{err_msg} | fallback error: {e2}"
-                            results.append({'ok': False, 'symbol': sym, 'error': err_msg, 'params': fallback_params})
+                            results.append({
+                                'ok': False,
+                                'symbol': sym,
+                                'positionSide': pos_side,
+                                'error': err_msg,
+                                'params': fallback_params,
+                            })
                     else:
-                        results.append({'ok': False, 'symbol': sym, 'error': err_msg, 'params': params})
+                        results.append({
+                            'ok': False,
+                            'symbol': sym,
+                            'positionSide': pos_side,
+                            'error': err_msg,
+                            'params': params,
+                        })
             except Exception as e:
-                results.append({'ok': False, 'symbol': sym, 'error': str(e)})
+                results.append({'ok': False, 'symbol': sym, 'positionSide': pos_side, 'error': str(e)})
     return results
