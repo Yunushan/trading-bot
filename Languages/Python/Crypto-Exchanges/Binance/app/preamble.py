@@ -46,7 +46,7 @@ try:
                 pass
             os.environ["XDG_RUNTIME_DIR"] = tmp_runtime
     
-    # Windows-specific QtWebEngine tuning: favor software rendering for stability
+    # Windows-specific QtWebEngine tuning: prefer GPU acceleration for responsiveness
     if os.name == "nt":
         flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
         gpu_flag = str(os.environ.get("BOT_TRADINGVIEW_DISABLE_GPU", "")).strip().lower()
@@ -61,7 +61,7 @@ try:
         elif force_gpu:
             disable_gpu = False
         else:
-            disable_gpu = True
+            disable_gpu = False
 
         drop_flags = {
             "--single-process",

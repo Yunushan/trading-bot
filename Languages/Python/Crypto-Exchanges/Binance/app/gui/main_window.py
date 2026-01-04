@@ -92,6 +92,11 @@ _WEBENGINE_DISABLED_REASON = (
     "WebEngine charts are disabled on Windows. "
     "Unset BOT_DISABLE_WEBENGINE_CHARTS or set it to 0 to enable."
 )
+_DEFAULT_WEB_UA = os.environ.get(
+    "BOT_WEBENGINE_UA",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+)
 
 
 def _configure_tradingview_webengine_env() -> None:
@@ -115,7 +120,7 @@ def _configure_tradingview_webengine_env() -> None:
         if force_gpu:
             disable_gpu = False
         else:
-            disable_gpu = True
+            disable_gpu = False
     if not disable_gpu:
         return
     flags = str(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") or "").strip()
@@ -214,6 +219,26 @@ def _tradingview_embed_health() -> tuple[bool, str]:
         if not exe_path.is_file():
             return False, f"TradingView embed disabled: {exe_name} not found in {exec_dir}."
     return True, ""
+
+def _webengine_embed_health() -> tuple[bool, str]:
+    ok, reason = _tradingview_embed_health()
+    if ok:
+        return True, ""
+    if reason:
+        reason = reason.replace("TradingView", "WebEngine")
+    return False, reason
+
+def _webengine_embed_unavailable_reason() -> str | None:
+    if _DISABLE_CHARTS:
+        return "Charts disabled. Set BOT_DISABLE_CHARTS=0 to enable web embeds."
+    if _chart_safe_mode_enabled():
+        return "Web embeds disabled for stability. Set BOT_SAFE_CHART_TAB=0 to enable."
+    if sys.platform == "win32" and not _webengine_charts_allowed():
+        return _WEBENGINE_DISABLED_REASON
+    ok, reason = _webengine_embed_health()
+    if not ok:
+        return reason or "WebEngine embed unavailable."
+    return None
 
 def _tradingview_unavailable_reason() -> str:
     if sys.platform == "win32" and not _webengine_charts_allowed():
@@ -3403,6 +3428,105 @@ class _BacktestWorker(QtCore.QThread):
 from ..position_guard import IntervalPositionGuard
 from .param_dialog import ParamDialog
 
+class _LazyWebEmbed(QtWidgets.QWidget):
+    def __init__(self, url: str, parent=None) -> None:
+        super().__init__(parent)
+        self._url = str(url or "").strip()
+        self._view = None
+        self._loaded_once = False
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._stack = QtWidgets.QStackedWidget()
+        layout.addWidget(self._stack)
+
+        self._fallback_label = QtWidgets.QLabel("Loading web view...")
+        self._fallback_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._fallback_label.setWordWrap(True)
+        self._stack.addWidget(self._fallback_label)
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._loaded_once:
+            return
+        self._loaded_once = True
+        self._ensure_view()
+
+    def set_url(self, url: str) -> None:
+        url = str(url or "").strip()
+        if not url:
+            return
+        self._url = url
+        if self._view is not None:
+            try:
+                self._view.load(QtCore.QUrl(self._url))
+            except Exception:
+                pass
+
+    def reload(self) -> None:
+        if self._view is None:
+            return
+        try:
+            self._view.reload()
+        except Exception:
+            pass
+
+    def _set_fallback_text(self, text: str) -> None:
+        self._fallback_label.setText(text)
+        try:
+            self._stack.setCurrentWidget(self._fallback_label)
+        except Exception:
+            pass
+
+    def _ensure_view(self) -> None:
+        reason = _webengine_embed_unavailable_reason()
+        if reason:
+            self._set_fallback_text(f"{reason}\n\nUse 'Open in Browser' to view the heatmap.")
+            return
+        try:
+            _configure_tradingview_webengine_env()
+        except Exception:
+            pass
+        try:
+            from PyQt6.QtWebEngineWidgets import QWebEngineView
+        except Exception as exc:
+            self._set_fallback_text(f"QtWebEngine unavailable: {exc}")
+            return
+
+        view = QWebEngineView(self)
+        self._configure_view(view)
+        self._view = view
+        self._stack.insertWidget(0, view)
+        self._stack.setCurrentWidget(view)
+        if self._url:
+            try:
+                view.load(QtCore.QUrl(self._url))
+            except Exception:
+                pass
+
+    def _configure_view(self, view) -> None:
+        try:
+            view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
+        except Exception:
+            pass
+        try:
+            settings = view.settings()
+            settings.setAttribute(settings.WebAttribute.LocalStorageEnabled, True)
+            settings.setAttribute(settings.WebAttribute.JavascriptCanOpenWindows, False)
+            settings.setAttribute(settings.WebAttribute.JavascriptCanCloseWindows, False)
+            settings.setAttribute(settings.WebAttribute.HyperlinkAuditingEnabled, False)
+            if hasattr(settings.WebAttribute, "Accelerated2dCanvasEnabled"):
+                settings.setAttribute(settings.WebAttribute.Accelerated2dCanvasEnabled, True)
+            if hasattr(settings.WebAttribute, "WebGLEnabled"):
+                settings.setAttribute(settings.WebAttribute.WebGLEnabled, True)
+        except Exception:
+            pass
+        try:
+            profile = view.page().profile()
+            profile.setHttpUserAgent(_DEFAULT_WEB_UA)
+        except Exception:
+            pass
+
 class MainWindow(QtWidgets.QWidget):
     log_signal = pyqtSignal(str)
     trade_signal = pyqtSignal(dict)
@@ -3714,6 +3838,8 @@ class MainWindow(QtWidgets.QWidget):
         self.bot_time_label_chart = None
         self.bot_time_label_code_tab = None
         self.code_tab = None
+        self.liquidation_tab = None
+        self.liquidation_tabs = None
         self._bot_active = False
         self._bot_active_since = None
         self._bot_time_timer = None
@@ -12086,6 +12212,11 @@ class MainWindow(QtWidgets.QWidget):
 
         self.tabs.addTab(tab3, "Backtest")
 
+        liquidation_tab = self._init_liquidation_heatmap_tab()
+        if liquidation_tab is not None:
+            self.liquidation_tab = liquidation_tab
+            self.tabs.addTab(liquidation_tab, "Liquidation Heatmap")
+
         code_tab = self._init_code_language_tab()
         if code_tab is not None:
             self.code_tab = code_tab
@@ -12107,6 +12238,162 @@ class MainWindow(QtWidgets.QWidget):
             self.ind_source_combo.currentTextChanged.connect(lambda v: self.config.__setitem__("indicator_source", v))
         except Exception:
             pass
+
+
+def _open_external_url(self, url: str) -> bool:
+    try:
+        target = str(url or "").strip()
+    except Exception:
+        target = ""
+    if not target:
+        return False
+    try:
+        return bool(QtGui.QDesktopServices.openUrl(QtCore.QUrl(target)))
+    except Exception:
+        return False
+
+
+def _build_liquidation_web_panel(self, title: str, url: str, note: str | None = None):
+    panel = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(panel)
+    layout.setContentsMargins(12, 12, 12, 12)
+    layout.setSpacing(8)
+
+    header_layout = QtWidgets.QHBoxLayout()
+    title_label = QtWidgets.QLabel(title)
+    title_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+    header_layout.addWidget(title_label)
+    header_layout.addStretch()
+    open_btn = QtWidgets.QPushButton("Open in Browser")
+    header_layout.addWidget(open_btn)
+    reload_btn = QtWidgets.QPushButton("Reload")
+    header_layout.addWidget(reload_btn)
+    layout.addLayout(header_layout)
+
+    if note:
+        note_label = QtWidgets.QLabel(note)
+        note_label.setWordWrap(True)
+        note_label.setStyleSheet("color: #94a3b8;")
+        layout.addWidget(note_label)
+
+    url_row = QtWidgets.QHBoxLayout()
+    url_row.addWidget(QtWidgets.QLabel("URL:"))
+    url_edit = QtWidgets.QLineEdit()
+    url_edit.setText(url)
+    url_edit.setPlaceholderText("https://")
+    url_row.addWidget(url_edit, 1)
+    go_btn = QtWidgets.QPushButton("Go")
+    url_row.addWidget(go_btn)
+    layout.addLayout(url_row)
+
+    web_embed = _LazyWebEmbed(url)
+    layout.addWidget(web_embed, 1)
+
+    def _current_url() -> str:
+        try:
+            return str(url_edit.text() or "").strip()
+        except Exception:
+            return ""
+
+    def _apply_url() -> None:
+        target = _current_url()
+        if not target:
+            return
+        web_embed.set_url(target)
+
+    go_btn.clicked.connect(_apply_url)
+    url_edit.returnPressed.connect(_apply_url)
+    reload_btn.clicked.connect(web_embed.reload)
+    open_btn.clicked.connect(lambda: _open_external_url(self, _current_url()))
+
+    return panel
+
+
+def _init_liquidation_heatmap_tab(self):
+    tab = QtWidgets.QWidget()
+    outer_layout = QtWidgets.QVBoxLayout(tab)
+    outer_layout.setContentsMargins(10, 10, 10, 10)
+    outer_layout.setSpacing(12)
+
+    intro = QtWidgets.QLabel(
+        "Liquidation heatmaps from multiple providers. "
+        "If a heatmap does not load, use 'Open in Browser'."
+    )
+    intro.setWordWrap(True)
+    outer_layout.addWidget(intro)
+
+    tabs = QtWidgets.QTabWidget()
+    outer_layout.addWidget(tabs, 1)
+    self.liquidation_tabs = tabs
+
+    coinglass_tab = QtWidgets.QWidget()
+    coinglass_layout = QtWidgets.QVBoxLayout(coinglass_tab)
+    coinglass_layout.setContentsMargins(0, 0, 0, 0)
+    coinglass_note = QtWidgets.QLabel(
+        "Use the on-page controls for Model 1/2/3, pair, symbol, and time selection."
+    )
+    coinglass_note.setWordWrap(True)
+    coinglass_layout.addWidget(coinglass_note)
+
+    coinglass_models = QtWidgets.QTabWidget()
+    coinglass_layout.addWidget(coinglass_models, 1)
+    coinglass_models_urls = [
+        (1, "https://www.coinglass.com/pro/futures/LiquidationHeatMap"),
+        (2, "https://www.coinglass.com/pro/futures/LiquidationHeatMapNew"),
+        (3, "https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3"),
+    ]
+    for model, url in coinglass_models_urls:
+        panel = _build_liquidation_web_panel(self, f"Coinglass Heatmap Model {model}", url)
+        coinglass_models.addTab(panel, f"Model {model}")
+
+    tabs.addTab(coinglass_tab, "Coinglass Heatmap")
+
+    tabs.addTab(
+        _build_liquidation_web_panel(
+            self,
+            "Coinank Liquidation Heatmap",
+            "https://coinank.com/chart/derivatives/liq-heat-map",
+        ),
+        "Coinank",
+    )
+
+    tabs.addTab(
+        _build_liquidation_web_panel(
+            self,
+            "Bitcoin Counterflow Liquidation Heatmap",
+            "https://www.bitcoincounterflow.com/liquidation-heatmap/",
+        ),
+        "Bitcoin Counterflow",
+    )
+
+    tabs.addTab(
+        _build_liquidation_web_panel(
+            self,
+            "Hyblock Capital Liquidation Heatmap",
+            "https://www.hyblockcapital.com/heatmap",
+        ),
+        "Hyblock Capital",
+    )
+
+    tabs.addTab(
+        _build_liquidation_web_panel(
+            self,
+            "Coinglass Liquidation Map",
+            "https://www.coinglass.com/pro/futures/LiquidationMap",
+        ),
+        "Coinglass Map",
+    )
+
+    tabs.addTab(
+        _build_liquidation_web_panel(
+            self,
+            "Hyperliquid Liquidation Map",
+            "https://www.coinglass.com/hyperliquid-liquidation-map",
+        ),
+        "Hyperliquid Map",
+    )
+
+    return tab
 
 
 def _init_code_language_tab(self):
@@ -16420,6 +16707,9 @@ try:
 except Exception:
     pass
 try:
+    MainWindow._open_external_url = _open_external_url
+    MainWindow._build_liquidation_web_panel = _build_liquidation_web_panel
+    MainWindow._init_liquidation_heatmap_tab = _init_liquidation_heatmap_tab
     MainWindow._init_code_language_tab = _init_code_language_tab
     MainWindow._sync_language_exchange_lists_from_config = _sync_language_exchange_lists_from_config
     MainWindow._ensure_language_exchange_paths = _ensure_language_exchange_paths

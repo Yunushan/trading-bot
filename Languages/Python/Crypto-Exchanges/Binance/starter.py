@@ -768,7 +768,7 @@ class StarterWindow(QtWidgets.QWidget):
         self._active_bot_process: subprocess.Popen[str] | None = None
         self._launch_status_timer = QtCore.QTimer(self)
         self._launch_status_timer.setSingleShot(True)
-        self._launch_status_timer.timeout.connect(self._mark_bot_ready)
+        self._launch_status_timer.timeout.connect(self._handle_launch_timeout)
         self._process_watch_timer = QtCore.QTimer(self)
         self._process_watch_timer.setInterval(250)  # Check every 250ms for faster response
         self._process_watch_timer.timeout.connect(self._monitor_bot_process)
@@ -786,6 +786,7 @@ class StarterWindow(QtWidgets.QWidget):
         self._verbose_launch_session_id = ""
         self._launch_mask_active = False
         self._launch_mask_prev_opacity: float | None = None
+        self._launch_timed_out = False
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(40, 32, 40, 32)
@@ -1686,10 +1687,14 @@ class StarterWindow(QtWidgets.QWidget):
             if self._is_launching:
                 if self._bot_ready:
                     self.primary_button.setText("Bot running (close to relaunch)")
+                    self.primary_button.setEnabled(False)
+                elif self._launch_timed_out:
+                    self.primary_button.setText("Launch Selected Bot")
+                    self.primary_button.setEnabled(self._can_launch_selected())
                 else:
                     self.primary_button.setText("Bot is starting...")
                     show_spinner = True
-                self.primary_button.setEnabled(False)
+                    self.primary_button.setEnabled(False)
             else:
                 self.primary_button.setText("Launch Selected Bot")
                 self.primary_button.setEnabled(self._can_launch_selected())
@@ -1698,7 +1703,7 @@ class StarterWindow(QtWidgets.QWidget):
                 self.primary_button.set_loading(show_spinner)
         except Exception:
             pass
-        if not (self._is_launching and not self._bot_ready):
+        if not (self._is_launching and not self._bot_ready and not self._launch_timed_out):
             try:
                 self._hide_launch_overlay()
             except Exception:
@@ -1706,8 +1711,11 @@ class StarterWindow(QtWidgets.QWidget):
 
     def _set_launch_in_progress(self, launching: bool) -> None:
         self._is_launching = launching
-        if not launching:
+        if launching:
+            self._launch_timed_out = False
+        else:
             self._bot_ready = False
+            self._launch_timed_out = False
             try:
                 self._end_launch_focus_shield()
             except Exception:
@@ -1717,6 +1725,7 @@ class StarterWindow(QtWidgets.QWidget):
     def _mark_bot_ready(self) -> None:
         if self._active_bot_process and self._active_bot_process.poll() is None:
             self._verbose_log("bot marked ready")
+            self._launch_timed_out = False
             self._bot_ready = True
             message = self._running_ready_message or "Selected bot is running. Close it to relaunch."
             self.status_label.setText(message)
@@ -1734,6 +1743,25 @@ class StarterWindow(QtWidgets.QWidget):
                 pass
             self._update_nav_state()
 
+    def _handle_launch_timeout(self) -> None:
+        if not self._is_launching or self._bot_ready:
+            return
+        self._verbose_log("launch timeout reached")
+        self._launch_timed_out = True
+        self.status_label.setText(
+            "Binance is taking longer than expected to start. "
+            "If the window opened, switch to it; otherwise close it and try again."
+        )
+        try:
+            self._hide_launch_overlay()
+        except Exception:
+            pass
+        try:
+            self._end_launch_focus_shield()
+        except Exception:
+            pass
+        self._update_nav_state()
+
     def _launch_overlay_options(self) -> dict[str, object]:
         if sys.platform != "win32":
             return {}
@@ -1743,12 +1771,9 @@ class StarterWindow(QtWidgets.QWidget):
         fullscreen_env = os.environ.get("BOT_LAUNCH_OVERLAY_FULLSCREEN")
         if fullscreen_env is not None:
             options["fullscreen"] = str(fullscreen_env).strip().lower() in {"1", "true", "yes", "on"}
-        else:
-            cover_env = os.environ.get("BOT_LAUNCH_OVERLAY_COVER_OWNER")
-            if cover_env is None:
-                options["cover_owner"] = True
-            else:
-                options["cover_owner"] = str(cover_env).strip().lower() in {"1", "true", "yes", "on"}
+        cover_env = os.environ.get("BOT_LAUNCH_OVERLAY_COVER_OWNER")
+        if cover_env is not None:
+            options["cover_owner"] = str(cover_env).strip().lower() in {"1", "true", "yes", "on"}
         if options.get("fullscreen"):
             if os.environ.get("BOT_LAUNCH_OVERLAY_ALL_SCREENS") is None:
                 options["all_screens"] = True
@@ -2907,6 +2932,7 @@ class StarterWindow(QtWidgets.QWidget):
             self._auto_launch_timer = None
         self._active_bot_process = None
         self._bot_ready = False
+        self._launch_timed_out = False
         self._active_launch_label = "Selected bot"
         self._running_ready_message = "Selected bot is running. Close it to relaunch."
         self._closed_message = "Selected bot closed. Launch it again anytime."
@@ -2923,7 +2949,7 @@ class StarterWindow(QtWidgets.QWidget):
             else:
                 self.status_label.setText("Select a programming language to continue.")
             return
-        if self._is_launching:
+        if self._is_launching and not self._launch_timed_out:
             return
         if self.selected_market is None:
             self.status_label.setText("Select a market to continue.")
@@ -3250,7 +3276,7 @@ class StarterWindow(QtWidgets.QWidget):
             self._update_status_message()
             return
         self._process_watch_timer.start()
-        # Fallback: if we cannot detect the main window, still mark as ready after a generous timeout.
+        # Fallback: if we cannot detect the main window, stop blocking the UI after a timeout.
         self._launch_status_timer.start(30000)
 
 
