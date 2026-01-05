@@ -421,7 +421,7 @@ BACKTEST_INTERVAL_ORDER = [
 
 MAX_CLOSED_HISTORY = 200
 
-APP_STATE_PATH = Path.home() / ".binance_trading_bot_state.json"
+APP_STATE_PATH = Path.home() / ".bybit_trading_bot_state.json"
 
 def _load_app_state_file(path: Path) -> dict:
     try:
@@ -3725,7 +3725,7 @@ class MainWindow(QtWidgets.QWidget):
         self._tv_visibility_watchdog_active = False
         self._tv_visibility_watchdog_timer = None
         self._tradingview_external_last_open_ts = 0.0
-        self._chart_debug_log_path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
+        self._chart_debug_log_path = Path(os.getenv("TEMP") or ".").resolve() / "bybit_chart_debug.log"
         self.chart_enabled = ENABLE_CHART_TAB and not _DISABLE_CHARTS
         self._chart_worker = None
         self._chart_theme_signal_installed = False
@@ -9241,7 +9241,7 @@ class MainWindow(QtWidgets.QWidget):
         try:
             path = getattr(self, "_chart_debug_log_path", None)
             if path is None:
-                path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
+                path = Path(os.getenv("TEMP") or ".").resolve() / "bybit_chart_debug.log"
                 self._chart_debug_log_path = path
             with open(path, "a", encoding="utf-8", errors="ignore") as fh:
                 fh.write(f"[{ts}] {message}\n")
@@ -10819,7 +10819,7 @@ class MainWindow(QtWidgets.QWidget):
         worker.start()
 
     def init_ui(self):
-        self.setWindowTitle("Binance Trading Bot")
+        self.setWindowTitle("Bybit Trading Bot")
         try:
             self.setWindowIcon(QtGui.QIcon(str(Path(__file__).resolve().parent.parent / "assets" / "binance_icon.ico")))
         except Exception:
@@ -17464,7 +17464,7 @@ def _log_window_event(self, name: str, event=None) -> None:
     except Exception:
         pass
     try:
-        path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
+        path = Path(os.getenv("TEMP") or ".").resolve() / "bybit_chart_debug.log"
         with open(path, "a", encoding="utf-8", errors="ignore") as fh:
             fh.write(f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
     except Exception:

@@ -173,12 +173,7 @@ LANGUAGE_OPTIONS = [
 ]
 
 MARKET_OPTIONS = [
-    {
-        "key": "crypto",
-        "title": "Crypto Exchange",
-        "subtitle": "Binance, Bybit, OKX, Gate, Bitget, MEXC, KuCoin",
-        "accent": "#34d399",
-    },
+    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin", "accent": "#34d399"},
     {
         "key": "forex",
         "title": "Forex Exchange",

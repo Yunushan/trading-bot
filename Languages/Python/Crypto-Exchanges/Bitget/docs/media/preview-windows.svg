@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420">
+  <rect width="1200" height="420" fill="#101217" />
+  <rect x="0" y="0" width="1200" height="80" fill="#1a237e" />
+  <text x="600" y="52" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="34" text-anchor="middle">Preview Attachment</text>
+  <text x="600" y="140" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="58" text-anchor="middle">Windows Style Preview</text>
+  <circle cx="600" cy="240" r="90" fill="#26418f" stroke="#90caf9" stroke-width="12" />
+  <text x="600" y="250" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="54" text-anchor="middle">W</text>
+  <text x="600" y="340" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="30" text-anchor="middle">Use attachments like this to showcase target platforms</text>
+</svg>

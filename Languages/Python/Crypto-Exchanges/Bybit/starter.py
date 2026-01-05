@@ -82,10 +82,6 @@ ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
 BINANCE_MAIN = WINDOWS_TASKBAR_DIR / "main.py"
 BYBIT_MAIN = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "Bybit" / "main.py"
 OKX_MAIN = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "OKX" / "main.py"
-GATE_MAIN = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "Gate" / "main.py"
-BITGET_MAIN = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "Bitget" / "main.py"
-MEXC_MAIN = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "MEXC" / "main.py"
-KUCOIN_MAIN = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "KuCoin" / "main.py"
 BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++" / "Crypto-Exchanges" / "Binance"
 BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "binance_cpp"
 BINANCE_CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
@@ -102,19 +98,11 @@ PYTHON_EXCHANGE_MAIN = {
     "binance": BINANCE_MAIN,
     "bybit": BYBIT_MAIN,
     "okx": OKX_MAIN,
-    "gate": GATE_MAIN,
-    "bitget": BITGET_MAIN,
-    "mexc": MEXC_MAIN,
-    "kucoin": KUCOIN_MAIN,
 }
 PYTHON_EXCHANGE_LABELS = {
     "binance": "Binance",
     "bybit": "Bybit",
     "okx": "OKX",
-    "gate": "Gate",
-    "bitget": "Bitget",
-    "mexc": "MEXC",
-    "kucoin": "KuCoin",
 }
 
 
@@ -173,12 +161,7 @@ LANGUAGE_OPTIONS = [
 ]
 
 MARKET_OPTIONS = [
-    {
-        "key": "crypto",
-        "title": "Crypto Exchange",
-        "subtitle": "Binance, Bybit, OKX, Gate, Bitget, MEXC, KuCoin",
-        "accent": "#34d399",
-    },
+    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin", "accent": "#34d399"},
     {
         "key": "forex",
         "title": "Forex Exchange",
@@ -202,30 +185,6 @@ CRYPTO_EXCHANGES = [
         "title": "OKX",
         "subtitle": "Advanced desktop bot ready to launch",
         "accent": "#a78bfa",
-    },
-    {
-        "key": "gate",
-        "title": "Gate",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#22c55e",
-    },
-    {
-        "key": "bitget",
-        "title": "Bitget",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#0ea5e9",
-    },
-    {
-        "key": "mexc",
-        "title": "MEXC",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#10b981",
-    },
-    {
-        "key": "kucoin",
-        "title": "KuCoin",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#eab308",
     },
 ]
 
@@ -3007,7 +2966,7 @@ class StarterWindow(QtWidgets.QWidget):
             return
         if self.selected_market == "forex":
             self.status_label.setText(
-                "Forex brokers (OANDA, FXCM, IG) are coming soon. Choose Crypto -> Binance, Bybit, OKX, Gate, Bitget, MEXC, or KuCoin to launch today."
+                "Forex brokers (OANDA, FXCM, IG) are coming soon. Choose Crypto -> Binance, Bybit, or OKX to launch today."
             )
             return
         if self.selected_market != "crypto":
@@ -3020,7 +2979,7 @@ class StarterWindow(QtWidgets.QWidget):
                 label = PYTHON_EXCHANGE_LABELS.get(exchange, exchange.title())
                 self.status_label.setText(f"{label} is ready. Press 'Launch Selected Bot' to open the PyQt app.")
                 return
-            self.status_label.setText("Select Binance, Bybit, OKX, Gate, Bitget, MEXC, or KuCoin to launch the Python workspace.")
+            self.status_label.setText("Select Binance, Bybit, or OKX to launch the Python workspace.")
             return
 
         if language == "cpp":
@@ -3036,7 +2995,7 @@ class StarterWindow(QtWidgets.QWidget):
                         "(requires Qt + CMake in PATH)."
                     )
                 return
-            if exchange in {"bybit", "okx", "gate", "bitget", "mexc", "kucoin"}:
+            if exchange in {"bybit", "okx"}:
                 self.status_label.setText(
                     "Only the Binance Qt C++ preview is available today. Select Binance to launch it."
                 )
