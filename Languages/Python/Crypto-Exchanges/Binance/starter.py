@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from uuid import uuid4
 from pathlib import Path
 from datetime import datetime
@@ -837,6 +838,13 @@ class StarterWindow(QtWidgets.QWidget):
         self._launch_mask_active = False
         self._launch_mask_prev_opacity: float | None = None
         self._launch_timed_out = False
+        self._launch_started_at: float | None = None
+        try:
+            self._launch_ready_soft_timeout_ms = int(os.environ.get("BOT_LAUNCH_READY_SOFT_TIMEOUT_MS") or 12000)
+        except Exception:
+            self._launch_ready_soft_timeout_ms = 12000
+        self._launch_ready_soft_timeout_ms = max(2000, min(self._launch_ready_soft_timeout_ms, 60000))
+        self._launch_log_name: str | None = None
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(40, 32, 40, 32)
@@ -2342,6 +2350,20 @@ class StarterWindow(QtWidgets.QWidget):
                     pass
                 self._verbose_log(f"main window detected: pid={pid_val}")
                 self._mark_bot_ready()
+                return
+            try:
+                timeout_ms = int(getattr(self, "_launch_ready_soft_timeout_ms", 0) or 0)
+            except Exception:
+                timeout_ms = 0
+            if timeout_ms > 0 and self._launch_started_at is not None:
+                elapsed_ms = (time.monotonic() - self._launch_started_at) * 1000.0
+                if elapsed_ms >= timeout_ms:
+                    self._verbose_log(f"soft ready timeout reached ({int(elapsed_ms)} ms); marking ready")
+                    try:
+                        self._launch_status_timer.stop()
+                    except Exception:
+                        pass
+                    self._mark_bot_ready()
 
     def _start_child_startup_window_suppression(self, root_pid: int) -> None:
         """Hide transient startup windows created by the launched bot (Windows only)."""
@@ -2987,6 +3009,8 @@ class StarterWindow(QtWidgets.QWidget):
         self._active_launch_label = "Selected bot"
         self._running_ready_message = "Selected bot is running. Close it to relaunch."
         self._closed_message = "Selected bot closed. Launch it again anytime."
+        self._launch_started_at = None
+        self._launch_log_name = None
         self._set_launch_in_progress(False)
 
     def _update_status_message(self) -> None:
@@ -3094,6 +3118,8 @@ class StarterWindow(QtWidgets.QWidget):
         if self.selected_language == "python":
             exchange_key = self.selected_exchange
             exchange_label = PYTHON_EXCHANGE_LABELS.get(exchange_key, "Selected bot")
+            exchange_key = str(exchange_key or "bot").lower()
+            self._launch_log_name = f"{exchange_key}_launch.log"
             main_path = PYTHON_EXCHANGE_MAIN.get(exchange_key or "")
             if main_path is None or not main_path.is_file():
                 _debug_log(f"{exchange_label} main missing: {main_path}")
@@ -3170,12 +3196,14 @@ class StarterWindow(QtWidgets.QWidget):
                 pass
         self._child_ready_file = None
         self._set_launch_in_progress(True)
+        self._launch_started_at = time.monotonic()
         self._active_launch_label = running_label
         self._running_ready_message = ready_message
         self._closed_message = closed_message
         launch_log_hint = ""
         if self.selected_language == "python":
-            launch_log_hint = f" | Launch log: {os.getenv('TEMP') or cwd}\\binance_launch.log"
+            log_name = self._launch_log_name or "binance_launch.log"
+            launch_log_hint = f" | Launch log: {os.getenv('TEMP') or cwd}\\{log_name}"
         self.status_label.setText(start_message + launch_log_hint)
         if sys.platform == "win32" and self.selected_language == "python":
             try:
@@ -3239,7 +3267,8 @@ class StarterWindow(QtWidgets.QWidget):
                 try:
                     ready_dir = Path(os.getenv("TEMP") or str(cwd))
                     ready_dir.mkdir(parents=True, exist_ok=True)
-                    ready_path = ready_dir / f"binance_ready_{uuid4().hex}.flag"
+                    exchange_key = str(self.selected_exchange or "bot").lower()
+                    ready_path = ready_dir / f"{exchange_key}_ready_{uuid4().hex}.flag"
                     try:
                         ready_path.unlink(missing_ok=True)
                     except Exception:
@@ -3285,7 +3314,8 @@ class StarterWindow(QtWidgets.QWidget):
             try:
                 log_dir = Path(os.getenv("TEMP") or cwd)
                 log_dir.mkdir(parents=True, exist_ok=True)
-                self._launch_log_path = log_dir / "binance_launch.log"
+                log_name = self._launch_log_name or "binance_launch.log"
+                self._launch_log_path = log_dir / log_name
                 popen_kwargs["stdout"] = open(self._launch_log_path, "w", encoding="utf-8", errors="ignore")
                 popen_kwargs["stderr"] = subprocess.STDOUT
                 _debug_log(f"Child stdout/stderr redirected to {self._launch_log_path}")

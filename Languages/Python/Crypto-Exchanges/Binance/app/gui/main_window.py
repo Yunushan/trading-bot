@@ -2282,6 +2282,22 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
                 seen_interval_pairs.add(interval_key)
                 if entry not in deduped_results:
                     deduped_results.append(entry)
+    if deduped_results:
+        label_map = {
+            _indicator_short_label(key).strip().lower(): key
+            for key in indicator_keys
+        }
+        for entry in deduped_results:
+            label_part, interval_part = _indicator_entry_signature(entry)
+            if not interval_part:
+                continue
+            key = label_map.get(label_part)
+            if not key:
+                continue
+            interval_slots = interval_map.setdefault(key.lower(), [])
+            interval_clean = interval_part.strip().upper()
+            if interval_clean and interval_clean not in interval_slots:
+                interval_slots.append(interval_clean)
     return deduped_results, interval_map
 
 
@@ -15220,7 +15236,6 @@ def _mw_render_positions_table(self):
             sym_digest = str(rec.get('symbol') or data.get('symbol') or "").strip().upper()
             if record_is_closed:
                 current_live_entries = list(rec.get("_current_indicator_values") or [])
-                rec["_current_indicator_values"] = current_live_entries
             else:
                 current_live_entries = _collect_current_indicator_live_strings(
                     self,
@@ -15230,7 +15245,20 @@ def _mw_render_positions_table(self):
                     interval_map,
                     interval_hint,
                 )
-                rec["_current_indicator_values"] = current_live_entries
+            if view_mode == "per_trade":
+                filtered_values = _filter_indicator_entries_for_interval(
+                    indicator_value_entries,
+                    interval_hint,
+                    include_non_matching=False,
+                )
+                if filtered_values:
+                    allowed = {_indicator_entry_signature(entry) for entry in filtered_values}
+                    current_live_entries = [
+                        entry
+                        for entry in (current_live_entries or [])
+                        if _indicator_entry_signature(entry) in allowed
+                    ]
+            rec["_current_indicator_values"] = current_live_entries
             indicator_snapshot = tuple(indicator_value_entries or [])
             interval_snapshot = tuple(
                 (key, tuple(values))
@@ -15487,12 +15515,36 @@ def _mw_render_positions_table(self):
                 live_values_entries = rec.get("_current_indicator_values")
                 if live_values_entries is None:
                     if not is_closed_like:
+                        live_indicator_keys = indicators_list
+                        live_interval_map = interval_map
+                        if strict_interval_values and filtered_indicator_values:
+                            label_map = {
+                                _indicator_short_label(key).strip().lower(): key
+                                for key in indicators_list
+                            }
+                            restricted_keys: list[str] = []
+                            restricted_map: dict[str, list[str]] = {}
+                            for entry in filtered_indicator_values:
+                                label_part, interval_part = _indicator_entry_signature(entry)
+                                mapped_key = label_map.get(label_part)
+                                if not mapped_key:
+                                    continue
+                                if mapped_key not in restricted_keys:
+                                    restricted_keys.append(mapped_key)
+                                if interval_part:
+                                    slots = restricted_map.setdefault(mapped_key.lower(), [])
+                                    interval_clean = interval_part.strip().upper()
+                                    if interval_clean and interval_clean not in slots:
+                                        slots.append(interval_clean)
+                            if restricted_keys:
+                                live_indicator_keys = restricted_keys
+                                live_interval_map = restricted_map
                         live_values_entries = _collect_current_indicator_live_strings(
                             self,
                             sym,
-                            indicators_list,
+                            live_indicator_keys,
                             live_value_cache,
-                            interval_map,
+                            live_interval_map,
                             interval,
                         )
                         rec["_current_indicator_values"] = live_values_entries

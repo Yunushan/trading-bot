@@ -912,7 +912,8 @@ class _SDKBaseClient:
         self._bw_throttle = None
 
     def _call(self, func, **kwargs):
-        response = func(**kwargs)
+        clean_kwargs = {key: val for key, val in kwargs.items() if val is not None}
+        response = func(**clean_kwargs)
         return _sdk_to_plain(response)
 
     def _http_get(self, url: str, params: dict[str, Any] | None = None, timeout: float = 10.0):

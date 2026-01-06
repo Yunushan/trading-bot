@@ -1061,7 +1061,8 @@ def main() -> int:
         auto_exit_ms = int(os.environ.get("BOT_AUTO_EXIT_MS") or 0)
     except Exception:
         auto_exit_ms = 0
-    if auto_exit_ms > 0:
+    allow_auto_exit = str(os.environ.get("BOT_ALLOW_AUTO_EXIT", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if auto_exit_ms > 0 and allow_auto_exit:
         QtCore.QTimer.singleShot(auto_exit_ms, app.quit)
 
     return app.exec()

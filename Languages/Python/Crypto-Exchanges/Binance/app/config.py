@@ -51,6 +51,8 @@ DEFAULT_CONFIG = {
     # Blocks immediate re-entry on the same symbol/interval/side after a close to prevent ping-pong loops.
     "indicator_reentry_cooldown_seconds": 0.0,
     "indicator_reentry_cooldown_bars": 1,
+    # When True, flip to the opposite side after a full indicator close (always-in-market).
+    "auto_flip_on_close": True,
     # When True, close paths may bypass the hold guard; keep False to prevent instant churn.
     "allow_close_ignoring_hold": False,
     # When False, a close triggered by one indicator will not flatten trades opened by multi-indicator signals.
