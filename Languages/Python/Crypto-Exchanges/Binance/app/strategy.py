@@ -4597,12 +4597,14 @@ class StrategyEngine:
                     indicator_interval_tokens.update(label_interval_tokens)
                 if action_norm not in {"buy", "sell"}:
                     continue
+                action_side_label = "BUY" if action_norm == "buy" else "SELL"
+                opp_side_label = "SELL" if action_side_label == "BUY" else "BUY"
                 # Exclusivity: never allow both long+short for the same indicator/interval.
                 same_side_live = self._indicator_live_qty_total(
                     cw["symbol"],
                     interval_current,
                     indicator_key,
-                    "BUY" if action_norm == "buy" else "SELL",
+                    action_side_label,
                     interval_aliases=indicator_interval_tokens,
                     strict_interval=True,
                     use_exchange_fallback=False,
@@ -4611,14 +4613,49 @@ class StrategyEngine:
                     cw["symbol"],
                     interval_current,
                     indicator_key,
-                    "SELL" if action_norm == "buy" else "BUY",
+                    opp_side_label,
                     interval_aliases=indicator_interval_tokens,
                     strict_interval=True,
                     use_exchange_fallback=False,
                 )
                 if same_side_live > qty_tol_indicator and opp_side_live <= qty_tol_indicator:
-                    # Same side already active; skip duplicate open.
-                    continue
+                    stale_cleared = False
+                    if account_type == "FUTURES":
+                        try:
+                            desired_ps_check = None
+                            if dual_side:
+                                desired_ps_check = "LONG" if action_side_label == "BUY" else "SHORT"
+                            exch_qty = max(
+                                0.0,
+                                float(
+                                    self._current_futures_position_qty(
+                                        cw["symbol"], action_side_label, desired_ps_check
+                                    )
+                                    or 0.0
+                                ),
+                            )
+                            tol_live = max(1e-9, exch_qty * 1e-6)
+                            if exch_qty <= tol_live:
+                                self._purge_indicator_tracking(
+                                    cw["symbol"],
+                                    interval_current,
+                                    indicator_key,
+                                    action_side_label,
+                                )
+                                same_side_live = 0.0
+                                stale_cleared = True
+                                try:
+                                    self.log(
+                                        f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} "
+                                        f"{action_side_label} stale guard cleared (no live position)."
+                                    )
+                                except Exception:
+                                    pass
+                        except Exception:
+                            stale_cleared = False
+                    if not stale_cleared:
+                        # Same side already active; skip duplicate open.
+                        continue
                 if not self._indicator_signal_confirmation_ready(
                     cw["symbol"],
                     interval_current,
@@ -4628,7 +4665,6 @@ class StrategyEngine:
                     now_indicator_ts,
                 ):
                     continue
-                action_side_label = "BUY" if action_norm == "buy" else "SELL"
                 cooldown_remaining = self._indicator_cooldown_remaining(
                     cw["symbol"],
                     interval_current,
@@ -5551,6 +5587,14 @@ class StrategyEngine:
                 side_value = str(req.get("side") or "").upper()
                 if not indicator_key or side_value not in ("BUY", "SELL"):
                     continue
+                flip_from = str(req.get("flip_from") or "").upper()
+                if flip_from in ("BUY", "SELL") and flip_from != side_value:
+                    try:
+                        self._purge_indicator_tracking(
+                            cw["symbol"], interval_current, indicator_key, side_value
+                        )
+                    except Exception:
+                        pass
                 existing_req = existing_map.get((indicator_key, side_value))
                 if existing_req is not None:
                     if not existing_req.get("indicator_key"):
@@ -5574,7 +5618,11 @@ class StrategyEngine:
                     if existing_flip_target <= 0.0 and req_flip_qty > 0.0:
                         existing_req["flip_qty_target"] = req_flip_qty
                     continue
+                allow_exchange_fallback = True
                 try:
+                    allow_exchange_fallback = not coerce_bool(
+                        self.config.get("allow_opposite_positions"), True
+                    )
                     live_qty = self._indicator_live_qty_total(
                         cw["symbol"],
                         interval_current,
@@ -5582,11 +5630,11 @@ class StrategyEngine:
                         side_value,
                         interval_aliases=indicator_interval_tokens,
                         strict_interval=True,
-                        use_exchange_fallback=True,
+                        use_exchange_fallback=allow_exchange_fallback,
                     )
                 except Exception:
                     live_qty = 0.0
-                if live_qty > qty_tol_indicator:
+                if live_qty > qty_tol_indicator and allow_exchange_fallback:
                     try:
                         desired_ps_check = None
                         if self.binance.get_futures_dual_side():
