@@ -9,9 +9,23 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
 
-_ICON_FILENAMES_WINDOWS = ("binance_icon.ico", "binance_icon.png", "crypto_forex_logo.ico", "crypto_forex_logo.png")
-_ICON_FILENAMES_UNIX = ("binance_icon.png", "binance_icon.ico", "crypto_forex_logo.png", "crypto_forex_logo.ico")
-_COMMON_FALLBACKS = ("binance_icon.svg",)
+_ICON_FILENAMES_WINDOWS = (
+    "okx_icon.ico",
+    "okx_icon.png",
+    "exchange_okx.ico",
+    "exchange_okx.png",
+    "crypto_forex_logo.ico",
+    "crypto_forex_logo.png",
+)
+_ICON_FILENAMES_UNIX = (
+    "okx_icon.png",
+    "okx_icon.ico",
+    "exchange_okx.png",
+    "exchange_okx.ico",
+    "crypto_forex_logo.png",
+    "crypto_forex_logo.ico",
+)
+_COMMON_FALLBACKS = ("okx_icon.svg",)
 
 FALLBACK_ICON_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAYPklEQVR4nO3dsY5d13XH4a1IgJVAALsAbFxEDxCA"
@@ -60,7 +74,7 @@ def _candidate_directories() -> list[Path]:
             exe_dir.parent / "assets",
         ])
 
-    env_assets = os.getenv("BINANCE_BOT_ASSETS")
+    env_assets = os.getenv("OKX_BOT_ASSETS")
     if env_assets:
         candidates.append(Path(env_assets))
 
@@ -166,8 +180,8 @@ def _icon_from_base64(data: str) -> QtGui.QIcon | None:
 
 @lru_cache(maxsize=1)
 def load_app_icon() -> QtGui.QIcon:
-    """Load the Binance app icon with platform-aware fallbacks."""
-    env_icon_path = os.getenv("BINANCE_BOT_ICON")
+    """Load the OKX app icon with platform-aware fallbacks."""
+    env_icon_path = os.getenv("OKX_BOT_ICON")
     if env_icon_path:
         env_path = Path(env_icon_path)
         candidate = _icon_from_path(env_path)
@@ -176,10 +190,10 @@ def load_app_icon() -> QtGui.QIcon:
     icon = _load_from_package_resources()
     if icon and not icon.isNull():
         return icon
-    for env_var in ("APPDIR", "BINANCE_BOT_APPDIR"):
+    for env_var in ("APPDIR", "OKX_BOT_APPDIR"):
         appdir = os.getenv(env_var)
         if appdir:
-            icon_path = Path(appdir) / "binance_icon.png"
+            icon_path = Path(appdir) / "okx_icon.png"
             candidate = _icon_from_path(icon_path)
             if not candidate.isNull():
                 return candidate
@@ -195,7 +209,7 @@ def load_app_icon() -> QtGui.QIcon:
     fallback = _icon_from_base64(FALLBACK_ICON_PNG)
     if fallback and not fallback.isNull():
         return fallback
-    theme_icon = QtGui.QIcon.fromTheme("binance")
+    theme_icon = QtGui.QIcon.fromTheme("okx")
     if theme_icon and not theme_icon.isNull():
         return theme_icon
     fallback_pixmap = QtGui.QPixmap(64, 64)
@@ -213,7 +227,7 @@ def load_app_icon() -> QtGui.QIcon:
 
 def find_primary_icon_file() -> Path | None:
     """Return the first icon file discovered in the search sequence."""
-    env_icon_path = os.getenv("BINANCE_BOT_ICON")
+    env_icon_path = os.getenv("OKX_BOT_ICON")
     if env_icon_path:
         env_path = Path(env_icon_path)
         if env_path.exists():

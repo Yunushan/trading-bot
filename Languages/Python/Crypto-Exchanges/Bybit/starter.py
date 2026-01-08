@@ -911,6 +911,19 @@ class StarterWindow(QtWidgets.QWidget):
             "BOT_NO_STARTUP_WINDOW_SUPPRESS",
             "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS",
             "BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS",
+            "BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS",
+            "BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK",
+            "BOT_DISABLE_STARTUP_WINDOW_HOOKS",
+            "BOT_DISABLE_APP_ICON",
+            "BOT_ENABLE_NATIVE_ICON",
+            "BOT_ENABLE_DELAYED_QT_ICON",
+            "BOT_DELAYED_APP_ICON_MS",
+            "BOT_NATIVE_ICON_DELAY_MS",
+            "BOT_ICON_ENFORCE_ATTEMPTS",
+            "BOT_ICON_ENFORCE_INTERVAL_MS",
+            "BOT_TASKBAR_METADATA_DELAY_MS",
+            "BOT_TASKBAR_ENSURE_MS",
+            "BYBIT_BOT_ICON",
             "BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS",
             "BOT_STARTUP_WINDOW_POLL_MS",
             "BOT_STARTUP_WINDOW_POLL_INTERVAL_MS",
@@ -3173,6 +3186,45 @@ class StarterWindow(QtWidgets.QWidget):
                 if exchange_label:
                     env["BOT_SELECTED_EXCHANGE"] = exchange_label
                     self._verbose_log(f"child env BOT_SELECTED_EXCHANGE={exchange_label!r}")
+                if self.selected_exchange == "bybit":
+                    bybit_icon_ico = REPO_ROOT / "assets" / "exchange_bybit.ico"
+                    bybit_icon = REPO_ROOT / "assets" / "exchange_bybit.png"
+                    bybit_icon_fallback_ico = BASE_DIR / "app" / "assets" / "bybit_icon.ico"
+                    bybit_icon_fallback = BASE_DIR / "app" / "assets" / "bybit_icon.png"
+                    for candidate in (
+                        bybit_icon_fallback_ico,
+                        bybit_icon_ico,
+                        bybit_icon_fallback,
+                        bybit_icon,
+                    ):
+                        if candidate.is_file():
+                            env.setdefault("BYBIT_BOT_ICON", str(candidate))
+                            break
+                if sys.platform == "win32":
+                    env.setdefault("BOT_DISABLE_APP_ICON", "1")
+                    env.setdefault("BOT_ENABLE_NATIVE_ICON", "1")
+                    env.setdefault("BOT_ENABLE_DELAYED_QT_ICON", "1")
+                    env.setdefault("BOT_DELAYED_APP_ICON_MS", "800")
+                    env.setdefault("BOT_NATIVE_ICON_DELAY_MS", "150")
+                    env.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "6")
+                    env.setdefault("BOT_ICON_ENFORCE_INTERVAL_MS", "500")
+                    env.setdefault("BOT_DISABLE_TASKBAR", "0")
+                    env.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "1200")
+                    env.setdefault("BOT_TASKBAR_ENSURE_MS", "8000")
+                    if self.selected_exchange == "bybit":
+                        env.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+                        if "BOT_NO_STARTUP_WINDOW_SUPPRESS" not in env:
+                            env["BOT_NO_STARTUP_WINDOW_SUPPRESS"] = "0"
+                        if "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS" not in env:
+                            env["BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS"] = "0"
+                        env.setdefault("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "0")
+                    else:
+                        env.setdefault("BOT_NO_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_DISABLE_STARTUP_WINDOW_HOOKS", "1")
                 no_cbt = str(env.get("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "")).strip().lower() in {
                     "1",
                     "true",
@@ -3257,11 +3309,20 @@ class StarterWindow(QtWidgets.QWidget):
             _debug_log(f"Spawned process pid={self._active_bot_process.pid}")
             self._verbose_log(f"spawned process pid={self._active_bot_process.pid}")
             if sys.platform == "win32" and self.selected_language == "python":
-                try:
-                    self._start_child_startup_window_suppression(int(self._active_bot_process.pid))
-                except Exception as suppress_exc:
-                    _debug_log(f"Child window suppression failed: {suppress_exc}")
-                    self._verbose_log(f"child window suppression failed: {suppress_exc}")
+                skip_child_suppress = str(env.get("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "")).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                if skip_child_suppress:
+                    self._verbose_log("child window suppression skipped: BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS")
+                else:
+                    try:
+                        self._start_child_startup_window_suppression(int(self._active_bot_process.pid))
+                    except Exception as suppress_exc:
+                        _debug_log(f"Child window suppression failed: {suppress_exc}")
+                        self._verbose_log(f"child window suppression failed: {suppress_exc}")
             # If the child dies immediately, surface the error instead of leaving the user waiting.
             if self._active_bot_process.poll() is not None:
                 rc = self._active_bot_process.returncode

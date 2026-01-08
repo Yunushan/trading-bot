@@ -10821,7 +10821,10 @@ class MainWindow(QtWidgets.QWidget):
     def init_ui(self):
         self.setWindowTitle("MEXC Trading Bot")
         try:
-            self.setWindowIcon(QtGui.QIcon(str(Path(__file__).resolve().parent.parent / "assets" / "binance_icon.ico")))
+            from app.gui.app_icon import load_app_icon
+            icon = load_app_icon()
+            if not icon.isNull():
+                self.setWindowIcon(icon)
         except Exception:
             pass
         root_layout = QtWidgets.QVBoxLayout(self)

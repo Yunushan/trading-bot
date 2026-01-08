@@ -3660,11 +3660,17 @@ class MainWindow(QtWidgets.QWidget):
         try:
             # Avoid repeated native window re-creation (can cause Windows flicker during startup).
             current_flags = self.windowFlags()
-            desired_flags = current_flags | (
-                QtCore.Qt.WindowType.WindowMinimizeButtonHint
+            desired_flags = (
+                current_flags
+                | QtCore.Qt.WindowType.Window
+                | QtCore.Qt.WindowType.WindowMinimizeButtonHint
                 | QtCore.Qt.WindowType.WindowMaximizeButtonHint
                 | QtCore.Qt.WindowType.WindowTitleHint
+                | QtCore.Qt.WindowType.WindowSystemMenuHint
+                | QtCore.Qt.WindowType.WindowCloseButtonHint
             )
+            desired_flags &= ~QtCore.Qt.WindowType.FramelessWindowHint
+            desired_flags &= ~QtCore.Qt.WindowType.Tool
             if desired_flags != current_flags:
                 self.setWindowFlags(desired_flags)
         except Exception:
@@ -10836,10 +10842,6 @@ class MainWindow(QtWidgets.QWidget):
 
     def init_ui(self):
         self.setWindowTitle("Binance Trading Bot")
-        try:
-            self.setWindowIcon(QtGui.QIcon(str(Path(__file__).resolve().parent.parent / "assets" / "binance_icon.ico")))
-        except Exception:
-            pass
         root_layout = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.currentChanged.connect(self._on_tab_changed)

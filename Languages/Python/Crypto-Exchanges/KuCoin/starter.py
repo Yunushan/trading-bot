@@ -947,6 +947,23 @@ class StarterWindow(QtWidgets.QWidget):
             "BOT_NO_STARTUP_WINDOW_SUPPRESS",
             "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS",
             "BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS",
+            "BOT_DISABLE_STARTUP_WINDOW_HOOKS",
+            "BOT_DISABLE_APP_ICON",
+            "BOT_ENABLE_NATIVE_ICON",
+            "BOT_ENABLE_DELAYED_QT_ICON",
+            "BOT_DELAYED_APP_ICON_MS",
+            "BOT_NATIVE_ICON_DELAY_MS",
+            "BOT_ICON_ENFORCE_ATTEMPTS",
+            "BOT_ICON_ENFORCE_INTERVAL_MS",
+            "BOT_TASKBAR_METADATA_DELAY_MS",
+            "BOT_TASKBAR_ENSURE_MS",
+            "BINANCE_BOT_ICON",
+            "BYBIT_BOT_ICON",
+            "OKX_BOT_ICON",
+            "GATE_BOT_ICON",
+            "BITGET_BOT_ICON",
+            "MEXC_BOT_ICON",
+            "KUCOIN_BOT_ICON",
             "BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS",
             "BOT_STARTUP_WINDOW_POLL_MS",
             "BOT_STARTUP_WINDOW_POLL_INTERVAL_MS",
@@ -3209,6 +3226,21 @@ class StarterWindow(QtWidgets.QWidget):
                 if exchange_label:
                     env["BOT_SELECTED_EXCHANGE"] = exchange_label
                     self._verbose_log(f"child env BOT_SELECTED_EXCHANGE={exchange_label!r}")
+                if sys.platform == "win32":
+                    env.setdefault("BOT_DISABLE_APP_ICON", "1")
+                    env.setdefault("BOT_ENABLE_NATIVE_ICON", "1")
+                    env.setdefault("BOT_ENABLE_DELAYED_QT_ICON", "1")
+                    env.setdefault("BOT_DELAYED_APP_ICON_MS", "800")
+                    env.setdefault("BOT_NATIVE_ICON_DELAY_MS", "150")
+                    env.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "6")
+                    env.setdefault("BOT_ICON_ENFORCE_INTERVAL_MS", "500")
+                    env.setdefault("BOT_DISABLE_TASKBAR", "0")
+                    env.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "1200")
+                    env.setdefault("BOT_TASKBAR_ENSURE_MS", "8000")
+                    env.setdefault("BOT_NO_STARTUP_WINDOW_SUPPRESS", "1")
+                    env.setdefault("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+                    env.setdefault("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS", "1")
+                    env.setdefault("BOT_DISABLE_STARTUP_WINDOW_HOOKS", "1")
                 no_cbt = str(env.get("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "")).strip().lower() in {
                     "1",
                     "true",
