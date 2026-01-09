@@ -5,7 +5,7 @@
   Neither the author nor this bot accepts any legal responsibility for trading outcomes. Use it at your own risk.
 </p>
 
-# Binance Trading Bot (Python → Languages/Python/Crypto-Exchanges/Binance)
+# Binance Trading Bot (Python → Languages/Python)
 
 A PyQt6 desktop GUI for spot and futures trading on Binance.
 
@@ -25,9 +25,9 @@ This repository provides a desktop assistant for building and exercising trading
 
 ## Install Python + dependencies
 
-> All commands below assume you already switched to the Python/Crypto-Exchanges/Binance workspace:
+> All commands below assume you already switched to the Python workspace:
 > ```bash
-> cd Languages/Python/Crypto-Exchanges/Binance
+> cd Languages/Python
 > ```
 
 ### For Easy Windows Install (If Python 3.10,3.11,3.12,3.13 Installed)
@@ -42,7 +42,7 @@ This repository provides a desktop assistant for building and exercising trading
    python -m pip install --upgrade pip
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
-   pip install -r ..\..\..\..\requirements.txt
+   pip install -r requirements.txt
    ```
 3. Run:
    ```powershell
@@ -54,7 +54,7 @@ This repository provides a desktop assistant for building and exercising trading
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r ../../../../requirements.txt
+pip install -r requirements.txt
 python3 main.py
 ```
 
@@ -63,7 +63,7 @@ python3 main.py
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r ../../../../requirements.txt
+pip install -r requirements.txt
 python3 main.py
 ```
 
@@ -78,7 +78,7 @@ pkg install python3 py39-pip  # or pkg install python311 py311-pip
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r ../../../../requirements.txt
+pip install -r requirements.txt
 python3 main.py
 ```
 

@@ -64,8 +64,8 @@ _strip_foreign_site_packages()
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 BASE_DIR = Path(__file__).resolve().parent
-REPO_ROOT = BASE_DIR.parents[3] if len(BASE_DIR.parents) >= 4 else BASE_DIR
-WINDOWS_TASKBAR_DIR = REPO_ROOT / "Languages" / "Python" / "Crypto-Exchanges" / "Binance"
+REPO_ROOT = BASE_DIR.parents[1] if len(BASE_DIR.parents) >= 2 else BASE_DIR
+WINDOWS_TASKBAR_DIR = BASE_DIR
 PREFERRED_QT_VERSION = os.environ.get("STARTER_QT_VERSION") or "6.5.3"
 
 _WINDOWS_TASKBAR_SPEC = importlib.util.spec_from_file_location(
@@ -79,8 +79,8 @@ _WINDOWS_TASKBAR_SPEC.loader.exec_module(windows_taskbar)
 apply_taskbar_metadata = windows_taskbar.apply_taskbar_metadata
 build_relaunch_command = windows_taskbar.build_relaunch_command
 ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
-BINANCE_MAIN = WINDOWS_TASKBAR_DIR / "main.py"
-BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++" / "Crypto-Exchanges" / "Binance"
+BINANCE_MAIN = BASE_DIR / "main.py"
+BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++"
 BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "binance_cpp"
 BINANCE_CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
 APP_ICON_BASENAME = "crypto_forex_logo"
@@ -854,6 +854,25 @@ class StarterWindow(QtWidgets.QWidget):
         except Exception:
             pass
         super().closeEvent(event)
+
+    def auto_launch_default(self) -> None:
+        if self._is_launching:
+            return
+        if self._active_bot_process and self._active_bot_process.poll() is None:
+            return
+        if self.selected_language != "python":
+            allow_auto = getattr(self, "_allow_language_auto_advance", True)
+            self._allow_language_auto_advance = False
+            self._update_language_selection("python")
+            self._allow_language_auto_advance = allow_auto
+        if self.stack.currentIndex() != 1:
+            self._show_market_page()
+        if self.selected_market != "crypto":
+            self._update_market_selection("crypto")
+        if self.selected_exchange != "binance":
+            self._update_exchange_selection("binance")
+        if self._can_launch_selected():
+            self._schedule_auto_launch()
 
     @staticmethod
     def _button_style(outlined: bool = False) -> str:
@@ -3280,7 +3299,25 @@ class StarterWindow(QtWidgets.QWidget):
         self._launch_status_timer.start(30000)
 
 
+def _launch_default_bot_direct() -> int:
+    if not BINANCE_MAIN.is_file():
+        _debug_log(f"Python main missing: {BINANCE_MAIN}")
+        raise FileNotFoundError(f"Could not find {BINANCE_MAIN}. Make sure the repository is intact.")
+    spec = importlib.util.spec_from_file_location("python_main", BINANCE_MAIN)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load python main module from {BINANCE_MAIN}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["python_main"] = module
+    spec.loader.exec_module(module)
+    if not hasattr(module, "main"):
+        raise AttributeError("Python main module does not expose main()")
+    return int(module.main())
+
+
 def main() -> None:
+    show_ui = str(os.environ.get("BOT_STARTER_SHOW_UI", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if not show_ui:
+        raise SystemExit(_launch_default_bot_direct())
     ensure_app_user_model_id(WINDOWS_APP_ID)
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Trading Bot Starter")
@@ -3294,6 +3331,7 @@ def main() -> None:
     window.winId()
     if app_icon is not None:
         QtCore.QTimer.singleShot(0, lambda: window.setWindowIcon(app_icon))
+    QtCore.QTimer.singleShot(0, window.auto_launch_default)
     if sys.platform == "win32":
         icon_location = None
         if APP_ICON_PATH.is_file():

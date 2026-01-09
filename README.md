@@ -1,6 +1,6 @@
 # Binance Trading Bot Workspace
 
-This repository packages a cross‑platform trading workstation that ships with a production‑ready **Binance desktop bot (PyQt6)**, a guided launcher (`starter.py`), and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
+This repository packages a cross‑platform trading workstation that ships with a production‑ready **Binance desktop bot (PyQt6)**, a direct launcher (`Languages/Python/starter.py`), and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
 
 ---
 
@@ -54,20 +54,22 @@ Optional but recommended:
 
 ```
 Languages/
-├─ Python/
-│  ├─ Crypto-Exchanges/
-│  │  └─ Binance/            # full PyQt6 trading application
-│  └─ Forex-Brokers/
-├─ C++/
-│  └─ Crypto-Exchanges/
-│     └─ Binance/src             # Qt C++ prototype for the Backtest UI
-├─ C/
-└─ Rust/
-starter.py                    # language & exchange launcher (wizard)
-requirements.txt              # shared dependency list for Python projects
+- Python/
+  - app/                  # full PyQt6 trading application
+  - docs/
+  - tools/
+  - main.py               # Python GUI entrypoint
+  - starter.py            # direct launcher (no wizard UI)
+  - requirements.txt
+- C++/
+  - CMakeLists.txt
+  - resources.qrc
+  - src/                  # Qt C++ prototype for the Backtest UI
+- C/
+- Rust/
 ```
 
-Everything users interact with today lives under `Languages/Python/Crypto-Exchanges/Binance` (referred to as “the Binance app”). Other language folders are stubs reserved for future ports.
+Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). Other language folders are stubs reserved for future ports.
 
 ---
 
@@ -77,8 +79,8 @@ Everything users interact with today lives under `Languages/Python/Crypto-Exchan
 2. **Install Python** (3.11 or 3.12 preferred). Remember to check “Add Python to PATH” on Windows.
 3. **Install dependencies** using the instructions for your OS below.
 4. **Launch the GUI:**
-   - Windows one-click: double-click `Languages/Python/Crypto-Exchanges/Binance/Binance-Bot-Trading.bat`, **or**
-   - Any OS: activate the virtual environment and run `python main.py` from the Binance folder.
+   - Windows one-click: double-click `Languages/Python/Binance-Bot-Trading.bat`, **or**
+   - Any OS: activate the virtual environment and run `python main.py` from the Python folder.
 5. The dashboard opens. Fill in your Binance API key/secret, choose Demo/Testnet or Live, configure symbols and indicators, then click **Start**.
 6. Use the **Positions** tab to monitor open trades and the **Chart/Backtest** tabs for analysis.
 
@@ -86,10 +88,10 @@ Everything users interact with today lives under `Languages/Python/Crypto-Exchan
 
 ## Installing dependencies
 
-All commands assume you are inside the Binance Python workspace:
+All commands assume you are inside the Python workspace:
 
 ```bash
-cd Languages/Python/Crypto-Exchanges/Binance
+cd Languages/Python
 ```
 
 ### Windows
@@ -105,7 +107,7 @@ cd Languages/Python/Crypto-Exchanges/Binance
 python -m pip install --upgrade pip
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r ..\..\..\..\requirements.txt
+pip install -r requirements.txt
 python main.py
 ```
 
@@ -117,7 +119,7 @@ python main.py
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r ../../../../requirements.txt
+pip install -r requirements.txt
 python3 main.py
 ```
 
@@ -129,7 +131,7 @@ python3 main.py
 python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r ../../../../requirements.txt
+pip install -r requirements.txt
 python3 main.py
 ```
 
@@ -144,7 +146,7 @@ pkg install python311 py311-pip
 python3.11 -m pip install --upgrade pip
 python3.11 -m venv .venv
 . .venv/bin/activate
-pip install -r ../../../../requirements.txt
+pip install -r requirements.txt
 python3.11 main.py
 ```
 
@@ -154,9 +156,9 @@ python3.11 main.py
 
 | Component | Location | Purpose | How to run |
 |-----------|----------|---------|------------|
-| **Binance GUI bot** | `Languages/Python/Crypto-Exchanges/Binance/main.py` | Full desktop trading workstation | `python main.py` (inside virtual env) |
-| **Windows launcher** | `Languages/Python/Crypto-Exchanges/Binance/Binance-Bot-Trading.bat` | Automates environment creation + launch | Double-click on Windows |
-| **Project wizard** | `starter.py` | Card-based selector that opens the right app for your chosen language/exchange | `python starter.py` from repo root |
+| **Binance GUI bot** | `Languages/Python/main.py` | Full desktop trading workstation | `python main.py` (inside virtual env) |
+| **Windows launcher** | `Languages/Python/Binance-Bot-Trading.bat` | Automates environment creation + launch | Double-click on Windows |
+| **Python launcher** | `Languages/Python/starter.py` | Directly opens the Python GUI (no wizard UI) | `python starter.py` (from `Languages/Python`) |
 
 All tools are cross-platform except the `.bat` helper which is Windows-only.
 
@@ -295,16 +297,14 @@ Backtests run locally; however, ensure you respect exchange rate limits by spaci
 
 ---
 
-## Code Languages & Exchanges tab
+## Code Languages tab
 
-This tab mirrors the card UI from `starter.py`. Use it to scaffold folders when you plan to port the bot or build auxiliary tools:
+This tab lists the supported code languages and keeps the scaffolding paths organized. Use it to scaffold folders when you plan to port the bot or build auxiliary tools:
 
 1. **Choose your language** (Python, C++, Rust, etc.).
-2. **Pick a market** (Crypto Exchanges vs Forex Brokers).
-3. **Select an exchange/broker** (Binance, Bybit, OKX, FXCM, etc.).
-4. The workspace automatically creates the corresponding directory tree and drops placeholder READMEs or `.gitkeep` files so you can start coding in an organized structure.
+2. The workspace ensures the language folder exists so you can keep related assets organized.
 
-It’s a documentation hub as well—each card includes a subtitle describing the stack and badge labels (Recommended, Coming Soon, etc.).
+It's a documentation hub as well-each card includes a subtitle describing the stack and badge labels (Recommended, Coming Soon, etc.).
 
 ---
 
@@ -312,11 +312,11 @@ It’s a documentation hub as well—each card includes a subtitle describing th
 
 | File | Location | Description |
 |------|----------|-------------|
-| `starter.py` | repo root | Launches the card-based wizard that links to each language/exchange app and ensures Windows AppID metadata is set for proper taskbar integration. |
-| `Binance-Bot-Trading.bat` | `Languages/Python/Crypto-Exchanges/Binance/` | Automates environment bootstrap on Windows. |
-| `close_all.py` | `Languages/Python/Crypto-Exchanges/Binance/app/` | Auxiliary script to close every futures position—useful for emergency scripts or cron jobs. |
-| `position_guard.py` | same folder | Contains the guard logic used to deduplicate indicator entries and enforce stop-loss/stop-gap rules (referenced in this README for understanding behaviour). |
-| `requirements.txt` | repo root | Shared dependency pinning for all Python components. |
+| `starter.py` | `Languages/Python/` | Direct launcher for the Python GUI (no wizard UI). |
+| `Binance-Bot-Trading.bat` | `Languages/Python/` | Automates environment bootstrap on Windows. |
+| `close_all.py` | `Languages/Python/app/` | Auxiliary script to close every futures position—useful for emergency scripts or cron jobs. |
+| `position_guard.py` | `Languages/Python/app/` | Contains the guard logic used to deduplicate indicator entries and enforce stop-loss/stop-gap rules (referenced in this README for understanding behaviour). |
+| `requirements.txt` | `Languages/Python/` | Python dependency pinning for the desktop GUI. |
 
 ---
 
@@ -338,7 +338,7 @@ It’s a documentation hub as well—each card includes a subtitle describing th
 > In-memory only. Copy/paste from the log viewer or run the bot from a terminal to capture stdout/ stderr.
 
 **How do I update dependencies?**
-> Reactivate the virtual environment and run `pip install -r ../../../../requirements.txt --upgrade`. Re-run the `.bat` file on Windows for a fresh environment.
+> Reactivate the virtual environment and run `pip install -r requirements.txt --upgrade`. Re-run the `.bat` file on Windows for a fresh environment.
 
 ---
 

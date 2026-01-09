@@ -17,7 +17,7 @@ if (TARGET Qt6::WebEngineWidgets)
     set(HAS_WEBENGINE 1)
 endif()
 
-set(ICON_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../../Python/Crypto-Exchanges/Binance/app/assets/binance_icon.ico")
+set(ICON_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../assets/crypto_forex_logo.ico")
 if (WIN32 AND EXISTS "${ICON_SOURCE}")
     set(ICON_PATH "${ICON_SOURCE}")
     set(APP_ICON_RC "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")

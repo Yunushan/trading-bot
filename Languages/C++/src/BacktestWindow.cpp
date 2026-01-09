@@ -1280,11 +1280,28 @@ QWidget *BacktestWindow::createBacktestTab() {
 }
 
 void BacktestWindow::launchPythonBot() {
-    QDir dir(QCoreApplication::applicationDirPath());
-    dir.cd("../../../Languages/Python/Crypto-Exchanges/Binance");
-    const QString script = dir.filePath("main.py");
-    if (!QFileInfo::exists(script)) {
-        QMessageBox::warning(this, "Python bot missing", QString("Could not find %1").arg(script));
+    QDir base(QCoreApplication::applicationDirPath());
+    QDir pythonDir = base;
+    QString script;
+    bool found = false;
+    // Search upward for Languages/Python to support different build output layouts.
+    for (int i = 0; i < 6; ++i) {
+        QDir candidate(base);
+        if (candidate.cd("Languages/Python")) {
+            const QString candidateScript = candidate.filePath("main.py");
+            if (QFileInfo::exists(candidateScript)) {
+                pythonDir = candidate;
+                script = candidateScript;
+                found = true;
+                break;
+            }
+        }
+        if (!base.cdUp()) {
+            break;
+        }
+    }
+    if (!found) {
+        QMessageBox::warning(this, "Python bot missing", "Could not locate Languages/Python/main.py.");
         return;
     }
     QString python = "pythonw.exe";
@@ -1294,7 +1311,7 @@ void BacktestWindow::launchPythonBot() {
             python = "python";
         }
     }
-    const bool ok = QProcess::startDetached(python, {script}, dir.absolutePath());
+    const bool ok = QProcess::startDetached(python, {script}, pythonDir.absolutePath());
     if (!ok) {
         QMessageBox::critical(this, "Launch failed", "Unable to start the Python Binance bot.");
     }

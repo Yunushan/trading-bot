@@ -18,16 +18,14 @@
 namespace {
 QString findIconPath() {
     // Prefer the embedded Qt resource (always available after build)
-    const QIcon resIcon(":/icons/binance.ico");
+    const QIcon resIcon(":/icons/crypto_forex_logo.png");
     if (!resIcon.isNull()) {
-        return QString(":/icons/binance.ico");
+        return QString(":/icons/crypto_forex_logo.png");
     }
 
     QDir dir(QCoreApplication::applicationDirPath());
-    const QStringList names = {"assets/binance_icon.ico",
-                               "assets/binance_icon.png",
-                               "assets/crypto_forex_logo.ico",
-                               "assets/crypto_forex_logo.png"};
+    const QStringList names = {"assets/crypto_forex_logo.png",
+                               "assets/crypto_forex_logo.ico"};
     for (int i = 0; i < 6; ++i) {
         for (const auto &name : names) {
             const QFileInfo candidate(dir.filePath(name));
@@ -47,7 +45,7 @@ QIcon loadAppIcon() {
     }
     QIcon icon(path);
     if (icon.isNull() && path.startsWith(":/")) {
-        icon = QIcon(":/icons/binance.png");
+        icon = QIcon(":/icons/crypto_forex_logo.png");
     }
     return icon;
 }

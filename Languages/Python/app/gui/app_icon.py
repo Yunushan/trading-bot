@@ -9,9 +9,9 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
 
-_ICON_FILENAMES_WINDOWS = ("binance_icon.ico", "binance_icon.png", "crypto_forex_logo.ico", "crypto_forex_logo.png")
-_ICON_FILENAMES_UNIX = ("binance_icon.png", "binance_icon.ico", "crypto_forex_logo.png", "crypto_forex_logo.ico")
-_COMMON_FALLBACKS = ("binance_icon.svg",)
+_ICON_FILENAMES_WINDOWS = ("crypto_forex_logo.png", "crypto_forex_logo.ico")
+_ICON_FILENAMES_UNIX = ("crypto_forex_logo.png", "crypto_forex_logo.ico")
+_COMMON_FALLBACKS = ("crypto_forex_logo.svg",)
 
 FALLBACK_ICON_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAYPklEQVR4nO3dsY5d13XH4a1IgJVAALsAbFxEDxCA"
@@ -74,10 +74,10 @@ def _candidate_directories() -> list[Path]:
     ])
     
     # Try to find repo root assets (assuming standard structure)
-    # project_dir = .../Binance
-    # repo_root = .../trading-bot (4 levels up from Binance)
-    if len(project_dir.parents) >= 4:
-        candidates.append(project_dir.parents[3] / "assets")
+    # project_dir = .../Languages/Python
+    # repo_root = .../trading-bot
+    repo_root = project_dir.parent.parent
+    candidates.append(repo_root / "assets")
 
     seen: set[Path] = set()
     ordered: list[Path] = []
@@ -166,7 +166,7 @@ def _icon_from_base64(data: str) -> QtGui.QIcon | None:
 
 @lru_cache(maxsize=1)
 def load_app_icon() -> QtGui.QIcon:
-    """Load the Binance app icon with platform-aware fallbacks."""
+    """Load the app icon with platform-aware fallbacks."""
     env_icon_path = os.getenv("BINANCE_BOT_ICON")
     if env_icon_path:
         env_path = Path(env_icon_path)
@@ -179,7 +179,7 @@ def load_app_icon() -> QtGui.QIcon:
     for env_var in ("APPDIR", "BINANCE_BOT_APPDIR"):
         appdir = os.getenv(env_var)
         if appdir:
-            icon_path = Path(appdir) / "binance_icon.png"
+            icon_path = Path(appdir) / "crypto_forex_logo.png"
             candidate = _icon_from_path(icon_path)
             if not candidate.isNull():
                 return candidate
@@ -195,7 +195,7 @@ def load_app_icon() -> QtGui.QIcon:
     fallback = _icon_from_base64(FALLBACK_ICON_PNG)
     if fallback and not fallback.isNull():
         return fallback
-    theme_icon = QtGui.QIcon.fromTheme("binance")
+    theme_icon = QtGui.QIcon.fromTheme("crypto-forex")
     if theme_icon and not theme_icon.isNull():
         return theme_icon
     fallback_pixmap = QtGui.QPixmap(64, 64)

@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 # Ensure repo root is importable so shared helpers can be used when launched directly.
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT_STR = str(PROJECT_ROOT)
 if PROJECT_ROOT_STR not in sys.path:
     sys.path.insert(0, PROJECT_ROOT_STR)
@@ -789,7 +789,7 @@ from windows_taskbar import (  # noqa: E402
     ensure_taskbar_visible,
 )
 
-APP_USER_MODEL_ID = "Binance.TradingBot"
+APP_USER_MODEL_ID = "TradingBot"
 _previous_qt_message_handler = None
 
 
@@ -830,8 +830,8 @@ def main() -> int:
                 pass
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Binance Trading Bot")
-    app.setApplicationDisplayName("Binance Trading Bot")
+    app.setApplicationName("Trading Bot")
+    app.setApplicationDisplayName("Trading Bot")
     app._exiting = False  # type: ignore[attr-defined]
     if sys.platform == "win32":
         try:
@@ -863,7 +863,18 @@ def main() -> int:
             pass
 
     if sys.platform == "win32" and not disable_taskbar:
-        icon_path = find_primary_icon_file()
+        icon_path = None
+        primary_icon = find_primary_icon_file()
+        if primary_icon:
+            try:
+                icon_candidate = Path(primary_icon)
+                if icon_candidate.suffix.lower() != ".ico":
+                    ico_candidate = icon_candidate.with_suffix(".ico")
+                    if ico_candidate.is_file():
+                        icon_candidate = ico_candidate
+                icon_path = icon_candidate
+            except Exception:
+                icon_path = primary_icon
         relaunch_cmd = build_relaunch_command()
 
         def _apply_taskbar(attempts: int = 12) -> None:
@@ -876,7 +887,7 @@ def main() -> int:
             success = apply_taskbar_metadata(
                 win,
                 app_id=APP_USER_MODEL_ID,
-                display_name="Binance Trading Bot",
+                display_name="Trading Bot",
                 icon_path=icon_path,
                 relaunch_command=relaunch_cmd,
             )
@@ -1019,7 +1030,7 @@ def main() -> int:
                 apply_taskbar_metadata(
                     win,
                     app_id=APP_USER_MODEL_ID,
-                    display_name="Binance Trading Bot",
+                    display_name="Trading Bot",
                     icon_path=icon_path,
                     relaunch_command=relaunch_cmd,
                 )

@@ -14,7 +14,7 @@ This directory contains a standalone Qt Widgets application that recreates the B
 2. Configure and build with CMake:
 
 ```bash
-cmake -S Languages/C++/Crypto-Exchanges/Binance -B build/binance_cpp -DCMAKE_PREFIX_PATH="path/to/Qt/6.x/gcc_64"
+cmake -S Languages/C++ -B build/binance_cpp -DCMAKE_PREFIX_PATH="path/to/Qt/6.x/gcc_64"
 cmake --build build/binance_cpp
 ```
 

@@ -608,27 +608,20 @@ LANGUAGE_PATHS = {
 }
 
 EXCHANGE_PATHS = {
-    "Binance": "Crypto-Exchanges/Binance",
-    "Bybit": "Crypto-Exchanges/Bybit",
-    "OKX": "Crypto-Exchanges/OKX",
-    "Bitget": "Crypto-Exchanges/Bitget",
-    "Gate": "Crypto-Exchanges/Gate",
-    "MEXC": "Crypto-Exchanges/MEXC",
-    "KuCoin": "Crypto-Exchanges/KuCoin",
-    "HTX": "Crypto-Exchanges/HTX",
-    "Crypto.com Exchange": "Crypto-Exchanges/Crypto.com Exchange",
-    "Kraken": "Crypto-Exchanges/Kraken",
-    "Bitfinex": "Crypto-Exchanges/Bitfinex",
+    "Binance": None,
+    "Bybit": None,
+    "OKX": None,
+    "Bitget": None,
+    "Gate": None,
+    "MEXC": None,
+    "KuCoin": None,
+    "HTX": None,
+    "Crypto.com Exchange": None,
+    "Kraken": None,
+    "Bitfinex": None,
 }
 
-FOREX_BROKER_PATHS = {
-    "OANDA": "Forex-Brokers/OANDA",
-    "FXCM": "Forex-Brokers/FXCM",
-    "IG": "Forex-Brokers/IG",
-    "XM": "Forex-Brokers/XM",
-    "IC Markets Global": "Forex-Brokers/IC Markets Global",
-    "Forex.com": "Forex-Brokers/Forex.com",
-}
+FOREX_BROKER_PATHS: dict[str, str | None] = {}
 MUTED_TEXT = "#94a3b8"
 
 STARTER_LANGUAGE_OPTIONS = [
@@ -3656,7 +3649,10 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
         self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
         self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
-        self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
+        if FOREX_BROKER_PATHS:
+            self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
+        else:
+            self.config.setdefault("selected_forex_broker", None)
         self.config.setdefault("code_market", "crypto")
         self.strategy_threads = {}
         self.shared_binance = None
@@ -3853,6 +3849,8 @@ class MainWindow(QtWidgets.QWidget):
         self.language_combo = None
         self.exchange_combo = None
         self.forex_combo = None
+        self.exchange_list = None
+        self._exchange_list_items = {}
         self._starter_language_cards = {}
         self._starter_market_cards = {}
         self._starter_crypto_cards = {}
@@ -10772,9 +10770,9 @@ class MainWindow(QtWidgets.QWidget):
         worker.start()
 
     def init_ui(self):
-        self.setWindowTitle("Binance Trading Bot")
+        self.setWindowTitle("Trading Bot")
         try:
-            self.setWindowIcon(QtGui.QIcon(str(Path(__file__).resolve().parent.parent / "assets" / "binance_icon.ico")))
+            self.setWindowIcon(QtGui.QIcon(str(_BASE_PROJECT_PATH / "assets" / "crypto_forex_logo.png")))
         except Exception:
             pass
         root_layout = QtWidgets.QVBoxLayout(self)
@@ -11003,6 +11001,45 @@ class MainWindow(QtWidgets.QWidget):
         self._on_account_type_changed(self.account_combo.currentText())
 
         scroll_layout.addLayout(grid)
+
+        exchange_group = QtWidgets.QGroupBox("Exchange")
+        exchange_layout = QtWidgets.QVBoxLayout(exchange_group)
+        exchange_layout.setContentsMargins(12, 10, 12, 10)
+        exchange_layout.setSpacing(6)
+        exchange_label = QtWidgets.QLabel("Select exchange")
+        exchange_layout.addWidget(exchange_label)
+        self.exchange_combo = QtWidgets.QComboBox()
+        exchange_layout.addWidget(self.exchange_combo)
+        exchange_options = [opt for opt in STARTER_CRYPTO_EXCHANGES if opt["key"] in EXCHANGE_PATHS]
+        enabled_exchanges = []
+        for opt in exchange_options:
+            item_text = opt["title"]
+            badge = opt.get("badge")
+            if badge:
+                item_text = f"{item_text} ({badge})"
+            self.exchange_combo.addItem(item_text, opt["key"])
+            idx = self.exchange_combo.count() - 1
+            if opt.get("disabled", False):
+                item = self.exchange_combo.model().item(idx)
+                if item is not None:
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEnabled)
+                    item.setForeground(QtGui.QColor("#6b7280"))
+            else:
+                enabled_exchanges.append(opt["key"])
+        selected_exchange = self.config.get("selected_exchange")
+        if selected_exchange not in enabled_exchanges:
+            selected_exchange = enabled_exchanges[0] if enabled_exchanges else None
+            if selected_exchange:
+                self.config["selected_exchange"] = selected_exchange
+        if selected_exchange:
+            idx = self.exchange_combo.findData(selected_exchange)
+            if idx >= 0:
+                with QtCore.QSignalBlocker(self.exchange_combo):
+                    self.exchange_combo.setCurrentIndex(idx)
+        self.exchange_combo.currentIndexChanged.connect(
+            lambda _=None: self._on_exchange_selection_changed(self.exchange_combo.currentData())
+        )
+        scroll_layout.addWidget(exchange_group)
 
         # Markets & Intervals
         sym_group = QtWidgets.QGroupBox("Markets & Intervals")
@@ -12220,7 +12257,7 @@ class MainWindow(QtWidgets.QWidget):
         code_tab = self._init_code_language_tab()
         if code_tab is not None:
             self.code_tab = code_tab
-            self.tabs.addTab(code_tab, "Code Languages And Exchanges")
+            self.tabs.addTab(code_tab, "Code Languages")
 
         self._refresh_symbol_interval_pairs("runtime")
         self._refresh_symbol_interval_pairs("backtest")
@@ -12415,8 +12452,8 @@ def _init_code_language_tab(self):
     scroll.setWidget(content)
 
     description = QtWidgets.QLabel(
-        "Select your preferred code language, crypto exchange, and forex broker. "
-        "Folders for each selection are created automatically inside the project so you can keep related assets organized."
+        "Select your preferred code language. "
+        "Folders for each language are created automatically inside the project so you can keep related assets organized."
     )
     description.setWordWrap(True)
     layout.addWidget(description)
@@ -12446,75 +12483,6 @@ def _init_code_language_tab(self):
         self._starter_language_cards[opt["config_key"]] = card
     lang_row.addStretch()
     layout.addLayout(lang_row)
-
-    market_label = QtWidgets.QLabel("Choose your market")
-    market_label.setStyleSheet("font-size: 20px; font-weight: 600;")
-    layout.addWidget(market_label)
-    market_row = QtWidgets.QHBoxLayout()
-    market_row.setSpacing(12)
-    for opt in STARTER_MARKET_OPTIONS:
-        card = _StarterCard(
-            opt["key"],
-            opt["title"],
-            opt["subtitle"],
-            opt["accent"],
-            opt.get("badge"),
-            disabled=opt.get("disabled", False),
-        )
-        card.clicked.connect(self._code_tab_select_market)
-        card.setMinimumWidth(220)
-        market_row.addWidget(card, 1)
-        self._starter_market_cards[opt["key"]] = card
-    market_row.addStretch()
-    layout.addLayout(market_row)
-
-    self._crypto_section_label = QtWidgets.QLabel("Crypto exchanges")
-    self._crypto_section_label.setStyleSheet("font-size: 16px; font-weight: 600;")
-    layout.addWidget(self._crypto_section_label)
-    self._crypto_cards_widget = QtWidgets.QWidget()
-    crypto_layout = QtWidgets.QHBoxLayout(self._crypto_cards_widget)
-    crypto_layout.setSpacing(12)
-    for opt in STARTER_CRYPTO_EXCHANGES:
-        if opt["key"] not in EXCHANGE_PATHS:
-            continue
-        card = _StarterCard(
-            opt["key"],
-            opt["title"],
-            opt["subtitle"],
-            opt["accent"],
-            opt.get("badge"),
-            disabled=opt.get("disabled", False),
-        )
-        card.clicked.connect(self._code_tab_select_exchange)
-        card.setMinimumWidth(200)
-        crypto_layout.addWidget(card, 1)
-        self._starter_crypto_cards[opt["key"]] = card
-    crypto_layout.addStretch()
-    layout.addWidget(self._crypto_cards_widget)
-
-    self._forex_section_label = QtWidgets.QLabel("Forex brokers")
-    self._forex_section_label.setStyleSheet("font-size: 16px; font-weight: 600;")
-    layout.addWidget(self._forex_section_label)
-    self._forex_cards_widget = QtWidgets.QWidget()
-    forex_cards_layout = QtWidgets.QHBoxLayout(self._forex_cards_widget)
-    forex_cards_layout.setSpacing(12)
-    for opt in STARTER_FOREX_BROKERS:
-        if opt["key"] not in FOREX_BROKER_PATHS:
-            continue
-        card = _StarterCard(
-            opt["key"],
-            opt["title"],
-            opt["subtitle"],
-            opt["accent"],
-            opt.get("badge"),
-            disabled=opt.get("disabled", False),
-        )
-        card.clicked.connect(self._code_tab_select_forex)
-        card.setMinimumWidth(200)
-        forex_cards_layout.addWidget(card, 1)
-        self._starter_forex_cards[opt["key"]] = card
-    forex_cards_layout.addStretch()
-    layout.addWidget(self._forex_cards_widget)
 
     status_widget = QtWidgets.QWidget()
     status_layout = QtWidgets.QHBoxLayout(status_widget)
@@ -12595,13 +12563,7 @@ def _code_tab_select_language(self, config_key: str) -> None:
     card = getattr(self, "_starter_language_cards", {}).get(config_key)
     if card is not None and card.is_disabled():
         return
-    previous_lang = self.config.get("code_language")
     self.config["code_language"] = config_key
-    if previous_lang != config_key:
-        self.config["code_market"] = None
-        self.config["selected_exchange"] = None
-        self.config["selected_forex_broker"] = None
-        self._code_tab_selected_market = None
     self._refresh_code_tab_from_config()
     self._ensure_language_exchange_paths()
 
@@ -12651,42 +12613,6 @@ def _refresh_code_tab_from_config(self) -> None:
             self.config["code_language"] = lang_key
     for key, card in lang_cards.items():
         card.setSelected(bool(lang_key) and key == lang_key)
-
-    market_cards = getattr(self, "_starter_market_cards", {})
-    market = self.config.get("code_market") or "crypto"
-    if market not in market_cards or market_cards[market].is_disabled():
-        market = next((k for k, c in market_cards.items() if not c.is_disabled()), None)
-        self.config["code_market"] = market
-    self._code_tab_selected_market = market
-    for key, card in market_cards.items():
-        card.setSelected(bool(market) and key == market)
-
-    selected_exchange = None
-    crypto_cards = getattr(self, "_starter_crypto_cards", {})
-    if market == "crypto":
-        available_crypto = [k for k, c in crypto_cards.items() if not c.is_disabled()]
-        selected_exchange = self.config.get("selected_exchange")
-        if selected_exchange not in available_crypto:
-            selected_exchange = available_crypto[0] if available_crypto else None
-            self.config["selected_exchange"] = selected_exchange
-    else:
-        self.config["selected_exchange"] = None
-    for key, card in crypto_cards.items():
-        card.setSelected(selected_exchange is not None and key == selected_exchange)
-
-    forex_cards = getattr(self, "_starter_forex_cards", {})
-    selected_forex = None
-    if market == "forex":
-        available_forex = [k for k, c in forex_cards.items() if not c.is_disabled()]
-        selected_forex = self.config.get("selected_forex_broker")
-        if selected_forex not in available_forex:
-            selected_forex = available_forex[0] if available_forex else None
-            self.config["selected_forex_broker"] = selected_forex
-    else:
-        self.config["selected_forex_broker"] = None
-    for key, card in forex_cards.items():
-        card.setSelected(selected_forex is not None and key == selected_forex)
-    self._update_code_tab_market_sections()
     # Dependency versions refresh lazily the first time this tab is opened (see _on_tab_changed).
 
 
@@ -12933,19 +12859,64 @@ def _sync_language_exchange_lists_from_config(self):
             if blocker is not None:
                 del blocker
             continue
-        if desired not in options_map:
+        if desired not in options_map and options_map:
             desired = next(iter(options_map))
             self.config[key] = desired
         with QtCore.QSignalBlocker(widget):
-            idx = widget.findText(desired, QtCore.Qt.MatchFlag.MatchExactly)
+            idx = widget.findData(desired)
+            if idx < 0:
+                idx = widget.findText(desired, QtCore.Qt.MatchFlag.MatchExactly)
+            if idx >= 0:
+                try:
+                    item = widget.model().item(idx)
+                except Exception:
+                    item = None
+                if item is not None and not (item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled):
+                    idx = -1
             if idx < 0 and widget.count() > 0:
-                idx = 0
-                desired = widget.itemText(0)
-                self.config[key] = desired
+                fallback_idx = -1
+                fallback_value = None
+                for i in range(widget.count()):
+                    try:
+                        item = widget.model().item(i)
+                    except Exception:
+                        item = None
+                    if item is not None and not (item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled):
+                        continue
+                    data_value = widget.itemData(i)
+                    text_value = widget.itemText(i)
+                    if data_value in options_map:
+                        fallback_idx = i
+                        fallback_value = data_value
+                        break
+                    if text_value in options_map:
+                        fallback_idx = i
+                        fallback_value = text_value
+                        break
+                if fallback_idx >= 0:
+                    idx = fallback_idx
+                    desired = fallback_value
+                    self.config[key] = desired
             if idx >= 0:
                 widget.setCurrentIndex(idx)
     self._ensure_language_exchange_paths()
     self._refresh_code_tab_from_config()
+    if self.exchange_list is not None:
+        desired_exchange = self.config.get("selected_exchange")
+        item = self._exchange_list_items.get(desired_exchange)
+        if item is None or not (item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled):
+            desired_exchange = None
+            for opt in STARTER_CRYPTO_EXCHANGES:
+                if opt.get("disabled", False):
+                    continue
+                desired_exchange = opt["key"]
+                break
+            if desired_exchange:
+                self.config["selected_exchange"] = desired_exchange
+                item = self._exchange_list_items.get(desired_exchange)
+        if item is not None:
+            with QtCore.QSignalBlocker(self.exchange_list):
+                self.exchange_list.setCurrentItem(item)
 
 
 def _ensure_language_exchange_paths(self):
@@ -12995,9 +12966,34 @@ def _on_code_language_changed(self, text: str):
 
 
 def _on_exchange_selection_changed(self, text: str):
-    if not text or text not in EXCHANGE_PATHS:
+    exchange_key = str(text).strip() if text is not None else ""
+    if exchange_key not in EXCHANGE_PATHS:
+        combo = getattr(self, "exchange_combo", None)
+        if combo is not None:
+            data_key = combo.currentData()
+            if data_key in EXCHANGE_PATHS:
+                exchange_key = data_key
+            else:
+                text_key = combo.currentText()
+                if text_key in EXCHANGE_PATHS:
+                    exchange_key = text_key
+    if not exchange_key or exchange_key not in EXCHANGE_PATHS:
         return
-    self.config["selected_exchange"] = text
+    self.config["selected_exchange"] = exchange_key
+    self._ensure_language_exchange_paths()
+
+
+def _on_exchange_list_changed(
+    self,
+    current: QtWidgets.QListWidgetItem | None,
+    _previous: QtWidgets.QListWidgetItem | None = None,
+) -> None:
+    if current is None:
+        return
+    exchange_key = current.data(QtCore.Qt.ItemDataRole.UserRole) or current.text()
+    if not exchange_key or exchange_key not in EXCHANGE_PATHS:
+        return
+    self.config["selected_exchange"] = exchange_key
     self._ensure_language_exchange_paths()
 
 
@@ -16567,7 +16563,10 @@ def load_config(self):
         self._refresh_symbol_interval_pairs("backtest")
         self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
         self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
-        self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
+        if FOREX_BROKER_PATHS:
+            self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
+        else:
+            self.config.setdefault("selected_forex_broker", None)
         self._sync_language_exchange_lists_from_config()
         self.log(f"Loaded config from {fn}")
         try:
@@ -16718,6 +16717,7 @@ try:
     MainWindow._apply_dependency_version_results = _apply_dependency_version_results
     MainWindow._on_code_language_changed = _on_code_language_changed
     MainWindow._on_exchange_selection_changed = _on_exchange_selection_changed
+    MainWindow._on_exchange_list_changed = _on_exchange_list_changed
     MainWindow._on_forex_selection_changed = _on_forex_selection_changed
     MainWindow._code_tab_select_language = _code_tab_select_language
     MainWindow._code_tab_select_market = _code_tab_select_market

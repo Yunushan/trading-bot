@@ -38,7 +38,7 @@ DEFAULT_CONFIG = {
     "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
     "code_language": "Python (PyQt)",
     "selected_exchange": "Binance",
-    "selected_forex_broker": "FXCM",
+    "selected_forex_broker": None,
     "indicator_flip_cooldown_bars": 1,
     "indicator_flip_cooldown_seconds": 0.0,
     "indicator_use_live_values": True,
