@@ -674,18 +674,38 @@ STARTER_CRYPTO_EXCHANGES = [
     {
         "key": "Bybit",
         "title": "Bybit",
-        "subtitle": "Derivatives-focused - coming soon",
+        "subtitle": "Advanced desktop bot ready to launch",
         "accent": "#fb7185",
-        "badge": "Coming Soon",
-        "disabled": True,
     },
     {
         "key": "OKX",
         "title": "OKX",
-        "subtitle": "Options + spot - coming soon",
+        "subtitle": "Advanced desktop bot ready to launch",
         "accent": "#a78bfa",
-        "badge": "Coming Soon",
-        "disabled": True,
+    },
+    {
+        "key": "Gate",
+        "title": "Gate",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#22c55e",
+    },
+    {
+        "key": "Bitget",
+        "title": "Bitget",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#0ea5e9",
+    },
+    {
+        "key": "MEXC",
+        "title": "MEXC",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#10b981",
+    },
+    {
+        "key": "KuCoin",
+        "title": "KuCoin",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#eab308",
     },
 ]
 
@@ -2255,6 +2275,22 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
                 seen_interval_pairs.add(interval_key)
                 if entry not in deduped_results:
                     deduped_results.append(entry)
+    if deduped_results:
+        label_map = {
+            _indicator_short_label(key).strip().lower(): key
+            for key in indicator_keys
+        }
+        for entry in deduped_results:
+            label_part, interval_part = _indicator_entry_signature(entry)
+            if not interval_part:
+                continue
+            key = label_map.get(label_part)
+            if not key:
+                continue
+            interval_slots = interval_map.setdefault(key.lower(), [])
+            interval_clean = interval_part.strip().upper()
+            if interval_clean and interval_clean not in interval_slots:
+                interval_slots.append(interval_clean)
     return deduped_results, interval_map
 
 
@@ -3617,11 +3653,17 @@ class MainWindow(QtWidgets.QWidget):
         try:
             # Avoid repeated native window re-creation (can cause Windows flicker during startup).
             current_flags = self.windowFlags()
-            desired_flags = current_flags | (
-                QtCore.Qt.WindowType.WindowMinimizeButtonHint
+            desired_flags = (
+                current_flags
+                | QtCore.Qt.WindowType.Window
+                | QtCore.Qt.WindowType.WindowMinimizeButtonHint
                 | QtCore.Qt.WindowType.WindowMaximizeButtonHint
                 | QtCore.Qt.WindowType.WindowTitleHint
+                | QtCore.Qt.WindowType.WindowSystemMenuHint
+                | QtCore.Qt.WindowType.WindowCloseButtonHint
             )
+            desired_flags &= ~QtCore.Qt.WindowType.FramelessWindowHint
+            desired_flags &= ~QtCore.Qt.WindowType.Tool
             if desired_flags != current_flags:
                 self.setWindowFlags(desired_flags)
         except Exception:
@@ -3654,6 +3696,15 @@ class MainWindow(QtWidgets.QWidget):
         else:
             self.config.setdefault("selected_forex_broker", None)
         self.config.setdefault("code_market", "crypto")
+        exchange_override = os.environ.get("BOT_SELECTED_EXCHANGE") or os.environ.get("BOT_DEFAULT_EXCHANGE")
+        if exchange_override:
+            exchange_override = str(exchange_override).strip()
+            for key in EXCHANGE_PATHS:
+                if key.lower() == exchange_override.lower():
+                    self.config["selected_exchange"] = key
+                    self.config["code_market"] = "crypto"
+                    self.config["selected_forex_broker"] = None
+                    break
         self.strategy_threads = {}
         self.shared_binance = None
         self.stop_worker = None
@@ -4148,6 +4199,24 @@ class MainWindow(QtWidgets.QWidget):
                     widget.setEnabled(False)
         except Exception:
             pass
+        if enabled:
+            try:
+                tif_combo = getattr(self, "tif_combo", None)
+                gtd_spin = getattr(self, "gtd_minutes_spin", None)
+                if tif_combo is not None and gtd_spin is not None:
+                    is_gtd = (tif_combo.currentText() == "GTD")
+                    gtd_spin.setEnabled(is_gtd)
+                    gtd_spin.setReadOnly(not is_gtd)
+                    try:
+                        gtd_spin.setButtonSymbols(
+                            QtWidgets.QAbstractSpinBox.ButtonSymbols.UpDownArrows
+                            if is_gtd
+                            else QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def _override_ctx(self, kind: str) -> dict:
         return getattr(self, "override_contexts", {}).get(kind, {})
@@ -10770,9 +10839,9 @@ class MainWindow(QtWidgets.QWidget):
         worker.start()
 
     def init_ui(self):
-        self.setWindowTitle("Trading Bot")
+        self.setWindowTitle("Binance Trading Bot")
         try:
-            self.setWindowIcon(QtGui.QIcon(str(_BASE_PROJECT_PATH / "assets" / "crypto_forex_logo.png")))
+            self.setWindowIcon(QtGui.QIcon(str(Path(__file__).resolve().parent.parent / "assets" / "binance_icon.ico")))
         except Exception:
             pass
         root_layout = QtWidgets.QVBoxLayout(self)
@@ -10952,10 +11021,6 @@ class MainWindow(QtWidgets.QWidget):
             self.gtd_minutes_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
         except Exception:
             pass
-        self.gtd_minutes_spin.setStyleSheet(
-            "QSpinBox { color: #5a5f70; background: #141824; }"
-            "QSpinBox:disabled { color: #5a5f70; background: #141824; }"
-        )
         grid.addWidget(self.gtd_minutes_spin, 3, 4)
         # Show GTD minutes only when TIF == 'GTD'
         def _update_gtd_visibility(text:str):
@@ -10969,13 +11034,6 @@ class MainWindow(QtWidgets.QWidget):
                 )
             except Exception:
                 pass
-            if is_gtd:
-                self.gtd_minutes_spin.setStyleSheet("")
-            else:
-                self.gtd_minutes_spin.setStyleSheet(
-                    "QSpinBox { color: #5a5f70; background: #141824; }"
-                    "QSpinBox:disabled { color: #5a5f70; background: #141824; }"
-                )
         self.tif_combo.currentTextChanged.connect(_update_gtd_visibility)
         _update_gtd_visibility(self.tif_combo.currentText())
 
@@ -15180,7 +15238,6 @@ def _mw_render_positions_table(self):
             sym_digest = str(rec.get('symbol') or data.get('symbol') or "").strip().upper()
             if record_is_closed:
                 current_live_entries = list(rec.get("_current_indicator_values") or [])
-                rec["_current_indicator_values"] = current_live_entries
             else:
                 current_live_entries = _collect_current_indicator_live_strings(
                     self,
@@ -15190,7 +15247,20 @@ def _mw_render_positions_table(self):
                     interval_map,
                     interval_hint,
                 )
-                rec["_current_indicator_values"] = current_live_entries
+            if view_mode == "per_trade":
+                filtered_values = _filter_indicator_entries_for_interval(
+                    indicator_value_entries,
+                    interval_hint,
+                    include_non_matching=False,
+                )
+                if filtered_values:
+                    allowed = {_indicator_entry_signature(entry) for entry in filtered_values}
+                    current_live_entries = [
+                        entry
+                        for entry in (current_live_entries or [])
+                        if _indicator_entry_signature(entry) in allowed
+                    ]
+            rec["_current_indicator_values"] = current_live_entries
             indicator_snapshot = tuple(indicator_value_entries or [])
             interval_snapshot = tuple(
                 (key, tuple(values))
@@ -15447,12 +15517,36 @@ def _mw_render_positions_table(self):
                 live_values_entries = rec.get("_current_indicator_values")
                 if live_values_entries is None:
                     if not is_closed_like:
+                        live_indicator_keys = indicators_list
+                        live_interval_map = interval_map
+                        if strict_interval_values and filtered_indicator_values:
+                            label_map = {
+                                _indicator_short_label(key).strip().lower(): key
+                                for key in indicators_list
+                            }
+                            restricted_keys: list[str] = []
+                            restricted_map: dict[str, list[str]] = {}
+                            for entry in filtered_indicator_values:
+                                label_part, interval_part = _indicator_entry_signature(entry)
+                                mapped_key = label_map.get(label_part)
+                                if not mapped_key:
+                                    continue
+                                if mapped_key not in restricted_keys:
+                                    restricted_keys.append(mapped_key)
+                                if interval_part:
+                                    slots = restricted_map.setdefault(mapped_key.lower(), [])
+                                    interval_clean = interval_part.strip().upper()
+                                    if interval_clean and interval_clean not in slots:
+                                        slots.append(interval_clean)
+                            if restricted_keys:
+                                live_indicator_keys = restricted_keys
+                                live_interval_map = restricted_map
                         live_values_entries = _collect_current_indicator_live_strings(
                             self,
                             sym,
-                            indicators_list,
+                            live_indicator_keys,
                             live_value_cache,
-                            interval_map,
+                            live_interval_map,
                             interval,
                         )
                         rec["_current_indicator_values"] = live_values_entries

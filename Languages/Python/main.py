@@ -19,6 +19,15 @@ def _env_flag(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _boot_log(message: str) -> None:
+    if not _env_flag("BOT_BOOT_LOG"):
+        return
+    try:
+        print(f"[boot] {message}", flush=True)
+    except Exception:
+        pass
+
+
 def _suppress_subprocess_console_windows() -> None:
     """Hide transient console windows from subprocess calls on Windows."""
     if sys.platform != "win32" or _env_flag("BOT_ALLOW_SUBPROCESS_CONSOLE"):
@@ -214,6 +223,14 @@ def _install_cbt_startup_window_suppression() -> None:
         except Exception:
             return ""
 
+    def _read_hwnd_title(hwnd_val: int) -> str:
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(wintypes.HWND(int(hwnd_val)), buf, 256)
+            return str(buf.value or "").strip()
+        except Exception:
+            return ""
+
     def _looks_like_qt_internal_helper_window(*, class_name: str, title: str) -> bool:
         name = str(class_name or "").strip()
         if name.startswith("Qt") and any(name.endswith(suffix) for suffix in _QT_INTERNAL_WINDOW_SUFFIXES):
@@ -250,6 +267,7 @@ def _install_cbt_startup_window_suppression() -> None:
             # Some Qt 6.10+ internal helper windows can appear full-size briefly on Windows 11.
             # Hide them at create-time to avoid visible flashes before the main UI shows.
             class_name = cs_class or _read_hwnd_class(hwnd_val)
+            title_text = cs_title or _read_hwnd_title(hwnd_val)
             if class_name.startswith("QEventDispatcherWin32_Internal_Widget"):
                 return user32.CallNextHookEx(0, n_code, w_param, l_param)
             if _looks_like_qt_internal_helper_window(class_name=class_name, title=cs_title):
@@ -561,6 +579,9 @@ def _install_startup_window_suppression() -> None:
             class_buf = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd_obj, class_buf, 256)
             class_name = (class_buf.value or "").strip()
+            title_buf = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd_obj, title_buf, 256)
+            title = (title_buf.value or "").strip()
 
             # Skip child windows early.
             try:
@@ -771,11 +792,15 @@ def _uninstall_startup_window_suppression() -> None:
     _STARTUP_WINDOW_POLL_THREAD = None
 
 
-_install_cbt_startup_window_suppression()
-_install_startup_window_suppression()
+if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
+    _boot_log("startup window hooks disabled")
+else:
+    _install_cbt_startup_window_suppression()
+    _install_startup_window_suppression()
 
 # Version banner / environment setup must run before importing PyQt modules
 from app import preamble  # noqa: E402,F401
+_boot_log("preamble loaded")
 
 from PyQt6 import QtCore, QtGui  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -791,6 +816,7 @@ from windows_taskbar import (  # noqa: E402
 
 APP_USER_MODEL_ID = "TradingBot"
 _previous_qt_message_handler = None
+_native_icon_handles: list[int] = []
 
 
 def _install_qt_warning_filter() -> None:
@@ -808,8 +834,275 @@ def _install_qt_warning_filter() -> None:
     _previous_qt_message_handler = QtCore.qInstallMessageHandler(handler)
 
 
+def _resolve_native_icon_path() -> Path | None:
+    path = find_primary_icon_file()
+    if path is None:
+        return None
+    if path.suffix.lower() == ".ico":
+        return path
+    fallback = path.with_suffix(".ico")
+    return fallback if fallback.is_file() else None
+
+
+def _get_hwnd(window) -> int:  # noqa: ANN001
+    try:
+        if hasattr(window, "effectiveWinId"):
+            try:
+                win_id = window.effectiveWinId()
+                if win_id:
+                    return int(win_id)
+            except Exception:
+                pass
+        try:
+            win_id = window.winId()
+            if win_id:
+                return int(win_id)
+        except Exception:
+            pass
+        try:
+            handle = window.windowHandle()
+        except Exception:
+            handle = None
+        if handle is not None:
+            try:
+                win_id = handle.winId()
+                if win_id:
+                    return int(win_id)
+            except Exception:
+                pass
+    except Exception:
+        return 0
+    return 0
+
+
+def _set_native_window_icon(window) -> bool:  # noqa: ANN001
+    if sys.platform != "win32":
+        return False
+    icon_path = _resolve_native_icon_path()
+    if icon_path is None or not icon_path.is_file():
+        return False
+    try:
+        import ctypes
+        import ctypes.wintypes as wintypes
+    except Exception:
+        return False
+    hwnd = _get_hwnd(window)
+    if not hwnd:
+        return False
+    user32 = ctypes.windll.user32
+    try:
+        user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongPtrW.restype = ctypes.c_longlong
+        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_longlong]
+        user32.SetWindowLongPtrW.restype = ctypes.c_longlong
+    except Exception:
+        pass
+    try:
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        user32.SetWindowLongW.restype = ctypes.c_long
+    except Exception:
+        pass
+    try:
+        get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        style = int(get_style(hwnd, -16))
+        exstyle = int(get_style(hwnd, -20))
+        WS_SYSMENU = 0x00080000
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_APPWINDOW = 0x00040000
+        if not (style & WS_SYSMENU):
+            set_style(hwnd, -16, int(style | WS_SYSMENU))
+        new_exstyle = int((exstyle | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW)
+        if new_exstyle != exstyle:
+            set_style(hwnd, -20, new_exstyle)
+        try:
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010
+            SWP_FRAMECHANGED = 0x0020
+            user32.SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x00000010
+    LR_DEFAULTSIZE = 0x00000040
+    try:
+        user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+        user32.GetSystemMetrics.restype = ctypes.c_int
+        user32.LoadImageW.argtypes = [
+            wintypes.HINSTANCE,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.LoadImageW.restype = wintypes.HICON
+    except Exception:
+        pass
+    try:
+        cx_small = int(user32.GetSystemMetrics(49))  # SM_CXSMICON
+        cy_small = int(user32.GetSystemMetrics(50))  # SM_CYSMICON
+        cx_big = int(user32.GetSystemMetrics(11))  # SM_CXICON
+        cy_big = int(user32.GetSystemMetrics(12))  # SM_CYICON
+    except Exception:
+        cx_small = cy_small = cx_big = cy_big = 0
+    hicon_small = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, cx_small, cy_small, LR_LOADFROMFILE)
+    hicon_big = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, cx_big, cy_big, LR_LOADFROMFILE)
+    if not hicon_small and not hicon_big:
+        hicon_big = user32.LoadImageW(0, str(icon_path), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+    if not hicon_small and not hicon_big:
+        return False
+    WM_SETICON = 0x0080
+    ICON_SMALL = 0
+    ICON_BIG = 1
+    try:
+        user32.SendMessageW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.SendMessageW.restype = wintypes.LRESULT
+    except Exception:
+        pass
+    applied = False
+    if hicon_small:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+        _native_icon_handles.append(int(hicon_small))
+        applied = True
+    if hicon_big:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+        _native_icon_handles.append(int(hicon_big))
+        applied = True
+    try:
+        user32.SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        user32.SetClassLongPtrW.restype = ctypes.c_void_p
+    except Exception:
+        pass
+    try:
+        user32.SetClassLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        user32.SetClassLongW.restype = ctypes.c_long
+    except Exception:
+        pass
+    if applied:
+        try:
+            set_class = getattr(user32, "SetClassLongPtrW", None) or user32.SetClassLongW
+            GCLP_HICON = -14
+            GCLP_HICONSM = -34
+            if hicon_big:
+                set_class(hwnd, GCLP_HICON, hicon_big)
+            if hicon_small:
+                set_class(hwnd, GCLP_HICONSM, hicon_small)
+        except Exception:
+            pass
+    return applied
+
+
+def _apply_qt_icon(app: QApplication, window) -> bool:  # noqa: ANN001
+    icon = QtGui.QIcon()
+    try:
+        icon = load_app_icon()
+    except Exception:
+        icon = QtGui.QIcon()
+    if icon.isNull():
+        try:
+            fallback_path = find_primary_icon_file()
+        except Exception:
+            fallback_path = None
+        if fallback_path and fallback_path.is_file():
+            try:
+                icon = QtGui.QIcon(str(fallback_path))
+            except Exception:
+                icon = QtGui.QIcon()
+        if icon.isNull() and fallback_path is not None:
+            png_path = fallback_path.with_suffix(".png")
+            if png_path.is_file():
+                try:
+                    pixmap = QtGui.QPixmap(str(png_path))
+                    if not pixmap.isNull():
+                        icon = QtGui.QIcon(pixmap)
+                except Exception:
+                    pass
+    if icon.isNull():
+        return False
+    try:
+        app.setWindowIcon(icon)
+        QtGui.QGuiApplication.setWindowIcon(icon)
+    except Exception:
+        pass
+    try:
+        window.setWindowIcon(icon)
+    except Exception:
+        pass
+    try:
+        handle = window.windowHandle()
+    except Exception:
+        handle = None
+    if handle is not None:
+        try:
+            handle.setIcon(icon)
+        except Exception:
+            pass
+    return True
+
+
+def _schedule_icon_enforcer(app: QApplication, window) -> None:  # noqa: ANN001
+    if sys.platform != "win32":
+        return
+    try:
+        attempts = int(os.environ.get("BOT_ICON_ENFORCE_ATTEMPTS") or 6)
+    except Exception:
+        attempts = 6
+    try:
+        interval_ms = int(os.environ.get("BOT_ICON_ENFORCE_INTERVAL_MS") or 500)
+    except Exception:
+        interval_ms = 500
+    attempts = max(1, min(attempts, 20))
+    interval_ms = max(100, min(interval_ms, 2000))
+    state = {"remaining": attempts}
+
+    def _attempt() -> None:
+        if state["remaining"] <= 0:
+            return
+        state["remaining"] -= 1
+        native_ok = False
+        qt_ok = False
+        if _env_flag("BOT_ENABLE_NATIVE_ICON"):
+            native_ok = _set_native_window_icon(window)
+        if _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
+            qt_ok = _apply_qt_icon(app, window)
+        if _env_flag("BOT_BOOT_LOG"):
+            _boot_log(f"icon enforce attempt native={native_ok} qt={qt_ok}")
+        if state["remaining"] > 0:
+            QtCore.QTimer.singleShot(interval_ms, _attempt)
+
+    QtCore.QTimer.singleShot(0, _attempt)
+
+
 def main() -> int:
     _install_qt_warning_filter()
+    _boot_log(
+        "env BOT_NO_STARTUP_WINDOW_SUPPRESS="
+        f"{os.environ.get('BOT_NO_STARTUP_WINDOW_SUPPRESS', '')!r} "
+        "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS="
+        f"{os.environ.get('BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS', '')!r} "
+        "BOT_DISABLE_STARTUP_WINDOW_HOOKS="
+        f"{os.environ.get('BOT_DISABLE_STARTUP_WINDOW_HOOKS', '')!r}"
+    )
 
     disable_taskbar = _env_flag("BOT_DISABLE_TASKBAR")
     if sys.platform == "win32" and not disable_taskbar:
@@ -839,19 +1132,22 @@ def main() -> int:
         except Exception:
             pass
 
-    icon = QtGui.QIcon()
-    try:
-        icon = load_app_icon()
-    except Exception:
+    disable_app_icon = _env_flag("BOT_DISABLE_APP_ICON")
+    if not disable_app_icon:
         icon = QtGui.QIcon()
-    if not icon.isNull():
         try:
-            app.setWindowIcon(icon)
-            QtGui.QGuiApplication.setWindowIcon(icon)
+            icon = load_app_icon()
         except Exception:
-            pass
+            icon = QtGui.QIcon()
+        if not icon.isNull():
+            try:
+                app.setWindowIcon(icon)
+                QtGui.QGuiApplication.setWindowIcon(icon)
+            except Exception:
+                pass
 
     win = MainWindow()
+    _boot_log("MainWindow created")
     try:
         win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
     except Exception:
@@ -876,6 +1172,11 @@ def main() -> int:
             except Exception:
                 icon_path = primary_icon
         relaunch_cmd = build_relaunch_command()
+        try:
+            taskbar_delay = int(os.environ.get("BOT_TASKBAR_METADATA_DELAY_MS") or 0)
+        except Exception:
+            taskbar_delay = 0
+        taskbar_delay = max(0, min(taskbar_delay, 5000))
 
         def _apply_taskbar(attempts: int = 12) -> None:
             if attempts <= 0:
@@ -898,13 +1199,32 @@ def main() -> int:
             if not success and attempts > 1:
                 QtCore.QTimer.singleShot(250, lambda: _apply_taskbar(attempts - 1))
 
-        QtCore.QTimer.singleShot(0, _apply_taskbar)
+        QtCore.QTimer.singleShot(taskbar_delay, _apply_taskbar)
 
     win.showMaximized()
+    _boot_log("MainWindow shown")
     try:
         win.winId()
     except Exception:
         pass
+    if sys.platform == "win32" and disable_app_icon:
+        if _env_flag("BOT_ENABLE_NATIVE_ICON"):
+            try:
+                native_delay = int(os.environ.get("BOT_NATIVE_ICON_DELAY_MS") or 0)
+            except Exception:
+                native_delay = 0
+            if native_delay > 0:
+                QtCore.QTimer.singleShot(native_delay, lambda: _set_native_window_icon(win))
+            else:
+                _set_native_window_icon(win)
+        if _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
+            try:
+                delayed_ms = int(os.environ.get("BOT_DELAYED_APP_ICON_MS") or 800)
+            except Exception:
+                delayed_ms = 800
+            delayed_ms = max(0, min(delayed_ms, 5000))
+            QtCore.QTimer.singleShot(delayed_ms, lambda: _apply_qt_icon(app, win))
+        _schedule_icon_enforcer(app, win)
     if sys.platform == "win32":
         try:
             watchdog_flag = str(os.environ.get("BOT_TRADINGVIEW_APP_WATCHDOG", "1")).strip().lower()
@@ -1006,8 +1326,6 @@ def main() -> int:
         app.installEventFilter(app._startup_input_unblocker)
     except Exception:
         pass
-    if not icon.isNull():
-        QtCore.QTimer.singleShot(0, lambda: win.setWindowIcon(icon))
     if sys.platform == "win32" and not disable_taskbar:
         try:
             controller_ms = int(os.environ.get("BOT_TASKBAR_ENSURE_MS") or 30000)
@@ -1055,6 +1373,7 @@ def main() -> int:
                 ready_path.touch(exist_ok=True)
         except Exception:
             pass
+    _boot_log("ready file handled")
 
     try:
         suppress_ms = int(os.environ.get("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS") or 8000)
@@ -1072,9 +1391,11 @@ def main() -> int:
         auto_exit_ms = int(os.environ.get("BOT_AUTO_EXIT_MS") or 0)
     except Exception:
         auto_exit_ms = 0
-    if auto_exit_ms > 0:
+    allow_auto_exit = str(os.environ.get("BOT_ALLOW_AUTO_EXIT", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if auto_exit_ms > 0 and allow_auto_exit:
         QtCore.QTimer.singleShot(auto_exit_ms, app.quit)
 
+    _boot_log("entering event loop")
     return app.exec()
 
 

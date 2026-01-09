@@ -117,7 +117,21 @@ except Exception:
 
 try:
     from PyQt6 import QtCore  # type: ignore[import]
-    QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    disable_share = str(os.environ.get("BOT_DISABLE_SHARE_OPENGL_CONTEXTS", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    force_sw = str(os.environ.get("BOT_FORCE_SOFTWARE_OPENGL", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    qt_open_gl = str(os.environ.get("QT_OPENGL", "")).strip().lower()
+    if not disable_share and not force_sw and qt_open_gl != "software":
+        QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 except Exception:
     pass
 

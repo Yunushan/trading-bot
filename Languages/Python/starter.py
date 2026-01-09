@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from uuid import uuid4
 from pathlib import Path
 from datetime import datetime
@@ -79,8 +80,8 @@ _WINDOWS_TASKBAR_SPEC.loader.exec_module(windows_taskbar)
 apply_taskbar_metadata = windows_taskbar.apply_taskbar_metadata
 build_relaunch_command = windows_taskbar.build_relaunch_command
 ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
-BINANCE_MAIN = BASE_DIR / "main.py"
-BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++"
+BINANCE_MAIN = WINDOWS_TASKBAR_DIR / "main.py"
+BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++" / "Crypto-Exchanges" / "Binance"
 BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "binance_cpp"
 BINANCE_CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
 APP_ICON_BASENAME = "crypto_forex_logo"
@@ -91,6 +92,26 @@ TEMP_DIR = Path(os.getenv("TEMP") or ".").resolve()
 DEBUG_LOG_PATH = TEMP_DIR / "starter_debug.log"
 STARTER_CHILD_WINDOW_EVENTS_LOG_PATH = TEMP_DIR / "starter_child_window_events.log"
 BINANCE_WINDOW_EVENTS_LOG_PATH = TEMP_DIR / "binance_window_events.log"
+SAFE_MODE_FLAG_PATH = TEMP_DIR / "starter_safe_mode.flag"
+
+PYTHON_EXCHANGE_MAIN = {
+    "binance": BINANCE_MAIN,
+    "bybit": BYBIT_MAIN,
+    "okx": OKX_MAIN,
+    "gate": GATE_MAIN,
+    "bitget": BITGET_MAIN,
+    "mexc": MEXC_MAIN,
+    "kucoin": KUCOIN_MAIN,
+}
+PYTHON_EXCHANGE_LABELS = {
+    "binance": "Binance",
+    "bybit": "Bybit",
+    "okx": "OKX",
+    "gate": "Gate",
+    "bitget": "Bitget",
+    "mexc": "MEXC",
+    "kucoin": "KuCoin",
+}
 
 
 def _debug_log(message: str) -> None:
@@ -148,7 +169,12 @@ LANGUAGE_OPTIONS = [
 ]
 
 MARKET_OPTIONS = [
-    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin", "accent": "#34d399"},
+    {
+        "key": "crypto",
+        "title": "Crypto Exchange",
+        "subtitle": "Binance, Bybit, OKX, Gate, Bitget, MEXC, KuCoin",
+        "accent": "#34d399",
+    },
     {
         "key": "forex",
         "title": "Forex Exchange",
@@ -164,18 +190,38 @@ CRYPTO_EXCHANGES = [
     {
         "key": "bybit",
         "title": "Bybit",
-        "subtitle": "Derivatives-focused - coming soon",
+        "subtitle": "Advanced desktop bot ready to launch",
         "accent": "#fb7185",
-        "badge": "Coming Soon",
-        "disabled": True,
     },
     {
         "key": "okx",
         "title": "OKX",
-        "subtitle": "Options + spot - coming soon",
+        "subtitle": "Advanced desktop bot ready to launch",
         "accent": "#a78bfa",
-        "badge": "Coming Soon",
-        "disabled": True,
+    },
+    {
+        "key": "gate",
+        "title": "Gate",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#22c55e",
+    },
+    {
+        "key": "bitget",
+        "title": "Bitget",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#0ea5e9",
+    },
+    {
+        "key": "mexc",
+        "title": "MEXC",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#10b981",
+    },
+    {
+        "key": "kucoin",
+        "title": "KuCoin",
+        "subtitle": "Advanced desktop bot ready to launch",
+        "accent": "#eab308",
     },
 ]
 
@@ -787,6 +833,23 @@ class StarterWindow(QtWidgets.QWidget):
         self._launch_mask_active = False
         self._launch_mask_prev_opacity: float | None = None
         self._launch_timed_out = False
+        self._launch_started_at: float | None = None
+        try:
+            self._launch_ready_soft_timeout_ms = int(os.environ.get("BOT_LAUNCH_READY_SOFT_TIMEOUT_MS") or 12000)
+        except Exception:
+            self._launch_ready_soft_timeout_ms = 12000
+        self._launch_ready_soft_timeout_ms = max(2000, min(self._launch_ready_soft_timeout_ms, 60000))
+        self._launch_log_name: str | None = None
+        self._safe_mode_next_launch = False
+        self._last_launch_exit_code: int | None = None
+        self._safe_mode_active = False
+        try:
+            if SAFE_MODE_FLAG_PATH.is_file():
+                age = time.time() - SAFE_MODE_FLAG_PATH.stat().st_mtime
+                if 0 <= age <= 1800:
+                    self._safe_mode_next_launch = True
+        except Exception:
+            pass
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(40, 32, 40, 32)
@@ -921,11 +984,32 @@ class StarterWindow(QtWidgets.QWidget):
             "BOT_NO_STARTUP_WINDOW_SUPPRESS",
             "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS",
             "BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS",
+            "BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS",
+            "BOT_FORCE_SAFE_MODE",
+            "BOT_DISABLE_SAFE_MODE",
+            "BOT_ENABLE_NATIVE_ICON",
+            "BOT_SAFE_CHART_TAB",
+            "BOT_DISABLE_CHARTS",
+            "BOT_DISABLE_WEBENGINE_CHARTS",
+            "BOT_TRADINGVIEW_DISABLE_GPU",
+            "BOT_TRADINGVIEW_USE_SWIFTSHADER",
+            "BOT_DISABLE_STARTUP_WINDOW_HOOKS",
+            "BOT_DISABLE_SHARE_OPENGL_CONTEXTS",
+            "BOT_BOOT_LOG",
+            "PYTHONFAULTHANDLER",
+            "BOT_ENABLE_DELAYED_QT_ICON",
+            "BOT_DELAYED_APP_ICON_MS",
+            "BOT_NATIVE_ICON_DELAY_MS",
+            "BOT_ICON_ENFORCE_ATTEMPTS",
+            "BOT_ICON_ENFORCE_INTERVAL_MS",
+            "BOT_TASKBAR_METADATA_DELAY_MS",
+            "BINANCE_BOT_ICON",
             "BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS",
             "BOT_STARTUP_WINDOW_POLL_MS",
             "BOT_STARTUP_WINDOW_POLL_INTERVAL_MS",
             "BOT_STARTUP_WINDOW_POLL_FAST_MS",
             "BOT_STARTUP_WINDOW_POLL_FAST_INTERVAL_MS",
+            "BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK",
             "BOT_LAUNCH_OVERLAY_FULLSCREEN",
             "BOT_LAUNCH_OVERLAY_ALL_SCREENS",
             "BOT_LAUNCH_OVERLAY_BACKGROUND",
@@ -968,10 +1052,51 @@ class StarterWindow(QtWidgets.QWidget):
                 parts.append(flag)
         return " ".join(parts)
 
+    @staticmethod
+    def _normalize_chromium_flags_for_safe_mode(flags: str) -> str:
+        parts = [part for part in flags.split() if part]
+        drop_exact = {
+            "--ignore-gpu-blocklist",
+            "--enable-gpu-rasterization",
+            "--enable-zero-copy",
+            "--disable-software-rasterizer",
+            "--disable-logging",
+            "--enable-logging=stderr",
+        }
+        cleaned: list[str] = []
+        for part in parts:
+            lower = part.lower()
+            if part in drop_exact:
+                continue
+            if lower.startswith("--use-gl=") or lower.startswith("--use-angle="):
+                continue
+            if lower.startswith("--enable-gpu"):
+                continue
+            if lower.startswith("--enable-features=") and ("vulkan" in lower or "useskiarenderer" in lower):
+                continue
+            cleaned.append(part)
+        required = [
+            "--disable-gpu",
+            "--disable-gpu-compositing",
+            "--disable-features=Vulkan,UseSkiaRenderer",
+        ]
+        for part in required:
+            if part not in cleaned:
+                cleaned.append(part)
+        use_swiftshader = str(os.environ.get("BOT_TRADINGVIEW_USE_SWIFTSHADER", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if use_swiftshader and "--use-gl=swiftshader" not in cleaned:
+            cleaned.append("--use-gl=swiftshader")
+        return " ".join(cleaned).strip()
+
     def _set_launch_mask(self, active: bool) -> None:
         if sys.platform != "win32":
             return
-        if self.selected_language != "python" or self.selected_exchange != "binance":
+        if self.selected_language != "python" or self.selected_exchange not in PYTHON_EXCHANGE_MAIN:
             return
         if active:
             if self._launch_mask_active:
@@ -1567,7 +1692,7 @@ class StarterWindow(QtWidgets.QWidget):
         allow_auto = getattr(self, "_allow_language_auto_advance", True)
         auto_advance = (self.stack.currentIndex() == 0) and allow_auto
         self.selected_language = key
-        if key == "python" and self.selected_exchange == "binance":
+        if key == "python" and self.selected_exchange in PYTHON_EXCHANGE_MAIN:
             self._enable_verbose_launch_logging("language-selected")
         self._verbose_log(f"language selection: {key} auto_advance={auto_advance}")
         for card_key, card in self.language_cards.items():
@@ -1638,7 +1763,7 @@ class StarterWindow(QtWidgets.QWidget):
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Coming soon")
             return
         self.selected_exchange = key
-        if self.selected_language == "python" and key == "binance":
+        if self.selected_language == "python" and key in PYTHON_EXCHANGE_MAIN:
             self._enable_verbose_launch_logging("exchange-selected")
         self._verbose_log(f"exchange selection: {key}")
         for card_key, card in self.exchange_cards.items():
@@ -1688,7 +1813,7 @@ class StarterWindow(QtWidgets.QWidget):
             f"primary click: page={self.stack.currentIndex()} can_launch={can_launch} "
             f"language={self.selected_language} market={self.selected_market} exchange={self.selected_exchange}"
         )
-        if can_launch and self.selected_language == "python" and self.selected_exchange == "binance":
+        if can_launch and self.selected_language == "python" and self.selected_exchange in PYTHON_EXCHANGE_MAIN:
             self._enable_verbose_launch_logging("launch-clicked")
         if can_launch:
             self.launch_selected_bot()
@@ -1767,8 +1892,9 @@ class StarterWindow(QtWidgets.QWidget):
             return
         self._verbose_log("launch timeout reached")
         self._launch_timed_out = True
+        exchange_label = PYTHON_EXCHANGE_LABELS.get(self.selected_exchange, "Selected bot")
         self.status_label.setText(
-            "Binance is taking longer than expected to start. "
+            f"{exchange_label} is taking longer than expected to start. "
             "If the window opened, switch to it; otherwise close it and try again."
         )
         try:
@@ -1784,8 +1910,23 @@ class StarterWindow(QtWidgets.QWidget):
     def _launch_overlay_options(self) -> dict[str, object]:
         if sys.platform != "win32":
             return {}
-        if self.selected_language != "python" or self.selected_exchange != "binance":
+        if self.selected_language != "python" or self.selected_exchange not in PYTHON_EXCHANGE_MAIN:
             return {}
+        if getattr(self, "_safe_mode_active", False):
+            options = {
+                "fullscreen": True,
+                "cover_owner": True,
+                "all_screens": True,
+                "background_mode": "solid",
+            }
+            self._verbose_log(
+                "launch overlay options: "
+                f"fullscreen={options.get('fullscreen')} "
+                f"cover_owner={options.get('cover_owner')} "
+                f"all_screens={options.get('all_screens')} "
+                f"background={options.get('background_mode')}"
+            )
+            return options
         options: dict[str, object] = {}
         fullscreen_env = os.environ.get("BOT_LAUNCH_OVERLAY_FULLSCREEN")
         if fullscreen_env is not None:
@@ -2272,8 +2413,18 @@ class StarterWindow(QtWidgets.QWidget):
                 exit_code = int(self._active_bot_process.returncode)
             except Exception:
                 exit_code = -1
+            self._last_launch_exit_code = exit_code
             self._verbose_log(f"process exited: code={exit_code}")
             message = self._closed_message or "Selected bot closed. Launch it again anytime."
+            crash_codes = {3221225477, 3221226505}
+            if exit_code in crash_codes:
+                self._safe_mode_next_launch = True
+                self._verbose_log("process crash detected; safe mode will be applied on next launch")
+                message = "Bot crashed on launch. Safe mode will be used next time."
+                try:
+                    SAFE_MODE_FLAG_PATH.write_text(str(exit_code), encoding="utf-8")
+                except Exception:
+                    pass
             try:
                 self._stop_child_startup_window_suppression()
             except Exception:
@@ -2310,6 +2461,20 @@ class StarterWindow(QtWidgets.QWidget):
                     pass
                 self._verbose_log(f"main window detected: pid={pid_val}")
                 self._mark_bot_ready()
+                return
+            try:
+                timeout_ms = int(getattr(self, "_launch_ready_soft_timeout_ms", 0) or 0)
+            except Exception:
+                timeout_ms = 0
+            if timeout_ms > 0 and self._launch_started_at is not None:
+                elapsed_ms = (time.monotonic() - self._launch_started_at) * 1000.0
+                if elapsed_ms >= timeout_ms:
+                    self._verbose_log(f"soft ready timeout reached ({int(elapsed_ms)} ms); marking ready")
+                    try:
+                        self._launch_status_timer.stop()
+                    except Exception:
+                        pass
+                    self._mark_bot_ready()
 
     def _start_child_startup_window_suppression(self, root_pid: int) -> None:
         """Hide transient startup windows created by the launched bot (Windows only)."""
@@ -2332,9 +2497,9 @@ class StarterWindow(QtWidgets.QWidget):
             return
 
         try:
-            duration_ms = int(os.environ.get("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS") or 12000)
+            duration_ms = int(os.environ.get("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS") or 16000)
         except Exception:
-            duration_ms = 12000
+            duration_ms = 16000
         duration_ms = max(1000, min(duration_ms, 20000))
 
         try:
@@ -2532,7 +2697,7 @@ class StarterWindow(QtWidgets.QWidget):
                 if class_name == "Intermediate D3D Window":
                     return height <= 500 and width <= 4000
                 if class_name.startswith("Chrome_WidgetWin_"):
-                    return height <= 400 and width <= 4000
+                    return height <= 500 and width <= 4000
                 try:
                     GW_OWNER = 4
                     owner = user32.GetWindow(hwnd_obj, GW_OWNER)
@@ -2540,6 +2705,8 @@ class StarterWindow(QtWidgets.QWidget):
                         return False
                 except Exception:
                     pass
+                if not title:
+                    return height <= 260 and width <= 5000
                 if width >= 500 and height >= 300:
                     return False
 
@@ -2550,11 +2717,34 @@ class StarterWindow(QtWidgets.QWidget):
 
         def _hide_hwnd(hwnd_obj) -> None:  # noqa: ANN001
             try:
+                GWL_STYLE = -16
+                WS_VISIBLE = 0x10000000
+                get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+                set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+                style = int(get_style(hwnd_obj, GWL_STYLE))
+                if style & WS_VISIBLE:
+                    set_style(hwnd_obj, GWL_STYLE, int(style & ~WS_VISIBLE))
+            except Exception:
+                pass
+            try:
+                GWL_EXSTYLE = -20
+                WS_EX_TOOLWINDOW = 0x00000080
+                WS_EX_APPWINDOW = 0x00040000
+                get_exstyle = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+                set_exstyle = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+                exstyle = int(get_exstyle(hwnd_obj, GWL_EXSTYLE))
+                new_exstyle = int((exstyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW)
+                if new_exstyle != exstyle:
+                    set_exstyle(hwnd_obj, GWL_EXSTYLE, new_exstyle)
+            except Exception:
+                pass
+            try:
                 SWP_NOSIZE = 0x0001
                 SWP_NOZORDER = 0x0004
                 SWP_NOACTIVATE = 0x0010
                 SWP_HIDEWINDOW = 0x0080
                 SWP_ASYNCWINDOWPOS = 0x4000
+                SWP_FRAMECHANGED = 0x0020
                 user32.SetWindowPos(
                     hwnd_obj,
                     0,
@@ -2562,7 +2752,12 @@ class StarterWindow(QtWidgets.QWidget):
                     -32000,
                     0,
                     0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW | SWP_ASYNCWINDOWPOS,
+                    SWP_NOSIZE
+                    | SWP_NOZORDER
+                    | SWP_NOACTIVATE
+                    | SWP_HIDEWINDOW
+                    | SWP_ASYNCWINDOWPOS
+                    | SWP_FRAMECHANGED,
                 )
             except Exception:
                 pass
@@ -2716,21 +2911,31 @@ class StarterWindow(QtWidgets.QWidget):
         self._child_startup_suppress_proc = proc
         stop_event = threading.Event()
         self._child_startup_suppress_stop = stop_event
+        use_global_hook = str(os.environ.get("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        if getattr(self, "_safe_mode_active", False):
+            use_global_hook = False
+        self._verbose_log(f"child window suppression global hook={use_global_hook}")
 
-        try:
-            global_hook = user32.SetWinEventHook(
-                EVENT_OBJECT_CREATE,
-                EVENT_OBJECT_SHOW,
-                0,
-                proc,
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT,
-            )
-            if global_hook:
-                hooks[0] = int(global_hook)
-        except Exception:
-            pass
+        if use_global_hook:
+            try:
+                global_hook = user32.SetWinEventHook(
+                    EVENT_OBJECT_CREATE,
+                    EVENT_OBJECT_SHOW,
+                    0,
+                    proc,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT,
+                )
+                if global_hook:
+                    hooks[0] = int(global_hook)
+            except Exception:
+                pass
 
         def _install_hook_for_pid(pid_val: int) -> None:
             if not pid_val or pid_val in hooks:
@@ -2815,11 +3020,8 @@ class StarterWindow(QtWidgets.QWidget):
 
             while time.monotonic() < deadline and not stop_event.is_set():
                 now = time.monotonic()
-                try:
-                    if now - started > 0.6 and _main_window_visible():
-                        break
-                except Exception:
-                    pass
+                # Keep suppression active for the full duration; helper windows can
+                # appear after the main window becomes visible.
                 if now >= next_process_scan:
                     next_process_scan = now + 0.25
                     try:
@@ -2955,6 +3157,9 @@ class StarterWindow(QtWidgets.QWidget):
         self._active_launch_label = "Selected bot"
         self._running_ready_message = "Selected bot is running. Close it to relaunch."
         self._closed_message = "Selected bot closed. Launch it again anytime."
+        self._launch_started_at = None
+        self._launch_log_name = None
+        self._safe_mode_active = False
         self._set_launch_in_progress(False)
 
     def _update_status_message(self) -> None:
@@ -2975,7 +3180,7 @@ class StarterWindow(QtWidgets.QWidget):
             return
         if self.selected_market == "forex":
             self.status_label.setText(
-                "Forex brokers (OANDA, FXCM, IG) are coming soon. Choose Crypto → Binance to launch today."
+                "Forex brokers (OANDA, FXCM, IG) are coming soon. Choose Crypto -> Binance, Bybit, OKX, Gate, Bitget, MEXC, or KuCoin to launch today."
             )
             return
         if self.selected_market != "crypto":
@@ -2984,13 +3189,11 @@ class StarterWindow(QtWidgets.QWidget):
         language = self.selected_language
         exchange = self.selected_exchange
         if language == "python":
-            if exchange == "binance":
-                self.status_label.setText("Binance is ready. Press 'Launch Selected Bot' to open the PyQt app.")
+            if exchange in PYTHON_EXCHANGE_MAIN:
+                label = PYTHON_EXCHANGE_LABELS.get(exchange, exchange.title())
+                self.status_label.setText(f"{label} is ready. Press 'Launch Selected Bot' to open the PyQt app.")
                 return
-            if exchange in {"bybit", "okx"}:
-                self.status_label.setText(f"{exchange.title()} workspace is being scaffolded.")
-                return
-            self.status_label.setText("Select Binance to launch the Python workspace. Other exchanges are coming soon.")
+            self.status_label.setText("Select Binance, Bybit, OKX, Gate, Bitget, MEXC, or KuCoin to launch the Python workspace.")
             return
 
         if language == "cpp":
@@ -3006,7 +3209,7 @@ class StarterWindow(QtWidgets.QWidget):
                         "(requires Qt + CMake in PATH)."
                     )
                 return
-            if exchange in {"bybit", "okx"}:
+            if exchange in {"bybit", "okx", "gate", "bitget", "mexc", "kucoin"}:
                 self.status_label.setText(
                     "Only the Binance Qt C++ preview is available today. Select Binance to launch it."
                 )
@@ -3023,13 +3226,14 @@ class StarterWindow(QtWidgets.QWidget):
     def _can_launch_selected(self) -> bool:
         if self.stack.currentIndex() != 1:
             return False
-        if self.selected_market != "crypto" or self.selected_exchange != "binance":
+        if self.selected_market != "crypto":
             return False
         language = self.selected_language
         if language == "python":
-            return BINANCE_MAIN.is_file()
+            main_path = PYTHON_EXCHANGE_MAIN.get(self.selected_exchange)
+            return bool(main_path and main_path.is_file())
         if language == "cpp":
-            return BINANCE_CPP_PROJECT.is_dir()
+            return self.selected_exchange == "binance" and BINANCE_CPP_PROJECT.is_dir()
         return False
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
@@ -3041,7 +3245,7 @@ class StarterWindow(QtWidgets.QWidget):
             _debug_log("Launch blocked: _can_launch_selected returned False.")
             self._update_status_message()
             return
-        if self.selected_language == "python" and self.selected_exchange == "binance":
+        if self.selected_language == "python" and self.selected_exchange in PYTHON_EXCHANGE_MAIN:
             self._enable_verbose_launch_logging("launch-start")
         self._verbose_log(
             f"launch requested: language={self.selected_language} "
@@ -3061,12 +3265,17 @@ class StarterWindow(QtWidgets.QWidget):
         closed_message: str
 
         if self.selected_language == "python":
-            if not BINANCE_MAIN.is_file():
-                _debug_log(f"Binance main missing: {BINANCE_MAIN}")
+            exchange_key = self.selected_exchange
+            exchange_label = PYTHON_EXCHANGE_LABELS.get(exchange_key, "Selected bot")
+            exchange_key = str(exchange_key or "bot").lower()
+            self._launch_log_name = f"{exchange_key}_launch.log"
+            main_path = PYTHON_EXCHANGE_MAIN.get(exchange_key or "")
+            if main_path is None or not main_path.is_file():
+                _debug_log(f"{exchange_label} main missing: {main_path}")
                 QtWidgets.QMessageBox.critical(
                     self,
-                    "Binance bot missing",
-                    f"Could not find {BINANCE_MAIN}. Make sure the repository is intact.",
+                    f"{exchange_label} bot missing",
+                    f"Could not find {main_path}. Make sure the repository is intact.",
                 )
                 return
             python_exec = sys.executable
@@ -3075,12 +3284,12 @@ class StarterWindow(QtWidgets.QWidget):
                 if pythonw.is_file():
                     python_exec = str(pythonw)
                     _debug_log(f"Using pythonw for child process: {python_exec}")
-            command = [python_exec, str(BINANCE_MAIN)]
-            cwd = BINANCE_MAIN.parent
-            start_message = "Bot is starting... Opening the Binance workspace."
-            running_label = "Binance Python bot"
-            ready_message = "Binance Python bot is running. Close it to relaunch."
-            closed_message = "Binance Python bot closed. Launch it again anytime."
+            command = [python_exec, str(main_path)]
+            cwd = main_path.parent
+            start_message = f"Bot is starting... Opening the {exchange_label} workspace."
+            running_label = f"{exchange_label} Python bot"
+            ready_message = f"{exchange_label} Python bot is running. Close it to relaunch."
+            closed_message = f"{exchange_label} Python bot closed. Launch it again anytime."
             _debug_log(f"Launching Python bot: exec={python_exec}, cwd={cwd}")
             self._verbose_log(f"python launch command: {command} cwd={cwd}")
         elif self.selected_language == "cpp":
@@ -3136,13 +3345,46 @@ class StarterWindow(QtWidgets.QWidget):
                 pass
         self._child_ready_file = None
         self._set_launch_in_progress(True)
+        self._launch_started_at = time.monotonic()
         self._active_launch_label = running_label
         self._running_ready_message = ready_message
         self._closed_message = closed_message
         launch_log_hint = ""
         if self.selected_language == "python":
-            launch_log_hint = f" | Launch log: {os.getenv('TEMP') or cwd}\\binance_launch.log"
+            log_name = self._launch_log_name or "binance_launch.log"
+            launch_log_hint = f" | Launch log: {os.getenv('TEMP') or cwd}\\{log_name}"
         self.status_label.setText(start_message + launch_log_hint)
+        safe_mode = False
+        safe_mode_reason = None
+        if sys.platform == "win32" and self.selected_language == "python":
+            disable_safe_mode = str(os.environ.get("BOT_DISABLE_SAFE_MODE", "")).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            force_safe_mode = str(os.environ.get("BOT_FORCE_SAFE_MODE", "")).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            default_safe_mode = bool(self.selected_exchange == "binance")
+            safe_mode = (force_safe_mode or self._safe_mode_next_launch or default_safe_mode) and not disable_safe_mode
+            if safe_mode:
+                if force_safe_mode:
+                    safe_mode_reason = "env"
+                elif self._safe_mode_next_launch:
+                    safe_mode_reason = "crash"
+                else:
+                    safe_mode_reason = "default"
+                self._safe_mode_next_launch = False
+                self._verbose_log(f"safe mode enabled for this launch (reason={safe_mode_reason})")
+                try:
+                    SAFE_MODE_FLAG_PATH.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        self._safe_mode_active = safe_mode
         if sys.platform == "win32" and self.selected_language == "python":
             try:
                 self._begin_launch_focus_shield()
@@ -3176,6 +3418,55 @@ class StarterWindow(QtWidgets.QWidget):
                 env["BOT_DEBUG_WINDOW_EVENTS"] = "1"
                 self._verbose_log("child env BOT_DEBUG_WINDOW_EVENTS=1")
             if self.selected_language == "python":
+                exchange_label = PYTHON_EXCHANGE_LABELS.get(self.selected_exchange)
+                if exchange_label:
+                    env["BOT_SELECTED_EXCHANGE"] = exchange_label
+                    self._verbose_log(f"child env BOT_SELECTED_EXCHANGE={exchange_label!r}")
+                if sys.platform == "win32":
+                    app_asset_icon = WINDOWS_TASKBAR_DIR / "app" / "assets" / "binance_icon.ico"
+                    app_asset_icon_png = WINDOWS_TASKBAR_DIR / "app" / "assets" / "binance_icon.png"
+                    if app_asset_icon.is_file():
+                        env.setdefault("BINANCE_BOT_ICON", str(app_asset_icon))
+                    elif app_asset_icon_png.is_file():
+                        env.setdefault("BINANCE_BOT_ICON", str(app_asset_icon_png))
+                    env.setdefault("BOT_DISABLE_APP_ICON", "1")
+                    env.setdefault("BOT_ENABLE_NATIVE_ICON", "1")
+                    env.setdefault("BOT_ENABLE_DELAYED_QT_ICON", "1")
+                    env.setdefault("BOT_DELAYED_APP_ICON_MS", "800")
+                    env.setdefault("BOT_NATIVE_ICON_DELAY_MS", "150")
+                    env.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "6")
+                    env.setdefault("BOT_ICON_ENFORCE_INTERVAL_MS", "500")
+                    env.setdefault("BOT_DISABLE_TASKBAR", "0")
+                    env.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "1200")
+                    env.setdefault("BOT_TASKBAR_ENSURE_MS", "8000")
+                    if self.selected_exchange in {"binance", "bybit"}:
+                        env.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+                        if "BOT_NO_STARTUP_WINDOW_SUPPRESS" not in env:
+                            env["BOT_NO_STARTUP_WINDOW_SUPPRESS"] = "0"
+                        if "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS" not in env:
+                            env["BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS"] = "0"
+                        env.setdefault("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "0")
+                    else:
+                        env.setdefault("BOT_NO_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS", "1")
+                        env.setdefault("BOT_DISABLE_STARTUP_WINDOW_HOOKS", "1")
+                    if safe_mode:
+                        env["BOT_DISABLE_CHARTS"] = "1"
+                        env["BOT_DISABLE_WEBENGINE_CHARTS"] = "1"
+                        env["BOT_SAFE_CHART_TAB"] = "1"
+                        env["BOT_TRADINGVIEW_DISABLE_GPU"] = "1"
+                        env["BOT_TRADINGVIEW_USE_SWIFTSHADER"] = "1"
+                        env["BOT_FORCE_SOFTWARE_OPENGL"] = "1"
+                        env["BOT_DISABLE_SHARE_OPENGL_CONTEXTS"] = "1"
+                        env["PYTHONFAULTHANDLER"] = "1"
+                        env["BOT_BOOT_LOG"] = "1"
+                        env["QT_OPENGL"] = "software"
+                        env["QSG_RHI_BACKEND"] = "software"
+                        env["QT_QUICK_BACKEND"] = "software"
+                        env["QTWEBENGINE_DISABLE_GPU"] = "1"
                 no_cbt = str(env.get("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "")).strip().lower() in {
                     "1",
                     "true",
@@ -3190,6 +3481,10 @@ class StarterWindow(QtWidgets.QWidget):
                 }
                 if not (no_cbt or no_startup):
                     env.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+                    env.setdefault("BOT_CBT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "16000")
+                    env.setdefault("BOT_CBT_THREAD_HOOK_SCAN_MS", "16000")
+                    env.setdefault("BOT_CBT_THREAD_HOOK_SCAN_INTERVAL_MS", "50")
+                    env.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "16000")
                     self._verbose_log(
                         "child env BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS="
                         f"{env.get('BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS', '')!r}"
@@ -3201,7 +3496,8 @@ class StarterWindow(QtWidgets.QWidget):
                 try:
                     ready_dir = Path(os.getenv("TEMP") or str(cwd))
                     ready_dir.mkdir(parents=True, exist_ok=True)
-                    ready_path = ready_dir / f"binance_ready_{uuid4().hex}.flag"
+                    exchange_key = str(self.selected_exchange or "bot").lower()
+                    ready_path = ready_dir / f"{exchange_key}_ready_{uuid4().hex}.flag"
                     try:
                         ready_path.unlink(missing_ok=True)
                     except Exception:
@@ -3233,6 +3529,8 @@ class StarterWindow(QtWidgets.QWidget):
             else:
                 extra_flags.append("--disable-logging")
             merged_flags = self._merge_chromium_flags(current_flags, extra_flags)
+            if safe_mode:
+                merged_flags = self._normalize_chromium_flags_for_safe_mode(merged_flags)
             env["QTWEBENGINE_CHROMIUM_FLAGS"] = merged_flags
             self._verbose_log(f"child env QTWEBENGINE_CHROMIUM_FLAGS={merged_flags!r}")
 
@@ -3247,7 +3545,8 @@ class StarterWindow(QtWidgets.QWidget):
             try:
                 log_dir = Path(os.getenv("TEMP") or cwd)
                 log_dir.mkdir(parents=True, exist_ok=True)
-                self._launch_log_path = log_dir / "binance_launch.log"
+                log_name = self._launch_log_name or "binance_launch.log"
+                self._launch_log_path = log_dir / log_name
                 popen_kwargs["stdout"] = open(self._launch_log_path, "w", encoding="utf-8", errors="ignore")
                 popen_kwargs["stderr"] = subprocess.STDOUT
                 _debug_log(f"Child stdout/stderr redirected to {self._launch_log_path}")
@@ -3260,11 +3559,20 @@ class StarterWindow(QtWidgets.QWidget):
             _debug_log(f"Spawned process pid={self._active_bot_process.pid}")
             self._verbose_log(f"spawned process pid={self._active_bot_process.pid}")
             if sys.platform == "win32" and self.selected_language == "python":
-                try:
-                    self._start_child_startup_window_suppression(int(self._active_bot_process.pid))
-                except Exception as suppress_exc:
-                    _debug_log(f"Child window suppression failed: {suppress_exc}")
-                    self._verbose_log(f"child window suppression failed: {suppress_exc}")
+                skip_child_suppress = str(env.get("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "")).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                if skip_child_suppress:
+                    self._verbose_log("child window suppression skipped: BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS")
+                else:
+                    try:
+                        self._start_child_startup_window_suppression(int(self._active_bot_process.pid))
+                    except Exception as suppress_exc:
+                        _debug_log(f"Child window suppression failed: {suppress_exc}")
+                        self._verbose_log(f"child window suppression failed: {suppress_exc}")
             # If the child dies immediately, surface the error instead of leaving the user waiting.
             if self._active_bot_process.poll() is not None:
                 rc = self._active_bot_process.returncode
