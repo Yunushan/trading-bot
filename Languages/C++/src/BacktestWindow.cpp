@@ -93,7 +93,7 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       dashboardThemeCombo_(nullptr),
       dashboardPage_(nullptr),
       codePage_(nullptr) {
-    setWindowTitle("Binance Trading Bot");
+    setWindowTitle("Trading Bot");
     resize(1350, 900);
 
     auto *central = new QWidget(this);

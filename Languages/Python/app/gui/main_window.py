@@ -10839,9 +10839,9 @@ class MainWindow(QtWidgets.QWidget):
         worker.start()
 
     def init_ui(self):
-        self.setWindowTitle("Binance Trading Bot")
+        self.setWindowTitle("Trading Bot")
         try:
-            self.setWindowIcon(QtGui.QIcon(str(Path(__file__).resolve().parent.parent / "assets" / "binance_icon.ico")))
+            self.setWindowIcon(QtGui.QIcon(str(_BASE_PROJECT_PATH / "assets" / "crypto_forex_logo.png")))
         except Exception:
             pass
         root_layout = QtWidgets.QVBoxLayout(self)

@@ -81,7 +81,7 @@ apply_taskbar_metadata = windows_taskbar.apply_taskbar_metadata
 build_relaunch_command = windows_taskbar.build_relaunch_command
 ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
 BINANCE_MAIN = WINDOWS_TASKBAR_DIR / "main.py"
-BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++" / "Crypto-Exchanges" / "Binance"
+BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++"
 BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "binance_cpp"
 BINANCE_CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
 APP_ICON_BASENAME = "crypto_forex_logo"
@@ -96,21 +96,9 @@ SAFE_MODE_FLAG_PATH = TEMP_DIR / "starter_safe_mode.flag"
 
 PYTHON_EXCHANGE_MAIN = {
     "binance": BINANCE_MAIN,
-    "bybit": BYBIT_MAIN,
-    "okx": OKX_MAIN,
-    "gate": GATE_MAIN,
-    "bitget": BITGET_MAIN,
-    "mexc": MEXC_MAIN,
-    "kucoin": KUCOIN_MAIN,
 }
 PYTHON_EXCHANGE_LABELS = {
     "binance": "Binance",
-    "bybit": "Bybit",
-    "okx": "OKX",
-    "gate": "Gate",
-    "bitget": "Bitget",
-    "mexc": "MEXC",
-    "kucoin": "KuCoin",
 }
 
 
@@ -3423,8 +3411,8 @@ class StarterWindow(QtWidgets.QWidget):
                     env["BOT_SELECTED_EXCHANGE"] = exchange_label
                     self._verbose_log(f"child env BOT_SELECTED_EXCHANGE={exchange_label!r}")
                 if sys.platform == "win32":
-                    app_asset_icon = WINDOWS_TASKBAR_DIR / "app" / "assets" / "binance_icon.ico"
-                    app_asset_icon_png = WINDOWS_TASKBAR_DIR / "app" / "assets" / "binance_icon.png"
+                    app_asset_icon = REPO_ROOT / "assets" / "crypto_forex_logo.ico"
+                    app_asset_icon_png = REPO_ROOT / "assets" / "crypto_forex_logo.png"
                     if app_asset_icon.is_file():
                         env.setdefault("BINANCE_BOT_ICON", str(app_asset_icon))
                     elif app_asset_icon_png.is_file():

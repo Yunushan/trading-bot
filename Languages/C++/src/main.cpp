@@ -65,8 +65,8 @@ int main(int argc, char *argv[]) {
 #endif
 
     QApplication app(argc, argv);
-    app.setApplicationDisplayName("Binance Trading Bot");
-    app.setApplicationName("Binance Trading Bot");
+    app.setApplicationDisplayName("Trading Bot");
+    app.setApplicationName("Trading Bot");
 
     const QIcon icon = loadAppIcon();
     if (!icon.isNull()) {
