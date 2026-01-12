@@ -1063,7 +1063,8 @@ def _apply_qt_icon(app: QApplication, window) -> bool:  # noqa: ANN001
 def _schedule_icon_enforcer(app: QApplication, window) -> None:  # noqa: ANN001
     if sys.platform != "win32":
         return
-    if not (_env_flag("BOT_ENABLE_NATIVE_ICON") or _env_flag("BOT_ENABLE_DELAYED_QT_ICON")):
+    force_icon = _env_flag("BOT_FORCE_APP_ICON")
+    if not (force_icon or _env_flag("BOT_ENABLE_NATIVE_ICON") or _env_flag("BOT_ENABLE_DELAYED_QT_ICON")):
         return
     try:
         attempts = int(os.environ.get("BOT_ICON_ENFORCE_ATTEMPTS") or 6)
@@ -1083,9 +1084,9 @@ def _schedule_icon_enforcer(app: QApplication, window) -> None:  # noqa: ANN001
         state["remaining"] -= 1
         native_ok = False
         qt_ok = False
-        if _env_flag("BOT_ENABLE_NATIVE_ICON"):
+        if force_icon or _env_flag("BOT_ENABLE_NATIVE_ICON"):
             native_ok = _set_native_window_icon(window)
-        if _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
+        if force_icon or _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
             qt_ok = _apply_qt_icon(app, window)
         if _env_flag("BOT_BOOT_LOG"):
             _boot_log(f"icon enforce attempt native={native_ok} qt={qt_ok}")
@@ -1106,7 +1107,9 @@ def main() -> int:
         f"{os.environ.get('BOT_DISABLE_STARTUP_WINDOW_HOOKS', '')!r}"
     )
 
-    disable_taskbar = _env_flag("BOT_DISABLE_TASKBAR")
+    force_app_icon = _env_flag("BOT_FORCE_APP_ICON")
+    force_taskbar = _env_flag("BOT_FORCE_TASKBAR_ICON")
+    disable_taskbar = _env_flag("BOT_DISABLE_TASKBAR") and not force_taskbar
     if sys.platform == "win32" and not disable_taskbar:
         ensure_app_user_model_id(APP_USER_MODEL_ID)
 
@@ -1135,12 +1138,22 @@ def main() -> int:
             pass
 
     icon = QtGui.QIcon()
-    disable_app_icon = _env_flag("BOT_DISABLE_APP_ICON")
+    disable_app_icon = _env_flag("BOT_DISABLE_APP_ICON") and not force_app_icon
     if not disable_app_icon:
         try:
             icon = load_app_icon()
         except Exception:
             icon = QtGui.QIcon()
+    if (force_app_icon or not disable_app_icon) and icon.isNull():
+        try:
+            fallback_path = find_primary_icon_file()
+        except Exception:
+            fallback_path = None
+        if fallback_path and fallback_path.is_file():
+            try:
+                icon = QtGui.QIcon(str(fallback_path))
+            except Exception:
+                icon = QtGui.QIcon()
         if not icon.isNull():
             try:
                 app.setWindowIcon(icon)
@@ -1163,7 +1176,7 @@ def main() -> int:
         win.winId()
     except Exception:
         pass
-    if sys.platform == "win32" and _env_flag("BOT_ENABLE_NATIVE_ICON"):
+    if sys.platform == "win32" and (force_app_icon or _env_flag("BOT_ENABLE_NATIVE_ICON")):
         _set_native_window_icon(win)
 
     if sys.platform == "win32" and not disable_taskbar:
@@ -1208,9 +1221,11 @@ def main() -> int:
         win.winId()
     except Exception:
         pass
+    if sys.platform == "win32" and force_app_icon:
+        QtCore.QTimer.singleShot(0, lambda: _apply_qt_icon(app, win))
     if sys.platform == "win32":
         if disable_app_icon:
-            if _env_flag("BOT_ENABLE_NATIVE_ICON"):
+            if force_app_icon or _env_flag("BOT_ENABLE_NATIVE_ICON"):
                 try:
                     native_delay = int(os.environ.get("BOT_NATIVE_ICON_DELAY_MS") or 0)
                 except Exception:
@@ -1219,7 +1234,7 @@ def main() -> int:
                     QtCore.QTimer.singleShot(native_delay, lambda: _set_native_window_icon(win))
                 else:
                     _set_native_window_icon(win)
-            if _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
+            if force_app_icon or _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
                 try:
                     delayed_ms = int(os.environ.get("BOT_DELAYED_APP_ICON_MS") or 800)
                 except Exception:

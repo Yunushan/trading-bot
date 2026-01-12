@@ -58,6 +58,7 @@ from app.strategy import StrategyEngine
 from app.workers import StopWorker, StartWorker, CallWorker
 from app.position_guard import IntervalPositionGuard
 from app.gui.param_dialog import ParamDialog
+from app.gui.app_icon import load_app_icon
 from app.indicators import (
     rsi as rsi_indicator,
     stoch_rsi as stoch_rsi_indicator,
@@ -97,6 +98,32 @@ _DEFAULT_WEB_UA = os.environ.get(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 )
+
+
+def _apply_window_icon(window) -> None:
+    try:
+        icon = load_app_icon()
+    except Exception:
+        icon = QtGui.QIcon()
+    if icon.isNull():
+        return
+    try:
+        window.setWindowIcon(icon)
+    except Exception:
+        pass
+    try:
+        QtGui.QGuiApplication.setWindowIcon(icon)
+    except Exception:
+        pass
+    try:
+        handle = window.windowHandle()
+    except Exception:
+        handle = None
+    if handle is not None:
+        try:
+            handle.setIcon(icon)
+        except Exception:
+            pass
 
 
 def _configure_tradingview_webengine_env() -> None:
@@ -10924,9 +10951,16 @@ class MainWindow(QtWidgets.QWidget):
     def init_ui(self):
         self.setWindowTitle("Trading Bot")
         try:
-            self.setWindowIcon(QtGui.QIcon(str(_BASE_PROJECT_PATH / "assets" / "crypto_forex_logo.png")))
+            _apply_window_icon(self)
         except Exception:
             pass
+        if sys.platform == "win32":
+            try:
+                delay_ms = int(os.environ.get("BOT_WINDOW_ICON_RETRY_MS") or 1200)
+            except Exception:
+                delay_ms = 1200
+            if delay_ms > 0:
+                QtCore.QTimer.singleShot(delay_ms, lambda w=self: _apply_window_icon(w))
         root_layout = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.currentChanged.connect(self._on_tab_changed)

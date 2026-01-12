@@ -3417,16 +3417,18 @@ class StarterWindow(QtWidgets.QWidget):
                         env.setdefault("BINANCE_BOT_ICON", str(app_asset_icon))
                     elif app_asset_icon_png.is_file():
                         env.setdefault("BINANCE_BOT_ICON", str(app_asset_icon_png))
-                    env.setdefault("BOT_DISABLE_APP_ICON", "1")
-                    env.setdefault("BOT_ENABLE_NATIVE_ICON", "1")
-                    env.setdefault("BOT_ENABLE_DELAYED_QT_ICON", "1")
+                    env["BOT_DISABLE_APP_ICON"] = "0"
+                    env["BOT_ENABLE_NATIVE_ICON"] = "1"
+                    env["BOT_ENABLE_DELAYED_QT_ICON"] = "1"
+                    env["BOT_FORCE_APP_ICON"] = "1"
+                    env["BOT_FORCE_TASKBAR_ICON"] = "1"
                     env.setdefault("BOT_DELAYED_APP_ICON_MS", "800")
                     env.setdefault("BOT_NATIVE_ICON_DELAY_MS", "150")
-                    env.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "6")
+                    env.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "12")
                     env.setdefault("BOT_ICON_ENFORCE_INTERVAL_MS", "500")
-                    env.setdefault("BOT_DISABLE_TASKBAR", "0")
+                    env["BOT_DISABLE_TASKBAR"] = "0"
                     env.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "1200")
-                    env.setdefault("BOT_TASKBAR_ENSURE_MS", "8000")
+                    env.setdefault("BOT_TASKBAR_ENSURE_MS", "15000")
                     if self.selected_exchange in {"binance", "bybit"}:
                         env.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
                         if "BOT_NO_STARTUP_WINDOW_SUPPRESS" not in env:
