@@ -374,7 +374,12 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
     def event(self, event):
         try:
             if event.type() == QtCore.QEvent.Type.CursorChange:
-                if self.cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor:
+                shape = self.cursor().shape()
+                if shape in {
+                    QtCore.Qt.CursorShape.PointingHandCursor,
+                    QtCore.Qt.CursorShape.OpenHandCursor,
+                    QtCore.Qt.CursorShape.ClosedHandCursor,
+                }:
                     self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         except Exception:
             pass

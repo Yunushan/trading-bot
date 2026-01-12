@@ -218,8 +218,24 @@ def find_primary_icon_file() -> Path | None:
         env_path = Path(env_icon_path)
         if env_path.exists():
             return env_path
-    for directory in _candidate_directories():
-        for filename in _icon_filename_candidates():
+    directories = _candidate_directories()
+    candidates = _icon_filename_candidates()
+    if sys.platform.startswith("win"):
+        ico_names = [name for name in candidates if name.lower().endswith(".ico")]
+        other_names = [name for name in candidates if not name.lower().endswith(".ico")]
+        for directory in directories:
+            for filename in ico_names:
+                path = directory / filename
+                if path.exists():
+                    return path
+        for directory in directories:
+            for filename in other_names:
+                path = directory / filename
+                if path.exists():
+                    return path
+        return None
+    for directory in directories:
+        for filename in candidates:
             path = directory / filename
             if path.exists():
                 return path

@@ -1063,6 +1063,8 @@ def _apply_qt_icon(app: QApplication, window) -> bool:  # noqa: ANN001
 def _schedule_icon_enforcer(app: QApplication, window) -> None:  # noqa: ANN001
     if sys.platform != "win32":
         return
+    if not (_env_flag("BOT_ENABLE_NATIVE_ICON") or _env_flag("BOT_ENABLE_DELAYED_QT_ICON")):
+        return
     try:
         attempts = int(os.environ.get("BOT_ICON_ENFORCE_ATTEMPTS") or 6)
     except Exception:
@@ -1132,9 +1134,9 @@ def main() -> int:
         except Exception:
             pass
 
+    icon = QtGui.QIcon()
     disable_app_icon = _env_flag("BOT_DISABLE_APP_ICON")
     if not disable_app_icon:
-        icon = QtGui.QIcon()
         try:
             icon = load_app_icon()
         except Exception:
@@ -1157,19 +1159,18 @@ def main() -> int:
             win.setWindowIcon(icon)
         except Exception:
             pass
+    try:
+        win.winId()
+    except Exception:
+        pass
+    if sys.platform == "win32" and _env_flag("BOT_ENABLE_NATIVE_ICON"):
+        _set_native_window_icon(win)
 
     if sys.platform == "win32" and not disable_taskbar:
-        icon_path = None
-        primary_icon = find_primary_icon_file()
-        if primary_icon:
-            try:
-                icon_candidate = Path(primary_icon)
-                if icon_candidate.suffix.lower() != ".ico":
-                    ico_candidate = icon_candidate.with_suffix(".ico")
-                    if ico_candidate.is_file():
-                        icon_candidate = ico_candidate
-                icon_path = icon_candidate
-            except Exception:
+        icon_path = _resolve_native_icon_path()
+        if icon_path is None:
+            primary_icon = find_primary_icon_file()
+            if primary_icon:
                 icon_path = primary_icon
         relaunch_cmd = build_relaunch_command()
         try:
@@ -1207,23 +1208,24 @@ def main() -> int:
         win.winId()
     except Exception:
         pass
-    if sys.platform == "win32" and disable_app_icon:
-        if _env_flag("BOT_ENABLE_NATIVE_ICON"):
-            try:
-                native_delay = int(os.environ.get("BOT_NATIVE_ICON_DELAY_MS") or 0)
-            except Exception:
-                native_delay = 0
-            if native_delay > 0:
-                QtCore.QTimer.singleShot(native_delay, lambda: _set_native_window_icon(win))
-            else:
-                _set_native_window_icon(win)
-        if _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
-            try:
-                delayed_ms = int(os.environ.get("BOT_DELAYED_APP_ICON_MS") or 800)
-            except Exception:
-                delayed_ms = 800
-            delayed_ms = max(0, min(delayed_ms, 5000))
-            QtCore.QTimer.singleShot(delayed_ms, lambda: _apply_qt_icon(app, win))
+    if sys.platform == "win32":
+        if disable_app_icon:
+            if _env_flag("BOT_ENABLE_NATIVE_ICON"):
+                try:
+                    native_delay = int(os.environ.get("BOT_NATIVE_ICON_DELAY_MS") or 0)
+                except Exception:
+                    native_delay = 0
+                if native_delay > 0:
+                    QtCore.QTimer.singleShot(native_delay, lambda: _set_native_window_icon(win))
+                else:
+                    _set_native_window_icon(win)
+            if _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
+                try:
+                    delayed_ms = int(os.environ.get("BOT_DELAYED_APP_ICON_MS") or 800)
+                except Exception:
+                    delayed_ms = 800
+                delayed_ms = max(0, min(delayed_ms, 5000))
+                QtCore.QTimer.singleShot(delayed_ms, lambda: _apply_qt_icon(app, win))
         _schedule_icon_enforcer(app, win)
     if sys.platform == "win32":
         try:
