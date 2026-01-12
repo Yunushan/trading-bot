@@ -81,12 +81,25 @@ try:
                 "--disable-software-rasterizer",
             }
 
-        flag_parts = [part for part in flags.split() if part and part not in drop_flags]
+        log_level = str(os.environ.get("BOT_WEBENGINE_LOG_LEVEL", "")).strip()
+        if log_level:
+            log_level_flag = f"--log-level={log_level}"
+        else:
+            log_level_flag = "--log-level=3"
+
+        flag_parts = [
+            part
+            for part in flags.split()
+            if part
+            and part not in drop_flags
+            and not part.startswith("--log-level=")
+        ]
         windows_flags = [
             "--no-sandbox",
             "--disable-logging",
             "--disable-renderer-backgrounding",
             "--disable-background-timer-throttling",
+            log_level_flag,
         ]
         if disable_gpu:
             windows_flags += [
