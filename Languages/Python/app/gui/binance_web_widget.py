@@ -184,6 +184,15 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
     def createWindow(self, _type):  # noqa: N802
         return None
 
+    def event(self, event):
+        try:
+            if event.type() == QtCore.QEvent.Type.CursorChange:
+                if self.cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor:
+                    self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+        except Exception:
+            pass
+        return super().event(event)
+
     def _render(self) -> None:
         if self._rendered:
             return

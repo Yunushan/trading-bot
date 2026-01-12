@@ -371,6 +371,15 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
         self._render()
         self._rendered = True
 
+    def event(self, event):
+        try:
+            if event.type() == QtCore.QEvent.Type.CursorChange:
+                if self.cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor:
+                    self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+        except Exception:
+            pass
+        return super().event(event)
+
     # Block TradingView popups from spawning external windows.
     def createWindow(self, _type):  # noqa: N802
         return None

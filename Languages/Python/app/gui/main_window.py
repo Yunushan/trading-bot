@@ -3463,6 +3463,8 @@ class _LazyWebEmbed(QtWidgets.QWidget):
         self._url = str(url or "").strip()
         self._view = None
         self._loaded_once = False
+        self._native_primed = False
+        self._cursor_filter_installed = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3474,8 +3476,24 @@ class _LazyWebEmbed(QtWidgets.QWidget):
         self._fallback_label.setWordWrap(True)
         self._stack.addWidget(self._fallback_label)
 
+    def prime_native_host(self) -> None:
+        if self._native_primed:
+            return
+        self._native_primed = True
+        # Pre-create native handles to avoid top-level flicker when WebEngine initializes.
+        for widget in (self, self._stack):
+            try:
+                widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+            except Exception:
+                pass
+            try:
+                widget.winId()
+            except Exception:
+                pass
+
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
+        self.prime_native_host()
         if self._loaded_once:
             return
         self._loaded_once = True
@@ -3512,6 +3530,7 @@ class _LazyWebEmbed(QtWidgets.QWidget):
         if reason:
             self._set_fallback_text(f"{reason}\n\nUse 'Open in Browser' to view the heatmap.")
             return
+        self.prime_native_host()
         try:
             _configure_tradingview_webengine_env()
         except Exception:
@@ -3527,6 +3546,11 @@ class _LazyWebEmbed(QtWidgets.QWidget):
         self._view = view
         self._stack.insertWidget(0, view)
         self._stack.setCurrentWidget(view)
+        try:
+            view.installEventFilter(self)
+            self._cursor_filter_installed = True
+        except Exception:
+            self._cursor_filter_installed = False
         if self._url:
             try:
                 view.load(QtCore.QUrl(self._url))
@@ -3555,6 +3579,16 @@ class _LazyWebEmbed(QtWidgets.QWidget):
             profile.setHttpUserAgent(_DEFAULT_WEB_UA)
         except Exception:
             pass
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if obj is getattr(self, "_view", None):
+            try:
+                if event.type() == QtCore.QEvent.Type.CursorChange:
+                    if self._view.cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor:
+                        self._view.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+            except Exception:
+                pass
+        return super().eventFilter(obj, event)
 
 class MainWindow(QtWidgets.QWidget):
     log_signal = pyqtSignal(str)
@@ -8034,6 +8068,11 @@ class MainWindow(QtWidgets.QWidget):
         self.chart_view_stack = QtWidgets.QStackedWidget()
         layout.addWidget(self.chart_view_stack, stretch=1)
         try:
+            self.chart_view_stack.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+            self.chart_view_stack.winId()
+        except Exception:
+            pass
+        try:
             self._chart_switch_overlay = QtWidgets.QLabel(self.chart_view_stack)
             self._chart_switch_overlay.setVisible(False)
             self._chart_switch_overlay.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -12383,6 +12422,10 @@ def _build_liquidation_web_panel(self, title: str, url: str, note: str | None = 
 
     web_embed = _LazyWebEmbed(url)
     layout.addWidget(web_embed, 1)
+    try:
+        QtCore.QTimer.singleShot(0, web_embed.prime_native_host)
+    except Exception:
+        pass
 
     def _current_url() -> str:
         try:
