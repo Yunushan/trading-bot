@@ -167,7 +167,7 @@ class StrategyEngine:
     _BAR_GUARD_LOCK = threading.Lock()
     _BAR_GLOBAL_SIGNATURES: dict[tuple[str, str, str], dict[str, object]] = {}
     _SYMBOL_GUARD_LOCK = threading.Lock()
-    _SYMBOL_ORDER_STATE: dict[tuple[str, str], dict[str, object]] = {}
+    _SYMBOL_ORDER_STATE: dict[tuple[str, str, str], dict[str, object]] = {}
 
     @classmethod
     def concurrent_limit(cls, job_count: int | None = None) -> int:
@@ -208,6 +208,7 @@ class StrategyEngine:
         self.config.setdefault("indicator_min_position_hold_seconds", 0.0)
         self.config.setdefault("indicator_reentry_cooldown_seconds", 0.0)
         self.config.setdefault("indicator_reentry_cooldown_bars", 1)
+        self.config.setdefault("indicator_reentry_requires_signal_reset", True)
         self.config.setdefault("require_indicator_flip_signal", True)
         self.config.setdefault("strict_indicator_flip_enforcement", True)
         self.config.setdefault("auto_flip_on_close", True)
@@ -220,7 +221,7 @@ class StrategyEngine:
         self._last_order_time = {}  # (symbol, interval, side)->{'qty': float, 'timestamp': float}
         self._last_bar_key = set()  # prevent multi entries within same bar per (symbol, interval, side)
         self._bar_order_tracker: dict[tuple[str, str, str], dict[str, object]] = {}
-        self._symbol_signature_open: dict[tuple[str, str, tuple[str, ...]], int] = {}
+        self._symbol_signature_open: dict[tuple[str, str, str, tuple[str, ...]], int] = {}
         self._symbol_signature_lock = threading.Lock()
         self._indicator_state: dict[tuple[str, str, str], dict[str, set[str]]] = {}
         self._indicator_state_lock = threading.Lock()
@@ -290,6 +291,9 @@ class StrategyEngine:
             )
         except Exception:
             self._indicator_reentry_cooldown_bars = 1
+        self._indicator_reentry_requires_reset = bool(
+            self.config.get("indicator_reentry_requires_signal_reset", True)
+        )
         try:
             self._indicator_flip_confirm_bars = max(
                 1, int(self.config.get("indicator_flip_confirmation_bars") or 1)
@@ -299,6 +303,7 @@ class StrategyEngine:
         self._indicator_last_action: dict[tuple[str, str, str], dict[str, float]] = {}
         self._indicator_signal_tracker: dict[tuple[str, str, str], dict[str, float | int | str]] = {}
         self._reentry_blocks: dict[tuple[str, str, str], float] = {}
+        self._indicator_reentry_signal_blocks: dict[tuple[str, str, str], str] = {}
         self._flip_on_close_requests: dict[tuple[str, str, str], dict[str, object]] = {}
         self._flip_on_close_lock = threading.RLock()
 
@@ -376,7 +381,15 @@ class StrategyEngine:
         indicator_keys = self._extract_indicator_keys(entry)
         if not indicator_keys:
             return
-        interval_norm = str(interval or "").strip().lower() or "default"
+        interval_raw = str(interval or "").strip()
+        interval_tokens = [
+            token
+            for token in self._tokenize_interval_label(interval_raw)
+            if token and token != "-"
+        ]
+        if not interval_tokens:
+            interval_tokens = [interval_raw.lower() or "default"]
+        interval_key = ",".join(sorted(interval_tokens))
         closed_norm = "BUY" if str(closed_side or "").upper() in {"BUY", "LONG"} else "SELL"
         open_side = "SELL" if closed_norm == "BUY" else "BUY"
         qty = 0.0
@@ -397,12 +410,13 @@ class StrategyEngine:
                 indicator_cfg = (self.config.get("indicators") or {}).get(indicator_key, {})
                 if indicator_cfg and not bool(indicator_cfg.get("enabled", True)):
                     continue
-                key = (interval_norm, indicator_key, open_side)
+                key = (interval_key, indicator_key, open_side)
                 existing = self._flip_on_close_requests.get(key)
                 if existing and event_id and existing.get("event_id") == event_id:
                     continue
                 self._flip_on_close_requests[key] = {
-                    "interval": interval_norm,
+                    "interval": interval_key,
+                    "interval_tokens": list(interval_tokens),
                     "indicator_key": indicator_key,
                     "side": open_side,
                     "flip_from": closed_norm,
@@ -420,8 +434,18 @@ class StrategyEngine:
         drained: list[dict[str, object]] = []
         with self._flip_on_close_lock:
             for key, req in list(self._flip_on_close_requests.items()):
-                if str(req.get("interval") or "") != interval_norm:
-                    continue
+                req_tokens = req.get("interval_tokens")
+                if isinstance(req_tokens, (list, tuple, set)):
+                    normalized_tokens = {
+                        str(token or "").strip().lower()
+                        for token in req_tokens
+                        if str(token or "").strip()
+                    }
+                    if interval_norm not in normalized_tokens:
+                        continue
+                else:
+                    if str(req.get("interval") or "") != interval_norm:
+                        continue
                 try:
                     age = now_ts - float(req.get("ts") or 0.0)
                 except Exception:
@@ -1266,6 +1290,53 @@ class StrategyEngine:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         self._reentry_blocks[(sym_norm, interval_norm, side_norm)] = time.time() + window_seconds
 
+    def _mark_indicator_reentry_signal_block(
+        self,
+        symbol: str,
+        interval: str | None,
+        entry: dict | None,
+        side_label: str,
+    ) -> None:
+        if not self._indicator_reentry_requires_reset:
+            return
+        indicator_keys = self._extract_indicator_keys(entry)
+        if not indicator_keys:
+            return
+        sym_norm = (symbol or "").upper()
+        interval_norm = (str(interval or "").strip().lower()) or "default"
+        side_norm = "BUY" if str(side_label or "").upper() in {"BUY", "LONG"} else "SELL"
+        for indicator_key in indicator_keys:
+            indicator_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
+            if not indicator_norm:
+                continue
+            self._indicator_reentry_signal_blocks[(sym_norm, interval_norm, indicator_norm)] = side_norm
+
+    def _refresh_indicator_reentry_signal_blocks(
+        self,
+        symbol: str,
+        interval: str | None,
+        action_side_map: dict[str, str] | None,
+    ) -> None:
+        if not self._indicator_reentry_requires_reset:
+            return
+        sym_norm = (symbol or "").upper()
+        interval_norm = (str(interval or "").strip().lower()) or "default"
+        normalized_actions: dict[str, str] = {}
+        for key, side in (action_side_map or {}).items():
+            indicator_norm = _canonical_indicator_token(key) or str(key or "").strip().lower()
+            side_norm = str(side or "").upper()
+            if not indicator_norm or side_norm not in {"BUY", "SELL"}:
+                continue
+            normalized_actions[indicator_norm] = side_norm
+        for block_key in list(self._indicator_reentry_signal_blocks.keys()):
+            sym_k, iv_k, ind_k = block_key
+            if sym_k != sym_norm or iv_k != interval_norm:
+                continue
+            block_side = self._indicator_reentry_signal_blocks.get(block_key)
+            current_side = normalized_actions.get(ind_k)
+            if current_side != block_side:
+                self._indicator_reentry_signal_blocks.pop(block_key, None)
+
     def _reentry_block_remaining(
         self,
         symbol: str,
@@ -1553,7 +1624,8 @@ class StrategyEngine:
         sig_tuple = self._normalize_signature_tuple(signature)
         if sig_tuple is None:
             return
-        key = (str(symbol or "").upper(), str(side or "").upper(), sig_tuple)
+        interval_norm = str(interval or "").strip().lower() or "default"
+        key = (str(symbol or "").upper(), interval_norm, str(side or "").upper(), sig_tuple)
         with self._symbol_signature_lock:
             current = self._symbol_signature_open.get(key, 0) + int(delta)
             if current <= 0:
@@ -1573,7 +1645,8 @@ class StrategyEngine:
             return False
         if len(sig_tuple) == 1:
             return False
-        key = (str(symbol or "").upper(), str(side or "").upper(), sig_tuple)
+        interval_norm = str(interval or "").strip().lower() or "default"
+        key = (str(symbol or "").upper(), interval_norm, str(side or "").upper(), sig_tuple)
         with self._symbol_signature_lock:
             return self._symbol_signature_open.get(key, 0) > 0
 
@@ -2520,6 +2593,19 @@ class StrategyEngine:
                 continue
             eps = max(1e-8, abs(live_qty) * 1e-6)
             if live_qty <= eps:
+                try:
+                    entries = self._leg_entries(leg_key)
+                except Exception:
+                    entries = []
+                for entry in entries or []:
+                    try:
+                        self._mark_indicator_reentry_signal_block(sym_norm, leg_interval, entry, leg_side_norm)
+                    except Exception:
+                        pass
+                    try:
+                        self._queue_flip_on_close(leg_interval, leg_side_norm, entry, None)
+                    except Exception:
+                        pass
                 self._remove_leg_entry(leg_key, None)
                 self._guard_mark_leg_closed(leg_key)
                 try:
@@ -2626,6 +2712,8 @@ class StrategyEngine:
             )
         side_norm = 'BUY' if str(side_label).upper() in ('BUY', 'LONG', 'L') else 'SELL'
         self._mark_guard_closed(symbol, interval, side_norm)
+        if fully_closed:
+            self._mark_indicator_reentry_signal_block(symbol, interval, entry, side_label)
         self._notify_interval_closed(
             symbol,
             interval,
@@ -3190,7 +3278,7 @@ class StrategyEngine:
                             price_pct=0.0,
                             margin_pct=0.0,
                             qty_limit=qty_request,
-                            queue_flip=False,
+                            queue_flip=bool(indicator_filter_norm),
                         )
                         if closed_qty > 0.0:
                             closed_entries += 1
@@ -3625,6 +3713,20 @@ class StrategyEngine:
             if not clear_side:
                 continue
             entries = self._leg_entries(key) or []
+            for entry in entries:
+                try:
+                    self._mark_indicator_reentry_signal_block(
+                        symbol,
+                        key[1],
+                        entry,
+                        leg_side_norm,
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._queue_flip_on_close(key[1], leg_side_norm, entry, None)
+                except Exception:
+                    pass
             for entry in entries:
                 for ind in self._extract_indicator_keys(entry):
                     try:
@@ -4435,6 +4537,22 @@ class StrategyEngine:
                                 payload = self._build_close_event_payload(
                                     cw["symbol"], cw.get("interval"), "BUY", qty_long, res
                                 )
+                                try:
+                                    for entry in self._leg_entries(key_long):
+                                        self._mark_indicator_reentry_signal_block(
+                                            cw["symbol"],
+                                            cw.get("interval"),
+                                            entry,
+                                            "BUY",
+                                        )
+                                        self._queue_flip_on_close(
+                                            cw.get("interval"),
+                                            "BUY",
+                                            entry,
+                                            payload,
+                                        )
+                                except Exception:
+                                    pass
                                 self._remove_leg_entry(key_long, None)
                                 long_open = False
                                 self._mark_guard_closed(cw["symbol"], cw.get("interval"), "BUY")
@@ -4518,6 +4636,22 @@ class StrategyEngine:
                                 payload = self._build_close_event_payload(
                                     cw["symbol"], cw.get("interval"), "SELL", qty_short, res
                                 )
+                                try:
+                                    for entry in self._leg_entries(key_short):
+                                        self._mark_indicator_reentry_signal_block(
+                                            cw["symbol"],
+                                            cw.get("interval"),
+                                            entry,
+                                            "SELL",
+                                        )
+                                        self._queue_flip_on_close(
+                                            cw.get("interval"),
+                                            "SELL",
+                                            entry,
+                                            payload,
+                                        )
+                                except Exception:
+                                    pass
                                 self._remove_leg_entry(key_short, None)
                                 short_open = False
                                 self._mark_guard_closed(cw["symbol"], cw.get("interval"), "SELL")
@@ -4574,6 +4708,18 @@ class StrategyEngine:
                 qty_tol_indicator = max(qty_tol_indicator, tol_cfg)
         except Exception:
             pass
+        interval_current = cw.get("interval")
+        action_side_map: dict[str, str] = {}
+        for indicator_name, indicator_action in (trigger_actions or {}).items():
+            indicator_norm = _canonical_indicator_token(indicator_name) or str(indicator_name or "").strip().lower()
+            action_norm = str(indicator_action or "").strip().lower()
+            if indicator_norm and action_norm in {"buy", "sell"}:
+                action_side_map[indicator_norm] = "BUY" if action_norm == "buy" else "SELL"
+        self._refresh_indicator_reentry_signal_blocks(
+            cw["symbol"],
+            interval_current,
+            action_side_map,
+        )
         if trigger_actions:
             desired_ps_long = "LONG" if dual_side else None
             desired_ps_short = "SHORT" if dual_side else None
@@ -4599,6 +4745,23 @@ class StrategyEngine:
                     continue
                 action_side_label = "BUY" if action_norm == "buy" else "SELL"
                 opp_side_label = "SELL" if action_side_label == "BUY" else "BUY"
+                if self._indicator_reentry_requires_reset:
+                    indicator_norm = _canonical_indicator_token(indicator_key) or indicator_key
+                    block_key = (
+                        str(cw["symbol"] or "").upper(),
+                        str(interval_current or "").strip().lower() or "default",
+                        indicator_norm,
+                    )
+                    block_side = self._indicator_reentry_signal_blocks.get(block_key)
+                    if block_side == action_side_label:
+                        try:
+                            self.log(
+                                f"{cw['symbol']}@{interval_current or 'default'} {indicator_norm} {action_side_label} "
+                                "blocked: signal has not reset since last close."
+                            )
+                        except Exception:
+                            pass
+                        continue
                 # Exclusivity: never allow both long+short for the same indicator/interval.
                 same_side_live = self._indicator_live_qty_total(
                     cw["symbol"],
@@ -6095,7 +6258,7 @@ class StrategyEngine:
                         live_qty_sym = max(live_qty_sym, float(leg_state.get("qty") or 0.0))
                     except Exception:
                         pass
-                guard_key_symbol = (cw["symbol"], side)
+                guard_key_symbol = (cw["symbol"], interval_key, side)
                 state = StrategyEngine._SYMBOL_ORDER_STATE.get(guard_key_symbol)
                 if isinstance(state, dict):
                     try:
@@ -6155,7 +6318,7 @@ class StrategyEngine:
                 # Always mark the signature so subsequent duplicates are blocked.
                 global_sig_set.add(sig_sorted)
                 sig_set.add(sig_sorted)
-            guard_key_symbol = (cw["symbol"], side)
+            guard_key_symbol = (cw["symbol"], interval_key, side)
             now_guard = time.time()
             guard_claimed = False
 

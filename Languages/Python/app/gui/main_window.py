@@ -1923,6 +1923,25 @@ def _dedupe_indicator_entries(entries: list[str] | None) -> list[str]:
     return deduped
 
 
+def _dedupe_indicator_entries_normalized(entries: list[str] | None) -> list[str]:
+    if not entries:
+        return []
+    seen_idx: dict[tuple[str, str], int] = {}
+    deduped: list[str] = []
+    for entry in entries:
+        label_part, interval_part = _indicator_entry_signature(entry)
+        label_key = _normalize_indicator_token(label_part) or label_part
+        interval_key = _normalize_indicator_token(interval_part) or interval_part
+        sig = (label_key, interval_key)
+        prior = seen_idx.get(sig)
+        if prior is None:
+            seen_idx[sig] = len(deduped)
+            deduped.append(entry)
+        else:
+            deduped[prior] = entry
+    return deduped
+
+
 def _filter_indicator_entries_for_interval(
     entries: list[str],
     interval_hint: str | None,
@@ -2722,7 +2741,15 @@ def _collect_current_indicator_live_strings(
     interval_map: dict[str, list[str]] | None = None,
     default_interval_hint: str | None = None,
 ):
-    keys = [str(k).strip().lower() for k in (indicator_keys or []) if str(k).strip()]
+    raw_keys = [str(k).strip() for k in (indicator_keys or []) if str(k).strip()]
+    keys: list[str] = []
+    seen_keys: set[str] = set()
+    for key in raw_keys:
+        key_norm = key.lower()
+        if not key_norm or key_norm in seen_keys:
+            continue
+        seen_keys.add(key_norm)
+        keys.append(key_norm)
     if not symbol or not keys:
         return []
     default_interval = _sanitize_interval_hint(default_interval_hint) or "1m"
@@ -2756,13 +2783,23 @@ def _collect_current_indicator_live_strings(
     entries: list[str] = []
     refresh_requests: dict[tuple, dict] = {}
     for key in keys:
-        intervals = []
+        intervals: list[str] = []
         if isinstance(interval_map, dict):
             intervals = interval_map.get(key) or interval_map.get(key.lower()) or []
         if not intervals:
             intervals = [default_interval]
+        normalized_intervals: list[str] = []
+        seen_intervals: set[str] = set()
         for interval_label in intervals:
             interval_clean = (str(interval_label or "").strip() or default_interval).lower()
+            interval_key = _normalize_indicator_token(interval_clean) or interval_clean
+            if interval_key in seen_intervals:
+                continue
+            seen_intervals.add(interval_key)
+            normalized_intervals.append(interval_clean)
+        if not normalized_intervals:
+            normalized_intervals = [default_interval]
+        for interval_clean in normalized_intervals:
             cache_key = (symbol_norm, interval_clean)
             cache_entry = cache.get(cache_key)
             if cache_entry is None:
@@ -2830,6 +2867,8 @@ def _collect_current_indicator_live_strings(
                         action = "-Sell"
             entry = f"{label}{interval_tag} {value_text}{action}".strip()
             entries.append(entry)
+    if entries:
+        entries = _dedupe_indicator_entries_normalized(entries)
     if refresh_requests:
         for cache_key, req in refresh_requests.items():
             _queue_live_indicator_refresh(
@@ -15308,6 +15347,8 @@ def _mw_render_positions_table(self):
                         for entry in (current_live_entries or [])
                         if _indicator_entry_signature(entry) in allowed
                     ]
+            if current_live_entries:
+                current_live_entries = _dedupe_indicator_entries_normalized(current_live_entries)
             rec["_current_indicator_values"] = current_live_entries
             indicator_snapshot = tuple(indicator_value_entries or [])
             interval_snapshot = tuple(
@@ -15600,6 +15641,9 @@ def _mw_render_positions_table(self):
                         rec["_current_indicator_values"] = live_values_entries
                     else:
                         live_values_entries = []
+                if live_values_entries:
+                    live_values_entries = _dedupe_indicator_entries_normalized(live_values_entries)
+                    rec["_current_indicator_values"] = live_values_entries
                 current_values_display = "\n".join(live_values_entries) if live_values_entries else "-"
                 self.pos_table.setItem(row, POS_CURRENT_VALUE_COLUMN, QtWidgets.QTableWidgetItem(current_values_display))
                 self.pos_table.setItem(row, 12, QtWidgets.QTableWidgetItem(side_text))
