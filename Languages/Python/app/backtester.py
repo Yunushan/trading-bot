@@ -114,6 +114,10 @@ class BacktestEngine:
         indicator_map = {ind.key: ind for ind in active_indicators}
         data_cache: dict[tuple[str, str], pd.DataFrame] = {}
         indicator_cache: dict[tuple[str, str, str, Tuple[Tuple[str, object], ...]], pd.Series] = {}
+        signal_cache: dict[
+            tuple[str, str, str, Tuple[Tuple[str, object], ...], int | None, int],
+            tuple[Optional[np.ndarray], Optional[np.ndarray]],
+        ] = {}
 
         combos: List[tuple[str, str, Optional[Sequence[str]], Optional[int]]]
         pair_override = getattr(request, "pair_overrides", None)
@@ -206,6 +210,20 @@ class BacktestEngine:
                             data_cache[cache_key] = df
                     if df is None or df.empty:
                         raise RuntimeError("No historical data returned.")
+                    work_df = None
+                    work_start_idx = None
+                    try:
+                        df_index = df.index
+                        if getattr(df_index, "is_monotonic_increasing", False):
+                            work_start_idx = int(df_index.searchsorted(request.start))
+                            if work_start_idx < 0:
+                                work_start_idx = 0
+                            work_df = df.iloc[work_start_idx:]
+                    except Exception:
+                        work_df = None
+                        work_start_idx = None
+                    if work_df is None:
+                        work_df = df.loc[df.index >= request.start]
                     if logic == "SEPARATE":
                         for indicator in indicator_bundle:
                             if should_stop and should_stop():
@@ -218,6 +236,9 @@ class BacktestEngine:
                                 request,
                                 leverage_override=effective_leverage,
                                 indicator_cache=indicator_cache,
+                                signal_cache=signal_cache,
+                                work_df=work_df,
+                                work_start_idx=work_start_idx,
                             )
                             if run is not None:
                                 run.symbol = symbol
@@ -233,6 +254,9 @@ class BacktestEngine:
                             request,
                             leverage_override=effective_leverage,
                             indicator_cache=indicator_cache,
+                            signal_cache=signal_cache,
+                            work_df=work_df,
+                            work_start_idx=work_start_idx,
                         )
                         if run is not None:
                             run.symbol = symbol
@@ -283,9 +307,19 @@ class BacktestEngine:
         *,
         leverage_override: float | None = None,
         indicator_cache: Optional[dict[tuple[str, str, str, Tuple[Tuple[str, object], ...]], pd.Series]] = None,
+        signal_cache: Optional[
+            dict[
+                tuple[str, str, str, Tuple[Tuple[str, object], ...], int | None, int],
+                tuple[Optional[np.ndarray], Optional[np.ndarray]],
+            ]
+        ] = None,
+        work_df: Optional[pd.DataFrame] = None,
+        work_start_idx: int | None = None,
     ) -> Optional[BacktestRunResult]:
         logic = (request.logic or "AND").upper()
-        work_df = df.loc[df.index >= request.start]
+        if work_df is None:
+            work_df = df.loc[df.index >= request.start]
+            work_start_idx = None
         if work_df.empty:
             return None
 
@@ -309,18 +343,26 @@ class BacktestEngine:
         indicator_signals: List[Dict[str, Optional[np.ndarray]]] = []
         indicator_keys: List[str] = []
         work_index = work_df.index
+        df_len = len(df)
         for indicator in indicators:
-            cache_key = (
-                symbol,
-                interval,
-                indicator.key,
-                tuple(
-                    sorted(
-                        (key, (value if isinstance(value, (int, float, str, bool, type(None))) else repr(value)))
-                        for key, value in (indicator.params or {}).items()
-                    )
-                ),
+            params_key = tuple(
+                sorted(
+                    (key, (value if isinstance(value, (int, float, str, bool, type(None))) else repr(value)))
+                    for key, value in (indicator.params or {}).items()
+                )
             )
+            cache_key = (symbol, interval, indicator.key, params_key)
+            signal_key = None
+            if signal_cache is not None:
+                signal_key = (symbol, interval, indicator.key, params_key, work_start_idx, df_len)
+                cached = signal_cache.get(signal_key)
+                if cached is not None:
+                    buy_array, sell_array = cached
+                    if buy_array is None and sell_array is None:
+                        continue
+                    indicator_signals.append({"buy": buy_array, "sell": sell_array})
+                    indicator_keys.append(indicator.key)
+                    continue
             series_full = None
             if indicator_cache is not None:
                 series_full = indicator_cache.get(cache_key)
@@ -331,25 +373,40 @@ class BacktestEngine:
                     if indicator_cache is not None:
                         indicator_cache[cache_key] = series_full
             if series_full is None:
+                if signal_cache is not None and signal_key is not None:
+                    signal_cache[signal_key] = (None, None)
                 continue
 
-            series = series_full.reindex(work_index)
+            if work_start_idx is not None:
+                if work_start_idx >= len(series_full):
+                    if signal_cache is not None and signal_key is not None:
+                        signal_cache[signal_key] = (None, None)
+                    continue
+                series = series_full.iloc[work_start_idx:]
+            else:
+                series = series_full.reindex(work_index)
             if series is None:
+                if signal_cache is not None and signal_key is not None:
+                    signal_cache[signal_key] = (None, None)
                 continue
             buy_val = indicator.params.get("buy_value")
             sell_val = indicator.params.get("sell_value")
             buy_events, sell_events = self._generate_signals(series, buy_val, sell_val)
             if buy_events is None and sell_events is None:
+                if signal_cache is not None and signal_key is not None:
+                    signal_cache[signal_key] = (None, None)
                 continue
 
             buy_array = (
-                buy_events.reindex(work_index, fill_value=False).to_numpy(dtype=bool, copy=False)
+                buy_events.to_numpy(dtype=bool, copy=False)
                 if buy_events is not None else None
             )
             sell_array = (
-                sell_events.reindex(work_index, fill_value=False).to_numpy(dtype=bool, copy=False)
+                sell_events.to_numpy(dtype=bool, copy=False)
                 if sell_events is not None else None
             )
+            if signal_cache is not None and signal_key is not None:
+                signal_cache[signal_key] = (buy_array, sell_array)
             indicator_signals.append({"buy": buy_array, "sell": sell_array})
             indicator_keys.append(indicator.key)
 
@@ -530,17 +587,23 @@ class BacktestEngine:
         sell_arrays = [signals["sell"] for signals in indicator_signals if signals["sell"] is not None]
 
         if buy_arrays:
-            buy_stack = np.vstack(buy_arrays)
-            if logic == "AND":
-                aggregated_buy_array = np.all(buy_stack, axis=0)
+            if len(buy_arrays) == 1:
+                aggregated_buy_array = buy_arrays[0]
             else:
-                aggregated_buy_array = np.any(buy_stack, axis=0)
+                buy_stack = np.vstack(buy_arrays)
+                if logic == "AND":
+                    aggregated_buy_array = np.all(buy_stack, axis=0)
+                else:
+                    aggregated_buy_array = np.any(buy_stack, axis=0)
         else:
             aggregated_buy_array = np.zeros(n_rows, dtype=bool)
 
         if sell_arrays:
-            sell_stack = np.vstack(sell_arrays)
-            aggregated_sell_array = np.any(sell_stack, axis=0)
+            if len(sell_arrays) == 1:
+                aggregated_sell_array = sell_arrays[0]
+            else:
+                sell_stack = np.vstack(sell_arrays)
+                aggregated_sell_array = np.any(sell_stack, axis=0)
         else:
             aggregated_sell_array = np.zeros(n_rows, dtype=bool)
 

@@ -107,7 +107,7 @@ DEFAULT_CONFIG = {
         "mdd_logic": MDD_LOGIC_DEFAULT,
         "scan_top_n": 200,
         "scan_mdd_limit": 10.0,
-        "scan_auto_apply": True,
+        "scan_auto_apply": False,
         "template": copy.deepcopy(BACKTEST_TEMPLATE_DEFAULT),
         "indicators": {},
         "stop_loss": copy.deepcopy(STOP_LOSS_DEFAULT),

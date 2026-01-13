@@ -7673,7 +7673,7 @@ class MainWindow(QtWidgets.QWidget):
                 f"Scan complete, but no runs met MDD <= {mdd_limit:.2f}% with trades."
             )
             return
-        auto_apply = bool(self.backtest_scan_apply_cb.isChecked()) if hasattr(self, "backtest_scan_apply_cb") else True
+        auto_apply = False
         if auto_apply:
             self._apply_backtest_scan_best(best)
         summary = (
@@ -12182,10 +12182,59 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_template_combo = QtWidgets.QComboBox()
         for key, definition in BACKTEST_TEMPLATE_DEFINITIONS.items():
             label = definition.get("label", key.replace("_", " ").title())
-            self.backtest_template_combo.addItem(label, key)
+        self.backtest_template_combo.addItem(label, key)
         template_layout.addWidget(self.backtest_template_combo, stretch=1)
 
         param_form.addRow("Template:", template_row)
+
+        scan_header = QtWidgets.QWidget()
+        scan_header_layout = QtWidgets.QHBoxLayout(scan_header)
+        scan_header_layout.setContentsMargins(0, 0, 0, 0)
+        scan_header_layout.setSpacing(8)
+        scan_title = QtWidgets.QLabel("Max MDD Scanner")
+        scan_title.setStyleSheet("font-weight: 600;")
+        scan_header_layout.addWidget(scan_title)
+        scan_divider = QtWidgets.QFrame()
+        scan_divider.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        scan_divider.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        scan_header_layout.addWidget(scan_divider, stretch=1)
+        param_form.addRow(scan_header)
+
+        scan_row = QtWidgets.QWidget()
+        scan_layout = QtWidgets.QHBoxLayout(scan_row)
+        scan_layout.setContentsMargins(0, 0, 0, 0)
+        scan_layout.setSpacing(6)
+        scan_layout.addWidget(QtWidgets.QLabel("Top N:"))
+        self.backtest_scan_top_spin = QtWidgets.QSpinBox()
+        self.backtest_scan_top_spin.setRange(1, max(1, int(_SYMBOL_FETCH_TOP_N)))
+        scan_top_default = int(self.backtest_config.get("scan_top_n", _SYMBOL_FETCH_TOP_N) or _SYMBOL_FETCH_TOP_N)
+        if scan_top_default < 1:
+            scan_top_default = 1
+        if scan_top_default > _SYMBOL_FETCH_TOP_N:
+            scan_top_default = _SYMBOL_FETCH_TOP_N
+        self.backtest_scan_top_spin.setValue(scan_top_default)
+        self.backtest_scan_top_spin.valueChanged.connect(
+            lambda v: self._update_backtest_config("scan_top_n", int(v))
+        )
+        scan_layout.addWidget(self.backtest_scan_top_spin)
+        scan_layout.addWidget(QtWidgets.QLabel("Max MDD %:"))
+        self.backtest_scan_mdd_spin = QtWidgets.QDoubleSpinBox()
+        self.backtest_scan_mdd_spin.setRange(0.0, 100.0)
+        self.backtest_scan_mdd_spin.setDecimals(2)
+        self.backtest_scan_mdd_spin.setSingleStep(0.5)
+        scan_mdd_default = float(self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0)
+        if scan_mdd_default < 0.0:
+            scan_mdd_default = 0.0
+        self.backtest_scan_mdd_spin.setValue(scan_mdd_default)
+        self.backtest_scan_mdd_spin.valueChanged.connect(
+            lambda v: self._update_backtest_config("scan_mdd_limit", float(v))
+        )
+        scan_layout.addWidget(self.backtest_scan_mdd_spin)
+        self.backtest_scan_btn = QtWidgets.QPushButton("Scan Symbols")
+        self.backtest_scan_btn.clicked.connect(self._run_backtest_scan)
+        scan_layout.addWidget(self.backtest_scan_btn)
+        scan_layout.addStretch()
+        param_form.addRow("Max MDD Scanner:", scan_row)
 
         self.backtest_template_enable_cb.toggled.connect(self._on_backtest_template_enabled)
         self.backtest_template_combo.currentIndexChanged.connect(self._on_backtest_template_selected)
@@ -12290,46 +12339,6 @@ class MainWindow(QtWidgets.QWidget):
         self._register_pnl_summary_labels(self.pnl_active_label_tab3, self.pnl_closed_label_tab3)
         controls_layout.addWidget(tab3_status_widget)
         output_group_layout.addLayout(controls_layout)
-        scan_controls_layout = QtWidgets.QHBoxLayout()
-        scan_controls_layout.setSpacing(8)
-        scan_controls_layout.addWidget(QtWidgets.QLabel("Scan Top N:"))
-        self.backtest_scan_top_spin = QtWidgets.QSpinBox()
-        self.backtest_scan_top_spin.setRange(1, max(1, int(_SYMBOL_FETCH_TOP_N)))
-        scan_top_default = int(self.backtest_config.get("scan_top_n", _SYMBOL_FETCH_TOP_N) or _SYMBOL_FETCH_TOP_N)
-        if scan_top_default < 1:
-            scan_top_default = 1
-        if scan_top_default > _SYMBOL_FETCH_TOP_N:
-            scan_top_default = _SYMBOL_FETCH_TOP_N
-        self.backtest_scan_top_spin.setValue(scan_top_default)
-        self.backtest_scan_top_spin.valueChanged.connect(
-            lambda v: self._update_backtest_config("scan_top_n", int(v))
-        )
-        scan_controls_layout.addWidget(self.backtest_scan_top_spin)
-        scan_controls_layout.addWidget(QtWidgets.QLabel("MDD <= %:"))
-        self.backtest_scan_mdd_spin = QtWidgets.QDoubleSpinBox()
-        self.backtest_scan_mdd_spin.setRange(0.0, 100.0)
-        self.backtest_scan_mdd_spin.setDecimals(2)
-        self.backtest_scan_mdd_spin.setSingleStep(0.5)
-        scan_mdd_default = float(self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0)
-        if scan_mdd_default < 0.0:
-            scan_mdd_default = 0.0
-        self.backtest_scan_mdd_spin.setValue(scan_mdd_default)
-        self.backtest_scan_mdd_spin.valueChanged.connect(
-            lambda v: self._update_backtest_config("scan_mdd_limit", float(v))
-        )
-        scan_controls_layout.addWidget(self.backtest_scan_mdd_spin)
-        self.backtest_scan_apply_cb = QtWidgets.QCheckBox("Auto-apply best")
-        scan_apply_default = bool(self.backtest_config.get("scan_auto_apply", True))
-        self.backtest_scan_apply_cb.setChecked(scan_apply_default)
-        self.backtest_scan_apply_cb.toggled.connect(
-            lambda v: self._update_backtest_config("scan_auto_apply", bool(v))
-        )
-        scan_controls_layout.addWidget(self.backtest_scan_apply_cb)
-        self.backtest_scan_btn = QtWidgets.QPushButton("Scan Symbols")
-        self.backtest_scan_btn.clicked.connect(self._run_backtest_scan)
-        scan_controls_layout.addWidget(self.backtest_scan_btn)
-        scan_controls_layout.addStretch()
-        output_group_layout.addLayout(scan_controls_layout)
         self._update_bot_status()
         try:
             for widget in (
