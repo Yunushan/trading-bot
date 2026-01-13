@@ -4745,23 +4745,6 @@ class StrategyEngine:
                     continue
                 action_side_label = "BUY" if action_norm == "buy" else "SELL"
                 opp_side_label = "SELL" if action_side_label == "BUY" else "BUY"
-                if self._indicator_reentry_requires_reset:
-                    indicator_norm = _canonical_indicator_token(indicator_key) or indicator_key
-                    block_key = (
-                        str(cw["symbol"] or "").upper(),
-                        str(interval_current or "").strip().lower() or "default",
-                        indicator_norm,
-                    )
-                    block_side = self._indicator_reentry_signal_blocks.get(block_key)
-                    if block_side == action_side_label:
-                        try:
-                            self.log(
-                                f"{cw['symbol']}@{interval_current or 'default'} {indicator_norm} {action_side_label} "
-                                "blocked: signal has not reset since last close."
-                            )
-                        except Exception:
-                            pass
-                        continue
                 # Exclusivity: never allow both long+short for the same indicator/interval.
                 same_side_live = self._indicator_live_qty_total(
                     cw["symbol"],
@@ -4781,6 +4764,23 @@ class StrategyEngine:
                     strict_interval=True,
                     use_exchange_fallback=False,
                 )
+                if self._indicator_reentry_requires_reset:
+                    indicator_norm = _canonical_indicator_token(indicator_key) or indicator_key
+                    block_key = (
+                        str(cw["symbol"] or "").upper(),
+                        str(interval_current or "").strip().lower() or "default",
+                        indicator_norm,
+                    )
+                    block_side = self._indicator_reentry_signal_blocks.get(block_key)
+                    if block_side == action_side_label and opp_side_live <= qty_tol_indicator:
+                        try:
+                            self.log(
+                                f"{cw['symbol']}@{interval_current or 'default'} {indicator_norm} {action_side_label} "
+                                "blocked: signal has not reset since last close."
+                            )
+                        except Exception:
+                            pass
+                        continue
                 if same_side_live > qty_tol_indicator and opp_side_live <= qty_tol_indicator:
                     stale_cleared = False
                     if account_type == "FUTURES":

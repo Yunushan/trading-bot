@@ -80,6 +80,7 @@ _WINDOWS_TASKBAR_SPEC.loader.exec_module(windows_taskbar)
 apply_taskbar_metadata = windows_taskbar.apply_taskbar_metadata
 build_relaunch_command = windows_taskbar.build_relaunch_command
 ensure_app_user_model_id = windows_taskbar.ensure_app_user_model_id
+ensure_taskbar_visible = windows_taskbar.ensure_taskbar_visible
 BINANCE_MAIN = WINDOWS_TASKBAR_DIR / "main.py"
 BINANCE_CPP_PROJECT = REPO_ROOT / "Languages" / "C++"
 BINANCE_CPP_BUILD_ROOT = REPO_ROOT / "build" / "binance_cpp"
@@ -3639,10 +3640,24 @@ def main() -> None:
         icon_str = str(icon_location) if icon_location is not None else None
         relaunch_cmd = build_relaunch_command(Path(__file__))
 
-        def _attempt_taskbar(attempts_remaining: int = 1, delay_ms: int = 0) -> None:
+        def _attempt_taskbar(attempts_remaining: int = 6, delay_ms: int = 0) -> None:
             if attempts_remaining <= 0:
                 return
             def _run():
+                try:
+                    if app_icon is not None:
+                        window.setWindowIcon(app_icon)
+                        QtGui.QGuiApplication.setWindowIcon(app_icon)
+                except Exception:
+                    pass
+                try:
+                    window.winId()
+                except Exception:
+                    pass
+                try:
+                    ensure_taskbar_visible(window)
+                except Exception:
+                    pass
                 success = apply_taskbar_metadata(
                     window,
                     app_id=WINDOWS_APP_ID,
@@ -3650,9 +3665,9 @@ def main() -> None:
                     icon_path=icon_str,
                     relaunch_command=relaunch_cmd,
                 )
-                if not success and attempts_remaining > 0:
+                if not success and attempts_remaining > 1:
                     QtCore.QTimer.singleShot(
-                        300,
+                        450,
                         lambda: _attempt_taskbar(attempts_remaining - 1, 0),
                     )
             if delay_ms > 0:
@@ -3660,7 +3675,7 @@ def main() -> None:
             else:
                 _run()
 
-        QtCore.QTimer.singleShot(500, lambda: _attempt_taskbar(1, 0))
+        QtCore.QTimer.singleShot(200, lambda: _attempt_taskbar(6, 0))
     sys.exit(app.exec())
 
 
