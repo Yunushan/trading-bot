@@ -12197,7 +12197,7 @@ class MainWindow(QtWidgets.QWidget):
         self.backtest_template_combo = QtWidgets.QComboBox()
         for key, definition in BACKTEST_TEMPLATE_DEFINITIONS.items():
             label = definition.get("label", key.replace("_", " ").title())
-        self.backtest_template_combo.addItem(label, key)
+            self.backtest_template_combo.addItem(label, key)
         template_layout.addWidget(self.backtest_template_combo, stretch=1)
 
         param_form.addRow("Template:", template_row)
