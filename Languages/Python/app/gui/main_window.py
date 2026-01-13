@@ -11319,7 +11319,6 @@ class MainWindow(QtWidgets.QWidget):
         self.lead_trader_enable_cb = QtWidgets.QCheckBox("Enable Lead Trader")
         lead_trader_enabled = bool(self.config.get("lead_trader_enabled", False))
         self.lead_trader_enable_cb.setChecked(lead_trader_enabled)
-        g.addWidget(self.lead_trader_enable_cb, 1, 0, 1, 2)
 
         self.lead_trader_combo = QtWidgets.QComboBox()
         for label, value in LEAD_TRADER_OPTIONS:
@@ -11330,7 +11329,23 @@ class MainWindow(QtWidgets.QWidget):
             idx_lead_trader = 0
         self.lead_trader_combo.setCurrentIndex(idx_lead_trader)
         self.config["lead_trader_profile"] = str(self.lead_trader_combo.itemData(idx_lead_trader))
-        g.addWidget(self.lead_trader_combo, 1, 2, 1, 3)
+        self.lead_trader_combo.setMaximumWidth(260)
+        try:
+            self.lead_trader_combo.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Fixed,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+        except Exception:
+            pass
+
+        lead_trader_row = QtWidgets.QWidget()
+        lead_trader_layout = QtWidgets.QHBoxLayout(lead_trader_row)
+        lead_trader_layout.setContentsMargins(0, 0, 0, 0)
+        lead_trader_layout.setSpacing(12)
+        lead_trader_layout.addWidget(self.lead_trader_enable_cb)
+        lead_trader_layout.addWidget(self.lead_trader_combo)
+        lead_trader_layout.addStretch(1)
+        g.addWidget(lead_trader_row, 1, 0, 1, 6)
 
         self.lead_trader_enable_cb.toggled.connect(self._on_lead_trader_toggled)
         self.lead_trader_combo.currentIndexChanged.connect(self._on_lead_trader_option_changed)

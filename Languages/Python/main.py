@@ -3,6 +3,17 @@ import sys
 import time
 from pathlib import Path
 
+APP_DISPLAY_NAME = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "Trading Bot").strip() or "Trading Bot"
+APP_USER_MODEL_ID = str(os.environ.get("BOT_APP_USER_MODEL_ID") or "com.tradingbot.TradingBot").strip() or "com.tradingbot.TradingBot"
+if sys.platform == "win32":
+    os.environ["QT_WIN_APPID"] = APP_USER_MODEL_ID
+    os.environ["QT_QPA_PLATFORM_WINDOWS_USER_MODEL_ID"] = APP_USER_MODEL_ID
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
 # Ensure repo root is importable so shared helpers can be used when launched directly.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT_STR = str(PROJECT_ROOT)
@@ -811,10 +822,10 @@ from windows_taskbar import (  # noqa: E402
     apply_taskbar_metadata,
     build_relaunch_command,
     ensure_app_user_model_id,
+    ensure_start_menu_shortcut,
     ensure_taskbar_visible,
 )
 
-APP_USER_MODEL_ID = "TradingBot"
 _previous_qt_message_handler = None
 _native_icon_handles: list[int] = []
 
@@ -842,6 +853,40 @@ def _resolve_native_icon_path() -> Path | None:
         return path
     fallback = path.with_suffix(".ico")
     return fallback if fallback.is_file() else None
+
+
+def _resolve_taskbar_icon_path() -> Path | None:
+    env_icon = os.environ.get("BOT_TASKBAR_ICON") or os.environ.get("BINANCE_BOT_ICON")
+    if env_icon:
+        env_path = Path(env_icon).expanduser()
+        if env_path.is_file():
+            if env_path.suffix.lower() == ".ico":
+                return env_path
+            ico_path = env_path.with_suffix(".ico")
+            if ico_path.is_file():
+                return ico_path
+            return env_path
+    icon_path = _resolve_native_icon_path()
+    if icon_path and icon_path.is_file():
+        return icon_path
+    primary = find_primary_icon_file()
+    if primary and primary.is_file():
+        if primary.suffix.lower() == ".ico":
+            return primary
+        ico_path = primary.with_suffix(".ico")
+        if ico_path.is_file():
+            return ico_path
+        return primary
+    repo_icon = Path(__file__).resolve().parents[2] / "assets" / "crypto_forex_logo.ico"
+    return repo_icon if repo_icon.is_file() else None
+
+
+def _format_shortcut_args(script_path: Path) -> str:
+    try:
+        import subprocess
+        return subprocess.list2cmdline([str(script_path.resolve())])
+    except Exception:
+        return f"\"{script_path.resolve()}\""
 
 
 def _get_hwnd(window) -> int:  # noqa: ANN001
@@ -1128,9 +1173,13 @@ def main() -> int:
                 pass
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Trading Bot")
-    app.setApplicationDisplayName("Trading Bot")
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationDisplayName(APP_DISPLAY_NAME)
     app._exiting = False  # type: ignore[attr-defined]
+    try:
+        QtGui.QGuiApplication.setDesktopFileName(APP_USER_MODEL_ID)
+    except Exception:
+        pass
     if sys.platform == "win32":
         try:
             app.setQuitOnLastWindowClosed(False)
@@ -1180,12 +1229,21 @@ def main() -> int:
         _set_native_window_icon(win)
 
     if sys.platform == "win32" and not disable_taskbar:
-        icon_path = _resolve_native_icon_path()
-        if icon_path is None:
-            primary_icon = find_primary_icon_file()
-            if primary_icon:
-                icon_path = primary_icon
-        relaunch_cmd = build_relaunch_command()
+        icon_path = _resolve_taskbar_icon_path()
+        relaunch_cmd = build_relaunch_command(Path(__file__))
+        if not _env_flag("BOT_DISABLE_START_MENU_SHORTCUT"):
+            try:
+                ensure_start_menu_shortcut(
+                    app_id=APP_USER_MODEL_ID,
+                    display_name=APP_DISPLAY_NAME,
+                    target_path=sys.executable,
+                    arguments=_format_shortcut_args(Path(__file__)),
+                    icon_path=icon_path,
+                    working_dir=Path(__file__).resolve().parent,
+                    relaunch_command=relaunch_cmd,
+                )
+            except Exception:
+                pass
         try:
             taskbar_delay = int(os.environ.get("BOT_TASKBAR_METADATA_DELAY_MS") or 0)
         except Exception:
@@ -1202,7 +1260,7 @@ def main() -> int:
             success = apply_taskbar_metadata(
                 win,
                 app_id=APP_USER_MODEL_ID,
-                display_name="Trading Bot",
+                display_name=APP_DISPLAY_NAME,
                 icon_path=icon_path,
                 relaunch_command=relaunch_cmd,
             )
@@ -1365,7 +1423,7 @@ def main() -> int:
                 apply_taskbar_metadata(
                     win,
                     app_id=APP_USER_MODEL_ID,
-                    display_name="Trading Bot",
+                    display_name=APP_DISPLAY_NAME,
                     icon_path=icon_path,
                     relaunch_command=relaunch_cmd,
                 )

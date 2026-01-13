@@ -11,6 +11,32 @@ from uuid import uuid4
 from pathlib import Path
 from datetime import datetime
 
+_STARTER_SHOW_UI = str(os.environ.get("BOT_STARTER_SHOW_UI", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_DEFAULT_BOT_APP_ID = "com.tradingbot.TradingBot"
+_DEFAULT_BOT_NAME = "Trading Bot"
+if _STARTER_SHOW_UI:
+    _early_app_id = "com.tradingbot.starter"
+    _early_display_name = "Trading Bot Starter"
+else:
+    _early_app_id = str(os.environ.get("BOT_APP_USER_MODEL_ID") or _DEFAULT_BOT_APP_ID).strip() or _DEFAULT_BOT_APP_ID
+    _early_display_name = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or _DEFAULT_BOT_NAME).strip() or _DEFAULT_BOT_NAME
+    os.environ.setdefault("BOT_APP_USER_MODEL_ID", _early_app_id)
+    os.environ.setdefault("BOT_TASKBAR_DISPLAY_NAME", _early_display_name)
+if sys.platform == "win32":
+    # Ensure the AppUserModelID is set before Qt is imported.
+    os.environ["QT_WIN_APPID"] = _early_app_id
+    os.environ["QT_QPA_PLATFORM_WINDOWS_USER_MODEL_ID"] = _early_app_id
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_early_app_id)
+    except Exception:
+        pass
+
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 _chromium_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
 _dns_guard_flags = "--dns-prefetch-disable"
@@ -3416,8 +3442,15 @@ class StarterWindow(QtWidgets.QWidget):
                     app_asset_icon_png = REPO_ROOT / "assets" / "crypto_forex_logo.png"
                     if app_asset_icon.is_file():
                         env.setdefault("BINANCE_BOT_ICON", str(app_asset_icon))
+                        env.setdefault("BOT_TASKBAR_ICON", str(app_asset_icon))
                     elif app_asset_icon_png.is_file():
                         env.setdefault("BINANCE_BOT_ICON", str(app_asset_icon_png))
+                        env.setdefault("BOT_TASKBAR_ICON", str(app_asset_icon_png))
+                    env.setdefault("BOT_TASKBAR_DISPLAY_NAME", "Trading Bot")
+                    env.setdefault("BOT_APP_USER_MODEL_ID", "com.tradingbot.TradingBot")
+                    app_user_model_id = env.get("BOT_APP_USER_MODEL_ID") or "com.tradingbot.TradingBot"
+                    env["QT_WIN_APPID"] = app_user_model_id
+                    env["QT_QPA_PLATFORM_WINDOWS_USER_MODEL_ID"] = app_user_model_id
                     env["BOT_DISABLE_APP_ICON"] = "0"
                     env["BOT_ENABLE_NATIVE_ICON"] = "1"
                     env["BOT_ENABLE_DELAYED_QT_ICON"] = "1"

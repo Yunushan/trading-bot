@@ -123,6 +123,14 @@ if sys.platform == "win32":
         ctypes.POINTER(GUID),
         ctypes.POINTER(ctypes.POINTER(IPropertyStore)),
     ]
+    _shell32.SHGetPropertyStoreFromParsingName.restype = HRESULT
+    _shell32.SHGetPropertyStoreFromParsingName.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(GUID),
+        ctypes.POINTER(ctypes.POINTER(IPropertyStore)),
+    ]
     _SetWindowAppUserModelID = getattr(_shell32, "SetWindowAppUserModelID", None)
     if _SetWindowAppUserModelID:
         _SetWindowAppUserModelID.restype = HRESULT
@@ -132,8 +140,111 @@ if sys.platform == "win32":
 
     _PropVariantClear = _ole32.PropVariantClear
     _PropVariantClear.argtypes = [ctypes.POINTER(PROPVARIANT)]
+    _ole32.CoTaskMemAlloc.argtypes = [ctypes.c_size_t]
+    _ole32.CoTaskMemAlloc.restype = ctypes.c_void_p
 
     _COM_INITIALISED = False
+    CLSCTX_INPROC_SERVER = 0x1
+
+    CLSID_ShellLink = GUID(
+        0x00021401,
+        0x0000,
+        0x0000,
+        0xC0,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x46,
+    )
+    IID_IShellLinkW = GUID(
+        0x000214F9,
+        0x0000,
+        0x0000,
+        0xC0,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x46,
+    )
+    IID_IPersistFile = GUID(
+        0x0000010B,
+        0x0000,
+        0x0000,
+        0xC0,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x46,
+    )
+
+    SetDescriptionType = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.LPCWSTR)
+    SetWorkingDirectoryType = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.LPCWSTR)
+    SetArgumentsType = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.LPCWSTR)
+    SetIconLocationType = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_int)
+    SetPathType = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.LPCWSTR)
+    SaveFileType = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.LPCWSTR, wintypes.BOOL)
+
+    class IShellLinkWVtbl(ctypes.Structure):
+        _fields_ = [
+            ("QueryInterface", QueryInterfaceType),
+            ("AddRef", AddRefType),
+            ("Release", ReleaseType),
+            ("GetPath", ctypes.c_void_p),
+            ("GetIDList", ctypes.c_void_p),
+            ("SetIDList", ctypes.c_void_p),
+            ("GetDescription", ctypes.c_void_p),
+            ("SetDescription", SetDescriptionType),
+            ("GetWorkingDirectory", ctypes.c_void_p),
+            ("SetWorkingDirectory", SetWorkingDirectoryType),
+            ("GetArguments", ctypes.c_void_p),
+            ("SetArguments", SetArgumentsType),
+            ("GetHotkey", ctypes.c_void_p),
+            ("SetHotkey", ctypes.c_void_p),
+            ("GetShowCmd", ctypes.c_void_p),
+            ("SetShowCmd", ctypes.c_void_p),
+            ("GetIconLocation", ctypes.c_void_p),
+            ("SetIconLocation", SetIconLocationType),
+            ("SetRelativePath", ctypes.c_void_p),
+            ("Resolve", ctypes.c_void_p),
+            ("SetPath", SetPathType),
+        ]
+
+    class IShellLinkW(ctypes.Structure):
+        _fields_ = [("lpVtbl", ctypes.POINTER(IShellLinkWVtbl))]
+
+    class IPersistFileVtbl(ctypes.Structure):
+        _fields_ = [
+            ("QueryInterface", QueryInterfaceType),
+            ("AddRef", AddRefType),
+            ("Release", ReleaseType),
+            ("GetClassID", ctypes.c_void_p),
+            ("IsDirty", ctypes.c_void_p),
+            ("Load", ctypes.c_void_p),
+            ("Save", SaveFileType),
+            ("SaveCompleted", ctypes.c_void_p),
+            ("GetCurFile", ctypes.c_void_p),
+        ]
+
+    class IPersistFile(ctypes.Structure):
+        _fields_ = [("lpVtbl", ctypes.POINTER(IPersistFileVtbl))]
+
+    _ole32.CoCreateInstance.argtypes = [
+        ctypes.POINTER(GUID),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(GUID),
+        ctypes.POINTER(LPVOID),
+    ]
+    _ole32.CoCreateInstance.restype = HRESULT
 
 
 def ensure_app_user_model_id(app_id: str) -> None:
@@ -329,3 +440,154 @@ def build_relaunch_command(script_path: Path | str | None = None) -> str | None:
     if not exe.exists() or script is None:
         return None
     return f'"{exe}" "{script}"'
+
+
+def ensure_start_menu_shortcut(
+    *,
+    app_id: str,
+    display_name: str,
+    target_path: str | Path,
+    arguments: str | None = None,
+    icon_path: str | Path | None = None,
+    working_dir: str | Path | None = None,
+    relaunch_command: str | None = None,
+) -> Path | None:
+    """Create/update a Start Menu shortcut so Windows can resolve app name + icon."""
+    if sys.platform != "win32":
+        return None
+    name = str(display_name or "").strip() or "Trading Bot"
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    start_menu = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    try:
+        start_menu.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return None
+    shortcut_path = start_menu / f"{name}.lnk"
+    if not _co_initialize_once():
+        return None
+    relaunch_cmd = relaunch_command or None
+    link_ptr = ctypes.c_void_p()
+    hr = _ole32.CoCreateInstance(
+        ctypes.byref(CLSID_ShellLink),
+        None,
+        CLSCTX_INPROC_SERVER,
+        ctypes.byref(IID_IShellLinkW),
+        ctypes.byref(link_ptr),
+    )
+    if hr != 0 or not link_ptr:
+        return None
+    shell_link = ctypes.cast(link_ptr, ctypes.POINTER(IShellLinkW))
+    try:
+        set_path = shell_link.contents.lpVtbl.contents.SetPath
+        set_path(shell_link, str(Path(target_path).resolve()))
+        if arguments:
+            shell_link.contents.lpVtbl.contents.SetArguments(shell_link, str(arguments))
+        if working_dir:
+            shell_link.contents.lpVtbl.contents.SetWorkingDirectory(shell_link, str(Path(working_dir).resolve()))
+        if icon_path:
+            shell_link.contents.lpVtbl.contents.SetIconLocation(
+                shell_link,
+                str(Path(icon_path).resolve()),
+                0,
+            )
+        shell_link.contents.lpVtbl.contents.SetDescription(shell_link, name)
+
+        store_ptr = ctypes.c_void_p()
+        hr_store = shell_link.contents.lpVtbl.contents.QueryInterface(
+            shell_link,
+            ctypes.byref(IID_IPropertyStore),
+            ctypes.byref(store_ptr),
+        )
+        if hr_store == 0 and store_ptr:
+            store = ctypes.cast(store_ptr, ctypes.POINTER(IPropertyStore))
+            try:
+                if app_id:
+                    _set_prop_string(store, PKEY_AppUserModel_ID, app_id)
+                if name:
+                    _set_prop_string(store, PKEY_RelaunchDisplayNameResource, name)
+                if icon_path:
+                    icon_str = f"{Path(icon_path).resolve()},0"
+                    _set_prop_string(store, PKEY_RelaunchIconResource, icon_str)
+                if relaunch_cmd:
+                    _set_prop_string(store, PKEY_RelaunchCommand, relaunch_cmd)
+                commit = store.contents.lpVtbl.contents.Commit
+                commit(store)
+            except Exception:
+                pass
+            finally:
+                release = store.contents.lpVtbl.contents.Release
+                release(store)
+
+        persist_ptr = ctypes.c_void_p()
+        hr_persist = shell_link.contents.lpVtbl.contents.QueryInterface(
+            shell_link,
+            ctypes.byref(IID_IPersistFile),
+            ctypes.byref(persist_ptr),
+        )
+        if hr_persist == 0 and persist_ptr:
+            persist = ctypes.cast(persist_ptr, ctypes.POINTER(IPersistFile))
+            try:
+                persist.contents.lpVtbl.contents.Save(persist, str(shortcut_path), True)
+            finally:
+                persist.contents.lpVtbl.contents.Release(persist)
+    finally:
+        shell_link.contents.lpVtbl.contents.Release(shell_link)
+    try:
+        _apply_shortcut_property_store(
+            shortcut_path,
+            app_id=app_id,
+            display_name=name,
+            icon_path=icon_path,
+            relaunch_command=relaunch_cmd,
+        )
+    except Exception:
+        pass
+    return shortcut_path
+
+
+def _apply_shortcut_property_store(
+    shortcut_path: Path | str,
+    *,
+    app_id: str,
+    display_name: str | None,
+    icon_path: str | Path | None,
+    relaunch_command: str | None = None,
+) -> bool:
+    if sys.platform != "win32":
+        return False
+    if not _co_initialize_once():
+        return False
+    link_path = Path(shortcut_path).resolve()
+    if not link_path.exists():
+        return False
+    store_ptr = ctypes.POINTER(IPropertyStore)()
+    hr = _shell32.SHGetPropertyStoreFromParsingName(
+        str(link_path),
+        None,
+        0x00000002,
+        ctypes.byref(IID_IPropertyStore),
+        ctypes.byref(store_ptr),
+    )
+    if hr != 0 or not store_ptr:
+        return False
+    store = store_ptr
+    try:
+        if app_id:
+            _set_prop_string(store, PKEY_AppUserModel_ID, app_id)
+        if display_name:
+            _set_prop_string(store, PKEY_RelaunchDisplayNameResource, display_name)
+        if icon_path:
+            icon_str = f"{Path(icon_path).resolve()},0"
+            _set_prop_string(store, PKEY_RelaunchIconResource, icon_str)
+        if relaunch_command:
+            _set_prop_string(store, PKEY_RelaunchCommand, relaunch_command)
+        commit = store.contents.lpVtbl.contents.Commit
+        commit(store)
+    except Exception:
+        return False
+    finally:
+        release = store.contents.lpVtbl.contents.Release
+        release(store)
+    return True
