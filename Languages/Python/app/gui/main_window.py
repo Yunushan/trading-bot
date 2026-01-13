@@ -14068,6 +14068,11 @@ def _mw_update_position_history(self, positions_map: dict):
         prev_records = getattr(self, "_open_position_records", {}) or {}
         candidates: list[tuple[str, str]] = []
         pending_close_map = getattr(self, "_pending_close_times", {})
+        try:
+            missing_grace_seconds = float(self.config.get("positions_missing_grace_seconds", 30) or 0.0)
+        except Exception:
+            missing_grace_seconds = 0.0
+        missing_grace_seconds = max(0.0, missing_grace_seconds)
         for key, prev in prev_records.items():
             if key in positions_map:
                 missing_counts.pop(key, None)
@@ -14088,6 +14093,22 @@ def _mw_update_position_history(self, positions_map: dict):
                 except Exception:
                     threshold = 2
             if count >= threshold:
+                if missing_grace_seconds > 0 and not (isinstance(pending_close_map, dict) and key in pending_close_map):
+                    open_val = None
+                    if isinstance(prev, dict):
+                        open_val = prev.get("open_time")
+                        if not open_val:
+                            open_val = (prev.get("data") or {}).get("open_time")
+                        if not open_val:
+                            open_val = (prev.get("data") or {}).get("update_time")
+                    dt_obj = self._parse_any_datetime(open_val)
+                    if dt_obj is not None:
+                        try:
+                            age_seconds = time.time() - dt_obj.timestamp()
+                        except Exception:
+                            age_seconds = None
+                        if age_seconds is not None and 0 <= age_seconds < missing_grace_seconds:
+                            continue
                 candidates.append(key)
 
         def _resolve_live_keys() -> set[tuple[str, str]] | None:

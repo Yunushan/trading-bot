@@ -64,6 +64,9 @@ DEFAULT_CONFIG = {
     "indicator_flip_confirmation_bars": 1,
     "indicator_source": "Binance futures",  # Binance spot | Binance futures | TradingView | Bybit
     "close_on_exit": False,
+    "positions_missing_threshold": 2,
+    "positions_missing_autoclose": True,
+    "positions_missing_grace_seconds": 30,
     # Allow stacking long/short legs in hedge mode; per-indicator/interval closes will still target only
     # the matching leg when a counter-signal arrives.
     "allow_opposite_positions": True,
