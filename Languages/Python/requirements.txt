@@ -11,6 +11,6 @@ numpy==2.2.6
 pandas==2.3.3
 pandas-ta==0.4.71b0
 requests==2.32.5
-binance-sdk-derivatives-trading-usds-futures==6.0.0
-binance-sdk-derivatives-trading-coin-futures==3.1.0
-binance-sdk-spot==6.1.0
+binance-sdk-derivatives-trading-usds-futures==6.1.0
+binance-sdk-derivatives-trading-coin-futures==3.2.0
+binance-sdk-spot==6.2.0
