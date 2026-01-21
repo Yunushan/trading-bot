@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from PyQt6 import QtCore
+from PyQt6 import QtCore, QtGui
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -472,6 +472,11 @@ def _resolve_log_path() -> Path:
 
 
 _LOG_PATH = _resolve_log_path()
+_HAND_CURSOR_SHAPES = {
+    QtCore.Qt.CursorShape.PointingHandCursor,
+    QtCore.Qt.CursorShape.OpenHandCursor,
+    QtCore.Qt.CursorShape.ClosedHandCursor,
+}
 
 
 def _log_chart_event(message: str) -> None:
@@ -486,6 +491,21 @@ def _log_chart_event(message: str) -> None:
         pass
 
 
+def _clear_hand_override_cursor() -> None:
+    try:
+        override = QtGui.QGuiApplication.overrideCursor()
+    except Exception:
+        return
+    while override is not None:
+        try:
+            if override.shape() not in _HAND_CURSOR_SHAPES:
+                return
+            QtGui.QGuiApplication.restoreOverrideCursor()
+            override = QtGui.QGuiApplication.overrideCursor()
+        except Exception:
+            return
+
+
 class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
     """
     QWebEngine wrapper around TradingView Lightweight Charts.
@@ -498,6 +518,10 @@ class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
             raise RuntimeError(f"QtWebEngine is unavailable: {_IMPORT_ERROR}")
         super().__init__(parent)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
+        try:
+            self.setMouseTracking(True)
+        except Exception:
+            pass
         try:
             if QWebEnginePage is not None:
                 self.setPage(_DebugWebEnginePage(self))
@@ -580,13 +604,16 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
 
     def event(self, event):
         try:
-            if event.type() == QtCore.QEvent.Type.CursorChange:
+            if event.type() in {
+                QtCore.QEvent.Type.CursorChange,
+                QtCore.QEvent.Type.MouseMove,
+                QtCore.QEvent.Type.Leave,
+                QtCore.QEvent.Type.FocusOut,
+                QtCore.QEvent.Type.Hide,
+            }:
+                _clear_hand_override_cursor()
                 shape = self.cursor().shape()
-                if shape in {
-                    QtCore.Qt.CursorShape.PointingHandCursor,
-                    QtCore.Qt.CursorShape.OpenHandCursor,
-                    QtCore.Qt.CursorShape.ClosedHandCursor,
-                }:
+                if shape in _HAND_CURSOR_SHAPES:
                     self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         except Exception:
             pass
