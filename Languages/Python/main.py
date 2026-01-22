@@ -301,7 +301,7 @@ def _install_cbt_startup_window_suppression() -> None:
             if width >= 500 and height >= 300:
                 return user32.CallNextHookEx(0, n_code, w_param, l_param)
             # Target only tiny top-level helpers that can flash (titlebar-sized).
-            if height <= 120 and width <= 4000:
+            if height <= 800 and width <= 4000:
                 cs.style = int(style & ~WS_VISIBLE)
                 ex_style = int(cs.dwExStyle) & 0xFFFFFFFF
                 cs.dwExStyle = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
@@ -627,7 +627,7 @@ def _install_startup_window_suppression() -> None:
                 return False
 
             # Generic tiny top-level surfaces that can flash briefly.
-            return height <= 80 and width <= 4000
+            return height <= 800 and width <= 4000
         except Exception:
             return False
 
@@ -803,28 +803,9 @@ def _uninstall_startup_window_suppression() -> None:
     _STARTUP_WINDOW_POLL_THREAD = None
 
 
-if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
-    _boot_log("startup window hooks disabled")
-else:
-    _install_cbt_startup_window_suppression()
-    _install_startup_window_suppression()
 
-# Version banner / environment setup must run before importing PyQt modules
-from app import preamble  # noqa: E402,F401
-_boot_log("preamble loaded")
 
-from PyQt6 import QtCore, QtGui  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from app.gui.app_icon import find_primary_icon_file, load_app_icon  # noqa: E402
-from app.gui.main_window import MainWindow  # noqa: E402
-from windows_taskbar import (  # noqa: E402
-    apply_taskbar_metadata,
-    build_relaunch_command,
-    ensure_app_user_model_id,
-    ensure_start_menu_shortcut,
-    ensure_taskbar_visible,
-)
 
 _previous_qt_message_handler = None
 _native_icon_handles: list[int] = []
@@ -832,6 +813,7 @@ _native_icon_handles: list[int] = []
 
 def _install_qt_warning_filter() -> None:
     """Suppress nuisance Qt warnings we cannot control."""
+    from PyQt6 import QtCore
     target = "setHighDpiScaleFactorRoundingPolicy"
 
     def handler(mode, context, message):  # noqa: ANN001
@@ -846,6 +828,7 @@ def _install_qt_warning_filter() -> None:
 
 
 def _resolve_native_icon_path() -> Path | None:
+    from app.gui.app_icon import find_primary_icon_file
     path = find_primary_icon_file()
     if path is None:
         return None
@@ -869,6 +852,7 @@ def _resolve_taskbar_icon_path() -> Path | None:
     icon_path = _resolve_native_icon_path()
     if icon_path and icon_path.is_file():
         return icon_path
+    from app.gui.app_icon import find_primary_icon_file
     primary = find_primary_icon_file()
     if primary and primary.is_file():
         if primary.suffix.lower() == ".ico":
@@ -1057,7 +1041,9 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
     return applied
 
 
-def _apply_qt_icon(app: QApplication, window) -> bool:  # noqa: ANN001
+def _apply_qt_icon(app, window) -> bool:
+    from PyQt6 import QtGui
+    from app.gui.app_icon import load_app_icon, find_primary_icon_file
     icon = QtGui.QIcon()
     try:
         icon = load_app_icon()
@@ -1105,7 +1091,7 @@ def _apply_qt_icon(app: QApplication, window) -> bool:  # noqa: ANN001
     return True
 
 
-def _schedule_icon_enforcer(app: QApplication, window) -> None:  # noqa: ANN001
+def _schedule_icon_enforcer(app, window) -> None:  # noqa: ANN001
     if sys.platform != "win32":
         return
     force_icon = _env_flag("BOT_FORCE_APP_ICON")
@@ -1135,6 +1121,7 @@ def _schedule_icon_enforcer(app: QApplication, window) -> None:  # noqa: ANN001
             qt_ok = _apply_qt_icon(app, window)
         if _env_flag("BOT_BOOT_LOG"):
             _boot_log(f"icon enforce attempt native={native_ok} qt={qt_ok}")
+        from PyQt6 import QtCore
         if state["remaining"] > 0:
             QtCore.QTimer.singleShot(interval_ms, _attempt)
 
@@ -1142,6 +1129,29 @@ def _schedule_icon_enforcer(app: QApplication, window) -> None:  # noqa: ANN001
 
 
 def main() -> int:
+    if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
+        _boot_log("startup window hooks disabled")
+    else:
+        _install_cbt_startup_window_suppression()
+        _install_startup_window_suppression()
+
+    # Version banner / environment setup must run before importing PyQt modules
+    from app import preamble  # noqa: E402,F401
+    _boot_log("preamble loaded")
+
+    from PyQt6 import QtCore, QtGui  # noqa: E402
+    from PyQt6.QtWidgets import QApplication  # noqa: E402
+
+    from app.gui.app_icon import find_primary_icon_file, load_app_icon  # noqa: E402
+    from app.gui.main_window import MainWindow  # noqa: E402
+    from windows_taskbar import (  # noqa: E402
+        apply_taskbar_metadata,
+        build_relaunch_command,
+        ensure_app_user_model_id,
+        ensure_start_menu_shortcut,
+        ensure_taskbar_visible,
+    )
+
     _install_qt_warning_filter()
     _boot_log(
         "env BOT_NO_STARTUP_WINDOW_SUPPRESS="
@@ -1361,7 +1371,7 @@ def main() -> int:
     except Exception:
         pass
     class _StartupInputUnblocker(QtCore.QObject):
-        def __init__(self, app_instance: QApplication):
+        def __init__(self, app_instance):
             super().__init__(app_instance)
             self._app = app_instance
             self._armed = True

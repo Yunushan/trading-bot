@@ -734,7 +734,7 @@ class LaunchOverlay(QtWidgets.QWidget):
         if self._topmost_timer is not None:
             return
         timer = QtCore.QTimer(self)
-        timer.setInterval(200)
+        timer.setInterval(10)
         timer.timeout.connect(self._force_topmost)
         timer.start()
         self._topmost_timer = timer
@@ -1942,6 +1942,17 @@ class StarterWindow(QtWidgets.QWidget):
                 f"background={options.get('background_mode')}"
             )
             return options
+
+        # Force fullscreen overlay for Binance/Bybit to mask QtWebEngine flickering
+        if self.selected_exchange in {"binance", "bybit"}:
+            options = {
+                "fullscreen": True,
+                "cover_owner": True,
+                "all_screens": True,
+                "background_mode": "solid",
+            }
+            return options
+
         options: dict[str, object] = {}
         fullscreen_env = os.environ.get("BOT_LAUNCH_OVERLAY_FULLSCREEN")
         if fullscreen_env is not None:
@@ -2703,16 +2714,16 @@ class StarterWindow(QtWidgets.QWidget):
                     return True
                 if "QWindowPopup" in class_name or "QWindowToolTip" in class_name:
                     return False
-                if class_name in {"ComboLBox", "#32768"}:
+                if class_name in {"ComboLBox", "#32768", "#32770"}:
                     return False
                 if class_name in {"ConsoleWindowClass", "PseudoConsoleWindow"}:
                     return True
                 if class_name.startswith("_q_"):
                     return height <= 260 and width <= 3200
                 if class_name == "Intermediate D3D Window":
-                    return height <= 500 and width <= 4000
+                    return True
                 if class_name.startswith("Chrome_WidgetWin_"):
-                    return height <= 500 and width <= 4000
+                    return True
                 try:
                     GW_OWNER = 4
                     owner = user32.GetWindow(hwnd_obj, GW_OWNER)
@@ -2725,8 +2736,8 @@ class StarterWindow(QtWidgets.QWidget):
                 if width >= 500 and height >= 300:
                     return False
 
-                # Only treat truly tiny top-level windows as transient.
-                return height <= 120 and width <= 4000
+                # Bruteforce: Hide anything else that is small (likely helper windows)
+                return True
             except Exception:
                 return False
 
@@ -2904,7 +2915,12 @@ class StarterWindow(QtWidgets.QWidget):
                 is_visible = bool(user32.IsWindowVisible(hwnd_obj))
             except Exception:
                 is_visible = False
-            if not _is_transient_window(hwnd_obj):
+            is_transient = _is_transient_window(hwnd_obj)
+            if not is_transient:
+                exe_path = _get_process_path(pid_val)
+                if exe_path and "qtwebengineprocess" in exe_path.lower():
+                    is_transient = True
+            if not is_transient:
                 return
             if not _maybe_track_pid(pid_val):
                 return
@@ -3038,7 +3054,7 @@ class StarterWindow(QtWidgets.QWidget):
                 # Keep suppression active for the full duration; helper windows can
                 # appear after the main window becomes visible.
                 if now >= next_process_scan:
-                    next_process_scan = now + 0.25
+                    next_process_scan = now + 0.05
                     try:
                         new_pids = _enum_descendant_pids(int(root_pid))
                         pid_snapshot["pids"] = set(new_pids)
@@ -3418,9 +3434,20 @@ class StarterWindow(QtWidgets.QWidget):
                     hide_console = Path(str(command[0])).name.lower() != "pythonw.exe"
                 except Exception:
                     hide_console = True
-            if hide_console:
-                create_no_window = 0x08000000  # CREATE_NO_WINDOW
-                popen_kwargs["creationflags"] = create_no_window
+            # Always force CREATE_NO_WINDOW to prevent any console flickering, even for pythonw
+            create_no_window = 0x08000000  # CREATE_NO_WINDOW
+            popen_kwargs["creationflags"] = create_no_window
+            
+            # PRO-TIP: Force the process to start hidden using STARTUPINFO.
+            # This often propagates to child processes (like QtWebEngine) and suppresses initial flickers.
+            try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
+                popen_kwargs["startupinfo"] = startupinfo
+            except Exception:
+                pass
+
             self._verbose_log(
                 f"popen config: hide_console={hide_console} "
                 f"creationflags={popen_kwargs.get('creationflags', 0)}"
@@ -3451,16 +3478,18 @@ class StarterWindow(QtWidgets.QWidget):
                     app_user_model_id = env.get("BOT_APP_USER_MODEL_ID") or "com.tradingbot.TradingBot"
                     env["QT_WIN_APPID"] = app_user_model_id
                     env["QT_QPA_PLATFORM_WINDOWS_USER_MODEL_ID"] = app_user_model_id
-                    env["BOT_DISABLE_APP_ICON"] = "0"
-                    env["BOT_ENABLE_NATIVE_ICON"] = "1"
-                    env["BOT_ENABLE_DELAYED_QT_ICON"] = "1"
-                    env["BOT_FORCE_APP_ICON"] = "1"
-                    env["BOT_FORCE_TASKBAR_ICON"] = "1"
+                    
+                    # DISABLE all native icon hacks which cause the main window to be hidden/shown repeatedly
+                    env["BOT_DISABLE_APP_ICON"] = "0" 
+                    env["BOT_ENABLE_NATIVE_ICON"] = "0"
+                    env["BOT_ENABLE_DELAYED_QT_ICON"] = "0"
+                    env["BOT_FORCE_APP_ICON"] = "0"
+                    env["BOT_FORCE_TASKBAR_ICON"] = "0"
+                    env["BOT_DISABLE_TASKBAR"] = "1"
+                    
                     env.setdefault("BOT_DELAYED_APP_ICON_MS", "800")
                     env.setdefault("BOT_NATIVE_ICON_DELAY_MS", "150")
-                    env.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "12")
-                    env.setdefault("BOT_ICON_ENFORCE_INTERVAL_MS", "500")
-                    env["BOT_DISABLE_TASKBAR"] = "0"
+                    env.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "0")
                     env.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "1200")
                     env.setdefault("BOT_TASKBAR_ENSURE_MS", "15000")
                     if self.selected_exchange in {"binance", "bybit"}:
@@ -3470,8 +3499,20 @@ class StarterWindow(QtWidgets.QWidget):
                         if "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS" not in env:
                             env["BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS"] = "0"
                         env.setdefault("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS", "1")
-                        env.setdefault("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "1")
-                        env.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "0")
+                        env.setdefault("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "0")
+                        env.setdefault("BOT_NO_STARTER_CHILD_WINDOW_SUPPRESS", "0")
+                        env.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "1")
+                        # Force software rendering to prevent GPU process crashes (the likely source of flickering)
+                        env["BOT_FORCE_SOFTWARE_OPENGL"] = "1"
+                        env["BOT_DISABLE_SHARE_OPENGL_CONTEXTS"] = "1"
+                        env["QT_QPA_PLATFORM"] = "windows:fontengine=freetype"
+                        env["QT_OPENGL"] = "software"
+                        env["QT_QUICK_BACKEND"] = "software"
+                        env["QSG_RHI_BACKEND"] = "software"
+                        # Prevent matplotlib/pandas_ta from creating dummy windows/processes
+                        env["MPLBACKEND"] = "Agg"
+                        env["PANDAS_TA_CORES"] = "0"
+                        env["NUMEXPR_MAX_THREADS"] = "1"
                     else:
                         env.setdefault("BOT_NO_STARTUP_WINDOW_SUPPRESS", "1")
                         env.setdefault("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS", "1")
@@ -3544,7 +3585,15 @@ class StarterWindow(QtWidgets.QWidget):
             )
             # Inject flags to suppress QtWebEngine helper surface while keeping GPU on for TradingView
             current_flags = env.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-            extra_flags = ["--no-sandbox", "--window-position=-10000,-10000"]
+            flag_list = ["--no-sandbox", "--window-position=-10000,-10000", "--disable-features=VizDisplayCompositor", "--disable-gpu", "--single-process"]
+            
+            # Pass flags strictly via command-line arguments to ensure QApplication picks them up
+            command.extend(flag_list)
+
+            # Also keep env var as backup
+            extra_flags = " ".join(flag_list)
+            env["QTWEBENGINE_CHROMIUM_FLAGS"] = self._merge_chromium_flags(current_flags, [extra_flags])
+            
             if self._verbose_launch_logging:
                 current_flags = " ".join(
                     flag for flag in current_flags.split() if flag != "--disable-logging"
