@@ -526,7 +526,6 @@ STOP_LOSS_SCOPE_LABELS = {
 }
 
 DASHBOARD_LOOP_CHOICES = [
-    ("Use Candle Interval", ""),
     ("30 seconds", "30s"),
     ("45 seconds", "45s"),
     ("1 minute", "1m"),
@@ -4320,6 +4319,7 @@ class MainWindow(QtWidgets.QWidget):
                         )
                     except Exception:
                         pass
+                self._apply_lead_trader_state(bool(self.config.get("lead_trader_enabled", False)))
             except Exception:
                 pass
 
