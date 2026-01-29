@@ -11677,7 +11677,13 @@ class MainWindow(QtWidgets.QWidget):
             self.waiting_pos_table.verticalHeader().setVisible(False)
         except Exception:
             pass
-        self.log_tab_widget.addTab(self.waiting_pos_table, "Waiting Positions")
+        self.log_tab_widget.addTab(self.waiting_pos_table, "Waiting Positions (Queue)")
+        self._waiting_positions_history = []
+        self._waiting_positions_last_snapshot = {}
+        try:
+            self._waiting_positions_history_max = int(self.config.get("waiting_positions_history_max", 500) or 500)
+        except Exception:
+            self._waiting_positions_history_max = 500
         try:
             self.log_tab_widget.setCurrentIndex(0)
         except Exception:
@@ -18307,33 +18313,39 @@ def _mw_refresh_waiting_positions_tab(self):
     table = getattr(self, "waiting_pos_table", None)
     if table is None:
         return
+    history = getattr(self, "_waiting_positions_history", None)
+    if not isinstance(history, list):
+        history = []
+        self._waiting_positions_history = history
+    last_snapshot = getattr(self, "_waiting_positions_last_snapshot", None)
+    if not isinstance(last_snapshot, dict):
+        last_snapshot = {}
+        self._waiting_positions_last_snapshot = last_snapshot
+    history_max = getattr(self, "_waiting_positions_history_max", None)
+    try:
+        history_max = int(history_max)
+    except Exception:
+        history_max = 500
+    if history_max <= 0:
+        history_max = 500
+    self._waiting_positions_history_max = history_max
     try:
         guard = getattr(self, "guard", None)
     except Exception:
         guard = None
     snapshot = []
+    snapshot_ok = False
     if guard is not None and hasattr(guard, "snapshot_pending_attempts"):
         try:
             raw = guard.snapshot_pending_attempts() or []
             snapshot = [item for item in raw if isinstance(item, dict)]
+            snapshot_ok = True
         except Exception:
             snapshot = []
-    table.setSortingEnabled(False)
-    table.setRowCount(len(snapshot))
-    if not snapshot:
-        table.clearContents()
-        table.setSortingEnabled(True)
-        return
-    try:
-        snapshot.sort(
-            key=lambda item: (
-                -float(str(item.get("age") or 0.0)),
-                str(item.get("symbol") or "")
-            )
-        )
-    except Exception:
-        pass
-    for row, item in enumerate(snapshot):
+            snapshot_ok = False
+    current_entries = []
+    current_keys = set()
+    for item in snapshot:
         symbol = str(item.get("symbol") or "").upper() or "-"
         interval_raw = str(item.get("interval") or "").strip()
         interval = interval_raw.upper() if interval_raw else "-"
@@ -18351,6 +18363,76 @@ def _mw_refresh_waiting_positions_tab(self):
             age_val = 0.0
         age_seconds = max(0, int(age_val))
         state = "Late" if age_val >= WAITING_POSITION_LATE_THRESHOLD else "Queued"
+        key = (symbol, interval, side, context)
+        current_entries.append(
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "side": side,
+                "context": context,
+                "age": age_val,
+                "age_seconds": age_seconds,
+                "state": state,
+                "key": key,
+            }
+        )
+        current_keys.add(key)
+    if snapshot_ok:
+        ended_keys = set(last_snapshot.keys()) - current_keys
+        if ended_keys:
+            now = time.time()
+            for key in ended_keys:
+                ended_entry = last_snapshot.get(key)
+                if not isinstance(ended_entry, dict):
+                    continue
+                ended_copy = dict(ended_entry)
+                ended_copy["state"] = "Ended"
+                ended_copy["ended_at"] = now
+                history.append(ended_copy)
+        if len(history) > history_max:
+            history = history[-history_max:]
+            self._waiting_positions_history = history
+        self._waiting_positions_last_snapshot = {entry["key"]: entry for entry in current_entries}
+    combined_entries = current_entries + history
+    table.setSortingEnabled(False)
+    table.setRowCount(len(combined_entries))
+    if not combined_entries:
+        table.clearContents()
+        table.setSortingEnabled(True)
+        return
+    try:
+        combined_entries.sort(
+            key=lambda item: (
+                1 if str(item.get("state") or "").lower() == "ended" else 0,
+                -float(str(item.get("age") or 0.0)),
+                str(item.get("symbol") or ""),
+            )
+        )
+    except Exception:
+        pass
+    for row, item in enumerate(combined_entries):
+        symbol = str(item.get("symbol") or "").upper() or "-"
+        interval_raw = str(item.get("interval") or "").strip()
+        interval = interval_raw.upper() if interval_raw else "-"
+        side_raw = str(item.get("side") or "").upper()
+        if side_raw in ("L", "LONG"):
+            side = "BUY"
+        elif side_raw in ("S", "SHORT"):
+            side = "SELL"
+        else:
+            side = side_raw or "-"
+        context = str(item.get("context") or "")
+        try:
+            age_val = float(item.get("age") or 0.0)
+        except Exception:
+            age_val = 0.0
+        try:
+            age_seconds = int(item.get("age_seconds"))
+        except Exception:
+            age_seconds = max(0, int(age_val))
+        state = str(item.get("state") or "")
+        if not state:
+            state = "Late" if age_val >= WAITING_POSITION_LATE_THRESHOLD else "Queued"
 
         symbol_item = QtWidgets.QTableWidgetItem(symbol)
         symbol_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
