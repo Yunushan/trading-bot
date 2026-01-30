@@ -11002,14 +11002,16 @@ class MainWindow(QtWidgets.QWidget):
             "Live",
             "Demo",
             "Testnet",
-            "Futures WebSocket (live market data)",
-            "Testnet WebSocket",
         ]
         self.mode_combo.addItems(mode_options)
         loaded_mode = self.config.get('mode', 'Live') or 'Live'
         # Backward compatibility for legacy label
         if loaded_mode == "Demo/Testnet":
             loaded_mode = "Demo"
+        if loaded_mode == "Futures WebSocket (live market data)":
+            loaded_mode = "Live"
+        if loaded_mode == "Testnet WebSocket":
+            loaded_mode = "Testnet"
         if loaded_mode not in mode_options:
             loaded_mode = "Live"
         self.mode_combo.setCurrentText(loaded_mode)
@@ -11604,6 +11606,7 @@ class MainWindow(QtWidgets.QWidget):
             self.loop_combo,
             self.lead_trader_enable_cb,
             self.lead_trader_combo,
+            self.cb_live_indicator_values,
             self.cb_add_only,
             self.allow_opposite_checkbox,
             self.cb_stop_without_close,
