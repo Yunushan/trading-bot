@@ -3791,6 +3791,8 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault('account_mode', 'Classic Trading')
         self.config.setdefault('auto_bump_percent_multiplier', DEFAULT_CONFIG.get('auto_bump_percent_multiplier', 10.0))
         self.config["connector_backend"] = _normalize_connector_backend(self.config.get("connector_backend"))
+        self.config.setdefault("positions_auto_resize_rows", True)
+        self.config.setdefault("positions_auto_resize_columns", True)
         self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
         self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
         self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
@@ -10084,6 +10086,47 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _on_positions_auto_resize_changed(self, state: int):
+        enabled = bool(state)
+        self.config["positions_auto_resize_rows"] = enabled
+        try:
+            if enabled:
+                self.pos_table.resizeRowsToContents()
+            else:
+                default_height = 44
+                try:
+                    default_height = int(
+                        self.pos_table.verticalHeader().defaultSectionSize() or default_height
+                    )
+                except Exception:
+                    default_height = 44
+                self.pos_table.verticalHeader().setDefaultSectionSize(default_height)
+                for row in range(self.pos_table.rowCount()):
+                    try:
+                        self.pos_table.setRowHeight(row, default_height)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _on_positions_auto_resize_columns_changed(self, state: int):
+        enabled = bool(state)
+        self.config["positions_auto_resize_columns"] = enabled
+        try:
+            if enabled:
+                self.pos_table.resizeColumnsToContents()
+            else:
+                header = self.pos_table.horizontalHeader()
+                try:
+                    header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
+                except Exception:
+                    try:
+                        header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _set_chart_symbol(self, symbol: str, ensure_option: bool = False, from_follow: bool = False) -> bool:
         if not getattr(self, "chart_enabled", False):
             return False
@@ -11789,6 +11832,22 @@ class MainWindow(QtWidgets.QWidget):
         self.positions_view_combo.setCurrentIndex(0)
         self.positions_view_combo.currentIndexChanged.connect(self._on_positions_view_changed)
         ctrl_layout.addWidget(self.positions_view_combo)
+        self.positions_auto_resize_checkbox = QtWidgets.QCheckBox("Auto Row Height")
+        self.positions_auto_resize_checkbox.setToolTip("Resize rows to fit multi-line indicator values.")
+        self.positions_auto_resize_checkbox.setChecked(
+            coerce_bool(self.config.get("positions_auto_resize_rows", True), True)
+        )
+        self.positions_auto_resize_checkbox.stateChanged.connect(self._on_positions_auto_resize_changed)
+        ctrl_layout.addWidget(self.positions_auto_resize_checkbox)
+        self.positions_auto_resize_columns_checkbox = QtWidgets.QCheckBox("Auto Column Width")
+        self.positions_auto_resize_columns_checkbox.setToolTip("Resize columns to fit full indicator text.")
+        self.positions_auto_resize_columns_checkbox.setChecked(
+            coerce_bool(self.config.get("positions_auto_resize_columns", True), True)
+        )
+        self.positions_auto_resize_columns_checkbox.stateChanged.connect(
+            self._on_positions_auto_resize_columns_changed
+        )
+        ctrl_layout.addWidget(self.positions_auto_resize_columns_checkbox)
         ctrl_layout.addStretch()
         tab2_layout.addLayout(ctrl_layout)
 
@@ -11865,6 +11924,10 @@ class MainWindow(QtWidgets.QWidget):
             self.pos_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.pos_table.setSortingEnabled(True)
         self.pos_table.setWordWrap(True)
+        try:
+            self.pos_table.setTextElideMode(QtCore.Qt.TextElideMode.ElideNone)
+        except Exception:
+            pass
         try:
             self.pos_table.verticalHeader().setDefaultSectionSize(44)
         except Exception:
@@ -15237,6 +15300,18 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
         total_qty = 0.0
         total_margin = 0.0
         total_pnl = 0.0
+        leverage_values: set[int] = set()
+
+        def _collect_leverage(value: object) -> None:
+            try:
+                if value is None or value == "":
+                    return
+                lev_val = int(float(value))
+                if lev_val > 0:
+                    leverage_values.add(lev_val)
+            except Exception:
+                return
+
         for entry in bucket:
             label = _clean_interval_label(entry.get("entry_tf")) or _clean_interval_label(
                 (entry.get("data") or {}).get("interval_display")
@@ -15244,6 +15319,21 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
             if label and label not in intervals:
                 intervals.append(label)
             data = entry.get("data") or {}
+            _collect_leverage(data.get("leverage"))
+            _collect_leverage(entry.get("leverage"))
+            raw_entry = data.get("raw_position")
+            if not isinstance(raw_entry, dict):
+                raw_entry = entry.get("raw_position") if isinstance(entry.get("raw_position"), dict) else None
+            if isinstance(raw_entry, dict):
+                _collect_leverage(raw_entry.get("leverage"))
+            allocations = entry.get("allocations") or []
+            if isinstance(allocations, dict):
+                allocations = list(allocations.values())
+            if isinstance(allocations, list):
+                for alloc in allocations:
+                    if not isinstance(alloc, dict):
+                        continue
+                    _collect_leverage(alloc.get("leverage"))
             # Track earliest open time across merged legs so cumulative view shows a stable timestamp.
             for ts_key in ("open_time",):
                 ts_val = entry.get(ts_key) or data.get(ts_key)
@@ -15293,6 +15383,20 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
                 agg_data["roi_percent"] = (total_pnl / total_margin) * 100.0
             except Exception:
                 pass
+        leverage_final = None
+        if leverage_values:
+            leverage_final = max(leverage_values)
+        try:
+            existing_lev = agg_data.get("leverage")
+            if existing_lev is not None:
+                existing_lev = int(float(existing_lev))
+            if existing_lev and existing_lev > 0:
+                leverage_final = existing_lev
+        except Exception:
+            pass
+        if leverage_final:
+            agg_data["leverage"] = leverage_final
+            clone["leverage"] = leverage_final
         if open_time_candidates:
             try:
                 earliest = min(open_time_candidates)
@@ -15746,6 +15850,16 @@ def _mw_render_positions_table(self):
                 self.pos_table.setCellWidget(row, POS_CLOSE_COLUMN, btn)
             except Exception:
                 pass
+        try:
+            if coerce_bool(self.config.get("positions_auto_resize_rows", True), True):
+                self.pos_table.resizeRowsToContents()
+        except Exception:
+            pass
+        try:
+            if coerce_bool(self.config.get("positions_auto_resize_columns", True), True):
+                self.pos_table.resizeColumnsToContents()
+        except Exception:
+            pass
         summary_margin = total_margin if total_margin > 0.0 else None
         self._update_positions_pnl_summary(total_pnl if pnl_has_value else None, summary_margin)
         self._update_global_pnl_display(*self._compute_global_pnl_totals())
