@@ -67,6 +67,9 @@ DEFAULT_CONFIG = {
     "positions_missing_threshold": 2,
     "positions_missing_autoclose": True,
     "positions_missing_grace_seconds": 30,
+    # Reconciliation debounce for transient futures snapshot gaps (especially demo/testnet).
+    "futures_flat_purge_miss_threshold": 2,
+    "futures_flat_purge_grace_seconds": 12.0,
     # Allow stacking long/short legs in hedge mode; per-indicator/interval closes will still target only
     # the matching leg when a counter-signal arrives.
     "allow_opposite_positions": True,

@@ -15,6 +15,17 @@ def _floor_to_step(qty: float, step: float) -> float:
 
 def _get_lot_limits(binance, sym: str) -> tuple[float, float, float]:
     try:
+        fut_filters = getattr(binance, "get_futures_symbol_filters", None)
+        if callable(fut_filters):
+            f = fut_filters(sym) or {}
+            step = float(f.get("stepSize") or 0.0)
+            min_qty = float(f.get("minQty") or 0.0)
+            max_qty = float(f.get("maxQty") or 0.0)
+            if step > 0.0 or min_qty > 0.0 or max_qty > 0.0:
+                return step, min_qty, max_qty
+    except Exception:
+        pass
+    try:
         f = binance.get_symbol_filters(sym)
         lot = f.get("LOT_SIZE") or {}
         step = float(lot.get("stepSize") or 0.0)
@@ -59,9 +70,46 @@ def _cancel_all(binance, sym: str):
     except Exception:
         pass
 
+def _submit_futures_order(binance, params: dict) -> dict:
+    """Place a futures order using wrapper fallback path when available."""
+    try:
+        submit = getattr(binance, "_futures_create_order_with_fallback", None)
+        if callable(submit):
+            order, _via = submit(dict(params))
+            try:
+                invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
+                if callable(invalidate):
+                    invalidate()
+            except Exception:
+                pass
+            return order or {}
+    except Exception:
+        pass
+    order = binance.client.futures_create_order(**params)
+    try:
+        invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
+        if callable(invalidate):
+            invalidate()
+    except Exception:
+        pass
+    return order or {}
+
 def _normalize_position_side(value: str | None) -> str:
     side = str(value or "").strip().upper()
     return side if side else "BOTH"
+
+def _derive_close_directive(amt: float, pos_side: str | None, dual: bool) -> tuple[str, str | None, float]:
+    """Return (order_side, position_side, qty_abs) for closing the given position row."""
+    qty_raw = abs(float(amt or 0.0))
+    ps_norm = _normalize_position_side(pos_side)
+    if dual:
+        if ps_norm == "LONG":
+            return "SELL", "LONG", qty_raw
+        if ps_norm == "SHORT":
+            return "BUY", "SHORT", qty_raw
+    if float(amt or 0.0) < 0.0:
+        return "BUY", ("SHORT" if dual else None), qty_raw
+    return "SELL", ("LONG" if dual else None), qty_raw
 
 def _is_unknown_execution_error(err: object) -> bool:
     if err is None:
@@ -172,13 +220,13 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     'skipped': True,
                     'reason': 'zero-qty',
                 }
-            side = 'SELL' if amt > 0 else 'BUY'
+            side, target_ps, qty_raw = _derive_close_directive(amt, pos_side, dual)
             if use_close_position:
                 close_params = dict(symbol=sym, side=side, type='MARKET', closePosition=True)
-                if dual:
-                    close_params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                if dual and target_ps in ("LONG", "SHORT"):
+                    close_params['positionSide'] = target_ps
                 try:
-                    od = binance.client.futures_create_order(**close_params)
+                    od = _submit_futures_order(binance, close_params)
                     return {'ok': True, 'symbol': sym, 'positionSide': pos_side, 'info': od, 'method': 'closePosition'}
                 except Exception as e:
                     return {
@@ -189,7 +237,6 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                         'positionAmt': amt,
                     }
             try:
-                qty_raw = abs(amt)
                 step, min_qty, max_qty = _get_lot_limits(binance, sym)
                 qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
                 if qty_float <= 0.0:
@@ -202,13 +249,13 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     }
                 qty_str = f"{qty_float:.8f}"
                 params = dict(symbol=sym, side=side, type='MARKET')
-                if dual:
-                    params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                if dual and target_ps in ("LONG", "SHORT"):
+                    params['positionSide'] = target_ps
                     params['quantity'] = str(qty_str)
                 else:
                     params['reduceOnly'] = True
                     params['quantity'] = str(qty_str)
-                od = binance.client.futures_create_order(**params)
+                od = _submit_futures_order(binance, params)
                 return {'ok': True, 'symbol': sym, 'positionSide': pos_side, 'info': od, 'method': 'reduceOnly'}
             except Exception as e:
                 return {
@@ -235,20 +282,19 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 if not sym or abs(amt) <= 0.0:
                     continue
                 try:
-                    side = 'SELL' if amt > 0 else 'BUY'
-                    qty_raw = abs(amt)
+                    side, target_ps, qty_raw = _derive_close_directive(amt, r.get('positionSide'), dual)
                     step, min_qty, max_qty = _get_lot_limits(binance, sym)
                     qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
                     qty_str = f"{qty_float:.8f}"
                     params = dict(symbol=sym, side=side, type='MARKET')
-                    if dual:
-                        params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                    if dual and target_ps in ("LONG", "SHORT"):
+                        params['positionSide'] = target_ps
                         params['quantity'] = str(qty_str)
                     else:
                         params['reduceOnly'] = True
                         params['quantity'] = str(qty_str)
                     try:
-                        od = binance.client.futures_create_order(**params)
+                        od = _submit_futures_order(binance, params)
                         results.append({'ok': True, 'symbol': sym, 'positionSide': r.get('positionSide'), 'info': od})
                     except Exception as e:
                         results.append({
@@ -332,17 +378,16 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                 amt = float(p.get('positionAmt') or 0.0)
                 if abs(amt) <= 0:
                     continue
-                side = 'SELL' if amt > 0 else 'BUY'
-                qty_raw = abs(amt)
+                side, target_ps, qty_raw = _derive_close_directive(amt, pos_side, dual)
                 step, min_qty, max_qty = _get_lot_limits(binance, sym)
                 qty_float = _quantize_qty(qty_raw, step, min_qty, max_qty)
                 qty_str = f"{qty_float:.8f}"
                 # First attempt a closePosition order to bypass filter edge cases.
                 close_params = dict(symbol=sym, side=side, type='MARKET', closePosition=True)
-                if dual:
-                    close_params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                if dual and target_ps in ("LONG", "SHORT"):
+                    close_params['positionSide'] = target_ps
                 try:
-                    od = binance.client.futures_create_order(**close_params)
+                    od = _submit_futures_order(binance, close_params)
                     results.append({
                         'ok': True,
                         'symbol': sym,
@@ -355,14 +400,14 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     err_msg = str(e)
                 _cancel_all(binance, sym)
                 params = dict(symbol=sym, side=side, type='MARKET')
-                if dual:
-                    params['positionSide'] = ('LONG' if amt > 0 else 'SHORT')
+                if dual and target_ps in ("LONG", "SHORT"):
+                    params['positionSide'] = target_ps
                     params['quantity'] = str(qty_str)
                 else:
                     params['reduceOnly'] = True
                     params['quantity'] = str(qty_str)
                 try:
-                    od = binance.client.futures_create_order(**params)
+                    od = _submit_futures_order(binance, params)
                     results.append({'ok': True, 'symbol': sym, 'positionSide': pos_side, 'info': od})
                     continue
                 except Exception as e:
@@ -370,7 +415,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     if (not dual) and ("-2022" in err_msg or "ReduceOnly" in err_msg):
                         fallback_params = dict(symbol=sym, side=side, type='MARKET', closePosition=True)
                         try:
-                            od = binance.client.futures_create_order(**fallback_params)
+                            od = _submit_futures_order(binance, fallback_params)
                             results.append({
                                 'ok': True,
                                 'symbol': sym,

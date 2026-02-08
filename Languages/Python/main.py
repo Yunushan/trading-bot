@@ -107,6 +107,52 @@ if sys.platform == "win32" and _env_flag("BOT_FORCE_SOFTWARE_OPENGL"):
 _suppress_subprocess_console_windows()
 
 
+def _configure_startup_window_suppression_defaults() -> None:
+    """Set safe Windows startup suppression defaults unless user already configured them."""
+    if sys.platform != "win32":
+        return
+    # Stability-first default: do not run WinEvent/CBT startup hooks unless explicitly
+    # forced. This prevents occasional post-startup UI hangs on some systems.
+    if not _env_flag("BOT_FORCE_STARTUP_WINDOW_HOOKS"):
+        os.environ["BOT_DISABLE_STARTUP_WINDOW_HOOKS"] = "1"
+        os.environ["BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS"] = "0"
+        os.environ.setdefault("BOT_STARTUP_MASK_ENABLED", "1")
+        os.environ.setdefault("BOT_STARTUP_MASK_MODE", "snapshot")
+        os.environ.setdefault("BOT_STARTUP_MASK_HIDE_MS", "1300")
+        # With startup mask active, avoid opacity-based reveal to prevent gray flashes.
+        os.environ["BOT_STARTUP_REVEAL_DELAY_MS"] = "0"
+        return
+    if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
+        return
+    if _env_flag("BOT_NO_STARTUP_WINDOW_SUPPRESS"):
+        return
+
+    # Keep suppression short and process-scoped by default. Aggressive global hooks can
+    # cause UI stalls on some Windows systems.
+    os.environ.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "2500")
+    os.environ.setdefault("BOT_STARTUP_WINDOW_POLL_MS", "2500")
+    os.environ.setdefault("BOT_STARTUP_WINDOW_POLL_INTERVAL_MS", "20")
+    os.environ.setdefault("BOT_STARTUP_WINDOW_POLL_FAST_MS", "900")
+    os.environ.setdefault("BOT_STARTUP_WINDOW_POLL_FAST_INTERVAL_MS", "8")
+    os.environ.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "0")
+    os.environ.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "1200")
+    os.environ.setdefault("BOT_TASKBAR_ENSURE_MS", "0")
+    os.environ.setdefault("BOT_TASKBAR_ENSURE_START_DELAY_MS", "1200")
+    os.environ.setdefault("BOT_PRIME_NATIVE_CHART_HOST", "0")
+    os.environ.setdefault("BOT_STARTUP_REVEAL_DELAY_MS", "400")
+    os.environ.setdefault("BOT_STARTUP_WINDOW_HOOK_AUTO_UNINSTALL_MS", "900")
+
+    if _env_flag("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS"):
+        return
+
+    # Keep CBT disabled by default; WinEvent+poll suppression handles most flickers
+    # with lower risk of UI stalls.
+    os.environ.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "0")
+    os.environ.setdefault("BOT_CBT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "2500")
+    os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_MS", "0")
+    os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_INTERVAL_MS", "80")
+
+
 # --- Windows startup transient window suppression --------------------------------
 # Qt can briefly create tiny helper windows during startup (notably `_q_titlebar`).
 # If they show even briefly, it looks like rapid flickering.
@@ -126,8 +172,7 @@ def _install_cbt_startup_window_suppression() -> None:
     global _CBT_STARTUP_WINDOW_PROC, _CBT_STARTUP_WINDOW_SCAN_STOP, _CBT_STARTUP_WINDOW_SCAN_THREAD, _CBT_STARTUP_WINDOW_LOCK
     if sys.platform != "win32" or _CBT_STARTUP_WINDOW_PROC is not None:
         return
-    # Disabled by default because CBT hooks can be fragile with complex Qt startups.
-    # Use BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS=1 to opt in.
+    # Enabled by default for the main/UI thread; multi-thread scan remains opt-in.
     if not _env_flag("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS"):
         return
     if _env_flag("BOT_NO_STARTUP_WINDOW_SUPPRESS") or _env_flag("BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS"):
@@ -244,10 +289,14 @@ def _install_cbt_startup_window_suppression() -> None:
 
     def _looks_like_qt_internal_helper_window(*, class_name: str, title: str) -> bool:
         name = str(class_name or "").strip()
+        if name.startswith("QEventDispatcherWin32_"):
+            return True
         if name.startswith("Qt") and any(name.endswith(suffix) for suffix in _QT_INTERNAL_WINDOW_SUFFIXES):
             return True
         ttl = str(title or "").strip()
         # Titles often omit the version digits (e.g., "QtPowerDummyWindow").
+        if ttl.startswith("QEventDispatcherWin32_"):
+            return True
         if ttl.startswith("Qt") and any(ttl.endswith(suffix) for suffix in _QT_INTERNAL_WINDOW_SUFFIXES):
             return True
         return False
@@ -281,7 +330,7 @@ def _install_cbt_startup_window_suppression() -> None:
             title_text = cs_title or _read_hwnd_title(hwnd_val)
             if class_name.startswith("QEventDispatcherWin32_Internal_Widget"):
                 return user32.CallNextHookEx(0, n_code, w_param, l_param)
-            if _looks_like_qt_internal_helper_window(class_name=class_name, title=cs_title):
+            if _looks_like_qt_internal_helper_window(class_name=class_name, title=title_text):
                 cs.style = int(style & ~WS_VISIBLE)
                 ex_style = int(cs.dwExStyle) & 0xFFFFFFFF
                 cs.dwExStyle = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
@@ -291,7 +340,7 @@ def _install_cbt_startup_window_suppression() -> None:
                     try:
                         with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
                             fh.write(
-                                f"cbt-hide-qt-helper hwnd={hwnd_val} size={width}x{height} class={class_name!r} title={cs_title!r} "
+                                f"cbt-hide-qt-helper hwnd={hwnd_val} size={width}x{height} class={class_name!r} title={title_text!r} "
                                 f"style=0x{style:08X} exstyle=0x{ex_style:08X}\n"
                             )
                     except Exception:
@@ -344,6 +393,8 @@ def _install_cbt_startup_window_suppression() -> None:
         if not thread_id:
             return
         if _CBT_STARTUP_WINDOW_PROC is None or _CBT_STARTUP_WINDOW_LOCK is None:
+            return
+        if not _thread_has_message_queue(int(thread_id)):
             return
         with _CBT_STARTUP_WINDOW_LOCK:
             if thread_id in _CBT_STARTUP_WINDOW_HOOKS:
@@ -411,10 +462,10 @@ def _install_cbt_startup_window_suppression() -> None:
         return thread_ids
 
     try:
-        scan_ms = int(os.environ.get("BOT_CBT_THREAD_HOOK_SCAN_MS") or 1500)
+        scan_ms = int(os.environ.get("BOT_CBT_THREAD_HOOK_SCAN_MS") or 0)
     except Exception:
-        scan_ms = 1500
-    scan_ms = max(200, min(8000, scan_ms))
+        scan_ms = 0
+    scan_ms = max(0, min(30000, scan_ms))
     try:
         interval_ms = int(os.environ.get("BOT_CBT_THREAD_HOOK_SCAN_INTERVAL_MS") or 50)
     except Exception:
@@ -425,6 +476,9 @@ def _install_cbt_startup_window_suppression() -> None:
         pid_val = int(kernel32.GetCurrentProcessId())
     except Exception:
         pid_val = 0
+
+    if scan_ms <= 0:
+        return
 
     stop_event = threading.Event()
     _CBT_STARTUP_WINDOW_SCAN_STOP = stop_event
@@ -487,10 +541,13 @@ def _uninstall_cbt_startup_window_suppression() -> None:
 
 def _install_startup_window_suppression() -> None:
     global _STARTUP_WINDOW_HOOK, _STARTUP_WINDOW_PROC, _STARTUP_WINDOW_POLL_STOP, _STARTUP_WINDOW_POLL_THREAD
-    if sys.platform != "win32" or _STARTUP_WINDOW_HOOK is not None:
+    if sys.platform != "win32":
         return
-    if _env_flag("BOT_NO_STARTUP_WINDOW_SUPPRESS") or _env_flag("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS"):
+    if _STARTUP_WINDOW_HOOK is not None or _STARTUP_WINDOW_POLL_THREAD is not None:
         return
+    if _env_flag("BOT_NO_STARTUP_WINDOW_SUPPRESS"):
+        return
+    disable_winevent_hook = _env_flag("BOT_NO_WINEVENT_STARTUP_WINDOW_SUPPRESS")
 
     try:  # pragma: no cover - Windows only
         import ctypes
@@ -535,6 +592,12 @@ def _install_startup_window_suppression() -> None:
     except Exception:
         pass
 
+    try:
+        user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+    except Exception:
+        pass
+
     def _get_hwnd_pid(hwnd_obj) -> int:  # noqa: ANN001
         try:
             out_pid = wintypes.DWORD()
@@ -542,6 +605,83 @@ def _install_startup_window_suppression() -> None:
             return int(out_pid.value)
         except Exception:
             return 0
+
+    def _enum_descendant_pids(root_pid: int) -> set[int]:
+        pids: set[int] = {int(root_pid)}
+        if not root_pid:
+            return pids
+        try:
+            TH32CS_SNAPPROCESS = 0x00000002
+            snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            if snapshot in (0, ctypes.c_void_p(-1).value):
+                return pids
+
+            class PROCESSENTRY32(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", wintypes.DWORD),
+                    ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_void_p),
+                    ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", wintypes.WCHAR * 260),
+                ]
+
+            parent_to_children: dict[int, list[int]] = {}
+            entry = PROCESSENTRY32()
+            entry.dwSize = ctypes.sizeof(entry)
+            try:
+                if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                    while True:
+                        child_pid = int(entry.th32ProcessID)
+                        parent_pid = int(entry.th32ParentProcessID)
+                        parent_to_children.setdefault(parent_pid, []).append(child_pid)
+                        if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                            break
+            finally:
+                try:
+                    kernel32.CloseHandle(snapshot)
+                except Exception:
+                    pass
+
+            queue = [int(root_pid)]
+            while queue:
+                current = queue.pop()
+                for child in parent_to_children.get(current, []):
+                    if child not in pids:
+                        pids.add(child)
+                        queue.append(child)
+        except Exception:
+            return pids
+        return pids
+
+    tracked_lock = threading.Lock()
+    tracked_pids: set[int] = {int(pid)}
+    tracked_state = {"ts": 0.0}
+
+    def _refresh_descendant_pids(force: bool = False) -> set[int]:
+        now = time.monotonic()
+        with tracked_lock:
+            last_ts = float(tracked_state["ts"])
+            if not force and (now - last_ts) < 0.2:
+                return set(tracked_pids)
+        refreshed = _enum_descendant_pids(pid)
+        with tracked_lock:
+            tracked_pids.clear()
+            tracked_pids.update(refreshed)
+            tracked_state["ts"] = now
+            return set(tracked_pids)
+
+    def _pid_is_tracked(pid_val: int) -> bool:
+        if not pid_val:
+            return False
+        with tracked_lock:
+            if pid_val in tracked_pids:
+                return True
+        return pid_val in _refresh_descendant_pids(force=False)
 
     def _log_window(hwnd_obj, reason: str) -> None:  # noqa: ANN001
         if not debug_window_events:
@@ -615,14 +755,34 @@ def _install_startup_window_suppression() -> None:
                 )
             ):
                 return True
+            if class_name.startswith("QEventDispatcherWin32_Internal_Widget"):
+                return False
+            if class_name.startswith("QEventDispatcherWin32_"):
+                return True
+            if title.startswith("QEventDispatcherWin32_Internal_Widget"):
+                return False
+            if title.startswith("QEventDispatcherWin32_"):
+                return True
             if class_name in {"ConsoleWindowClass", "PseudoConsoleWindow"}:
                 return True
             if class_name.startswith("_q_"):
+                return height <= 260 and width <= 3200
+            if title.startswith("_q_"):
                 return height <= 260 and width <= 3200
             if class_name == "Intermediate D3D Window":
                 return height <= 500 and width <= 4000
             if class_name.startswith("Chrome_WidgetWin_"):
                 return height <= 400 and width <= 4000
+            if title.startswith("Qt") and any(
+                title.endswith(suffix)
+                for suffix in (
+                    "PowerDummyWindow",
+                    "ClipboardView",
+                    "ScreenChangeObserverWindow",
+                    "ThemeChangeObserverWindow",
+                )
+            ):
+                return True
             if width >= 500 and height >= 300:
                 return False
 
@@ -672,53 +832,69 @@ def _install_startup_window_suppression() -> None:
         try:
             if id_object != OBJID_WINDOW or not hwnd_obj:
                 return
-            # Extra guard: only touch windows belonging to this process.
-            if _get_hwnd_pid(hwnd_obj) != pid:
+            is_create_event = int(event) == EVENT_OBJECT_CREATE
+            hwnd_pid = _get_hwnd_pid(hwnd_obj)
+            if not _pid_is_tracked(hwnd_pid):
                 return
-            try:
-                if not user32.IsWindowVisible(hwnd_obj):
+            if not is_create_event:
+                try:
+                    if not user32.IsWindowVisible(hwnd_obj):
+                        return
+                except Exception:
                     return
-            except Exception:
-                return
             if not _is_transient_startup_window(hwnd_obj):
                 return
-            reason = "hide-startup-create" if int(event) == EVENT_OBJECT_CREATE else "hide-startup-show"
+            reason = "hide-startup-create" if is_create_event else "hide-startup-show"
             _log_window(hwnd_obj, reason)
             _hide_hwnd(hwnd_obj)
         except Exception:
             return
 
+    _refresh_descendant_pids(force=True)
+
     _STARTUP_WINDOW_PROC = WinEventProc(_win_event_proc)
-    hook = user32.SetWinEventHook(
-        EVENT_OBJECT_CREATE,
-        EVENT_OBJECT_SHOW,
-        0,
-        _STARTUP_WINDOW_PROC,
-        pid,
-        0,
-        WINEVENT_OUTOFCONTEXT,
-    )
+    hook = 0
+    if not disable_winevent_hook:
+        use_global_hook = str(os.environ.get("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        hook_pid = 0 if use_global_hook else pid
+        hook = user32.SetWinEventHook(
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_SHOW,
+            0,
+            _STARTUP_WINDOW_PROC,
+            hook_pid,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
     _STARTUP_WINDOW_HOOK = hook if hook else None
     if _STARTUP_WINDOW_HOOK is None:
         _STARTUP_WINDOW_PROC = None
 
-    # Fallback: during the first couple seconds, poll our top-level windows and hide
-    # any transient startup helpers. This helps when a window is shown too briefly
-    # for WinEvent to catch before the user perceives a flash.
+    # Fallback: poll top-level windows and hide transient helpers in this process tree.
     try:
-        poll_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_MS") or 1500)
+        suppress_ms = int(os.environ.get("BOT_STARTUP_WINDOW_SUPPRESS_DURATION_MS") or 8000)
     except Exception:
-        poll_ms = 1500
+        suppress_ms = 8000
+    suppress_ms = max(500, min(suppress_ms, 30000))
+    try:
+        poll_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_MS") or suppress_ms)
+    except Exception:
+        poll_ms = suppress_ms
     try:
         interval_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_INTERVAL_MS") or 30)
     except Exception:
         interval_ms = 30
-    poll_ms = max(200, min(poll_ms, 3000))
+    poll_ms = max(200, min(poll_ms, suppress_ms))
     interval_ms = max(20, min(interval_ms, 200))
     try:
-        fast_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_FAST_MS") or 800)
+        fast_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_FAST_MS") or 1200)
     except Exception:
-        fast_ms = 800
+        fast_ms = 1200
     fast_ms = max(0, min(fast_ms, poll_ms))
     try:
         fast_interval_ms = int(os.environ.get("BOT_STARTUP_WINDOW_POLL_FAST_INTERVAL_MS") or 10)
@@ -730,16 +906,12 @@ def _install_startup_window_suppression() -> None:
     _STARTUP_WINDOW_POLL_STOP = stop_event
 
     EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    try:
-        user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
-        user32.EnumWindows.restype = wintypes.BOOL
-    except Exception:
-        pass
 
     def _poll_once() -> None:
         def _enum_cb(hwnd_obj, _lparam):  # noqa: ANN001
             try:
-                if _get_hwnd_pid(hwnd_obj) != pid:
+                hwnd_pid = _get_hwnd_pid(hwnd_obj)
+                if not _pid_is_tracked(hwnd_pid):
                     return True
                 try:
                     if not user32.IsWindowVisible(hwnd_obj):
@@ -762,9 +934,13 @@ def _install_startup_window_suppression() -> None:
         start = time.monotonic()
         deadline = start + (max(200, poll_ms) / 1000.0)
         fast_deadline = start + (max(0, fast_ms) / 1000.0)
+        next_pid_refresh = start
         while time.monotonic() < deadline and not stop_event.is_set():
-            _poll_once()
             now = time.monotonic()
+            if now >= next_pid_refresh:
+                _refresh_descendant_pids(force=True)
+                next_pid_refresh = now + 0.05
+            _poll_once()
             sleep_s = (fast_interval_ms if now < fast_deadline else interval_ms) / 1000.0
             time.sleep(max(0.002, sleep_s))
 
@@ -775,7 +951,9 @@ def _install_startup_window_suppression() -> None:
 
 def _uninstall_startup_window_suppression() -> None:
     global _STARTUP_WINDOW_HOOK, _STARTUP_WINDOW_PROC, _STARTUP_WINDOW_POLL_STOP, _STARTUP_WINDOW_POLL_THREAD
-    if sys.platform != "win32" or _STARTUP_WINDOW_HOOK is None:
+    if sys.platform != "win32":
+        return
+    if _STARTUP_WINDOW_HOOK is None and _STARTUP_WINDOW_POLL_STOP is None and _STARTUP_WINDOW_POLL_THREAD is None:
         return
     try:
         stop_event = _STARTUP_WINDOW_POLL_STOP
@@ -792,11 +970,12 @@ def _uninstall_startup_window_suppression() -> None:
                 pass
     except Exception:
         pass
-    try:  # pragma: no cover - Windows only
-        import ctypes
-        ctypes.windll.user32.UnhookWinEvent(_STARTUP_WINDOW_HOOK)
-    except Exception:
-        pass
+    if _STARTUP_WINDOW_HOOK is not None:
+        try:  # pragma: no cover - Windows only
+            import ctypes
+            ctypes.windll.user32.UnhookWinEvent(_STARTUP_WINDOW_HOOK)
+        except Exception:
+            pass
     _STARTUP_WINDOW_HOOK = None
     _STARTUP_WINDOW_PROC = None
     _STARTUP_WINDOW_POLL_STOP = None
@@ -1094,6 +1273,7 @@ def _apply_qt_icon(app, window) -> bool:
 def _schedule_icon_enforcer(app, window) -> None:  # noqa: ANN001
     if sys.platform != "win32":
         return
+    from PyQt6 import QtCore
     force_icon = _env_flag("BOT_FORCE_APP_ICON")
     if not (force_icon or _env_flag("BOT_ENABLE_NATIVE_ICON") or _env_flag("BOT_ENABLE_DELAYED_QT_ICON")):
         return
@@ -1121,7 +1301,6 @@ def _schedule_icon_enforcer(app, window) -> None:  # noqa: ANN001
             qt_ok = _apply_qt_icon(app, window)
         if _env_flag("BOT_BOOT_LOG"):
             _boot_log(f"icon enforce attempt native={native_ok} qt={qt_ok}")
-        from PyQt6 import QtCore
         if state["remaining"] > 0:
             QtCore.QTimer.singleShot(interval_ms, _attempt)
 
@@ -1129,6 +1308,7 @@ def _schedule_icon_enforcer(app, window) -> None:  # noqa: ANN001
 
 
 def main() -> int:
+    _configure_startup_window_suppression_defaults()
     if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
         _boot_log("startup window hooks disabled")
     else:
@@ -1140,7 +1320,7 @@ def main() -> int:
     _boot_log("preamble loaded")
 
     from PyQt6 import QtCore, QtGui  # noqa: E402
-    from PyQt6.QtWidgets import QApplication  # noqa: E402
+    from PyQt6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
 
     from app.gui.app_icon import find_primary_icon_file, load_app_icon  # noqa: E402
     from app.gui.main_window import MainWindow  # noqa: E402
@@ -1158,8 +1338,14 @@ def main() -> int:
         f"{os.environ.get('BOT_NO_STARTUP_WINDOW_SUPPRESS', '')!r} "
         "BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS="
         f"{os.environ.get('BOT_NO_CBT_STARTUP_WINDOW_SUPPRESS', '')!r} "
+        "BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS="
+        f"{os.environ.get('BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS', '')!r} "
         "BOT_DISABLE_STARTUP_WINDOW_HOOKS="
-        f"{os.environ.get('BOT_DISABLE_STARTUP_WINDOW_HOOKS', '')!r}"
+        f"{os.environ.get('BOT_DISABLE_STARTUP_WINDOW_HOOKS', '')!r} "
+        "BOT_STARTUP_MASK_ENABLED="
+        f"{os.environ.get('BOT_STARTUP_MASK_ENABLED', '')!r} "
+        "BOT_STARTUP_MASK_MODE="
+        f"{os.environ.get('BOT_STARTUP_MASK_MODE', '')!r}"
     )
 
     force_app_icon = _env_flag("BOT_FORCE_APP_ICON")
@@ -1196,6 +1382,66 @@ def main() -> int:
         except Exception:
             pass
 
+    startup_masks: list[QWidget] = []
+    startup_mask_hide_ms = 0
+    startup_mask_mode = ""
+    if sys.platform == "win32" and _env_flag("BOT_STARTUP_MASK_ENABLED"):
+        try:
+            startup_mask_hide_ms = int(os.environ.get("BOT_STARTUP_MASK_HIDE_MS") or 500)
+        except Exception:
+            startup_mask_hide_ms = 500
+        startup_mask_mode = str(os.environ.get("BOT_STARTUP_MASK_MODE") or "snapshot").strip().lower()
+        startup_mask_hide_ms = max(100, min(startup_mask_hide_ms, 5000))
+        try:
+            screens = list(QtGui.QGuiApplication.screens() or [])
+            if not screens:
+                primary = QtGui.QGuiApplication.primaryScreen()
+                if primary is not None:
+                    screens = [primary]
+            snapshot_count = 0
+            for screen in screens:
+                mask = QWidget(
+                    None,
+                    QtCore.Qt.WindowType.FramelessWindowHint
+                    | QtCore.Qt.WindowType.Tool
+                    | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                    | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
+                    | QtCore.Qt.WindowType.NoDropShadowWindowHint,
+                )
+                mask.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+                mask.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                mask.setGeometry(screen.geometry())
+                mask_is_snapshot = False
+                if startup_mask_mode == "snapshot":
+                    try:
+                        pixmap = screen.grabWindow(0)
+                    except Exception:
+                        pixmap = QtGui.QPixmap()
+                    if pixmap is not None and not pixmap.isNull():
+                        snapshot = QLabel(mask)
+                        snapshot.setScaledContents(True)
+                        snapshot.setPixmap(pixmap)
+                        snapshot.setGeometry(mask.rect())
+                        snapshot.show()
+                        mask_is_snapshot = True
+                        snapshot_count += 1
+                if not mask_is_snapshot:
+                    mask.setStyleSheet("background-color: #0d1117;")
+                mask.show()
+                try:
+                    mask.raise_()
+                except Exception:
+                    pass
+                startup_masks.append(mask)
+            try:
+                app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
+            except Exception:
+                pass
+            mask_mode_effective = "snapshot" if snapshot_count == len(startup_masks) and startup_masks else "solid"
+            _boot_log(f"startup masks shown count={len(startup_masks)} mode={mask_mode_effective}")
+        except Exception:
+            startup_masks = []
+
     icon = QtGui.QIcon()
     disable_app_icon = _env_flag("BOT_DISABLE_APP_ICON") and not force_app_icon
     if not disable_app_icon:
@@ -1231,12 +1477,8 @@ def main() -> int:
             win.setWindowIcon(icon)
         except Exception:
             pass
-    try:
-        win.winId()
-    except Exception:
-        pass
-    if sys.platform == "win32" and (force_app_icon or _env_flag("BOT_ENABLE_NATIVE_ICON")):
-        _set_native_window_icon(win)
+    apply_native_icon_after_show = sys.platform == "win32" and (force_app_icon or _env_flag("BOT_ENABLE_NATIVE_ICON"))
+    force_taskbar_visibility = _env_flag("BOT_FORCE_TASKBAR_VISIBILITY")
 
     if sys.platform == "win32" and not disable_taskbar:
         icon_path = _resolve_taskbar_icon_path()
@@ -1274,21 +1516,126 @@ def main() -> int:
                 icon_path=icon_path,
                 relaunch_command=relaunch_cmd,
             )
-            try:
-                ensure_taskbar_visible(win)
-            except Exception:
-                pass
+            if force_taskbar_visibility:
+                try:
+                    ensure_taskbar_visible(win)
+                except Exception:
+                    pass
             if not success and attempts > 1:
                 QtCore.QTimer.singleShot(250, lambda: _apply_taskbar(attempts - 1))
 
         QtCore.QTimer.singleShot(taskbar_delay, _apply_taskbar)
 
-    win.showMaximized()
+    try:
+        startup_reveal_ms = int(os.environ.get("BOT_STARTUP_REVEAL_DELAY_MS") or 0)
+    except Exception:
+        startup_reveal_ms = 0
+    startup_reveal_ms = max(0, min(startup_reveal_ms, 5000))
+    startup_reveal_armed = False
+    if sys.platform == "win32" and startup_reveal_ms > 0:
+        try:
+            win.setWindowOpacity(0.0)
+            startup_reveal_armed = True
+        except Exception:
+            startup_reveal_armed = False
+
+    if sys.platform == "win32":
+        try:
+            win.setWindowState(win.windowState() | QtCore.Qt.WindowState.WindowMaximized)
+        except Exception:
+            pass
+        win.show()
+    else:
+        win.showMaximized()
     _boot_log("MainWindow shown")
     try:
         win.winId()
     except Exception:
         pass
+    mask_unmask_deadline = time.monotonic() + 4.0
+
+    def _main_window_ready_for_unmask() -> bool:
+        try:
+            if not win.isVisible():
+                return False
+        except Exception:
+            return False
+        try:
+            if win.windowState() & QtCore.Qt.WindowState.WindowMinimized:
+                return False
+        except Exception:
+            pass
+        try:
+            handle = win.windowHandle()
+        except Exception:
+            handle = None
+        if handle is not None:
+            try:
+                if hasattr(handle, "isExposed") and not handle.isExposed():
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def _try_hide_startup_mask() -> None:
+        nonlocal startup_masks
+        if not startup_masks:
+            return
+        if not _main_window_ready_for_unmask() and time.monotonic() < mask_unmask_deadline:
+            QtCore.QTimer.singleShot(80, _try_hide_startup_mask)
+            return
+        for mask in list(startup_masks):
+            try:
+                mask.hide()
+            except Exception:
+                pass
+            try:
+                mask.deleteLater()
+            except Exception:
+                pass
+        startup_masks = []
+        _boot_log("startup masks hidden")
+
+    if startup_reveal_armed:
+
+        def _reveal_main_window() -> None:
+            try:
+                win.setWindowOpacity(1.0)
+            except Exception:
+                pass
+            try:
+                if not win.isVisible():
+                    if sys.platform == "win32":
+                        win.show()
+                    else:
+                        win.showMaximized()
+            except Exception:
+                pass
+            try:
+                win.raise_()
+                win.activateWindow()
+            except Exception:
+                pass
+            _try_hide_startup_mask()
+
+        QtCore.QTimer.singleShot(startup_reveal_ms, _reveal_main_window)
+        if startup_masks:
+            QtCore.QTimer.singleShot(max(startup_mask_hide_ms, startup_reveal_ms + 300), _try_hide_startup_mask)
+    elif startup_masks:
+        QtCore.QTimer.singleShot(startup_mask_hide_ms or 1300, _try_hide_startup_mask)
+    # Safety valve: startup window hooks help suppress flashes during creation, but
+    # keeping them active too long can make some Windows setups feel unresponsive.
+    if sys.platform == "win32":
+        try:
+            hook_auto_uninstall_ms = int(os.environ.get("BOT_STARTUP_WINDOW_HOOK_AUTO_UNINSTALL_MS") or 900)
+        except Exception:
+            hook_auto_uninstall_ms = 900
+        hook_auto_uninstall_ms = max(0, min(hook_auto_uninstall_ms, 5000))
+        if hook_auto_uninstall_ms > 0:
+            QtCore.QTimer.singleShot(hook_auto_uninstall_ms, _uninstall_startup_window_suppression)
+            QtCore.QTimer.singleShot(hook_auto_uninstall_ms, _uninstall_cbt_startup_window_suppression)
+    if apply_native_icon_after_show:
+        QtCore.QTimer.singleShot(0, lambda: _set_native_window_icon(win))
     if sys.platform == "win32" and force_app_icon:
         QtCore.QTimer.singleShot(0, lambda: _apply_qt_icon(app, win))
     if sys.platform == "win32":
@@ -1413,36 +1760,43 @@ def main() -> int:
         pass
     if sys.platform == "win32" and not disable_taskbar:
         try:
-            controller_ms = int(os.environ.get("BOT_TASKBAR_ENSURE_MS") or 30000)
+            controller_ms_raw = int(os.environ.get("BOT_TASKBAR_ENSURE_MS") or 0)
         except Exception:
-            controller_ms = 30000
+            controller_ms_raw = 0
         try:
             interval_ms = int(os.environ.get("BOT_TASKBAR_ENSURE_INTERVAL_MS") or 250)
         except Exception:
             interval_ms = 250
-        controller_ms = max(1000, min(controller_ms, 30000))
-        interval_ms = max(100, min(interval_ms, 2000))
-        start_ts = time.monotonic()
+        try:
+            start_delay_ms = int(os.environ.get("BOT_TASKBAR_ENSURE_START_DELAY_MS") or 1200)
+        except Exception:
+            start_delay_ms = 1200
+        if controller_ms_raw > 0:
+            controller_ms = max(1000, min(controller_ms_raw, 30000))
+            interval_ms = max(100, min(interval_ms, 2000))
+            start_delay_ms = max(0, min(start_delay_ms, 5000))
+            start_ts = time.monotonic()
 
-        def _tick_taskbar() -> None:
-            try:
-                ensure_taskbar_visible(win)
-            except Exception:
-                pass
-            try:
-                apply_taskbar_metadata(
-                    win,
-                    app_id=APP_USER_MODEL_ID,
-                    display_name=APP_DISPLAY_NAME,
-                    icon_path=icon_path,
-                    relaunch_command=relaunch_cmd,
-                )
-            except Exception:
-                pass
-            if (time.monotonic() - start_ts) * 1000.0 < controller_ms:
-                QtCore.QTimer.singleShot(interval_ms, _tick_taskbar)
+            def _tick_taskbar() -> None:
+                if force_taskbar_visibility:
+                    try:
+                        ensure_taskbar_visible(win)
+                    except Exception:
+                        pass
+                try:
+                    apply_taskbar_metadata(
+                        win,
+                        app_id=APP_USER_MODEL_ID,
+                        display_name=APP_DISPLAY_NAME,
+                        icon_path=icon_path,
+                        relaunch_command=relaunch_cmd,
+                    )
+                except Exception:
+                    pass
+                if (time.monotonic() - start_ts) * 1000.0 < controller_ms:
+                    QtCore.QTimer.singleShot(interval_ms, _tick_taskbar)
 
-        QtCore.QTimer.singleShot(0, _tick_taskbar)
+            QtCore.QTimer.singleShot(start_delay_ms, _tick_taskbar)
 
     ready_signal = os.environ.get("BOT_STARTER_READY_FILE")
     if ready_signal:
@@ -1470,7 +1824,7 @@ def main() -> int:
         cbt_ms = int(os.environ.get("BOT_CBT_STARTUP_WINDOW_SUPPRESS_DURATION_MS") or 2500)
     except Exception:
         cbt_ms = 2500
-    QtCore.QTimer.singleShot(max(250, min(8000, cbt_ms)), _uninstall_cbt_startup_window_suppression)
+    QtCore.QTimer.singleShot(max(250, min(30000, cbt_ms)), _uninstall_cbt_startup_window_suppression)
 
     try:
         auto_exit_ms = int(os.environ.get("BOT_AUTO_EXIT_MS") or 0)

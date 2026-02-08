@@ -212,6 +212,8 @@ class StrategyEngine:
         self.config.setdefault("require_indicator_flip_signal", True)
         self.config.setdefault("strict_indicator_flip_enforcement", True)
         self.config.setdefault("auto_flip_on_close", True)
+        self.config.setdefault("futures_flat_purge_grace_seconds", 12.0)
+        self.config.setdefault("futures_flat_purge_miss_threshold", 2)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.binance = binance_wrapper
         self.log = log_callback
@@ -235,6 +237,7 @@ class StrategyEngine:
         self._stop = False
         # Debounce liquidation reconciliation to avoid clearing state on transient API gaps.
         self._reconcile_miss_counts: dict[str, int] = {}
+        self._flat_purge_miss_counts: dict[tuple[str, str, str], int] = {}
         key = f"{str(self.config.get('symbol') or '').upper()}@{str(self.config.get('interval') or '').lower()}"
         h = abs(hash(key)) if key.strip('@') else 0
         self._phase_seed = (h % 997) / 997.0 if key.strip('@') else 0.0
@@ -254,6 +257,18 @@ class StrategyEngine:
         except Exception:
             retry_backoff = 0.75
         self._order_rate_retry_backoff = max(0.1, min(retry_backoff, 5.0))
+        try:
+            self._flat_purge_grace_seconds = max(
+                0.0, float(self.config.get("futures_flat_purge_grace_seconds") or 0.0)
+            )
+        except Exception:
+            self._flat_purge_grace_seconds = 12.0
+        try:
+            self._flat_purge_miss_threshold = max(
+                1, int(self.config.get("futures_flat_purge_miss_threshold") or 1)
+            )
+        except Exception:
+            self._flat_purge_miss_threshold = 2
         self._indicator_use_live_values = bool(self.config.get("indicator_use_live_values", False))
         try:
             self._indicator_min_hold_seconds = max(
@@ -1113,7 +1128,9 @@ class StrategyEngine:
         indicator_norm = _canonical_indicator_token(indicator_key) or indicator_key
         indicator_lookup_key = indicator_norm or indicator_key
         qty_from_book = self._trade_book_total_qty(symbol, interval, indicator_lookup_key, side)
-        if qty_from_book is not None:
+        # Only trust trade-book totals as authoritative when strictly positive.
+        # A stale zero bucket should not hide live ledger/exchange exposure.
+        if qty_from_book is not None and qty_from_book > 0.0:
             return qty_from_book
         total = 0.0
         try:
@@ -1127,6 +1144,8 @@ class StrategyEngine:
                     continue
         except Exception:
             return 0.0
+        if qty_from_book is not None:
+            return max(total, qty_from_book)
         return total
 
     def _indicator_live_qty_total(
@@ -1287,7 +1306,13 @@ class StrategyEngine:
             pass
         return False
 
-    def _indicator_entry_matches_close(self, entry: dict, indicator_lookup_key: str) -> bool:
+    def _indicator_entry_matches_close(
+        self,
+        entry: dict,
+        indicator_lookup_key: str,
+        *,
+        allow_multi_override: bool = False,
+    ) -> bool:
         """Guard so a close only targets entries that match the closing indicator."""
         tokens = self._extract_indicator_keys(entry)
         if not tokens:
@@ -1295,7 +1320,7 @@ class StrategyEngine:
         if indicator_lookup_key not in tokens:
             return False
         allow_multi = coerce_bool(self.config.get("allow_multi_indicator_close"), False)
-        if len(tokens) > 1 and not allow_multi:
+        if len(tokens) > 1 and not (allow_multi or allow_multi_override):
             return False
         return True
 
@@ -1831,7 +1856,11 @@ class StrategyEngine:
         ledger_entries = [
             entry
             for entry in self._trade_book_entries(symbol, interval, indicator_lookup_key, side_label)
-            if self._indicator_entry_matches_close(entry, indicator_lookup_key)
+            if self._indicator_entry_matches_close(
+                entry,
+                indicator_lookup_key,
+                allow_multi_override=allow_hedge_close,
+            )
         ]
         ledger_ids = [entry.get("ledger_id") for entry in ledger_entries if entry.get("ledger_id")]
         ledger_ids = [lid for lid in ledger_ids if lid]
@@ -1960,7 +1989,7 @@ class StrategyEngine:
             if limit_remaining is not None and limit_remaining <= limit_tol:
                 break
         if closed_count <= 0:
-            if hedge_scope_only:
+            if hedge_scope_only and not allow_hedge_close:
                 self._exit_close_guard(symbol, side_norm)
                 return 0, 0.0
             targeted_entries: list[tuple[tuple[str, str, str], dict]] = []
@@ -1983,7 +2012,11 @@ class StrategyEngine:
                 if not entries:
                     continue
                 for entry in entries:
-                    if not self._indicator_entry_matches_close(entry, indicator_lookup_key):
+                    if not self._indicator_entry_matches_close(
+                        entry,
+                        indicator_lookup_key,
+                        allow_multi_override=allow_hedge_close,
+                    ):
                         continue
                     targeted_entries.append((leg_key, entry))
             if targeted_entries:
@@ -2069,7 +2102,11 @@ class StrategyEngine:
                 if not entries:
                     continue
                 for entry in entries:
-                    if not self._indicator_entry_matches_close(entry, indicator_lookup_key):
+                    if not self._indicator_entry_matches_close(
+                        entry,
+                        indicator_lookup_key,
+                        allow_multi_override=allow_hedge_close,
+                    ):
                         continue
                     try:
                         interval_seconds_entry = float(_interval_to_seconds(str(leg_key[1] or "1m")))
@@ -2607,15 +2644,20 @@ class StrategyEngine:
         position_side: str | None,
         positions: list[dict] | None = None,
     ) -> float | None:
+        sym_norm = str(symbol or "").upper()
         rows: list[dict] | None
         if positions is None:
             try:
                 rows = self.binance.list_open_futures_positions(max_age=0.0, force_refresh=True) or []
             except Exception:
                 return None
+            if not rows:
+                try:
+                    rows = self.binance.client.futures_position_information(symbol=sym_norm) or []
+                except Exception:
+                    rows = []
         else:
             rows = positions
-        sym_norm = str(symbol or "").upper()
         side_norm = "BUY" if str(side_label or "").upper() in {"BUY", "LONG"} else "SELL"
         desired_pos_side = str(position_side or "").upper() if position_side else None
         best_qty = 0.0
@@ -2637,7 +2679,17 @@ class StrategyEngine:
                 if desired_pos_side:
                     qty_val = abs(amt)
                 else:
-                    if side_norm == "BUY":
+                    # Prefer explicit positionSide labels when available because some connectors
+                    # report SHORT amounts as positive values in hedge mode.
+                    if pos_side_val == "LONG":
+                        if side_norm != "BUY":
+                            continue
+                        qty_val = abs(amt)
+                    elif pos_side_val == "SHORT":
+                        if side_norm != "SELL":
+                            continue
+                        qty_val = abs(amt)
+                    elif side_norm == "BUY":
                         if amt <= 0.0:
                             continue
                         qty_val = amt
@@ -2661,6 +2713,22 @@ class StrategyEngine:
         sym_norm = str(symbol or "").upper()
         if not sym_norm:
             return
+        now_ts = time.time()
+        try:
+            mode_text = str(getattr(self.binance, "mode", "") or "").lower()
+        except Exception:
+            mode_text = ""
+        try:
+            purge_grace_seconds = max(0.0, float(getattr(self, "_flat_purge_grace_seconds", 12.0) or 0.0))
+        except Exception:
+            purge_grace_seconds = 12.0
+        # Demo/testnet position snapshots can lag right after opening.
+        if any(tag in mode_text for tag in ("demo", "test", "paper")):
+            purge_grace_seconds = max(purge_grace_seconds, 30.0)
+        try:
+            miss_threshold = max(1, int(getattr(self, "_flat_purge_miss_threshold", 2) or 1))
+        except Exception:
+            miss_threshold = 2
         for leg_key, leg in list(self._leg_ledger.items()):
             leg_sym, leg_interval, leg_side = leg_key
             if str(leg_sym or "").upper() != sym_norm:
@@ -2670,6 +2738,7 @@ class StrategyEngine:
             except Exception:
                 qty_recorded = 0.0
             if qty_recorded <= 0.0:
+                self._flat_purge_miss_counts.pop(leg_key, None)
                 continue
             leg_side_norm = "BUY" if str(leg_side or "").upper() in {"BUY", "LONG"} else "SELL"
             desired_pos_side = None
@@ -2684,33 +2753,56 @@ class StrategyEngine:
             if live_qty is None:
                 continue
             eps = max(1e-8, abs(live_qty) * 1e-6)
-            if live_qty <= eps:
-                try:
-                    entries = self._leg_entries(leg_key)
-                except Exception:
-                    entries = []
+            if live_qty > eps:
+                self._flat_purge_miss_counts.pop(leg_key, None)
+                continue
+            try:
+                entries = self._leg_entries(leg_key)
+            except Exception:
+                entries = []
+            if purge_grace_seconds > 0.0:
+                newest_ts = 0.0
                 for entry in entries or []:
                     try:
-                        self._mark_indicator_reentry_signal_block(sym_norm, leg_interval, entry, leg_side_norm)
+                        ts_val = float(entry.get("timestamp") or 0.0)
                     except Exception:
-                        pass
+                        ts_val = 0.0
+                    if ts_val > newest_ts:
+                        newest_ts = ts_val
+                if newest_ts <= 0.0:
                     try:
-                        for indicator_key in self._extract_indicator_keys(entry):
-                            self._record_indicator_close(sym_norm, leg_interval, indicator_key, leg_side_norm, entry.get("qty"))
+                        newest_ts = float((leg or {}).get("timestamp") or 0.0)
                     except Exception:
-                        pass
-                    try:
-                        self._queue_flip_on_close(leg_interval, leg_side_norm, entry, None)
-                    except Exception:
-                        pass
-                self._remove_leg_entry(leg_key, None)
-                self._guard_mark_leg_closed(leg_key)
+                        newest_ts = 0.0
+                if newest_ts > 0.0 and (now_ts - newest_ts) < purge_grace_seconds:
+                    continue
+            miss_count = int(self._flat_purge_miss_counts.get(leg_key, 0) or 0) + 1
+            self._flat_purge_miss_counts[leg_key] = miss_count
+            if miss_count < miss_threshold:
+                continue
+            self._flat_purge_miss_counts.pop(leg_key, None)
+            for entry in entries or []:
                 try:
-                    self.log(
-                        f"Purged stale {leg_side_norm} leg for {sym_norm}@{leg_interval} after liquidation/manual close."
-                    )
+                    self._mark_indicator_reentry_signal_block(sym_norm, leg_interval, entry, leg_side_norm)
                 except Exception:
                     pass
+                try:
+                    for indicator_key in self._extract_indicator_keys(entry):
+                        self._record_indicator_close(sym_norm, leg_interval, indicator_key, leg_side_norm, entry.get("qty"))
+                except Exception:
+                    pass
+                try:
+                    self._queue_flip_on_close(leg_interval, leg_side_norm, entry, None)
+                except Exception:
+                    pass
+            self._remove_leg_entry(leg_key, None)
+            self._guard_mark_leg_closed(leg_key)
+            try:
+                self.log(
+                    f"Purged stale {leg_side_norm} leg for {sym_norm}@{leg_interval} after liquidation/manual close."
+                )
+            except Exception:
+                pass
 
     def _close_leg_entry(
         self,
@@ -2745,20 +2837,13 @@ class StrategyEngine:
         if actual_qty is not None:
             eps = max(1e-9, actual_qty * 1e-6)
             if actual_qty <= eps:
-                self._remove_leg_entry(leg_key, entry.get("ledger_id"))
                 try:
                     self.log(
-                        f"Skip close for {symbol}@{interval} ({side_label}): position already flat on exchange."
+                        f"{symbol}@{interval} ({side_label}) live qty snapshot is flat; attempting verified close to avoid stale-snapshot misses."
                     )
                 except Exception:
                     pass
-                if queue_flip:
-                    try:
-                        self._queue_flip_on_close(interval, side_label, entry, None)
-                    except Exception:
-                        pass
-                return 0.0
-            if qty_to_close - actual_qty > eps:
+            elif qty_to_close - actual_qty > eps:
                 try:
                     self.log(
                         f"Adjusting close size for {symbol}@{interval} ({side_label}) "
@@ -2767,13 +2852,15 @@ class StrategyEngine:
                 except Exception:
                     pass
                 qty_to_close = actual_qty
+        if qty_to_close <= 0.0:
+            return 0.0
         start_ts = time.time()
         try:
-            res = self.binance.close_futures_leg_exact(
+            ok_close, res = self._execute_close_with_fallback(
                 symbol,
+                close_side,
                 qty_to_close,
-                side=close_side,
-                position_side=position_side,
+                position_side,
             )
         except Exception as exc:
             try:
@@ -2781,24 +2868,40 @@ class StrategyEngine:
             except Exception:
                 pass
             return 0.0
-        if not (isinstance(res, dict) and res.get("ok")):
+        if not ok_close:
             try:
                 self.log(f"Per-trade stop-loss close failed for {symbol}@{interval} ({side_label}): {res}")
             except Exception:
                 pass
             return 0.0
+        closed_qty = qty_to_close
+        if isinstance(res, dict):
+            try:
+                sent_qty = float(
+                    res.get("sent_qty")
+                    or res.get("executed_qty")
+                    or res.get("executedQty")
+                    or res.get("origQty")
+                    or 0.0
+                )
+            except Exception:
+                sent_qty = 0.0
+            if sent_qty > 0.0:
+                closed_qty = min(qty_to_close, sent_qty)
+        if closed_qty <= 0.0:
+            closed_qty = qty_to_close
         latency_s = max(0.0, time.time() - start_ts)
         payload = self._build_close_event_payload(
             symbol,
             interval,
             side_label,
-            qty_to_close,
+            closed_qty,
             res,
             leg_info_override=entry,
         )
         if isinstance(reason, str) and reason.strip():
             payload["reason"] = reason.strip()
-        remaining_qty = qty_recorded - qty_to_close
+        remaining_qty = qty_recorded - closed_qty
         eps_remaining = max(1e-9, qty_recorded * 1e-6)
         fully_closed = remaining_qty <= eps_remaining or not entry.get("ledger_id")
         if fully_closed:
@@ -2816,7 +2919,7 @@ class StrategyEngine:
             self._mark_indicator_reentry_signal_block(symbol, interval, entry, side_label)
             try:
                 for indicator_key in self._extract_indicator_keys(entry):
-                    self._record_indicator_close(symbol, interval, indicator_key, side_label, qty_to_close)
+                    self._record_indicator_close(symbol, interval, indicator_key, side_label, closed_qty)
             except Exception:
                 pass
         self._notify_interval_closed(
@@ -2838,11 +2941,11 @@ class StrategyEngine:
             pct_display = max(price_pct, margin_pct)
             self.log(
                 f"Per-trade stop-loss closed {side_label} for {symbol}@{interval} "
-                f"(qty {qty_to_close:.10f}, loss {loss_usdt:.4f} USDT / {pct_display:.2f}%)."
+                f"(qty {closed_qty:.10f}, loss {loss_usdt:.4f} USDT / {pct_display:.2f}%)."
             )
         except Exception:
             pass
-        return qty_to_close
+        return closed_qty
 
     def _evaluate_per_trade_stop(
         self,
@@ -3436,6 +3539,7 @@ class StrategyEngine:
                         ignore_hold=True,
                         qty_limit=qty_goal,
                         strict_interval=True,
+                        allow_hedge_close=True,
                     )
                 except Exception as exc:
                     try:
@@ -3579,25 +3683,30 @@ class StrategyEngine:
             residual_qty = 0.0
             for indicator_hint in indicator_tokens:
                 try:
-                    qty_val = self._indicator_open_qty(
+                    qty_val = self._indicator_live_qty_total(
                         symbol,
                         interval_norm,
                         indicator_hint,
                         opp,
                         interval_aliases=interval_tokens,
                         strict_interval=True,
+                        use_exchange_fallback=True,
                     )
                 except Exception:
                     qty_val = 0.0
                 residual_qty = max(residual_qty, qty_val)
-            if residual_qty <= 0.0:
+            residual_tol = max(1e-9, residual_qty * 1e-6)
+            if residual_qty <= residual_tol:
+                # Reconcile stale indicator tracking instead of hard-blocking the flip.
                 try:
-                    self.log(
-                        f"{symbol}@{interval_norm or 'default'} flip skipped: no {indicator_label} {opp} leg to close."
-                    )
+                    for indicator_hint in indicator_tokens:
+                        self._purge_indicator_tracking(symbol, interval_norm, indicator_hint, opp)
                 except Exception:
                     pass
-                return False
+                indicator_target_cleared = True
+                if qty_goal is None:
+                    return True
+                return _goal_met()
             qty_hint = residual_qty
             if qty_goal is not None and qty_goal > 0.0:
                 qty_hint = min(qty_hint, qty_goal)
@@ -3642,7 +3751,10 @@ class StrategyEngine:
                     self.log(f"{symbol}@{interval_norm or 'default'} flip skipped: no {indicator_label} {opp} leg to close.")
                 except Exception:
                     pass
-                return False
+                indicator_target_cleared = True
+                if qty_goal is None:
+                    return True
+                return _goal_met()
 
         # If an indicator was provided, stop here. We never want to close unrelated symbol-side
         # exposure beyond the indicator/interval scope.
@@ -6069,6 +6181,14 @@ class StrategyEngine:
                         )
         flip_requests = self._drain_flip_on_close_requests(cw.get("interval"))
         if flip_requests:
+            require_flip_signal = coerce_bool(self.config.get("require_indicator_flip_signal"), True)
+            strict_flip_guard = coerce_bool(self.config.get("strict_indicator_flip_enforcement"), True)
+            allow_without_signal = coerce_bool(
+                self.config.get("allow_indicator_close_without_signal"), False
+            )
+            enforce_flip_signal_confirmation = (
+                require_flip_signal and strict_flip_guard and not allow_without_signal
+            )
             existing_map: dict[tuple[str, str], dict[str, object]] = {}
             for req in indicator_order_requests:
                 side_val = str(req.get("side") or "").upper()
@@ -6121,6 +6241,20 @@ class StrategyEngine:
                         existing_req["flip_qty"] = req_flip_qty
                     if existing_flip_target <= 0.0 and req_flip_qty > 0.0:
                         existing_req["flip_qty_target"] = req_flip_qty
+                    existing_actions = existing_req.get("trigger_actions")
+                    if not isinstance(existing_actions, dict):
+                        existing_actions = {}
+                    existing_actions[indicator_key] = side_value.lower()
+                    existing_req["trigger_actions"] = existing_actions
+                    continue
+                if enforce_flip_signal_confirmation:
+                    try:
+                        self.log(
+                            f"{cw['symbol']}@{interval_current or 'default'} {indicator_key} {side_value} "
+                            "flip request ignored (waiting for live indicator confirmation)."
+                        )
+                    except Exception:
+                        pass
                     continue
                 allow_exchange_fallback = True
                 try:
@@ -6178,6 +6312,8 @@ class StrategyEngine:
                         "flip_from": req.get("flip_from"),
                         "flip_qty": flip_qty_val,
                         "flip_qty_target": flip_qty_val,
+                        "trigger_desc": f"{indicator_key.upper()} flip-on-close -> {side_value}",
+                        "trigger_actions": {indicator_key: side_value.lower()},
                     }
                 )
         thresholds = []
@@ -6195,6 +6331,87 @@ class StrategyEngine:
         if thresholds: parts.append("Thresholds:" + ",".join(thresholds))
         parts.append("Details:" + trigger_desc)
         self.log(" | ".join(parts))
+
+        trigger_segments = [
+            segment.strip()
+            for segment in str(trigger_desc or "").split("|")
+            if str(segment).strip()
+        ]
+
+        def _segment_matches_indicator_context(indicator_key: str | None, segment: str) -> bool:
+            key_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
+            if not key_norm:
+                return False
+            seg_low = str(segment or "").lower()
+            if not seg_low:
+                return False
+            seg_token = re.sub(r"[^a-z0-9]", "", seg_low)
+            if key_norm == "stoch_rsi":
+                return "stochrsi" in seg_token or "stochasticrsi" in seg_token
+            if key_norm == "rsi":
+                return (
+                    "rsi" in seg_token
+                    and "stochrsi" not in seg_token
+                    and "stochasticrsi" not in seg_token
+                )
+            if key_norm == "willr":
+                return ("williams" in seg_low) or ("%r" in seg_low)
+            if key_norm == "ma":
+                return "ma_" in seg_low or "ma crossover" in seg_low or seg_low.startswith("ma")
+            token = key_norm.replace("_", "")
+            return token in seg_token if token else False
+
+        def _build_trigger_desc_for_order(indicator_key: str | None, side_value: str | None) -> str:
+            side_upper = str(side_value or "").upper()
+            action_suffix = f"-> {side_upper}" if side_upper in {"BUY", "SELL"} else ""
+            indicator_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
+            if not indicator_norm or not trigger_segments:
+                return str(trigger_desc or "")
+            matched_segments = [
+                segment
+                for segment in trigger_segments
+                if _segment_matches_indicator_context(indicator_norm, segment)
+            ]
+            if not matched_segments:
+                return str(trigger_desc or "")
+            selected: list[str] = []
+            value_segment = next((seg for seg in matched_segments if "->" not in seg), None)
+            if value_segment:
+                selected.append(value_segment)
+            action_segment = None
+            for seg in matched_segments:
+                if "->" not in seg:
+                    continue
+                if action_suffix and action_suffix in seg.upper():
+                    action_segment = seg
+                    break
+                if action_segment is None:
+                    action_segment = seg
+            if action_segment:
+                selected.append(action_segment)
+            if action_suffix and not action_segment:
+                selected.append(f"{indicator_norm.upper()} {action_suffix}")
+            selected = list(dict.fromkeys(selected))
+            return " | ".join(selected) if selected else str(trigger_desc or "")
+
+        def _normalize_order_trigger_actions(
+            raw_actions,
+            indicator_key: str | None,
+            side_value: str | None,
+        ) -> dict[str, str]:
+            normalized: dict[str, str] = {}
+            if isinstance(raw_actions, dict):
+                for raw_key, raw_action in raw_actions.items():
+                    key_norm = _canonical_indicator_token(raw_key) or str(raw_key or "").strip().lower()
+                    action_norm = str(raw_action or "").strip().lower()
+                    if key_norm and action_norm in {"buy", "sell"}:
+                        normalized[key_norm] = action_norm
+            indicator_norm = _canonical_indicator_token(indicator_key) or str(indicator_key or "").strip().lower()
+            if indicator_norm and indicator_norm not in normalized:
+                side_norm = str(side_value or "").upper()
+                if side_norm in {"BUY", "SELL"}:
+                    normalized[indicator_norm] = side_norm.lower()
+            return normalized
 
         base_trigger_labels = list(dict.fromkeys(trigger_sources or []))
         base_signature = tuple(sorted(base_trigger_labels))
@@ -6218,6 +6435,24 @@ class StrategyEngine:
                     if str(part or "").strip()
                 )
                 signature = signature_parts or tuple(sorted(lbl.lower() for lbl in label_list))
+                indicator_key_request = _canonical_indicator_token(request.get("indicator_key")) or None
+                if not indicator_key_request:
+                    if signature:
+                        indicator_key_request = _canonical_indicator_token(signature[0]) or signature[0]
+                    elif label_list:
+                        indicator_key_request = (
+                            _canonical_indicator_token(label_list[0]) or str(label_list[0]).strip().lower()
+                        )
+                request_trigger_actions = _normalize_order_trigger_actions(
+                    request.get("trigger_actions"),
+                    indicator_key_request,
+                    side_value,
+                )
+                request_trigger_desc = str(request.get("trigger_desc") or "").strip()
+                if not request_trigger_desc:
+                    request_trigger_desc = _build_trigger_desc_for_order(indicator_key_request, side_value)
+                if not request_trigger_desc:
+                    request_trigger_desc = str(trigger_desc or "")
                 if self._symbol_signature_active(cw["symbol"], side_value, signature, cw.get("interval")):
                     try:
                         self.log(f"{cw['symbol']}@{cw.get('interval')} {side_value} skipped: signature active on this bar.")
@@ -6237,15 +6472,24 @@ class StrategyEngine:
                         "flip_from": request.get("flip_from"),
                         "flip_qty": request.get("flip_qty"),
                         "flip_qty_target": request.get("flip_qty_target"),
+                        "trigger_desc": request_trigger_desc,
+                        "trigger_actions": request_trigger_actions,
                     }
                 )
         elif signal:
+            fallback_trigger_actions = _normalize_order_trigger_actions(
+                trigger_actions,
+                None,
+                str(signal).upper(),
+            )
             orders_to_execute.append(
                 {
                     "side": str(signal).upper(),
                     "labels": base_trigger_labels,
                     "signature": base_signature,
                     "timestamp": signal_timestamp,
+                    "trigger_desc": str(trigger_desc or ""),
+                    "trigger_actions": fallback_trigger_actions,
                 }
             )
 
@@ -6404,6 +6648,8 @@ class StrategyEngine:
                         "flip_from": order.get("flip_from"),
                         "flip_qty": order.get("flip_qty"),
                         "flip_qty_target": order.get("flip_qty_target"),
+                        "trigger_desc": order.get("trigger_desc"),
+                        "trigger_actions": order.get("trigger_actions"),
                     }
                 )
 
@@ -6430,11 +6676,14 @@ class StrategyEngine:
             flip_from_side: str | None = None,
             flip_qty: float | int | None = None,
             flip_qty_target: float | int | None = None,
+            order_trigger_desc: str | None = None,
+            order_trigger_actions: dict[str, str] | None = None,
         ) -> None:
             nonlocal positions_cache, order_batch_counter, order_batch_total
             side = str(order_side or "").upper()
             if side not in ("BUY", "SELL"):
                 return
+            interval_norm = str(cw.get("interval") or "").strip()
             flip_from_norm = str(flip_from_side or "").upper()
             try:
                 flip_qty_val = float(flip_qty or 0.0)
@@ -6465,8 +6714,21 @@ class StrategyEngine:
             trigger_labels = list(dict.fromkeys(indicator_labels or base_trigger_labels))
             if not trigger_labels:
                 trigger_labels = [side.lower()]
+            trigger_desc_for_order = str(order_trigger_desc or "").strip() or str(trigger_desc or "")
+            trigger_actions_for_order: dict[str, str] = {}
+            if isinstance(order_trigger_actions, dict):
+                for raw_key, raw_action in order_trigger_actions.items():
+                    key_norm = _canonical_indicator_token(raw_key) or str(raw_key or "").strip().lower()
+                    action_norm = str(raw_action or "").strip().lower()
+                    if key_norm and action_norm in {"buy", "sell"}:
+                        trigger_actions_for_order[key_norm] = action_norm
+            if not trigger_actions_for_order:
+                inferred_action = "buy" if side == "BUY" else "sell"
+                for label in trigger_labels:
+                    key_norm = _canonical_indicator_token(label) or str(label or "").strip().lower()
+                    if key_norm:
+                        trigger_actions_for_order[key_norm] = inferred_action
             signature = tuple(order_signature or tuple(sorted(trigger_labels)))
-            interval_norm = str(cw.get("interval") or "").strip()
             interval_key = interval_norm or "default"
             context_key = f"{interval_key}:{side}:{'|'.join(signature) if signature else side}"
             bar_sig_key = (cw["symbol"], interval_key, side)
@@ -7770,8 +8032,10 @@ class StrategyEngine:
                                     'ledger_id': ledger_id,
                                     'trigger_signature': signature_list,
                                     'trigger_indicators': list(trigger_labels),
-                                    'trigger_desc': trigger_desc,
+                                    'trigger_desc': trigger_desc_for_order,
                                 }
+                                if trigger_actions_for_order:
+                                    entry_payload['trigger_actions'] = dict(trigger_actions_for_order)
                                 if slot_key_tuple:
                                     try:
                                         entry_payload['slot_id'] = "|".join(slot_key_tuple)
@@ -7795,8 +8059,8 @@ class StrategyEngine:
                                     size_logged = qty_logged * price_logged if price_logged > 0.0 else 0.0
                                     margin_logged = float(entry_payload.get('margin_usdt') or margin_est or 0.0)
                                     indicator_label = (
-                                        trigger_desc.upper()
-                                        if isinstance(trigger_desc, str) and trigger_desc.strip()
+                                        trigger_desc_for_order.upper()
+                                        if isinstance(trigger_desc_for_order, str) and trigger_desc_for_order.strip()
                                         else "-"
                                     )
                                     self.log(
@@ -7889,10 +8153,12 @@ class StrategyEngine:
                     "avg_price": avg_price if avg_price > 0 else price,
                     "leverage": leverage_used,
                     "trigger_indicators": trigger_labels,
-                    "trigger_desc": trigger_desc,
+                    "trigger_desc": trigger_desc_for_order,
                     "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                     "status": "placed",
                 }
+                if trigger_actions_for_order:
+                    order_info["trigger_actions"] = dict(trigger_actions_for_order)
                 info_meta = order_res.get("info") or {}
                 computed_meta = order_res.get("computed") or {}
                 order_id_value = None
@@ -7964,6 +8230,8 @@ class StrategyEngine:
                 order.get("flip_from"),
                 order.get("flip_qty"),
                 order.get("flip_qty_target"),
+                order.get("trigger_desc"),
+                order.get("trigger_actions"),
             )
 
     def _trigger_emergency_close(self, sym: str, interval: str, reason: str):

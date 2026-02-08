@@ -100,6 +100,14 @@ _DEFAULT_WEB_UA = os.environ.get(
 )
 
 
+def _native_chart_host_prewarm_enabled() -> bool:
+    """Whether to pre-create native window handles for chart hosts."""
+    if sys.platform != "win32":
+        return True
+    flag = str(os.environ.get("BOT_PRIME_NATIVE_CHART_HOST", "0")).strip().lower()
+    return flag in {"1", "true", "yes", "on"}
+
+
 def _apply_window_icon(window) -> None:
     try:
         icon = load_app_icon()
@@ -1608,6 +1616,7 @@ def _format_indicator_list(keys):
 
 _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 _ACTION_RE = re.compile(r"->\s*(BUY|SELL)", re.IGNORECASE)
+_ENTRY_ACTION_SUFFIX_RE = re.compile(r"\s-\s*(BUY|SELL)\s*$", re.IGNORECASE)
 _INDICATOR_SHORT_LABEL_OVERRIDES = {
     "stoch_rsi": "SRSI",
     "rsi": "RSI",
@@ -1820,7 +1829,7 @@ def _split_trigger_desc(desc: str | None) -> list[str]:
 
 
 def _indicator_segment_match(indicator_key: str, segment: str) -> bool:
-    key_norm = str(indicator_key or "").strip().lower()
+    key_norm = _canonicalize_indicator_key(indicator_key) or str(indicator_key or "").strip().lower()
     seg_low = segment.lower()
     if not key_norm or not seg_low:
         return False
@@ -1873,6 +1882,19 @@ def _extract_indicator_metrics(indicator_key: str, segments: list[str]) -> tuple
             action_str = match.group(1).title()
             break
     return value_str, action_str
+
+
+def _normalize_trigger_actions_map(raw_actions) -> dict[str, str]:
+    if not isinstance(raw_actions, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for raw_key, raw_action in raw_actions.items():
+        key_norm = _canonicalize_indicator_key(raw_key)
+        action_norm = str(raw_action or "").strip().lower()
+        if not key_norm or action_norm not in {"buy", "sell"}:
+            continue
+        normalized[key_norm] = action_norm.title()
+    return normalized
 
 
 def _fallback_trigger_entries_from_desc(
@@ -1968,6 +1990,68 @@ def _dedupe_indicator_entries_normalized(entries: list[str] | None) -> list[str]
     return deduped
 
 
+def _indicator_entry_components(text: str) -> tuple[tuple[str, str], str | None, str | None]:
+    sig = _indicator_entry_signature(text)
+    value_str: str | None = None
+    action_str: str | None = None
+    try:
+        parts = str(text or "").strip().split(None, 1)
+    except Exception:
+        parts = []
+    payload = parts[1].strip() if len(parts) >= 2 else ""
+    if payload:
+        action_match = _ENTRY_ACTION_SUFFIX_RE.search(payload)
+        if action_match:
+            action_str = action_match.group(1).title()
+            payload = payload[:action_match.start()].strip()
+        if payload and payload != "--":
+            float_match = _FLOAT_RE.search(payload)
+            if float_match:
+                value_str = float_match.group(0)
+    return sig, value_str, action_str
+
+
+def _backfill_trigger_entries_with_live_values(
+    trigger_entries: list[str] | None,
+    live_entries: list[str] | None,
+) -> list[str]:
+    if not trigger_entries:
+        return []
+    if not live_entries:
+        return list(trigger_entries)
+    live_map: dict[tuple[str, str], tuple[str | None, str | None]] = {}
+    for live_entry in live_entries:
+        sig, value_str, action_str = _indicator_entry_components(live_entry)
+        if not sig[0]:
+            continue
+        if value_str is None and action_str is None:
+            continue
+        live_map[sig] = (value_str, action_str)
+    if not live_map:
+        return list(trigger_entries)
+    merged: list[str] = []
+    for trigger_entry in trigger_entries:
+        sig, value_str, action_str = _indicator_entry_components(trigger_entry)
+        if value_str is not None:
+            merged.append(trigger_entry)
+            continue
+        fallback = live_map.get(sig)
+        if not fallback:
+            merged.append(trigger_entry)
+            continue
+        fallback_value, fallback_action = fallback
+        if fallback_value is None:
+            merged.append(trigger_entry)
+            continue
+        head = str(trigger_entry or "").strip().split(None, 1)[0].strip()
+        action_final = action_str or fallback_action
+        rebuilt = f"{head} {fallback_value}".strip()
+        if action_final:
+            rebuilt = f"{rebuilt} -{action_final}"
+        merged.append(rebuilt)
+    return _dedupe_indicator_entries_normalized(merged)
+
+
 def _filter_indicator_entries_for_interval(
     entries: list[str],
     interval_hint: str | None,
@@ -2009,6 +2093,10 @@ def _filter_indicator_entries_for_interval(
                 matched.append(text)
     if matched:
         return _dedupe_indicator_entries(matched)
+    any_interval_token = any(_interval_token(text) is not None for text in entries)
+    if not any_interval_token:
+        # Keep entries when no explicit interval tags exist.
+        return _dedupe_indicator_entries(entries)
     if not include_non_matching:
         return []
     for text in entries:
@@ -2054,6 +2142,78 @@ def _normalize_interval_token(value: str | None) -> str | None:
         return None
 
 
+def _collect_record_indicator_keys(
+    rec: dict,
+    *,
+    include_inactive_allocs: bool = False,
+    include_allocation_scope: bool = True,
+) -> list[str]:
+    if not isinstance(rec, dict):
+        return []
+    collected: list[str] = []
+    seen: set[str] = set()
+
+    def _add_keys(raw, desc_text: str | None = None) -> None:
+        resolved = _resolve_trigger_indicators(raw, desc_text)
+        for key in _normalize_indicator_values(resolved):
+            key_norm = _canonicalize_indicator_key(key)
+            if not key_norm or key_norm in seen:
+                continue
+            seen.add(key_norm)
+            collected.append(key_norm)
+
+    def _iter_allocations(payload) -> list[dict]:
+        if isinstance(payload, dict):
+            payload = list(payload.values())
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+
+    data = rec.get("data") or {}
+    base_desc = data.get("trigger_desc") or rec.get("trigger_desc")
+    _add_keys(rec.get("indicators"))
+    _add_keys(data.get("trigger_indicators"))
+    if isinstance(data.get("trigger_actions"), dict):
+        _add_keys(list((data.get("trigger_actions") or {}).keys()))
+    if not collected:
+        _add_keys(None, base_desc)
+
+    if include_allocation_scope:
+        for alloc in _iter_allocations(rec.get("allocations")):
+            status_flag = str(alloc.get("status") or "").strip().lower()
+            if status_flag in _CLOSED_ALLOCATION_STATES and not include_inactive_allocs:
+                continue
+            _add_keys(alloc.get("trigger_indicators"), alloc.get("trigger_desc"))
+            if isinstance(alloc.get("trigger_actions"), dict):
+                _add_keys(list((alloc.get("trigger_actions") or {}).keys()))
+
+    aggregated_entries = rec.get("_aggregated_entries")
+    if isinstance(aggregated_entries, list):
+        for agg in aggregated_entries:
+            if not isinstance(agg, dict):
+                continue
+            agg_data = agg.get("data") or {}
+            agg_status = str(agg.get("status") or agg_data.get("status") or "").strip().lower()
+            if agg_status in _CLOSED_RECORD_STATES and not include_inactive_allocs:
+                continue
+            agg_desc = agg_data.get("trigger_desc") or agg.get("trigger_desc")
+            _add_keys(agg.get("indicators"))
+            _add_keys(agg_data.get("trigger_indicators"))
+            if isinstance(agg_data.get("trigger_actions"), dict):
+                _add_keys(list((agg_data.get("trigger_actions") or {}).keys()))
+            if not collected:
+                _add_keys(None, agg_desc)
+            if include_allocation_scope:
+                for alloc in _iter_allocations(agg.get("allocations")):
+                    status_flag = str(alloc.get("status") or "").strip().lower()
+                    if status_flag in _CLOSED_ALLOCATION_STATES and not include_inactive_allocs:
+                        continue
+                    _add_keys(alloc.get("trigger_indicators"), alloc.get("trigger_desc"))
+                    if isinstance(alloc.get("trigger_actions"), dict):
+                        _add_keys(list((alloc.get("trigger_actions") or {}).keys()))
+    return collected
+
+
 def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None) -> tuple[list[str], dict[str, list[str]]]:
     data = rec.get("data") or {}
     record_status = str(rec.get("status") or data.get("status") or "").strip().lower()
@@ -2064,22 +2224,14 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
     elif isinstance(data.get("interval_display"), str):
         primary_interval = str(data.get("interval_display")).split(",")[0].strip()
 
-    indicator_keys_raw = _normalize_indicator_values(rec.get("indicators"))
-    if not indicator_keys_raw:
-        indicator_keys_raw = _normalize_indicator_values(data.get("trigger_indicators"))
-    if not indicator_keys_raw:
-        inferred = _resolve_trigger_indicators(None, data.get("trigger_desc"))
-        indicator_keys_raw = inferred
-    seen: set[str] = set()
-    indicator_keys: list[str] = []
-    for key in indicator_keys_raw or []:
-        key_norm = str(key).strip().lower()
-        if key_norm and key_norm not in seen:
-            seen.add(key_norm)
-            indicator_keys.append(key_norm)
+    indicator_keys = _collect_record_indicator_keys(
+        rec,
+        include_inactive_allocs=include_inactive_allocs,
+    )
     if not indicator_keys:
         return [], {}
     indicator_key_set = set(indicator_keys)
+    action_overrides_by_interval: dict[tuple[str, str | None], str] = {}
 
     sources: list[dict] = []
 
@@ -2105,10 +2257,31 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
                 }
             )
 
+    def _register_action_overrides(interval_value, raw_actions) -> None:
+        normalized_actions = _normalize_trigger_actions_map(raw_actions)
+        if not normalized_actions:
+            return
+        interval_norm_tokens: list[str | None] = []
+        if interval_value:
+            for part in [p.strip() for p in str(interval_value).split(",") if p.strip()]:
+                interval_norm_tokens.append(_normalize_interval_token(part))
+        if not interval_norm_tokens:
+            interval_norm_tokens.append(_normalize_interval_token(interval_value))
+        if None not in interval_norm_tokens:
+            interval_norm_tokens.append(None)
+        for indicator_key, action_val in normalized_actions.items():
+            key_norm = _canonicalize_indicator_key(indicator_key) or indicator_key
+            if not key_norm:
+                continue
+            for interval_norm_token in interval_norm_tokens:
+                action_overrides_by_interval[(key_norm, interval_norm_token)] = action_val
+
     aggregated_entries = rec.get("_aggregated_entries")
     data_desc = data.get("trigger_desc")
+    data_interval = data.get("interval_display") or data.get("interval") or primary_interval
+    _register_action_overrides(data_interval, data.get("trigger_actions") or rec.get("trigger_actions"))
     if data_desc and not aggregated_entries:
-        interval_display = data.get("interval_display") or data.get("interval") or primary_interval
+        interval_display = data_interval
         _append_source(interval_display, data_desc)
 
     allocations = rec.get("allocations") or []
@@ -2125,6 +2298,7 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
             if not desc:
                 continue
             iv = alloc.get("interval_display") or alloc.get("interval")
+            _register_action_overrides(iv, alloc.get("trigger_actions"))
             _append_source(iv, desc)
 
     if isinstance(aggregated_entries, list):
@@ -2143,6 +2317,10 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
                     or agg.get("entry_tf")
                     or primary_interval
                 )
+                _register_action_overrides(
+                    agg_interval,
+                    agg_data.get("trigger_actions") or agg.get("trigger_actions"),
+                )
                 _append_source(agg_interval, agg_desc)
             agg_allocs = agg.get("allocations") or []
             if isinstance(agg_allocs, dict):
@@ -2158,6 +2336,7 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
                     if not desc:
                         continue
                     iv = alloc.get("interval_display") or alloc.get("interval")
+                    _register_action_overrides(iv, alloc.get("trigger_actions"))
                     _append_source(iv, desc)
 
     side_key = str(rec.get("side_key") or (rec.get("data") or {}).get("side_key") or "").upper()
@@ -2175,14 +2354,21 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
                 sources_to_use = fallback_sources
     interval_map: dict[str, list[str]] = {}
     results: list[str] = []
+    allow_value_without_action = len(indicator_keys) == 1
     for key in indicator_keys:
+        key_norm = _canonicalize_indicator_key(key) or key.lower()
         interval_entry_order: list[str | None] = []
         interval_entry_map: dict[str | None, str] = {}
 
         for source in sources_to_use:
             segments = source.get("segments") or []
             value, action = _extract_indicator_metrics(key, segments)
+            source_interval_norm = source.get("norm_interval")
             if action is None:
+                action = action_overrides_by_interval.get((key_norm, source_interval_norm))
+            if action is None:
+                action = action_overrides_by_interval.get((key_norm, None))
+            if action is None and (value is None or not allow_value_without_action):
                 continue
             interval_label = source.get("interval") or primary_interval
             interval_display = (interval_label or "").strip()
@@ -2214,6 +2400,32 @@ def _collect_indicator_value_strings(rec: dict, interval_hint: str | None = None
             results.extend(interval_entry_map[idx] for idx in interval_entry_order)
 
     deduped_results = _dedupe_indicator_entries(results)
+
+    if not deduped_results and action_overrides_by_interval:
+        interval_order: list[str | None] = []
+        if primary_norm is not None:
+            interval_order.append(primary_norm)
+        if None not in interval_order:
+            interval_order.append(None)
+        for key in indicator_keys:
+            key_norm = _canonicalize_indicator_key(key) or key.lower()
+            action_val = None
+            for interval_norm in interval_order:
+                action_val = action_overrides_by_interval.get((key_norm, interval_norm))
+                if action_val:
+                    break
+            if not action_val:
+                continue
+            interval_display = (primary_interval or "").strip()
+            label = _indicator_short_label(key)
+            interval_part = f"@{interval_display.upper()}" if interval_display else ""
+            entry = f"{label}{interval_part} -- -{action_val}".strip()
+            deduped_results.append(entry)
+            if interval_display:
+                interval_clean = interval_display.strip().upper()
+                slots = interval_map.setdefault(key.lower(), [])
+                if interval_clean not in slots:
+                    slots.append(interval_clean)
 
     seen_interval_pairs = {_indicator_entry_signature(entry) for entry in deduped_results}
     if not deduped_results:
@@ -2771,7 +2983,7 @@ def _collect_current_indicator_live_strings(
     keys: list[str] = []
     seen_keys: set[str] = set()
     for key in raw_keys:
-        key_norm = key.lower()
+        key_norm = _canonicalize_indicator_key(key) or key.lower()
         if not key_norm or key_norm in seen_keys:
             continue
         seen_keys.add(key_norm)
@@ -2950,10 +3162,64 @@ def _safe_int(value, default=0):
         return int(default)
 
 
+def _normalize_indicator_token(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+_INDICATOR_TOKEN_TO_KEY: dict[str, str] = {}
+for _ind_key, _display_name in INDICATOR_DISPLAY_NAMES.items():
+    _key_norm = str(_ind_key or "").strip().lower()
+    _key_token = _normalize_indicator_token(_key_norm)
+    if _key_token:
+        _INDICATOR_TOKEN_TO_KEY.setdefault(_key_token, _key_norm)
+    if isinstance(_display_name, str) and _display_name.strip():
+        _display_token = _normalize_indicator_token(_display_name)
+        if _display_token:
+            _INDICATOR_TOKEN_TO_KEY.setdefault(_display_token, _key_norm)
+
+_INDICATOR_TOKEN_ALIASES = {
+    "stochrsi": "stoch_rsi",
+    "stochasticrsi": "stoch_rsi",
+    "srsi": "stoch_rsi",
+    "williamsr": "willr",
+    "williamspercentr": "willr",
+    "wr": "willr",
+    "wpr": "willr",
+    "relativestrengthindex": "rsi",
+}
+
+
+def _canonicalize_indicator_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    # Drop interval/action fragments if they leak into indicator fields.
+    base = text.split("@", 1)[0].strip()
+    low = base.lower()
+    if not low:
+        return None
+    if low in INDICATOR_DISPLAY_NAMES:
+        return low
+    token = _normalize_indicator_token(low)
+    if not token:
+        return low
+    alias = _INDICATOR_TOKEN_ALIASES.get(token)
+    if alias:
+        return alias
+    mapped = _INDICATOR_TOKEN_TO_KEY.get(token)
+    if mapped:
+        return mapped
+    return low
+
+
 def _normalize_indicator_values(raw) -> list[str]:
     """
-    Ensure indicator collections are always returned as a sorted list of strings.
-    Handles legacy booleans/strings gracefully.
+    Ensure indicator collections are returned as canonical, sorted keys.
+    Handles legacy booleans/strings and display-name inputs gracefully.
     """
     items: list[str] = []
     if isinstance(raw, (list, tuple, set)):
@@ -2963,19 +3229,13 @@ def _normalize_indicator_values(raw) -> list[str]:
     else:
         iterable = [raw]
     for item in iterable:
-        try:
-            text = str(item).strip()
-        except Exception:
-            text = ""
-        if text:
-            items.append(text)
+        canonical = _canonicalize_indicator_key(item)
+        if canonical:
+            items.append(canonical)
     if not items:
         return []
     # Deduplicate while maintaining deterministic order.
     return sorted(dict.fromkeys(items))
-
-def _normalize_indicator_token(text: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
 
 _INDICATOR_DESC_TOKENS = {
     key: _normalize_indicator_token(name)
@@ -2984,9 +3244,9 @@ _INDICATOR_DESC_TOKENS = {
 }
 
 _INDICATOR_DESC_HINTS = {
-    "stoch_rsi": {"stochrsi", "stochasticrsi"},
-    "willr": {"williamsr"},
-    "rsi": {"rsi"},
+    "stoch_rsi": {"stochrsi", "stochasticrsi", "srsi"},
+    "willr": {"williamsr", "williamspercentr", "wr", "wpr"},
+    "rsi": {"rsi", "relativestrengthindex"},
 }
 
 def _infer_indicators_from_desc(desc: str | None) -> list[str]:
@@ -3543,6 +3803,8 @@ class _LazyWebEmbed(QtWidgets.QWidget):
 
     def prime_native_host(self) -> None:
         if self._native_primed:
+            return
+        if not _native_chart_host_prewarm_enabled():
             return
         self._native_primed = True
         # Pre-create native handles to avoid top-level flicker when WebEngine initializes.
@@ -8140,11 +8402,12 @@ class MainWindow(QtWidgets.QWidget):
         self._chart_view_widgets = {}
         self.chart_view_stack = QtWidgets.QStackedWidget()
         layout.addWidget(self.chart_view_stack, stretch=1)
-        try:
-            self.chart_view_stack.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
-            self.chart_view_stack.winId()
-        except Exception:
-            pass
+        if _native_chart_host_prewarm_enabled():
+            try:
+                self.chart_view_stack.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+                self.chart_view_stack.winId()
+            except Exception:
+                pass
         try:
             self._chart_switch_overlay = QtWidgets.QLabel(self.chart_view_stack)
             self._chart_switch_overlay.setVisible(False)
@@ -9032,16 +9295,16 @@ class MainWindow(QtWidgets.QWidget):
             requested_mode = "original"
             actual_mode = "original"
         if requested_mode == "tradingview":
-            self._start_tradingview_close_guard()
-            self._start_tradingview_visibility_watchdog()
-            if not getattr(self, "_tradingview_first_switch_done", False):
-                if self._is_chart_visible():
-                    self._show_chart_switch_overlay()
-                self._start_tradingview_window_suppression()
-                self._start_tradingview_visibility_guard()
             if not self._chart_view_tradingview_available:
                 actual_mode = "original"
             elif allow_tradingview_init:
+                self._start_tradingview_close_guard()
+                self._start_tradingview_visibility_watchdog()
+                if not getattr(self, "_tradingview_first_switch_done", False):
+                    if self._is_chart_visible():
+                        self._show_chart_switch_overlay()
+                    self._start_tradingview_window_suppression()
+                    self._start_tradingview_visibility_guard()
                 widget = self._ensure_tradingview_widget()
                 if widget is None:
                     actual_mode = "original"
@@ -13289,6 +13552,9 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
         positions_map: dict[tuple, dict] = {}
         base_rows = rows or []
         alloc_map_global = getattr(self, "_entry_allocations", {}) or {}
+        prev_records = getattr(self, "_open_position_records", {}) or {}
+        if not isinstance(prev_records, dict):
+            prev_records = {}
 
         def _collect_allocations(symbol: str, side_key: str) -> list[dict]:
             try:
@@ -13441,16 +13707,27 @@ def _gui_on_positions_ready(self, rows: list, acct: str):
                         break
                 if not active_any:
                     continue
+                # Demo/testnet snapshots can briefly omit a just-open symbol. Keep any
+                # previously tracked active row instead of scheduling an immediate close.
                 try:
-                    pending_close_map = getattr(self, "_pending_close_times", {})
+                    prev_rec = copy.deepcopy(prev_records.get(key) or {})
                 except Exception:
-                    pending_close_map = {}
-                if isinstance(pending_close_map, dict):
+                    prev_rec = {}
+                if isinstance(prev_rec, dict) and prev_rec:
+                    prev_rec["status"] = "Active"
+                    prev_rec["close_time"] = "-"
                     try:
-                        pending_close_map.setdefault(
-                            key,
-                            self._format_display_time(datetime.now().astimezone()),
+                        prev_rec["allocations"] = copy.deepcopy(
+                            [entry for entry in allocations if isinstance(entry, dict)]
                         )
+                    except Exception:
+                        pass
+                    positions_map[key] = prev_rec
+                    tracked_keys.add(key)
+                    try:
+                        pending_close_map = getattr(self, "_pending_close_times", {})
+                        if isinstance(pending_close_map, dict):
+                            pending_close_map.pop(key, None)
                     except Exception:
                         pass
                 continue
@@ -14860,13 +15137,14 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                     pnl = base_pnl
             if allocation.get("status"):
                 status_lower = str(allocation.get("status")).strip().lower()
-        margin_ratio = normalize_margin_ratio(allocation.get("margin_ratio"))
+        allocation_data = allocation if isinstance(allocation, dict) else {}
+        margin_ratio = normalize_margin_ratio(allocation_data.get("margin_ratio"))
         try:
-            margin_balance_val = float(allocation.get("margin_balance") or 0.0)
+            margin_balance_val = float(allocation_data.get("margin_balance") or 0.0)
         except Exception:
             margin_balance_val = 0.0
         try:
-            maint_margin_val = float(allocation.get("maint_margin") or 0.0)
+            maint_margin_val = float(allocation_data.get("maint_margin") or 0.0)
         except Exception:
             maint_margin_val = 0.0
 
@@ -14988,6 +15266,13 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
             entry = copy.deepcopy(base_rec)
             interval_label = interval_hint or entry.get("entry_tf") or "-"
             entry["entry_tf"] = interval_label or "-"
+            if isinstance(allocation, dict):
+                try:
+                    entry["allocations"] = [copy.deepcopy(allocation)]
+                except Exception:
+                    entry["allocations"] = [dict(allocation)]
+            else:
+                entry["allocations"] = []
             alloc_status = str((allocation or {}).get("status") or status_text)
             entry["status"] = alloc_status
             if isinstance(meta, dict) and meta.get("stop_loss_enabled") is not None:
@@ -15059,6 +15344,14 @@ def _mw_positions_records_per_trade(self, open_records: dict, closed_records: li
                     clone_data = dict(clone.get("data") or {})
                     clone_data["trigger_indicators"] = clone_indicators
                     clone["data"] = clone_data
+                    clone_allocs: list[dict] = []
+                    for alloc_payload in (clone.get("allocations") or []):
+                        if not isinstance(alloc_payload, dict):
+                            continue
+                        alloc_clone = dict(alloc_payload)
+                        alloc_clone["trigger_indicators"] = clone_indicators
+                        clone_allocs.append(alloc_clone)
+                    clone["allocations"] = clone_allocs
                     clone["_aggregate_key"] = f"{aggregate_key}|{indicator_name.lower()}"
                     clone["_aggregate_is_primary"] = True
                     raw_records.append(clone)
@@ -15498,13 +15791,13 @@ def _mw_render_positions_table(self):
             data = rec.get('data') or {}
             status_flag = str(rec.get('status') or data.get('status') or "").strip().lower()
             record_is_closed = status_flag in _CLOSED_RECORD_STATES
-            indicators_list = tuple(_normalize_indicator_values(rec.get('indicators')))
-            if not indicators_list:
-                inferred = _resolve_trigger_indicators(
-                    data.get('trigger_indicators'),
-                    data.get('trigger_desc') or rec.get('trigger_desc'),
+            indicators_list = tuple(
+                _collect_record_indicator_keys(
+                    rec,
+                    include_inactive_allocs=record_is_closed,
+                    include_allocation_scope=view_mode != "per_trade",
                 )
-                indicators_list = tuple(_normalize_indicator_values(inferred))
+            )
             interval_hint = (
                 rec.get('entry_tf')
                 or data.get('interval_display')
@@ -15751,7 +16044,11 @@ def _mw_render_positions_table(self):
                 indicator_values_entries: list[str] = []
                 interval_map: dict[str, list[str]] = {}
                 for entry in source_entries:
-                    entry_inds = _normalize_indicator_values(entry.get("indicators"))
+                    entry_inds = _collect_record_indicator_keys(
+                        entry,
+                        include_inactive_allocs=is_closed_like,
+                        include_allocation_scope=view_mode != "per_trade",
+                    )
                     for token in entry_inds:
                         if token and token not in indicators_list:
                             indicators_list.append(token)
@@ -15838,6 +16135,41 @@ def _mw_render_positions_table(self):
                     rec["_current_indicator_values"] = live_values_entries
                 current_values_display = "\n".join(live_values_entries) if live_values_entries else "-"
                 self.pos_table.setItem(row, POS_CURRENT_VALUE_COLUMN, QtWidgets.QTableWidgetItem(current_values_display))
+                if filtered_indicator_values and live_values_entries:
+                    merged_trigger_entries = _backfill_trigger_entries_with_live_values(
+                        filtered_indicator_values,
+                        live_values_entries,
+                    )
+                    if merged_trigger_entries != filtered_indicator_values:
+                        filtered_indicator_values = merged_trigger_entries
+                        indicator_values_display = "\n".join(filtered_indicator_values)
+                        self.pos_table.setItem(
+                            row,
+                            POS_TRIGGERED_VALUE_COLUMN,
+                            QtWidgets.QTableWidgetItem(indicator_values_display),
+                        )
+                if indicator_values_display == "-" and live_values_entries:
+                    trigger_fallback_entries = _filter_indicator_entries_for_interval(
+                        live_values_entries,
+                        interval_for_display,
+                        include_non_matching=not strict_interval_values,
+                    )
+                    if not trigger_fallback_entries:
+                        trigger_fallback_entries = _filter_indicator_entries_for_interval(
+                            live_values_entries,
+                            interval_for_display,
+                            include_non_matching=True,
+                        )
+                    if not trigger_fallback_entries:
+                        trigger_fallback_entries = list(live_values_entries)
+                    trigger_fallback_entries = _dedupe_indicator_entries_normalized(trigger_fallback_entries)
+                    if trigger_fallback_entries:
+                        fallback_display = "\n".join(trigger_fallback_entries)
+                        self.pos_table.setItem(
+                            row,
+                            POS_TRIGGERED_VALUE_COLUMN,
+                            QtWidgets.QTableWidgetItem(fallback_display),
+                        )
                 self.pos_table.setItem(row, 12, QtWidgets.QTableWidgetItem(side_text))
                 self.pos_table.setItem(row, 13, QtWidgets.QTableWidgetItem(str(open_time or '-')))
                 self.pos_table.setItem(row, 14, QtWidgets.QTableWidgetItem(str(close_time or '-')))
@@ -16158,13 +16490,23 @@ def _mw_close_position_single(self, symbol: str, side_key: str | None, interval:
         except Exception:
             pass
         return
-    if getattr(self, "shared_binance", None) is None:
+    account_text = (self.account_combo.currentText() or "").upper()
+    force_futures = side_key in ("L", "S")
+    needs_wrapper = getattr(self, "shared_binance", None) is None
+    if force_futures and not needs_wrapper:
+        try:
+            current_wrapper_acct = str(getattr(self.shared_binance, "account_type", "") or "").upper()
+        except Exception:
+            current_wrapper_acct = ""
+        if not current_wrapper_acct.startswith("FUT"):
+            needs_wrapper = True
+    if needs_wrapper:
         try:
             self.shared_binance = self._create_binance_wrapper(
                 api_key=self.api_key_edit.text().strip(),
                 api_secret=self.api_secret_edit.text().strip(),
                 mode=self.mode_combo.currentText(),
-                account_type=self.account_combo.currentText(),
+                account_type=("Futures" if force_futures else self.account_combo.currentText()),
                 default_leverage=int(self.leverage_spin.value() or 1),
                 default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
             )
@@ -16174,7 +16516,7 @@ def _mw_close_position_single(self, symbol: str, side_key: str | None, interval:
             except Exception:
                 pass
             return
-    account = (self.account_combo.currentText() or "").upper()
+    account = account_text
     try:
         qty_val = float(qty or 0.0)
     except Exception:
@@ -16182,7 +16524,7 @@ def _mw_close_position_single(self, symbol: str, side_key: str | None, interval:
 
     def _do():
         bw = self.shared_binance
-        if account.startswith("FUT"):
+        if force_futures or account.startswith("FUT"):
             if side_key in ("L", "S") and qty_val > 0:
                 try:
                     dual = bool(bw.get_futures_dual_side())
@@ -16192,7 +16534,22 @@ def _mw_close_position_single(self, symbol: str, side_key: str | None, interval:
                 pos_side = None
                 if dual:
                     pos_side = "LONG" if side_key == "L" else "SHORT"
-                return bw.close_futures_leg_exact(symbol, qty_val, side=order_side, position_side=pos_side)
+                primary_res = bw.close_futures_leg_exact(symbol, qty_val, side=order_side, position_side=pos_side)
+                if isinstance(primary_res, dict) and primary_res.get("ok"):
+                    return primary_res
+                try:
+                    fallback_res = bw.close_futures_position(symbol)
+                except Exception as exc:
+                    fallback_res = {"ok": False, "error": str(exc)}
+                if isinstance(fallback_res, dict) and fallback_res.get("ok"):
+                    fallback_res.setdefault("fallback_from", "close_futures_leg_exact")
+                    if isinstance(primary_res, dict) and primary_res.get("error"):
+                        fallback_res.setdefault("primary_error", primary_res.get("error"))
+                    return fallback_res
+                if isinstance(primary_res, dict):
+                    primary_res["fallback"] = fallback_res
+                    return primary_res
+                return {"ok": False, "error": f"close leg failed: {primary_res!r}", "fallback": fallback_res}
             return bw.close_futures_position(symbol)
         return {"ok": False, "error": "Spot manual close via UI is not available yet"}
 
@@ -18703,6 +19060,9 @@ def _mw_on_trade_signal(self, order_info: dict):
             )
             if normalized_triggers:
                 base_data["trigger_indicators"] = normalized_triggers
+            normalized_actions = _normalize_trigger_actions_map(trade_snapshot.get("trigger_actions"))
+            if normalized_actions:
+                base_data["trigger_actions"] = normalized_actions
             value_mappings = (
                 ("qty", "qty"),
                 ("margin_usdt", "margin_usdt"),
@@ -19145,6 +19505,7 @@ def _mw_on_trade_signal(self, order_info: dict):
             else:
                 open_time_fmt = None
             trigger_inds = _resolve_trigger_indicators(order_info.get("trigger_indicators"), order_info.get("trigger_desc"))
+            trigger_actions = _normalize_trigger_actions_map(order_info.get("trigger_actions"))
             trade_entry = {
                 "interval": norm_iv,
                 "interval_display": interval,
@@ -19161,6 +19522,7 @@ def _mw_on_trade_signal(self, order_info: dict):
                 "pnl_value": None,
                 "trigger_indicators": list(trigger_inds) if trigger_inds else [],
                 "trigger_desc": order_info.get("trigger_desc"),
+                "trigger_actions": trigger_actions,
             }
             if order_id_token:
                 trade_entry["order_id"] = order_id_token
