@@ -156,10 +156,22 @@ def _configure_tradingview_webengine_env() -> None:
             disable_gpu = False
         else:
             disable_gpu = False
-    if not disable_gpu:
-        return
     flags = str(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") or "").strip()
     parts = [part for part in flags.split() if part]
+    # Always strip known unstable/global flags that can interfere with the app window.
+    base_cleaned = []
+    for part in parts:
+        lower = part.lower()
+        if part in {"--single-process", "--in-process-gpu"}:
+            continue
+        if lower.startswith("--window-position="):
+            continue
+        base_cleaned.append(part)
+    if base_cleaned != parts:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(base_cleaned).strip()
+    parts = list(base_cleaned)
+    if not disable_gpu:
+        return
     drop_flags = {
         "--ignore-gpu-blocklist",
         "--enable-zero-copy",
@@ -3859,6 +3871,13 @@ class _LazyWebEmbed(QtWidgets.QWidget):
             return
         self.prime_native_host()
         try:
+            host_window = self.window()
+            start_guard = getattr(host_window, "_start_webengine_close_guard", None)
+            if callable(start_guard):
+                start_guard()
+        except Exception:
+            pass
+        try:
             _configure_tradingview_webengine_env()
         except Exception:
             pass
@@ -4108,6 +4127,13 @@ class MainWindow(QtWidgets.QWidget):
         self._tv_visibility_guard_timer = None
         self._tv_close_guard_until = 0.0
         self._tv_close_guard_active = False
+        self._webengine_close_guard_until = 0.0
+        self._webengine_close_guard_active = False
+        self._webengine_visibility_watchdog_active = False
+        self._webengine_visibility_watchdog_timer = None
+        self._webengine_runtime_prewarmed = False
+        self._webengine_runtime_prewarm_view = None
+        self._last_user_close_command_ts = 0.0
         self._tv_visibility_watchdog_active = False
         self._tv_visibility_watchdog_timer = None
         self._tradingview_external_last_open_ts = 0.0
@@ -4280,6 +4306,10 @@ class MainWindow(QtWidgets.QWidget):
         self.init_ui()
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
+        try:
+            self._prewarm_webengine_runtime()
+        except Exception:
+            pass
         QtCore.QTimer.singleShot(250, self._handle_post_init_state)
         QtCore.QTimer.singleShot(50, self._update_connector_labels)
 
@@ -8574,6 +8604,7 @@ class MainWindow(QtWidgets.QWidget):
         if tv_class is None:
             self._chart_view_tradingview_available = False
             return None
+        self._start_webengine_close_guard()
         try:
             parent = getattr(self, "chart_view_stack", None) or self
             widget = tv_class(parent)
@@ -8611,6 +8642,7 @@ class MainWindow(QtWidgets.QWidget):
         if bw_class is None or not available:
             self._chart_view_binance_available = False
             return None
+        self._start_webengine_close_guard()
         try:
             parent = getattr(self, "chart_view_stack", None) or self
             widget = bw_class(parent)
@@ -8637,6 +8669,7 @@ class MainWindow(QtWidgets.QWidget):
         if lw_class is None or not available:
             self._chart_view_lightweight_available = False
             return None
+        self._start_webengine_close_guard()
         try:
             parent = getattr(self, "chart_view_stack", None) or self
             widget = lw_class(parent)
@@ -8725,6 +8758,70 @@ class MainWindow(QtWidgets.QWidget):
         delay_ms = max(100, min(delay_ms, 10000))
         self._tradingview_prewarm_scheduled = True
         QtCore.QTimer.singleShot(delay_ms, self._prewarm_tradingview)
+
+    def _prewarm_webengine_runtime(self):
+        """Initialize QtWebEngine once while the app is booting to avoid first-tab flicker."""
+        if getattr(self, "_webengine_runtime_prewarmed", False):
+            return
+        if sys.platform != "win32":
+            return
+        if not _webengine_charts_allowed():
+            return
+        flag = str(os.environ.get("BOT_PREWARM_WEBENGINE", "1")).strip().lower()
+        if flag in {"0", "false", "no", "off"}:
+            return
+        if _webengine_embed_unavailable_reason():
+            return
+        try:
+            _configure_tradingview_webengine_env()
+        except Exception:
+            pass
+        try:
+            from PyQt6.QtWebEngineWidgets import QWebEngineView
+        except Exception:
+            return
+        try:
+            view = QWebEngineView(self)
+            view.setObjectName("botWebEnginePrewarm")
+            try:
+                view.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            except Exception:
+                pass
+            try:
+                view.resize(1, 1)
+                view.move(-32000, -32000)
+                view.hide()
+            except Exception:
+                pass
+            try:
+                view.load(QtCore.QUrl("about:blank"))
+            except Exception:
+                pass
+            self._webengine_runtime_prewarm_view = view
+            self._webengine_runtime_prewarmed = True
+            try:
+                self._chart_debug_log("webengine_prewarm init=1")
+            except Exception:
+                pass
+        except Exception:
+            return
+
+        try:
+            hold_ms = int(os.environ.get("BOT_PREWARM_WEBENGINE_HOLD_MS") or 2200)
+        except Exception:
+            hold_ms = 2200
+        hold_ms = max(500, min(hold_ms, 10000))
+
+        def _cleanup():
+            view_obj = getattr(self, "_webengine_runtime_prewarm_view", None)
+            self._webengine_runtime_prewarm_view = None
+            if view_obj is not None:
+                try:
+                    view_obj.deleteLater()
+                except Exception:
+                    pass
+
+        QtCore.QTimer.singleShot(hold_ms, _cleanup)
 
     def _prewarm_tradingview(self):
         self._tradingview_prewarm_scheduled = False
@@ -8824,6 +8921,95 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             self._tv_close_guard_until = 0.0
         self._tv_close_guard_active = True
+
+    def _start_webengine_close_guard(self):
+        if sys.platform != "win32":
+            return
+        if not _webengine_charts_allowed():
+            return
+        try:
+            duration_ms = int(os.environ.get("BOT_WEBENGINE_CLOSE_GUARD_MS") or 3500)
+        except Exception:
+            duration_ms = 3500
+        duration_ms = max(800, min(duration_ms, 15000))
+        try:
+            until = time.monotonic() + (duration_ms / 1000.0)
+        except Exception:
+            until = 0.0
+        try:
+            prev_until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
+        except Exception:
+            prev_until = 0.0
+        self._webengine_close_guard_until = max(prev_until, until)
+        self._webengine_close_guard_active = True
+        self._start_webengine_visibility_watchdog()
+        try:
+            self._chart_debug_log(
+                f"webengine_close_guard start duration_ms={duration_ms} until={self._webengine_close_guard_until:.3f}"
+            )
+        except Exception:
+            pass
+
+    def _start_webengine_visibility_watchdog(self):
+        if sys.platform != "win32":
+            return
+        if getattr(self, "_webengine_visibility_watchdog_active", False):
+            return
+        try:
+            interval_ms = int(os.environ.get("BOT_WEBENGINE_CLOSE_GUARD_WATCHDOG_INTERVAL_MS") or 120)
+        except Exception:
+            interval_ms = 120
+        interval_ms = max(30, min(interval_ms, 1000))
+        timer = QtCore.QTimer(self)
+        timer.setInterval(interval_ms)
+        self._webengine_visibility_watchdog_active = True
+        self._webengine_visibility_watchdog_timer = timer
+
+        def _tick():
+            if _allow_guard_bypass(self):
+                self._stop_webengine_visibility_watchdog()
+                return
+            try:
+                now = time.monotonic()
+            except Exception:
+                now = 0.0
+            try:
+                until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
+            except Exception:
+                until = 0.0
+            if not until or now >= until:
+                try:
+                    self._webengine_close_guard_active = False
+                except Exception:
+                    pass
+                self._stop_webengine_visibility_watchdog()
+                return
+            if not getattr(self, "_webengine_close_guard_active", False):
+                self._stop_webengine_visibility_watchdog()
+                return
+            try:
+                if not self.isVisible() or self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
+                    _restore_window_after_guard(self)
+            except Exception:
+                pass
+
+        timer.timeout.connect(_tick)
+        timer.start()
+        _tick()
+
+    def _stop_webengine_visibility_watchdog(self):
+        timer = getattr(self, "_webengine_visibility_watchdog_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            try:
+                timer.deleteLater()
+            except Exception:
+                pass
+        self._webengine_visibility_watchdog_timer = None
+        self._webengine_visibility_watchdog_active = False
 
     def _stop_tradingview_visibility_guard(self):
         timer = getattr(self, "_tv_visibility_guard_timer", None)
@@ -9630,7 +9816,7 @@ class MainWindow(QtWidgets.QWidget):
 
     def _chart_debug_log(self, message: str) -> None:
         try:
-            ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
         except Exception:
             ts = "unknown-time"
         try:
@@ -11016,6 +11202,8 @@ class MainWindow(QtWidgets.QWidget):
             elif self._chart_needs_render:
                 self.load_chart(auto=True)
             self._chart_pending_initial_load = False
+        elif widget is getattr(self, "liquidation_tab", None):
+            pass
         elif widget is getattr(self, "code_tab", None):
             if not getattr(self, "_dep_version_auto_refresh_done", False):
                 self._dep_version_auto_refresh_done = True
@@ -18164,7 +18352,26 @@ def _log_window_event(self, name: str, event=None) -> None:
         spontaneous = int(bool(event.spontaneous())) if event is not None else -1
     except Exception:
         spontaneous = -1
-    msg = f"window_event {name} visible={visible} minimized={minimized} spontaneous={spontaneous}"
+    try:
+        now = time.monotonic()
+    except Exception:
+        now = 0.0
+    try:
+        we_active = int(bool(getattr(self, "_webengine_close_guard_active", False)))
+    except Exception:
+        we_active = -1
+    try:
+        we_until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
+    except Exception:
+        we_until = 0.0
+    try:
+        we_rem_ms = int(max(0.0, (we_until - now) * 1000.0)) if we_until else 0
+    except Exception:
+        we_rem_ms = -1
+    msg = (
+        f"window_event {name} visible={visible} minimized={minimized} spontaneous={spontaneous} "
+        f"we_guard={we_active} we_rem_ms={we_rem_ms}"
+    )
     try:
         logger = getattr(self, "_chart_debug_log", None)
         if callable(logger):
@@ -18175,9 +18382,218 @@ def _log_window_event(self, name: str, event=None) -> None:
     try:
         path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
         with open(path, "a", encoding="utf-8", errors="ignore") as fh:
-            fh.write(f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+            fh.write(f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}] {msg}\n")
     except Exception:
         pass
+
+def _allow_guard_bypass(self) -> bool:
+    try:
+        if bool(getattr(self, "_force_close", False)) or bool(getattr(self, "_close_in_progress", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        app = QtWidgets.QApplication.instance()
+    except Exception:
+        app = None
+    try:
+        if app is not None and bool(getattr(app, "_exiting", False)):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _mark_user_close_command(self) -> None:
+    try:
+        self._last_user_close_command_ts = time.monotonic()
+    except Exception:
+        self._last_user_close_command_ts = 0.0
+
+def _is_recent_user_close_command(self) -> bool:
+    try:
+        last_ts = float(getattr(self, "_last_user_close_command_ts", 0.0) or 0.0)
+    except Exception:
+        last_ts = 0.0
+    if last_ts <= 0.0:
+        return False
+    try:
+        ttl_ms = int(os.environ.get("BOT_USER_CLOSE_BYPASS_MS") or 1800)
+    except Exception:
+        ttl_ms = 1800
+    ttl_ms = max(300, min(ttl_ms, 10000))
+    try:
+        return (time.monotonic() - last_ts) * 1000.0 <= ttl_ms
+    except Exception:
+        return False
+
+def _restore_window_after_guard(self) -> None:
+    def _restore_once():
+        try:
+            state = self.windowState()
+        except Exception:
+            state = QtCore.Qt.WindowState.WindowNoState
+        try:
+            visible = bool(self.isVisible())
+        except Exception:
+            visible = False
+        try:
+            minimized = bool(state & QtCore.Qt.WindowState.WindowMinimized)
+        except Exception:
+            minimized = False
+        if minimized:
+            try:
+                if state & QtCore.Qt.WindowState.WindowMaximized:
+                    self.showMaximized()
+                else:
+                    self.showNormal()
+            except Exception:
+                pass
+        elif not visible:
+            try:
+                if state & QtCore.Qt.WindowState.WindowMaximized:
+                    self.showMaximized()
+                else:
+                    self.show()
+            except Exception:
+                pass
+        try:
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    _restore_once()
+    try:
+        QtCore.QTimer.singleShot(40, _restore_once)
+        QtCore.QTimer.singleShot(140, _restore_once)
+    except Exception:
+        pass
+
+def _active_close_protection_until(self) -> float:
+    try:
+        now = time.monotonic()
+    except Exception:
+        now = 0.0
+
+    try:
+        tv_active = bool(getattr(self, "_tv_close_guard_active", False))
+    except Exception:
+        tv_active = False
+    try:
+        tv_until = float(getattr(self, "_tv_close_guard_until", 0.0) or 0.0)
+    except Exception:
+        tv_until = 0.0
+    if tv_active and tv_until and now >= tv_until:
+        try:
+            self._tv_close_guard_active = False
+        except Exception:
+            pass
+        tv_active = False
+        tv_until = 0.0
+
+    try:
+        we_active = bool(getattr(self, "_webengine_close_guard_active", False))
+    except Exception:
+        we_active = False
+    try:
+        we_until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
+    except Exception:
+        we_until = 0.0
+    if we_active and we_until and now >= we_until:
+        try:
+            self._webengine_close_guard_active = False
+        except Exception:
+            pass
+        we_active = False
+        we_until = 0.0
+
+    active_until = 0.0
+    if tv_active and tv_until > active_until:
+        active_until = tv_until
+    if we_active and we_until > active_until:
+        active_until = we_until
+    return active_until
+
+def _should_block_programmatic_hide(self) -> bool:
+    if _allow_guard_bypass(self):
+        return False
+    try:
+        now = time.monotonic()
+    except Exception:
+        now = 0.0
+    guard_until = _active_close_protection_until(self)
+    return bool(guard_until and now < guard_until and not _is_recent_user_close_command(self))
+
+def setVisible(self, visible):  # noqa: N802, ANN001
+    make_visible = bool(visible)
+    if not make_visible and _should_block_programmatic_hide(self):
+        try:
+            logger = getattr(self, "_chart_debug_log", None)
+            if callable(logger):
+                logger("window_event setVisible_blocked visible=0 reason=webengine_guard")
+        except Exception:
+            pass
+        _restore_window_after_guard(self)
+        return
+    try:
+        super(MainWindow, self).setVisible(visible)
+    except Exception:
+        pass
+
+def hide(self):  # noqa: ANN001
+    if _should_block_programmatic_hide(self):
+        try:
+            logger = getattr(self, "_chart_debug_log", None)
+            if callable(logger):
+                logger("window_event hide_blocked reason=webengine_guard")
+        except Exception:
+            pass
+        _restore_window_after_guard(self)
+        return
+    try:
+        super(MainWindow, self).hide()
+    except Exception:
+        pass
+
+def nativeEvent(self, eventType, message):  # noqa: N802, ANN001
+    if sys.platform == "win32":
+        # Native MSG parsing is opt-in because ctypes pointer casts here can
+        # be unstable on some Windows/PyQt builds and break startup.
+        detect_flag = str(os.environ.get("BOT_ENABLE_NATIVE_CLOSE_DETECT", "")).strip().lower()
+        if detect_flag not in {"1", "true", "yes", "on"}:
+            try:
+                return super(MainWindow, self).nativeEvent(eventType, message)
+            except Exception:
+                return False, 0
+        try:
+            et = ""
+            try:
+                et = bytes(eventType).decode("utf-8", "ignore").strip().lower()
+            except Exception:
+                try:
+                    et = str(eventType).strip().lower()
+                except Exception:
+                    et = ""
+            # Only inspect native MSG payload for event types that are documented to carry MSG.
+            if et not in {"windows_generic_msg", "windows_dispatcher_msg"}:
+                raise RuntimeError("unsupported native event type")
+            import ctypes
+            import ctypes.wintypes as wintypes
+            WM_SYSCOMMAND = 0x0112
+            SC_CLOSE = 0xF060
+            msg_ptr = int(message)
+            if msg_ptr and msg_ptr > 0x10000:
+                msg_obj = ctypes.cast(msg_ptr, ctypes.POINTER(wintypes.MSG)).contents
+                if int(msg_obj.message) == WM_SYSCOMMAND:
+                    cmd = int(msg_obj.wParam) & 0xFFF0
+                    if cmd == SC_CLOSE:
+                        _mark_user_close_command(self)
+        except Exception:
+            pass
+    try:
+        return super(MainWindow, self).nativeEvent(eventType, message)
+    except Exception:
+        return False, 0
 
 def closeEvent(self, event):
     try:
@@ -18217,38 +18633,31 @@ def closeEvent(self, event):
         except Exception:
             pass
         return
-    try:
-        guard_active = bool(getattr(self, "_tv_close_guard_active", False))
-    except Exception:
-        guard_active = False
-    try:
-        guard_until = float(getattr(self, "_tv_close_guard_until", 0.0) or 0.0)
-    except Exception:
-        guard_until = 0.0
-    if guard_active:
-        if guard_until and time.monotonic() < guard_until:
-            event.ignore()
+    if not _allow_guard_bypass(self):
+        try:
+            now = time.monotonic()
+        except Exception:
+            now = 0.0
+        guard_until = _active_close_protection_until(self)
+        if guard_until and now < guard_until:
             try:
-                self.showNormal()
-                self.raise_()
-                self.activateWindow()
+                is_spontaneous_close = bool(event is not None and event.spontaneous())
             except Exception:
-                pass
-            return
-        try:
-            self._tv_close_guard_active = False
-        except Exception:
-            pass
-        guard_active = False
-    if guard_until and time.monotonic() < guard_until:
-        event.ignore()
-        try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-        return
+                is_spontaneous_close = False
+            if is_spontaneous_close or _is_recent_user_close_command(self):
+                try:
+                    self._last_user_close_command_ts = 0.0
+                except Exception:
+                    pass
+                try:
+                    self._webengine_close_guard_active = False
+                    self._tv_close_guard_active = False
+                except Exception:
+                    pass
+            else:
+                event.ignore()
+                _restore_window_after_guard(self)
+                return
 
     try:
         StrategyEngine.request_shutdown()
@@ -18301,31 +18710,20 @@ def hideEvent(self, event):  # noqa: N802
         _log_window_event(self, "hideEvent", event=event)
     except Exception:
         pass
-    try:
-        guard_active = bool(getattr(self, "_tv_close_guard_active", False))
-    except Exception:
-        guard_active = False
-    if guard_active:
+    if not _allow_guard_bypass(self):
         try:
-            guard_until = float(getattr(self, "_tv_close_guard_until", 0.0) or 0.0)
+            now = time.monotonic()
         except Exception:
-            guard_until = 0.0
-        if guard_until and time.monotonic() < guard_until:
-            try:
-                event.ignore()
-            except Exception:
-                pass
-            try:
-                self.showNormal()
-                self.raise_()
-                self.activateWindow()
-            except Exception:
-                pass
-            return
-        try:
-            self._tv_close_guard_active = False
-        except Exception:
-            pass
+            now = 0.0
+        guard_until = _active_close_protection_until(self)
+        if guard_until and now < guard_until:
+            if not _is_recent_user_close_command(self):
+                try:
+                    event.ignore()
+                except Exception:
+                    pass
+                _restore_window_after_guard(self)
+                return
     try:
         super(MainWindow, self).hideEvent(event)
     except Exception:
@@ -18338,6 +18736,13 @@ try:
     MainWindow._teardown_positions_thread = _teardown_positions_thread
     MainWindow.closeEvent = closeEvent
     MainWindow.hideEvent = hideEvent
+    MainWindow.setVisible = setVisible
+    MainWindow.hide = hide
+    try:
+        if str(os.environ.get("BOT_ENABLE_NATIVE_CLOSE_DETECT", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            MainWindow.nativeEvent = nativeEvent
+    except Exception:
+        pass
 except Exception:
     pass
 

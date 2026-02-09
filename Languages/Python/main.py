@@ -106,6 +106,36 @@ if sys.platform == "win32" and _env_flag("BOT_FORCE_SOFTWARE_OPENGL"):
 
 _suppress_subprocess_console_windows()
 
+def _sanitize_webengine_cli_args() -> None:
+    """Drop risky Chromium args that can destabilize QtWebEngine/main window behavior."""
+    if sys.platform != "win32":
+        return
+    try:
+        argv = list(sys.argv or [])
+    except Exception:
+        return
+    if len(argv) <= 1:
+        return
+    filtered = [argv[0]]
+    changed = False
+    for arg in argv[1:]:
+        text = str(arg or "").strip()
+        lower = text.lower()
+        if lower in {"--single-process", "--in-process-gpu"}:
+            changed = True
+            continue
+        if lower.startswith("--window-position="):
+            changed = True
+            continue
+        filtered.append(arg)
+    if changed:
+        try:
+            sys.argv[:] = filtered
+        except Exception:
+            pass
+
+_sanitize_webengine_cli_args()
+
 
 def _configure_startup_window_suppression_defaults() -> None:
     """Set safe Windows startup suppression defaults unless user already configured them."""
@@ -1677,6 +1707,7 @@ def main() -> int:
                         guard_active = bool(
                             getattr(win, "_tv_close_guard_active", False)
                             or getattr(win, "_tv_visibility_watchdog_active", False)
+                            or getattr(win, "_webengine_close_guard_active", False)
                         )
                     except Exception:
                         guard_active = False
