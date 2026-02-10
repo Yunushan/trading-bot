@@ -143,14 +143,16 @@ def _configure_startup_window_suppression_defaults() -> None:
         return
     # Stability-first default: do not run WinEvent/CBT startup hooks unless explicitly
     # forced. This prevents occasional post-startup UI hangs on some systems.
+    # Instead, use a full-screen startup mask to hide transient Qt windows.
+    # The mask is made Win32-level click-through (WS_EX_TRANSPARENT) so it does not
+    # block mouse input on Windows 11.
     if not _env_flag("BOT_FORCE_STARTUP_WINDOW_HOOKS"):
+        # Both WinEvent and CBT hooks can cause UI hangs on some Windows 11 systems.
+        # Use polling-based suppression instead (handled in main()).
         os.environ["BOT_DISABLE_STARTUP_WINDOW_HOOKS"] = "1"
         os.environ["BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS"] = "0"
-        os.environ.setdefault("BOT_STARTUP_MASK_ENABLED", "1")
-        os.environ.setdefault("BOT_STARTUP_MASK_MODE", "snapshot")
-        os.environ.setdefault("BOT_STARTUP_MASK_HIDE_MS", "1300")
-        # With startup mask active, avoid opacity-based reveal to prevent gray flashes.
-        os.environ["BOT_STARTUP_REVEAL_DELAY_MS"] = "0"
+        os.environ.setdefault("BOT_STARTUP_MASK_ENABLED", "0")
+        os.environ.setdefault("BOT_STARTUP_REVEAL_DELAY_MS", "0")
         return
     if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
         return
@@ -1337,6 +1339,249 @@ def _schedule_icon_enforcer(app, window) -> None:  # noqa: ANN001
     QtCore.QTimer.singleShot(0, _attempt)
 
 
+class _SplashScreen:
+    """Lightweight loading screen shown during startup.
+
+    Uses raw QWidget + QPainter to avoid importing heavy modules early.
+    Made Win32-level click-through so it never blocks mouse input.
+    """
+
+    def __init__(self, app, QtCore, QtGui, QWidget):  # noqa: N803
+        self._app = app
+        self._QtCore = QtCore
+        self._QtGui = QtGui
+        self._widget = None
+        self._spinner_angle = 0
+        self._status_text = "Loading…"
+        self._logo_pixmap = None
+        self._timer = None
+
+        try:
+            # Find app logo
+            logo_path = Path(__file__).resolve().parents[2] / "assets" / "crypto_forex_logo.png"
+            if logo_path.is_file():
+                self._logo_pixmap = QtGui.QPixmap(str(logo_path))
+                if self._logo_pixmap.isNull():
+                    self._logo_pixmap = None
+        except Exception:
+            self._logo_pixmap = None
+
+        try:
+            screen = QtGui.QGuiApplication.primaryScreen()
+            screen_geo = screen.geometry() if screen else QtCore.QRect(0, 0, 1920, 1080)
+
+            splash_w, splash_h = 420, 320
+
+            splash = _SplashWidget(
+                None,
+                QtCore.Qt.WindowType.FramelessWindowHint
+                | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                | QtCore.Qt.WindowType.Tool
+                | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
+                | QtCore.Qt.WindowType.NoDropShadowWindowHint,
+            )
+            splash.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            splash.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+            splash.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            splash.setFixedSize(splash_w, splash_h)
+
+            x = screen_geo.x() + (screen_geo.width() - splash_w) // 2
+            y = screen_geo.y() + (screen_geo.height() - splash_h) // 2
+            splash.move(x, y)
+
+            splash._splash_ref = self  # back-reference for paint
+            self._widget = splash
+            splash.show()
+            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 30)
+
+            # Win32 click-through
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    import ctypes.wintypes as wintypes
+                    _u32 = ctypes.windll.user32
+                    _hwnd = wintypes.HWND(int(splash.winId()))
+                    GWL_EXSTYLE = -20
+                    WS_EX_LAYERED = 0x00080000
+                    WS_EX_TRANSPARENT = 0x00000020
+                    _get = getattr(_u32, "GetWindowLongPtrW", None) or _u32.GetWindowLongW
+                    _set = getattr(_u32, "SetWindowLongPtrW", None) or _u32.SetWindowLongW
+                    _ex = int(_get(_hwnd, GWL_EXSTYLE))
+                    _set(_hwnd, GWL_EXSTYLE, _ex | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+                except Exception:
+                    pass
+
+            # Spinner animation timer
+            timer = QtCore.QTimer()
+            timer.setInterval(40)
+            timer.timeout.connect(self._tick)
+            timer.start()
+            self._timer = timer
+        except Exception:
+            self._widget = None
+
+    def _tick(self) -> None:
+        self._spinner_angle = (self._spinner_angle + 8) % 360
+        if self._widget is not None:
+            try:
+                self._widget.update()
+            except Exception:
+                pass
+
+    def set_status(self, text: str) -> None:
+        self._status_text = text
+        if self._widget is not None:
+            try:
+                self._widget.update()
+                self._app.processEvents(self._QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 20)
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        if self._timer is not None:
+            try:
+                self._timer.stop()
+            except Exception:
+                pass
+            self._timer = None
+        if self._widget is not None:
+            try:
+                self._widget.hide()
+                self._widget.deleteLater()
+            except Exception:
+                pass
+            self._widget = None
+
+
+class _SplashWidget:
+    """Minimal widget subclass placeholder — replaced at runtime below."""
+    pass
+
+
+def _make_splash_widget_class(QWidget, QtCore, QtGui):  # noqa: N803
+    """Create the splash widget class at call-time so Qt imports are available."""
+
+    class SplashWidget(QWidget):
+        def paintEvent(self, event):  # noqa: N802
+            splash_ref = getattr(self, "_splash_ref", None)
+            if splash_ref is None:
+                return
+            try:
+                painter = QtGui.QPainter(self)
+                painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+
+                w, h = self.width(), self.height()
+
+                # --- Background panel with rounded corners ---
+                panel_rect = QtCore.QRectF(0, 0, w, h)
+                panel_path = QtGui.QPainterPath()
+                panel_path.addRoundedRect(panel_rect, 24, 24)
+                painter.setClipPath(panel_path)
+
+                # Dark gradient background
+                bg_grad = QtGui.QLinearGradient(0, 0, 0, h)
+                bg_grad.setColorAt(0.0, QtGui.QColor(16, 22, 32, 245))
+                bg_grad.setColorAt(1.0, QtGui.QColor(10, 14, 22, 250))
+                painter.fillRect(self.rect(), bg_grad)
+
+                # Subtle border glow
+                painter.setClipping(False)
+                border_pen = QtGui.QPen(QtGui.QColor(56, 189, 248, 80))
+                border_pen.setWidthF(1.5)
+                painter.setPen(border_pen)
+                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(QtCore.QRectF(0.75, 0.75, w - 1.5, h - 1.5), 24, 24)
+
+                # --- Top accent line gradient ---
+                accent_rect = QtCore.QRectF(40, 0, w - 80, 3)
+                accent_grad = QtGui.QLinearGradient(40, 0, w - 40, 0)
+                accent_grad.setColorAt(0.0, QtGui.QColor(56, 189, 248, 0))
+                accent_grad.setColorAt(0.3, QtGui.QColor(56, 189, 248, 180))
+                accent_grad.setColorAt(0.5, QtGui.QColor(52, 211, 153, 200))
+                accent_grad.setColorAt(0.7, QtGui.QColor(56, 189, 248, 180))
+                accent_grad.setColorAt(1.0, QtGui.QColor(56, 189, 248, 0))
+                painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                painter.setBrush(accent_grad)
+                painter.drawRoundedRect(accent_rect, 1.5, 1.5)
+
+                cy = 40  # current y position for layout
+
+                # --- App logo ---
+                logo = splash_ref._logo_pixmap
+                if logo is not None and not logo.isNull():
+                    logo_size = 72
+                    scaled = logo.scaled(
+                        logo_size, logo_size,
+                        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                        QtCore.Qt.TransformationMode.SmoothTransformation,
+                    )
+                    lx = (w - scaled.width()) // 2
+                    painter.drawPixmap(lx, cy, scaled)
+                    cy += logo_size + 16
+                else:
+                    cy += 20
+
+                # --- App name ---
+                title_font = QtGui.QFont("Segoe UI", 18, QtGui.QFont.Weight.Bold)
+                painter.setFont(title_font)
+                painter.setPen(QtGui.QColor(230, 237, 243))
+                title_rect = QtCore.QRectF(0, cy, w, 30)
+                painter.drawText(title_rect, QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop, APP_DISPLAY_NAME)
+                cy += 36
+
+                # --- Status text ---
+                status_font = QtGui.QFont("Segoe UI", 11)
+                painter.setFont(status_font)
+                painter.setPen(QtGui.QColor(148, 163, 184))
+                status_rect = QtCore.QRectF(0, cy, w, 22)
+                painter.drawText(status_rect, QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop, splash_ref._status_text)
+                cy += 34
+
+                # --- Spinner ring ---
+                spinner_size = 44
+                sx = (w - spinner_size) // 2
+                spinner_rect = QtCore.QRectF(sx, cy, spinner_size, spinner_size)
+
+                # Track ring (dim) — use QPainterPath for smooth AA
+                track_pen = QtGui.QPen(QtGui.QColor(148, 163, 184, 40))
+                track_pen.setWidthF(3.0)
+                track_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+                painter.setPen(track_pen)
+                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(spinner_rect)
+
+                # Active arc (bright) — QPainterPath for smooth curves
+                arc_path = QtGui.QPainterPath()
+                arc_path.arcMoveTo(spinner_rect, splash_ref._spinner_angle)
+                arc_path.arcTo(spinner_rect, splash_ref._spinner_angle, 100)
+                arc_pen = QtGui.QPen(QtGui.QColor(56, 189, 248))
+                arc_pen.setWidthF(3.0)
+                arc_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+                painter.setPen(arc_pen)
+                painter.drawPath(arc_path)
+
+                # Second smaller arc for visual depth
+                arc_path2 = QtGui.QPainterPath()
+                angle2 = (splash_ref._spinner_angle + 180) % 360
+                arc_path2.arcMoveTo(spinner_rect, angle2)
+                arc_path2.arcTo(spinner_rect, angle2, 60)
+                arc_pen2 = QtGui.QPen(QtGui.QColor(52, 211, 153, 180))
+                arc_pen2.setWidthF(3.0)
+                arc_pen2.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+                painter.setPen(arc_pen2)
+                painter.drawPath(arc_path2)
+
+            except Exception:
+                pass
+            finally:
+                try:
+                    painter.end()
+                except Exception:
+                    pass
+
+    return SplashWidget
+
+
 def main() -> int:
     _configure_startup_window_suppression_defaults()
     if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
@@ -1352,8 +1597,8 @@ def main() -> int:
     from PyQt6 import QtCore, QtGui  # noqa: E402
     from PyQt6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
 
-    from app.gui.app_icon import find_primary_icon_file, load_app_icon  # noqa: E402
-    from app.gui.main_window import MainWindow  # noqa: E402
+    # Heavy imports (MainWindow, app_icon) are deferred to after the splash screen
+    # is shown, so the user sees loading feedback immediately.
     from windows_taskbar import (  # noqa: E402
         apply_taskbar_metadata,
         build_relaunch_command,
@@ -1411,6 +1656,133 @@ def main() -> int:
             app.setQuitOnLastWindowClosed(False)
         except Exception:
             pass
+    # --- Suppress transient startup windows via WinEvent hook on dedicated thread ---
+    # Qt/QtWebEngine create small helper windows during init that flash briefly.
+    # We install a WinEvent hook (EVENT_OBJECT_SHOW) on a DEDICATED background thread
+    # with its own Win32 message loop BEFORE creating any Qt windows (including the
+    # splash screen). A threading.Event ensures the hook is active before we proceed.
+    _suppress_stop = False
+    _suppress_thread_id = 0
+    _suppress_known_ok: set[int] = set()  # whitelisted HWNDs (splash, main window)
+    _hook_ready = None  # threading.Event set when hook is installed
+
+    def _suppress_via_winevent():
+        nonlocal _suppress_thread_id
+        if sys.platform != "win32":
+            if _hook_ready is not None:
+                _hook_ready.set()
+            return
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+
+            _suppress_thread_id = kernel32.GetCurrentThreadId()
+            pid = kernel32.GetCurrentProcessId()
+
+            SW_HIDE = 0
+            GWL_STYLE = -16
+            WS_VISIBLE = 0x10000000
+            EVENT_OBJECT_SHOW = 0x8002
+            WINEVENT_OUTOFCONTEXT = 0x0000
+            _get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+
+            # WinEvent callback — fires instantly when any window becomes visible
+            WINEVENTPROC = ctypes.WINFUNCTYPE(
+                None,
+                wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                ctypes.c_long, ctypes.c_long, wintypes.DWORD, wintypes.DWORD,
+            )
+
+            def _on_show(_hook, _event, hwnd, id_object, _id_child, _tid, _time):
+                if id_object != 0:  # OBJID_WINDOW = 0
+                    return
+                h = int(hwnd) if hwnd else 0
+                if not h or h in _suppress_known_ok:
+                    return
+                try:
+                    w_pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
+                    if w_pid.value != pid:
+                        return
+
+                    style = int(_get_style(hwnd, GWL_STYLE))
+                    if not (style & WS_VISIBLE):
+                        return
+
+                    rect = wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    w = rect.right - rect.left
+                    h_val = rect.bottom - rect.top
+                    if w > 400 and h_val > 300:
+                        _suppress_known_ok.add(h)
+                        return
+
+                    # Move off-screen instantly (MoveWindow is immediate, doesn't
+                    # need the target thread to process messages like ShowWindow does)
+                    user32.MoveWindow(hwnd, -32000, -32000, 1, 1, False)
+                    user32.ShowWindow(hwnd, SW_HIDE)
+                except Exception:
+                    pass
+
+            cb = WINEVENTPROC(_on_show)
+
+            hook = user32.SetWinEventHook(
+                EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW,
+                None, cb, pid, 0, WINEVENT_OUTOFCONTEXT,
+            )
+
+            # Signal main thread that hook is installed
+            if _hook_ready is not None:
+                _hook_ready.set()
+
+            if not hook:
+                return
+
+            import time
+            deadline = time.monotonic() + 5.0
+            msg = wintypes.MSG()
+            while not _suppress_stop and time.monotonic() < deadline:
+                while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                    if msg.message == 0x0012:  # WM_QUIT
+                        user32.UnhookWinEvent(hook)
+                        return
+                    user32.TranslateMessage(ctypes.byref(msg))
+                    user32.DispatchMessageW(ctypes.byref(msg))
+                time.sleep(0.001)
+
+            user32.UnhookWinEvent(hook)
+        except Exception:
+            if _hook_ready is not None:
+                _hook_ready.set()
+
+    # Start hook thread and wait for it to be ready BEFORE creating any Qt windows
+    if sys.platform == "win32":
+        import threading as _th
+        _hook_ready = _th.Event()
+        _suppress_thread = _th.Thread(target=_suppress_via_winevent, daemon=True)
+        _suppress_thread.start()
+        _hook_ready.wait(timeout=0.5)  # wait up to 500ms for hook to be installed
+        _boot_log("transient window suppression hook ready")
+
+    # --- Show loading splash screen ---
+    global _SplashWidget
+    _SplashWidget = _make_splash_widget_class(QWidget, QtCore, QtGui)
+    splash = None
+    if not _env_flag("BOT_DISABLE_SPLASH"):
+        try:
+            splash = _SplashScreen(app, QtCore, QtGui, QWidget)
+            _boot_log("splash screen shown")
+            # Whitelist splash HWND so the hook doesn't hide it
+            if splash._widget is not None:
+                try:
+                    _suppress_known_ok.add(int(splash._widget.winId()))
+                except Exception:
+                    pass
+        except Exception:
+            splash = None
 
     startup_masks: list[QWidget] = []
     startup_mask_hide_ms = 0
@@ -1462,6 +1834,30 @@ def main() -> int:
                     mask.raise_()
                 except Exception:
                     pass
+                # Make the mask truly click-through at the Win32 level.
+                # Qt's WA_TransparentForMouseEvents only affects Qt's internal routing;
+                # on Windows 11 the OS still considers topmost windows as capturing input.
+                # WS_EX_TRANSPARENT | WS_EX_LAYERED tells Windows to pass all mouse
+                # events through to whatever is behind the mask.
+                try:
+                    import ctypes
+                    import ctypes.wintypes as wintypes
+                    _user32 = ctypes.windll.user32
+                    _hwnd = wintypes.HWND(int(mask.winId()))
+                    GWL_EXSTYLE = -20
+                    WS_EX_LAYERED = 0x00080000
+                    WS_EX_TRANSPARENT = 0x00000020
+                    _get = getattr(_user32, "GetWindowLongPtrW", None) or _user32.GetWindowLongW
+                    _set = getattr(_user32, "SetWindowLongPtrW", None) or _user32.SetWindowLongW
+                    _ex = int(_get(_hwnd, GWL_EXSTYLE))
+                    _set(_hwnd, GWL_EXSTYLE, _ex | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+                except Exception:
+                    pass
+                # Whitelist mask HWND so WinEvent hook doesn't hide it
+                try:
+                    _suppress_known_ok.add(int(mask.winId()))
+                except Exception:
+                    pass
                 startup_masks.append(mask)
             try:
                 app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
@@ -1471,6 +1867,52 @@ def main() -> int:
             _boot_log(f"startup masks shown count={len(startup_masks)} mode={mask_mode_effective}")
         except Exception:
             startup_masks = []
+
+    if splash is not None:
+        try:
+            splash.set_status("Loading modules…")
+        except Exception:
+            pass
+
+    # --- Deferred heavy imports (after splash is visible) ---
+    # Run imports in a background thread so the Qt event loop stays alive
+    # and the splash spinner keeps animating during the ~2-3s import time.
+    _import_result: dict = {}
+    _import_done = False
+
+    def _bg_import():
+        nonlocal _import_done
+        try:
+            from app.gui.app_icon import find_primary_icon_file as _fpi, load_app_icon as _lai  # noqa: E402
+            from app.gui.main_window import MainWindow as _MW  # noqa: E402
+            _import_result["find_primary_icon_file"] = _fpi
+            _import_result["load_app_icon"] = _lai
+            _import_result["MainWindow"] = _MW
+        except Exception as exc:
+            _import_result["error"] = exc
+        _import_done = True
+
+    import threading
+    _import_thread = threading.Thread(target=_bg_import, daemon=True)
+    _import_thread.start()
+    while not _import_done:
+        try:
+            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        except Exception:
+            pass
+        _import_thread.join(0.05)
+
+    if "error" in _import_result:
+        raise _import_result["error"]
+    find_primary_icon_file = _import_result["find_primary_icon_file"]
+    load_app_icon = _import_result["load_app_icon"]
+    MainWindow = _import_result["MainWindow"]
+
+    if splash is not None:
+        try:
+            splash.set_status("Loading icons…")
+        except Exception:
+            pass
 
     icon = QtGui.QIcon()
     disable_app_icon = _env_flag("BOT_DISABLE_APP_ICON") and not force_app_icon
@@ -1495,6 +1937,12 @@ def main() -> int:
                 QtGui.QGuiApplication.setWindowIcon(icon)
             except Exception:
                 pass
+
+    if splash is not None:
+        try:
+            splash.set_status("Initializing interface…")
+        except Exception:
+            pass
 
     win = MainWindow()
     _boot_log("MainWindow created")
@@ -1578,6 +2026,14 @@ def main() -> int:
     else:
         win.showMaximized()
     _boot_log("MainWindow shown")
+    _suppress_stop = True  # stop transient window suppression thread
+    if splash is not None:
+        try:
+            splash.close()
+            _boot_log("splash screen closed")
+        except Exception:
+            pass
+        splash = None
     try:
         win.winId()
     except Exception:
