@@ -817,6 +817,224 @@ _DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "binance-sdk-spot", "package": "binance-sdk-spot"},
 ]
 
+_CONNECTOR_DEPENDENCY_KEYS = {
+    "python-binance",
+    "binance-connector",
+    "ccxt",
+    "binance-sdk-derivatives-trading-usds-futures",
+    "binance-sdk-derivatives-trading-coin-futures",
+    "binance-sdk-spot",
+}
+
+_DEPENDENCY_MODULE_ALIASES = {
+    "python-binance": ("binance",),
+    "binance-connector": ("binance",),
+    "ccxt": ("ccxt",),
+    "pyqt6": ("PyQt6",),
+    "pyqt6-qt6": ("PyQt6",),
+    "pyqt6-webengine": ("PyQt6.QtWebEngineWidgets", "PyQt6.QtWebEngineCore"),
+    "numba": ("numba",),
+    "llvmlite": ("llvmlite",),
+    "numpy": ("numpy",),
+    "pandas": ("pandas",),
+    "pandas-ta": ("pandas_ta",),
+    "requests": ("requests",),
+    "binance-sdk-derivatives-trading-usds-futures": ("binance_sdk_derivatives_trading_usds_futures",),
+    "binance-sdk-derivatives-trading-coin-futures": ("binance_sdk_derivatives_trading_coin_futures",),
+    "binance-sdk-spot": ("binance_sdk_spot",),
+}
+
+_DEPENDENCY_USAGE_ACTIVE_COLOR = "#16a34a"
+_DEPENDENCY_USAGE_PASSIVE_COLOR = "#dc2626"
+_DEPENDENCY_USAGE_PENDING_COLOR = "#d97706"
+_DEPENDENCY_USAGE_UNKNOWN_COLOR = "#64748b"
+_DEPENDENCY_USAGE_POLL_INTERVAL_MS = 1500
+
+
+def _normalize_dependency_key(value: str | None) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _normalize_dependency_usage_text(usage: str | None) -> str:
+    text = str(usage or "").strip().lower()
+    if text == "active":
+        return "Active"
+    if text == "passive":
+        return "Passive"
+    if text == "checking...":
+        return "Checking..."
+    if text == "unknown":
+        return "Unknown"
+    if not text:
+        return "Passive"
+    return str(usage).strip()
+
+
+def _dependency_usage_color(usage_text: str) -> str:
+    normalized = str(usage_text or "").strip().lower()
+    if normalized == "active":
+        return _DEPENDENCY_USAGE_ACTIVE_COLOR
+    if normalized == "passive":
+        return _DEPENDENCY_USAGE_PASSIVE_COLOR
+    if normalized == "checking...":
+        return _DEPENDENCY_USAGE_PENDING_COLOR
+    return _DEPENDENCY_USAGE_UNKNOWN_COLOR
+
+
+def _set_dependency_usage_widget(widget: QtWidgets.QLabel | None, usage: str | None) -> None:
+    if widget is None:
+        return
+    usage_text = _normalize_dependency_usage_text(usage)
+    usage_color = _dependency_usage_color(usage_text)
+    widget.setText(usage_text)
+    widget.setStyleSheet(f"font-size: 11px; padding: 2px; font-weight: 600; color: {usage_color};")
+
+
+def _set_dependency_usage_counter_widget(widget: QtWidgets.QLabel | None, count: int | str | None) -> None:
+    if widget is None:
+        return
+    try:
+        count_value = max(0, int(count or 0))
+    except Exception:
+        count_value = 0
+    widget.setText(str(count_value))
+    widget.setStyleSheet("font-size: 11px; padding: 2px; font-weight: 600;")
+
+
+def _make_dependency_cell_copyable(widget: QtWidgets.QLabel | None) -> None:
+    if widget is None:
+        return
+    try:
+        widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+    except Exception:
+        pass
+    try:
+        widget.setCursor(QtCore.Qt.CursorShape.IBeamCursor)
+    except Exception:
+        pass
+
+
+def _apply_dependency_usage_entry(
+    self,
+    label: str,
+    usage: str | None,
+    *,
+    widgets: tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel] | None = None,
+    track_change: bool = True,
+) -> None:
+    if not label:
+        return
+    labels = getattr(self, "_dep_version_labels", None)
+    if widgets is None:
+        if not isinstance(labels, dict):
+            return
+        widgets = labels.get(label)
+    if not widgets:
+        return
+    try:
+        _, _, usage_widget, counter_widget = widgets
+    except Exception:
+        return
+
+    usage_text = _normalize_dependency_usage_text(usage)
+    normalized_usage = usage_text.lower()
+
+    state_map = getattr(self, "_dep_usage_last_state", None)
+    if not isinstance(state_map, dict):
+        state_map = {}
+        self._dep_usage_last_state = state_map
+    count_map = getattr(self, "_dep_usage_change_counts", None)
+    if not isinstance(count_map, dict):
+        count_map = {}
+        self._dep_usage_change_counts = count_map
+
+    previous_state = str(state_map.get(label) or "").strip().lower()
+    if track_change and previous_state in {"active", "passive"} and normalized_usage in {"active", "passive"}:
+        if previous_state != normalized_usage:
+            try:
+                count_map[label] = max(0, int(count_map.get(label, 0))) + 1
+            except Exception:
+                count_map[label] = 1
+    if normalized_usage in {"active", "passive"}:
+        state_map[label] = normalized_usage
+
+    _set_dependency_usage_widget(usage_widget, usage_text)
+    _set_dependency_usage_counter_widget(counter_widget, count_map.get(label, 0))
+
+
+def _dependency_module_candidates(target: dict[str, str]) -> tuple[str, ...]:
+    package = _normalize_dependency_key(target.get("package"))
+    label = _normalize_dependency_key(target.get("label"))
+    key = package or label
+    alias_candidates = _DEPENDENCY_MODULE_ALIASES.get(key)
+    if alias_candidates:
+        return alias_candidates
+    raw = str(target.get("package") or target.get("label") or "").strip()
+    if not raw:
+        return tuple()
+    return (raw.replace("-", "_"),)
+
+
+def _dependency_usage_state(
+    target: dict[str, str],
+    *,
+    config: dict | None = None,
+    loaded_modules: set[str] | None = None,
+) -> str:
+    dependency_key = _normalize_dependency_key(target.get("package") or target.get("label"))
+    if dependency_key in _CONNECTOR_DEPENDENCY_KEYS:
+        backend_key = _normalize_connector_backend((config or {}).get("connector_backend"))
+        return "Active" if dependency_key == backend_key else "Passive"
+
+    modules = loaded_modules if loaded_modules is not None else set(sys.modules.keys())
+    for module_name in _dependency_module_candidates(target):
+        name = str(module_name or "").strip()
+        if not name:
+            continue
+        if name in modules:
+            return "Active"
+        prefix = f"{name}."
+        if any(loaded.startswith(prefix) for loaded in modules):
+            return "Active"
+    return "Passive"
+
+
+def _refresh_dependency_usage_labels(
+    self,
+    targets: list[dict[str, str]] | None = None,
+    *,
+    config: dict | None = None,
+) -> None:
+    labels = getattr(self, "_dep_version_labels", None)
+    if not labels:
+        return
+    target_list = targets or getattr(self, "_dep_version_targets", []) or []
+    if not target_list:
+        return
+    try:
+        config_snapshot = dict((config if config is not None else self.config) or {})
+    except Exception:
+        config_snapshot = {}
+    loaded_modules = set(sys.modules.keys())
+    usage_by_label: dict[str, str] = {}
+    for target in target_list:
+        label = str(target.get("label") or "").strip()
+        if not label:
+            continue
+        usage_by_label[label] = _dependency_usage_state(
+            target,
+            config=config_snapshot,
+            loaded_modules=loaded_modules,
+        )
+    for label, widgets in labels.items():
+        _apply_dependency_usage_entry(
+            self,
+            label,
+            usage_by_label.get(label, "Passive"),
+            widgets=widgets,
+            track_change=True,
+        )
+
 
 def _extract_requirement_name(line: str) -> str | None:
     stripped = (line or "").strip()
@@ -2579,9 +2797,11 @@ def _collect_dependency_versions(
     targets: list[dict[str, str]] | None = None,
     *,
     include_latest: bool = True,
-) -> list[tuple[str, str, str]]:
-    versions: list[tuple[str, str, str]] = []
+    config: dict | None = None,
+) -> list[tuple[str, str, str, str]]:
+    versions: list[tuple[str, str, str, str]] = []
     target_list = targets or DEPENDENCY_VERSION_TARGETS
+    loaded_modules = set(sys.modules.keys())
 
     installed_map: dict[str, str] = {}
     for target in target_list:
@@ -2622,7 +2842,8 @@ def _collect_dependency_versions(
         label = target["label"]
         installed_display = installed_map.get(label, "Not installed")
         latest_display = latest_map.get(label, "Not checked" if not include_latest else "Unknown")
-        versions.append((label, installed_display, latest_display))
+        usage_display = _dependency_usage_state(target, config=config, loaded_modules=loaded_modules)
+        versions.append((label, installed_display, latest_display, usage_display))
     return versions
 
 
@@ -4195,6 +4416,8 @@ class MainWindow(QtWidgets.QWidget):
         self._dep_version_refresh_inflight = False
         self._dep_version_refresh_pending = False
         self._dep_version_auto_refresh_done = False
+        self._dep_usage_last_state: dict[str, str] = {}
+        self._dep_usage_change_counts: dict[str, int] = {}
         self.backtest_indicator_widgets = {}
         self.backtest_results = []
         self.backtest_worker = None
@@ -10048,6 +10271,10 @@ class MainWindow(QtWidgets.QWidget):
             self._refresh_symbol_interval_pairs("backtest")
         except Exception:
             pass
+        try:
+            _refresh_dependency_usage_labels(self)
+        except Exception:
+            pass
 
     def _on_account_type_changed(self, value):
         account_text = str(value or "").strip()
@@ -11131,6 +11358,13 @@ class MainWindow(QtWidgets.QWidget):
             widget = self.tabs.widget(index)
         except Exception:
             return
+        try:
+            if widget is getattr(self, "code_tab", None):
+                self._start_dependency_usage_auto_poll()
+            else:
+                self._stop_dependency_usage_auto_poll()
+        except Exception:
+            pass
         if widget is getattr(self, "chart_tab", None):
             try:
                 combo_mode = self.chart_view_mode_combo.currentData()
@@ -13243,7 +13477,10 @@ def _init_code_language_tab(self):
     self._register_pnl_summary_labels(self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab)
     layout.addWidget(status_widget)
 
-    self._dep_version_labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel]] = {}
+    self._dep_version_labels: dict[
+        str,
+        tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel],
+    ] = {}
     self._dep_version_targets: list[dict[str, str]] = _dependency_targets_from_requirements(
         _iter_candidate_requirement_paths(self.config)
     )
@@ -13258,11 +13495,15 @@ def _init_code_language_tab(self):
     versions_container = QtWidgets.QWidget()
     versions_layout = QtWidgets.QGridLayout(versions_container)
     versions_layout.setContentsMargins(6, 6, 6, 6)
-    versions_layout.setColumnStretch(0, 5)
-    versions_layout.setColumnStretch(1, 3)
-    versions_layout.setColumnStretch(2, 3)
+    versions_layout.setColumnStretch(0, 0)
+    versions_layout.setColumnStretch(1, 0)
+    versions_layout.setColumnStretch(2, 0)
+    versions_layout.setColumnStretch(3, 0)
+    versions_layout.setColumnStretch(4, 0)
+    versions_layout.setColumnStretch(5, 1)
     versions_layout.setVerticalSpacing(8)
-    versions_layout.setHorizontalSpacing(12)
+    versions_layout.setHorizontalSpacing(6)
+    versions_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
 
     versions_scroll = QtWidgets.QScrollArea()
     versions_scroll.setWidgetResizable(True)
@@ -13352,6 +13593,52 @@ def _refresh_code_tab_from_config(self) -> None:
     for key, card in lang_cards.items():
         card.setSelected(bool(lang_key) and key == lang_key)
     # Dependency versions refresh lazily the first time this tab is opened (see _on_tab_changed).
+    _refresh_dependency_usage_labels(self)
+
+
+def _code_tab_visible(self) -> bool:
+    try:
+        tabs = getattr(self, "tabs", None)
+        code_tab = getattr(self, "code_tab", None)
+        if tabs is None or code_tab is None:
+            return False
+        return tabs.currentWidget() is code_tab
+    except Exception:
+        return False
+
+
+def _start_dependency_usage_auto_poll(self) -> None:
+    timer = getattr(self, "_dep_usage_poll_timer", None)
+    if timer is None:
+        try:
+            timer = QtCore.QTimer(self)
+            timer.setInterval(_DEPENDENCY_USAGE_POLL_INTERVAL_MS)
+            timer.timeout.connect(self._poll_dependency_usage_states)
+            self._dep_usage_poll_timer = timer
+        except Exception:
+            return
+    try:
+        if not timer.isActive():
+            timer.start()
+    except Exception:
+        pass
+    self._poll_dependency_usage_states()
+
+
+def _stop_dependency_usage_auto_poll(self) -> None:
+    timer = getattr(self, "_dep_usage_poll_timer", None)
+    if timer is None:
+        return
+    try:
+        timer.stop()
+    except Exception:
+        pass
+
+
+def _poll_dependency_usage_states(self) -> None:
+    if not self._code_tab_visible():
+        return
+    _refresh_dependency_usage_labels(self)
 
 
 def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None = None) -> None:
@@ -13375,33 +13662,74 @@ def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None 
     header_inst.setStyleSheet("font-weight: 600; font-size: 12px;")
     header_latest = QtWidgets.QLabel("Latest")
     header_latest.setStyleSheet("font-weight: 600; font-size: 12px;")
+    header_usage = QtWidgets.QLabel("Usage")
+    header_usage.setStyleSheet("font-weight: 600; font-size: 12px;")
+    header_usage_counter = QtWidgets.QLabel("Usage Change Counter")
+    header_usage_counter.setStyleSheet("font-weight: 600; font-size: 12px;")
     layout.addWidget(header_dep, 0, 0)
     layout.addWidget(header_inst, 0, 1)
     layout.addWidget(header_latest, 0, 2)
+    layout.addWidget(header_usage, 0, 3)
+    layout.addWidget(header_usage_counter, 0, 4)
 
-    labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel]] = {}
+    labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel]] = {}
+    count_map = getattr(self, "_dep_usage_change_counts", None)
+    if not isinstance(count_map, dict):
+        count_map = {}
+        self._dep_usage_change_counts = count_map
     for row, target in enumerate(target_list, start=1):
         label_widget = QtWidgets.QLabel(target["label"])
         label_widget.setStyleSheet("font-weight: 600; font-size: 11px; padding: 2px;")
         label_widget.setMinimumHeight(20)
+        _make_dependency_cell_copyable(label_widget)
 
         installed_widget = QtWidgets.QLabel("Checking...")
         installed_widget.setStyleSheet("font-size: 11px; padding: 2px;")
         installed_widget.setMinimumHeight(20)
-        installed_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        _make_dependency_cell_copyable(installed_widget)
 
         latest_widget = QtWidgets.QLabel("Checking...")
         latest_widget.setStyleSheet("font-size: 11px; padding: 2px;")
         latest_widget.setMinimumHeight(20)
-        latest_widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        _make_dependency_cell_copyable(latest_widget)
+
+        usage_widget = QtWidgets.QLabel()
+        usage_widget.setMinimumHeight(20)
+        _make_dependency_cell_copyable(usage_widget)
+        _set_dependency_usage_widget(usage_widget, "Checking...")
+
+        usage_counter_widget = QtWidgets.QLabel()
+        usage_counter_widget.setMinimumHeight(20)
+        _make_dependency_cell_copyable(usage_counter_widget)
+        _set_dependency_usage_counter_widget(usage_counter_widget, count_map.get(target["label"], 0))
 
         layout.addWidget(label_widget, row, 0)
         layout.addWidget(installed_widget, row, 1)
         layout.addWidget(latest_widget, row, 2)
-        labels[target["label"]] = (installed_widget, latest_widget)
+        layout.addWidget(usage_widget, row, 3)
+        layout.addWidget(usage_counter_widget, row, 4)
+        labels[target["label"]] = (installed_widget, latest_widget, usage_widget, usage_counter_widget)
 
     self._dep_version_labels = labels
     self._dep_version_targets = list(target_list)
+    tracked_labels = {str(t.get("label") or "").strip() for t in target_list}
+    try:
+        state_map = getattr(self, "_dep_usage_last_state", None)
+        if isinstance(state_map, dict):
+            for key in list(state_map.keys()):
+                if key not in tracked_labels:
+                    state_map.pop(key, None)
+    except Exception:
+        pass
+    try:
+        count_map_local = getattr(self, "_dep_usage_change_counts", None)
+        if isinstance(count_map_local, dict):
+            for key in list(count_map_local.keys()):
+                if key not in tracked_labels:
+                    count_map_local.pop(key, None)
+    except Exception:
+        pass
+    _refresh_dependency_usage_labels(self, target_list)
 
     rows = len(target_list) + 1  # +1 for header
     try:
@@ -13438,6 +13766,10 @@ def _refresh_dependency_versions(self) -> None:
         resolved_targets = _dependency_targets_from_requirements(_iter_candidate_requirement_paths(self.config))
     except Exception:
         resolved_targets = copy.deepcopy(DEPENDENCY_VERSION_TARGETS)
+    try:
+        config_snapshot = dict(self.config or {})
+    except Exception:
+        config_snapshot = {}
 
     # Ensure the UI rows exist for the resolved targets before applying values.
     try:
@@ -13453,27 +13785,34 @@ def _refresh_dependency_versions(self) -> None:
 
     labels = getattr(self, "_dep_version_labels", None)
     if labels:
-        for installed_widget, latest_widget in labels.values():
+        for label, widgets in labels.items():
+            _, latest_widget, _, _ = widgets
             try:
                 latest_widget.setText("Checking...")
             except Exception:
                 pass
+            _apply_dependency_usage_entry(self, label, "Checking...", widgets=widgets, track_change=False)
 
     # Phase 1: populate installed versions immediately (no network).
     try:
-        installed_snapshot = _collect_dependency_versions(resolved_targets, include_latest=False)
+        installed_snapshot = _collect_dependency_versions(
+            resolved_targets,
+            include_latest=False,
+            config=config_snapshot,
+        )
     except Exception:
         installed_snapshot = []
     if labels and installed_snapshot:
-        for label, installed, _ in installed_snapshot:
+        for label, installed, _, usage in installed_snapshot:
             widgets = labels.get(label)
             if not widgets:
                 continue
-            installed_widget, _ = widgets
+            installed_widget, _, _, _ = widgets
             try:
                 installed_widget.setText(installed)
             except Exception:
                 pass
+            _apply_dependency_usage_entry(self, label, usage, widgets=widgets, track_change=True)
 
     def _watchdog(token: float):
         try:
@@ -13483,11 +13822,14 @@ def _refresh_dependency_versions(self) -> None:
                 return
             labels_local = getattr(self, "_dep_version_labels", None)
             if labels_local:
-                for installed_widget, latest_widget in labels_local.values():
+                for label, widgets in labels_local.items():
+                    _, latest_widget, _, _ = widgets
                     try:
                         latest_widget.setText("Unknown")
                     except Exception:
                         pass
+                    if _normalize_dependency_usage_text(widgets[2].text()) == "Checking...":
+                        _apply_dependency_usage_entry(self, label, "Passive", widgets=widgets, track_change=False)
             self._dep_version_refresh_inflight = False
         except Exception:
             self._dep_version_refresh_inflight = False
@@ -13497,20 +13839,40 @@ def _refresh_dependency_versions(self) -> None:
     # Phase 2: fetch latest versions in the background without blocking the UI.
     def _run_latest():
         try:
-            installed_snapshot = list(_collect_dependency_versions(resolved_targets, include_latest=False))
+            installed_snapshot = list(
+                _collect_dependency_versions(
+                    resolved_targets,
+                    include_latest=False,
+                    config=config_snapshot,
+                )
+            )
         except Exception:
             installed_snapshot = []
 
         try:
-            results = list(_collect_dependency_versions(resolved_targets, include_latest=True))
+            results = list(
+                _collect_dependency_versions(
+                    resolved_targets,
+                    include_latest=True,
+                    config=config_snapshot,
+                )
+            )
         except Exception:
             results = []
         if not results:
             # Fall back to installed values with Unknown latest so the UI never stays at "Checking..."
             if installed_snapshot:
-                results = [(label, inst, "Unknown") for (label, inst, _) in installed_snapshot]
+                results = [(label, inst, "Unknown", usage) for (label, inst, _, usage) in installed_snapshot]
             else:
-                results = [(target["label"], "Not installed", "Unknown") for target in (resolved_targets or [])]
+                results = [
+                    (
+                        target["label"],
+                        "Not installed",
+                        "Unknown",
+                        _dependency_usage_state(target, config=config_snapshot),
+                    )
+                    for target in (resolved_targets or [])
+                ]
 
         # Queue the UI update on the main thread using QMetaObject.invokeMethod for thread safety.
         # QTimer.singleShot can fail silently when called from a non-main thread in PyQt6.
@@ -13535,14 +13897,22 @@ def _apply_dependency_version_results(self, results: list) -> None:
         if labels_local:
             installed_map = {}
             latest_map = {}
-            for label, installed, latest in results:
+            usage_map = {}
+            for row in (results or []):
+                if not row:
+                    continue
+                label = row[0]
+                installed = row[1] if len(row) > 1 else "Not installed"
+                latest = row[2] if len(row) > 2 else "Unknown"
+                usage = row[3] if len(row) > 3 else "Passive"
                 installed_map[label] = installed
                 latest_map[label] = latest
+                usage_map[label] = usage
 
             for label, widgets in labels_local.items():
                 if widgets is None:
                     continue
-                installed_widget, latest_widget = widgets
+                installed_widget, latest_widget, _, _ = widgets
                 try:
                     if label in installed_map:
                         installed_widget.setText(installed_map[label])
@@ -13552,6 +13922,7 @@ def _apply_dependency_version_results(self, results: list) -> None:
                     latest_widget.setText(latest_map.get(label, "Unknown"))
                 except Exception:
                     pass
+                _apply_dependency_usage_entry(self, label, usage_map.get(label, "Passive"), widgets=widgets, track_change=True)
 
         self._dep_version_refresh_inflight = False
         if getattr(self, "_dep_version_refresh_pending", False):
@@ -17669,6 +18040,10 @@ try:
     MainWindow._code_tab_select_exchange = _code_tab_select_exchange
     MainWindow._code_tab_select_forex = _code_tab_select_forex
     MainWindow._refresh_code_tab_from_config = _refresh_code_tab_from_config
+    MainWindow._code_tab_visible = _code_tab_visible
+    MainWindow._start_dependency_usage_auto_poll = _start_dependency_usage_auto_poll
+    MainWindow._stop_dependency_usage_auto_poll = _stop_dependency_usage_auto_poll
+    MainWindow._poll_dependency_usage_states = _poll_dependency_usage_states
     MainWindow._update_code_tab_market_sections = _update_code_tab_market_sections
 except Exception:
     pass
