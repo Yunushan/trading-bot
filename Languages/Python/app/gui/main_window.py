@@ -6,6 +6,8 @@ import sys
 import json
 import math
 import re
+import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -636,6 +638,12 @@ for _parent in _THIS_FILE.parents:
         break
 else:
     _BASE_PROJECT_PATH = _THIS_FILE.parents[2]
+
+CPP_CODE_LANGUAGE_KEY = "C++ (Qt/C++23)"
+CPP_SUPPORTED_EXCHANGE_KEY = "Binance"
+CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
+CPP_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "C++").resolve()
+CPP_BUILD_ROOT = (_BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
 
 # Startup knobs to avoid slow/flashy QtWebEngine init on Windows
 _DISABLE_CHARTS = str(os.environ.get("BOT_DISABLE_CHARTS", "")).strip().lower() in {"1", "true", "yes", "on"}
@@ -1871,11 +1879,32 @@ _INDICATOR_SHORT_LABEL_OVERRIDES = {
 # across bot restarts so interval/indicator data is not lost.
 
 _ALLOCATIONS_FILE_NAME = ".trading_bot_allocations.json"
+_ALLOCATIONS_DIR_NAME = "data"
 
 
 def _get_allocations_file_path() -> Path:
     """Get the path to the allocations persistence file."""
-    return _THIS_FILE.parents[2] / _ALLOCATIONS_FILE_NAME
+    python_root = _THIS_FILE.parents[2]
+    data_dir = python_root / _ALLOCATIONS_DIR_NAME
+    primary_path = data_dir / _ALLOCATIONS_FILE_NAME
+    legacy_path = python_root / _ALLOCATIONS_FILE_NAME
+
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Fallback to legacy location if data dir cannot be created.
+        return legacy_path
+
+    if legacy_path.is_file() and not primary_path.exists():
+        try:
+            legacy_path.replace(primary_path)
+        except Exception:
+            try:
+                shutil.copy2(legacy_path, primary_path)
+            except Exception:
+                return legacy_path
+
+    return primary_path
 
 
 def _serialize_allocation_key(key: tuple) -> str:
@@ -4536,9 +4565,25 @@ class MainWindow(QtWidgets.QWidget):
         self._starter_crypto_cards = {}
         self._starter_forex_cards = {}
         self._code_tab_selected_market = self.config.get("code_market") or "crypto"
+        self._open_code_tab_on_start = str(os.environ.get("BOT_OPEN_CODE_TAB", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._ensure_runtime_connector_for_account(self.config.get("account_type") or "Futures", force_default=False)
         self._override_debug_verbose = bool(self.config.get("debug_override_verbose", False))
         self.init_ui()
+        if self._open_code_tab_on_start:
+            try:
+                tabs = getattr(self, "tabs", None)
+                code_tab = getattr(self, "code_tab", None)
+                if tabs is not None and code_tab is not None:
+                    idx = tabs.indexOf(code_tab)
+                    if idx >= 0:
+                        tabs.setCurrentIndex(idx)
+            except Exception:
+                pass
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
         try:
@@ -13536,6 +13581,293 @@ def _init_code_language_tab(self):
     self._refresh_code_tab_from_config()
     return tab
 
+def _cpp_executable_names() -> set[str]:
+    names = {CPP_EXECUTABLE_BASENAME}
+    if sys.platform == "win32":
+        names.add(f"{CPP_EXECUTABLE_BASENAME}.exe")
+    return names
+
+
+def _find_cpp_code_tab_executable() -> Path | None:
+    candidate_names = _cpp_executable_names()
+    suffixes = {""}
+    if sys.platform == "win32":
+        suffixes.add(".exe")
+
+    roots = [
+        CPP_PROJECT_PATH,
+        CPP_PROJECT_PATH / "build",
+        CPP_PROJECT_PATH / "Release",
+        CPP_PROJECT_PATH / "Debug",
+        CPP_PROJECT_PATH / "bin",
+        CPP_BUILD_ROOT,
+        CPP_BUILD_ROOT / "Release",
+        CPP_BUILD_ROOT / "Debug",
+        CPP_BUILD_ROOT / "bin",
+        CPP_BUILD_ROOT / "out",
+    ]
+
+    for root in roots:
+        for name in candidate_names:
+            candidate = root / name
+            if candidate.is_file():
+                return candidate
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() not in suffixes:
+                    continue
+                if path.name in candidate_names or path.stem == CPP_EXECUTABLE_BASENAME:
+                    return path
+        except (PermissionError, OSError):
+            continue
+    return None
+
+
+def _read_cmake_cache_value(cache_file: Path, key: str) -> str | None:
+    if not cache_file.is_file():
+        return None
+    needle = f"{key}:"
+    try:
+        for line in cache_file.read_text(errors="ignore").splitlines():
+            if line.startswith(needle):
+                parts = line.split("=", 1)
+                if len(parts) == 2:
+                    value = parts[1].strip()
+                    return value or None
+    except Exception:
+        return None
+    return None
+
+
+def _detect_default_cpp_qt_prefix() -> Path | None:
+    candidates = [
+        Path("C:/Qt"),
+        Path.home() / "Qt",
+    ]
+    for base in candidates:
+        if not base.is_dir():
+            continue
+        try:
+            for version_dir in sorted(base.glob("6.*"), reverse=True):
+                for kit_dir in sorted(version_dir.iterdir(), reverse=True):
+                    qt_cmake = kit_dir / "lib" / "cmake" / "Qt6"
+                    if qt_cmake.is_dir():
+                        return qt_cmake.resolve()
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_cpp_qt_prefix_for_code_tab() -> str | None:
+    env_prefix = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
+    if env_prefix:
+        return env_prefix
+
+    cached_qt_dir = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6_DIR")
+    if cached_qt_dir:
+        try:
+            cached_path = Path(cached_qt_dir).resolve()
+            if cached_path.exists():
+                return str(cached_path)
+        except Exception:
+            pass
+
+    detected = _detect_default_cpp_qt_prefix()
+    if detected is not None:
+        return str(detected)
+    return None
+
+
+def _discover_cpp_qt_bin_dirs_for_code_tab() -> list[Path]:
+    prefixes: list[Path] = []
+    env_prefix = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
+    if env_prefix:
+        for token in env_prefix.split(os.pathsep):
+            token = token.strip()
+            if token:
+                prefixes.append(Path(token))
+
+    cached_qt_dir = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6_DIR")
+    if cached_qt_dir:
+        prefixes.append(Path(cached_qt_dir))
+
+    detected = _detect_default_cpp_qt_prefix()
+    if detected is not None:
+        prefixes.append(detected)
+
+    bin_dirs: list[Path] = []
+    for prefix in prefixes:
+        try:
+            prefix_resolved = prefix.resolve()
+        except Exception:
+            continue
+        for base in [prefix_resolved] + list(prefix_resolved.parents):
+            candidate = base / "bin"
+            if not candidate.is_dir():
+                continue
+            if (candidate / "Qt6Core.dll").is_file() or (candidate / "Qt6Widgets.dll").is_file():
+                try:
+                    bin_dirs.append(candidate.resolve())
+                except Exception:
+                    bin_dirs.append(candidate)
+                break
+
+    build_bin = CPP_BUILD_ROOT / "bin"
+    if build_bin.is_dir():
+        bin_dirs.append(build_bin.resolve())
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in bin_dirs:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return unique
+
+
+def _run_command_capture_hidden(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    run_kwargs: dict[str, object] = {
+        "capture_output": True,
+        "text": True,
+    }
+    if cwd is not None:
+        run_kwargs["cwd"] = str(cwd)
+    if env is not None:
+        run_kwargs["env"] = env
+    if sys.platform == "win32":
+        run_kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    try:
+        result = subprocess.run(command, check=True, **run_kwargs)
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        return True, output
+    except FileNotFoundError:
+        return False, f"Command not found: {command[0]}"
+    except subprocess.CalledProcessError as exc:
+        output = ((exc.stdout or "") + (exc.stderr or "")).strip()
+        return False, output
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
+    if not CPP_PROJECT_PATH.is_dir():
+        return None, f"C++ project directory is missing: {CPP_PROJECT_PATH}"
+    if shutil.which("cmake") is None:
+        return None, "CMake is not available in PATH."
+    try:
+        CPP_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        return None, f"Could not create build directory '{CPP_BUILD_ROOT}': {exc}"
+
+    prefix_env = _resolve_cpp_qt_prefix_for_code_tab()
+    configure_cmd = ["cmake", "-S", str(CPP_PROJECT_PATH), "-B", str(CPP_BUILD_ROOT)]
+    if prefix_env:
+        configure_cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
+
+    ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
+    if not ok:
+        # Retry once with a cleaned cache to recover from generator or Qt path mismatch.
+        try:
+            (CPP_BUILD_ROOT / "CMakeCache.txt").unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(CPP_BUILD_ROOT / "CMakeFiles", ignore_errors=True)
+        except Exception:
+            pass
+        ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
+    if not ok:
+        tail = "\n".join([line for line in output.splitlines() if line][-20:])
+        return None, f"CMake configure failed.\n{tail}".strip()
+
+    build_commands: list[list[str]]
+    if sys.platform == "win32":
+        build_commands = [
+            ["cmake", "--build", str(CPP_BUILD_ROOT), "--config", "Release"],
+            ["cmake", "--build", str(CPP_BUILD_ROOT), "--config", "Debug"],
+        ]
+    else:
+        build_commands = [["cmake", "--build", str(CPP_BUILD_ROOT)]]
+
+    last_output = ""
+    for command in build_commands:
+        ok, last_output = _run_command_capture_hidden(command, cwd=CPP_PROJECT_PATH)
+        if ok:
+            break
+    if not ok:
+        tail = "\n".join([line for line in last_output.splitlines() if line][-20:])
+        return None, f"CMake build failed.\n{tail}".strip()
+
+    exe_path = _find_cpp_code_tab_executable()
+    if exe_path is None or not exe_path.is_file():
+        return None, "Build completed but binance_backtest_tab executable was not found."
+    return exe_path, None
+
+
+def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
+    if str(self.config.get("selected_exchange") or "") != CPP_SUPPORTED_EXCHANGE_KEY:
+        self.config["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
+        self.log("C++ preview supports Binance only. Switched exchange to Binance.")
+        try:
+            self._refresh_code_tab_from_config()
+        except Exception:
+            pass
+
+    existing = getattr(self, "_cpp_code_tab_process", None)
+    try:
+        if existing is not None and existing.poll() is None:
+            self.log("C++ bot is already running.")
+            return True
+    except Exception:
+        pass
+
+    exe_path = _find_cpp_code_tab_executable()
+    if exe_path is None:
+        self.log("C++ executable not found. Attempting to build it now...")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            exe_path, error = _build_cpp_executable_for_code_tab(self)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        if exe_path is None:
+            detail = error or "Automatic C++ build failed."
+            self.log(f"C++ launch failed: {detail}")
+            QtWidgets.QMessageBox.warning(
+                self,
+                "C++ launch failed",
+                f"Could not start the C++ bot.\n\n{detail}\n\nInstall Qt + CMake and try again.",
+            )
+            return False
+
+    env = os.environ.copy()
+    qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
+    if qt_bins:
+        env["PATH"] = os.pathsep.join([*(str(path) for path in qt_bins), env.get("PATH", "")])
+
+    try:
+        process = subprocess.Popen([str(exe_path)], cwd=str(exe_path.parent), env=env)
+    except Exception as exc:
+        self.log(f"C++ launch failed: {exc}")
+        QtWidgets.QMessageBox.warning(self, "C++ launch failed", str(exc))
+        return False
+
+    self._cpp_code_tab_process = process
+    self.log(f"Launched C++ bot ({trigger}): {exe_path}")
+    return True
+
+
 def _code_tab_select_language(self, config_key: str) -> None:
     if config_key not in LANGUAGE_PATHS:
         return
@@ -13543,8 +13875,13 @@ def _code_tab_select_language(self, config_key: str) -> None:
     if card is not None and card.is_disabled():
         return
     self.config["code_language"] = config_key
+    if config_key == CPP_CODE_LANGUAGE_KEY and self.config.get("selected_exchange") != CPP_SUPPORTED_EXCHANGE_KEY:
+        self.config["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
+        self.log("C++ preview supports Binance only. Switched exchange to Binance.")
     self._refresh_code_tab_from_config()
     self._ensure_language_exchange_paths()
+    if config_key == CPP_CODE_LANGUAGE_KEY:
+        _launch_cpp_from_code_tab(self, trigger="language-card")
 
 
 def _code_tab_select_market(self, market_key: str) -> None:

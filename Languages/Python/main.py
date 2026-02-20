@@ -137,6 +137,43 @@ def _sanitize_webengine_cli_args() -> None:
 _sanitize_webengine_cli_args()
 
 
+def _parse_entry_mode(argv: list[str]) -> str:
+    """
+    Select startup mode for this script.
+
+    Modes:
+    - "starter": open main UI and focus the Code Languages tab first
+    - "direct": open main UI normally (dashboard-first, default)
+    """
+    env_mode = str(os.environ.get("BOT_MAIN_MODE", "")).strip().lower()
+    if env_mode in {"starter", "direct"}:
+        return env_mode
+
+    lowered = {str(arg).strip().lower() for arg in argv}
+    if "--direct" in lowered or "--mode=direct" in lowered:
+        return "direct"
+    if "--starter" in lowered or "--mode=starter" in lowered:
+        return "starter"
+
+    if _env_flag("BOT_DIRECT_MAIN"):
+        return "direct"
+    if _env_flag("BOT_STARTER_SHOW_UI"):
+        return "starter"
+
+    # Default startup should land on Dashboard.
+    return "direct"
+
+
+def _run_entrypoint(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    mode = _parse_entry_mode(args)
+    if mode == "starter":
+        os.environ["BOT_OPEN_CODE_TAB"] = "1"
+    else:
+        os.environ["BOT_OPEN_CODE_TAB"] = "0"
+    return int(main())
+
+
 def _configure_startup_window_suppression_defaults() -> None:
     """Set safe Windows startup suppression defaults unless user already configured them."""
     if sys.platform != "win32":
@@ -1599,7 +1636,7 @@ def main() -> int:
 
     # Heavy imports (MainWindow, app_icon) are deferred to after the splash screen
     # is shown, so the user sees loading feedback immediately.
-    from windows_taskbar import (  # noqa: E402
+    from app.platform.windows_taskbar import (  # noqa: E402
         apply_taskbar_metadata,
         build_relaunch_command,
         ensure_app_user_model_id,
@@ -2326,4 +2363,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_run_entrypoint())

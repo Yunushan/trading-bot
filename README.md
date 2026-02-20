@@ -1,6 +1,6 @@
 # Binance Trading Bot Workspace
 
-This repository packages a cross‑platform trading workstation that ships with a production‑ready **Binance desktop bot (PyQt6)**, a direct launcher (`Languages/Python/starter.py`), and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
+This repository packages a cross‑platform trading workstation that ships with a production‑ready **Binance desktop bot (PyQt6)** and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
 
 ---
 
@@ -59,7 +59,6 @@ Languages/
   - docs/
   - tools/
   - main.py               # Python GUI entrypoint
-  - starter.py            # direct launcher (no wizard UI)
   - requirements.txt
 - C++/
   - CMakeLists.txt
@@ -158,7 +157,6 @@ python3.11 main.py
 |-----------|----------|---------|------------|
 | **Binance GUI bot** | `Languages/Python/main.py` | Full desktop trading workstation | `python main.py` (inside virtual env) |
 | **Windows launcher** | `Languages/Python/Binance-Bot-Trading.bat` | Automates environment creation + launch | Double-click on Windows |
-| **Python launcher** | `Languages/Python/starter.py` | Directly opens the Python GUI (no wizard UI) | `python starter.py` (from `Languages/Python`) |
 
 All tools are cross-platform except the `.bat` helper which is Windows-only.
 
@@ -312,7 +310,6 @@ It's a documentation hub as well-each card includes a subtitle describing the st
 
 | File | Location | Description |
 |------|----------|-------------|
-| `starter.py` | `Languages/Python/` | Direct launcher for the Python GUI (no wizard UI). |
 | `Binance-Bot-Trading.bat` | `Languages/Python/` | Automates environment bootstrap on Windows. |
 | `close_all.py` | `Languages/Python/app/` | Auxiliary script to close every futures position—useful for emergency scripts or cron jobs. |
 | `position_guard.py` | `Languages/Python/app/` | Contains the guard logic used to deduplicate indicator entries and enforce stop-loss/stop-gap rules (referenced in this README for understanding behaviour). |
