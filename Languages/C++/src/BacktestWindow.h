@@ -8,6 +8,7 @@ class QLabel;
 class QPushButton;
 class QLineEdit;
 class QComboBox;
+class QCheckBox;
 class QTableWidget;
 class QDoubleSpinBox;
 class QSpinBox;
@@ -40,7 +41,6 @@ private:
     QWidget *createBacktestTab();
     QWidget *createCodeTab();
     QWidget *createPlaceholderTab(const QString &title, const QString &body);
-    void launchPythonBot();
     void populateDefaults();
     void showIndicatorDialog(const QString &indicatorName);
     void refreshDashboardBalance();
@@ -78,4 +78,14 @@ private:
     QListWidget *dashboardSymbolList_;
     QListWidget *dashboardIntervalList_;
     QPushButton *dashboardRefreshSymbolsBtn_;
+
+    QComboBox *chartMarketCombo_;
+    QComboBox *chartSymbolCombo_;
+    QComboBox *chartIntervalCombo_;
+    QComboBox *chartViewModeCombo_;
+    QCheckBox *chartAutoFollowCheck_;
+    QLabel *chartPnlActiveLabel_;
+    QLabel *chartPnlClosedLabel_;
+    QLabel *chartBotStatusLabel_;
+    QLabel *chartBotTimeLabel_;
 };

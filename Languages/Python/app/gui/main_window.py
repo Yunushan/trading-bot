@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import sys
 import json
@@ -825,6 +826,30 @@ _DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "binance-sdk-spot", "package": "binance-sdk-spot"},
 ]
 
+_CPP_DEPENDENCY_VERSION_TARGETS = [
+    {"label": "Qt6 (C++)", "custom": "cpp_qt", "latest_key": "qt6"},
+    {"label": "Qt6 Network (REST)", "custom": "cpp_qt_network", "latest_key": "qt6"},
+    {"label": "Qt6 WebEngine", "custom": "cpp_qt_webengine", "latest_key": "qt6"},
+    {"label": "Qt6 WebSockets", "custom": "cpp_qt_websockets", "latest_key": "qt6"},
+    {
+        "label": "Binance REST client (native)",
+        "custom": "cpp_file_version",
+        "path": "Languages/C++/src/BinanceRestClient.cpp",
+        "usage": "Active",
+    },
+    {
+        "label": "Binance WebSocket client (native)",
+        "custom": "cpp_file_version",
+        "path": "Languages/C++/src/BinanceWsClient.cpp",
+        "usage": "Active",
+    },
+    {"label": "Eigen", "custom": "cpp_eigen", "latest_key": "eigen"},
+    {"label": "xtensor", "custom": "cpp_xtensor", "latest_key": "xtensor"},
+    {"label": "TA-Lib", "custom": "cpp_talib", "latest_key": "ta-lib"},
+    {"label": "libcurl", "custom": "cpp_libcurl", "latest_key": "libcurl"},
+    {"label": "cpr", "custom": "cpp_cpr", "latest_key": "cpr"},
+]
+
 _CONNECTOR_DEPENDENCY_KEYS = {
     "python-binance",
     "binance-connector",
@@ -983,12 +1008,760 @@ def _dependency_module_candidates(target: dict[str, str]) -> tuple[str, ...]:
     return (raw.replace("-", "_"),)
 
 
+def _version_sort_key(version_text: str | None) -> tuple[int, ...]:
+    value = str(version_text or "").strip()
+    if not value:
+        return tuple()
+    parts = re.findall(r"\d+", value)
+    if not parts:
+        return tuple()
+    try:
+        return tuple(int(part) for part in parts)
+    except Exception:
+        return tuple()
+
+
+def _pick_highest_version(candidates: list[str]) -> str | None:
+    valid = [str(item).strip() for item in candidates if str(item).strip()]
+    if not valid:
+        return None
+    valid.sort(key=_version_sort_key)
+    return valid[-1]
+
+
+def _extract_semver_from_text(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = re.search(r"(\d+(?:[._]\d+){1,3})", text)
+    if not match:
+        return None
+    return match.group(1).replace("_", ".")
+
+
+def _http_get_text(url: str, timeout: float = 8.0) -> str | None:
+    if not url:
+        return None
+    timeout_val = max(2.0, float(timeout or 8.0))
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout_val) as response:
+            data = response.read()
+        return data.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+def _http_get_json(url: str, timeout: float = 8.0):
+    payload = _http_get_text(url, timeout=timeout)
+    if payload is None:
+        return None
+    try:
+        return json.loads(payload)
+    except Exception:
+        return None
+
+
+def _cpp_dependency_file_exists(path_value: str | None) -> bool:
+    relative_path = str(path_value or "").strip()
+    if not relative_path:
+        return False
+    try:
+        resolved = (_BASE_PROJECT_PATH / relative_path).resolve()
+    except Exception:
+        return False
+    return resolved.is_file()
+
+
+def _cpp_source_fingerprint(path_value: str | None) -> str:
+    relative_path = str(path_value or "").strip()
+    if not relative_path:
+        return "Missing"
+    try:
+        resolved = (_BASE_PROJECT_PATH / relative_path).resolve()
+    except Exception:
+        return "Missing"
+    if not resolved.is_file():
+        return "Missing"
+    try:
+        digest = hashlib.sha1(resolved.read_bytes()).hexdigest()[:8]
+    except Exception:
+        return "Source"
+    return f"src-{digest}"
+
+
+def _cpp_qt_prefix_tokens() -> list[Path]:
+    raw_prefix = str(_resolve_cpp_qt_prefix_for_code_tab() or "").strip()
+    if not raw_prefix:
+        return []
+    tokens = [token.strip() for token in raw_prefix.split(os.pathsep) if token.strip()]
+    paths: list[Path] = []
+    for token in tokens:
+        try:
+            paths.append(Path(token).resolve())
+        except Exception:
+            continue
+    return paths
+
+
+def _cpp_qt_version_from_path(path_value: str | None) -> str | None:
+    text = str(path_value or "")
+    for match in re.findall(r"(?<!\d)(6\.\d+(?:\.\d+)?)(?!\d)", text):
+        if match:
+            return match
+    return None
+
+
+def _cpp_qt_version_from_qmake() -> str | None:
+    qmake_names = ["qmake"]
+    if sys.platform == "win32":
+        qmake_names.insert(0, "qmake.exe")
+    for bin_dir in _discover_cpp_qt_bin_dirs_for_code_tab():
+        for executable in qmake_names:
+            qmake_path = bin_dir / executable
+            if not qmake_path.is_file():
+                continue
+            ok, output = _run_command_capture_hidden([str(qmake_path), "-query", "QT_VERSION"])
+            if not ok:
+                continue
+            value = str(output or "").strip().splitlines()
+            if not value:
+                continue
+            detected = _extract_semver_from_text(value[-1].strip())
+            if detected:
+                return detected
+    return None
+
+
+def _cpp_qt_version_display() -> str:
+    qmake_version = _cpp_qt_version_from_qmake()
+    if qmake_version:
+        return qmake_version
+    for prefix in _cpp_qt_prefix_tokens():
+        detected = _cpp_qt_version_from_path(str(prefix))
+        if detected:
+            return detected
+    return "Not detected"
+
+
+def _cpp_qt_local_versions() -> list[str]:
+    versions: list[str] = []
+    roots = [Path("C:/Qt"), Path.home() / "Qt"]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir():
+                    continue
+                detected = _cpp_qt_version_from_path(entry.name)
+                if detected:
+                    versions.append(detected)
+        except Exception:
+            continue
+    unique = sorted({value for value in versions}, key=_version_sort_key)
+    return unique
+
+
+def _cpp_latest_qt_version_from_download() -> str | None:
+    base_url = "https://download.qt.io/official_releases/qt/"
+    listing = _http_get_text(base_url, timeout=8.0)
+    if not listing:
+        return None
+    minor_versions = re.findall(r'href="(6\.\d+)/"', listing)
+    selected_minor = _pick_highest_version(minor_versions)
+    if not selected_minor:
+        return None
+    minor_listing = _http_get_text(f"{base_url}{selected_minor}/", timeout=8.0)
+    if not minor_listing:
+        return selected_minor
+    patch_versions = re.findall(rf'href="({re.escape(selected_minor)}\.\d+)/"', minor_listing)
+    return _pick_highest_version(patch_versions) or selected_minor
+
+
+def _cpp_latest_local_qt_version() -> str | None:
+    return _pick_highest_version(_cpp_qt_local_versions())
+
+
+def _cpp_latest_qt_version() -> str | None:
+    online_version = _cpp_latest_qt_version_from_download()
+    if online_version:
+        return online_version
+    return _cpp_latest_local_qt_version()
+
+
+def _cpp_qt_kit_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path | None):
+        if path is None:
+            return
+        try:
+            resolved = path.resolve()
+        except Exception:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    for prefix in _cpp_qt_prefix_tokens():
+        current = prefix
+        for _ in range(4):
+            if (current / "include").is_dir() and (current / "bin").is_dir():
+                _add(current)
+                break
+            if current.parent == current:
+                break
+            current = current.parent
+    for bin_dir in _discover_cpp_qt_bin_dirs_for_code_tab():
+        _add(bin_dir.parent)
+    return roots
+
+
+def _cpp_qt_network_available() -> bool:
+    cache_value = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6Network_DIR")
+    if cache_value:
+        return True
+    for bin_dir in _discover_cpp_qt_bin_dirs_for_code_tab():
+        for dll_name in ("Qt6Network.dll", "Qt6Networkd.dll"):
+            try:
+                if (bin_dir / dll_name).is_file():
+                    return True
+            except Exception:
+                continue
+    for root in _cpp_qt_kit_roots():
+        try:
+            if (root / "include" / "QtNetwork").is_dir():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _cpp_qt_webengine_available() -> bool:
+    cache_value = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6WebEngineWidgets_DIR")
+    if cache_value and str(cache_value).strip().upper() != "QT6WEBENGINEWIDGETS_DIR-NOTFOUND":
+        return True
+    for bin_dir in _discover_cpp_qt_bin_dirs_for_code_tab():
+        for exe_name in ("QtWebEngineProcess.exe", "QtWebEngineProcess"):
+            try:
+                if (bin_dir / exe_name).is_file():
+                    return True
+            except Exception:
+                continue
+        for dll_name in ("Qt6WebEngineWidgets.dll", "Qt6WebEngineWidgetsd.dll"):
+            try:
+                if (bin_dir / dll_name).is_file():
+                    return True
+            except Exception:
+                continue
+    for root in _cpp_qt_kit_roots():
+        try:
+            if (root / "include" / "QtWebEngineWidgets").is_dir():
+                return True
+        except Exception:
+            continue
+        try:
+            if (root / "lib" / "cmake" / "Qt6WebEngineWidgets" / "Qt6WebEngineWidgetsConfig.cmake").is_file():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _cpp_qt_websockets_available() -> bool:
+    cache_value = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6WebSockets_DIR")
+    if cache_value:
+        return True
+    for bin_dir in _discover_cpp_qt_bin_dirs_for_code_tab():
+        for dll_name in ("Qt6WebSockets.dll", "Qt6WebSocketsd.dll"):
+            try:
+                if (bin_dir / dll_name).is_file():
+                    return True
+            except Exception:
+                continue
+    for root in _cpp_qt_kit_roots():
+        try:
+            if (root / "include" / "QtWebSockets").is_dir():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _cpp_candidate_vcpkg_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path_value: Path | str | None):
+        if path_value is None:
+            return
+        try:
+            resolved = Path(path_value).resolve()
+        except Exception:
+            return
+        if resolved in seen or not resolved.is_dir():
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    env_root = str(os.environ.get("VCPKG_ROOT") or "").strip()
+    if env_root:
+        _add(env_root)
+    _add(_BASE_PROJECT_PATH / ".vcpkg")
+    _add(Path("C:/vcpkg"))
+    _add(Path.home() / "vcpkg")
+    return roots
+
+
+def _cpp_load_vcpkg_status_versions() -> dict[str, str]:
+    cache_entry = globals().get("_CPP_VCPKG_STATUS_CACHE")
+    now = time.time()
+    if isinstance(cache_entry, tuple) and len(cache_entry) == 2:
+        cached_map, cached_at = cache_entry
+        try:
+            if now - float(cached_at or 0.0) < 120 and isinstance(cached_map, dict):
+                return dict(cached_map)
+        except Exception:
+            pass
+
+    versions: dict[str, str] = {}
+    for root in _cpp_candidate_vcpkg_roots():
+        status_file = root / "installed" / "vcpkg" / "status"
+        if not status_file.is_file():
+            continue
+        try:
+            content = status_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for block in re.split(r"\r?\n\r?\n", content):
+            if not block.strip():
+                continue
+            package = ""
+            feature = ""
+            version_value = ""
+            port_version = ""
+            status_value = ""
+            for line in block.splitlines():
+                if line.startswith("Package: "):
+                    package = line.split(":", 1)[1].strip().lower()
+                elif line.startswith("Feature: "):
+                    feature = line.split(":", 1)[1].strip().lower()
+                elif line.startswith("Version: "):
+                    version_value = line.split(":", 1)[1].strip()
+                elif line.startswith("Port-Version: "):
+                    port_version = line.split(":", 1)[1].strip()
+                elif line.startswith("Status: "):
+                    status_value = line.split(":", 1)[1].strip().lower()
+            if not package or "install ok installed" not in status_value:
+                continue
+            if feature and feature not in {"core"}:
+                continue
+            if not version_value:
+                continue
+            normalized = version_value
+            existing = versions.get(package)
+            if existing is None or _version_sort_key(normalized) >= _version_sort_key(existing):
+                versions[package] = normalized
+
+    globals()["_CPP_VCPKG_STATUS_CACHE"] = (dict(versions), now)
+    return versions
+
+
+def _cpp_vcpkg_installed_version(*package_names: str) -> str | None:
+    if not package_names:
+        return None
+    versions = _cpp_load_vcpkg_status_versions()
+    for name in package_names:
+        key = str(name or "").strip().lower()
+        if not key:
+            continue
+        value = versions.get(key)
+        if value:
+            return value
+    return None
+
+
+def _cpp_candidate_include_dirs() -> list[Path]:
+    cached_entry = globals().get("_CPP_INCLUDE_DIR_CACHE")
+    now = time.time()
+    if isinstance(cached_entry, tuple) and len(cached_entry) == 2:
+        cached_dirs, cached_at = cached_entry
+        if now - float(cached_at or 0.0) < 120:
+            return list(cached_dirs)
+
+    include_dirs: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path | None):
+        if path is None:
+            return
+        try:
+            resolved = path.resolve()
+        except Exception:
+            return
+        if resolved in seen or not resolved.is_dir():
+            return
+        seen.add(resolved)
+        include_dirs.append(resolved)
+
+    for base in (CPP_BUILD_ROOT, CPP_PROJECT_PATH, _BASE_PROJECT_PATH):
+        try:
+            for include_path in base.glob("vcpkg_installed/*/include"):
+                _add(include_path)
+        except Exception:
+            continue
+
+    try:
+        build_parent = CPP_BUILD_ROOT.parent
+    except Exception:
+        build_parent = None
+    if isinstance(build_parent, Path) and build_parent.is_dir():
+        try:
+            for build_dir in build_parent.glob("binance_cpp*"):
+                for include_path in build_dir.glob("vcpkg_installed/*/include"):
+                    _add(include_path)
+        except Exception:
+            pass
+
+    for root_path in _cpp_candidate_vcpkg_roots():
+        try:
+            for include_path in root_path.glob("installed/*/include"):
+                _add(include_path)
+        except Exception:
+            continue
+
+    for qt_root in _cpp_qt_kit_roots():
+        _add(qt_root / "include")
+
+    globals()["_CPP_INCLUDE_DIR_CACHE"] = (list(include_dirs), now)
+    return include_dirs
+
+
+def _cpp_find_header(*relative_candidates: str) -> Path | None:
+    for include_dir in _cpp_candidate_include_dirs():
+        for relative in relative_candidates:
+            rel = str(relative or "").strip().replace("\\", "/")
+            if not rel:
+                continue
+            candidate = include_dir / rel
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _cpp_read_text_file(path: Path | None) -> str:
+    if path is None or not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _cpp_extract_macro_str(text: str, macro_name: str) -> str | None:
+    if not text or not macro_name:
+        return None
+    pattern = rf"^\s*#\s*define\s+{re.escape(macro_name)}\s+\"([^\"]+)\""
+    match = re.search(pattern, text, flags=re.MULTILINE)
+    if not match:
+        return None
+    return str(match.group(1) or "").strip() or None
+
+
+def _cpp_extract_macro_int(text: str, macro_name: str) -> int | None:
+    if not text or not macro_name:
+        return None
+    pattern = rf"^\s*#\s*define\s+{re.escape(macro_name)}\s+(\d+)"
+    match = re.search(pattern, text, flags=re.MULTILINE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _cpp_detect_eigen_version() -> str | None:
+    vcpkg_version = _cpp_vcpkg_installed_version("eigen3")
+    if vcpkg_version:
+        return vcpkg_version
+    header = _cpp_find_header("eigen3/Eigen/src/Core/util/Macros.h", "Eigen/src/Core/util/Macros.h")
+    text = _cpp_read_text_file(header)
+    world = _cpp_extract_macro_int(text, "EIGEN_WORLD_VERSION")
+    major = _cpp_extract_macro_int(text, "EIGEN_MAJOR_VERSION")
+    minor = _cpp_extract_macro_int(text, "EIGEN_MINOR_VERSION")
+    if world is None or major is None or minor is None:
+        return None
+    return f"{world}.{major}.{minor}"
+
+
+def _cpp_detect_xtensor_version() -> str | None:
+    vcpkg_version = _cpp_vcpkg_installed_version("xtensor")
+    if vcpkg_version:
+        return vcpkg_version
+    header = _cpp_find_header("xtensor/core/xtensor_config.hpp", "xtensor/xtensor_config.hpp")
+    text = _cpp_read_text_file(header)
+    major = _cpp_extract_macro_int(text, "XTENSOR_VERSION_MAJOR")
+    minor = _cpp_extract_macro_int(text, "XTENSOR_VERSION_MINOR")
+    patch = _cpp_extract_macro_int(text, "XTENSOR_VERSION_PATCH")
+    if major is not None and minor is not None and patch is not None:
+        return f"{major}.{minor}.{patch}"
+    return _cpp_extract_macro_str(text, "XTENSOR_VERSION")
+
+
+def _cpp_detect_talib_version() -> str | None:
+    vcpkg_version = _cpp_vcpkg_installed_version("talib")
+    if vcpkg_version:
+        return vcpkg_version
+    header = _cpp_find_header("ta-lib/ta_defs.h", "ta_defs.h")
+    text = _cpp_read_text_file(header)
+    version = _cpp_extract_macro_str(text, "TA_LIB_VERSION_STR")
+    if version:
+        return version
+    major = _cpp_extract_macro_int(text, "TA_LIB_VERSION_MAJOR")
+    minor = _cpp_extract_macro_int(text, "TA_LIB_VERSION_MINOR")
+    patch = _cpp_extract_macro_int(text, "TA_LIB_VERSION_PATCH")
+    if major is not None and minor is not None and patch is not None:
+        return f"{major}.{minor}.{patch}"
+    return None
+
+
+def _cpp_detect_cpr_version() -> str | None:
+    vcpkg_version = _cpp_vcpkg_installed_version("cpr")
+    if vcpkg_version:
+        return vcpkg_version
+    header = _cpp_find_header("cpr/cprver.h")
+    text = _cpp_read_text_file(header)
+    version = _cpp_extract_macro_str(text, "CPR_VERSION")
+    if version:
+        return version
+    major = _cpp_extract_macro_int(text, "CPR_VERSION_MAJOR")
+    minor = _cpp_extract_macro_int(text, "CPR_VERSION_MINOR")
+    patch = _cpp_extract_macro_int(text, "CPR_VERSION_PATCH")
+    if major is not None and minor is not None and patch is not None:
+        return f"{major}.{minor}.{patch}"
+    return None
+
+
+def _cpp_detect_libcurl_version() -> str | None:
+    vcpkg_version = _cpp_vcpkg_installed_version("curl")
+    if vcpkg_version:
+        return vcpkg_version
+    header = _cpp_find_header("curl/curlver.h")
+    text = _cpp_read_text_file(header)
+    header_version = _cpp_extract_macro_str(text, "LIBCURL_VERSION")
+    if header_version:
+        return header_version
+    ok, output = _run_command_capture_hidden(["curl", "--version"])
+    if not ok:
+        return None
+    text_output = str(output or "")
+    for pattern in (r"libcurl/([0-9]+(?:\.[0-9]+){1,3})", r"curl\s+([0-9]+(?:\.[0-9]+){1,3})"):
+        match = re.search(pattern, text_output)
+        if match:
+            return str(match.group(1))
+    return None
+
+
+def _cpp_latest_from_github_release(owner: str, repo: str) -> str | None:
+    if not owner or not repo:
+        return None
+    payload = _http_get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest", timeout=8.0)
+    if not isinstance(payload, dict):
+        return None
+    candidates = [
+        _extract_semver_from_text(payload.get("tag_name")),
+        _extract_semver_from_text(payload.get("name")),
+    ]
+    return _pick_highest_version([candidate for candidate in candidates if candidate])
+
+
+def _cpp_latest_from_github_tags(owner: str, repo: str) -> str | None:
+    if not owner or not repo:
+        return None
+    payload = _http_get_json(f"https://api.github.com/repos/{owner}/{repo}/tags?per_page=20", timeout=8.0)
+    if not isinstance(payload, list):
+        return None
+    versions: list[str] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        detected = _extract_semver_from_text(row.get("name"))
+        if detected:
+            versions.append(detected)
+    return _pick_highest_version(versions)
+
+
+def _cpp_latest_eigen_version() -> str | None:
+    payload = _http_get_json(
+        "https://gitlab.com/api/v4/projects/libeigen%2Feigen/repository/tags?per_page=20",
+        timeout=8.0,
+    )
+    if not isinstance(payload, list):
+        return None
+    versions: list[str] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        detected = _extract_semver_from_text(row.get("name"))
+        if detected:
+            versions.append(detected)
+    return _pick_highest_version(versions)
+
+
+def _cpp_latest_xtensor_version() -> str | None:
+    return _cpp_latest_from_github_release("xtensor-stack", "xtensor") or _cpp_latest_from_github_tags(
+        "xtensor-stack",
+        "xtensor",
+    )
+
+
+def _cpp_latest_talib_version() -> str | None:
+    return _cpp_latest_from_github_release("TA-Lib", "ta-lib")
+
+
+def _cpp_latest_cpr_version() -> str | None:
+    return _cpp_latest_from_github_release("libcpr", "cpr")
+
+
+def _cpp_latest_libcurl_version() -> str | None:
+    return _cpp_latest_from_github_release("curl", "curl")
+
+
+def _cpp_latest_version_for_key(key: str | None) -> str | None:
+    cache = globals().setdefault("_LATEST_CPP_VERSION_CACHE", {})
+    cache_key = str(key or "").strip().lower()
+    if not cache_key:
+        return None
+    now = time.time()
+    cached_entry = cache.get(cache_key)
+    if isinstance(cached_entry, tuple) and len(cached_entry) == 2:
+        cached_value, cached_at = cached_entry
+        try:
+            if now - float(cached_at) < 1800:
+                return str(cached_value or "").strip() or None
+        except Exception:
+            pass
+
+    loaders = {
+        "qt6": _cpp_latest_qt_version,
+        "eigen": _cpp_latest_eigen_version,
+        "xtensor": _cpp_latest_xtensor_version,
+        "ta-lib": _cpp_latest_talib_version,
+        "libcurl": _cpp_latest_libcurl_version,
+        "cpr": _cpp_latest_cpr_version,
+    }
+    loader = loaders.get(cache_key)
+    if loader is None:
+        return None
+    value = loader()
+    if value:
+        cache[cache_key] = (value, now)
+    return value
+
+
+def _cpp_cached_installed_value(cache_key: str, resolver, ttl_sec: float = 20.0) -> str | None:
+    cache = globals().setdefault("_CPP_INSTALLED_VALUE_CACHE", {})
+    now = time.time()
+    entry = cache.get(cache_key)
+    if isinstance(entry, tuple) and len(entry) == 2:
+        cached_value, cached_at = entry
+        try:
+            if now - float(cached_at) < max(1.0, float(ttl_sec)):
+                return cached_value
+        except Exception:
+            pass
+    try:
+        resolved_value = resolver()
+    except Exception:
+        resolved_value = None
+    cache[cache_key] = (resolved_value, now)
+    return resolved_value
+
+
+def _cpp_custom_installed_value(target: dict[str, str]) -> str | None:
+    custom = str(target.get("custom") or "").strip().lower()
+    cache_key = f"{custom}:{str(target.get('path') or '').strip()}"
+
+    def _resolve():
+        if custom == "cpp_qt":
+            return _cpp_qt_version_display()
+        if custom == "cpp_qt_network":
+            qt_version = _cpp_qt_version_display()
+            return qt_version if _cpp_qt_network_available() and qt_version != "Not detected" else "Not installed"
+        if custom == "cpp_qt_webengine":
+            qt_version = _cpp_qt_version_display()
+            return qt_version if _cpp_qt_webengine_available() and qt_version != "Not detected" else "Not installed"
+        if custom == "cpp_qt_websockets":
+            qt_version = _cpp_qt_version_display()
+            return qt_version if _cpp_qt_websockets_available() and qt_version != "Not detected" else "Not installed"
+        if custom == "cpp_file_version":
+            return _cpp_source_fingerprint(target.get("path"))
+        if custom == "cpp_eigen":
+            return _cpp_detect_eigen_version() or "Not installed"
+        if custom == "cpp_xtensor":
+            return _cpp_detect_xtensor_version() or "Not installed"
+        if custom == "cpp_talib":
+            return _cpp_detect_talib_version() or "Not installed"
+        if custom == "cpp_libcurl":
+            return _cpp_detect_libcurl_version() or "Not installed"
+        if custom == "cpp_cpr":
+            return _cpp_detect_cpr_version() or "Not installed"
+        return None
+
+    return _cpp_cached_installed_value(cache_key, _resolve, ttl_sec=20.0)
+
+
+def _cpp_version_is_installed_marker(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return False
+    blocked = {
+        "not installed",
+        "not detected",
+        "missing",
+        "unknown",
+        "disabled",
+    }
+    return normalized not in blocked
+
+
+def _cpp_custom_latest_value(target: dict[str, str], installed_value: str) -> str:
+    custom = str(target.get("custom") or "").strip().lower()
+    latest_key = str(target.get("latest_key") or "").strip().lower()
+    if custom == "cpp_file_version":
+        return installed_value or "Unknown"
+    if latest_key:
+        latest_resolved = _cpp_latest_version_for_key(latest_key)
+        if latest_resolved:
+            return latest_resolved
+    latest_text = str(target.get("latest") or "").strip()
+    if latest_text:
+        return latest_text
+    return installed_value or "Unknown"
+
+
+def _cpp_custom_usage_value(target: dict[str, str]) -> str:
+    custom = str(target.get("custom") or "").strip().lower()
+    if custom == "cpp_file_version":
+        return "Active" if _cpp_dependency_file_exists(target.get("path")) else "Passive"
+    installed_value = _cpp_custom_installed_value(target)
+    return "Active" if _cpp_version_is_installed_marker(installed_value) else "Passive"
+
+
 def _dependency_usage_state(
     target: dict[str, str],
     *,
     config: dict | None = None,
     loaded_modules: set[str] | None = None,
 ) -> str:
+    custom = str(target.get("custom") or "").strip().lower()
+    if custom.startswith("cpp_"):
+        return _cpp_custom_usage_value(target)
+
     dependency_key = _normalize_dependency_key(target.get("package") or target.get("label"))
     if dependency_key in _CONNECTOR_DEPENDENCY_KEYS:
         backend_key = _normalize_connector_backend((config or {}).get("connector_backend"))
@@ -1131,7 +1904,18 @@ def _dependency_targets_from_requirements(paths: list[Path] | None = None) -> li
     return entries
 
 
-DEPENDENCY_VERSION_TARGETS = _dependency_targets_from_requirements()
+def _resolve_dependency_targets_for_config(config: dict | None = None) -> list[dict[str, str]]:
+    language_key = ""
+    try:
+        language_key = str((config or {}).get("code_language") or "").strip()
+    except Exception:
+        language_key = ""
+    if language_key == CPP_CODE_LANGUAGE_KEY:
+        return copy.deepcopy(_CPP_DEPENDENCY_VERSION_TARGETS)
+    return _dependency_targets_from_requirements(_iter_candidate_requirement_paths(config))
+
+
+DEPENDENCY_VERSION_TARGETS = _resolve_dependency_targets_for_config()
 
 def _latest_version_from_pypi(package: str, timeout: float = 8.0) -> str | None:
     if not package:
@@ -2836,8 +3620,11 @@ def _collect_dependency_versions(
     for target in target_list:
         label = target["label"]
         installed_version = None
-        if target.get("custom") == "qt":
+        custom = str(target.get("custom") or "").strip().lower()
+        if custom == "qt":
             installed_version = getattr(QtCore, "QT_VERSION_STR", None)
+        elif custom.startswith("cpp_"):
+            installed_version = _cpp_custom_installed_value(target)
         else:
             package = target.get("package")
             if package:
@@ -2854,7 +3641,13 @@ def _collect_dependency_versions(
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             future_map: dict[str, concurrent.futures.Future] = {}
             for target in target_list:
-                if target.get("custom") == "qt":
+                custom = str(target.get("custom") or "").strip().lower()
+                if custom.startswith("cpp_"):
+                    installed_display = installed_map.get(target["label"], "Unknown")
+                    latest_map[target["label"]] = _cpp_custom_latest_value(target, installed_display)
+                    continue
+                if custom == "qt":
+                    latest_map[target["label"]] = installed_map.get(target["label"], "Unknown")
                     continue
                 pypi_name = target.get("pypi") or target.get("package")
                 if not pypi_name:
@@ -13526,9 +14319,7 @@ def _init_code_language_tab(self):
         str,
         tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel],
     ] = {}
-    self._dep_version_targets: list[dict[str, str]] = _dependency_targets_from_requirements(
-        _iter_candidate_requirement_paths(self.config)
-    )
+    self._dep_version_targets: list[dict[str, str]] = _resolve_dependency_targets_for_config(self.config)
     versions_group = QtWidgets.QGroupBox("Environment Versions")
     versions_group.setSizePolicy(
         QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
@@ -13607,11 +14398,43 @@ def _find_cpp_code_tab_executable() -> Path | None:
         CPP_BUILD_ROOT / "out",
     ]
 
+    try:
+        build_parent = CPP_BUILD_ROOT.parent
+    except Exception:
+        build_parent = None
+    if isinstance(build_parent, Path) and build_parent.is_dir():
+        try:
+            for extra in sorted(build_parent.glob("binance_cpp*"), reverse=True):
+                roots.extend(
+                    [
+                        extra,
+                        extra / "Release",
+                        extra / "Debug",
+                        extra / "bin",
+                        extra / "out",
+                    ]
+                )
+        except Exception:
+            pass
+
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    def _remember(path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        found.append(resolved)
+
     for root in roots:
         for name in candidate_names:
             candidate = root / name
             if candidate.is_file():
-                return candidate
+                _remember(candidate)
 
     for root in roots:
         if not root.is_dir():
@@ -13623,10 +14446,54 @@ def _find_cpp_code_tab_executable() -> Path | None:
                 if path.suffix.lower() not in suffixes:
                     continue
                 if path.name in candidate_names or path.stem == CPP_EXECUTABLE_BASENAME:
-                    return path
+                    _remember(path)
         except (PermissionError, OSError):
             continue
-    return None
+    if not found:
+        return None
+
+    def _mtime(path: Path) -> float:
+        try:
+            return float(path.stat().st_mtime)
+        except Exception:
+            return 0.0
+
+    found.sort(key=_mtime, reverse=True)
+    return found[0]
+
+
+def _cpp_executable_is_stale(exe_path: Path | None) -> bool:
+    if exe_path is None or not exe_path.is_file():
+        return True
+    try:
+        exe_mtime = float(exe_path.stat().st_mtime)
+    except Exception:
+        return True
+
+    source_paths: list[Path] = [
+        CPP_PROJECT_PATH / "CMakeLists.txt",
+        CPP_PROJECT_PATH / "resources.qrc",
+    ]
+    src_dir = CPP_PROJECT_PATH / "src"
+    if src_dir.is_dir():
+        try:
+            source_paths.extend(sorted(src_dir.glob("*.cpp")))
+            source_paths.extend(sorted(src_dir.glob("*.h")))
+        except Exception:
+            pass
+
+    latest_source_mtime = 0.0
+    for path in source_paths:
+        try:
+            if not path.is_file():
+                continue
+            latest_source_mtime = max(latest_source_mtime, float(path.stat().st_mtime))
+        except Exception:
+            continue
+
+    if latest_source_mtime <= 0.0:
+        return False
+    return exe_mtime + 0.001 < latest_source_mtime
 
 
 def _read_cmake_cache_value(cache_file: Path, key: str) -> str | None:
@@ -13646,6 +14513,7 @@ def _read_cmake_cache_value(cache_file: Path, key: str) -> str | None:
 
 
 def _detect_default_cpp_qt_prefix() -> Path | None:
+    discovered: list[Path] = []
     candidates = [
         Path("C:/Qt"),
         Path.home() / "Qt",
@@ -13654,52 +14522,143 @@ def _detect_default_cpp_qt_prefix() -> Path | None:
         if not base.is_dir():
             continue
         try:
-            for version_dir in sorted(base.glob("6.*"), reverse=True):
-                for kit_dir in sorted(version_dir.iterdir(), reverse=True):
+            version_dirs = sorted(
+                [entry for entry in base.glob("6.*") if entry.is_dir()],
+                key=lambda p: _version_sort_key(p.name),
+                reverse=True,
+            )
+            for version_dir in version_dirs:
+                for kit_dir in sorted(version_dir.iterdir(), key=lambda p: p.name.lower(), reverse=True):
                     qt_cmake = kit_dir / "lib" / "cmake" / "Qt6"
                     if qt_cmake.is_dir():
-                        return qt_cmake.resolve()
+                        try:
+                            discovered.append(qt_cmake.resolve())
+                        except Exception:
+                            discovered.append(qt_cmake)
+        except Exception:
+            continue
+    if not discovered:
+        return None
+    discovered.sort(key=_qt_prefix_preference_key, reverse=True)
+    return discovered[0]
+
+
+def _normalize_qt_prefix_token(token: str | None) -> str:
+    value = str(token or "").strip().strip('"').strip("'")
+    if not value:
+        return ""
+    if "=" in value:
+        # Handle malformed env values like "CMAKE_PREFIX_PATH=C:\\Qt\\6.x\\..."
+        maybe_path = value.rsplit("=", 1)[-1].strip().strip('"').strip("'")
+        if maybe_path:
+            value = maybe_path
+    return value
+
+
+def _as_qt6_cmake_dir(path_value: str | Path | None) -> Path | None:
+    if path_value is None:
+        return None
+    try:
+        candidate = Path(path_value).resolve()
+    except Exception:
+        return None
+    probes = [candidate]
+    probes.append(candidate / "lib" / "cmake" / "Qt6")
+    if candidate.name.lower() == "qt6":
+        probes.insert(0, candidate)
+    for probe in probes:
+        try:
+            if (probe / "Qt6Config.cmake").is_file():
+                return probe.resolve()
         except Exception:
             continue
     return None
 
 
+def _qt_prefix_has_webengine(path_value: str | Path | None) -> bool:
+    qt_dir = _as_qt6_cmake_dir(path_value)
+    if qt_dir is None:
+        return False
+    probes = [
+        qt_dir.parent / "Qt6WebEngineWidgets" / "Qt6WebEngineWidgetsConfig.cmake",
+        qt_dir.parent / "Qt6WebEngineCore" / "Qt6WebEngineCoreConfig.cmake",
+    ]
+    for probe in probes:
+        try:
+            if probe.is_file():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _qt_prefix_preference_key(path_value: str | Path | None) -> tuple[int, tuple[int, ...]]:
+    has_webengine = 1 if _qt_prefix_has_webengine(path_value) else 0
+    detected = _cpp_qt_version_from_path(str(path_value or ""))
+    return has_webengine, _version_sort_key(detected or "")
+
+
+def _qt_prefix_version_key(path_value: str | Path | None) -> tuple[int, ...]:
+    if path_value is None:
+        return tuple()
+    detected = _cpp_qt_version_from_path(str(path_value))
+    return _version_sort_key(detected or "")
+
+
+def _best_qt_prefix_from_env(env_value: str | None) -> Path | None:
+    raw = str(env_value or "").strip()
+    if not raw:
+        return None
+    candidates: list[Path] = []
+    for token in raw.split(os.pathsep):
+        normalized = _normalize_qt_prefix_token(token)
+        if not normalized:
+            continue
+        qt_dir = _as_qt6_cmake_dir(normalized)
+        if qt_dir is not None:
+            candidates.append(qt_dir)
+    if not candidates:
+        return None
+    candidates.sort(key=_qt_prefix_preference_key, reverse=True)
+    return candidates[0]
+
+
 def _resolve_cpp_qt_prefix_for_code_tab() -> str | None:
-    env_prefix = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
-    if env_prefix:
-        return env_prefix
+    env_prefix_raw = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
+    env_qt_prefix = _best_qt_prefix_from_env(env_prefix_raw)
+    detected = _detect_default_cpp_qt_prefix()
+    if env_qt_prefix is not None and detected is not None:
+        if _qt_prefix_preference_key(detected) > _qt_prefix_preference_key(env_qt_prefix):
+            return str(detected)
+        return str(env_qt_prefix)
+    if env_qt_prefix is not None:
+        return str(env_qt_prefix)
+    if detected is not None:
+        return str(detected)
 
     cached_qt_dir = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6_DIR")
     if cached_qt_dir:
-        try:
-            cached_path = Path(cached_qt_dir).resolve()
-            if cached_path.exists():
-                return str(cached_path)
-        except Exception:
-            pass
-
-    detected = _detect_default_cpp_qt_prefix()
-    if detected is not None:
-        return str(detected)
+        cached_path = _as_qt6_cmake_dir(cached_qt_dir)
+        if cached_path is not None:
+            return str(cached_path)
     return None
 
 
 def _discover_cpp_qt_bin_dirs_for_code_tab() -> list[Path]:
     prefixes: list[Path] = []
-    env_prefix = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
-    if env_prefix:
-        for token in env_prefix.split(os.pathsep):
-            token = token.strip()
-            if token:
-                prefixes.append(Path(token))
-
-    cached_qt_dir = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6_DIR")
-    if cached_qt_dir:
-        prefixes.append(Path(cached_qt_dir))
+    resolved_prefix = _resolve_cpp_qt_prefix_for_code_tab()
+    if resolved_prefix:
+        qt_dir = _as_qt6_cmake_dir(resolved_prefix)
+        if qt_dir is not None:
+            prefixes.append(qt_dir)
 
     detected = _detect_default_cpp_qt_prefix()
     if detected is not None:
         prefixes.append(detected)
+
+    cached_qt_dir = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6_DIR")
+    if cached_qt_dir:
+        prefixes.append(Path(cached_qt_dir))
 
     bin_dirs: list[Path] = []
     for prefix in prefixes:
@@ -13775,6 +14734,7 @@ def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
     configure_cmd = ["cmake", "-S", str(CPP_PROJECT_PATH), "-B", str(CPP_BUILD_ROOT)]
     if prefix_env:
         configure_cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
+        configure_cmd.append(f"-DQt6_DIR={prefix_env}")
 
     ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
     if not ok:
@@ -13816,6 +14776,69 @@ def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
     return exe_path, None
 
 
+def _cpp_dependency_rows_for_launch(self) -> list[dict[str, str]]:
+    try:
+        config_snapshot = dict(self.config or {})
+    except Exception:
+        config_snapshot = {}
+    config_snapshot["code_language"] = CPP_CODE_LANGUAGE_KEY
+    config_snapshot["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
+
+    try:
+        targets = _resolve_dependency_targets_for_config(config_snapshot)
+    except Exception:
+        targets = copy.deepcopy(_CPP_DEPENDENCY_VERSION_TARGETS)
+
+    # Reuse already-resolved UI values first so launching the C++ app does not block on fresh network checks.
+    rows_from_ui: list[dict[str, str]] = []
+    labels = getattr(self, "_dep_version_labels", None)
+    if isinstance(labels, dict) and labels:
+        pending = False
+        for target in targets:
+            label = str(target.get("label") or "").strip()
+            if not label:
+                continue
+            widgets = labels.get(label)
+            if not widgets or len(widgets) < 2:
+                pending = True
+                continue
+            installed_widget, latest_widget = widgets[0], widgets[1]
+            installed = str(installed_widget.text() or "").strip() or "Unknown"
+            latest = str(latest_widget.text() or "").strip() or "Unknown"
+            if latest.lower() in {"checking...", "not checked"}:
+                pending = True
+            rows_from_ui.append({"name": label, "installed": installed, "latest": latest})
+        if rows_from_ui and not pending and len(rows_from_ui) == len(targets):
+            return rows_from_ui
+
+    try:
+        resolved_versions = _collect_dependency_versions(
+            targets,
+            include_latest=True,
+            config=config_snapshot,
+        )
+    except Exception:
+        resolved_versions = _collect_dependency_versions(
+            targets,
+            include_latest=False,
+            config=config_snapshot,
+        )
+
+    rows: list[dict[str, str]] = []
+    for item in resolved_versions:
+        if not item:
+            continue
+        label = str(item[0] or "").strip()
+        if not label:
+            continue
+        installed = str(item[1] if len(item) > 1 else "Unknown").strip() or "Unknown"
+        latest = str(item[2] if len(item) > 2 else "Unknown").strip() or "Unknown"
+        if latest.lower() in {"checking...", "not checked"}:
+            latest = installed if installed.lower() != "not installed" else "Unknown"
+        rows.append({"name": label, "installed": installed, "latest": latest})
+    return rows
+
+
 def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
     if str(self.config.get("selected_exchange") or "") != CPP_SUPPORTED_EXCHANGE_KEY:
         self.config["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
@@ -13834,8 +14857,12 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
         pass
 
     exe_path = _find_cpp_code_tab_executable()
-    if exe_path is None:
-        self.log("C++ executable not found. Attempting to build it now...")
+    stale_fallback = exe_path if exe_path is not None and exe_path.is_file() else None
+    if exe_path is None or _cpp_executable_is_stale(exe_path):
+        if exe_path is None:
+            self.log("C++ executable not found. Attempting to build it now...")
+        else:
+            self.log("C++ executable is outdated. Rebuilding to apply latest C++ UI changes...")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
             exe_path, error = _build_cpp_executable_for_code_tab(self)
@@ -13843,24 +14870,73 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
             QtWidgets.QApplication.restoreOverrideCursor()
         if exe_path is None:
             detail = error or "Automatic C++ build failed."
-            self.log(f"C++ launch failed: {detail}")
-            QtWidgets.QMessageBox.warning(
-                self,
-                "C++ launch failed",
-                f"Could not start the C++ bot.\n\n{detail}\n\nInstall Qt + CMake and try again.",
-            )
-            return False
+            if stale_fallback is not None and stale_fallback.is_file():
+                exe_path = stale_fallback
+                self.log(f"C++ rebuild failed, launching existing executable: {detail}")
+            else:
+                self.log(f"C++ launch failed: {detail}")
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "C++ launch failed",
+                    f"Could not start the C++ bot.\n\n{detail}\n\nInstall Qt + CMake and try again.",
+                )
+                return False
+        elif stale_fallback is not None and stale_fallback != exe_path:
+            try:
+                self.log(f"C++ executable refreshed: {stale_fallback} -> {exe_path}")
+            except Exception:
+                pass
 
     env = os.environ.copy()
     qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
     if qt_bins:
         env["PATH"] = os.pathsep.join([*(str(path) for path in qt_bins), env.get("PATH", "")])
+    try:
+        dep_rows = _cpp_dependency_rows_for_launch(self)
+        if dep_rows:
+            payload = json.dumps(dep_rows, ensure_ascii=False, separators=(",", ":"))
+            if len(payload) <= 16000:
+                env["TB_CPP_ENV_VERSIONS_JSON"] = payload
+    except Exception:
+        pass
+
+    popen_kwargs: dict[str, object] = {
+        "cwd": str(exe_path.parent),
+        "env": env,
+    }
+    if sys.platform == "win32":
+        # main.py patches subprocess.Popen globally to hide windows.
+        # Override that behavior for the Qt C++ GUI executable.
+        popen_kwargs["creationflags"] = 0
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 1  # SW_SHOWNORMAL
+            popen_kwargs["startupinfo"] = startupinfo
+        except Exception:
+            pass
 
     try:
-        process = subprocess.Popen([str(exe_path)], cwd=str(exe_path.parent), env=env)
+        process = subprocess.Popen([str(exe_path)], **popen_kwargs)
     except Exception as exc:
         self.log(f"C++ launch failed: {exc}")
         QtWidgets.QMessageBox.warning(self, "C++ launch failed", str(exc))
+        return False
+
+    # If it dies immediately, surface a clear error instead of a silent no-op.
+    try:
+        time.sleep(0.2)
+    except Exception:
+        pass
+    if process.poll() is not None:
+        exit_code = process.returncode
+        self.log(f"C++ launch failed: process exited immediately (code {exit_code}).")
+        QtWidgets.QMessageBox.warning(
+            self,
+            "C++ launch failed",
+            f"C++ bot exited immediately (code {exit_code}).\n"
+            "Check Qt runtime DLL availability and CMake/Qt configuration.",
+        )
         return False
 
     self._cpp_code_tab_process = process
@@ -13929,8 +15005,20 @@ def _refresh_code_tab_from_config(self) -> None:
             self.config["code_language"] = lang_key
     for key, card in lang_cards.items():
         card.setSelected(bool(lang_key) and key == lang_key)
+    targets_changed = False
+    try:
+        resolved_targets = _resolve_dependency_targets_for_config(self.config)
+    except Exception:
+        resolved_targets = list(getattr(self, "_dep_version_targets", []) or [])
+    if resolved_targets and resolved_targets != getattr(self, "_dep_version_targets", None):
+        self._rebuild_dependency_version_rows(resolved_targets)
+        targets_changed = True
+    elif not resolved_targets:
+        resolved_targets = list(getattr(self, "_dep_version_targets", []) or [])
+    if targets_changed and self._code_tab_visible():
+        QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
     # Dependency versions refresh lazily the first time this tab is opened (see _on_tab_changed).
-    _refresh_dependency_usage_labels(self)
+    _refresh_dependency_usage_labels(self, resolved_targets)
 
 
 def _code_tab_visible(self) -> bool:
@@ -14100,7 +15188,7 @@ def _refresh_dependency_versions(self) -> None:
     self._dep_version_watchdog_token = time.monotonic()
 
     try:
-        resolved_targets = _dependency_targets_from_requirements(_iter_candidate_requirement_paths(self.config))
+        resolved_targets = _resolve_dependency_targets_for_config(self.config)
     except Exception:
         resolved_targets = copy.deepcopy(DEPENDENCY_VERSION_TARGETS)
     try:
@@ -21039,3 +22127,7 @@ def _begin_close_on_exit_sequence(self):
         self._bg_workers.append(worker)
         worker.start()
 _LATEST_VERSION_CACHE: dict[str, tuple[str, float]] = {}
+_LATEST_CPP_VERSION_CACHE: dict[str, tuple[str, float]] = {}
+_CPP_INCLUDE_DIR_CACHE: tuple[list[Path], float] = ([], 0.0)
+_CPP_INSTALLED_VALUE_CACHE: dict[str, tuple[str | None, float]] = {}
+_CPP_VCPKG_STATUS_CACHE: tuple[dict[str, str], float] = ({}, 0.0)

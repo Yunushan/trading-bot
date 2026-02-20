@@ -1,6 +1,6 @@
 <RCC>
   <qresource prefix="/icons">
-    <file alias="crypto_forex_logo.ico">../assets/crypto_forex_logo.ico</file>
-    <file alias="crypto_forex_logo.png">../assets/crypto_forex_logo.png</file>
+    <file alias="crypto_forex_logo.ico">../../assets/crypto_forex_logo.ico</file>
+    <file alias="crypto_forex_logo.png">../../assets/crypto_forex_logo.png</file>
   </qresource>
 </RCC>

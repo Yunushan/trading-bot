@@ -1,4 +1,5 @@
 #include "BacktestWindow.h"
+#include "BinanceRestClient.h"
 
 #include <QCheckBox>
 #include <QAbstractItemView>
@@ -19,28 +20,36 @@
 #include <QDebug>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMap>
 #include <QPushButton>
 #include <QMessageBox>
-#include <QProcess>
-#include <QProcessEnvironment>
 #include <QDir>
 #include <QFileInfo>
-#include <QStandardPaths>
+#include <QFontMetrics>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QVariant>
 #include <QScrollArea>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QSizePolicy>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTabWidget>
+#include <QStackedWidget>
 #include <QTimer>
 #include <QUrl>
+#include <QVector>
 #ifndef HAS_QT_WEBENGINE
 #define HAS_QT_WEBENGINE 0
+#endif
+#ifndef HAS_QT_WEBSOCKETS
+#define HAS_QT_WEBSOCKETS 0
 #endif
 #include <QVBoxLayout>
 #include <QtMath>
@@ -48,10 +57,211 @@
 #include <QWebEngineView>
 #endif
 
+#include <algorithm>
 #include <functional>
 #include <set>
 
 namespace {
+class NativeKlineChartWidget final : public QWidget {
+public:
+    explicit NativeKlineChartWidget(QWidget *parent = nullptr)
+        : QWidget(parent) {
+        setMinimumHeight(460);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+
+    void setCandles(const QVector<BinanceRestClient::KlineCandle> &candles) {
+        candles_ = candles;
+        update();
+    }
+
+    void setOverlayMessage(const QString &message) {
+        overlayMessage_ = message;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        QWidget::paintEvent(event);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        QRect frame = rect().adjusted(0, 0, -1, -1);
+        painter.fillRect(frame, QColor("#0b1020"));
+        painter.setPen(QPen(QColor("#1f2937"), 1.0));
+        painter.drawRect(frame);
+
+        QRect chartRect = frame.adjusted(14, 22, -14, -34);
+        if (chartRect.width() < 24 || chartRect.height() < 24) {
+            return;
+        }
+
+        painter.setPen(QPen(QColor("#1f2937"), 1.0, Qt::DashLine));
+        for (int i = 0; i <= 4; ++i) {
+            const int y = chartRect.top() + (chartRect.height() * i) / 4;
+            painter.drawLine(chartRect.left(), y, chartRect.right(), y);
+        }
+
+        if (candles_.isEmpty()) {
+            painter.setPen(QColor("#94a3b8"));
+            painter.drawText(chartRect, Qt::AlignCenter, "No chart data loaded.");
+            return;
+        }
+
+        const int candleCount = static_cast<int>(candles_.size());
+        const int maxVisible = std::max(25, chartRect.width() / 6);
+        const int start = std::max(0, candleCount - maxVisible);
+        const int visible = candleCount - start;
+        if (visible <= 0) {
+            painter.setPen(QColor("#94a3b8"));
+            painter.drawText(chartRect, Qt::AlignCenter, "No visible candles.");
+            return;
+        }
+
+        double low = 0.0;
+        double high = 0.0;
+        bool initialized = false;
+        for (int i = start; i < candleCount; ++i) {
+            const auto &c = candles_.at(i);
+            if (!qIsFinite(c.low) || !qIsFinite(c.high)) {
+                continue;
+            }
+            if (!initialized) {
+                low = c.low;
+                high = c.high;
+                initialized = true;
+                continue;
+            }
+            low = std::min(low, c.low);
+            high = std::max(high, c.high);
+        }
+        if (!initialized) {
+            painter.setPen(QColor("#94a3b8"));
+            painter.drawText(chartRect, Qt::AlignCenter, "Invalid candle values.");
+            return;
+        }
+
+        const double span = std::max(1e-9, high - low);
+        auto yFromPrice = [&](double value) {
+            const double clamped = std::clamp((value - low) / span, 0.0, 1.0);
+            return chartRect.bottom() - clamped * chartRect.height();
+        };
+
+        const double spacing = static_cast<double>(chartRect.width()) / std::max(1, visible);
+        const double bodyWidth = std::max(2.0, spacing * 0.65);
+
+        for (int i = 0; i < visible; ++i) {
+            const auto &candle = candles_.at(start + i);
+            if (!qIsFinite(candle.open) || !qIsFinite(candle.close)
+                || !qIsFinite(candle.high) || !qIsFinite(candle.low)) {
+                continue;
+            }
+
+            const double x = chartRect.left() + (i + 0.5) * spacing;
+            const double yHigh = yFromPrice(candle.high);
+            const double yLow = yFromPrice(candle.low);
+            const double yOpen = yFromPrice(candle.open);
+            const double yClose = yFromPrice(candle.close);
+
+            const bool bull = candle.close >= candle.open;
+            const QColor color = bull ? QColor("#22c55e") : QColor("#ef4444");
+
+            painter.setPen(QPen(color, 1.2));
+            painter.drawLine(QPointF(x, yHigh), QPointF(x, yLow));
+
+            const double top = std::min(yOpen, yClose);
+            const double bottom = std::max(yOpen, yClose);
+            QRectF body(x - bodyWidth / 2.0, top, bodyWidth, std::max(1.0, bottom - top));
+            painter.fillRect(body, color);
+        }
+
+        painter.setPen(QColor("#e5e7eb"));
+        const auto &last = candles_.constLast();
+        const QString summary = QString("Candles: %1   Last Close: %2   High: %3   Low: %4")
+            .arg(visible)
+            .arg(last.close, 0, 'f', 4)
+            .arg(high, 0, 'f', 4)
+            .arg(low, 0, 'f', 4);
+        painter.drawText(frame.adjusted(10, frame.height() - 24, -10, -6), Qt::AlignLeft | Qt::AlignVCenter, summary);
+
+        if (!overlayMessage_.trimmed().isEmpty()) {
+            const QRect hintRect = QRect(frame.left() + 10, frame.top() + 6, frame.width() - 20, 16);
+            painter.setPen(QColor("#93c5fd"));
+            const QFontMetrics metrics(painter.font());
+            painter.drawText(hintRect, Qt::AlignLeft | Qt::AlignVCenter, metrics.elidedText(overlayMessage_, Qt::ElideRight, hintRect.width()));
+        }
+    }
+
+private:
+    QVector<BinanceRestClient::KlineCandle> candles_;
+    QString overlayMessage_;
+};
+
+QString tradingViewIntervalFor(QString interval) {
+    interval = interval.trimmed().toLower();
+    static const QMap<QString, QString> mapping = {
+        {"1m", "1"},
+        {"3m", "3"},
+        {"5m", "5"},
+        {"15m", "15"},
+        {"30m", "30"},
+        {"1h", "60"},
+        {"2h", "120"},
+        {"4h", "240"},
+        {"6h", "360"},
+        {"8h", "480"},
+        {"12h", "720"},
+        {"1d", "1D"},
+        {"3d", "3D"},
+        {"1w", "1W"},
+        {"1mo", "1M"},
+    };
+    return mapping.value(interval, "60");
+}
+
+QString normalizeChartSymbol(QString symbol) {
+    QString out = symbol.trimmed().toUpper();
+    out.remove('/');
+    if (out.endsWith(".P")) {
+        out.chop(2);
+    }
+    return out;
+}
+
+QString spotSymbolWithUnderscore(const QString &symbol) {
+    if (symbol.contains('_')) {
+        return symbol;
+    }
+    static const QStringList quoteAssets = {
+        "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USD", "BTC", "ETH", "BNB",
+        "EUR", "TRY", "GBP", "AUD", "BRL", "RUB", "IDR", "UAH", "ZAR", "BIDR", "PAX"
+    };
+    for (const auto &quote : quoteAssets) {
+        if (symbol.endsWith(quote) && symbol.size() > quote.size()) {
+            return symbol.left(symbol.size() - quote.size()) + "_" + quote;
+        }
+    }
+    return symbol;
+}
+
+QString buildBinanceWebUrl(const QString &symbol, const QString &interval, const QString &marketKey) {
+    QString sym = normalizeChartSymbol(symbol);
+    const QString cleanInterval = interval.trimmed();
+    QString url;
+    if (marketKey.trimmed().toLower() == "spot") {
+        sym = spotSymbolWithUnderscore(sym);
+        url = QString("https://www.binance.com/en/trade/%1?type=spot").arg(sym);
+    } else {
+        url = QString("https://www.binance.com/en/futures/%1").arg(sym);
+    }
+    if (!cleanInterval.isEmpty()) {
+        url += (url.contains('?') ? "&" : "?");
+        url += QString("interval=%1").arg(cleanInterval);
+    }
+    return url;
+}
+
 QString formatDuration(qint64 seconds) {
     const qint64 mins = seconds / 60;
     const qint64 hrs = mins / 60;
@@ -92,7 +302,16 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       backtestTab_(nullptr),
       dashboardThemeCombo_(nullptr),
       dashboardPage_(nullptr),
-      codePage_(nullptr) {
+      codePage_(nullptr),
+      chartMarketCombo_(nullptr),
+      chartSymbolCombo_(nullptr),
+      chartIntervalCombo_(nullptr),
+      chartViewModeCombo_(nullptr),
+      chartAutoFollowCheck_(nullptr),
+      chartPnlActiveLabel_(nullptr),
+      chartPnlClosedLabel_(nullptr),
+      chartBotStatusLabel_(nullptr),
+      chartBotTimeLabel_(nullptr) {
     setWindowTitle("Trading Bot");
     resize(1350, 900);
 
@@ -378,123 +597,27 @@ void BacktestWindow::refreshDashboardBalance() {
         dashboardBalanceLabel_->setText("Refreshing...");
     }
 
-    // Lightweight Python helper using REST; avoids adding a C++ HTTP/signature dependency.
-    const QString script = R"PY(
-import os, time, hmac, hashlib, urllib.parse, json, sys
-import requests
+    const QString accountNorm = accountType.trimmed().toLower();
+    const QString modeNorm = mode.trimmed().toLower();
+    const bool isFutures = accountNorm.startsWith("fut");
+    const bool isTestnet = modeNorm.startsWith("paper") || modeNorm.startsWith("test");
 
-api_key = os.environ.get("API_KEY") or ""
-api_secret = os.environ.get("API_SECRET") or ""
-account = (os.environ.get("ACCOUNT") or "Futures").lower()
-mode = (os.environ.get("MODE") or "Live").lower()
-
-if not api_key or not api_secret:
-    print(json.dumps({"error": "missing credentials"}))
-    sys.exit(0)
-
-is_futures = account.startswith("fut")
-is_testnet = mode.startswith("paper") or mode.startswith("test")
-if is_futures:
-    base = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
-    endpoint = "/fapi/v2/account"
-else:
-    base = "https://testnet.binance.vision" if is_testnet else "https://api.binance.com"
-    endpoint = "/api/v3/account"
-
-params = {"timestamp": int(time.time() * 1000)}
-query = urllib.parse.urlencode(params)
-sig = hmac.new(api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-url = f"{base}{endpoint}?{query}&signature={sig}"
-headers = {"X-MBX-APIKEY": api_key}
-
-try:
-    resp = requests.get(url, headers=headers, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    balance = None
-    if is_futures:
-        for asset in data.get("assets", []):
-            if asset.get("asset") == "USDT":
-                balance = asset.get("walletBalance") or asset.get("marginBalance") or asset.get("availableBalance")
-                break
-    else:
-        for bal in data.get("balances", []):
-            if bal.get("asset") == "USDT":
-                balance = bal.get("free")
-                break
-    if balance is None:
-        print(json.dumps({"error": "USDT balance not found"}))
-    else:
-        print(json.dumps({"balance": balance}))
-except Exception as exc:  # noqa: BLE001
-    print(json.dumps({"error": str(exc)}))
-    sys.exit(0)
-)PY";
-
-    QProcess proc;
-    QString program = "python";
-#ifdef Q_OS_WIN
-    // Prefer pythonw to avoid stray console popups.
-    program = "pythonw";
-#endif
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("API_KEY", apiKey);
-    env.insert("API_SECRET", apiSecret);
-    env.insert("ACCOUNT", accountType);
-    env.insert("MODE", mode);
-    proc.setProcessEnvironment(env);
-    proc.start(program, {"-c", script});
-    if (!proc.waitForStarted(3000)) {
-        // Fallback to python if pythonw is missing.
-        proc.start("python", {"-c", script});
-        if (!proc.waitForStarted(3000)) {
-            if (dashboardBalanceLabel_) {
-                dashboardBalanceLabel_->setText("Python not found");
-            }
-            resetButton();
-            return;
-        }
-    }
-
-    if (!proc.waitForFinished(15000)) {
-        proc.kill();
+    const auto result = BinanceRestClient::fetchUsdtBalance(
+        apiKey,
+        apiSecret,
+        isFutures,
+        isTestnet,
+        10000);
+    if (!result.ok) {
         if (dashboardBalanceLabel_) {
-            dashboardBalanceLabel_->setText("Timeout contacting Binance");
+            dashboardBalanceLabel_->setText(QString("Error: %1").arg(result.error));
+            dashboardBalanceLabel_->setStyleSheet("color: #ef4444; font-weight: 700;");
         }
         resetButton();
         return;
     }
 
-    const QByteArray output = proc.readAllStandardOutput();
-    QString err = QString::fromUtf8(proc.readAllStandardError());
-    if (!err.isEmpty()) {
-        qWarning() << "balance refresh stderr:" << err;
-    }
-
-    QJsonParseError parseErr{};
-    const QJsonDocument doc = QJsonDocument::fromJson(output, &parseErr);
-    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
-        if (dashboardBalanceLabel_) {
-            dashboardBalanceLabel_->setText("Unexpected response");
-        }
-        resetButton();
-        return;
-    }
-
-    const QJsonObject obj = doc.object();
-    if (obj.contains("error")) {
-        if (dashboardBalanceLabel_) {
-            dashboardBalanceLabel_->setText(QString("Error: %1").arg(obj.value("error").toString()));
-        }
-        resetButton();
-        return;
-    }
-
-    const QVariant balVar = obj.value("balance").toVariant();
-    QString balStr = balVar.toString();
-    if ((balStr.isEmpty() || balStr == "0") && balVar.canConvert<double>()) {
-        balStr = QString::number(balVar.toDouble(), 'f', 4);
-    }
+    const QString balStr = QString::number(result.usdtBalance, 'f', 4);
     if (dashboardBalanceLabel_) {
         dashboardBalanceLabel_->setText(balStr.isEmpty() ? "0" : balStr);
         dashboardBalanceLabel_->setStyleSheet("color: #22c55e; font-weight: 700;");
@@ -522,86 +645,18 @@ void BacktestWindow::refreshDashboardSymbols() {
 
     const QString accountType = dashboardAccountTypeCombo_ ? dashboardAccountTypeCombo_->currentText() : "Futures";
     const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : "Live";
+    const QString accountNorm = accountType.trimmed().toLower();
+    const QString modeNorm = mode.trimmed().toLower();
+    const bool isFutures = accountNorm.startsWith("fut");
+    const bool isTestnet = modeNorm.startsWith("paper") || modeNorm.startsWith("test");
 
-    const QString script = R"PY(
-import os, json, requests
-
-account = (os.environ.get("ACCOUNT") or "Futures").lower()
-mode = (os.environ.get("MODE") or "Live").lower()
-
-is_futures = account.startswith("fut")
-is_testnet = mode.startswith("paper") or mode.startswith("test")
-
-if is_futures:
-    base = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
-    endpoint = "/fapi/v1/exchangeInfo"
-else:
-    base = "https://testnet.binance.vision" if is_testnet else "https://api.binance.com"
-    endpoint = "/api/v3/exchangeInfo"
-
-try:
-    resp = requests.get(base + endpoint, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    symbols = []
-    for sym in data.get("symbols", []):
-        if sym.get("quoteAsset") != "USDT":
-            continue
-        if sym.get("status", "").upper() not in {"TRADING", "PENDING_TRADING"}:
-            continue
-        if is_futures:
-            if sym.get("contractType", "").upper() not in {"PERPETUAL", "CURRENT_QUARTER", "NEXT_QUARTER"}:
-                continue
-        symbols.append(sym.get("symbol"))
-    symbols = sorted({s for s in symbols if s})
-    print(json.dumps({"symbols": symbols}))
-except Exception as exc:  # noqa: BLE001
-    print(json.dumps({"error": str(exc)}))
-)PY";
-
-    QProcess proc;
-    QString program = "python";
-#ifdef Q_OS_WIN
-    program = "pythonw";
-#endif
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("ACCOUNT", accountType);
-    env.insert("MODE", mode);
-    proc.setProcessEnvironment(env);
-    proc.start(program, {"-c", script});
-    if (!proc.waitForStarted(3000)) {
-        proc.start("python", {"-c", script});
-        if (!proc.waitForStarted(3000)) {
-            QMessageBox::warning(this, tr("Refresh symbols failed"), tr("Python not found to fetch symbols."));
-            resetButton();
-            return;
-        }
-    }
-
-    if (!proc.waitForFinished(15000)) {
-        proc.kill();
-        QMessageBox::warning(this, tr("Refresh symbols failed"), tr("Timeout contacting Binance."));
+    const auto result = BinanceRestClient::fetchUsdtSymbols(isFutures, isTestnet, 10000);
+    if (!result.ok) {
+        QMessageBox::warning(this, tr("Refresh symbols failed"), result.error);
         resetButton();
         return;
     }
 
-    const QByteArray output = proc.readAllStandardOutput();
-    QJsonParseError parseErr{};
-    const QJsonDocument doc = QJsonDocument::fromJson(output, &parseErr);
-    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
-        QMessageBox::warning(this, tr("Refresh symbols failed"), tr("Unexpected response from Binance."));
-        resetButton();
-        return;
-    }
-
-    const QJsonObject obj = doc.object();
-    if (obj.contains("error")) {
-        QMessageBox::warning(this, tr("Refresh symbols failed"), obj.value("error").toString());
-        resetButton();
-        return;
-    }
-
-    const QJsonArray symbolsArr = obj.value("symbols").toArray();
     QSet<QString> previousSelections;
     if (dashboardSymbolList_) {
         for (auto *item : dashboardSymbolList_->selectedItems()) {
@@ -610,12 +665,7 @@ except Exception as exc:  # noqa: BLE001
         dashboardSymbolList_->clear();
     }
 
-    QStringList symbols;
-    symbols.reserve(symbolsArr.size());
-    for (const auto &val : symbolsArr) {
-        symbols.append(val.toString());
-    }
-    dashboardSymbolList_->addItems(symbols);
+    dashboardSymbolList_->addItems(result.symbols);
 
     // Restore previous selections if still present; otherwise select first to hint usability.
     bool anySelected = false;
@@ -1111,43 +1161,263 @@ QWidget *BacktestWindow::createChartTab() {
     layout->addWidget(heading);
 
     auto *desc = new QLabel(
-        "TradingView/price chart workspace to match the Python Chart tab. Embedded chart uses TradingView widget.",
+        "C++ chart tab mirrors Python chart modes: Original (Binance web) and TradingView.",
         page);
     desc->setWordWrap(true);
     layout->addWidget(desc);
 
+    auto *controls = new QHBoxLayout();
+    controls->setSpacing(8);
+    controls->addWidget(new QLabel("Market:", page));
+
+    auto *marketCombo = new QComboBox(page);
+    marketCombo->addItem("Futures", "futures");
+    marketCombo->addItem("Spot", "spot");
+    chartMarketCombo_ = marketCombo;
+    controls->addWidget(marketCombo);
+
+    controls->addWidget(new QLabel("Symbol:", page));
+    auto *symbolCombo = new QComboBox(page);
+    symbolCombo->setEditable(false);
+    symbolCombo->setMinimumContentsLength(10);
+    symbolCombo->setSizeAdjustPolicy(QComboBox::SizeAdjustPolicy::AdjustToContents);
+    chartSymbolCombo_ = symbolCombo;
+    controls->addWidget(symbolCombo);
+
+    controls->addWidget(new QLabel("Interval:", page));
+    auto *intervalCombo = new QComboBox(page);
+    intervalCombo->addItems({"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"});
+    intervalCombo->setCurrentText("1m");
+    chartIntervalCombo_ = intervalCombo;
+    controls->addWidget(intervalCombo);
+
+    controls->addWidget(new QLabel("View:", page));
+    auto *viewModeCombo = new QComboBox(page);
+    viewModeCombo->addItem("Original", "original");
+    viewModeCombo->addItem("TradingView", "tradingview");
+    chartViewModeCombo_ = viewModeCombo;
+    controls->addWidget(viewModeCombo);
+
+    auto *autoFollowCheck = new QCheckBox("Auto Follow Dashboard", page);
+    autoFollowCheck->setChecked(true);
+    chartAutoFollowCheck_ = autoFollowCheck;
+    controls->addWidget(autoFollowCheck);
+
+    auto *refreshBtn = new QPushButton("Refresh", page);
+    controls->addWidget(refreshBtn);
+
+    auto *openBtn = new QPushButton("Open In Browser", page);
+    controls->addWidget(openBtn);
+
+    controls->addStretch();
+
+    auto *chartStatusWidget = new QWidget(page);
+    auto *chartStatusLayout = new QHBoxLayout(chartStatusWidget);
+    chartStatusLayout->setContentsMargins(0, 0, 0, 0);
+    chartStatusLayout->setSpacing(8);
+
+    chartPnlActiveLabel_ = new QLabel("Total PNL Active Positions: --", chartStatusWidget);
+    chartPnlClosedLabel_ = new QLabel("Total PNL Closed Positions: --", chartStatusWidget);
+    chartBotStatusLabel_ = new QLabel("Bot Status: OFF", chartStatusWidget);
+    chartBotStatusLabel_->setStyleSheet("color: #ef4444; font-weight: 700;");
+    chartBotTimeLabel_ = new QLabel("Bot Active Time: --", chartStatusWidget);
+
+    chartStatusLayout->addWidget(chartPnlActiveLabel_);
+    chartStatusLayout->addWidget(chartPnlClosedLabel_);
+    chartStatusLayout->addWidget(chartBotStatusLabel_);
+    chartStatusLayout->addWidget(chartBotTimeLabel_);
+    controls->addWidget(chartStatusWidget);
+
+    layout->addLayout(controls);
+
+    auto *status = new QLabel("Chart ready.", page);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto *chartStack = new QStackedWidget(page);
+    layout->addWidget(chartStack, 1);
+
+    auto *originalPage = new QWidget(chartStack);
+    auto *originalLayout = new QVBoxLayout(originalPage);
+    originalLayout->setContentsMargins(0, 0, 0, 0);
 #if HAS_QT_WEBENGINE
-    auto *view = new QWebEngineView(page);
-    view->setMinimumHeight(520);
-    view->setContextMenuPolicy(Qt::NoContextMenu);
-  const auto html = QStringLiteral(R"(
+    auto *binanceView = new QWebEngineView(originalPage);
+    binanceView->setContextMenuPolicy(Qt::NoContextMenu);
+    binanceView->setMinimumHeight(460);
+    originalLayout->addWidget(binanceView, 1);
+#else
+    auto *chartWidget = new NativeKlineChartWidget(originalPage);
+    originalLayout->addWidget(chartWidget, 1);
+#endif
+    chartStack->addWidget(originalPage);
+
+    auto *tradingPage = new QWidget(chartStack);
+    auto *tradingLayout = new QVBoxLayout(tradingPage);
+    tradingLayout->setContentsMargins(0, 0, 0, 0);
+    tradingLayout->setSpacing(8);
+#if HAS_QT_WEBENGINE
+    auto *tradingView = new QWebEngineView(tradingPage);
+    tradingView->setMinimumHeight(460);
+    tradingView->setContextMenuPolicy(Qt::NoContextMenu);
+    tradingLayout->addWidget(tradingView, 1);
+#else
+    auto *tvUnavailable = new QLabel(
+        "Qt WebEngine is not available in this C++ build, so embedded TradingView is disabled. "
+        "Use the Open TradingView button to view it in your browser.",
+        tradingPage);
+    tvUnavailable->setWordWrap(true);
+    tvUnavailable->setStyleSheet("color: #f59e0b;");
+    tradingLayout->addWidget(tvUnavailable);
+    tradingLayout->addStretch(1);
+#endif
+    chartStack->addWidget(tradingPage);
+
+#if !HAS_QT_WEBENGINE
+    try {
+        const int tvIdx = viewModeCombo->findData("tradingview");
+        if (tvIdx >= 0) {
+            if (auto *model = qobject_cast<QStandardItemModel *>(viewModeCombo->model())) {
+                if (QStandardItem *item = model->item(tvIdx)) {
+                    item->setEnabled(false);
+                    item->setToolTip("Qt WebEngine not installed in this C++ toolchain.");
+                }
+            }
+        }
+        viewModeCombo->setCurrentIndex(viewModeCombo->findData("original"));
+    } catch (...) {
+    }
+#else
+    viewModeCombo->setCurrentIndex(viewModeCombo->findData("original"));
+#endif
+
+    auto currentRawSymbol = [symbolCombo]() {
+        QString raw = symbolCombo->currentData().toString().trimmed().toUpper();
+        if (raw.isEmpty()) {
+            raw = normalizeChartSymbol(symbolCombo->currentText());
+        }
+        return raw;
+    };
+
+    std::function<void()> refreshCurrent;
+
+    auto loadSymbols = [this, marketCombo, symbolCombo, status, currentRawSymbol]() {
+        QString preferredRaw = currentRawSymbol();
+        if (chartAutoFollowCheck_ && chartAutoFollowCheck_->isChecked() && dashboardSymbolList_) {
+            const auto selected = dashboardSymbolList_->selectedItems();
+            if (!selected.isEmpty()) {
+                const QString dashRaw = normalizeChartSymbol(selected.first()->text());
+                if (!dashRaw.isEmpty()) {
+                    preferredRaw = dashRaw;
+                }
+            }
+        }
+        const bool futures = marketCombo->currentData().toString() == "futures";
+
+        const auto result = BinanceRestClient::fetchUsdtSymbols(futures, false, 12000);
+        QStringList symbols;
+        if (result.ok && !result.symbols.isEmpty()) {
+            symbols = result.symbols;
+            status->setText(QString("Loaded %1 symbols.").arg(symbols.size()));
+        } else {
+            symbols = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"};
+            status->setText(result.error.isEmpty()
+                                ? "Using fallback symbol list."
+                                : QString("Using fallback symbols: %1").arg(result.error));
+        }
+
+        QSignalBlocker blocker(symbolCombo);
+        symbolCombo->clear();
+        for (const QString &raw : symbols) {
+            const QString display = futures ? QString("%1.P").arg(raw) : raw;
+            symbolCombo->addItem(display, raw);
+        }
+
+        int idx = symbolCombo->findData(preferredRaw);
+        if (idx < 0) {
+            idx = symbolCombo->findData("BTCUSDT");
+        }
+        if (idx < 0 && symbolCombo->count() > 0) {
+            idx = 0;
+        }
+        if (idx >= 0) {
+            symbolCombo->setCurrentIndex(idx);
+        }
+    };
+
+    std::function<void()> refreshOriginal;
+#if HAS_QT_WEBENGINE
+    refreshOriginal = [status, marketCombo, intervalCombo, currentRawSymbol, binanceView]() {
+        const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
+        if (rawSymbol.isEmpty()) {
+            status->setText("Select a symbol, then refresh.");
+            return;
+        }
+        const QString marketKey = marketCombo->currentData().toString();
+        const QString interval = intervalCombo->currentText().trimmed();
+        const QString url = buildBinanceWebUrl(rawSymbol, interval, marketKey);
+        binanceView->load(QUrl(url));
+        status->setText(QString("Original view loaded: %1 (%2)").arg(rawSymbol, interval));
+    };
+#else
+    refreshOriginal = [status, marketCombo, intervalCombo, currentRawSymbol, chartWidget]() {
+        const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
+        if (rawSymbol.isEmpty()) {
+            status->setText("Select a symbol, then refresh.");
+            chartWidget->setCandles({});
+            chartWidget->setOverlayMessage("Symbol is required.");
+            return;
+        }
+        const bool futures = marketCombo->currentData().toString() == "futures";
+        const QString interval = intervalCombo->currentText().trimmed();
+        const auto result = BinanceRestClient::fetchKlines(
+            rawSymbol,
+            interval,
+            futures,
+            false,
+            320,
+            12000);
+        if (!result.ok) {
+            chartWidget->setCandles({});
+            chartWidget->setOverlayMessage(result.error);
+            status->setText(QString("Original chart load failed: %1").arg(result.error));
+            return;
+        }
+        chartWidget->setCandles(result.candles);
+        chartWidget->setOverlayMessage(futures ? "Source: Binance Futures" : "Source: Binance Spot");
+        status->setText(QString("Original view loaded: %1 (%2)").arg(rawSymbol, interval));
+    };
+#endif
+
+    std::function<void()> refreshTradingView;
+#if HAS_QT_WEBENGINE
+    refreshTradingView = [status, intervalCombo, currentRawSymbol, tradingView]() {
+        const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
+        if (rawSymbol.isEmpty()) {
+            status->setText("Select a symbol, then refresh.");
+            return;
+        }
+        const QString tvInterval = tradingViewIntervalFor(intervalCombo->currentText());
+        const QString html = QStringLiteral(R"(
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <style>
-    html, body, #container {
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      padding: 0;
-      background: #0b1020;
-      overflow: hidden; /* prevent scrollbars */
-    }
+    html, body, #container { width: 100%%; height: 100%%; margin: 0; padding: 0; background: #0b1020; overflow: hidden; }
     ::-webkit-scrollbar { width: 0px; height: 0px; display: none; }
   </style>
 </head>
 <body>
   <div id="container">
-    <div class="tradingview-widget-container" style="height:100%; width:100%;">
+    <div class="tradingview-widget-container" style="height:100%%; width:100%%;">
       <div id="tradingview_embed"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
       <script type="text/javascript">
         new TradingView.widget({
-          "width": "100%",
-          "height": "100%",
-          "symbol": "BINANCE:BTCUSDT",
-          "interval": "60",
+          "width": "100%%",
+          "height": "100%%",
+          "symbol": "BINANCE:%1",
+          "interval": "%2",
           "timezone": "Etc/UTC",
           "theme": "dark",
           "style": "1",
@@ -1164,27 +1434,130 @@ QWidget *BacktestWindow::createChartTab() {
   </div>
 </body>
 </html>
-    )");
-    view->setHtml(html, QUrl("https://www.tradingview.com/"));
-    layout->addWidget(view, 1);
+        )").arg(rawSymbol, tvInterval);
+        tradingView->setHtml(html, QUrl("https://www.tradingview.com/"));
+        status->setText(QString("TradingView loaded: %1 (%2)").arg(rawSymbol, intervalCombo->currentText()));
+    };
 #else
-    auto *placeholder = new QWidget(page);
-    placeholder->setMinimumHeight(420);
-    placeholder->setStyleSheet("background-color: #0f1624; border: 1px dashed #2d3748;");
-    layout->addWidget(placeholder, 1);
-
-    auto *hint = new QLabel(
-        "Qt WebEngine is not installed in this toolchain, so the embedded chart is disabled. "
-        "Click below to open TradingView in your browser.", page);
-    hint->setWordWrap(true);
-    layout->addWidget(hint);
-
-    auto *openBtn = new QPushButton("Open TradingView Chart in Browser", page);
-    connect(openBtn, &QPushButton::clicked, this, []() {
-        QDesktopServices::openUrl(QUrl("https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT"));
-    });
-    layout->addWidget(openBtn, 0, Qt::AlignLeft);
+    refreshTradingView = [status]() {
+        status->setText("TradingView embed unavailable: Qt WebEngine is not installed in this build.");
+    };
 #endif
+
+    refreshCurrent = [refreshOriginal, refreshTradingView, viewModeCombo, chartStack, originalPage, tradingPage]() {
+        const QString mode = viewModeCombo->currentData().toString();
+        if (mode == "tradingview") {
+            chartStack->setCurrentWidget(tradingPage);
+            refreshTradingView();
+            return;
+        }
+        chartStack->setCurrentWidget(originalPage);
+        refreshOriginal();
+    };
+
+    auto syncFromDashboard = [this, symbolCombo, intervalCombo, refreshCurrent]() {
+        if (!chartAutoFollowCheck_ || !chartAutoFollowCheck_->isChecked()) {
+            return;
+        }
+
+        QString dashSymbol;
+        if (dashboardSymbolList_) {
+            const auto selectedSymbols = dashboardSymbolList_->selectedItems();
+            if (!selectedSymbols.isEmpty()) {
+                dashSymbol = normalizeChartSymbol(selectedSymbols.first()->text());
+            }
+        }
+
+        QString dashInterval;
+        if (dashboardIntervalList_) {
+            const auto selectedIntervals = dashboardIntervalList_->selectedItems();
+            if (!selectedIntervals.isEmpty()) {
+                dashInterval = selectedIntervals.first()->text().trimmed();
+            }
+        }
+
+        bool changed = false;
+        if (!dashSymbol.isEmpty()) {
+            const int symbolIdx = symbolCombo->findData(dashSymbol);
+            if (symbolIdx >= 0 && symbolCombo->currentIndex() != symbolIdx) {
+                QSignalBlocker blocker(symbolCombo);
+                symbolCombo->setCurrentIndex(symbolIdx);
+                changed = true;
+            }
+        }
+        if (!dashInterval.isEmpty()) {
+            const int intervalIdx = intervalCombo->findText(dashInterval, Qt::MatchFixedString);
+            if (intervalIdx >= 0 && intervalCombo->currentIndex() != intervalIdx) {
+                QSignalBlocker blocker(intervalCombo);
+                intervalCombo->setCurrentIndex(intervalIdx);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            refreshCurrent();
+        }
+    };
+
+    connect(refreshBtn, &QPushButton::clicked, page, refreshCurrent);
+    connect(symbolCombo, &QComboBox::currentTextChanged, page, [refreshCurrent](const QString &) {
+        refreshCurrent();
+    });
+    connect(intervalCombo, &QComboBox::currentTextChanged, page, [refreshCurrent](const QString &) {
+        refreshCurrent();
+    });
+    connect(viewModeCombo, &QComboBox::currentTextChanged, page, [refreshCurrent](const QString &) {
+        refreshCurrent();
+    });
+    connect(marketCombo, &QComboBox::currentTextChanged, page, [loadSymbols, refreshCurrent](const QString &) {
+        loadSymbols();
+        refreshCurrent();
+    });
+    connect(autoFollowCheck, &QCheckBox::toggled, page, [syncFromDashboard](bool enabled) {
+        if (enabled) {
+            syncFromDashboard();
+        }
+    });
+    if (dashboardSymbolList_) {
+        connect(dashboardSymbolList_, &QListWidget::itemSelectionChanged, page, syncFromDashboard);
+    }
+    if (dashboardIntervalList_) {
+        connect(dashboardIntervalList_, &QListWidget::itemSelectionChanged, page, syncFromDashboard);
+    }
+
+    connect(openBtn, &QPushButton::clicked, page, [marketCombo, intervalCombo, viewModeCombo, currentRawSymbol]() {
+        const QString rawSymbol = normalizeChartSymbol(currentRawSymbol());
+        if (rawSymbol.isEmpty()) {
+            return;
+        }
+        const QString mode = viewModeCombo->currentData().toString();
+        QUrl url;
+        if (mode == "tradingview") {
+            const QString tvInterval = tradingViewIntervalFor(intervalCombo->currentText());
+            url = QUrl(QString("https://www.tradingview.com/chart/?symbol=BINANCE:%1&interval=%2")
+                           .arg(rawSymbol, tvInterval));
+        } else {
+            const QString marketKey = marketCombo->currentData().toString();
+            const QString interval = intervalCombo->currentText().trimmed();
+            url = QUrl(buildBinanceWebUrl(rawSymbol, interval, marketKey));
+        }
+        QDesktopServices::openUrl(url);
+    });
+
+    loadSymbols();
+    syncFromDashboard();
+    QTimer::singleShot(0, page, [this, page, refreshCurrent]() {
+        if (tabs_ && tabs_->currentWidget() == page) {
+            refreshCurrent();
+        }
+    });
+    if (tabs_) {
+        connect(tabs_, &QTabWidget::currentChanged, page, [this, page, refreshCurrent](int) {
+            if (tabs_ && tabs_->currentWidget() == page) {
+                refreshCurrent();
+            }
+        });
+    }
 
     return page;
 }
@@ -1277,44 +1650,6 @@ QWidget *BacktestWindow::createBacktestTab() {
     contentLayout->addWidget(createResultsGroup(), 1);
 
     return page;
-}
-
-void BacktestWindow::launchPythonBot() {
-    QDir base(QCoreApplication::applicationDirPath());
-    QDir pythonDir = base;
-    QString script;
-    bool found = false;
-    // Search upward for Languages/Python to support different build output layouts.
-    for (int i = 0; i < 6; ++i) {
-        QDir candidate(base);
-        if (candidate.cd("Languages/Python")) {
-            const QString candidateScript = candidate.filePath("main.py");
-            if (QFileInfo::exists(candidateScript)) {
-                pythonDir = candidate;
-                script = candidateScript;
-                found = true;
-                break;
-            }
-        }
-        if (!base.cdUp()) {
-            break;
-        }
-    }
-    if (!found) {
-        QMessageBox::warning(this, "Python bot missing", "Could not locate Languages/Python/main.py.");
-        return;
-    }
-    QString python = "pythonw.exe";
-    if (QStandardPaths::findExecutable(python).isEmpty()) {
-        python = "python.exe";
-        if (QStandardPaths::findExecutable(python).isEmpty()) {
-            python = "python";
-        }
-    }
-    const bool ok = QProcess::startDetached(python, {script}, pythonDir.absolutePath());
-    if (!ok) {
-        QMessageBox::critical(this, "Launch failed", "Unable to start the Python Binance bot.");
-    }
 }
 
 QWidget *BacktestWindow::createCodeTab() {
@@ -1461,9 +1796,20 @@ QWidget *BacktestWindow::createCodeTab() {
     };
 
     addSection("Choose your language",
-               {makeCard("Python", "Fast to build - Huge ecosystem", "#22d3ee", "Recommended", "#1d4ed8", false,
-                         [this]() { launchPythonBot(); }),
-                makeCard("C++", "Qt native desktop (preview)", "#2563eb", "Preview", "#1f2937"),
+               {makeCard("Python", "Use Languages/Python/main.py for Python runtime", "#1f2937", "External",
+                         "#1f2937", false, [this]() {
+                             QMessageBox::information(
+                                 this,
+                                 "Python runtime",
+                                 "This C++ app now uses native C++ clients.\n"
+                                 "Run Languages/Python/main.py separately for the Python runtime.");
+                         }),
+                makeCard("C++", "Qt native desktop (active)", "#2563eb", "Active", "#1f2937", false, [this]() {
+                    if (tabs_ && backtestTab_) {
+                        tabs_->setCurrentWidget(backtestTab_);
+                    }
+                    updateStatusMessage("C++ workspace active.");
+                }),
                 makeCard("Rust", "Memory safe - coming soon", "#1f2937", "Coming Soon", "#1f2937", true),
                 makeCard("C", "Low-level power - coming soon", "#1f2937", "Coming Soon", "#1f2937", true)});
 
@@ -1491,19 +1837,61 @@ QWidget *BacktestWindow::createCodeTab() {
     table->horizontalHeader()->setStyleSheet("font-weight: 700;");
 
     struct Row {
-        const char *name;
-        const char *installed;
-        const char *latest;
+        QString name;
+        QString installed;
+        QString latest;
     };
-    const Row rows[] = {
-        {"python-binance", "1.0.32", "1.0.32"}, {"binance-connector", "3.12.0", "3.12.0"},
-        {"PyQt6", "6.10.0", "6.10.0"},          {"PyQt6-Qt6", "6.10.0", "6.10.0"},
-        {"PyQt6-WebEngine", "6.10.0", "6.10.0"}, {"numba", "0.62.1", "0.62.1"},
-        {"llvmlite", "0.45.1", "0.45.1"},       {"numpy", "2.3.5", "2.3.5"},
-        {"pandas", "2.3.3", "2.3.3"},           {"pandas-ta", "0.4.7b0", "0.4.7b0"},
-        {"requests", "2.32.3", "2.32.3"}};
-    table->setRowCount(static_cast<int>(std::size(rows)));
-    for (int i = 0; i < static_cast<int>(std::size(rows)); ++i) {
+    QVector<Row> rows;
+
+    const QByteArray envRows = qgetenv("TB_CPP_ENV_VERSIONS_JSON");
+    if (!envRows.trimmed().isEmpty()) {
+        QJsonParseError parseError{};
+        const QJsonDocument doc = QJsonDocument::fromJson(envRows, &parseError);
+        if (parseError.error == QJsonParseError::NoError && doc.isArray()) {
+            const QJsonArray arr = doc.array();
+            rows.reserve(arr.size());
+            for (const QJsonValue &entry : arr) {
+                if (!entry.isObject()) {
+                    continue;
+                }
+                const QJsonObject obj = entry.toObject();
+                const QString name = obj.value(QStringLiteral("name")).toString().trimmed();
+                if (name.isEmpty()) {
+                    continue;
+                }
+                QString installed = obj.value(QStringLiteral("installed")).toString().trimmed();
+                QString latest = obj.value(QStringLiteral("latest")).toString().trimmed();
+                if (installed.isEmpty()) {
+                    installed = QStringLiteral("Unknown");
+                }
+                if (latest.isEmpty()) {
+                    latest = QStringLiteral("Unknown");
+                }
+                rows.push_back({name, installed, latest});
+            }
+        }
+    }
+
+    if (rows.isEmpty()) {
+        rows = {
+            {QStringLiteral("Qt6 (C++)"), QString::fromLatin1(QT_VERSION_STR), QString::fromLatin1(QT_VERSION_STR)},
+            {QStringLiteral("Qt6 Network (REST)"), QString::fromLatin1(QT_VERSION_STR), QString::fromLatin1(QT_VERSION_STR)},
+            {QStringLiteral("Qt6 WebSockets"),
+             HAS_QT_WEBSOCKETS ? QString::fromLatin1(QT_VERSION_STR) : QStringLiteral("Not installed"),
+             HAS_QT_WEBSOCKETS ? QString::fromLatin1(QT_VERSION_STR) : QStringLiteral("Install Qt WebSockets")},
+            {QStringLiteral("Binance REST client (native)"), QStringLiteral("Active"), QStringLiteral("Active")},
+            {QStringLiteral("Binance WebSocket client (native)"),
+             HAS_QT_WEBSOCKETS ? QStringLiteral("Active") : QStringLiteral("Inactive"),
+             HAS_QT_WEBSOCKETS ? QStringLiteral("Active") : QStringLiteral("Needs Qt WebSockets")},
+            {QStringLiteral("Eigen"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
+            {QStringLiteral("xtensor"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
+            {QStringLiteral("TA-Lib"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
+            {QStringLiteral("libcurl"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
+            {QStringLiteral("cpr"), QStringLiteral("Not installed"), QStringLiteral("Unknown")}};
+    }
+
+    table->setRowCount(rows.size());
+    for (int i = 0; i < rows.size(); ++i) {
         table->setItem(i, 0, new QTableWidgetItem(rows[i].name));
         table->setItem(i, 1, new QTableWidgetItem(rows[i].installed));
         table->setItem(i, 2, new QTableWidgetItem(rows[i].latest));
@@ -1738,6 +2126,10 @@ void BacktestWindow::handleRunBacktest() {
     botStart_ = std::chrono::steady_clock::now();
     ensureBotTimer(true);
     botStatusLabel_->setText("Bot Status: Running");
+    if (chartBotStatusLabel_) {
+        chartBotStatusLabel_->setText("Bot Status: ON");
+        chartBotStatusLabel_->setStyleSheet("color: #16a34a; font-weight: 700;");
+    }
     runButton_->setEnabled(false);
     stopButton_->setEnabled(true);
     updateStatusMessage("Running backtest...");
@@ -1760,6 +2152,13 @@ void BacktestWindow::handleStopBacktest() {
     ensureBotTimer(false);
     botTimeLabel_->setText("Bot Active Time: --");
     botStatusLabel_->setText("Bot Status: Stopped");
+    if (chartBotTimeLabel_) {
+        chartBotTimeLabel_->setText("Bot Active Time: --");
+    }
+    if (chartBotStatusLabel_) {
+        chartBotStatusLabel_->setText("Bot Status: OFF");
+        chartBotStatusLabel_->setStyleSheet("color: #ef4444; font-weight: 700;");
+    }
     runButton_->setEnabled(true);
     stopButton_->setEnabled(false);
     updateStatusMessage("Backtest stopped.");
@@ -1771,7 +2170,11 @@ void BacktestWindow::updateBotActiveTime() {
     }
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - botStart_);
-    botTimeLabel_->setText("Bot Active Time: " + formatDuration(elapsed.count()));
+    const QString text = "Bot Active Time: " + formatDuration(elapsed.count());
+    botTimeLabel_->setText(text);
+    if (chartBotTimeLabel_) {
+        chartBotTimeLabel_->setText(text);
+    }
 }
 
 void BacktestWindow::ensureBotTimer(bool running) {
