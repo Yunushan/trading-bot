@@ -75,6 +75,8 @@ private:
     QPushButton *dashboardRefreshBtn_;
     QComboBox *dashboardAccountTypeCombo_;
     QComboBox *dashboardModeCombo_;
+    QComboBox *dashboardExchangeCombo_;
+    QComboBox *dashboardIndicatorSourceCombo_;
     QListWidget *dashboardSymbolList_;
     QListWidget *dashboardIntervalList_;
     QPushButton *dashboardRefreshSymbolsBtn_;

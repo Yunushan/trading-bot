@@ -12,7 +12,9 @@ import subprocess
 import threading
 import time
 import traceback
+import types
 import concurrent.futures
+import importlib
 import importlib.metadata as importlib_metadata
 import urllib.request
 import urllib.parse
@@ -1006,6 +1008,151 @@ def _dependency_module_candidates(target: dict[str, str]) -> tuple[str, ...]:
     if not raw:
         return tuple()
     return (raw.replace("-", "_"),)
+
+
+def _normalize_installed_version_text(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, types.ModuleType):
+        for attr_name in ("__version__", "VERSION", "version", "version_info"):
+            try:
+                nested_value = getattr(value, attr_name, None)
+            except Exception:
+                nested_value = None
+            if nested_value is None or nested_value is value:
+                continue
+            if callable(nested_value):
+                try:
+                    nested_value = nested_value()
+                except Exception:
+                    nested_value = None
+            if isinstance(nested_value, types.ModuleType):
+                for inner_attr_name in ("__version__", "VERSION", "version", "version_info"):
+                    try:
+                        inner_value = getattr(nested_value, inner_attr_name, None)
+                    except Exception:
+                        inner_value = None
+                    if inner_value is None or inner_value is nested_value or inner_value is value:
+                        continue
+                    if callable(inner_value):
+                        try:
+                            inner_value = inner_value()
+                        except Exception:
+                            inner_value = None
+                    normalized = _normalize_installed_version_text(inner_value)
+                    if normalized:
+                        return normalized
+                continue
+            normalized = _normalize_installed_version_text(nested_value)
+            if normalized:
+                return normalized
+        return None
+    if isinstance(value, dict):
+        for key in ("__version__", "version", "VERSION"):
+            try:
+                nested_value = value.get(key)
+            except Exception:
+                nested_value = None
+            normalized = _normalize_installed_version_text(nested_value)
+            if normalized:
+                return normalized
+        return None
+    if isinstance(value, (tuple, list)):
+        try:
+            parts = [str(part).strip() for part in value if str(part).strip()]
+            if parts:
+                return ".".join(parts)
+        except Exception:
+            return None
+    if isinstance(value, bytes):
+        try:
+            text = value.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            text = str(value).strip()
+    else:
+        text = str(value).strip()
+    if not text:
+        return None
+    if text.startswith("<module "):
+        return None
+    if text.startswith("<") and text.endswith(">") and " at 0x" in text:
+        return None
+    semver = _extract_semver_from_text(text)
+    return semver or text
+
+
+def _module_version_from_runtime(module_name: str, dependency_key: str) -> str | None:
+    name = str(module_name or "").strip()
+    if not name:
+        return None
+    try:
+        module = importlib.import_module(name)
+    except Exception:
+        return None
+
+    if name.startswith("PyQt6"):
+        try:
+            from PyQt6 import QtCore as _QtCore
+            if dependency_key == "pyqt6":
+                return (
+                    _normalize_installed_version_text(getattr(_QtCore, "PYQT_VERSION_STR", None))
+                    or _normalize_installed_version_text(getattr(_QtCore, "QT_VERSION_STR", None))
+                )
+            if dependency_key in {"pyqt6-qt6", "pyqt6-webengine"}:
+                return _normalize_installed_version_text(getattr(_QtCore, "QT_VERSION_STR", None))
+        except Exception:
+            pass
+
+    for attr_name in ("__version__", "VERSION", "version", "version_info"):
+        try:
+            attr_value = getattr(module, attr_name, None)
+        except Exception:
+            attr_value = None
+        if callable(attr_value):
+            try:
+                attr_value = attr_value()
+            except Exception:
+                attr_value = None
+        normalized = _normalize_installed_version_text(attr_value)
+        if normalized:
+            return normalized
+
+    # Module import succeeded but no explicit version marker exposed.
+    return "Installed"
+
+
+def _installed_version_for_dependency_target(target: dict[str, str]) -> str | None:
+    custom = str(target.get("custom") or "").strip().lower()
+    if custom == "qt":
+        return getattr(QtCore, "QT_VERSION_STR", None)
+    if custom.startswith("cpp_"):
+        return _cpp_custom_installed_value(target)
+
+    dependency_key = _normalize_dependency_key(target.get("package") or target.get("label"))
+    metadata_candidates: list[str] = []
+    for candidate in (
+        target.get("package"),
+        target.get("pypi"),
+        target.get("label"),
+    ):
+        value = str(candidate or "").strip()
+        if value and value not in metadata_candidates:
+            metadata_candidates.append(value)
+
+    for package_name in metadata_candidates:
+        try:
+            version_text = importlib_metadata.version(package_name)
+        except Exception:
+            continue
+        normalized = _normalize_installed_version_text(version_text)
+        if normalized:
+            return normalized
+
+    for module_name in _dependency_module_candidates(target):
+        resolved = _module_version_from_runtime(module_name, dependency_key)
+        if resolved:
+            return resolved
+    return None
 
 
 def _version_sort_key(version_text: str | None) -> tuple[int, ...]:
@@ -3619,19 +3766,9 @@ def _collect_dependency_versions(
     installed_map: dict[str, str] = {}
     for target in target_list:
         label = target["label"]
-        installed_version = None
-        custom = str(target.get("custom") or "").strip().lower()
-        if custom == "qt":
-            installed_version = getattr(QtCore, "QT_VERSION_STR", None)
-        elif custom.startswith("cpp_"):
-            installed_version = _cpp_custom_installed_value(target)
-        else:
-            package = target.get("package")
-            if package:
-                try:
-                    installed_version = importlib_metadata.version(package)
-                except Exception:
-                    installed_version = None
+        installed_version = _installed_version_for_dependency_target(target)
+        if installed_version:
+            installed_version = _normalize_installed_version_text(installed_version) or installed_version
         installed_map[label] = installed_version or "Not installed"
 
     latest_map: dict[str, str] = {}

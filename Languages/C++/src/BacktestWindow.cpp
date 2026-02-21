@@ -25,12 +25,17 @@
 #include <QMessageBox>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
 #include <QFontMetrics>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QRegularExpression>
+#include <QStandardPaths>
 #include <QVariant>
 #include <QScrollArea>
 #include <QSet>
@@ -262,6 +267,518 @@ QString buildBinanceWebUrl(const QString &symbol, const QString &interval, const
     return url;
 }
 
+QString normalizeExchangeKey(QString value) {
+    value = value.trimmed();
+    const int badgePos = value.indexOf('(');
+    if (badgePos > 0) {
+        value = value.left(badgePos).trimmed();
+    }
+
+    const QString key = value.toLower();
+    if (key == "binance") return "Binance";
+    if (key == "bybit") return "Bybit";
+    if (key == "okx") return "OKX";
+    if (key == "gate") return "Gate";
+    if (key == "bitget") return "Bitget";
+    if (key == "mexc") return "MEXC";
+    if (key == "kucoin") return "KuCoin";
+    if (key == "coinbase") return "Coinbase";
+    if (key == "htx") return "HTX";
+    if (key == "kraken") return "Kraken";
+    if (key == "tradingview") return "TradingView";
+    return value;
+}
+
+QString selectedDashboardExchange(const QComboBox *combo) {
+    if (!combo) {
+        return QStringLiteral("Binance");
+    }
+    QString value = combo->currentData().toString().trimmed();
+    if (value.isEmpty()) {
+        value = combo->currentText().trimmed();
+    }
+    value = normalizeExchangeKey(value);
+    return value.isEmpty() ? QStringLiteral("Binance") : value;
+}
+
+bool exchangeUsesBinanceApi(const QString &exchangeKey) {
+    return normalizeExchangeKey(exchangeKey).compare(QStringLiteral("Binance"), Qt::CaseInsensitive) == 0;
+}
+
+QString exchangeFromIndicatorSource(const QString &sourceText) {
+    const QString normalized = normalizeExchangeKey(sourceText);
+    static const QSet<QString> known = {
+        QStringLiteral("Binance"),
+        QStringLiteral("Bybit"),
+        QStringLiteral("OKX"),
+        QStringLiteral("Gate"),
+        QStringLiteral("Bitget"),
+        QStringLiteral("MEXC"),
+        QStringLiteral("KuCoin"),
+    };
+    if (known.contains(normalized)) {
+        return normalized;
+    }
+    return QString();
+}
+
+QString preferredIndicatorSourceForExchange(const QString &exchangeKey, const QString &currentSource) {
+    const QString normalized = normalizeExchangeKey(exchangeKey);
+    if (normalized.compare(QStringLiteral("Binance"), Qt::CaseInsensitive) == 0) {
+        if (currentSource.trimmed().toLower().contains(QStringLiteral("binance"))) {
+            return currentSource.trimmed();
+        }
+        return QStringLiteral("Binance futures");
+    }
+    if (normalized == QStringLiteral("MEXC")) {
+        return QStringLiteral("Mexc");
+    }
+    if (normalized == QStringLiteral("KuCoin")) {
+        return QStringLiteral("Kucoin");
+    }
+    return normalized;
+}
+
+QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures) {
+    Q_UNUSED(futures);
+    const QString normalized = normalizeExchangeKey(exchangeKey);
+    if (normalized == QStringLiteral("Bybit")) {
+        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"};
+    }
+    if (normalized == QStringLiteral("OKX")) {
+        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LTCUSDT"};
+    }
+    if (normalized == QStringLiteral("Gate")) {
+        return {"BTCUSDT", "ETHUSDT", "XRPUSDT", "TRXUSDT", "ETCUSDT"};
+    }
+    if (normalized == QStringLiteral("Bitget")) {
+        return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOTUSDT"};
+    }
+    if (normalized == QStringLiteral("MEXC")) {
+        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT"};
+    }
+    if (normalized == QStringLiteral("KuCoin")) {
+        return {"BTCUSDT", "ETHUSDT", "XRPUSDT", "ADAUSDT", "LINKUSDT"};
+    }
+    return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"};
+}
+
+QString extractSemverFromText(const QString &value) {
+    static const QRegularExpression re(QStringLiteral("(\\d+(?:[._]\\d+){1,3})"));
+    const QRegularExpressionMatch match = re.match(value);
+    if (!match.hasMatch()) {
+        return QString();
+    }
+    QString out = match.captured(1).trimmed();
+    out.replace('_', '.');
+    return out;
+}
+
+QString normalizeVersionText(const QString &value) {
+    const QString trimmed = value.trimmed();
+    if (trimmed.isEmpty()) {
+        return QString();
+    }
+    const QString semver = extractSemverFromText(trimmed);
+    return semver.isEmpty() ? trimmed : semver;
+}
+
+QString readTextFile(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return QString();
+    }
+    return QString::fromUtf8(file.readAll());
+}
+
+QString extractMacroString(const QString &text, const QString &macroName) {
+    if (text.isEmpty() || macroName.trimmed().isEmpty()) {
+        return QString();
+    }
+    const QRegularExpression re(
+        QStringLiteral("^\\s*#\\s*define\\s+%1\\s+\"([^\"]+)\"")
+            .arg(QRegularExpression::escape(macroName)),
+        QRegularExpression::MultilineOption);
+    const QRegularExpressionMatch match = re.match(text);
+    if (!match.hasMatch()) {
+        return QString();
+    }
+    return normalizeVersionText(match.captured(1));
+}
+
+int extractMacroInt(const QString &text, const QString &macroName, bool *okOut = nullptr) {
+    if (okOut) {
+        *okOut = false;
+    }
+    if (text.isEmpty() || macroName.trimmed().isEmpty()) {
+        return 0;
+    }
+    const QRegularExpression re(
+        QStringLiteral("^\\s*#\\s*define\\s+%1\\s+(\\d+)")
+            .arg(QRegularExpression::escape(macroName)),
+        QRegularExpression::MultilineOption);
+    const QRegularExpressionMatch match = re.match(text);
+    if (!match.hasMatch()) {
+        return 0;
+    }
+    bool ok = false;
+    const int value = match.captured(1).toInt(&ok);
+    if (okOut) {
+        *okOut = ok;
+    }
+    return ok ? value : 0;
+}
+
+void appendUniquePath(QStringList &paths, const QString &pathValue, bool mustExist = true) {
+    const QString cleaned = QDir::cleanPath(pathValue.trimmed());
+    if (cleaned.isEmpty()) {
+        return;
+    }
+    const QFileInfo info(cleaned);
+    if (mustExist && !info.exists()) {
+        return;
+    }
+    const QString canonical = info.exists() ? info.canonicalFilePath() : cleaned;
+    const QString absolute = canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+    if (absolute.isEmpty()) {
+        return;
+    }
+    if (!paths.contains(absolute, Qt::CaseInsensitive)) {
+        paths.push_back(absolute);
+    }
+}
+
+QStringList dependencyProjectRoots() {
+    QStringList roots;
+    auto addAncestors = [&roots](const QString &startPath) {
+        QDir cursor(startPath);
+        for (int i = 0; i < 8; ++i) {
+            appendUniquePath(roots, cursor.absolutePath(), true);
+            if (!cursor.cdUp()) {
+                break;
+            }
+        }
+    };
+    addAncestors(QCoreApplication::applicationDirPath());
+    addAncestors(QDir::currentPath());
+    return roots;
+}
+
+QStringList dependencyVcpkgRoots() {
+    QStringList roots;
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString envRoot = env.value(QStringLiteral("VCPKG_ROOT")).trimmed();
+    if (!envRoot.isEmpty()) {
+        appendUniquePath(roots, envRoot, true);
+    }
+    appendUniquePath(roots, QStringLiteral("C:/vcpkg"), true);
+    appendUniquePath(roots, QDir(QDir::homePath()).filePath(QStringLiteral("vcpkg")), true);
+    for (const QString &projectRoot : dependencyProjectRoots()) {
+        appendUniquePath(roots, QDir(projectRoot).filePath(QStringLiteral(".vcpkg")), true);
+    }
+    return roots;
+}
+
+QStringList dependencyIncludeRoots() {
+    static QStringList cache;
+    static bool ready = false;
+    if (ready) {
+        return cache;
+    }
+    ready = true;
+
+    auto addInstalledIncludeDirs = [&](const QString &installedRoot) {
+        QDir installedDir(installedRoot);
+        if (!installedDir.exists()) {
+            return;
+        }
+        const QFileInfoList archDirs = installedDir.entryInfoList(
+            QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable);
+        for (const QFileInfo &archInfo : archDirs) {
+            appendUniquePath(cache, QDir(archInfo.absoluteFilePath()).filePath(QStringLiteral("include")), true);
+        }
+    };
+
+    for (const QString &projectRoot : dependencyProjectRoots()) {
+        addInstalledIncludeDirs(QDir(projectRoot).filePath(QStringLiteral("vcpkg_installed")));
+        addInstalledIncludeDirs(QDir(projectRoot).filePath(QStringLiteral(".vcpkg/installed")));
+    }
+    for (const QString &vcpkgRoot : dependencyVcpkgRoots()) {
+        addInstalledIncludeDirs(QDir(vcpkgRoot).filePath(QStringLiteral("installed")));
+    }
+    return cache;
+}
+
+QString findHeaderPath(const QStringList &relativeCandidates) {
+    if (relativeCandidates.isEmpty()) {
+        return QString();
+    }
+    for (const QString &includeRoot : dependencyIncludeRoots()) {
+        QDir base(includeRoot);
+        for (const QString &relative : relativeCandidates) {
+            QString rel = relative.trimmed();
+            if (rel.isEmpty()) {
+                continue;
+            }
+            rel.replace('\\', '/');
+            const QString candidate = base.filePath(rel);
+            if (QFileInfo::exists(candidate)) {
+                return QDir::cleanPath(candidate);
+            }
+        }
+    }
+    return QString();
+}
+
+QMap<QString, QString> loadVcpkgInstalledVersions() {
+    static QMap<QString, QString> cache;
+    static bool ready = false;
+    if (ready) {
+        return cache;
+    }
+    ready = true;
+
+    QStringList statusFiles;
+    auto addStatusFile = [&statusFiles](const QString &path) {
+        const QFileInfo info(path);
+        if (!info.exists() || !info.isFile()) {
+            return;
+        }
+        const QString abs = info.canonicalFilePath().isEmpty() ? info.absoluteFilePath() : info.canonicalFilePath();
+        if (!statusFiles.contains(abs, Qt::CaseInsensitive)) {
+            statusFiles.push_back(abs);
+        }
+    };
+
+    for (const QString &projectRoot : dependencyProjectRoots()) {
+        addStatusFile(QDir(projectRoot).filePath(QStringLiteral(".vcpkg/installed/vcpkg/status")));
+    }
+    for (const QString &vcpkgRoot : dependencyVcpkgRoots()) {
+        addStatusFile(QDir(vcpkgRoot).filePath(QStringLiteral("installed/vcpkg/status")));
+    }
+
+    static const QRegularExpression splitRe(QStringLiteral("\\r?\\n\\r?\\n"));
+    for (const QString &statusPath : statusFiles) {
+        const QString content = readTextFile(statusPath);
+        if (content.trimmed().isEmpty()) {
+            continue;
+        }
+        const QStringList blocks = content.split(splitRe, Qt::SkipEmptyParts);
+        for (const QString &block : blocks) {
+            QString packageName;
+            QString featureName;
+            QString versionValue;
+            QString statusValue;
+            const QStringList lines = block.split(QRegularExpression(QStringLiteral("\\r?\\n")), Qt::SkipEmptyParts);
+            for (const QString &line : lines) {
+                if (line.startsWith(QStringLiteral("Package: "), Qt::CaseInsensitive)) {
+                    packageName = line.section(':', 1).trimmed().toLower();
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("Feature: "), Qt::CaseInsensitive)) {
+                    featureName = line.section(':', 1).trimmed().toLower();
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("Version: "), Qt::CaseInsensitive)) {
+                    versionValue = line.section(':', 1).trimmed();
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("Status: "), Qt::CaseInsensitive)) {
+                    statusValue = line.section(':', 1).trimmed().toLower();
+                    continue;
+                }
+            }
+            if (packageName.isEmpty()) {
+                continue;
+            }
+            if (!(featureName.isEmpty() || featureName == QStringLiteral("core"))) {
+                continue;
+            }
+            if (!statusValue.contains(QStringLiteral("install ok installed"))) {
+                continue;
+            }
+            const QString normalizedVersion = normalizeVersionText(versionValue);
+            if (!normalizedVersion.isEmpty() && !cache.contains(packageName)) {
+                cache.insert(packageName, normalizedVersion);
+            }
+        }
+    }
+    return cache;
+}
+
+QString vcpkgInstalledVersion(const QStringList &packageNames) {
+    if (packageNames.isEmpty()) {
+        return QString();
+    }
+    const QMap<QString, QString> versions = loadVcpkgInstalledVersions();
+    for (const QString &name : packageNames) {
+        const QString key = name.trimmed().toLower();
+        if (key.isEmpty()) {
+            continue;
+        }
+        const QString value = versions.value(key).trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+    return QString();
+}
+
+QString detectEigenVersion() {
+    const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("eigen3")});
+    if (!vcpkgVersion.isEmpty()) {
+        return vcpkgVersion;
+    }
+    const QString header = findHeaderPath({
+        QStringLiteral("eigen3/Eigen/src/Core/util/Macros.h"),
+        QStringLiteral("Eigen/src/Core/util/Macros.h"),
+    });
+    if (header.isEmpty()) {
+        return QString();
+    }
+    const QString text = readTextFile(header);
+    bool okWorld = false;
+    bool okMajor = false;
+    bool okMinor = false;
+    const int world = extractMacroInt(text, QStringLiteral("EIGEN_WORLD_VERSION"), &okWorld);
+    const int major = extractMacroInt(text, QStringLiteral("EIGEN_MAJOR_VERSION"), &okMajor);
+    const int minor = extractMacroInt(text, QStringLiteral("EIGEN_MINOR_VERSION"), &okMinor);
+    if (okWorld && okMajor && okMinor) {
+        return QStringLiteral("%1.%2.%3").arg(world).arg(major).arg(minor);
+    }
+    return QStringLiteral("Installed");
+}
+
+QString detectXtensorVersion() {
+    const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("xtensor")});
+    if (!vcpkgVersion.isEmpty()) {
+        return vcpkgVersion;
+    }
+    const QString header = findHeaderPath({
+        QStringLiteral("xtensor/core/xtensor_config.hpp"),
+        QStringLiteral("xtensor/xtensor_config.hpp"),
+    });
+    if (header.isEmpty()) {
+        return QString();
+    }
+    const QString text = readTextFile(header);
+    bool okMajor = false;
+    bool okMinor = false;
+    bool okPatch = false;
+    const int major = extractMacroInt(text, QStringLiteral("XTENSOR_VERSION_MAJOR"), &okMajor);
+    const int minor = extractMacroInt(text, QStringLiteral("XTENSOR_VERSION_MINOR"), &okMinor);
+    const int patch = extractMacroInt(text, QStringLiteral("XTENSOR_VERSION_PATCH"), &okPatch);
+    if (okMajor && okMinor && okPatch) {
+        return QStringLiteral("%1.%2.%3").arg(major).arg(minor).arg(patch);
+    }
+    const QString macroVersion = extractMacroString(text, QStringLiteral("XTENSOR_VERSION"));
+    return macroVersion.isEmpty() ? QStringLiteral("Installed") : macroVersion;
+}
+
+QString detectTaLibVersion() {
+    const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("talib"), QStringLiteral("ta-lib")});
+    if (!vcpkgVersion.isEmpty()) {
+        return vcpkgVersion;
+    }
+    const QString header = findHeaderPath({
+        QStringLiteral("ta-lib/ta_defs.h"),
+        QStringLiteral("ta_defs.h"),
+    });
+    if (header.isEmpty()) {
+        return QString();
+    }
+    const QString text = readTextFile(header);
+    const QString macroString = extractMacroString(text, QStringLiteral("TA_LIB_VERSION_STR"));
+    if (!macroString.isEmpty()) {
+        return macroString;
+    }
+    bool okMajor = false;
+    bool okMinor = false;
+    bool okPatch = false;
+    const int major = extractMacroInt(text, QStringLiteral("TA_LIB_VERSION_MAJOR"), &okMajor);
+    const int minor = extractMacroInt(text, QStringLiteral("TA_LIB_VERSION_MINOR"), &okMinor);
+    const int patch = extractMacroInt(text, QStringLiteral("TA_LIB_VERSION_PATCH"), &okPatch);
+    if (okMajor && okMinor && okPatch) {
+        return QStringLiteral("%1.%2.%3").arg(major).arg(minor).arg(patch);
+    }
+    return QStringLiteral("Installed");
+}
+
+QString detectCprVersion() {
+    const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("cpr")});
+    if (!vcpkgVersion.isEmpty()) {
+        return vcpkgVersion;
+    }
+    const QString header = findHeaderPath({QStringLiteral("cpr/cprver.h")});
+    if (header.isEmpty()) {
+        return QString();
+    }
+    const QString text = readTextFile(header);
+    const QString macroVersion = extractMacroString(text, QStringLiteral("CPR_VERSION"));
+    if (!macroVersion.isEmpty()) {
+        return macroVersion;
+    }
+    bool okMajor = false;
+    bool okMinor = false;
+    bool okPatch = false;
+    const int major = extractMacroInt(text, QStringLiteral("CPR_VERSION_MAJOR"), &okMajor);
+    const int minor = extractMacroInt(text, QStringLiteral("CPR_VERSION_MINOR"), &okMinor);
+    const int patch = extractMacroInt(text, QStringLiteral("CPR_VERSION_PATCH"), &okPatch);
+    if (okMajor && okMinor && okPatch) {
+        return QStringLiteral("%1.%2.%3").arg(major).arg(minor).arg(patch);
+    }
+    return QStringLiteral("Installed");
+}
+
+QString detectLibcurlVersionFromCli() {
+    const QString executable = QStandardPaths::findExecutable(QStringLiteral("curl"));
+    if (executable.isEmpty()) {
+        return QString();
+    }
+    QProcess process;
+    process.start(executable, {QStringLiteral("--version")});
+    if (!process.waitForStarted(1200)) {
+        return QString();
+    }
+    process.waitForFinished(2000);
+    const QString output = QString::fromUtf8(process.readAllStandardOutput()) + QString::fromUtf8(process.readAllStandardError());
+    static const QRegularExpression libcurlRe(QStringLiteral("libcurl/([0-9]+(?:\\.[0-9]+){1,3})"));
+    static const QRegularExpression curlRe(QStringLiteral("\\bcurl\\s+([0-9]+(?:\\.[0-9]+){1,3})"));
+    QRegularExpressionMatch match = libcurlRe.match(output);
+    if (match.hasMatch()) {
+        return normalizeVersionText(match.captured(1));
+    }
+    match = curlRe.match(output);
+    if (match.hasMatch()) {
+        return normalizeVersionText(match.captured(1));
+    }
+    return QString();
+}
+
+QString detectLibcurlVersion() {
+    const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("curl"), QStringLiteral("libcurl")});
+    if (!vcpkgVersion.isEmpty()) {
+        return vcpkgVersion;
+    }
+    const QString header = findHeaderPath({QStringLiteral("curl/curlver.h")});
+    if (!header.isEmpty()) {
+        const QString macroVersion = extractMacroString(readTextFile(header), QStringLiteral("LIBCURL_VERSION"));
+        if (!macroVersion.isEmpty()) {
+            return macroVersion;
+        }
+        return QStringLiteral("Installed");
+    }
+    return detectLibcurlVersionFromCli();
+}
+
+QString installedOrMissing(const QString &value) {
+    const QString normalized = normalizeVersionText(value);
+    if (!normalized.isEmpty()) {
+        return normalized;
+    }
+    return QStringLiteral("Not installed");
+}
+
 QString formatDuration(qint64 seconds) {
     const qint64 mins = seconds / 60;
     const qint64 hrs = mins / 60;
@@ -302,6 +819,8 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       backtestTab_(nullptr),
       dashboardThemeCombo_(nullptr),
       dashboardPage_(nullptr),
+      dashboardExchangeCombo_(nullptr),
+      dashboardIndicatorSourceCombo_(nullptr),
       codePage_(nullptr),
       chartMarketCombo_(nullptr),
       chartSymbolCombo_(nullptr),
@@ -328,7 +847,7 @@ BacktestWindow::BacktestWindow(QWidget *parent)
     tabs_->addTab(createPositionsTab(), "Positions");
     backtestTab_ = createBacktestTab();
     tabs_->addTab(backtestTab_, "Backtest");
-    tabs_->addTab(createCodeTab(), "Code Languages And Exchanges");
+    tabs_->addTab(createCodeTab(), "Code Languages");
     tabs_->setCurrentWidget(backtestTab_);
 
     rootLayout->addWidget(tabs_);
@@ -590,6 +1109,17 @@ void BacktestWindow::refreshDashboardBalance() {
         resetButton();
         return;
     }
+
+    const QString selectedExchange = selectedDashboardExchange(dashboardExchangeCombo_);
+    if (!exchangeUsesBinanceApi(selectedExchange)) {
+        if (dashboardBalanceLabel_) {
+            dashboardBalanceLabel_->setText(QString("%1 balance API coming soon").arg(selectedExchange));
+            dashboardBalanceLabel_->setStyleSheet("color: #f59e0b; font-weight: 700;");
+        }
+        resetButton();
+        return;
+    }
+
     const QString accountType = dashboardAccountTypeCombo_ ? dashboardAccountTypeCombo_->currentText() : "Futures";
     const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : "Live";
 
@@ -643,12 +1173,50 @@ void BacktestWindow::refreshDashboardSymbols() {
         return;
     }
 
+    QSet<QString> previousSelections;
+    if (dashboardSymbolList_) {
+        for (auto *item : dashboardSymbolList_->selectedItems()) {
+            previousSelections.insert(item->text());
+        }
+    }
+    dashboardSymbolList_->clear();
+
+    auto applySymbols = [this, &previousSelections](const QStringList &symbols) {
+        if (!dashboardSymbolList_) {
+            return;
+        }
+        dashboardSymbolList_->clear();
+        dashboardSymbolList_->addItems(symbols);
+
+        bool anySelected = false;
+        for (int i = 0; i < dashboardSymbolList_->count(); ++i) {
+            auto *item = dashboardSymbolList_->item(i);
+            if (previousSelections.contains(item->text())) {
+                item->setSelected(true);
+                anySelected = true;
+            }
+        }
+        if (!anySelected && dashboardSymbolList_->count() > 0) {
+            dashboardSymbolList_->item(0)->setSelected(true);
+        }
+    };
+
     const QString accountType = dashboardAccountTypeCombo_ ? dashboardAccountTypeCombo_->currentText() : "Futures";
     const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : "Live";
     const QString accountNorm = accountType.trimmed().toLower();
     const QString modeNorm = mode.trimmed().toLower();
     const bool isFutures = accountNorm.startsWith("fut");
     const bool isTestnet = modeNorm.startsWith("paper") || modeNorm.startsWith("test");
+    const QString selectedExchange = selectedDashboardExchange(dashboardExchangeCombo_);
+
+    if (!exchangeUsesBinanceApi(selectedExchange)) {
+        const QStringList fallbackSymbols = placeholderSymbolsForExchange(selectedExchange, isFutures);
+        applySymbols(fallbackSymbols);
+        updateStatusMessage(
+            QString("%1 API symbol sync is coming soon. Showing placeholder symbols.").arg(selectedExchange));
+        resetButton();
+        return;
+    }
 
     const auto result = BinanceRestClient::fetchUsdtSymbols(isFutures, isTestnet, 10000);
     if (!result.ok) {
@@ -657,28 +1225,7 @@ void BacktestWindow::refreshDashboardSymbols() {
         return;
     }
 
-    QSet<QString> previousSelections;
-    if (dashboardSymbolList_) {
-        for (auto *item : dashboardSymbolList_->selectedItems()) {
-            previousSelections.insert(item->text());
-        }
-        dashboardSymbolList_->clear();
-    }
-
-    dashboardSymbolList_->addItems(result.symbols);
-
-    // Restore previous selections if still present; otherwise select first to hint usability.
-    bool anySelected = false;
-    for (int i = 0; i < dashboardSymbolList_->count(); ++i) {
-        auto *item = dashboardSymbolList_->item(i);
-        if (previousSelections.contains(item->text())) {
-            item->setSelected(true);
-            anySelected = true;
-        }
-    }
-    if (!anySelected && dashboardSymbolList_->count() > 0) {
-        dashboardSymbolList_->item(0)->setSelected(true);
-    }
+    applySymbols(result.symbols);
 
     resetButton();
 }
@@ -692,6 +1239,8 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardRefreshBtn_ = nullptr;
     dashboardAccountTypeCombo_ = nullptr;
     dashboardModeCombo_ = nullptr;
+    dashboardExchangeCombo_ = nullptr;
+    dashboardIndicatorSourceCombo_ = nullptr;
     dashboardSymbolList_ = nullptr;
     dashboardIntervalList_ = nullptr;
     dashboardRefreshSymbolsBtn_ = nullptr;
@@ -714,6 +1263,21 @@ QWidget *BacktestWindow::createDashboardTab() {
     auto *root = new QVBoxLayout(content);
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(12);
+
+    const QStringList dashboardIndicatorSources = {
+        "Binance spot",
+        "Binance futures",
+        "TradingView",
+        "Bybit",
+        "Coinbase",
+        "OKX",
+        "Gate",
+        "Bitget",
+        "Mexc",
+        "Kucoin",
+        "HTX",
+        "Kraken",
+    };
 
     auto *accountBox = new QGroupBox("Account & Status", page);
     auto *accountGrid = new QGridLayout(accountBox);
@@ -813,8 +1377,10 @@ QWidget *BacktestWindow::createDashboardTab() {
 
     col = 0;
     auto *indicatorSourceCombo = new QComboBox(accountBox);
-    indicatorSourceCombo->addItems({"Binance futures", "Binance spot", "Testnet futures"});
+    indicatorSourceCombo->addItems(dashboardIndicatorSources);
+    indicatorSourceCombo->setCurrentText("Binance futures");
     indicatorSourceCombo->setMinimumWidth(180);
+    dashboardIndicatorSourceCombo_ = indicatorSourceCombo;
     addPair(3, col, "Indicator Source:", indicatorSourceCombo, 2);
 
     auto *orderTypeCombo = new QComboBox(accountBox);
@@ -830,29 +1396,50 @@ QWidget *BacktestWindow::createDashboardTab() {
     }
     accountGrid->setColumnStretch(13, 2);
 
+    auto *exchangeBox = new QGroupBox("Exchange", page);
+    auto *exchangeLayout = new QVBoxLayout(exchangeBox);
+    exchangeLayout->setSpacing(6);
+    exchangeLayout->setContentsMargins(12, 10, 12, 10);
+    exchangeLayout->addWidget(new QLabel("Select exchange", exchangeBox));
+    auto *exchangeCombo = new QComboBox(exchangeBox);
+    dashboardExchangeCombo_ = exchangeCombo;
+    exchangeLayout->addWidget(exchangeCombo);
+    struct ExchangeOption {
+        QString title;
+        QString badge;
+        bool disabled;
+    };
+    const QVector<ExchangeOption> exchangeOptions = {
+        {"Binance", "", false},
+        {"Bybit", "coming soon", true},
+        {"OKX", "coming soon", true},
+        {"Gate", "coming soon", true},
+        {"Bitget", "coming soon", true},
+        {"MEXC", "coming soon", true},
+        {"KuCoin", "coming soon", true},
+    };
+    for (const auto &opt : exchangeOptions) {
+        QString itemText = opt.title;
+        if (!opt.badge.isEmpty()) {
+            itemText += QString(" (%1)").arg(opt.badge);
+        }
+        exchangeCombo->addItem(itemText, opt.title);
+        const int idx = exchangeCombo->count() - 1;
+        if (opt.disabled) {
+            if (auto *model = qobject_cast<QStandardItemModel *>(exchangeCombo->model())) {
+                if (auto *item = model->item(idx)) {
+                    item->setFlags(item->flags() & ~Qt::ItemFlag::ItemIsEnabled);
+                    item->setForeground(QColor("#6b7280"));
+                }
+            }
+        }
+    }
+    root->addWidget(exchangeBox);
+
     auto *marketsBox = new QGroupBox("Markets / Intervals", page);
     auto *marketsLayout = new QVBoxLayout(marketsBox);
     marketsLayout->setSpacing(8);
     marketsLayout->setContentsMargins(12, 12, 12, 12);
-
-    auto *indicatorRow = new QHBoxLayout();
-    indicatorRow->setSpacing(10);
-    indicatorRow->addWidget(new QLabel("Indicator Source:", marketsBox));
-    auto *indicatorSource = new QComboBox(marketsBox);
-    indicatorSource->addItems({"Binance futures", "Binance spot", "Combined watchlist"});
-    indicatorRow->addWidget(indicatorSource);
-    indicatorRow->addSpacing(8);
-    indicatorRow->addWidget(new QLabel("TIF:", marketsBox));
-    auto *tifCombo = new QComboBox(marketsBox);
-    tifCombo->addItems({"GTC", "IOC", "FOK"});
-    indicatorRow->addWidget(tifCombo);
-    indicatorRow->addSpacing(8);
-    indicatorRow->addWidget(new QLabel("Expiry:", marketsBox));
-    auto *expiryTif = new QComboBox(marketsBox);
-    expiryTif->addItems({"30 min (GTD)", "1h (GTD)", "4h (GTD)", "GTC"});
-    indicatorRow->addWidget(expiryTif);
-    indicatorRow->addStretch();
-    marketsLayout->addLayout(indicatorRow);
 
     auto *listsGrid = new QGridLayout();
     listsGrid->setHorizontalSpacing(12);
@@ -893,6 +1480,87 @@ QWidget *BacktestWindow::createDashboardTab() {
     marketsHint->setStyleSheet("color: #94a3b8; font-size: 12px;");
     marketsLayout->addWidget(marketsHint);
     root->addWidget(marketsBox);
+
+    auto setComboTextIfPresent = [](QComboBox *combo, const QString &text) -> bool {
+        if (!combo || text.trimmed().isEmpty()) {
+            return false;
+        }
+        int idx = combo->findText(text, Qt::MatchFixedString);
+        if (idx < 0) {
+            idx = combo->findText(text, Qt::MatchContains);
+        }
+        if (idx < 0) {
+            return false;
+        }
+        combo->setCurrentIndex(idx);
+        return true;
+    };
+
+    auto syncIndicatorSourceCombos = [this, setComboTextIfPresent](const QString &text, QComboBox *origin) {
+        if (dashboardIndicatorSourceCombo_ && dashboardIndicatorSourceCombo_ != origin) {
+            QSignalBlocker blocker(dashboardIndicatorSourceCombo_);
+            setComboTextIfPresent(dashboardIndicatorSourceCombo_, text);
+        }
+    };
+
+    auto syncExchangeFromIndicatorSource = [this](const QString &sourceText) {
+        if (!dashboardExchangeCombo_) {
+            return;
+        }
+        const QString mappedExchange = exchangeFromIndicatorSource(sourceText);
+        if (mappedExchange.isEmpty()) {
+            return;
+        }
+        int idx = dashboardExchangeCombo_->findData(mappedExchange);
+        if (idx < 0) {
+            idx = dashboardExchangeCombo_->findText(mappedExchange, Qt::MatchFixedString);
+        }
+        if (idx < 0 || idx == dashboardExchangeCombo_->currentIndex()) {
+            return;
+        }
+        {
+            QSignalBlocker blocker(dashboardExchangeCombo_);
+            dashboardExchangeCombo_->setCurrentIndex(idx);
+        }
+        refreshDashboardSymbols();
+    };
+
+    auto syncIndicatorSourceFromExchange = [this, setComboTextIfPresent](const QString &exchangeText) {
+        const QString preferred = preferredIndicatorSourceForExchange(
+            exchangeText,
+            dashboardIndicatorSourceCombo_ ? dashboardIndicatorSourceCombo_->currentText() : QString());
+        if (preferred.trimmed().isEmpty()) {
+            return;
+        }
+        if (dashboardIndicatorSourceCombo_) {
+            QSignalBlocker blocker(dashboardIndicatorSourceCombo_);
+            setComboTextIfPresent(dashboardIndicatorSourceCombo_, preferred);
+        }
+    };
+
+    if (dashboardExchangeCombo_) {
+        int binanceIdx = dashboardExchangeCombo_->findData("Binance");
+        if (binanceIdx < 0) {
+            binanceIdx = dashboardExchangeCombo_->findText("Binance", Qt::MatchFixedString);
+        }
+        if (binanceIdx >= 0) {
+            dashboardExchangeCombo_->setCurrentIndex(binanceIdx);
+        }
+        connect(dashboardExchangeCombo_, &QComboBox::currentTextChanged, this, [this, syncIndicatorSourceFromExchange](const QString &text) {
+            syncIndicatorSourceFromExchange(text);
+            refreshDashboardSymbols();
+        });
+    }
+
+    if (dashboardIndicatorSourceCombo_) {
+        connect(dashboardIndicatorSourceCombo_, &QComboBox::currentTextChanged, this, [syncIndicatorSourceCombos, syncExchangeFromIndicatorSource, this](const QString &text) {
+            syncIndicatorSourceCombos(text, dashboardIndicatorSourceCombo_);
+            syncExchangeFromIndicatorSource(text);
+        });
+    }
+    syncIndicatorSourceCombos(
+        dashboardIndicatorSourceCombo_ ? dashboardIndicatorSourceCombo_->currentText() : QStringLiteral("Binance futures"),
+        dashboardIndicatorSourceCombo_);
 
     connect(customButton, &QPushButton::clicked, this, [customIntervalEdit, dashboardIntervalList]() {
         const auto parts = customIntervalEdit->text().split(',', Qt::SkipEmptyParts);
@@ -1706,13 +2374,12 @@ QWidget *BacktestWindow::createCodeTab() {
     container->setStyleSheet(surfaceStyle);
     scroll->setStyleSheet(surfaceStyle);
 
-    auto *heading = new QLabel("Code Languages And Exchanges", container);
+    auto *heading = new QLabel("Code Languages", container);
     heading->setStyleSheet(QString("font-size: 20px; font-weight: 700; color: %1;").arg(textColor));
     layout->addWidget(heading);
 
     auto *sub = new QLabel(
-        "Select your preferred code language, crypto exchange, and forex broker. Folders for each selection are created "
-        "automatically to keep related assets organized.",
+        "Select your preferred code language. Folders for each language are created automatically to keep related assets organized.",
         container);
     sub->setWordWrap(true);
     sub->setStyleSheet(QString("color: %1;").arg(mutedColor));
@@ -1813,16 +2480,6 @@ QWidget *BacktestWindow::createCodeTab() {
                 makeCard("Rust", "Memory safe - coming soon", "#1f2937", "Coming Soon", "#1f2937", true),
                 makeCard("C", "Low-level power - coming soon", "#1f2937", "Coming Soon", "#1f2937", true)});
 
-    addSection("Choose your market",
-               {makeCard("Crypto Exchange", "Binance, Bybit, KuCoin", "#10b981"),
-                makeCard("Forex Exchange", "OANDA, FXCM, MetaTrader - coming soon", "#1f2937", "Coming Soon",
-                         "#1f2937", true)});
-
-    addSection("Crypto exchanges",
-               {makeCard("Binance", "Advanced desktop bot ready to launch", "#f59e0b"),
-                makeCard("Bybit", "Derivatives-focused - coming soon", "#1f2937", "Coming Soon", "#1f2937", true),
-                makeCard("OKX", "Options + spot - coming soon", "#1f2937", "Coming Soon", "#1f2937", true)});
-
     auto *envTitle = new QLabel("Environment Versions", container);
     envTitle->setStyleSheet(QString("font-size: 14px; font-weight: 700; color: %1;").arg(textColor));
     layout->addWidget(envTitle);
@@ -1873,21 +2530,49 @@ QWidget *BacktestWindow::createCodeTab() {
     }
 
     if (rows.isEmpty()) {
+        const QDir appDir(QCoreApplication::applicationDirPath());
+        const bool hasQtCoreDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Core.dll")))
+            || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Cored.dll")));
+        const bool hasQtNetworkDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Network.dll")))
+            || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Networkd.dll")));
+        const bool hasQtWebSocketsDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSockets.dll")))
+            || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSocketsd.dll")));
+        const bool wsReady = (HAS_QT_WEBSOCKETS != 0) && hasQtWebSocketsDll;
+
+        const QString qtRuntimeVersion = QString::fromLatin1(QT_VERSION_STR);
+        const QString qtInstalled = hasQtCoreDll ? qtRuntimeVersion : QStringLiteral("Not installed");
+        const QString qtNetworkInstalled = hasQtNetworkDll ? qtRuntimeVersion : QStringLiteral("Not installed");
+        const QString qtWsInstalled = wsReady ? qtRuntimeVersion : QStringLiteral("Not installed");
+
+        const QString eigenInstalled = installedOrMissing(detectEigenVersion());
+        const QString xtensorInstalled = installedOrMissing(detectXtensorVersion());
+        const QString talibInstalled = installedOrMissing(detectTaLibVersion());
+        const QString libcurlInstalled = installedOrMissing(detectLibcurlVersion());
+        const QString cprInstalled = installedOrMissing(detectCprVersion());
+
+        const auto latestOrUnknown = [](const QString &installed) {
+            return installed.compare(QStringLiteral("Not installed"), Qt::CaseInsensitive) == 0
+                ? QStringLiteral("Unknown")
+                : installed;
+        };
+
         rows = {
-            {QStringLiteral("Qt6 (C++)"), QString::fromLatin1(QT_VERSION_STR), QString::fromLatin1(QT_VERSION_STR)},
-            {QStringLiteral("Qt6 Network (REST)"), QString::fromLatin1(QT_VERSION_STR), QString::fromLatin1(QT_VERSION_STR)},
+            {QStringLiteral("Qt6 (C++)"), qtInstalled, latestOrUnknown(qtInstalled)},
+            {QStringLiteral("Qt6 Network (REST)"), qtNetworkInstalled, latestOrUnknown(qtNetworkInstalled)},
             {QStringLiteral("Qt6 WebSockets"),
-             HAS_QT_WEBSOCKETS ? QString::fromLatin1(QT_VERSION_STR) : QStringLiteral("Not installed"),
-             HAS_QT_WEBSOCKETS ? QString::fromLatin1(QT_VERSION_STR) : QStringLiteral("Install Qt WebSockets")},
-            {QStringLiteral("Binance REST client (native)"), QStringLiteral("Active"), QStringLiteral("Active")},
+             qtWsInstalled,
+             wsReady ? qtRuntimeVersion : QStringLiteral("Install Qt WebSockets")},
+            {QStringLiteral("Binance REST client (native)"),
+             hasQtNetworkDll ? QStringLiteral("Active") : QStringLiteral("Inactive"),
+             hasQtNetworkDll ? QStringLiteral("Active") : QStringLiteral("Needs Qt Network")},
             {QStringLiteral("Binance WebSocket client (native)"),
-             HAS_QT_WEBSOCKETS ? QStringLiteral("Active") : QStringLiteral("Inactive"),
-             HAS_QT_WEBSOCKETS ? QStringLiteral("Active") : QStringLiteral("Needs Qt WebSockets")},
-            {QStringLiteral("Eigen"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
-            {QStringLiteral("xtensor"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
-            {QStringLiteral("TA-Lib"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
-            {QStringLiteral("libcurl"), QStringLiteral("Not installed"), QStringLiteral("Unknown")},
-            {QStringLiteral("cpr"), QStringLiteral("Not installed"), QStringLiteral("Unknown")}};
+             wsReady ? QStringLiteral("Active") : QStringLiteral("Inactive"),
+             wsReady ? QStringLiteral("Active") : QStringLiteral("Needs Qt WebSockets")},
+            {QStringLiteral("Eigen"), eigenInstalled, latestOrUnknown(eigenInstalled)},
+            {QStringLiteral("xtensor"), xtensorInstalled, latestOrUnknown(xtensorInstalled)},
+            {QStringLiteral("TA-Lib"), talibInstalled, latestOrUnknown(talibInstalled)},
+            {QStringLiteral("libcurl"), libcurlInstalled, latestOrUnknown(libcurlInstalled)},
+            {QStringLiteral("cpr"), cprInstalled, latestOrUnknown(cprInstalled)}};
     }
 
     table->setRowCount(rows.size());

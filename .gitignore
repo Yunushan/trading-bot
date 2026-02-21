@@ -3,8 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 build/
+dist/
+dist_enduser/
 .vscode/
 aqtinstall.log
 CMakeFiles/
 .venv/
 .trading_bot_allocations.json
+/Trading-Bot-*.exe
