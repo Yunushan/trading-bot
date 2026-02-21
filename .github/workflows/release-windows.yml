@@ -1,0 +1,99 @@
+name: Release Windows Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            Languages/Python/requirements.txt
+
+      - name: Set up MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.2"
+          host: "windows"
+          target: "desktop"
+          arch: "win64_msvc2022_64"
+          dir: "C:/Qt"
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install -r Languages/Python/requirements.txt
+
+      - name: Build Python EXE
+        working-directory: Languages/Python
+        run: |
+          python -m PyInstaller main.py --name Trading-Bot-Python --onefile --noconfirm
+
+      - name: Configure C++ build
+        run: |
+          cmake -S "Languages/C++" -B "build/binance_cpp" -DCMAKE_BUILD_TYPE=Release -DTB_REQUIRE_QT_WEBENGINE=OFF
+
+      - name: Build C++ EXE
+        run: |
+          cmake --build "build/binance_cpp" --config Release --parallel
+
+      - name: Package release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item "Languages/Python/dist/Trading-Bot-Python.exe" "release/Trading-Bot-Python.exe"
+
+          $cppExe = "build/binance_cpp/Release/binance_backtest_tab.exe"
+          if (!(Test-Path $cppExe)) {
+            $cppExe = "build/binance_cpp/binance_backtest_tab.exe"
+          }
+          if (!(Test-Path $cppExe)) {
+            throw "C++ executable not found after build."
+          }
+
+          $cppBundleDir = "release/Trading-Bot-C++"
+          New-Item -ItemType Directory -Force -Path $cppBundleDir | Out-Null
+          Copy-Item $cppExe (Join-Path $cppBundleDir "Trading-Bot-C++.exe")
+
+          $windeployqt = Get-Command windeployqt -ErrorAction SilentlyContinue
+          if (-not $windeployqt) {
+            throw "windeployqt not found on PATH."
+          }
+          & $windeployqt.Source --release --compiler-runtime (Join-Path $cppBundleDir "Trading-Bot-C++.exe")
+
+          Compress-Archive -Path "$cppBundleDir/*" -DestinationPath "release/Trading-Bot-C++.zip" -Force
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: |
+            release/Trading-Bot-Python.exe
+            release/Trading-Bot-C++.zip
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/Trading-Bot-Python.exe
+            release/Trading-Bot-C++.zip

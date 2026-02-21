@@ -29,9 +29,10 @@ This repository packages a cross‑platform trading workstation that ships with 
 10. [Backtest tab](#backtest-tab)
 11. [Code Languages & Exchanges tab](#code-languages--exchanges-tab)
 12. [Utilities and helper scripts](#utilities-and-helper-scripts)
-13. [Troubleshooting & FAQ](#troubleshooting--faq)
-14. [Safety notes](#safety-notes)
-15. [License](#license)
+13. [Release checklist (GitHub Releases)](#release-checklist-github-releases)
+14. [Troubleshooting & FAQ](#troubleshooting--faq)
+15. [Safety notes](#safety-notes)
+16. [License](#license)
 
 ---
 
@@ -317,6 +318,30 @@ It's a documentation hub as well-each card includes a subtitle describing the st
 
 ---
 
+## Release checklist (GitHub Releases)
+
+This repo includes an automated release workflow at `.github/workflows/release-windows.yml`.
+When you push a tag that starts with `v` (for example `v1.0.0`), GitHub Actions will:
+
+- Build `Trading-Bot-Python.exe` with PyInstaller.
+- Build the C++ app and package Qt runtime files with `windeployqt`.
+- Publish both files to a GitHub Release for that tag.
+
+Release steps:
+
+1. Commit and push your source changes.
+2. Create and push a version tag:
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+3. Open the Actions tab and wait for `Release Windows Binaries` to finish.
+4. Check the new GitHub Release assets:
+   - `Trading-Bot-Python.exe`
+   - `Trading-Bot-C++.zip`
+
+---
+
 ## Troubleshooting & FAQ
 
 **The GUI won’t start / missing Qt platform plugin**
@@ -354,4 +379,3 @@ It's a documentation hub as well-each card includes a subtitle describing the st
 This project is released under the MIT License. See [LICENSE](LICENSE) for the full terms. Use the software at your own risk and comply with all exchange terms of service.
 
 Happy trading and safe experimenting! If you discover issues or have feature ideas, open a GitHub issue or start a discussion so we can continue improving the workspace together.
-*** End Patch
