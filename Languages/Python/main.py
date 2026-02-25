@@ -1097,6 +1097,15 @@ def _resolve_taskbar_icon_path() -> Path | None:
             if ico_path.is_file():
                 return ico_path
             return env_path
+    if getattr(sys, "frozen", False):
+        try:
+            exe_icon = Path(sys.executable).resolve()
+        except Exception:
+            exe_icon = None
+        if exe_icon is not None and exe_icon.is_file():
+            # In bundled mode, prefer the executable icon resource so pinned
+            # taskbar entries don't depend on transient _MEIPASS paths.
+            return exe_icon
     icon_path = _resolve_native_icon_path()
     if icon_path and icon_path.is_file():
         return icon_path

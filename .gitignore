@@ -9,5 +9,7 @@ dist_enduser/
 aqtinstall.log
 CMakeFiles/
 .venv/
+.vcpkg/
+Languages/C++/build-*/
 .trading_bot_allocations.json
 /Trading-Bot-*.exe

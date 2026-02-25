@@ -40,10 +40,27 @@ if (WIN32)
         message(STATUS "Using Qt6_DIR=${Qt6_DIR}")
     endif()
 
+    # Keep optional Qt modules pinned to the same kit as Qt6_DIR to avoid
+    # mixed-kit CMake cache entries (for example Qt 6.10 + stale Qt 6.5 paths).
+    set(_tb_qt6_cmake_root "")
+    if (DEFINED Qt6_DIR AND NOT Qt6_DIR STREQUAL "")
+        get_filename_component(_tb_qt6_cmake_root "${Qt6_DIR}" DIRECTORY)
+        if (EXISTS "${_tb_qt6_cmake_root}")
+            set(QT_ADDITIONAL_PACKAGES_PREFIX_PATH "${_tb_qt6_cmake_root}" CACHE STRING "Qt package search root" FORCE)
+            foreach(_tb_qt_module IN ITEMS Qt6WebEngineWidgets Qt6WebEngineCore Qt6WebChannel Qt6Positioning Qt6WebSockets)
+                if (EXISTS "${_tb_qt6_cmake_root}/${_tb_qt_module}/${_tb_qt_module}Config.cmake")
+                    set(${_tb_qt_module}_DIR "${_tb_qt6_cmake_root}/${_tb_qt_module}" CACHE PATH "${_tb_qt_module} config path" FORCE)
+                endif()
+            endforeach()
+        endif()
+    endif()
+
     if ((NOT DEFINED Vulkan_INCLUDE_DIR)
         OR Vulkan_INCLUDE_DIR STREQUAL ""
         OR Vulkan_INCLUDE_DIR MATCHES "NOTFOUND")
         set(_tb_vulkan_include_candidates
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../.vcpkg/installed/x64-windows/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../build/binance_cpp/vcpkg_installed/x64-windows/include"
             "$ENV{VCPKG_ROOT}/installed/x64-windows/include"
             "$ENV{USERPROFILE}/vcpkg/installed/x64-windows/include"
             "C:/vcpkg/installed/x64-windows/include"

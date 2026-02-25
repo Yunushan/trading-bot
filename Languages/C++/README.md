@@ -12,6 +12,22 @@ This directory contains a standalone Qt Widgets application that recreates the B
 
 ### Building
 
+Optional one-shot dependency setup on Windows:
+
+```powershell
+./Languages/C++/tools/install_cpp_dependencies.ps1
+```
+
+Dependency mode options:
+
+```powershell
+# Reproducible (same versions each run)
+./Languages/C++/tools/install_cpp_dependencies.ps1 -VcpkgMode pinned
+
+# Always update to latest vcpkg baseline before install
+./Languages/C++/tools/install_cpp_dependencies.ps1 -VcpkgMode latest
+```
+
 1. Ensure Qt 6.5+ with Widgets and Network is installed and available in your environment.
 2. Configure and build with CMake:
 

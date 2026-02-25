@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
 
-_ICON_FILENAMES_WINDOWS = ("crypto_forex_logo.png", "crypto_forex_logo.ico")
+_ICON_FILENAMES_WINDOWS = ("crypto_forex_logo.ico", "crypto_forex_logo.png")
 _ICON_FILENAMES_UNIX = ("crypto_forex_logo.png", "crypto_forex_logo.ico")
 _COMMON_FALLBACKS = ("crypto_forex_logo.svg",)
 

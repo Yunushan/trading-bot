@@ -4,6 +4,19 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      vcpkg_mode:
+        description: "C++ dependency mode"
+        type: choice
+        options:
+          - pinned
+          - latest
+        default: pinned
+      vcpkg_ref:
+        description: "vcpkg git ref used when mode=pinned"
+        required: false
+        default: "26283ac5e8a068561a718ce18b169bfad84c7dab"
 
 permissions:
   contents: write
@@ -11,6 +24,12 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/.vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_PINNED_REF: "26283ac5e8a068561a718ce18b169bfad84c7dab"
+      VCPKG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.vcpkg_mode || 'pinned' }}
+      VCPKG_REQUESTED_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.vcpkg_ref || '' }}
 
     steps:
       - name: Checkout repository
@@ -30,11 +49,50 @@ jobs:
       - name: Install Qt 6
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.8.2"
+          version: "6.10.2"
           host: "windows"
           target: "desktop"
           arch: "win64_msvc2022_64"
+          modules: "qtwebengine qtwebsockets qtwebchannel qtpositioning"
           dir: "C:/Qt"
+
+      - name: Install vcpkg and C++ dependencies
+        shell: pwsh
+        run: |
+          if (!(Test-Path "$env:VCPKG_ROOT/.git")) {
+            git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          }
+
+          Push-Location "$env:VCPKG_ROOT"
+          git fetch --tags --force
+
+          if ($env:VCPKG_MODE -eq "latest") {
+            $remoteHead = git symbolic-ref refs/remotes/origin/HEAD
+            $branch = ($remoteHead -replace "^refs/remotes/origin/", "").Trim()
+            if ([string]::IsNullOrWhiteSpace($branch)) {
+              $branch = "master"
+            }
+            git checkout $branch
+            git pull --ff-only origin $branch
+            Write-Host "Using latest vcpkg from branch: $branch"
+          } else {
+            $ref = $env:VCPKG_REQUESTED_REF
+            if ([string]::IsNullOrWhiteSpace($ref)) {
+              $ref = $env:VCPKG_PINNED_REF
+            }
+            git checkout $ref
+            Write-Host "Using pinned vcpkg ref: $ref"
+          }
+          Pop-Location
+
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_ROOT/vcpkg.exe" install `
+            eigen3:$env:VCPKG_DEFAULT_TRIPLET `
+            xtensor:$env:VCPKG_DEFAULT_TRIPLET `
+            talib:$env:VCPKG_DEFAULT_TRIPLET `
+            cpr:$env:VCPKG_DEFAULT_TRIPLET `
+            "curl[tool,ssl]:$env:VCPKG_DEFAULT_TRIPLET" `
+            vulkan-headers:$env:VCPKG_DEFAULT_TRIPLET
 
       - name: Install Python dependencies
         shell: pwsh
@@ -44,13 +102,13 @@ jobs:
           python -m pip install -r Languages/Python/requirements.txt
 
       - name: Build Python EXE
-        working-directory: Languages/Python
+        shell: pwsh
         run: |
-          python -m PyInstaller main.py --name Trading-Bot-Python --onefile --noconfirm
+          ./Languages/Python/tools/build_exe.ps1 -Python python -Name "Trading-Bot-Python" -SkipDependencyInstall
 
       - name: Configure C++ build
         run: |
-          cmake -S "Languages/C++" -B "build/binance_cpp" -DCMAKE_BUILD_TYPE=Release -DTB_REQUIRE_QT_WEBENGINE=OFF
+          cmake -S "Languages/C++" -B "build/binance_cpp" -A x64 -DQt6_DIR="C:/Qt/6.10.2/msvc2022_64/lib/cmake/Qt6" -DTB_REQUIRE_QT_WEBENGINE=ON
 
       - name: Build C++ EXE
         run: |

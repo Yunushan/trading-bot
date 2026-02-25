@@ -1390,7 +1390,17 @@ def _cpp_qt_network_available() -> bool:
 def _cpp_qt_webengine_available() -> bool:
     cache_value = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6WebEngineWidgets_DIR")
     if cache_value and str(cache_value).strip().upper() != "QT6WEBENGINEWIDGETS_DIR-NOTFOUND":
-        return True
+        try:
+            cache_path = Path(str(cache_value)).resolve()
+        except Exception:
+            cache_path = Path(str(cache_value))
+        try:
+            if cache_path.is_file():
+                return True
+            if (cache_path / "Qt6WebEngineWidgetsConfig.cmake").is_file():
+                return True
+        except Exception:
+            pass
     for bin_dir in _discover_cpp_qt_bin_dirs_for_code_tab():
         for exe_name in ("QtWebEngineProcess.exe", "QtWebEngineProcess"):
             try:
@@ -14712,6 +14722,29 @@ def _as_qt6_cmake_dir(path_value: str | Path | None) -> Path | None:
     return None
 
 
+def _qt_bin_dirs_from_prefix(path_value: str | Path | None) -> list[Path]:
+    qt_dir = _as_qt6_cmake_dir(path_value)
+    if qt_dir is None:
+        return []
+    bins: list[Path] = []
+    seen: set[Path] = set()
+    for base in [qt_dir, *qt_dir.parents]:
+        candidate = base / "bin"
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        try:
+            is_dir = resolved.is_dir()
+        except Exception:
+            is_dir = False
+        if not is_dir or resolved in seen:
+            continue
+        seen.add(resolved)
+        bins.append(resolved)
+    return bins
+
+
 def _qt_prefix_has_webengine(path_value: str | Path | None) -> bool:
     qt_dir = _as_qt6_cmake_dir(path_value)
     if qt_dir is None:
@@ -14720,12 +14753,48 @@ def _qt_prefix_has_webengine(path_value: str | Path | None) -> bool:
         qt_dir.parent / "Qt6WebEngineWidgets" / "Qt6WebEngineWidgetsConfig.cmake",
         qt_dir.parent / "Qt6WebEngineCore" / "Qt6WebEngineCoreConfig.cmake",
     ]
+    has_config = False
     for probe in probes:
         try:
             if probe.is_file():
+                has_config = True
+                break
+        except Exception:
+            continue
+    if not has_config:
+        return False
+    for bin_dir in _qt_bin_dirs_from_prefix(path_value):
+        try:
+            if (bin_dir / "QtWebEngineProcess.exe").is_file():
                 return True
         except Exception:
             continue
+        for dll_name in ("Qt6WebEngineCore.dll", "Qt6WebEngineWidgets.dll", "Qt6WebEngineWidgetsd.dll"):
+            try:
+                if (bin_dir / dll_name).is_file():
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _qt_prefix_has_websockets(path_value: str | Path | None) -> bool:
+    qt_dir = _as_qt6_cmake_dir(path_value)
+    if qt_dir is None:
+        return False
+    try:
+        config_ok = (qt_dir.parent / "Qt6WebSockets" / "Qt6WebSocketsConfig.cmake").is_file()
+    except Exception:
+        config_ok = False
+    if not config_ok:
+        return False
+    for bin_dir in _qt_bin_dirs_from_prefix(path_value):
+        for dll_name in ("Qt6WebSockets.dll", "Qt6WebSocketsd.dll"):
+            try:
+                if (bin_dir / dll_name).is_file():
+                    return True
+            except Exception:
+                continue
     return False
 
 
@@ -14828,6 +14897,169 @@ def _discover_cpp_qt_bin_dirs_for_code_tab() -> list[Path]:
     return unique
 
 
+def _create_cpp_launch_progress_dialog(parent: QtWidgets.QWidget | None) -> QtWidgets.QProgressDialog | None:
+    try:
+        dialog = QtWidgets.QProgressDialog("Preparing C++ bot...", "", 0, 0, parent)
+        dialog.setWindowTitle("C++ Launch")
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumDuration(0)
+        dialog.setValue(0)
+        dialog.show()
+        QtWidgets.QApplication.processEvents()
+        return dialog
+    except Exception:
+        return None
+
+
+def _update_cpp_launch_progress(dialog: QtWidgets.QProgressDialog | None, text: str) -> None:
+    if dialog is None:
+        return
+    try:
+        dialog.setLabelText(str(text or "Working..."))
+        dialog.setValue(0)
+        QtWidgets.QApplication.processEvents()
+    except Exception:
+        pass
+
+
+def _is_qt_runtime_path(path_value: str | None) -> bool:
+    value = str(path_value or "").strip().strip('"').strip("'")
+    if not value:
+        return False
+    low = value.lower().replace("/", "\\")
+    if "site-packages\\pyqt6\\qt6\\bin" in low:
+        return True
+    if "\\qt\\" in low and low.endswith("\\bin"):
+        return True
+    return False
+
+
+def _compose_cpp_launch_path(qt_bins: list[Path], base_path: str | None) -> str:
+    preferred: list[str] = []
+    preferred_norm: set[str] = set()
+    for path in qt_bins:
+        try:
+            resolved = str(path.resolve())
+        except Exception:
+            resolved = str(path)
+        normalized = os.path.normcase(os.path.normpath(resolved))
+        if normalized in preferred_norm:
+            continue
+        preferred_norm.add(normalized)
+        preferred.append(resolved)
+
+    merged: list[str] = list(preferred)
+    seen: set[str] = set(preferred_norm)
+    for token in str(base_path or "").split(os.pathsep):
+        part = str(token or "").strip()
+        if not part:
+            continue
+        normalized = os.path.normcase(os.path.normpath(part))
+        if normalized in seen:
+            continue
+        if _is_qt_runtime_path(part) and normalized not in preferred_norm:
+            # Avoid mixing Qt runtimes from unrelated kits/interpreters.
+            continue
+        seen.add(normalized)
+        merged.append(part)
+    return os.pathsep.join(merged)
+
+
+def _find_windeployqt_for_cpp(qt_bins: list[Path] | None = None) -> Path | None:
+    names = ["windeployqt"]
+    if sys.platform == "win32":
+        names.insert(0, "windeployqt.exe")
+
+    for candidate in qt_bins or []:
+        for name in names:
+            path = candidate / name
+            try:
+                if path.is_file():
+                    return path.resolve()
+            except Exception:
+                continue
+
+    for name in names:
+        found = shutil.which(name)
+        if not found:
+            continue
+        try:
+            return Path(found).resolve()
+        except Exception:
+            return Path(found)
+    return None
+
+
+def _cpp_runtime_stamp_path(exe_path: Path) -> Path:
+    return exe_path.parent / ".tb_cpp_runtime.stamp"
+
+
+def _cpp_runtime_bundle_missing(exe_path: Path) -> bool:
+    required_dlls = ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll")
+    for dll_name in required_dlls:
+        try:
+            if not (exe_path.parent / dll_name).is_file():
+                return True
+        except Exception:
+            return True
+    return False
+
+
+def _deploy_cpp_runtime_bundle(
+    exe_path: Path,
+    *,
+    qt_bins: list[Path] | None = None,
+    force: bool = False,
+) -> tuple[bool, str]:
+    if sys.platform != "win32":
+        return True, ""
+    if exe_path is None or not exe_path.is_file():
+        return False, "C++ executable does not exist."
+
+    stamp_path = _cpp_runtime_stamp_path(exe_path)
+    if not force:
+        try:
+            stamp_fresh = stamp_path.is_file() and stamp_path.stat().st_mtime >= exe_path.stat().st_mtime
+        except Exception:
+            stamp_fresh = False
+        if stamp_fresh and not _cpp_runtime_bundle_missing(exe_path):
+            return True, "already-deployed"
+
+    windeployqt = _find_windeployqt_for_cpp(qt_bins)
+    if windeployqt is None:
+        return False, "windeployqt was not found."
+
+    deploy_env = os.environ.copy()
+    deploy_env["PATH"] = _compose_cpp_launch_path(qt_bins or [], deploy_env.get("PATH", ""))
+    deploy_cmd = [
+        str(windeployqt),
+        "--compiler-runtime",
+        "--no-translations",
+        "--force",
+        str(exe_path),
+    ]
+    ok, output = _run_command_capture_hidden(deploy_cmd, cwd=exe_path.parent, env=deploy_env)
+    if ok:
+        try:
+            stamp_path.write_text(str(time.time()), encoding="utf-8")
+        except Exception:
+            pass
+    return ok, output
+
+
+def _format_windows_exit_code(returncode: int | None) -> str:
+    try:
+        value = int(returncode or 0)
+    except Exception:
+        return str(returncode)
+    if value < 0:
+        value = (value + (1 << 32)) & 0xFFFFFFFF
+    return f"{value} (0x{value:08X})"
+
+
 def _run_command_capture_hidden(
     command: list[str],
     *,
@@ -14868,14 +15100,42 @@ def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
         return None, f"Could not create build directory '{CPP_BUILD_ROOT}': {exc}"
 
     prefix_env = _resolve_cpp_qt_prefix_for_code_tab()
-    configure_cmd = ["cmake", "-S", str(CPP_PROJECT_PATH), "-B", str(CPP_BUILD_ROOT)]
-    if prefix_env:
-        configure_cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
-        configure_cmd.append(f"-DQt6_DIR={prefix_env}")
 
-    ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
-    if not ok:
-        # Retry once with a cleaned cache to recover from generator or Qt path mismatch.
+    def _parse_env_bool(name: str) -> bool | None:
+        raw = str(os.environ.get(name, "") or "").strip().lower()
+        if not raw:
+            return None
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return None
+
+    env_require_webengine = _parse_env_bool("TB_REQUIRE_QT_WEBENGINE")
+    if env_require_webengine is None:
+        detected_webengine = _qt_prefix_has_webengine(prefix_env) or _cpp_qt_webengine_available()
+        require_webengine = bool(detected_webengine)
+    else:
+        require_webengine = bool(env_require_webengine)
+
+    def _configure_cmd(require_we: bool) -> list[str]:
+        cmd = ["cmake", "-S", str(CPP_PROJECT_PATH), "-B", str(CPP_BUILD_ROOT)]
+        prefix_has_webengine = _qt_prefix_has_webengine(prefix_env)
+        prefix_has_websockets = _qt_prefix_has_websockets(prefix_env)
+        if prefix_env:
+            cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
+            cmd.append(f"-DQt6_DIR={prefix_env}")
+            # Prevent CMake from pulling optional Qt modules from a different kit.
+            cmd.append(
+                f"-DCMAKE_DISABLE_FIND_PACKAGE_Qt6WebEngineWidgets={'OFF' if prefix_has_webengine else 'ON'}"
+            )
+            cmd.append(
+                f"-DCMAKE_DISABLE_FIND_PACKAGE_Qt6WebSockets={'OFF' if prefix_has_websockets else 'ON'}"
+            )
+        cmd.append(f"-DTB_REQUIRE_QT_WEBENGINE={'ON' if require_we else 'OFF'}")
+        return cmd
+
+    def _clean_configure_state() -> None:
         try:
             (CPP_BUILD_ROOT / "CMakeCache.txt").unlink(missing_ok=True)
         except Exception:
@@ -14884,7 +15144,30 @@ def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
             shutil.rmtree(CPP_BUILD_ROOT / "CMakeFiles", ignore_errors=True)
         except Exception:
             pass
+
+    configure_cmd = _configure_cmd(require_webengine)
+    ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
+    if not ok:
+        # Retry once with a cleaned cache to recover from generator or Qt path mismatch.
+        _clean_configure_state()
         ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
+
+    # Auto fallback when the first configure fails and WebEngine was auto-enabled.
+    # This handles stale cache values (for example mixed Qt kits) and kits without
+    # WebEngine modules.
+    if (
+        not ok
+        and require_webengine
+        and env_require_webengine is None
+    ):
+        fallback_cmd = _configure_cmd(False)
+        _clean_configure_state()
+        ok, output = _run_command_capture_hidden(fallback_cmd, cwd=CPP_PROJECT_PATH)
+        if ok:
+            try:
+                self.log("C++ configure retry succeeded with Qt WebEngine disabled.")
+            except Exception:
+                pass
     if not ok:
         tail = "\n".join([line for line in output.splitlines() if line][-20:])
         return None, f"CMake configure failed.\n{tail}".strip()
@@ -14927,6 +15210,7 @@ def _cpp_dependency_rows_for_launch(self) -> list[dict[str, str]]:
         targets = copy.deepcopy(_CPP_DEPENDENCY_VERSION_TARGETS)
 
     # Reuse already-resolved UI values first so launching the C++ app does not block on fresh network checks.
+    # But never reuse placeholder rows like "Checking...".
     rows_from_ui: list[dict[str, str]] = []
     labels = getattr(self, "_dep_version_labels", None)
     if isinstance(labels, dict) and labels:
@@ -14942,6 +15226,8 @@ def _cpp_dependency_rows_for_launch(self) -> list[dict[str, str]]:
             installed_widget, latest_widget = widgets[0], widgets[1]
             installed = str(installed_widget.text() or "").strip() or "Unknown"
             latest = str(latest_widget.text() or "").strip() or "Unknown"
+            if installed.lower() in {"checking...", "not checked"}:
+                pending = True
             if latest.lower() in {"checking...", "not checked"}:
                 pending = True
             rows_from_ui.append({"name": label, "installed": installed, "latest": latest})
@@ -14951,7 +15237,7 @@ def _cpp_dependency_rows_for_launch(self) -> list[dict[str, str]]:
     try:
         resolved_versions = _collect_dependency_versions(
             targets,
-            include_latest=True,
+            include_latest=False,
             config=config_snapshot,
         )
     except Exception:
@@ -14993,92 +15279,185 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
     except Exception:
         pass
 
-    exe_path = _find_cpp_code_tab_executable()
-    stale_fallback = exe_path if exe_path is not None and exe_path.is_file() else None
-    if exe_path is None or _cpp_executable_is_stale(exe_path):
-        if exe_path is None:
-            self.log("C++ executable not found. Attempting to build it now...")
-        else:
-            self.log("C++ executable is outdated. Rebuilding to apply latest C++ UI changes...")
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
-        try:
-            exe_path, error = _build_cpp_executable_for_code_tab(self)
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-        if exe_path is None:
-            detail = error or "Automatic C++ build failed."
-            if stale_fallback is not None and stale_fallback.is_file():
-                exe_path = stale_fallback
-                self.log(f"C++ rebuild failed, launching existing executable: {detail}")
-            else:
-                self.log(f"C++ launch failed: {detail}")
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "C++ launch failed",
-                    f"Could not start the C++ bot.\n\n{detail}\n\nInstall Qt + CMake and try again.",
-                )
-                return False
-        elif stale_fallback is not None and stale_fallback != exe_path:
+    progress_dialog = _create_cpp_launch_progress_dialog(self)
+
+    def _progress(message: str) -> None:
+        _update_cpp_launch_progress(progress_dialog, message)
+
+    def _poll_early_exit(proc: subprocess.Popen, timeout_s: float = 0.45) -> int | None:
+        deadline = time.time() + max(0.1, float(timeout_s))
+        while time.time() < deadline:
+            code = proc.poll()
+            if code is not None:
+                return code
             try:
-                self.log(f"C++ executable refreshed: {stale_fallback} -> {exe_path}")
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        return None
+
+    try:
+        _progress("Resolving C++ executable...")
+        exe_path = _find_cpp_code_tab_executable()
+        stale_fallback = exe_path if exe_path is not None and exe_path.is_file() else None
+        if exe_path is None or _cpp_executable_is_stale(exe_path):
+            if exe_path is None:
+                self.log("C++ executable not found. Attempting to build it now...")
+            else:
+                self.log("C++ executable is outdated. Rebuilding to apply latest C++ UI changes...")
+            _progress("Compiling C++ bot (this may take a while)...")
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+            try:
+                exe_path, error = _build_cpp_executable_for_code_tab(self)
+            finally:
+                QtWidgets.QApplication.restoreOverrideCursor()
+            if exe_path is None:
+                detail = error or "Automatic C++ build failed."
+                if stale_fallback is not None and stale_fallback.is_file():
+                    exe_path = stale_fallback
+                    self.log(f"C++ rebuild failed, launching existing executable: {detail}")
+                else:
+                    self.log(f"C++ launch failed: {detail}")
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "C++ launch failed",
+                        f"Could not start the C++ bot.\n\n{detail}\n\nInstall Qt + CMake and try again.",
+                    )
+                    return False
+            elif stale_fallback is not None and stale_fallback != exe_path:
+                try:
+                    self.log(f"C++ executable refreshed: {stale_fallback} -> {exe_path}")
+                except Exception:
+                    pass
+
+        _progress("Preparing Qt runtime...")
+        env = os.environ.copy()
+        qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
+        env["PATH"] = _compose_cpp_launch_path(qt_bins, env.get("PATH", ""))
+
+        deploy_ok, deploy_output = _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=False)
+        if not deploy_ok:
+            try:
+                self.log(f"C++ runtime deploy warning: {deploy_output}")
             except Exception:
                 pass
 
-    env = os.environ.copy()
-    qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
-    if qt_bins:
-        env["PATH"] = os.pathsep.join([*(str(path) for path in qt_bins), env.get("PATH", "")])
-    try:
-        dep_rows = _cpp_dependency_rows_for_launch(self)
-        if dep_rows:
-            payload = json.dumps(dep_rows, ensure_ascii=False, separators=(",", ":"))
-            if len(payload) <= 16000:
-                env["TB_CPP_ENV_VERSIONS_JSON"] = payload
-    except Exception:
-        pass
-
-    popen_kwargs: dict[str, object] = {
-        "cwd": str(exe_path.parent),
-        "env": env,
-    }
-    if sys.platform == "win32":
-        # main.py patches subprocess.Popen globally to hide windows.
-        # Override that behavior for the Qt C++ GUI executable.
-        popen_kwargs["creationflags"] = 0
         try:
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 1  # SW_SHOWNORMAL
-            popen_kwargs["startupinfo"] = startupinfo
+            dep_rows = _cpp_dependency_rows_for_launch(self)
+            if dep_rows:
+                payload = json.dumps(dep_rows, ensure_ascii=False, separators=(",", ":"))
+                if len(payload) <= 16000:
+                    env["TB_CPP_ENV_VERSIONS_JSON"] = payload
         except Exception:
             pass
 
-    try:
-        process = subprocess.Popen([str(exe_path)], **popen_kwargs)
-    except Exception as exc:
-        self.log(f"C++ launch failed: {exc}")
-        QtWidgets.QMessageBox.warning(self, "C++ launch failed", str(exc))
-        return False
+        popen_kwargs: dict[str, object] = {
+            "cwd": str(exe_path.parent),
+            "env": env,
+        }
+        if sys.platform == "win32":
+            # main.py patches subprocess.Popen globally to hide windows.
+            # Override that behavior for the Qt C++ GUI executable.
+            popen_kwargs["creationflags"] = 0
+            try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 1  # SW_SHOWNORMAL
+                popen_kwargs["startupinfo"] = startupinfo
+            except Exception:
+                pass
 
-    # If it dies immediately, surface a clear error instead of a silent no-op.
-    try:
-        time.sleep(0.2)
-    except Exception:
-        pass
-    if process.poll() is not None:
-        exit_code = process.returncode
-        self.log(f"C++ launch failed: process exited immediately (code {exit_code}).")
-        QtWidgets.QMessageBox.warning(
-            self,
-            "C++ launch failed",
-            f"C++ bot exited immediately (code {exit_code}).\n"
-            "Check Qt runtime DLL availability and CMake/Qt configuration.",
-        )
-        return False
+        def _spawn_cpp() -> subprocess.Popen:
+            return subprocess.Popen([str(exe_path)], **popen_kwargs)
 
-    self._cpp_code_tab_process = process
-    self.log(f"Launched C++ bot ({trigger}): {exe_path}")
-    return True
+        _progress("Launching C++ bot...")
+        try:
+            process = _spawn_cpp()
+        except Exception as exc:
+            self.log(f"C++ launch failed: {exc}")
+            QtWidgets.QMessageBox.warning(self, "C++ launch failed", str(exc))
+            return False
+
+        early_exit = _poll_early_exit(process)
+        if early_exit is not None:
+            exit_code = process.returncode
+            self.log(f"C++ launch failed: process exited immediately (code {exit_code}).")
+
+            retry_succeeded = False
+            retry_reason = ""
+            if sys.platform == "win32":
+                _progress("C++ exited immediately. Repairing Qt runtime and retrying...")
+                redeploy_ok, redeploy_output = _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=True)
+                if not redeploy_ok:
+                    retry_reason = str(redeploy_output or "windeployqt failed")
+                else:
+                    try:
+                        retry_process = _spawn_cpp()
+                        retry_exit = _poll_early_exit(retry_process)
+                        if retry_exit is None:
+                            process = retry_process
+                            retry_succeeded = True
+                    except Exception as exc:
+                        retry_reason = str(exc)
+
+            # Recovery path for previously built binaries that were linked against
+            # optional Qt modules from a mismatched kit.
+            if not retry_succeeded:
+                _progress("Rebuilding C++ bot with current Qt settings and retrying...")
+                rebuild_err = ""
+                QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+                try:
+                    rebuilt_exe, rebuild_err = _build_cpp_executable_for_code_tab(self)
+                finally:
+                    QtWidgets.QApplication.restoreOverrideCursor()
+                if rebuilt_exe is not None and rebuilt_exe.is_file():
+                    exe_path = rebuilt_exe
+                    qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
+                    env["PATH"] = _compose_cpp_launch_path(qt_bins, env.get("PATH", ""))
+                    popen_kwargs["cwd"] = str(exe_path.parent)
+                    popen_kwargs["env"] = env
+                    _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=True)
+                    try:
+                        rebuild_process = _spawn_cpp()
+                        rebuild_exit = _poll_early_exit(rebuild_process)
+                        if rebuild_exit is None:
+                            process = rebuild_process
+                            retry_succeeded = True
+                    except Exception as exc:
+                        retry_reason = str(exc)
+                elif rebuild_err:
+                    retry_reason = str(rebuild_err)
+
+            if retry_succeeded:
+                self._cpp_code_tab_process = process
+                self.log(f"Launched C++ bot ({trigger}): {exe_path}")
+                return True
+
+            exit_text = _format_windows_exit_code(exit_code)
+            extra = ""
+            if "0xC0000139" in exit_text:
+                extra = "\nWindows status 0xC0000139 usually means Qt DLL mismatch."
+            if retry_reason:
+                extra = f"{extra}\nAuto-repair attempt failed: {retry_reason}".rstrip()
+            QtWidgets.QMessageBox.warning(
+                self,
+                "C++ launch failed",
+                f"C++ bot exited immediately (code {exit_text}).\n"
+                "Check Qt runtime DLL availability and CMake/Qt configuration."
+                f"{extra}",
+            )
+            return False
+
+        self._cpp_code_tab_process = process
+        self.log(f"Launched C++ bot ({trigger}): {exe_path}")
+        return True
+    finally:
+        try:
+            if progress_dialog is not None:
+                progress_dialog.close()
+        except Exception:
+            pass
 
 
 def _code_tab_select_language(self, config_key: str) -> None:

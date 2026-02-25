@@ -1805,11 +1805,15 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         const QString codeCss = isLight
                                     ? QStringLiteral(
                                           "QWidget#codePage { background: #f5f7fb; color: #0f172a; }"
+                                          "QScrollArea#codeScrollArea { background: #f5f7fb; border: none; }"
+                                          "QWidget#codeContent { background: #f5f7fb; }"
                                           "QLabel { color: #0f172a; }"
                                           "QTableWidget { background: #ffffff; color: #0f172a; gridline-color: #d1d5db; }"
                                           "QHeaderView::section { background: #e5e7eb; color: #0f172a; }")
                                     : QStringLiteral(
                                           "QWidget#codePage { background: #0b0f16; color: #e5e7eb; }"
+                                          "QScrollArea#codeScrollArea { background: #0b1220; border: none; }"
+                                          "QWidget#codeContent { background: #0b1220; }"
                                           "QLabel { color: #e5e7eb; }"
                                           "QTableWidget { background: #0d1117; color: #e5e7eb; gridline-color: #1f2937; }"
                                           "QHeaderView::section { background: #111827; color: #e5e7eb; }");
@@ -2329,6 +2333,7 @@ QWidget *BacktestWindow::createCodeTab() {
     outer->setSpacing(10);
 
     auto *scroll = new QScrollArea(page);
+    scroll->setObjectName("codeScrollArea");
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     outer->addWidget(scroll);
@@ -2339,37 +2344,15 @@ QWidget *BacktestWindow::createCodeTab() {
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(14);
 
-    // Pick readable colors based on the actual background luminance, not just theme name.
-    QPalette pal = scroll->palette();
-    QColor bg = pal.color(QPalette::Base);
-    if (!bg.isValid()) {
-        bg = pal.color(QPalette::Window);
-    }
-    double luma = 0.0;
-    if (bg.isValid()) {
-        const double r = bg.red() / 255.0;
-        const double g = bg.green() / 255.0;
-        const double b = bg.blue() / 255.0;
-        luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    }
-    // If palette is light, force a dark code-tab surface for contrast.
-    const bool forceDarkSurface = (luma > 0.6) || !bg.isValid();
-    const QString surfaceColor = forceDarkSurface ? QString("#0b1220") : bg.name();
-    auto recalcText = [&](const QString &hex) {
-        QColor c(hex);
-        double lr = c.red() / 255.0;
-        double lg = c.green() / 255.0;
-        double lb = c.blue() / 255.0;
-        double ll = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
-        return ll > 0.6;
-    };
-    const bool surfIsLight = recalcText(surfaceColor);
-    const QString textColor = surfIsLight ? QString("#0b1220") : QString("#e6edf3");
-    const QString mutedColor = surfIsLight ? QString("#1f2937") : QString("#cbd5e1");
-    // Apply surface background to container/scroll so dark theme stays dark even if palette is light.
+    // Use explicit theme colors instead of palette-derived colors to avoid gray fallback on Windows.
+    const bool isLight = dashboardThemeCombo_
+        && dashboardThemeCombo_->currentText().compare("Light", Qt::CaseInsensitive) == 0;
+    const QString surfaceColor = isLight ? QString("#f5f7fb") : QString("#0b1220");
+    const QString textColor = isLight ? QString("#0f172a") : QString("#e6edf3");
+    const QString mutedColor = isLight ? QString("#334155") : QString("#cbd5e1");
     QString surfaceStyle = QString(
         "QWidget#codeContent { background: %1; }"
-        "QScrollArea { background: %1; border: none; }").arg(surfaceColor);
+        "QScrollArea#codeScrollArea { background: %1; border: none; }").arg(surfaceColor);
     container->setObjectName("codeContent");
     container->setStyleSheet(surfaceStyle);
     scroll->setStyleSheet(surfaceStyle);
@@ -2484,6 +2467,15 @@ QWidget *BacktestWindow::createCodeTab() {
     envTitle->setStyleSheet(QString("font-size: 14px; font-weight: 700; color: %1;").arg(textColor));
     layout->addWidget(envTitle);
 
+    auto *envActions = new QHBoxLayout();
+    envActions->setContentsMargins(0, 0, 0, 0);
+    envActions->addStretch();
+    auto *refreshEnvBtn = new QPushButton("Refresh Env Versions", container);
+    refreshEnvBtn->setCursor(Qt::PointingHandCursor);
+    refreshEnvBtn->setToolTip("Re-evaluate C++ dependency versions.");
+    envActions->addWidget(refreshEnvBtn);
+    layout->addLayout(envActions);
+
     auto *table = new QTableWidget(container);
     table->setColumnCount(3);
     table->setHorizontalHeaderLabels({"Dependency", "Installed", "Latest"});
@@ -2498,38 +2490,53 @@ QWidget *BacktestWindow::createCodeTab() {
         QString installed;
         QString latest;
     };
-    QVector<Row> rows;
 
-    const QByteArray envRows = qgetenv("TB_CPP_ENV_VERSIONS_JSON");
-    if (!envRows.trimmed().isEmpty()) {
-        QJsonParseError parseError{};
-        const QJsonDocument doc = QJsonDocument::fromJson(envRows, &parseError);
-        if (parseError.error == QJsonParseError::NoError && doc.isArray()) {
-            const QJsonArray arr = doc.array();
-            rows.reserve(arr.size());
-            for (const QJsonValue &entry : arr) {
-                if (!entry.isObject()) {
-                    continue;
+    const auto loadRows = []() -> QVector<Row> {
+        QVector<Row> rows;
+        bool hasCheckingPlaceholder = false;
+
+        const QByteArray envRows = qgetenv("TB_CPP_ENV_VERSIONS_JSON");
+        if (!envRows.trimmed().isEmpty()) {
+            QJsonParseError parseError{};
+            const QJsonDocument doc = QJsonDocument::fromJson(envRows, &parseError);
+            if (parseError.error == QJsonParseError::NoError && doc.isArray()) {
+                const QJsonArray arr = doc.array();
+                rows.reserve(arr.size());
+                for (const QJsonValue &entry : arr) {
+                    if (!entry.isObject()) {
+                        continue;
+                    }
+                    const QJsonObject obj = entry.toObject();
+                    const QString name = obj.value(QStringLiteral("name")).toString().trimmed();
+                    if (name.isEmpty()) {
+                        continue;
+                    }
+                    QString installed = obj.value(QStringLiteral("installed")).toString().trimmed();
+                    QString latest = obj.value(QStringLiteral("latest")).toString().trimmed();
+                    if (installed.isEmpty()) {
+                        installed = QStringLiteral("Unknown");
+                    }
+                    if (latest.isEmpty()) {
+                        latest = QStringLiteral("Unknown");
+                    }
+                    const QString installedLower = installed.toLower();
+                    const QString latestLower = latest.toLower();
+                    if (installedLower == QStringLiteral("checking...")
+                        || installedLower == QStringLiteral("not checked")
+                        || latestLower == QStringLiteral("checking...")
+                        || latestLower == QStringLiteral("not checked")) {
+                        hasCheckingPlaceholder = true;
+                    }
+                    rows.push_back({name, installed, latest});
                 }
-                const QJsonObject obj = entry.toObject();
-                const QString name = obj.value(QStringLiteral("name")).toString().trimmed();
-                if (name.isEmpty()) {
-                    continue;
-                }
-                QString installed = obj.value(QStringLiteral("installed")).toString().trimmed();
-                QString latest = obj.value(QStringLiteral("latest")).toString().trimmed();
-                if (installed.isEmpty()) {
-                    installed = QStringLiteral("Unknown");
-                }
-                if (latest.isEmpty()) {
-                    latest = QStringLiteral("Unknown");
-                }
-                rows.push_back({name, installed, latest});
             }
         }
-    }
 
-    if (rows.isEmpty()) {
+        if (!rows.isEmpty() && !hasCheckingPlaceholder) {
+            return rows;
+        }
+
+        rows.clear();
         const QDir appDir(QCoreApplication::applicationDirPath());
         const bool hasQtCoreDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Core.dll")))
             || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Cored.dll")));
@@ -2573,14 +2580,29 @@ QWidget *BacktestWindow::createCodeTab() {
             {QStringLiteral("TA-Lib"), talibInstalled, latestOrUnknown(talibInstalled)},
             {QStringLiteral("libcurl"), libcurlInstalled, latestOrUnknown(libcurlInstalled)},
             {QStringLiteral("cpr"), cprInstalled, latestOrUnknown(cprInstalled)}};
-    }
+        return rows;
+    };
 
-    table->setRowCount(rows.size());
-    for (int i = 0; i < rows.size(); ++i) {
-        table->setItem(i, 0, new QTableWidgetItem(rows[i].name));
-        table->setItem(i, 1, new QTableWidgetItem(rows[i].installed));
-        table->setItem(i, 2, new QTableWidgetItem(rows[i].latest));
-    }
+    const auto applyRows = [table](const QVector<Row> &rows) {
+        table->setRowCount(rows.size());
+        for (int i = 0; i < rows.size(); ++i) {
+            table->setItem(i, 0, new QTableWidgetItem(rows[i].name));
+            table->setItem(i, 1, new QTableWidgetItem(rows[i].installed));
+            table->setItem(i, 2, new QTableWidgetItem(rows[i].latest));
+        }
+    };
+
+    applyRows(loadRows());
+
+    connect(refreshEnvBtn, &QPushButton::clicked, this, [this, refreshEnvBtn, loadRows, applyRows]() mutable {
+        refreshEnvBtn->setEnabled(false);
+        refreshEnvBtn->setText(QStringLiteral("Refreshing..."));
+        QCoreApplication::processEvents();
+        applyRows(loadRows());
+        refreshEnvBtn->setText(QStringLiteral("Refresh Env Versions"));
+        refreshEnvBtn->setEnabled(true);
+        updateStatusMessage(QStringLiteral("Environment versions refreshed."));
+    });
     layout->addWidget(table);
 
     auto *statusRow = new QHBoxLayout();
