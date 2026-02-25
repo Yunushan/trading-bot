@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -1086,6 +1087,43 @@ def _resolve_native_icon_path() -> Path | None:
     return fallback if fallback.is_file() else None
 
 
+def _stable_icon_cache_path() -> Path | None:
+    base = str(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or "").strip()
+    if not base:
+        return None
+    try:
+        cache_dir = Path(base).resolve() / "TradingBot" / "assets"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / "crypto_forex_logo.ico"
+    except Exception:
+        return None
+
+
+def _persist_icon_for_taskbar(icon_path: Path | None) -> Path | None:
+    if icon_path is None or not icon_path.is_file():
+        return None
+    if icon_path.suffix.lower() != ".ico":
+        ico_path = icon_path.with_suffix(".ico")
+        if not ico_path.is_file():
+            return None
+        icon_path = ico_path
+    target = _stable_icon_cache_path()
+    if target is None:
+        return None
+    try:
+        src = icon_path.resolve()
+        if target.exists():
+            try:
+                if target.resolve() == src:
+                    return target
+            except Exception:
+                pass
+        shutil.copy2(src, target)
+        return target
+    except Exception:
+        return None
+
+
 def _resolve_taskbar_icon_path() -> Path | None:
     env_icon = os.environ.get("BOT_TASKBAR_ICON") or os.environ.get("BINANCE_BOT_ICON")
     if env_icon:
@@ -1097,6 +1135,11 @@ def _resolve_taskbar_icon_path() -> Path | None:
             if ico_path.is_file():
                 return ico_path
             return env_path
+    # Prefer a stable cached icon path first (safe for pinned taskbar entries).
+    native_icon = _resolve_native_icon_path()
+    persisted = _persist_icon_for_taskbar(native_icon)
+    if persisted and persisted.is_file():
+        return persisted
     if getattr(sys, "frozen", False):
         try:
             exe_icon = Path(sys.executable).resolve()
@@ -1120,6 +1163,71 @@ def _resolve_taskbar_icon_path() -> Path | None:
         return primary
     repo_icon = Path(__file__).resolve().parents[2] / "assets" / "crypto_forex_logo.ico"
     return repo_icon if repo_icon.is_file() else None
+
+
+def _resolve_splash_logo_pixmap(QtGui):  # noqa: N803
+    """Best-effort splash logo resolver that works in source and frozen builds."""
+    candidates: list[Path] = []
+    env_logo = str(os.environ.get("BOT_SPLASH_LOGO") or os.environ.get("BINANCE_BOT_SPLASH") or "").strip()
+    if env_logo:
+        candidates.append(Path(env_logo).expanduser())
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        meipass_path = Path(meipass)
+        candidates.extend(
+            [
+                meipass_path / "assets" / "crypto_forex_logo.png",
+                meipass_path / "assets" / "crypto_forex_logo.ico",
+                meipass_path / "crypto_forex_logo.png",
+                meipass_path / "crypto_forex_logo.ico",
+            ]
+        )
+
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+    except Exception:
+        exe_dir = None
+    if exe_dir is not None:
+        candidates.extend(
+            [
+                exe_dir / "assets" / "crypto_forex_logo.png",
+                exe_dir / "assets" / "crypto_forex_logo.ico",
+                exe_dir / "crypto_forex_logo.png",
+                exe_dir / "crypto_forex_logo.ico",
+            ]
+        )
+
+    root_assets = Path(__file__).resolve().parents[2] / "assets"
+    candidates.extend(
+        [
+            root_assets / "crypto_forex_logo.png",
+            root_assets / "crypto_forex_logo.ico",
+        ]
+    )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if not candidate.is_file():
+            continue
+        try:
+            pixmap = QtGui.QPixmap(str(candidate))
+            if pixmap is not None and not pixmap.isNull():
+                return pixmap
+        except Exception:
+            pass
+        try:
+            icon = QtGui.QIcon(str(candidate))
+            if icon is not None and not icon.isNull():
+                pixmap = icon.pixmap(96, 96)
+                if pixmap is not None and not pixmap.isNull():
+                    return pixmap
+        except Exception:
+            pass
+    return None
 
 
 def _format_shortcut_args(script_path: Path) -> str:
@@ -1165,6 +1273,10 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
     if sys.platform != "win32":
         return False
     icon_path = _resolve_native_icon_path()
+    if icon_path is None:
+        taskbar_icon = _resolve_taskbar_icon_path()
+        if taskbar_icon is not None and str(taskbar_icon).lower().endswith(".ico"):
+            icon_path = taskbar_icon
     if icon_path is None or not icon_path.is_file():
         return False
     try:
@@ -1403,12 +1515,9 @@ class _SplashScreen:
         self._timer = None
 
         try:
-            # Find app logo
-            logo_path = Path(__file__).resolve().parents[2] / "assets" / "crypto_forex_logo.png"
-            if logo_path.is_file():
-                self._logo_pixmap = QtGui.QPixmap(str(logo_path))
-                if self._logo_pixmap.isNull():
-                    self._logo_pixmap = None
+            self._logo_pixmap = _resolve_splash_logo_pixmap(QtGui)
+            if self._logo_pixmap is not None and self._logo_pixmap.isNull():
+                self._logo_pixmap = None
         except Exception:
             self._logo_pixmap = None
 

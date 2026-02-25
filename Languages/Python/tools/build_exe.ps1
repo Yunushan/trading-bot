@@ -31,6 +31,7 @@ try {
     "main.py",
     "--name", $Name,
     "--onefile",
+    "--clean",
     "--noconfirm",
     "--specpath", "build",
     "--collect-submodules", "binance_sdk_derivatives_trading_usds_futures",
@@ -64,9 +65,10 @@ try {
     }
   }
 
-  if ($iconPath -ne "") {
-    $pyInstallerArgs += @("--icon", $iconPath)
+  if ($iconPath -eq "") {
+    throw "Icon not found. Refusing to build EXE without icon resource."
   }
+  $pyInstallerArgs += @("--icon", $iconPath)
 
   $assetsDir = Join-Path $repoRoot "assets"
   if (Test-Path $assetsDir) {
