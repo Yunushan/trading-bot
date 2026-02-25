@@ -25,7 +25,7 @@ jobs:
   build-and-release:
     runs-on: windows-latest
     env:
-      VCPKG_ROOT: ${{ github.workspace }}/.vcpkg
+      TB_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows
       VCPKG_PINNED_REF: "26283ac5e8a068561a718ce18b169bfad84c7dab"
       VCPKG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.vcpkg_mode || 'pinned' }}
@@ -59,11 +59,25 @@ jobs:
       - name: Install vcpkg and C++ dependencies
         shell: pwsh
         run: |
-          if (!(Test-Path "$env:VCPKG_ROOT/.git")) {
-            git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          $vcpkgRoot = $env:TB_VCPKG_ROOT
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+            throw "TB_VCPKG_ROOT is empty."
           }
 
-          Push-Location "$env:VCPKG_ROOT"
+          $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $vcpkgRootFull = [System.IO.Path]::GetFullPath($vcpkgRoot)
+          if (!$vcpkgRootFull.StartsWith($workspace, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unsafe vcpkg root outside workspace: $vcpkgRootFull"
+          }
+
+          if ((Test-Path $vcpkgRoot) -and !(Test-Path "$vcpkgRoot/.git")) {
+            Remove-Item -Recurse -Force $vcpkgRoot
+          }
+          if (!(Test-Path "$vcpkgRoot/.git")) {
+            git clone https://github.com/microsoft/vcpkg.git "$vcpkgRoot"
+          }
+
+          Push-Location "$vcpkgRoot"
           git fetch --tags --force
 
           if ($env:VCPKG_MODE -eq "latest") {
@@ -85,8 +99,11 @@ jobs:
           }
           Pop-Location
 
-          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:VCPKG_ROOT/vcpkg.exe" install `
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $env:VCPKG_ROOT = $vcpkgRoot
+
+          & "$vcpkgRoot/bootstrap-vcpkg.bat" -disableMetrics
+          & "$vcpkgRoot/vcpkg.exe" --vcpkg-root "$vcpkgRoot" install `
             eigen3:$env:VCPKG_DEFAULT_TRIPLET `
             xtensor:$env:VCPKG_DEFAULT_TRIPLET `
             talib:$env:VCPKG_DEFAULT_TRIPLET `
