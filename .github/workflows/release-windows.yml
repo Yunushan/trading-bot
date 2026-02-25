@@ -135,7 +135,32 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Copy-Item "Languages/Python/dist/Trading-Bot-Python.exe" "release/Trading-Bot-Python.exe"
+          $pythonExe = "Languages/Python/dist/Trading-Bot-Python.exe"
+          if (!(Test-Path $pythonExe)) {
+            throw "Python executable not found after build."
+          }
+
+          # Zip-first distribution for better browser/download UX.
+          $pythonBundleDir = "release/Trading-Bot-Python"
+          New-Item -ItemType Directory -Force -Path $pythonBundleDir | Out-Null
+          Copy-Item $pythonExe (Join-Path $pythonBundleDir "Trading-Bot-Python.exe")
+
+          $pythonReadme = @"
+Trading Bot (Python)
+====================
+
+Recommended:
+- Extract this zip to a normal folder.
+- Run Trading-Bot-Python.exe from that folder.
+- If you pinned an older build, unpin it first and pin this one again.
+"@
+          Set-Content -Path (Join-Path $pythonBundleDir "README.txt") -Value $pythonReadme -Encoding utf8
+
+          $pythonZipAsset = "release/Trading-Bot-Python.zip"
+          $pythonExeAsset = "release/Trading-Bot-Python.exe"
+          Compress-Archive -Path "$pythonBundleDir/*" -DestinationPath $pythonZipAsset -Force
+          # Keep direct EXE as an optional advanced asset.
+          Copy-Item $pythonExe $pythonExeAsset
 
           $cppExe = "build/binance_cpp/Release/binance_backtest_tab.exe"
           if (!(Test-Path $cppExe)) {
@@ -162,6 +187,7 @@ jobs:
         with:
           name: windows-release-assets
           path: |
+            release/Trading-Bot-Python.zip
             release/Trading-Bot-Python.exe
             release/Trading-Bot-C++.zip
 
@@ -170,5 +196,6 @@ jobs:
         with:
           generate_release_notes: true
           files: |
+            release/Trading-Bot-Python.zip
             release/Trading-Bot-Python.exe
             release/Trading-Bot-C++.zip

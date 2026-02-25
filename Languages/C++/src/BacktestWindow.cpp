@@ -832,6 +832,7 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       chartBotStatusLabel_(nullptr),
       chartBotTimeLabel_(nullptr) {
     setWindowTitle("Trading Bot");
+    setMinimumSize(640, 420);
     resize(1350, 900);
 
     auto *central = new QWidget(this);
@@ -1295,7 +1296,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     int col = 0;
     dashboardApiKey_ = new QLineEdit(accountBox);
     dashboardApiKey_->setPlaceholderText("API Key");
-    dashboardApiKey_->setMinimumWidth(240);
+    dashboardApiKey_->setMinimumWidth(140);
     addPair(0, col, "API Key:", dashboardApiKey_, 2);
 
     dashboardModeCombo_ = new QComboBox(accountBox);
@@ -1329,7 +1330,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardApiSecret_ = new QLineEdit(accountBox);
     dashboardApiSecret_->setEchoMode(QLineEdit::Password);
     dashboardApiSecret_->setPlaceholderText("API Secret Key");
-    dashboardApiSecret_->setMinimumWidth(240);
+    dashboardApiSecret_->setMinimumWidth(140);
     addPair(1, col, "API Secret Key:", dashboardApiSecret_, 2);
 
     dashboardAccountTypeCombo_ = new QComboBox(accountBox);
@@ -1346,7 +1347,7 @@ QWidget *BacktestWindow::createDashboardTab() {
         "Binance Gateway",
         "Custom Connector"
     });
-    connectorCombo->setMinimumWidth(260);
+    connectorCombo->setMinimumWidth(180);
     addPair(1, col, "Connector:", connectorCombo, 3);
 
     col = 0;
@@ -1379,7 +1380,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     auto *indicatorSourceCombo = new QComboBox(accountBox);
     indicatorSourceCombo->addItems(dashboardIndicatorSources);
     indicatorSourceCombo->setCurrentText("Binance futures");
-    indicatorSourceCombo->setMinimumWidth(180);
+    indicatorSourceCombo->setMinimumWidth(140);
     dashboardIndicatorSourceCombo_ = indicatorSourceCombo;
     addPair(3, col, "Indicator Source:", indicatorSourceCombo, 2);
 
@@ -2271,7 +2272,7 @@ QWidget *BacktestWindow::createBacktestTab() {
     auto *scrollArea = new QScrollArea(page);
     scrollArea->setObjectName("backtestScrollArea");
     scrollArea->setWidgetResizable(true);
-    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     rootLayout->addWidget(scrollArea);
 
     auto *scrollWidget = new QWidget(scrollArea);
@@ -2297,7 +2298,7 @@ QWidget *BacktestWindow::createBacktestTab() {
     controlsLayout->addWidget(stopButton_);
 
     statusLabel_ = new QLabel(page);
-    statusLabel_->setMinimumWidth(220);
+    statusLabel_->setMinimumWidth(140);
     controlsLayout->addWidget(statusLabel_);
 
     addSelectedBtn_ = new QPushButton("Add Selected to Dashboard", page);
@@ -2335,7 +2336,7 @@ QWidget *BacktestWindow::createCodeTab() {
     auto *scroll = new QScrollArea(page);
     scroll->setObjectName("codeScrollArea");
     scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     outer->addWidget(scroll);
 
     auto *container = new QWidget(scroll);
@@ -2636,16 +2637,16 @@ QWidget *BacktestWindow::createMarketsGroup() {
     layout->addWidget(symbolsInfo, 1, 0, 1, 3);
     symbolList_ = new QListWidget(group);
     symbolList_->setSelectionMode(QAbstractItemView::MultiSelection);
-    symbolList_->setMinimumWidth(220);
-    symbolList_->setMaximumWidth(280);
+    symbolList_->setMinimumWidth(140);
+    symbolList_->setMaximumWidth(220);
     layout->addWidget(symbolList_, 2, 0, 4, 3);
 
     auto *intervalInfo = new QLabel("Intervals (select 1 or more):", group);
     layout->addWidget(intervalInfo, 1, 3);
     intervalList_ = new QListWidget(group);
     intervalList_->setSelectionMode(QAbstractItemView::MultiSelection);
-    intervalList_->setMinimumWidth(180);
-    intervalList_->setMaximumWidth(240);
+    intervalList_->setMinimumWidth(120);
+    intervalList_->setMaximumWidth(200);
     layout->addWidget(intervalList_, 2, 3, 4, 2);
 
     customIntervalEdit_ = new QLineEdit(group);

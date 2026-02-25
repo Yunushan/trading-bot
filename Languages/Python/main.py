@@ -1135,20 +1135,21 @@ def _resolve_taskbar_icon_path() -> Path | None:
             if ico_path.is_file():
                 return ico_path
             return env_path
-    # Prefer a stable cached icon path first (safe for pinned taskbar entries).
-    native_icon = _resolve_native_icon_path()
-    persisted = _persist_icon_for_taskbar(native_icon)
-    if persisted and persisted.is_file():
-        return persisted
     if getattr(sys, "frozen", False):
         try:
             exe_icon = Path(sys.executable).resolve()
         except Exception:
             exe_icon = None
         if exe_icon is not None and exe_icon.is_file():
-            # In bundled mode, prefer the executable icon resource so pinned
-            # taskbar entries don't depend on transient _MEIPASS paths.
+            # In bundled mode always prefer the executable icon resource so
+            # taskbar + Explorer stay consistent and do not depend on stale
+            # cached .ico files.
             return exe_icon
+    # Source mode: use a stable cached icon path for Start menu/taskbar metadata.
+    native_icon = _resolve_native_icon_path()
+    persisted = _persist_icon_for_taskbar(native_icon)
+    if persisted and persisted.is_file():
+        return persisted
     icon_path = _resolve_native_icon_path()
     if icon_path and icon_path.is_file():
         return icon_path

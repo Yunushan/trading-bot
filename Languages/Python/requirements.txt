@@ -1,7 +1,7 @@
 
-python-binance==1.0.34
+python-binance==1.0.35
 binance-connector==3.12.0
-ccxt==4.5.34
+ccxt==4.5.40
 PyQt6==6.10.0
 PyQt6-Qt6==6.10.0
 PyQt6-WebEngine==6.10.0
@@ -11,6 +11,6 @@ numpy==2.2.6
 pandas==2.3.3
 pandas-ta==0.4.71b0
 requests==2.32.5
-binance-sdk-derivatives-trading-usds-futures==7.1.0
-binance-sdk-derivatives-trading-coin-futures==4.1.0
-binance-sdk-spot==7.1.0
+binance-sdk-derivatives-trading-usds-futures==7.1.1
+binance-sdk-derivatives-trading-coin-futures==4.1.1
+binance-sdk-spot==7.2.0

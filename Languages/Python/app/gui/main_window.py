@@ -1180,7 +1180,13 @@ def _extract_semver_from_text(value: str | None) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
-    match = re.search(r"(\d+(?:[._]\d+){1,3})", text)
+    # Preserve common prerelease/build suffixes so values like 0.4.71b0
+    # are not truncated to 0.4.71 in the Environment Versions table.
+    match = re.search(
+        r"(\d+(?:[._]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
     if not match:
         return None
     return match.group(1).replace("_", ".")
@@ -12675,6 +12681,8 @@ class MainWindow(QtWidgets.QWidget):
 
     def init_ui(self):
         self.setWindowTitle("Trading Bot")
+        # Allow smaller manual resize on compact screens.
+        self.setMinimumSize(640, 420)
         try:
             _apply_window_icon(self)
         except Exception:
@@ -12699,6 +12707,8 @@ class MainWindow(QtWidgets.QWidget):
 
         self.dashboard_scroll = QtWidgets.QScrollArea()
         self.dashboard_scroll.setWidgetResizable(True)
+        self.dashboard_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.dashboard_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         tab1_layout.addWidget(self.dashboard_scroll)
 
         scroll_contents = QtWidgets.QWidget()
@@ -13661,7 +13671,7 @@ class MainWindow(QtWidgets.QWidget):
         tab3_layout = QtWidgets.QVBoxLayout(tab3)
         tab3_scroll_area = QtWidgets.QScrollArea(tab3)
         tab3_scroll_area.setWidgetResizable(True)
-        tab3_scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tab3_scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         tab3_layout.addWidget(tab3_scroll_area)
         tab3_scroll_widget = QtWidgets.QWidget()
         tab3_scroll_area.setWidget(tab3_scroll_widget)
@@ -13673,7 +13683,7 @@ class MainWindow(QtWidgets.QWidget):
         top_layout.setSpacing(16)
 
         market_group = QtWidgets.QGroupBox("Markets")
-        market_group.setMinimumWidth(320)
+        market_group.setMinimumWidth(220)
         market_group.setMaximumWidth(620)
         market_group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -13697,7 +13707,7 @@ class MainWindow(QtWidgets.QWidget):
         size_policy_symbols.setHorizontalStretch(0)
         size_policy_symbols.setVerticalStretch(1)
         self.backtest_symbol_list.setSizePolicy(size_policy_symbols)
-        self.backtest_symbol_list.setMinimumWidth(200)
+        self.backtest_symbol_list.setMinimumWidth(140)
         self.backtest_symbol_list.setMaximumWidth(260)
         self.backtest_symbol_list.itemSelectionChanged.connect(self._backtest_store_symbols)
         market_layout.addWidget(self.backtest_symbol_list, 2, 0, 4, 3)
@@ -13709,7 +13719,7 @@ class MainWindow(QtWidgets.QWidget):
         size_policy_intervals.setHorizontalStretch(0)
         size_policy_intervals.setVerticalStretch(1)
         self.backtest_interval_list.setSizePolicy(size_policy_intervals)
-        self.backtest_interval_list.setMinimumWidth(160)
+        self.backtest_interval_list.setMinimumWidth(120)
         self.backtest_interval_list.setMaximumWidth(240)
         self.backtest_interval_list.itemSelectionChanged.connect(self._backtest_store_intervals)
         market_layout.addWidget(self.backtest_interval_list, 2, 3, 4, 2)
@@ -13759,7 +13769,7 @@ class MainWindow(QtWidgets.QWidget):
         top_layout.addWidget(market_group, 3)
 
         param_group = QtWidgets.QGroupBox("Backtest Parameters")
-        param_group.setMinimumWidth(520)
+        param_group.setMinimumWidth(320)
         param_group.setMaximumWidth(820)
         param_group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -14038,7 +14048,7 @@ class MainWindow(QtWidgets.QWidget):
         top_layout.addWidget(param_group, 5)
 
         indicator_group = QtWidgets.QGroupBox("Indicators")
-        indicator_group.setMinimumWidth(280)
+        indicator_group.setMinimumWidth(220)
         indicator_group.setMaximumWidth(340)
         indicator_group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -14364,7 +14374,7 @@ def _init_liquidation_heatmap_tab(self):
         _build_liquidation_web_panel(
             self,
             "Hyblock Capital Liquidation Heatmap",
-            "https://www.hyblockcapital.com/heatmap",
+            "https://hyblockcapital.com/",
         ),
         "Hyblock Capital",
     )
@@ -14398,7 +14408,7 @@ def _init_code_language_tab(self):
 
     scroll = QtWidgets.QScrollArea()
     scroll.setWidgetResizable(True)
-    scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     outer_layout.addWidget(scroll)
 
@@ -14491,7 +14501,7 @@ def _init_code_language_tab(self):
     versions_scroll = QtWidgets.QScrollArea()
     versions_scroll.setWidgetResizable(True)
     versions_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-    versions_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    versions_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     versions_scroll.setWidget(versions_container)
     versions_scroll.setSizePolicy(
         QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
