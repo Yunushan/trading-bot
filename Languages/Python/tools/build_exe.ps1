@@ -6,12 +6,14 @@ param(
   [string]$Icon = "",
   [string]$Name = "Trading-Bot-Python",
   [switch]$Console,
-  [switch]$SkipDependencyInstall
+  [switch]$SkipDependencyInstall,
+  [string]$ReleaseTag = ""
 )
 
 $ErrorActionPreference = "Stop"
 $pythonRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $pythonRoot "..\\..")).Path
+$releaseInfoPath = ""
 Push-Location $pythonRoot
 
 try {
@@ -24,6 +26,25 @@ try {
     else {
       throw "requirements.txt not found in $pythonRoot"
     }
+  }
+
+  $effectiveReleaseTag = "$ReleaseTag".Trim()
+  if ([string]::IsNullOrWhiteSpace($effectiveReleaseTag)) {
+    $effectiveReleaseTag = "$env:TB_RELEASE_TAG".Trim()
+  }
+  if (-not [string]::IsNullOrWhiteSpace($effectiveReleaseTag)) {
+    if ($effectiveReleaseTag -match "(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)") {
+      $effectiveReleaseTag = $Matches[1].Replace("_", ".")
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($effectiveReleaseTag)) {
+    $releaseInfoPath = Join-Path $pythonRoot "build\\release-info.json"
+    New-Item -ItemType Directory -Force -Path (Split-Path $releaseInfoPath -Parent) | Out-Null
+    $releaseInfoPayload = @{
+      release_tag = $effectiveReleaseTag
+      built_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    } | ConvertTo-Json -Depth 4
+    Set-Content -Path $releaseInfoPath -Value $releaseInfoPayload -Encoding utf8
   }
 
   $pyInstallerArgs = @(
@@ -75,11 +96,18 @@ try {
     # Bundle repo assets so onefile runtime can still load icons and logos.
     $pyInstallerArgs += @("--add-data", "$assetsDir;assets")
   }
+  if ($releaseInfoPath -ne "" -and (Test-Path $releaseInfoPath)) {
+    # Embed release metadata so the running EXE can show its release tag in the UI.
+    $pyInstallerArgs += @("--add-data", "$releaseInfoPath;app")
+  }
 
   & $Python @pyInstallerArgs
 
   Write-Host "Done. EXE at: dist\$Name.exe"
 }
 finally {
+  if ($releaseInfoPath -ne "" -and (Test-Path $releaseInfoPath)) {
+    Remove-Item -Force $releaseInfoPath -ErrorAction SilentlyContinue
+  }
   Pop-Location
 }

@@ -643,6 +643,7 @@ for _parent in _THIS_FILE.parents:
 else:
     _BASE_PROJECT_PATH = _THIS_FILE.parents[2]
 
+PYTHON_CODE_LANGUAGE_KEY = "Python (PyQt)"
 CPP_CODE_LANGUAGE_KEY = "C++ (Qt/C++23)"
 CPP_SUPPORTED_EXCHANGE_KEY = "Binance"
 CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
@@ -651,6 +652,8 @@ CPP_RELEASE_OWNER = "Yunushan"
 CPP_RELEASE_REPO = "trading-bot"
 CPP_RELEASE_CPP_ASSET = "Trading-Bot-C++.zip"
 CPP_CACHE_META_FILE = "cpp-runtime-meta.json"
+RELEASE_INFO_JSON_NAME = "release-info.json"
+RELEASE_TAG_TEXT_NAME = "release-tag.txt"
 CPP_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "C++").resolve()
 CPP_BUILD_ROOT = (_BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
 
@@ -14438,6 +14441,7 @@ def _init_code_language_tab(self):
     layout.addWidget(description)
 
     self._starter_language_cards: dict[str, _StarterCard] = {}
+    self._starter_language_base_subtitles: dict[str, str] = {}
     self._starter_market_cards: dict[str, _StarterCard] = {}
     self._starter_crypto_cards: dict[str, _StarterCard] = {}
     self._starter_forex_cards: dict[str, _StarterCard] = {}
@@ -14460,6 +14464,7 @@ def _init_code_language_tab(self):
         card.setMinimumWidth(180)
         lang_row.addWidget(card, 1)
         self._starter_language_cards[opt["config_key"]] = card
+        self._starter_language_base_subtitles[opt["config_key"]] = str(opt.get("subtitle") or "").strip()
     lang_row.addStretch()
     layout.addLayout(lang_row)
 
@@ -14553,6 +14558,221 @@ def _is_frozen_python_app() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def _normalize_release_tag_text(value) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    lower_text = text.lower()
+    for prefix in ("refs/tags/", "refs/heads/"):
+        if lower_text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            lower_text = text.lower()
+            break
+    if not text:
+        return None
+    if lower_text in {"none", "null", "unknown", "n/a", "na", "-"}:
+        return None
+    if len(text) > 96:
+        text = text[:96].strip()
+    semver = _extract_semver_from_text(text)
+    if semver:
+        return semver
+    return text
+
+
+def _release_tag_from_json_file(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    candidate_keys = (
+        "release_tag",
+        "tag_name",
+        "tag",
+        "python_release_tag",
+        "app_release_tag",
+        "version",
+    )
+    for key in candidate_keys:
+        tag_value = _normalize_release_tag_text(payload.get(key))
+        if tag_value:
+            return tag_value
+
+    nested_keys = ("python", "app", "release")
+    for nested_key in nested_keys:
+        nested = payload.get(nested_key)
+        if not isinstance(nested, dict):
+            continue
+        for key in candidate_keys:
+            tag_value = _normalize_release_tag_text(nested.get(key))
+            if tag_value:
+                return tag_value
+    return None
+
+
+def _release_tag_from_text_file(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            return _normalize_release_tag_text(line)
+    except Exception:
+        return None
+    return None
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        key = os.path.normcase(os.path.normpath(str(resolved)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(resolved)
+    return unique
+
+
+def _release_tag_from_metadata_dirs(directories: list[Path]) -> str | None:
+    metadata_names = (
+        RELEASE_INFO_JSON_NAME,
+        "tb-release.json",
+        RELEASE_TAG_TEXT_NAME,
+        "tb-release.txt",
+    )
+    for directory in _dedupe_paths(directories):
+        for name in metadata_names:
+            file_path = directory / name
+            if not file_path.is_file():
+                continue
+            if file_path.suffix.lower() == ".json":
+                tag_value = _release_tag_from_json_file(file_path)
+            else:
+                tag_value = _release_tag_from_text_file(file_path)
+            if tag_value:
+                return tag_value
+    return None
+
+
+def _python_release_metadata_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    try:
+        app_dir = _THIS_FILE.parents[1]
+        dirs.extend([app_dir, app_dir.parent])
+    except Exception:
+        pass
+
+    if _is_frozen_python_app():
+        meipass_raw = str(getattr(sys, "_MEIPASS", "") or "").strip()
+        if meipass_raw:
+            meipass_dir = Path(meipass_raw)
+            dirs.extend([meipass_dir, meipass_dir / "app"])
+        try:
+            exe_dir = Path(sys.executable).resolve().parent
+            dirs.extend([exe_dir, exe_dir / "app"])
+        except Exception:
+            pass
+    return _dedupe_paths(dirs)
+
+
+def _python_runtime_release_tag() -> str | None:
+    env_keys = (
+        "TB_PY_RELEASE_TAG",
+        "TB_PYTHON_RELEASE_TAG",
+        "TB_APP_RELEASE_TAG",
+        "TB_RELEASE_TAG",
+        "BOT_RELEASE_TAG",
+    )
+    for key in env_keys:
+        value = _normalize_release_tag_text(os.environ.get(key))
+        if value:
+            return value
+    return _release_tag_from_metadata_dirs(_python_release_metadata_dirs())
+
+
+def _cpp_runtime_release_snapshot() -> tuple[str | None, str]:
+    exe_path = _find_cpp_code_tab_executable()
+    if exe_path is None or not exe_path.is_file():
+        return None, "Not installed"
+
+    tag_from_bundle = _release_tag_from_metadata_dirs([exe_path.parent, exe_path.parent.parent])
+    if tag_from_bundle:
+        return tag_from_bundle, "Ready"
+
+    if _cpp_runtime_is_cached_path(exe_path):
+        cache_meta = _cpp_read_cache_meta(_cpp_cache_root())
+        cached_tag = _normalize_release_tag_text(cache_meta.get("release_tag"))
+        if cached_tag:
+            return cached_tag, "Ready"
+        return None, "Cached"
+
+    if _is_frozen_python_app():
+        return None, "Bundled"
+    return None, "Local build"
+
+
+def _python_runtime_release_line() -> str:
+    py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    release_tag = _python_runtime_release_tag()
+    if release_tag:
+        return f"Release: {release_tag} | Python {py_version}"
+    if _is_frozen_python_app():
+        return f"Release: Unknown | Python {py_version}"
+    return f"Release: Dev | Python {py_version}"
+
+
+def _cpp_runtime_release_line() -> str:
+    release_tag, state_text = _cpp_runtime_release_snapshot()
+    if release_tag:
+        return f"Release: {release_tag}"
+    if _is_frozen_python_app():
+        python_release_tag = _python_runtime_release_tag()
+        if python_release_tag:
+            return f"Release: {python_release_tag}"
+    if state_text:
+        return f"Release: {state_text}"
+    return "Release: Unknown"
+
+
+def _refresh_code_language_card_release_labels(self) -> None:
+    cards = getattr(self, "_starter_language_cards", None)
+    if not isinstance(cards, dict) or not cards:
+        return
+    base_subtitles = getattr(self, "_starter_language_base_subtitles", None)
+    if not isinstance(base_subtitles, dict):
+        base_subtitles = {}
+
+    release_lines = {
+        PYTHON_CODE_LANGUAGE_KEY: _python_runtime_release_line(),
+        CPP_CODE_LANGUAGE_KEY: _cpp_runtime_release_line(),
+    }
+
+    for key, card in cards.items():
+        if card is None:
+            continue
+        base_text = str(base_subtitles.get(key) or "").strip()
+        release_text = str(release_lines.get(key) or "").strip()
+        subtitle_text = base_text
+        if release_text:
+            subtitle_text = f"{base_text}\n{release_text}" if base_text else release_text
+        try:
+            card.subtitle_label.setText(subtitle_text)
+        except Exception:
+            pass
+
+
 def _cpp_cache_root() -> Path | None:
     candidates: list[Path] = []
     for env_key in ("LOCALAPPDATA", "APPDATA"):
@@ -14600,6 +14820,13 @@ def _cpp_runtime_is_cached_path(exe_path: Path | None) -> bool:
     if exe_path is None or cache_root is None:
         return False
     return _path_is_within_directory(exe_path, cache_root)
+
+
+def _reset_cpp_dependency_caches() -> None:
+    globals()["_CPP_INSTALLED_VALUE_CACHE"] = {}
+    globals()["_CPP_PACKAGED_MANIFEST_CACHE"] = {}
+    globals()["_CPP_INCLUDE_DIR_CACHE"] = ([], 0.0)
+    globals()["_CPP_VCPKG_STATUS_CACHE"] = ({}, 0.0)
 
 
 def _cpp_packaged_executable_names() -> set[str]:
@@ -15779,6 +16006,23 @@ def _run_command_capture_hidden(
         return False, str(exc)
 
 
+def _run_callable_with_ui_pump(
+    fn,
+    *args,
+    poll_interval_s: float = 0.05,
+    **kwargs,
+):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn, *args, **kwargs)
+        while not future.done():
+            try:
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
+            time.sleep(max(0.01, float(poll_interval_s)))
+        return future.result()
+
+
 def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
     if _is_frozen_python_app():
         return (
@@ -15997,6 +16241,7 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
         _progress("Resolving C++ executable...")
         exe_path = _find_cpp_code_tab_executable()
         auto_runtime_error = ""
+        runtime_bundle_touched = False
         if _is_frozen_python_app() and (exe_path is None or _cpp_runtime_is_cached_path(exe_path)):
             if exe_path is None:
                 _progress("C++ runtime not found. Downloading release bundle...")
@@ -16008,9 +16253,18 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                 self.log(log_message)
             except Exception:
                 pass
-            cached_exe, cached_err = _ensure_cached_cpp_bundle(force_download=False)
+            try:
+                cached_exe, cached_err = _run_callable_with_ui_pump(
+                    _ensure_cached_cpp_bundle,
+                    force_download=False,
+                    poll_interval_s=0.05,
+                )
+            except Exception as exc:
+                cached_exe, cached_err = None, str(exc)
             if cached_exe is not None and cached_exe.is_file():
                 exe_path = cached_exe
+                runtime_bundle_touched = True
+                _reset_cpp_dependency_caches()
                 try:
                     self.log(f"C++ runtime prepared from cache: {cached_exe.parent}")
                 except Exception:
@@ -16075,9 +16329,18 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
         if sys.platform == "win32" and _cpp_runtime_bundle_missing(exe_path):
             if _is_frozen_python_app():
                 _progress("C++ runtime incomplete. Fetching bundle...")
-                cached_exe, cached_err = _ensure_cached_cpp_bundle(force_download=False)
+                try:
+                    cached_exe, cached_err = _run_callable_with_ui_pump(
+                        _ensure_cached_cpp_bundle,
+                        force_download=False,
+                        poll_interval_s=0.05,
+                    )
+                except Exception as exc:
+                    cached_exe, cached_err = None, str(exc)
                 if cached_exe is not None and cached_exe.is_file():
                     exe_path = cached_exe
+                    runtime_bundle_touched = True
+                    _reset_cpp_dependency_caches()
                     qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
                     env = _prepare_cpp_launch_env(exe_path, qt_bins, env)
                 else:
@@ -16102,6 +16365,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                 return False
 
         try:
+            if _is_frozen_python_app():
+                _reset_cpp_dependency_caches()
             dep_rows = _cpp_dependency_rows_for_launch(self)
             if dep_rows:
                 payload = json.dumps(dep_rows, ensure_ascii=False, separators=(",", ":"))
@@ -16195,6 +16460,9 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
             if retry_succeeded:
                 self._cpp_code_tab_process = process
                 self.log(f"Launched C++ bot ({trigger}): {exe_path}")
+                if runtime_bundle_touched:
+                    QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
+                    QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
                 return True
 
             exit_text = _format_windows_exit_code(exit_code)
@@ -16214,6 +16482,9 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
 
         self._cpp_code_tab_process = process
         self.log(f"Launched C++ bot ({trigger}): {exe_path}")
+        if runtime_bundle_touched:
+            QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
+            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
         return True
     finally:
         try:
@@ -16284,6 +16555,7 @@ def _refresh_code_tab_from_config(self) -> None:
             self.config["code_language"] = lang_key
     for key, card in lang_cards.items():
         card.setSelected(bool(lang_key) and key == lang_key)
+    _refresh_code_language_card_release_labels(self)
     targets_changed = False
     try:
         resolved_targets = _resolve_dependency_targets_for_config(self.config)
