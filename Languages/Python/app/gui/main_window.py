@@ -650,6 +650,7 @@ CPP_PACKAGED_EXECUTABLE_BASENAME = "Trading-Bot-C++"
 CPP_RELEASE_OWNER = "Yunushan"
 CPP_RELEASE_REPO = "trading-bot"
 CPP_RELEASE_CPP_ASSET = "Trading-Bot-C++.zip"
+CPP_CACHE_META_FILE = "cpp-runtime-meta.json"
 CPP_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "C++").resolve()
 CPP_BUILD_ROOT = (_BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
 
@@ -1855,6 +1856,10 @@ def _cpp_custom_installed_value(target: dict[str, str]) -> str | None:
     cache_key = f"{custom}:{str(target.get('path') or '').strip()}"
 
     def _resolve():
+        packaged_value = _cpp_packaged_installed_value(target)
+        if packaged_value:
+            return packaged_value
+
         if custom == "cpp_qt":
             return _cpp_qt_version_display()
         if custom == "cpp_qt_network":
@@ -1914,6 +1919,8 @@ def _cpp_custom_latest_value(target: dict[str, str], installed_value: str) -> st
 
 def _cpp_custom_usage_value(target: dict[str, str]) -> str:
     custom = str(target.get("custom") or "").strip().lower()
+    if _cpp_packaged_runtime_exe() is not None:
+        return "Active"
     if custom == "cpp_file_version":
         return "Active" if _cpp_dependency_file_exists(target.get("path")) else "Passive"
     installed_value = _cpp_custom_installed_value(target)
@@ -14570,6 +14577,31 @@ def _cpp_cache_root() -> Path | None:
     return None
 
 
+def _path_is_within_directory(path_value: Path | None, directory: Path | None) -> bool:
+    if path_value is None or directory is None:
+        return False
+    try:
+        path_resolved = path_value.resolve()
+    except Exception:
+        path_resolved = path_value
+    try:
+        dir_resolved = directory.resolve()
+    except Exception:
+        dir_resolved = directory
+    path_norm = os.path.normcase(os.path.normpath(str(path_resolved)))
+    dir_norm = os.path.normcase(os.path.normpath(str(dir_resolved)))
+    if path_norm == dir_norm:
+        return True
+    return path_norm.startswith(dir_norm + os.sep)
+
+
+def _cpp_runtime_is_cached_path(exe_path: Path | None) -> bool:
+    cache_root = _cpp_cache_root()
+    if exe_path is None or cache_root is None:
+        return False
+    return _path_is_within_directory(exe_path, cache_root)
+
+
 def _cpp_packaged_executable_names() -> set[str]:
     names = {CPP_PACKAGED_EXECUTABLE_BASENAME}
     if sys.platform == "win32":
@@ -14609,17 +14641,173 @@ def _find_cpp_packaged_exe_under(root: Path | None) -> Path | None:
     return found[0]
 
 
-def _resolve_cpp_release_zip_url() -> str:
+def _cpp_packaged_runtime_exe() -> Path | None:
+    if not _is_frozen_python_app():
+        return None
+    exe_path = _find_cpp_code_tab_executable()
+    if exe_path is None or not exe_path.is_file():
+        return None
+    if sys.platform == "win32" and _cpp_runtime_bundle_missing(exe_path):
+        return None
+    return exe_path
+
+
+def _cpp_packaged_manifest_installed_map(exe_path: Path | None) -> dict[str, str]:
+    if exe_path is None:
+        return {}
+    cache = globals().setdefault("_CPP_PACKAGED_MANIFEST_CACHE", {})
+    cache_key = os.path.normcase(os.path.normpath(str(exe_path.parent)))
+    now = time.time()
+    entry = cache.get(cache_key)
+    if isinstance(entry, tuple) and len(entry) == 2:
+        cached_map, cached_at = entry
+        try:
+            if now - float(cached_at or 0.0) < 30 and isinstance(cached_map, dict):
+                return dict(cached_map)
+        except Exception:
+            pass
+
+    manifest_paths = [
+        exe_path.parent / "cpp-deps.json",
+        exe_path.parent / "cpp-env-versions.json",
+        exe_path.parent / "TB_CPP_ENV_VERSIONS.json",
+        exe_path.parent / "versions.json",
+    ]
+    resolved: dict[str, str] = {}
+    for manifest_path in manifest_paths:
+        if not manifest_path.is_file():
+            continue
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+
+        if isinstance(payload, dict):
+            deps = payload.get("dependencies")
+            if isinstance(deps, list):
+                for item in deps:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name") or item.get("label") or "").strip()
+                    version = str(item.get("installed") or item.get("version") or "").strip()
+                    if not name or not version:
+                        continue
+                    resolved[name.lower()] = version
+
+            rows = payload.get("rows")
+            if isinstance(rows, list):
+                for item in rows:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name") or item.get("label") or "").strip()
+                    version = str(item.get("installed") or item.get("version") or "").strip()
+                    if not name or not version:
+                        continue
+                    resolved[name.lower()] = version
+
+            if not resolved:
+                for key, value in payload.items():
+                    if isinstance(value, (str, int, float)):
+                        version = str(value).strip()
+                        if version:
+                            resolved[str(key).strip().lower()] = version
+        if resolved:
+            break
+
+    cache[cache_key] = (dict(resolved), now)
+    return resolved
+
+
+def _cpp_packaged_installed_value(target: dict[str, str]) -> str | None:
+    exe_path = _cpp_packaged_runtime_exe()
+    if exe_path is None:
+        return None
+
+    custom = str(target.get("custom") or "").strip().lower()
+    label = str(target.get("label") or "").strip().lower()
+    manifest_map = _cpp_packaged_manifest_installed_map(exe_path)
+
+    aliases: list[str] = [label]
+    alias_by_custom = {
+        "cpp_qt": ["qt6 (c++)", "qt6"],
+        "cpp_qt_network": ["qt6 network (rest)", "qt6 network"],
+        "cpp_qt_webengine": ["qt6 webengine"],
+        "cpp_qt_websockets": ["qt6 websockets"],
+        "cpp_eigen": ["eigen"],
+        "cpp_xtensor": ["xtensor"],
+        "cpp_talib": ["ta-lib", "talib"],
+        "cpp_libcurl": ["libcurl", "curl"],
+        "cpp_cpr": ["cpr"],
+        "cpp_file_version": ["binance rest client (native)", "binance websocket client (native)"],
+    }
+    for alias in alias_by_custom.get(custom, []):
+        alias_norm = str(alias).strip().lower()
+        if alias_norm and alias_norm not in aliases:
+            aliases.append(alias_norm)
+    for key in aliases:
+        value = str(manifest_map.get(key) or "").strip()
+        if value:
+            return value
+
+    if custom.startswith("cpp_"):
+        return "Bundled"
+    return None
+
+
+def _cpp_cache_meta_path(cache_root: Path | None) -> Path | None:
+    if cache_root is None:
+        return None
+    return cache_root / CPP_CACHE_META_FILE
+
+
+def _cpp_read_cache_meta(cache_root: Path | None) -> dict:
+    meta_path = _cpp_cache_meta_path(cache_root)
+    if meta_path is None or not meta_path.is_file():
+        return {}
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _cpp_write_cache_meta(cache_root: Path | None, payload: dict) -> None:
+    meta_path = _cpp_cache_meta_path(cache_root)
+    if meta_path is None:
+        return
+    try:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _cpp_latest_release_asset_info(timeout: float = 8.0) -> tuple[str | None, str | None]:
     explicit_url = str(os.environ.get("TB_CPP_ZIP_URL") or "").strip()
     if explicit_url:
-        return explicit_url
+        return None, explicit_url
 
     owner = str(os.environ.get("TB_RELEASE_OWNER") or CPP_RELEASE_OWNER).strip() or CPP_RELEASE_OWNER
     repo = str(os.environ.get("TB_RELEASE_REPO") or CPP_RELEASE_REPO).strip() or CPP_RELEASE_REPO
     asset_name = str(os.environ.get("TB_CPP_RELEASE_ASSET") or CPP_RELEASE_CPP_ASSET).strip() or CPP_RELEASE_CPP_ASSET
 
-    payload = _http_get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest", timeout=8.0)
+    cache = globals().setdefault("_CPP_LATEST_RELEASE_INFO_CACHE", {})
+    cache_key = f"{owner}/{repo}/{asset_name}".lower()
+    now = time.time()
+    entry = cache.get(cache_key)
+    if isinstance(entry, tuple) and len(entry) == 3:
+        cached_tag, cached_url, cached_at = entry
+        try:
+            if now - float(cached_at or 0.0) < 300:
+                return cached_tag, cached_url
+        except Exception:
+            pass
+
+    tag_name: str | None = None
+    browser_url: str | None = None
+    payload = _http_get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest", timeout=timeout)
     if isinstance(payload, dict):
+        tag_name = str(payload.get("tag_name") or "").strip() or None
         assets = payload.get("assets")
         if isinstance(assets, list):
             for row in assets:
@@ -14627,11 +14815,31 @@ def _resolve_cpp_release_zip_url() -> str:
                     continue
                 if str(row.get("name") or "").strip() != asset_name:
                     continue
-                browser_url = str(row.get("browser_download_url") or "").strip()
-                if browser_url:
-                    return browser_url
+                candidate = str(row.get("browser_download_url") or "").strip()
+                if candidate:
+                    browser_url = candidate
+                    break
 
-    return f"https://github.com/{owner}/{repo}/releases/latest/download/{asset_name}"
+    if not browser_url:
+        browser_url = f"https://github.com/{owner}/{repo}/releases/latest/download/{asset_name}"
+
+    cache[cache_key] = (tag_name, browser_url, now)
+    return tag_name, browser_url
+
+
+def _cpp_release_is_newer(latest_tag: str | None, cached_tag: str | None) -> bool:
+    latest_clean = str(latest_tag or "").strip()
+    cached_clean = str(cached_tag or "").strip()
+    if not latest_clean:
+        return False
+    if not cached_clean:
+        return True
+
+    latest_ver = _extract_semver_from_text(latest_clean)
+    cached_ver = _extract_semver_from_text(cached_clean)
+    if latest_ver and cached_ver:
+        return _version_sort_key(latest_ver) > _version_sort_key(cached_ver)
+    return latest_clean != cached_clean
 
 
 def _download_binary_file(url: str, target_path: Path, timeout: float = 45.0) -> None:
@@ -14781,35 +14989,61 @@ def _ensure_cached_cpp_bundle(force_download: bool = False) -> tuple[Path | None
 
     bundle_dir = cache_root / "Trading-Bot-C++"
     cached_exe = _find_cpp_packaged_exe_under(bundle_dir)
-    if (
-        not force_download
-        and cached_exe is not None
+    cached_valid = (
+        cached_exe is not None
         and cached_exe.is_file()
         and (sys.platform != "win32" or not _cpp_runtime_bundle_missing(cached_exe))
-    ):
-        return cached_exe, None
+    )
+    cache_meta = _cpp_read_cache_meta(cache_root)
+    latest_tag: str | None = None
+    download_url: str | None = None
+    allow_local_zip = True
+
+    if cached_valid and not force_download:
+        auto_update_raw = str(os.environ.get("TB_CPP_AUTO_UPDATE", "1") or "1").strip().lower()
+        auto_update_enabled = auto_update_raw not in {"0", "false", "no", "off"}
+        if not auto_update_enabled:
+            return cached_exe, None
+
+        latest_tag, download_url = _cpp_latest_release_asset_info(timeout=8.0)
+        if not latest_tag:
+            # Keep usable cached runtime when release metadata is temporarily unreachable.
+            return cached_exe, None
+
+        cached_tag = str(cache_meta.get("release_tag") or "").strip() or None
+        if _cpp_release_is_newer(latest_tag, cached_tag):
+            # Updating to a specific newer release should come from release URL, not local stale zips.
+            allow_local_zip = False
+        else:
+            return cached_exe, None
 
     local_zip_error = ""
-    for local_zip in _cpp_local_zip_candidates(cache_root):
-        if not local_zip.is_file():
-            continue
-        from_zip_exe, from_zip_err = _populate_cpp_bundle_from_zip(
-            local_zip,
-            cache_root=cache_root,
-            bundle_dir=bundle_dir,
-        )
-        if from_zip_exe is not None and from_zip_exe.is_file():
-            return from_zip_exe, None
-        if from_zip_err:
-            local_zip_error = str(from_zip_err)
+    if allow_local_zip:
+        for local_zip in _cpp_local_zip_candidates(cache_root):
+            if not local_zip.is_file():
+                continue
+            from_zip_exe, from_zip_err = _populate_cpp_bundle_from_zip(
+                local_zip,
+                cache_root=cache_root,
+                bundle_dir=bundle_dir,
+            )
+            if from_zip_exe is not None and from_zip_exe.is_file():
+                meta_payload = dict(cache_meta)
+                if latest_tag:
+                    meta_payload["release_tag"] = latest_tag
+                meta_payload["asset_name"] = CPP_RELEASE_CPP_ASSET
+                meta_payload["updated_at"] = time.time()
+                if download_url:
+                    meta_payload["download_url"] = download_url
+                _cpp_write_cache_meta(cache_root, meta_payload)
+                return from_zip_exe, None
+            if from_zip_err:
+                local_zip_error = str(from_zip_err)
 
-    download_url = _resolve_cpp_release_zip_url()
     if not download_url:
-        if (
-            cached_exe is not None
-            and cached_exe.is_file()
-            and (sys.platform != "win32" or not _cpp_runtime_bundle_missing(cached_exe))
-        ):
+        latest_tag, download_url = _cpp_latest_release_asset_info(timeout=8.0)
+    if not download_url:
+        if cached_valid:
             return cached_exe, None
         if local_zip_error:
             return None, local_zip_error
@@ -14827,21 +15061,30 @@ def _ensure_cached_cpp_bundle(force_download: bool = False) -> tuple[Path | None
     try:
         _download_binary_file(download_url, zip_target, timeout=timeout_val)
     except Exception as exc:
-        if (
-            cached_exe is not None
-            and cached_exe.is_file()
-            and (sys.platform != "win32" or not _cpp_runtime_bundle_missing(cached_exe))
-        ):
+        if cached_valid:
             return cached_exe, None
         if local_zip_error:
             return None, f"{local_zip_error}\nCould not download C++ bundle: {exc}"
         return None, f"Could not download C++ bundle: {exc}"
 
-    return _populate_cpp_bundle_from_zip(
+    downloaded_exe, downloaded_err = _populate_cpp_bundle_from_zip(
         zip_target,
         cache_root=cache_root,
         bundle_dir=bundle_dir,
     )
+    if downloaded_exe is None or not downloaded_exe.is_file():
+        if cached_valid:
+            return cached_exe, None
+        return downloaded_exe, downloaded_err
+
+    meta_payload = dict(cache_meta)
+    if latest_tag:
+        meta_payload["release_tag"] = latest_tag
+    meta_payload["asset_name"] = CPP_RELEASE_CPP_ASSET
+    meta_payload["updated_at"] = time.time()
+    meta_payload["download_url"] = download_url
+    _cpp_write_cache_meta(cache_root, meta_payload)
+    return downloaded_exe, None
 
 
 def _cpp_runtime_search_roots() -> list[Path]:
@@ -15754,10 +15997,15 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
         _progress("Resolving C++ executable...")
         exe_path = _find_cpp_code_tab_executable()
         auto_runtime_error = ""
-        if exe_path is None and _is_frozen_python_app():
-            _progress("C++ runtime not found. Downloading release bundle...")
+        if _is_frozen_python_app() and (exe_path is None or _cpp_runtime_is_cached_path(exe_path)):
+            if exe_path is None:
+                _progress("C++ runtime not found. Downloading release bundle...")
+                log_message = "C++ runtime not found locally. Downloading Trading-Bot-C++.zip..."
+            else:
+                _progress("Checking C++ runtime updates...")
+                log_message = "Checking C++ runtime cache for newer release..."
             try:
-                self.log("C++ runtime not found locally. Downloading Trading-Bot-C++.zip...")
+                self.log(log_message)
             except Exception:
                 pass
             cached_exe, cached_err = _ensure_cached_cpp_bundle(force_download=False)
