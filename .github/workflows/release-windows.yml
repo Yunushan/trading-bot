@@ -106,7 +106,7 @@ jobs:
           target: desktop
           arch: ${{ matrix.qt_arch }}
           modules: ${{ matrix.qt_modules }}
-          dir: C:/Qt
+          dir: C:/
 
       - name: Resolve Qt CMake path
         shell: pwsh
