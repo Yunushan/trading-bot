@@ -1,6 +1,6 @@
 name: Release Windows Binaries
 
-on:
+"on":
   push:
     tags:
       - "v*"
@@ -32,7 +32,10 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    if: ${{ github.event_name != 'workflow_dispatch' || (matrix.id == 'windows-x64' && github.event.inputs.build_windows_x64 == 'true') || (matrix.id == 'windows-arm64' && github.event.inputs.build_windows_arm64 == 'true') }}
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.build_windows_x64 == 'true' ||
+      github.event.inputs.build_windows_arm64 == 'true'
     strategy:
       fail-fast: false
       matrix:
