@@ -104,13 +104,113 @@ jobs:
           $env:VCPKG_ROOT = $vcpkgRoot
 
           & "$vcpkgRoot/bootstrap-vcpkg.bat" -disableMetrics
-          & "$vcpkgRoot/vcpkg.exe" --vcpkg-root "$vcpkgRoot" install `
-            eigen3:$env:VCPKG_DEFAULT_TRIPLET `
-            xtensor:$env:VCPKG_DEFAULT_TRIPLET `
-            talib:$env:VCPKG_DEFAULT_TRIPLET `
-            cpr:$env:VCPKG_DEFAULT_TRIPLET `
-            "curl[tool,ssl]:$env:VCPKG_DEFAULT_TRIPLET" `
-            vulkan-headers:$env:VCPKG_DEFAULT_TRIPLET
+          git config --global http.version HTTP/1.1
+
+          function Invoke-WithRetry {
+            param(
+              [Parameter(Mandatory = $true)][scriptblock]$Action,
+              [int]$MaxAttempts = 4,
+              [int]$InitialDelaySeconds = 2,
+              [string]$Label = "operation"
+            )
+            $attempt = 1
+            while ($attempt -le $MaxAttempts) {
+              try {
+                & $Action
+                return
+              } catch {
+                if ($attempt -ge $MaxAttempts) {
+                  throw
+                }
+                $delay = [Math]::Min(30, $InitialDelaySeconds * [Math]::Pow(2, $attempt - 1))
+                Write-Warning "$Label failed on attempt $attempt/$MaxAttempts: $($_.Exception.Message)"
+                Write-Host "Retrying in $delay seconds..."
+                Start-Sleep -Seconds ([int]$delay)
+                $attempt++
+              }
+            }
+          }
+
+          function Prefetch-NlohmannJsonArchive {
+            param([string]$Root)
+            $portFile = Join-Path $Root "ports/nlohmann-json/portfile.cmake"
+            if (!(Test-Path $portFile)) {
+              return
+            }
+            $content = Get-Content -Path $portFile -Raw -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($content)) {
+              return
+            }
+            if ($content -notmatch 'REF\s+([^\s\)]+)') {
+              return
+            }
+            $ref = $Matches[1].Trim('"')
+            if ([string]::IsNullOrWhiteSpace($ref)) {
+              return
+            }
+
+            $downloadsDir = Join-Path $Root "downloads"
+            New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
+            $archiveName = "nlohmann-json-$ref.tar.gz"
+            $archivePath = Join-Path $downloadsDir $archiveName
+            if (Test-Path $archivePath) {
+              Write-Host "nlohmann-json source archive already present: $archiveName"
+              return
+            }
+
+            $urls = @(
+              "https://github.com/nlohmann/json/archive/$ref.tar.gz",
+              "https://codeload.github.com/nlohmann/json/tar.gz/$ref",
+              "https://codeload.github.com/nlohmann/json/tar.gz/refs/tags/$ref"
+            )
+            foreach ($url in $urls) {
+              try {
+                Invoke-WithRetry -Label "download $archiveName" -MaxAttempts 3 -InitialDelaySeconds 2 -Action {
+                  Invoke-WebRequest -Uri $url -OutFile $archivePath -ErrorAction Stop
+                  if (!(Test-Path $archivePath) -or (Get-Item $archivePath).Length -le 0) {
+                    throw "Downloaded archive is empty."
+                  }
+                }
+                Write-Host "Prefetched nlohmann-json archive from: $url"
+                return
+              } catch {
+                Write-Warning "Failed mirror for nlohmann-json: $url"
+              }
+            }
+            Write-Warning "Could not prefetch nlohmann-json archive; vcpkg will attempt direct download."
+          }
+
+          Prefetch-NlohmannJsonArchive -Root $vcpkgRoot
+
+          $packages = @(
+            "eigen3:$env:VCPKG_DEFAULT_TRIPLET",
+            "xtensor:$env:VCPKG_DEFAULT_TRIPLET",
+            "talib:$env:VCPKG_DEFAULT_TRIPLET",
+            "cpr:$env:VCPKG_DEFAULT_TRIPLET",
+            "curl[tool,ssl]:$env:VCPKG_DEFAULT_TRIPLET",
+            "vulkan-headers:$env:VCPKG_DEFAULT_TRIPLET"
+          )
+
+          $installed = $false
+          $maxInstallAttempts = 3
+          for ($installAttempt = 1; $installAttempt -le $maxInstallAttempts; $installAttempt++) {
+            & "$vcpkgRoot/vcpkg.exe" --vcpkg-root "$vcpkgRoot" install @packages
+            if ($LASTEXITCODE -eq 0) {
+              $installed = $true
+              break
+            }
+
+            if ($installAttempt -lt $maxInstallAttempts) {
+              Write-Warning "vcpkg install failed on attempt $installAttempt/$maxInstallAttempts. Preparing retry..."
+              Get-ChildItem -Path (Join-Path $vcpkgRoot "downloads") -Filter "nlohmann-json-*.tar.gz" -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+              Prefetch-NlohmannJsonArchive -Root $vcpkgRoot
+              Start-Sleep -Seconds ([int][Math]::Min(30, 5 * $installAttempt))
+            }
+          }
+          if (-not $installed) {
+            throw "vcpkg install failed after $maxInstallAttempts attempts."
+          }
 
       - name: Install Python dependencies
         shell: pwsh
