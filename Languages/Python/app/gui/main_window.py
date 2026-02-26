@@ -14973,11 +14973,13 @@ def _cpp_packaged_installed_value(target: dict[str, str]) -> str | None:
             aliases.append(alias_norm)
     for key in aliases:
         value = str(manifest_map.get(key) or "").strip()
-        if value:
+        if value and value.strip().lower() not in {"bundled", "bundle"}:
             return value
 
-    if custom.startswith("cpp_"):
-        return "Bundled"
+    if custom == "cpp_file_version":
+        release_tag = _release_tag_from_metadata_dirs([exe_path.parent, exe_path.parent.parent])
+        if release_tag:
+            return release_tag
     return None
 
 

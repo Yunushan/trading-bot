@@ -277,6 +277,102 @@ jobs:
             Set-Content -Path $releaseInfoPath -Value $releaseInfoPayload -Encoding utf8
           }
 
+          function Get-VcpkgInstalledVersion {
+            param(
+              [string]$VcpkgRoot,
+              [string[]]$PackageNames
+            )
+            if ([string]::IsNullOrWhiteSpace($VcpkgRoot) -or $null -eq $PackageNames -or $PackageNames.Count -eq 0) {
+              return ""
+            }
+            $statusPath = Join-Path $VcpkgRoot "installed/vcpkg/status"
+            if (!(Test-Path $statusPath)) {
+              return ""
+            }
+            $statusRaw = Get-Content -Path $statusPath -Raw -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($statusRaw)) {
+              return ""
+            }
+            $blocks = [regex]::Split($statusRaw.Trim(), "\r?\n\r?\n+")
+            foreach ($packageName in $PackageNames) {
+              if ([string]::IsNullOrWhiteSpace($packageName)) {
+                continue
+              }
+              $needle = [regex]::Escape($packageName.Trim())
+              foreach ($block in $blocks) {
+                if ([string]::IsNullOrWhiteSpace($block)) {
+                  continue
+                }
+                if ($block -notmatch "(?m)^Package:\s*$needle\s*$") {
+                  continue
+                }
+                $version = ""
+                if ($block -match "(?m)^Version(?:-[A-Za-z]+)?:\s*([^\r\n]+)\s*$") {
+                  $version = "$($Matches[1])".Trim()
+                }
+                $portVersion = ""
+                if ($block -match "(?m)^Port-Version:\s*([^\r\n]+)\s*$") {
+                  $portVersion = "$($Matches[1])".Trim()
+                }
+                if ([string]::IsNullOrWhiteSpace($version)) {
+                  continue
+                }
+                if (-not [string]::IsNullOrWhiteSpace($portVersion) -and $portVersion -ne "0") {
+                  return "$version#$portVersion"
+                }
+                return $version
+              }
+            }
+            return ""
+          }
+
+          $qtVersion = ""
+          try {
+            $qmake = Get-Command qmake -ErrorAction SilentlyContinue
+            if ($qmake) {
+              $qtVersion = (& $qmake.Source -query QT_VERSION 2>$null | Select-Object -First 1).Trim()
+            }
+          } catch {
+            $qtVersion = ""
+          }
+          if ([string]::IsNullOrWhiteSpace($qtVersion)) {
+            $qtVersion = "6.10.2"
+          }
+
+          $nativeClientVersion = if ([string]::IsNullOrWhiteSpace($releaseTag)) { "Unknown" } else { $releaseTag }
+          $vcpkgRootForManifest = "$env:TB_VCPKG_ROOT"
+          $eigenVersion = Get-VcpkgInstalledVersion -VcpkgRoot $vcpkgRootForManifest -PackageNames @("eigen3")
+          $xtensorVersion = Get-VcpkgInstalledVersion -VcpkgRoot $vcpkgRootForManifest -PackageNames @("xtensor")
+          $talibVersion = Get-VcpkgInstalledVersion -VcpkgRoot $vcpkgRootForManifest -PackageNames @("talib")
+          $curlVersion = Get-VcpkgInstalledVersion -VcpkgRoot $vcpkgRootForManifest -PackageNames @("curl")
+          $cprVersion = Get-VcpkgInstalledVersion -VcpkgRoot $vcpkgRootForManifest -PackageNames @("cpr")
+          $eigenInstalled = if ([string]::IsNullOrWhiteSpace($eigenVersion)) { "Unknown" } else { $eigenVersion }
+          $xtensorInstalled = if ([string]::IsNullOrWhiteSpace($xtensorVersion)) { "Unknown" } else { $xtensorVersion }
+          $talibInstalled = if ([string]::IsNullOrWhiteSpace($talibVersion)) { "Unknown" } else { $talibVersion }
+          $curlInstalled = if ([string]::IsNullOrWhiteSpace($curlVersion)) { "Unknown" } else { $curlVersion }
+          $cprInstalled = if ([string]::IsNullOrWhiteSpace($cprVersion)) { "Unknown" } else { $cprVersion }
+
+          $cppDeps = @(
+            @{ name = "Qt6 (C++)"; installed = $qtVersion },
+            @{ name = "Qt6 Network (REST)"; installed = $qtVersion },
+            @{ name = "Qt6 WebEngine"; installed = $qtVersion },
+            @{ name = "Qt6 WebSockets"; installed = $qtVersion },
+            @{ name = "Binance REST client (native)"; installed = $nativeClientVersion },
+            @{ name = "Binance WebSocket client (native)"; installed = $nativeClientVersion },
+            @{ name = "Eigen"; installed = $eigenInstalled },
+            @{ name = "xtensor"; installed = $xtensorInstalled },
+            @{ name = "TA-Lib"; installed = $talibInstalled },
+            @{ name = "libcurl"; installed = $curlInstalled },
+            @{ name = "cpr"; installed = $cprInstalled }
+          )
+          $cppDepsPath = Join-Path $cppBundleDir "cpp-deps.json"
+          $cppDepsPayload = @{
+            release_tag = $releaseTag
+            built_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+            dependencies = $cppDeps
+          } | ConvertTo-Json -Depth 6
+          Set-Content -Path $cppDepsPath -Value $cppDepsPayload -Encoding utf8
+
           Compress-Archive -Path "$cppBundleDir/*" -DestinationPath "release/Trading-Bot-C++.zip" -Force
 
       - name: Upload workflow artifacts
