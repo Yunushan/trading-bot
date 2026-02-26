@@ -645,6 +645,7 @@ else:
 CPP_CODE_LANGUAGE_KEY = "C++ (Qt/C++23)"
 CPP_SUPPORTED_EXCHANGE_KEY = "Binance"
 CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
+CPP_PACKAGED_EXECUTABLE_BASENAME = "Trading-Bot-C++"
 CPP_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "C++").resolve()
 CPP_BUILD_ROOT = (_BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
 
@@ -14530,49 +14531,114 @@ def _init_code_language_tab(self):
     return tab
 
 def _cpp_executable_names() -> set[str]:
-    names = {CPP_EXECUTABLE_BASENAME}
+    base_names = {CPP_EXECUTABLE_BASENAME, CPP_PACKAGED_EXECUTABLE_BASENAME}
+    names = set(base_names)
     if sys.platform == "win32":
-        names.add(f"{CPP_EXECUTABLE_BASENAME}.exe")
+        names.update({f"{name}.exe" for name in base_names})
     return names
+
+
+def _is_frozen_python_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _cpp_runtime_search_roots() -> list[Path]:
+    raw_roots: list[Path] = []
+
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+    except Exception:
+        exe_dir = None
+    if exe_dir is not None:
+        raw_roots.extend(
+            [
+                exe_dir,
+                exe_dir / "Trading-Bot-C++",
+                exe_dir / "release",
+                exe_dir / "release" / "Trading-Bot-C++",
+            ]
+        )
+
+    try:
+        cwd = Path.cwd().resolve()
+    except Exception:
+        cwd = None
+    if cwd is not None:
+        raw_roots.extend(
+            [
+                cwd,
+                cwd / "Trading-Bot-C++",
+                cwd / "release",
+                cwd / "release" / "Trading-Bot-C++",
+            ]
+        )
+
+    env_hint = str(os.environ.get("TB_CPP_EXE_DIR") or "").strip()
+    if env_hint:
+        raw_roots.append(Path(env_hint).expanduser())
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in raw_roots:
+        try:
+            resolved = root.resolve()
+        except Exception:
+            resolved = root
+        key = os.path.normcase(os.path.normpath(str(resolved)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(resolved)
+    return unique
 
 
 def _find_cpp_code_tab_executable() -> Path | None:
     candidate_names = _cpp_executable_names()
+    candidate_stems = {Path(name).stem.lower() for name in candidate_names}
+    packaged_stem = CPP_PACKAGED_EXECUTABLE_BASENAME.lower()
+    default_stem = CPP_EXECUTABLE_BASENAME.lower()
+    frozen_mode = _is_frozen_python_app()
     suffixes = {""}
     if sys.platform == "win32":
         suffixes.add(".exe")
 
-    roots = [
-        CPP_PROJECT_PATH,
-        CPP_PROJECT_PATH / "build",
-        CPP_PROJECT_PATH / "Release",
-        CPP_PROJECT_PATH / "Debug",
-        CPP_PROJECT_PATH / "bin",
-        CPP_BUILD_ROOT,
-        CPP_BUILD_ROOT / "Release",
-        CPP_BUILD_ROOT / "Debug",
-        CPP_BUILD_ROOT / "bin",
-        CPP_BUILD_ROOT / "out",
-    ]
+    roots: list[Path] = []
+    if not _is_frozen_python_app():
+        roots.extend(
+            [
+                CPP_PROJECT_PATH,
+                CPP_PROJECT_PATH / "build",
+                CPP_PROJECT_PATH / "Release",
+                CPP_PROJECT_PATH / "Debug",
+                CPP_PROJECT_PATH / "bin",
+                CPP_BUILD_ROOT,
+                CPP_BUILD_ROOT / "Release",
+                CPP_BUILD_ROOT / "Debug",
+                CPP_BUILD_ROOT / "bin",
+                CPP_BUILD_ROOT / "out",
+            ]
+        )
 
-    try:
-        build_parent = CPP_BUILD_ROOT.parent
-    except Exception:
-        build_parent = None
-    if isinstance(build_parent, Path) and build_parent.is_dir():
         try:
-            for extra in sorted(build_parent.glob("binance_cpp*"), reverse=True):
-                roots.extend(
-                    [
-                        extra,
-                        extra / "Release",
-                        extra / "Debug",
-                        extra / "bin",
-                        extra / "out",
-                    ]
-                )
+            build_parent = CPP_BUILD_ROOT.parent
         except Exception:
-            pass
+            build_parent = None
+        if isinstance(build_parent, Path) and build_parent.is_dir():
+            try:
+                for extra in sorted(build_parent.glob("binance_cpp*"), reverse=True):
+                    roots.extend(
+                        [
+                            extra,
+                            extra / "Release",
+                            extra / "Debug",
+                            extra / "bin",
+                            extra / "out",
+                        ]
+                    )
+            except Exception:
+                pass
+
+    roots.extend(_cpp_runtime_search_roots())
 
     found: list[Path] = []
     seen: set[Path] = set()
@@ -14602,7 +14668,7 @@ def _find_cpp_code_tab_executable() -> Path | None:
                     continue
                 if path.suffix.lower() not in suffixes:
                     continue
-                if path.name in candidate_names or path.stem == CPP_EXECUTABLE_BASENAME:
+                if path.name in candidate_names or path.stem.lower() in candidate_stems:
                     _remember(path)
         except (PermissionError, OSError):
             continue
@@ -14615,11 +14681,27 @@ def _find_cpp_code_tab_executable() -> Path | None:
         except Exception:
             return 0.0
 
-    found.sort(key=_mtime, reverse=True)
+    def _name_priority(path: Path) -> int:
+        stem = path.stem.lower()
+        if frozen_mode:
+            if stem == packaged_stem:
+                return 2
+            if stem == default_stem:
+                return 1
+            return 0
+        if stem == default_stem:
+            return 2
+        if stem == packaged_stem:
+            return 1
+        return 0
+
+    found.sort(key=lambda path: (_name_priority(path), _mtime(path)), reverse=True)
     return found[0]
 
 
 def _cpp_executable_is_stale(exe_path: Path | None) -> bool:
+    if _is_frozen_python_app():
+        return False
     if exe_path is None or not exe_path.is_file():
         return True
     try:
@@ -15100,6 +15182,12 @@ def _run_command_capture_hidden(
 
 
 def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
+    if _is_frozen_python_app():
+        return (
+            None,
+            "Bundled source build is unavailable in the packaged app. "
+            "Extract Trading-Bot-C++.zip and keep Trading-Bot-C++.exe next to Trading-Bot-Python.exe.",
+        )
     if not CPP_PROJECT_PATH.is_dir():
         return None, f"C++ project directory is missing: {CPP_PROJECT_PATH}"
     if shutil.which("cmake") is None:
@@ -15329,10 +15417,16 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                     self.log(f"C++ rebuild failed, launching existing executable: {detail}")
                 else:
                     self.log(f"C++ launch failed: {detail}")
+                    install_hint = "Install Qt + CMake and try again."
+                    if _is_frozen_python_app():
+                        install_hint = (
+                            "Extract Trading-Bot-C++.zip from this release and keep "
+                            "Trading-Bot-C++.exe next to Trading-Bot-Python.exe."
+                        )
                     QtWidgets.QMessageBox.warning(
                         self,
                         "C++ launch failed",
-                        f"Could not start the C++ bot.\n\n{detail}\n\nInstall Qt + CMake and try again.",
+                        f"Could not start the C++ bot.\n\n{detail}\n\n{install_hint}",
                     )
                     return False
             elif stale_fallback is not None and stale_fallback != exe_path:
@@ -15413,7 +15507,7 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
 
             # Recovery path for previously built binaries that were linked against
             # optional Qt modules from a mismatched kit.
-            if not retry_succeeded:
+            if not retry_succeeded and not _is_frozen_python_app():
                 _progress("Rebuilding C++ bot with current Qt settings and retrying...")
                 rebuild_err = ""
                 QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
@@ -15438,6 +15532,11 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                         retry_reason = str(exc)
                 elif rebuild_err:
                     retry_reason = str(rebuild_err)
+            elif not retry_succeeded and not retry_reason:
+                retry_reason = (
+                    "Packaged C++ app may be missing Qt runtime files. "
+                    "Re-extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe."
+                )
 
             if retry_succeeded:
                 self._cpp_code_tab_process = process
