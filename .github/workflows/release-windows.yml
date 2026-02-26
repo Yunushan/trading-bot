@@ -47,6 +47,7 @@ jobs:
           - id: windows-x64
             os: windows-latest
             python_arch: x64
+            python_requirements: Languages/Python/requirements.txt
             msvc_arch: x64
             vcpkg_triplet: x64-windows
             qt_arch: win64_msvc2022_64
@@ -60,6 +61,7 @@ jobs:
           - id: windows-arm64
             os: windows-11-arm
             python_arch: arm64
+            python_requirements: Languages/Python/requirements.windows-arm64.txt
             msvc_arch: ""
             vcpkg_triplet: arm64-windows
             qt_arch: win64_msvc2022_arm64_cross_compiled
@@ -89,8 +91,7 @@ jobs:
           python-version: "3.12"
           architecture: ${{ matrix.python_arch }}
           cache: pip
-          cache-dependency-path: |
-            Languages/Python/requirements.txt
+          cache-dependency-path: ${{ matrix.python_requirements }}
 
       - name: Set up MSVC toolchain
         if: matrix.msvc_arch != ''
@@ -317,7 +318,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
-          python -m pip install --prefer-binary -r Languages/Python/requirements.txt
+          python -m pip install --prefer-binary -r "${{ matrix.python_requirements }}"
 
       - name: Build Python EXE
         shell: pwsh
