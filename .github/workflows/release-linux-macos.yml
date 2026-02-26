@@ -11,12 +11,16 @@ name: Release Linux and macOS Binaries
         type: boolean
         default: true
       build_macos:
-        description: "Build macOS assets"
+        description: "Build macOS assets (regular runners only)"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-linux-macos-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -41,12 +45,6 @@ jobs:
             qt_host: linux_arm64
             qt_arch: linux_gcc_arm64
             artifact_name: linux-arm64-release-assets
-          - id: macos-14-intel
-            platform: macos
-            os: macos-14-large
-            qt_host: mac
-            qt_arch: clang_64
-            artifact_name: macos14-intel-release-assets
           - id: macos-14-arm64
             platform: macos
             os: macos-14
@@ -65,12 +63,6 @@ jobs:
             qt_host: mac
             qt_arch: clang_64
             artifact_name: macos15-arm64-release-assets
-          - id: macos-26-intel
-            platform: macos
-            os: macos-26-large
-            qt_host: mac
-            qt_arch: clang_64
-            artifact_name: macos26-intel-release-assets
           - id: macos-26-arm64
             platform: macos
             os: macos-26
@@ -101,7 +93,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            libasound2 \
+            libasound2t64 \
             libdbus-1-3 \
             libegl1 \
             libgbm1 \
