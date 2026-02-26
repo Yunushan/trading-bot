@@ -123,7 +123,7 @@ jobs:
                   throw
                 }
                 $delay = [Math]::Min(30, $InitialDelaySeconds * [Math]::Pow(2, $attempt - 1))
-                Write-Warning "$Label failed on attempt $attempt/$MaxAttempts: $($_.Exception.Message)"
+                Write-Warning ("{0} failed on attempt {1}/{2}. {3}" -f $Label, $attempt, $MaxAttempts, $_.Exception.Message)
                 Write-Host "Retrying in $delay seconds..."
                 Start-Sleep -Seconds ([int]$delay)
                 $attempt++
