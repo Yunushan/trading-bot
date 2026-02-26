@@ -1,0 +1,134 @@
+name: Release FreeBSD Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      run_freebsd:
+        description: "Run FreeBSD self-hosted build"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.run_freebsd == 'true' }}
+    runs-on:
+      - self-hosted
+      - freebsd
+    env:
+      TB_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate FreeBSD runner prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python3 >/dev/null
+          command -v cmake >/dev/null
+          command -v c++ >/dev/null || command -v clang++ >/dev/null
+          if ! command -v qmake >/dev/null && [[ -z "${Qt6_DIR:-}" && -z "${CMAKE_PREFIX_PATH:-}" ]]; then
+            echo "Qt 6 not found. Install Qt and expose qmake or set Qt6_DIR/CMAKE_PREFIX_PATH." >&2
+            exit 1
+          fi
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyinstaller
+          python3 -m pip install -r Languages/Python/requirements.txt
+
+      - name: Build Python binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x Languages/Python/tools/build_binary.sh
+          Languages/Python/tools/build_binary.sh \
+            --python python3 \
+            --name Trading-Bot-Python \
+            --skip-dependency-install \
+            --release-tag "${TB_RELEASE_TAG}"
+
+      - name: Resolve Qt CMake path
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${Qt6_DIR:-}" ]]; then
+            echo "QT_CMAKE_DIR=${Qt6_DIR}" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          if command -v qmake >/dev/null; then
+            qt_prefix="$(qmake -query QT_INSTALL_PREFIX)"
+            echo "QT_CMAKE_DIR=${qt_prefix}/lib/cmake/Qt6" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          echo "QT_CMAKE_DIR=" >> "${GITHUB_ENV}"
+
+      - name: Configure C++ build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_args=(
+            -S Languages/C++
+            -B build/binance_cpp
+            -DCMAKE_BUILD_TYPE=Release
+            -DTB_REQUIRE_QT_WEBENGINE=OFF
+          )
+          if [[ -n "${QT_CMAKE_DIR:-}" ]]; then
+            cmake_args+=("-DQt6_DIR=${QT_CMAKE_DIR}")
+          fi
+          cmake "${cmake_args[@]}"
+
+      - name: Build C++ binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build/binance_cpp --config Release --parallel
+
+      - name: Install C++ runtime bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release/Trading-Bot-C++
+          cmake --install build/binance_cpp --config Release --prefix release/Trading-Bot-C++
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          arch="$(uname -m)"
+          python_bin="Languages/Python/dist/Trading-Bot-Python"
+          if [[ ! -f "${python_bin}" ]]; then
+            echo "Python binary not found at ${python_bin}" >&2
+            exit 1
+          fi
+
+          cp "${python_bin}" "release/Trading-Bot-Python-freebsd-${arch}"
+          chmod +x "release/Trading-Bot-Python-freebsd-${arch}"
+          tar -C release -czf "release/Trading-Bot-Python-freebsd-${arch}.tar.gz" "Trading-Bot-Python-freebsd-${arch}"
+          tar -C release -czf "release/Trading-Bot-C++-freebsd-${arch}.tar.gz" "Trading-Bot-C++"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-release-assets
+          path: release/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/Trading-Bot-Python-freebsd-*.tar.gz
+            release/Trading-Bot-C++-freebsd-*.tar.gz

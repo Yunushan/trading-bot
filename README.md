@@ -320,12 +320,20 @@ It's a documentation hub as well-each card includes a subtitle describing the st
 
 ## Release checklist (GitHub Releases)
 
-This repo includes an automated release workflow at `.github/workflows/release-windows.yml`.
-When you push a tag that starts with `v` (for example `v1.0.0`), GitHub Actions will:
+This repo includes automated release workflows:
 
-- Build `Trading-Bot-Python.exe` with PyInstaller.
-- Build the C++ app and package Qt runtime files with `windeployqt`.
-- Publish both files to a GitHub Release for that tag.
+- `.github/workflows/release-windows.yml`
+- `.github/workflows/release-linux-macos.yml`
+- `.github/workflows/release-freebsd.yml`
+
+When you push a tag that starts with `v` (for example `v1.0.0`), GitHub Actions will build and publish platform assets:
+
+- **Windows**: x64 (`Trading-Bot-Python.exe`, `Trading-Bot-C++.zip`) and ARM64 (`Trading-Bot-Python-arm64.exe`, `Trading-Bot-C++-arm64.zip`)
+- **Linux**: Python/C++ tarballs plus Linux packages (`.deb`, `.rpm`) for `x86_64` and `arm64`
+- **macOS**: Python/C++ zip bundles (built on `macos-14`, `macos-15`, and `macos-26` for both Intel `x86_64` and ARM64)
+- **FreeBSD**: Python/C++ tarballs (requires an online self-hosted runner with labels `self-hosted, freebsd`)
+
+> FreeBSD release workflow runs automatically on `v*` tags when a matching self-hosted runner is available, or manually via workflow dispatch (`run_freebsd=true`).
 
 Release steps:
 
@@ -335,10 +343,13 @@ Release steps:
    git tag v1.0.0
    git push origin v1.0.0
    ```
-3. Open the Actions tab and wait for `Release Windows Binaries` to finish.
+3. Open the Actions tab and wait for release workflows to finish.
 4. Check the new GitHub Release assets:
    - `Trading-Bot-Python.exe`
    - `Trading-Bot-C++.zip`
+   - `Trading-Bot-Python-arm64.exe`
+   - `Trading-Bot-C++-arm64.zip`
+   - Linux, macOS, and FreeBSD artifacts from their respective workflows
 
 ---
 

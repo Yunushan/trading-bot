@@ -17,20 +17,60 @@ on:
         description: "vcpkg git ref used when mode=pinned"
         required: false
         default: "26283ac5e8a068561a718ce18b169bfad84c7dab"
+      build_windows_x64:
+        description: "Build Windows x64 assets"
+        type: boolean
+        default: true
+      build_windows_arm64:
+        description: "Build Windows ARM64 assets"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: windows-latest
+  build:
+    runs-on: ${{ matrix.os }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (matrix.id == 'windows-x64' && github.event.inputs.build_windows_x64 == 'true') || (matrix.id == 'windows-arm64' && github.event.inputs.build_windows_arm64 == 'true') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x64
+            os: windows-latest
+            python_arch: x64
+            msvc_arch: x64
+            vcpkg_triplet: x64-windows
+            qt_arch: win64_msvc2022_64
+            qt_modules: qtwebengine qtwebsockets qtwebchannel qtpositioning
+            cmake_arch: x64
+            require_webengine: ON
+            asset_suffix: ""
+            python_asset: Trading-Bot-Python.exe
+            cpp_zip: Trading-Bot-C++.zip
+            artifact_name: windows-x64-release-assets
+          - id: windows-arm64
+            os: windows-11-arm
+            python_arch: arm64
+            msvc_arch: ""
+            vcpkg_triplet: arm64-windows
+            qt_arch: win64_msvc2022_arm64
+            qt_modules: qtwebsockets qtwebchannel qtpositioning
+            cmake_arch: ARM64
+            require_webengine: OFF
+            asset_suffix: -arm64
+            python_asset: Trading-Bot-Python-arm64.exe
+            cpp_zip: Trading-Bot-C++-arm64.zip
+            artifact_name: windows-arm64-release-assets
     env:
       TB_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg
-      VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.vcpkg_triplet }}
       VCPKG_PINNED_REF: "26283ac5e8a068561a718ce18b169bfad84c7dab"
       VCPKG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.vcpkg_mode || 'pinned' }}
       VCPKG_REQUESTED_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.vcpkg_ref || '' }}
       TB_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      TB_REQUIRE_QT_WEBENGINE: ${{ matrix.require_webengine }}
 
     steps:
       - name: Checkout repository
@@ -40,22 +80,39 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
+          architecture: ${{ matrix.python_arch }}
+          cache: pip
           cache-dependency-path: |
             Languages/Python/requirements.txt
 
       - name: Set up MSVC toolchain
+        if: matrix.msvc_arch != ''
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Install Qt 6
         uses: jurplel/install-qt-action@v4
         with:
           version: "6.10.2"
-          host: "windows"
-          target: "desktop"
-          arch: "win64_msvc2022_64"
-          modules: "qtwebengine qtwebsockets qtwebchannel qtpositioning"
-          dir: "C:/Qt"
+          host: windows
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: ${{ matrix.qt_modules }}
+          dir: C:/Qt
+
+      - name: Resolve Qt CMake path
+        shell: pwsh
+        run: |
+          $qmake = Get-Command qmake -ErrorAction SilentlyContinue
+          if (-not $qmake) {
+            throw "qmake not found after Qt installation."
+          }
+          $qtPrefix = (& $qmake.Source -query QT_INSTALL_PREFIX 2>$null | Select-Object -First 1).Trim()
+          if ([string]::IsNullOrWhiteSpace($qtPrefix)) {
+            throw "Could not resolve QT_INSTALL_PREFIX via qmake."
+          }
+          "QT_CMAKE_DIR=$qtPrefix/lib/cmake/Qt6" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install vcpkg and C++ dependencies
         shell: pwsh
@@ -225,10 +282,12 @@ jobs:
           ./Languages/Python/tools/build_exe.ps1 -Python python -Name "Trading-Bot-Python" -SkipDependencyInstall -ReleaseTag "$env:TB_RELEASE_TAG"
 
       - name: Configure C++ build
+        shell: pwsh
         run: |
-          cmake -S "Languages/C++" -B "build/binance_cpp" -A x64 -DQt6_DIR="C:/Qt/6.10.2/msvc2022_64/lib/cmake/Qt6" -DTB_REQUIRE_QT_WEBENGINE=ON
+          cmake -S "Languages/C++" -B "build/binance_cpp" -A "${{ matrix.cmake_arch }}" -DQt6_DIR="$env:QT_CMAKE_DIR" -DTB_REQUIRE_QT_WEBENGINE=$env:TB_REQUIRE_QT_WEBENGINE
 
       - name: Build C++ EXE
+        shell: pwsh
         run: |
           cmake --build "build/binance_cpp" --config Release --parallel
 
@@ -241,7 +300,7 @@ jobs:
             throw "Python executable not found after build."
           }
 
-          $pythonExeAsset = "release/Trading-Bot-Python.exe"
+          $pythonExeAsset = "release/${{ matrix.python_asset }}"
           Copy-Item $pythonExe $pythonExeAsset
 
           $cppExe = "build/binance_cpp/Release/binance_backtest_tab.exe"
@@ -252,7 +311,7 @@ jobs:
             throw "C++ executable not found after build."
           }
 
-          $cppBundleDir = "release/Trading-Bot-C++"
+          $cppBundleDir = "release/Trading-Bot-C++${{ matrix.asset_suffix }}"
           New-Item -ItemType Directory -Force -Path $cppBundleDir | Out-Null
           Copy-Item $cppExe (Join-Path $cppBundleDir "Trading-Bot-C++.exe")
 
@@ -373,20 +432,37 @@ jobs:
           } | ConvertTo-Json -Depth 6
           Set-Content -Path $cppDepsPath -Value $cppDepsPayload -Encoding utf8
 
-          Compress-Archive -Path "$cppBundleDir/*" -DestinationPath "release/Trading-Bot-C++.zip" -Force
+          Compress-Archive -Path "$cppBundleDir/*" -DestinationPath "release/${{ matrix.cpp_zip }}" -Force
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-release-assets
+          name: ${{ matrix.artifact_name }}
           path: |
-            release/Trading-Bot-Python.exe
-            release/Trading-Bot-C++.zip
+            release/${{ matrix.python_asset }}
+            release/${{ matrix.cpp_zip }}
+          if-no-files-found: error
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*-release-assets
+          merge-multiple: true
+          path: release
+
+      - name: Show release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lah release
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            release/Trading-Bot-Python.exe
-            release/Trading-Bot-C++.zip
+          files: release/*

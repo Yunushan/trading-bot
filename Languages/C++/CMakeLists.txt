@@ -5,6 +5,7 @@ project(BinanceBacktestTabCpp LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+include(GNUInstallDirs)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
@@ -136,4 +137,24 @@ endif()
 
 if (MSVC)
     target_compile_options(binance_backtest_tab PRIVATE /Zc:__cplusplus)
+endif()
+
+if (APPLE)
+    # Produce a native .app bundle on macOS so deployment tooling can package Qt frameworks.
+    set_target_properties(binance_backtest_tab PROPERTIES MACOSX_BUNDLE TRUE)
+endif()
+
+install(
+    TARGETS binance_backtest_tab
+    BUNDLE DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+if (COMMAND qt_generate_deploy_app_script)
+    qt_generate_deploy_app_script(
+        TARGET binance_backtest_tab
+        OUTPUT_SCRIPT tb_deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT ${tb_deploy_script})
 endif()

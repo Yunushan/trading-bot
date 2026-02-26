@@ -383,6 +383,18 @@ QString normalizeVersionText(const QString &value) {
     return semver.isEmpty() ? trimmed : semver;
 }
 
+bool isMissingVersionMarker(const QString &value) {
+    const QString normalized = value.trimmed().toLower();
+    return normalized.isEmpty()
+        || normalized == QStringLiteral("not installed")
+        || normalized == QStringLiteral("not detected")
+        || normalized == QStringLiteral("missing")
+        || normalized == QStringLiteral("unknown")
+        || normalized == QStringLiteral("disabled")
+        || normalized == QStringLiteral("bundle")
+        || normalized == QStringLiteral("bundled");
+}
+
 QString readTextFile(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -530,6 +542,139 @@ QString findHeaderPath(const QStringList &relativeCandidates) {
     return QString();
 }
 
+void insertInstalledVersionEntry(QMap<QString, QString> &versions, const QString &name, const QString &version) {
+    const QString key = name.trimmed().toLower();
+    if (key.isEmpty()) {
+        return;
+    }
+    const QString normalizedVersion = normalizeVersionText(version);
+    if (isMissingVersionMarker(normalizedVersion)) {
+        return;
+    }
+    if (!versions.contains(key)) {
+        versions.insert(key, normalizedVersion);
+    }
+}
+
+void collectInstalledVersionsFromArray(const QJsonArray &array, QMap<QString, QString> &versions) {
+    for (const QJsonValue &entry : array) {
+        if (!entry.isObject()) {
+            continue;
+        }
+        const QJsonObject item = entry.toObject();
+        const QString name = item.value(QStringLiteral("name")).toString().trimmed().isEmpty()
+            ? item.value(QStringLiteral("label")).toString().trimmed()
+            : item.value(QStringLiteral("name")).toString().trimmed();
+        const QString installed = item.value(QStringLiteral("installed")).toString().trimmed().isEmpty()
+            ? item.value(QStringLiteral("version")).toString().trimmed()
+            : item.value(QStringLiteral("installed")).toString().trimmed();
+        insertInstalledVersionEntry(versions, name, installed);
+    }
+}
+
+QMap<QString, QString> loadPackagedInstalledVersions() {
+    static QMap<QString, QString> cache;
+    static bool ready = false;
+    if (ready) {
+        return cache;
+    }
+    ready = true;
+
+    QStringList manifestPaths;
+    auto addManifestPath = [&manifestPaths](const QString &path) {
+        const QString cleaned = QDir::cleanPath(path.trimmed());
+        if (cleaned.isEmpty()) {
+            return;
+        }
+        const QFileInfo info(cleaned);
+        if (!info.exists() || !info.isFile()) {
+            return;
+        }
+        const QString canonical = info.canonicalFilePath();
+        const QString absolute = canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+        if (absolute.isEmpty()) {
+            return;
+        }
+        if (!manifestPaths.contains(absolute, Qt::CaseInsensitive)) {
+            manifestPaths.push_back(absolute);
+        }
+    };
+
+    const QString envManifestPath = QString::fromLocal8Bit(qgetenv("TB_CPP_DEPS_JSON")).trimmed();
+    if (!envManifestPath.isEmpty()) {
+        addManifestPath(envManifestPath);
+    }
+
+    const QStringList candidateNames = {
+        QStringLiteral("cpp-deps.json"),
+        QStringLiteral("cpp-env-versions.json"),
+        QStringLiteral("TB_CPP_ENV_VERSIONS.json"),
+        QStringLiteral("versions.json"),
+    };
+
+    QDir appDir(QCoreApplication::applicationDirPath());
+    for (const QString &name : candidateNames) {
+        addManifestPath(appDir.filePath(name));
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        if (!appDir.cdUp()) {
+            break;
+        }
+        for (const QString &name : candidateNames) {
+            addManifestPath(appDir.filePath(name));
+        }
+    }
+
+    for (const QString &manifestPath : manifestPaths) {
+        QJsonParseError parseError{};
+        const QJsonDocument doc = QJsonDocument::fromJson(readTextFile(manifestPath).toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || doc.isNull()) {
+            continue;
+        }
+
+        QMap<QString, QString> parsed;
+        if (doc.isObject()) {
+            const QJsonObject root = doc.object();
+            collectInstalledVersionsFromArray(root.value(QStringLiteral("dependencies")).toArray(), parsed);
+            collectInstalledVersionsFromArray(root.value(QStringLiteral("rows")).toArray(), parsed);
+
+            for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
+                if (!it.value().isString()) {
+                    continue;
+                }
+                insertInstalledVersionEntry(parsed, it.key(), it.value().toString());
+            }
+        } else if (doc.isArray()) {
+            collectInstalledVersionsFromArray(doc.array(), parsed);
+        }
+
+        if (!parsed.isEmpty()) {
+            cache = parsed;
+            break;
+        }
+    }
+    return cache;
+}
+
+QString packagedInstalledVersion(const QStringList &names) {
+    if (names.isEmpty()) {
+        return QString();
+    }
+    const QMap<QString, QString> versions = loadPackagedInstalledVersions();
+    for (const QString &name : names) {
+        const QString key = name.trimmed().toLower();
+        if (key.isEmpty()) {
+            continue;
+        }
+        const QString value = versions.value(key).trimmed();
+        if (!isMissingVersionMarker(value)) {
+            return value;
+        }
+    }
+    return QString();
+}
+
 QMap<QString, QString> loadVcpkgInstalledVersions() {
     static QMap<QString, QString> cache;
     static bool ready = false;
@@ -625,6 +770,13 @@ QString vcpkgInstalledVersion(const QStringList &packageNames) {
 }
 
 QString detectEigenVersion() {
+    const QString packagedVersion = packagedInstalledVersion({
+        QStringLiteral("eigen"),
+        QStringLiteral("eigen3"),
+    });
+    if (!packagedVersion.isEmpty()) {
+        return packagedVersion;
+    }
     const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("eigen3")});
     if (!vcpkgVersion.isEmpty()) {
         return vcpkgVersion;
@@ -650,6 +802,10 @@ QString detectEigenVersion() {
 }
 
 QString detectXtensorVersion() {
+    const QString packagedVersion = packagedInstalledVersion({QStringLiteral("xtensor")});
+    if (!packagedVersion.isEmpty()) {
+        return packagedVersion;
+    }
     const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("xtensor")});
     if (!vcpkgVersion.isEmpty()) {
         return vcpkgVersion;
@@ -676,6 +832,13 @@ QString detectXtensorVersion() {
 }
 
 QString detectTaLibVersion() {
+    const QString packagedVersion = packagedInstalledVersion({
+        QStringLiteral("ta-lib"),
+        QStringLiteral("talib"),
+    });
+    if (!packagedVersion.isEmpty()) {
+        return packagedVersion;
+    }
     const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("talib"), QStringLiteral("ta-lib")});
     if (!vcpkgVersion.isEmpty()) {
         return vcpkgVersion;
@@ -705,6 +868,10 @@ QString detectTaLibVersion() {
 }
 
 QString detectCprVersion() {
+    const QString packagedVersion = packagedInstalledVersion({QStringLiteral("cpr")});
+    if (!packagedVersion.isEmpty()) {
+        return packagedVersion;
+    }
     const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("cpr")});
     if (!vcpkgVersion.isEmpty()) {
         return vcpkgVersion;
@@ -756,6 +923,13 @@ QString detectLibcurlVersionFromCli() {
 }
 
 QString detectLibcurlVersion() {
+    const QString packagedVersion = packagedInstalledVersion({
+        QStringLiteral("libcurl"),
+        QStringLiteral("curl"),
+    });
+    if (!packagedVersion.isEmpty()) {
+        return packagedVersion;
+    }
     const QString vcpkgVersion = vcpkgInstalledVersion({QStringLiteral("curl"), QStringLiteral("libcurl")});
     if (!vcpkgVersion.isEmpty()) {
         return vcpkgVersion;
@@ -2495,6 +2669,25 @@ QWidget *BacktestWindow::createCodeTab() {
     const auto loadRows = []() -> QVector<Row> {
         QVector<Row> rows;
         bool hasCheckingPlaceholder = false;
+        const auto resolveInstalledFromLabel = [](const QString &name) -> QString {
+            const QString key = name.trimmed().toLower();
+            if (key == QStringLiteral("eigen")) {
+                return installedOrMissing(detectEigenVersion());
+            }
+            if (key == QStringLiteral("xtensor")) {
+                return installedOrMissing(detectXtensorVersion());
+            }
+            if (key == QStringLiteral("ta-lib") || key == QStringLiteral("talib")) {
+                return installedOrMissing(detectTaLibVersion());
+            }
+            if (key == QStringLiteral("libcurl") || key == QStringLiteral("curl")) {
+                return installedOrMissing(detectLibcurlVersion());
+            }
+            if (key == QStringLiteral("cpr")) {
+                return installedOrMissing(detectCprVersion());
+            }
+            return QString();
+        };
 
         const QByteArray envRows = qgetenv("TB_CPP_ENV_VERSIONS_JSON");
         if (!envRows.trimmed().isEmpty()) {
@@ -2514,12 +2707,17 @@ QWidget *BacktestWindow::createCodeTab() {
                     }
                     QString installed = obj.value(QStringLiteral("installed")).toString().trimmed();
                     QString latest = obj.value(QStringLiteral("latest")).toString().trimmed();
+
+                    if (isMissingVersionMarker(installed)) {
+                        const QString repairedInstalled = resolveInstalledFromLabel(name);
+                        if (!isMissingVersionMarker(repairedInstalled)) {
+                            installed = repairedInstalled;
+                        }
+                    }
                     if (installed.isEmpty()) {
                         installed = QStringLiteral("Unknown");
                     }
-                    if (latest.isEmpty()) {
-                        latest = QStringLiteral("Unknown");
-                    }
+
                     const QString installedLower = installed.toLower();
                     const QString latestLower = latest.toLower();
                     if (installedLower == QStringLiteral("checking...")
@@ -2527,6 +2725,17 @@ QWidget *BacktestWindow::createCodeTab() {
                         || latestLower == QStringLiteral("checking...")
                         || latestLower == QStringLiteral("not checked")) {
                         hasCheckingPlaceholder = true;
+                    }
+
+                    if ((latest.isEmpty()
+                         || latestLower == QStringLiteral("checking...")
+                         || latestLower == QStringLiteral("not checked")
+                         || latestLower == QStringLiteral("unknown"))
+                        && !isMissingVersionMarker(installed)) {
+                        latest = installed;
+                    }
+                    if (latest.isEmpty()) {
+                        latest = QStringLiteral("Unknown");
                     }
                     rows.push_back({name, installed, latest});
                 }

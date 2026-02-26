@@ -16151,30 +16151,24 @@ def _cpp_dependency_rows_for_launch(self) -> list[dict[str, str]]:
     except Exception:
         targets = copy.deepcopy(_CPP_DEPENDENCY_VERSION_TARGETS)
 
-    # Reuse already-resolved UI values first so launching the C++ app does not block on fresh network checks.
-    # But never reuse placeholder rows like "Checking...".
-    rows_from_ui: list[dict[str, str]] = []
+    # Reuse UI "latest" values when available, but always recompute "installed"
+    # values for launch payload to avoid stale "Not installed" snapshots.
+    latest_from_ui: dict[str, str] = {}
     labels = getattr(self, "_dep_version_labels", None)
     if isinstance(labels, dict) and labels:
-        pending = False
         for target in targets:
             label = str(target.get("label") or "").strip()
             if not label:
                 continue
             widgets = labels.get(label)
             if not widgets or len(widgets) < 2:
-                pending = True
                 continue
-            installed_widget, latest_widget = widgets[0], widgets[1]
-            installed = str(installed_widget.text() or "").strip() or "Unknown"
+            latest_widget = widgets[1]
             latest = str(latest_widget.text() or "").strip() or "Unknown"
-            if installed.lower() in {"checking...", "not checked"}:
-                pending = True
-            if latest.lower() in {"checking...", "not checked"}:
-                pending = True
-            rows_from_ui.append({"name": label, "installed": installed, "latest": latest})
-        if rows_from_ui and not pending and len(rows_from_ui) == len(targets):
-            return rows_from_ui
+            if latest.lower() not in {"checking...", "not checked"}:
+                latest_from_ui[label] = latest
+
+    _reset_cpp_dependency_caches()
 
     try:
         resolved_versions = _collect_dependency_versions(
@@ -16197,7 +16191,7 @@ def _cpp_dependency_rows_for_launch(self) -> list[dict[str, str]]:
         if not label:
             continue
         installed = str(item[1] if len(item) > 1 else "Unknown").strip() or "Unknown"
-        latest = str(item[2] if len(item) > 2 else "Unknown").strip() or "Unknown"
+        latest = str(latest_from_ui.get(label) or (item[2] if len(item) > 2 else "Unknown")).strip() or "Unknown"
         if latest.lower() in {"checking...", "not checked"}:
             latest = installed if installed.lower() != "not installed" else "Unknown"
         rows.append({"name": label, "installed": installed, "latest": latest})
