@@ -1,15 +1,12 @@
 name: Release FreeBSD Binaries
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       run_freebsd:
         description: "Run FreeBSD self-hosted build"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write

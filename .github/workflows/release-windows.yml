@@ -62,7 +62,7 @@ jobs:
             python_arch: arm64
             msvc_arch: ""
             vcpkg_triplet: arm64-windows
-            qt_arch: win64_msvc2022_arm64
+            qt_arch: win64_msvc2022_arm64_cross_compiled
             qt_modules: qtwebsockets qtwebchannel qtpositioning
             cmake_arch: ARM64
             require_webengine: OFF
