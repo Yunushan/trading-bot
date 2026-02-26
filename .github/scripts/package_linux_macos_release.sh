@@ -85,11 +85,13 @@ if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
     -p "release/trading-bot-python_VERSION_ARCH.TYPE" \
     .
 else
-  cp "${python_bin}" "release/Trading-Bot-Python-macos-${arch}"
-  chmod +x "release/Trading-Bot-Python-macos-${arch}"
+  macos_python_asset="release/Trading-Bot-Python-macos-${arch}"
+  cp "${python_bin}" "${macos_python_asset}"
+  chmod +x "${macos_python_asset}"
   ditto -c -k --sequesterRsrc --keepParent \
-    "release/Trading-Bot-Python-macos-${arch}" \
+    "${macos_python_asset}" \
     "release/Trading-Bot-Python-macos-${arch}.zip"
+  rm -f "${macos_python_asset}"
   ditto -c -k --sequesterRsrc --keepParent \
     "release/Trading-Bot-C++" \
     "release/Trading-Bot-C++-macos-${arch}.zip"
