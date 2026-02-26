@@ -18,6 +18,7 @@ import importlib
 import importlib.metadata as importlib_metadata
 import urllib.request
 import urllib.parse
+import zipfile
 import pandas as pd
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
@@ -646,6 +647,9 @@ CPP_CODE_LANGUAGE_KEY = "C++ (Qt/C++23)"
 CPP_SUPPORTED_EXCHANGE_KEY = "Binance"
 CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
 CPP_PACKAGED_EXECUTABLE_BASENAME = "Trading-Bot-C++"
+CPP_RELEASE_OWNER = "Yunushan"
+CPP_RELEASE_REPO = "trading-bot"
+CPP_RELEASE_CPP_ASSET = "Trading-Bot-C++.zip"
 CPP_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "C++").resolve()
 CPP_BUILD_ROOT = (_BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
 
@@ -14542,8 +14546,307 @@ def _is_frozen_python_app() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def _cpp_cache_root() -> Path | None:
+    candidates: list[Path] = []
+    for env_key in ("LOCALAPPDATA", "APPDATA"):
+        raw_base = str(os.environ.get(env_key) or "").strip()
+        if raw_base:
+            candidates.append(Path(raw_base) / "TradingBot" / "cpp-runtime")
+    try:
+        candidates.append(Path.home() / ".trading-bot" / "cpp-runtime")
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        try:
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved
+        except Exception:
+            continue
+    return None
+
+
+def _cpp_packaged_executable_names() -> set[str]:
+    names = {CPP_PACKAGED_EXECUTABLE_BASENAME}
+    if sys.platform == "win32":
+        names.add(f"{CPP_PACKAGED_EXECUTABLE_BASENAME}.exe")
+    return names
+
+
+def _find_cpp_packaged_exe_under(root: Path | None) -> Path | None:
+    if root is None:
+        return None
+    try:
+        resolved_root = root.resolve()
+    except Exception:
+        resolved_root = root
+    if not resolved_root.exists():
+        return None
+
+    names = _cpp_packaged_executable_names()
+    found: list[Path] = []
+
+    for name in names:
+        candidate = resolved_root / name
+        if candidate.is_file():
+            found.append(candidate)
+
+    if resolved_root.is_dir() and not found:
+        try:
+            for path in resolved_root.rglob("*"):
+                if path.is_file() and path.name in names:
+                    found.append(path)
+        except Exception:
+            return None
+
+    if not found:
+        return None
+    found.sort(key=lambda item: float(item.stat().st_mtime) if item.exists() else 0.0, reverse=True)
+    return found[0]
+
+
+def _resolve_cpp_release_zip_url() -> str:
+    explicit_url = str(os.environ.get("TB_CPP_ZIP_URL") or "").strip()
+    if explicit_url:
+        return explicit_url
+
+    owner = str(os.environ.get("TB_RELEASE_OWNER") or CPP_RELEASE_OWNER).strip() or CPP_RELEASE_OWNER
+    repo = str(os.environ.get("TB_RELEASE_REPO") or CPP_RELEASE_REPO).strip() or CPP_RELEASE_REPO
+    asset_name = str(os.environ.get("TB_CPP_RELEASE_ASSET") or CPP_RELEASE_CPP_ASSET).strip() or CPP_RELEASE_CPP_ASSET
+
+    payload = _http_get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest", timeout=8.0)
+    if isinstance(payload, dict):
+        assets = payload.get("assets")
+        if isinstance(assets, list):
+            for row in assets:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("name") or "").strip() != asset_name:
+                    continue
+                browser_url = str(row.get("browser_download_url") or "").strip()
+                if browser_url:
+                    return browser_url
+
+    return f"https://github.com/{owner}/{repo}/releases/latest/download/{asset_name}"
+
+
+def _download_binary_file(url: str, target_path: Path, timeout: float = 45.0) -> None:
+    timeout_val = max(8.0, float(timeout or 45.0))
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
+    with urllib.request.urlopen(request, timeout=timeout_val) as response:
+        with target_path.open("wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+
+
+def _extract_zip_safely(zip_path: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        destination_root = destination.resolve()
+    except Exception:
+        destination_root = destination
+    destination_root_norm = os.path.normcase(str(destination_root))
+
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        for member in archive.infolist():
+            name = str(member.filename or "").replace("\\", "/")
+            if not name:
+                continue
+            if name.startswith("/") or name.startswith("../") or "/../" in name:
+                continue
+
+            target = destination / Path(name)
+            try:
+                target_resolved = target.resolve()
+            except Exception:
+                target_resolved = target
+            target_norm = os.path.normcase(str(target_resolved))
+            if not (target_norm == destination_root_norm or target_norm.startswith(destination_root_norm + os.sep)):
+                continue
+
+            if member.is_dir():
+                target_resolved.mkdir(parents=True, exist_ok=True)
+                continue
+
+            target_resolved.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member, "r") as src, target_resolved.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def _cpp_local_zip_candidates(cache_root: Path | None) -> list[Path]:
+    candidates: list[Path] = []
+
+    explicit_zip = str(os.environ.get("TB_CPP_ZIP_PATH") or "").strip()
+    if explicit_zip:
+        candidates.append(Path(explicit_zip).expanduser())
+
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+    except Exception:
+        exe_dir = None
+    if exe_dir is not None:
+        candidates.extend(
+            [
+                exe_dir / CPP_RELEASE_CPP_ASSET,
+                exe_dir / "release" / CPP_RELEASE_CPP_ASSET,
+            ]
+        )
+
+    try:
+        cwd = Path.cwd().resolve()
+    except Exception:
+        cwd = None
+    if cwd is not None:
+        candidates.extend(
+            [
+                cwd / CPP_RELEASE_CPP_ASSET,
+                cwd / "release" / CPP_RELEASE_CPP_ASSET,
+            ]
+        )
+
+    if cache_root is not None:
+        candidates.append(cache_root / "_download" / CPP_RELEASE_CPP_ASSET)
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = os.path.normcase(os.path.normpath(str(resolved)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(resolved)
+    return unique
+
+
+def _populate_cpp_bundle_from_zip(
+    zip_path: Path,
+    *,
+    cache_root: Path,
+    bundle_dir: Path,
+) -> tuple[Path | None, str | None]:
+    if not zip_path.is_file():
+        return None, f"Zip not found: {zip_path}"
+
+    staging_dir = cache_root / "_staging"
+    try:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    except Exception:
+        pass
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    extracted_dir = staging_dir / "extract"
+    try:
+        _extract_zip_safely(zip_path, extracted_dir)
+    except Exception as exc:
+        return None, f"Could not extract C++ bundle '{zip_path}': {exc}"
+
+    staged_exe = _find_cpp_packaged_exe_under(extracted_dir)
+    if staged_exe is None or not staged_exe.is_file():
+        return None, f"Archive '{zip_path.name}' does not contain Trading-Bot-C++.exe."
+
+    staged_bundle_dir = staged_exe.parent
+    try:
+        shutil.rmtree(bundle_dir, ignore_errors=True)
+    except Exception:
+        pass
+    try:
+        shutil.copytree(staged_bundle_dir, bundle_dir, dirs_exist_ok=True)
+    except Exception as exc:
+        return None, f"Could not cache C++ runtime files: {exc}"
+
+    final_exe = _find_cpp_packaged_exe_under(bundle_dir)
+    if final_exe is None or not final_exe.is_file():
+        return None, "C++ cache populated but executable could not be located."
+    if sys.platform == "win32" and _cpp_runtime_bundle_missing(final_exe):
+        return None, "C++ bundle is incomplete (Qt runtime files missing)."
+    return final_exe, None
+
+
+def _ensure_cached_cpp_bundle(force_download: bool = False) -> tuple[Path | None, str | None]:
+    cache_root = _cpp_cache_root()
+    if cache_root is None:
+        return None, "Could not initialize local cache directory for C++ runtime."
+
+    bundle_dir = cache_root / "Trading-Bot-C++"
+    cached_exe = _find_cpp_packaged_exe_under(bundle_dir)
+    if (
+        not force_download
+        and cached_exe is not None
+        and cached_exe.is_file()
+        and (sys.platform != "win32" or not _cpp_runtime_bundle_missing(cached_exe))
+    ):
+        return cached_exe, None
+
+    local_zip_error = ""
+    for local_zip in _cpp_local_zip_candidates(cache_root):
+        if not local_zip.is_file():
+            continue
+        from_zip_exe, from_zip_err = _populate_cpp_bundle_from_zip(
+            local_zip,
+            cache_root=cache_root,
+            bundle_dir=bundle_dir,
+        )
+        if from_zip_exe is not None and from_zip_exe.is_file():
+            return from_zip_exe, None
+        if from_zip_err:
+            local_zip_error = str(from_zip_err)
+
+    download_url = _resolve_cpp_release_zip_url()
+    if not download_url:
+        if (
+            cached_exe is not None
+            and cached_exe.is_file()
+            and (sys.platform != "win32" or not _cpp_runtime_bundle_missing(cached_exe))
+        ):
+            return cached_exe, None
+        if local_zip_error:
+            return None, local_zip_error
+        return None, "Could not resolve C++ release asset URL."
+
+    timeout_raw = str(os.environ.get("TB_CPP_DOWNLOAD_TIMEOUT") or "").strip()
+    try:
+        timeout_val = max(8.0, float(timeout_raw)) if timeout_raw else 45.0
+    except Exception:
+        timeout_val = 45.0
+
+    download_dir = cache_root / "_download"
+    zip_target = download_dir / CPP_RELEASE_CPP_ASSET
+
+    try:
+        _download_binary_file(download_url, zip_target, timeout=timeout_val)
+    except Exception as exc:
+        if (
+            cached_exe is not None
+            and cached_exe.is_file()
+            and (sys.platform != "win32" or not _cpp_runtime_bundle_missing(cached_exe))
+        ):
+            return cached_exe, None
+        if local_zip_error:
+            return None, f"{local_zip_error}\nCould not download C++ bundle: {exc}"
+        return None, f"Could not download C++ bundle: {exc}"
+
+    return _populate_cpp_bundle_from_zip(
+        zip_target,
+        cache_root=cache_root,
+        bundle_dir=bundle_dir,
+    )
+
+
 def _cpp_runtime_search_roots() -> list[Path]:
     raw_roots: list[Path] = []
+    frozen_mode = _is_frozen_python_app()
 
     try:
         exe_dir = Path(sys.executable).resolve().parent
@@ -14563,7 +14866,7 @@ def _cpp_runtime_search_roots() -> list[Path]:
         cwd = Path.cwd().resolve()
     except Exception:
         cwd = None
-    if cwd is not None:
+    if cwd is not None and not frozen_mode:
         raw_roots.extend(
             [
                 cwd,
@@ -14576,6 +14879,15 @@ def _cpp_runtime_search_roots() -> list[Path]:
     env_hint = str(os.environ.get("TB_CPP_EXE_DIR") or "").strip()
     if env_hint:
         raw_roots.append(Path(env_hint).expanduser())
+
+    cache_root = _cpp_cache_root()
+    if cache_root is not None:
+        raw_roots.extend(
+            [
+                cache_root / "Trading-Bot-C++",
+                cache_root,
+            ]
+        )
 
     unique: list[Path] = []
     seen: set[str] = set()
@@ -14593,11 +14905,16 @@ def _cpp_runtime_search_roots() -> list[Path]:
 
 
 def _find_cpp_code_tab_executable() -> Path | None:
-    candidate_names = _cpp_executable_names()
+    frozen_mode = _is_frozen_python_app()
+    if frozen_mode:
+        candidate_names = {CPP_PACKAGED_EXECUTABLE_BASENAME}
+        if sys.platform == "win32":
+            candidate_names.add(f"{CPP_PACKAGED_EXECUTABLE_BASENAME}.exe")
+    else:
+        candidate_names = _cpp_executable_names()
     candidate_stems = {Path(name).stem.lower() for name in candidate_names}
     packaged_stem = CPP_PACKAGED_EXECUTABLE_BASENAME.lower()
     default_stem = CPP_EXECUTABLE_BASENAME.lower()
-    frozen_mode = _is_frozen_python_app()
     suffixes = {""}
     if sys.platform == "win32":
         suffixes.add(".exe")
@@ -14659,19 +14976,20 @@ def _find_cpp_code_tab_executable() -> Path | None:
             if candidate.is_file():
                 _remember(candidate)
 
-    for root in roots:
-        if not root.is_dir():
-            continue
-        try:
-            for path in root.rglob("*"):
-                if not path.is_file():
-                    continue
-                if path.suffix.lower() not in suffixes:
-                    continue
-                if path.name in candidate_names or path.stem.lower() in candidate_stems:
-                    _remember(path)
-        except (PermissionError, OSError):
-            continue
+    if not frozen_mode:
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                for path in root.rglob("*"):
+                    if not path.is_file():
+                        continue
+                    if path.suffix.lower() not in suffixes:
+                        continue
+                    if path.name in candidate_names or path.stem.lower() in candidate_stems:
+                        _remember(path)
+            except (PermissionError, OSError):
+                continue
     if not found:
         return None
 
@@ -15097,7 +15415,44 @@ def _cpp_runtime_bundle_missing(exe_path: Path) -> bool:
                 return True
         except Exception:
             return True
+    if sys.platform == "win32":
+        try:
+            if not (exe_path.parent / "platforms" / "qwindows.dll").is_file():
+                return True
+        except Exception:
+            return True
     return False
+
+
+def _prepare_cpp_launch_env(
+    exe_path: Path,
+    qt_bins: list[Path],
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    env = dict(base_env or os.environ.copy())
+
+    # Prevent PyQt/PySide process-level plugin paths from leaking into the child Qt app.
+    for key in (
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "QML_IMPORT_PATH",
+        "QML2_IMPORT_PATH",
+        "QT_QPA_FONTDIR",
+        "QT_QPA_PLATFORMTHEME",
+    ):
+        env.pop(key, None)
+
+    launch_bins: list[Path] = [exe_path.parent]
+    launch_bins.extend(qt_bins or [])
+    env["PATH"] = _compose_cpp_launch_path(launch_bins, env.get("PATH", ""))
+
+    plugin_root = exe_path.parent
+    platform_plugins = plugin_root / "platforms"
+    if platform_plugins.is_dir():
+        env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(platform_plugins)
+    if plugin_root.is_dir():
+        env["QT_PLUGIN_PATH"] = str(plugin_root)
+    return env
 
 
 def _deploy_cpp_runtime_bundle(
@@ -15186,7 +15541,7 @@ def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
         return (
             None,
             "Bundled source build is unavailable in the packaged app. "
-            "Extract Trading-Bot-C++.zip and keep Trading-Bot-C++.exe next to Trading-Bot-Python.exe.",
+            "Automatic C++ runtime download was attempted. If it failed, extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe.",
         )
     if not CPP_PROJECT_PATH.is_dir():
         return None, f"C++ project directory is missing: {CPP_PROJECT_PATH}"
@@ -15398,6 +15753,26 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
     try:
         _progress("Resolving C++ executable...")
         exe_path = _find_cpp_code_tab_executable()
+        auto_runtime_error = ""
+        if exe_path is None and _is_frozen_python_app():
+            _progress("C++ runtime not found. Downloading release bundle...")
+            try:
+                self.log("C++ runtime not found locally. Downloading Trading-Bot-C++.zip...")
+            except Exception:
+                pass
+            cached_exe, cached_err = _ensure_cached_cpp_bundle(force_download=False)
+            if cached_exe is not None and cached_exe.is_file():
+                exe_path = cached_exe
+                try:
+                    self.log(f"C++ runtime prepared from cache: {cached_exe.parent}")
+                except Exception:
+                    pass
+            elif cached_err:
+                auto_runtime_error = str(cached_err)
+                try:
+                    self.log(f"C++ auto-download failed: {auto_runtime_error}")
+                except Exception:
+                    pass
         stale_fallback = exe_path if exe_path is not None and exe_path.is_file() else None
         if exe_path is None or _cpp_executable_is_stale(exe_path):
             if exe_path is None:
@@ -15412,6 +15787,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                 QtWidgets.QApplication.restoreOverrideCursor()
             if exe_path is None:
                 detail = error or "Automatic C++ build failed."
+                if auto_runtime_error:
+                    detail = f"{detail}\nAuto-download failed: {auto_runtime_error}"
                 if stale_fallback is not None and stale_fallback.is_file():
                     exe_path = stale_fallback
                     self.log(f"C++ rebuild failed, launching existing executable: {detail}")
@@ -15420,8 +15797,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                     install_hint = "Install Qt + CMake and try again."
                     if _is_frozen_python_app():
                         install_hint = (
-                            "Extract Trading-Bot-C++.zip from this release and keep "
-                            "Trading-Bot-C++.exe next to Trading-Bot-Python.exe."
+                            "Automatic C++ runtime download failed. "
+                            "Extract Trading-Bot-C++.zip from this release next to Trading-Bot-Python.exe."
                         )
                     QtWidgets.QMessageBox.warning(
                         self,
@@ -15436,16 +15813,45 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                     pass
 
         _progress("Preparing Qt runtime...")
-        env = os.environ.copy()
         qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
-        env["PATH"] = _compose_cpp_launch_path(qt_bins, env.get("PATH", ""))
+        env = _prepare_cpp_launch_env(exe_path, qt_bins, os.environ.copy())
 
-        deploy_ok, deploy_output = _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=False)
-        if not deploy_ok:
-            try:
-                self.log(f"C++ runtime deploy warning: {deploy_output}")
-            except Exception:
-                pass
+        if not _is_frozen_python_app():
+            deploy_ok, deploy_output = _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=False)
+            if not deploy_ok:
+                try:
+                    self.log(f"C++ runtime deploy warning: {deploy_output}")
+                except Exception:
+                    pass
+        env = _prepare_cpp_launch_env(exe_path, qt_bins, env)
+        if sys.platform == "win32" and _cpp_runtime_bundle_missing(exe_path):
+            if _is_frozen_python_app():
+                _progress("C++ runtime incomplete. Fetching bundle...")
+                cached_exe, cached_err = _ensure_cached_cpp_bundle(force_download=False)
+                if cached_exe is not None and cached_exe.is_file():
+                    exe_path = cached_exe
+                    qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
+                    env = _prepare_cpp_launch_env(exe_path, qt_bins, env)
+                else:
+                    hint = (
+                        "Could not auto-repair C++ runtime from release. "
+                        "Extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe."
+                    )
+                    extra = f"\n\nAuto-repair error: {cached_err}" if cached_err else ""
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "C++ launch failed",
+                        f"Qt runtime files for C++ are incomplete at:\n{exe_path.parent}\n\n{hint}{extra}",
+                    )
+                    return False
+            else:
+                hint = "Run windeployqt or install Qt + CMake and try again."
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "C++ launch failed",
+                    f"Qt runtime files for C++ are incomplete at:\n{exe_path.parent}\n\n{hint}",
+                )
+                return False
 
         try:
             dep_rows = _cpp_dependency_rows_for_launch(self)
@@ -15518,7 +15924,7 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                 if rebuilt_exe is not None and rebuilt_exe.is_file():
                     exe_path = rebuilt_exe
                     qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
-                    env["PATH"] = _compose_cpp_launch_path(qt_bins, env.get("PATH", ""))
+                    env = _prepare_cpp_launch_env(exe_path, qt_bins, env)
                     popen_kwargs["cwd"] = str(exe_path.parent)
                     popen_kwargs["env"] = env
                     _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=True)
@@ -15534,7 +15940,7 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                     retry_reason = str(rebuild_err)
             elif not retry_succeeded and not retry_reason:
                 retry_reason = (
-                    "Packaged C++ app may be missing Qt runtime files. "
+                    "Packaged C++ app may be missing Qt runtime files after auto-repair. "
                     "Re-extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe."
                 )
 
