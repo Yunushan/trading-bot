@@ -170,8 +170,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf release/Trading-Bot-C++
-          cmake --install "build/binance_cpp" --config Release --prefix "release/Trading-Bot-C++"
+          install_prefix="${GITHUB_WORKSPACE}/release/Trading-Bot-C++"
+          rm -rf "${install_prefix}"
+          cmake --install "build/binance_cpp" --config Release --prefix "${install_prefix}"
 
       - name: Package release assets
         shell: bash
