@@ -145,15 +145,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path $pythonBundleDir | Out-Null
           Copy-Item $pythonExe (Join-Path $pythonBundleDir "Trading-Bot-Python.exe")
 
-          $pythonReadme = @"
-Trading Bot (Python)
-====================
-
-Recommended:
-- Extract this zip to a normal folder.
-- Run Trading-Bot-Python.exe from that folder.
-- If you pinned an older build, unpin it first and pin this one again.
-"@
+          $pythonReadme = @(
+            "Trading Bot (Python)"
+            "===================="
+            ""
+            "Recommended:"
+            "- Extract this zip to a normal folder."
+            "- Run Trading-Bot-Python.exe from that folder."
+            "- If you pinned an older build, unpin it first and pin this one again."
+          ) -join "`r`n"
           Set-Content -Path (Join-Path $pythonBundleDir "README.txt") -Value $pythonReadme -Encoding utf8
 
           $pythonZipAsset = "release/Trading-Bot-Python.zip"
