@@ -2749,6 +2749,11 @@ QWidget *BacktestWindow::createCodeTab() {
     const auto loadRows = []() -> QVector<Row> {
         QVector<Row> rows;
         bool hasCheckingPlaceholder = false;
+        const auto isNativeClientRow = [](const QString &name) {
+            const QString key = name.trimmed().toLower();
+            return key == QStringLiteral("binance rest client (native)")
+                || key == QStringLiteral("binance websocket client (native)");
+        };
         const auto resolveInstalledFromLabel = [](const QString &name) -> QString {
             const QString key = name.trimmed().toLower();
             if (key == QStringLiteral("binance rest client (native)")) {
@@ -2760,10 +2765,7 @@ QWidget *BacktestWindow::createCodeTab() {
                 if (!isMissingVersionMarker(releaseTag)) {
                     return releaseTag;
                 }
-                const QDir appDir(QCoreApplication::applicationDirPath());
-                const bool hasQtNetworkDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Network.dll")))
-                    || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Networkd.dll")));
-                return hasQtNetworkDll ? QStringLiteral("Active") : QStringLiteral("Not installed");
+                return QStringLiteral("Unknown");
             }
             if (key == QStringLiteral("binance websocket client (native)")) {
                 const QString packagedVersion = packagedInstalledVersion({QStringLiteral("Binance WebSocket client (native)")});
@@ -2774,11 +2776,7 @@ QWidget *BacktestWindow::createCodeTab() {
                 if (!isMissingVersionMarker(releaseTag)) {
                     return releaseTag;
                 }
-                const QDir appDir(QCoreApplication::applicationDirPath());
-                const bool hasQtWebSocketsDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSockets.dll")))
-                    || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSocketsd.dll")));
-                const bool wsReady = (HAS_QT_WEBSOCKETS != 0) && hasQtWebSocketsDll;
-                return wsReady ? QStringLiteral("Active") : QStringLiteral("Not installed");
+                return QStringLiteral("Unknown");
             }
             if (key == QStringLiteral("eigen")) {
                 return installedOrMissing(detectEigenVersion());
@@ -2816,8 +2814,21 @@ QWidget *BacktestWindow::createCodeTab() {
                     }
                     QString installed = obj.value(QStringLiteral("installed")).toString().trimmed();
                     QString latest = obj.value(QStringLiteral("latest")).toString().trimmed();
+                    const bool nativeClientRow = isNativeClientRow(name);
+                    const QString installedLowerInitial = installed.toLower();
+                    const QString latestLowerInitial = latest.toLower();
 
-                    if (isMissingVersionMarker(installed)) {
+                    if (nativeClientRow
+                        && (installedLowerInitial == QStringLiteral("installed")
+                            || installedLowerInitial == QStringLiteral("active")
+                            || isMissingVersionMarker(installed))) {
+                        const QString repairedInstalled = resolveInstalledFromLabel(name);
+                        if (!isMissingVersionMarker(repairedInstalled)
+                            && repairedInstalled.compare(QStringLiteral("Installed"), Qt::CaseInsensitive) != 0
+                            && repairedInstalled.compare(QStringLiteral("Active"), Qt::CaseInsensitive) != 0) {
+                            installed = repairedInstalled;
+                        }
+                    } else if (isMissingVersionMarker(installed)) {
                         const QString repairedInstalled = resolveInstalledFromLabel(name);
                         if (!isMissingVersionMarker(repairedInstalled)) {
                             installed = repairedInstalled;
@@ -2839,7 +2850,9 @@ QWidget *BacktestWindow::createCodeTab() {
                     if ((latest.isEmpty()
                          || latestLower == QStringLiteral("checking...")
                          || latestLower == QStringLiteral("not checked")
-                         || isMissingVersionMarker(latest))
+                         || isMissingVersionMarker(latest)
+                         || (nativeClientRow && (latestLowerInitial == QStringLiteral("installed")
+                                                 || latestLowerInitial == QStringLiteral("active"))))
                         && !isMissingVersionMarker(installed)) {
                         latest = installed;
                     }
@@ -2869,6 +2882,10 @@ QWidget *BacktestWindow::createCodeTab() {
         const QString qtInstalled = hasQtCoreDll ? qtRuntimeVersion : QStringLiteral("Not installed");
         const QString qtNetworkInstalled = hasQtNetworkDll ? qtRuntimeVersion : QStringLiteral("Not installed");
         const QString qtWsInstalled = wsReady ? qtRuntimeVersion : QStringLiteral("Not installed");
+        QString nativeClientVersion = releaseTagFromMetadataDirs();
+        if (isMissingVersionMarker(nativeClientVersion)) {
+            nativeClientVersion = QStringLiteral("Unknown");
+        }
 
         const QString eigenInstalled = installedOrMissing(detectEigenVersion());
         const QString xtensorInstalled = installedOrMissing(detectXtensorVersion());
@@ -2889,11 +2906,11 @@ QWidget *BacktestWindow::createCodeTab() {
              qtWsInstalled,
              wsReady ? qtRuntimeVersion : QStringLiteral("Install Qt WebSockets")},
             {QStringLiteral("Binance REST client (native)"),
-             hasQtNetworkDll ? QStringLiteral("Active") : QStringLiteral("Inactive"),
-             hasQtNetworkDll ? QStringLiteral("Active") : QStringLiteral("Needs Qt Network")},
+             nativeClientVersion,
+             nativeClientVersion},
             {QStringLiteral("Binance WebSocket client (native)"),
-             wsReady ? QStringLiteral("Active") : QStringLiteral("Inactive"),
-             wsReady ? QStringLiteral("Active") : QStringLiteral("Needs Qt WebSockets")},
+             nativeClientVersion,
+             nativeClientVersion},
             {QStringLiteral("Eigen"), eigenInstalled, latestOrUnknown(eigenInstalled)},
             {QStringLiteral("xtensor"), xtensorInstalled, latestOrUnknown(xtensorInstalled)},
             {QStringLiteral("TA-Lib"), talibInstalled, latestOrUnknown(talibInstalled)},

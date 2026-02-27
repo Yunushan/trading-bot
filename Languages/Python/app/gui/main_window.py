@@ -1860,7 +1860,22 @@ def _cpp_custom_installed_value(target: dict[str, str]) -> str | None:
 
     def _resolve():
         packaged_value = _cpp_packaged_installed_value(target)
-        if packaged_value:
+        if custom == "cpp_file_version":
+            packaged_semver = _extract_semver_from_text(str(packaged_value or ""))
+            if packaged_semver:
+                return packaged_semver
+            cpp_release_tag, _ = _cpp_runtime_release_snapshot()
+            if cpp_release_tag:
+                return cpp_release_tag
+            py_release_tag = _python_runtime_release_tag()
+            if py_release_tag:
+                return py_release_tag
+            if packaged_value:
+                normalized_packaged = _normalize_installed_version_text(packaged_value) or str(packaged_value).strip()
+                lowered = normalized_packaged.lower()
+                if normalized_packaged and lowered not in {"installed", "active"} and not lowered.startswith("src-"):
+                    return normalized_packaged
+        elif packaged_value:
             return packaged_value
 
         if custom == "cpp_qt":
@@ -1875,12 +1890,9 @@ def _cpp_custom_installed_value(target: dict[str, str]) -> str | None:
             qt_version = _cpp_qt_version_display()
             return qt_version if _cpp_qt_websockets_available() and qt_version != "Not detected" else "Not installed"
         if custom == "cpp_file_version":
-            release_tag, _ = _cpp_runtime_release_snapshot()
-            if release_tag:
-                return release_tag
             fingerprint = _cpp_source_fingerprint(target.get("path"))
-            if str(fingerprint).strip().lower() == "missing" and _cpp_packaged_runtime_exe() is not None:
-                return "Installed"
+            if str(fingerprint).strip().lower() == "missing":
+                return "Unknown"
             return fingerprint
         if custom == "cpp_eigen":
             return _cpp_detect_eigen_version() or "Not installed"
