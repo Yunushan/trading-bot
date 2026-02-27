@@ -206,12 +206,14 @@ class StrategyEngine:
         self.config.setdefault("indicator_flip_cooldown_seconds", 0.0)
         self.config.setdefault("indicator_use_live_values", False)
         self.config.setdefault("indicator_min_position_hold_seconds", 0.0)
+        self.config.setdefault("indicator_min_position_hold_bars", 1)
         self.config.setdefault("indicator_reentry_cooldown_seconds", 0.0)
         self.config.setdefault("indicator_reentry_cooldown_bars", 1)
         self.config.setdefault("indicator_reentry_requires_signal_reset", True)
         self.config.setdefault("require_indicator_flip_signal", True)
         self.config.setdefault("strict_indicator_flip_enforcement", True)
         self.config.setdefault("auto_flip_on_close", True)
+        self.config.setdefault("allow_close_ignoring_hold", False)
         self.config.setdefault("futures_flat_purge_grace_seconds", 12.0)
         self.config.setdefault("futures_flat_purge_miss_threshold", 2)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
@@ -231,7 +233,9 @@ class StrategyEngine:
         self._trade_book: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = {}
         self._ledger_index: dict[str, tuple[str, str, str]] = {}
         self._close_guard_lock = threading.RLock()
-        self._close_inflight: dict[str, dict[str, object]] = {}
+        # Tracks in-flight close operations per (symbol, side). Using side granularity
+        # lets hedge-mode BUY/SELL closes proceed independently.
+        self._close_inflight: dict[tuple[str, str], dict[str, object]] = {}
         self._oneway_overlap_warned: set[tuple[str, str, str]] = set()
         self.can_open_cb = can_open_callback
         self._stop = False
@@ -1225,6 +1229,7 @@ class StrategyEngine:
         *,
         ignore_hold: bool = False,
     ) -> bool:
+        # Only bypass hold guard when explicitly allowed by config.
         if ignore_hold and coerce_bool(self.config.get("allow_close_ignoring_hold"), False):
             return True
         base_hold = max(0.0, getattr(self, "_indicator_min_hold_seconds", 0.0))
@@ -1496,15 +1501,19 @@ class StrategyEngine:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         if not sym or side_norm not in {"BUY", "SELL"}:
             return True
+        allow_opposite = coerce_bool(self.config.get("allow_opposite_positions"), True)
+        key = (sym, side_norm)
+        opposite = "SELL" if side_norm == "BUY" else "BUY"
+        opposite_key = (sym, opposite)
         with self._close_guard_lock:
-            existing = self._close_inflight.get(sym)
+            existing = self._close_inflight.get(key)
             if existing:
-                active_side = str(existing.get("side") or "").upper()
-                if active_side != side_norm:
-                    return False
                 existing["depth"] = int(existing.get("depth") or 0) + 1
                 return True
-            self._close_inflight[sym] = {"side": side_norm, "label": label or "", "depth": 1}
+            # In one-way mode we still serialize opposite-side closes on the same symbol.
+            if (not allow_opposite) and opposite_key in self._close_inflight:
+                return False
+            self._close_inflight[key] = {"side": side_norm, "label": label or "", "depth": 1}
             return True
 
     def _exit_close_guard(self, symbol: str, side: str) -> None:
@@ -1512,13 +1521,14 @@ class StrategyEngine:
         side_norm = "BUY" if str(side or "").upper() in {"BUY", "LONG"} else "SELL"
         if not sym or side_norm not in {"BUY", "SELL"}:
             return
+        key = (sym, side_norm)
         with self._close_guard_lock:
-            entry = self._close_inflight.get(sym)
-            if not entry or str(entry.get("side") or "").upper() != side_norm:
+            entry = self._close_inflight.get(key)
+            if not entry:
                 return
             depth = int(entry.get("depth") or 1) - 1
             if depth <= 0:
-                self._close_inflight.pop(sym, None)
+                self._close_inflight.pop(key, None)
             else:
                 entry["depth"] = depth
 
@@ -1527,9 +1537,14 @@ class StrategyEngine:
         if not sym:
             return None
         with self._close_guard_lock:
-            entry = self._close_inflight.get(sym)
-            if not entry:
+            entries = [
+                entry
+                for (sym_key, _), entry in self._close_inflight.items()
+                if sym_key == sym
+            ]
+            if not entries:
                 return None
+            entry = entries[0]
             return {
                 "side": str(entry.get("side") or ""),
                 "label": str(entry.get("label") or ""),
@@ -2208,6 +2223,38 @@ class StrategyEngine:
                         position_side,
                     )
                     if success:
+                        payload = self._build_close_event_payload(
+                            symbol,
+                            interval_text or cw.get("interval") or "default",
+                            side_norm,
+                            qty_remaining,
+                            res,
+                        )
+                        if isinstance(reason, str) and reason.strip():
+                            payload["reason"] = reason.strip()
+                        try:
+                            self._notify_interval_closed(
+                                symbol,
+                                interval_text or cw.get("interval") or "default",
+                                side_norm,
+                                **payload,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            self._mark_guard_closed(symbol, interval_text or cw.get("interval"), side_norm)
+                        except Exception:
+                            pass
+                        try:
+                            if indicator_lookup_key:
+                                self._purge_indicator_tracking(
+                                    symbol,
+                                    interval_text or cw.get("interval"),
+                                    indicator_lookup_key,
+                                    side_norm,
+                                )
+                        except Exception:
+                            pass
                         closed_count += 1
                         total_qty_closed += qty_remaining
                         if limit_remaining is not None:
@@ -2929,7 +2976,7 @@ class StrategyEngine:
             **payload,
             latency_seconds=latency_s,
             latency_ms=latency_s * 1000.0,
-            reason="per_trade_stop_loss",
+            reason=(str(reason).strip() if isinstance(reason, str) and str(reason).strip() else "per_trade_stop_loss"),
         )
         if queue_flip and fully_closed:
             try:
@@ -3659,6 +3706,46 @@ class StrategyEngine:
             return True
 
         if indicator_tokens and not indicator_target_cleared:
+            if not coerce_bool(self.config.get("allow_close_ignoring_hold"), False):
+                now_hold_ts = time.time()
+                hold_ready_any = False
+                hold_candidate_seen = False
+                remaining_values: list[float] = []
+                for indicator_hint in indicator_tokens:
+                    for leg_key, entry in self._iter_indicator_entries(symbol, interval_norm, indicator_hint, opp):
+                        try:
+                            ts_val = float(entry.get("timestamp") or 0.0)
+                        except Exception:
+                            ts_val = 0.0
+                        if ts_val <= 0.0:
+                            continue
+                        hold_candidate_seen = True
+                        interval_seconds_entry = self._interval_seconds_value(leg_key[1] or interval_norm)
+                        effective_hold = max(
+                            max(0.0, float(getattr(self, "_indicator_min_hold_seconds", 0.0) or 0.0)),
+                            max(0, int(getattr(self, "_indicator_min_hold_bars", 0) or 0)) * interval_seconds_entry,
+                        )
+                        if effective_hold <= 0.0:
+                            hold_ready_any = True
+                            break
+                        age = max(0.0, now_hold_ts - ts_val)
+                        if age >= effective_hold:
+                            hold_ready_any = True
+                            break
+                        remaining_values.append(max(0.0, effective_hold - age))
+                    if hold_ready_any:
+                        break
+                if hold_candidate_seen and not hold_ready_any:
+                    try:
+                        wait_s = min(remaining_values) if remaining_values else 0.0
+                        indicator_label = ", ".join(indicator_tokens)
+                        self.log(
+                            f"{symbol}@{interval_norm or 'default'} flip blocked by hold guard for {indicator_label} "
+                            f"{opp} leg (wait ~{wait_s:.1f}s)."
+                        )
+                    except Exception:
+                        pass
+                    return False
             indicator_label = ", ".join(indicator_tokens)
             indicator_primary = indicator_tokens[0] if indicator_tokens else None
             protect_other_legs = False
@@ -6711,6 +6798,16 @@ class StrategyEngine:
                         pass
             current_batch_index = order_batch_counter
             order_batch_counter += 1
+            try:
+                order_event_uid = (
+                    f"{str(cw.get('symbol') or '').upper()}|{interval_norm or 'default'}|{side}|"
+                    f"{time.time_ns()}"
+                )
+            except Exception:
+                order_event_uid = (
+                    f"{str(cw.get('symbol') or '').upper()}|{interval_norm or 'default'}|{side}|"
+                    f"{int(time.time() * 1_000_000)}"
+                )
             trigger_labels = list(dict.fromkeys(indicator_labels or base_trigger_labels))
             if not trigger_labels:
                 trigger_labels = [side.lower()]
@@ -6729,6 +6826,32 @@ class StrategyEngine:
                     if key_norm:
                         trigger_actions_for_order[key_norm] = inferred_action
             signature = tuple(order_signature or tuple(sorted(trigger_labels)))
+            primary_indicator_for_order = self._indicator_token_from_signature(signature, trigger_labels)
+            if not primary_indicator_for_order:
+                for action_key in (trigger_actions_for_order or {}).keys():
+                    action_key_norm = _canonical_indicator_token(action_key) or str(action_key or "").strip().lower()
+                    if action_key_norm:
+                        primary_indicator_for_order = action_key_norm
+                        break
+            if primary_indicator_for_order:
+                primary_indicator_for_order = (
+                    _canonical_indicator_token(primary_indicator_for_order) or str(primary_indicator_for_order).strip().lower()
+                )
+                trigger_labels = [primary_indicator_for_order]
+                signature = (primary_indicator_for_order,)
+                action_value = trigger_actions_for_order.get(primary_indicator_for_order)
+                if action_value not in {"buy", "sell"}:
+                    action_value = "buy" if side == "BUY" else "sell"
+                trigger_actions_for_order = {primary_indicator_for_order: action_value}
+                if trigger_desc_for_order:
+                    narrowed_segments = [
+                        segment.strip()
+                        for segment in str(trigger_desc_for_order).split("|")
+                        if str(segment).strip()
+                        and _segment_matches_indicator_context(primary_indicator_for_order, segment)
+                    ]
+                    if narrowed_segments:
+                        trigger_desc_for_order = " | ".join(dict.fromkeys(narrowed_segments))
             interval_key = interval_norm or "default"
             context_key = f"{interval_key}:{side}:{'|'.join(signature) if signature else side}"
             bar_sig_key = (cw["symbol"], interval_key, side)
@@ -7850,20 +7973,88 @@ class StrategyEngine:
                         except Exception:
                             pass
                     try:
-                        qty_emit = float(order_res.get('computed',{}).get('qty') or 0.0)
+                        qty_emit = float(order_res.get('computed', {}).get('qty') or 0.0)
                         if qty_emit <= 0:
-                            qty_emit = float(order_res.get('info',{}).get('origQty') or 0.0)
+                            qty_emit = float(order_res.get('info', {}).get('origQty') or 0.0)
+                        info_meta_quick = order_res.get("info") or {}
+                        computed_meta_quick = order_res.get("computed") or {}
+                        fills_meta_quick = order_res.get("fills") or {}
+                        order_id_quick = None
+                        client_order_id_quick = None
+                        if isinstance(info_meta_quick, dict):
+                            order_id_quick = (
+                                info_meta_quick.get("orderId")
+                                or info_meta_quick.get("order_id")
+                                or info_meta_quick.get("orderID")
+                            )
+                            client_order_id_quick = (
+                                info_meta_quick.get("clientOrderId")
+                                or info_meta_quick.get("client_order_id")
+                                or info_meta_quick.get("clientOrderID")
+                            )
+                        if isinstance(computed_meta_quick, dict):
+                            order_id_quick = order_id_quick or computed_meta_quick.get("order_id") or computed_meta_quick.get("orderId")
+                            client_order_id_quick = client_order_id_quick or computed_meta_quick.get("client_order_id") or computed_meta_quick.get("clientOrderId")
+                        try:
+                            avg_price_quick = float(
+                                info_meta_quick.get("avgPrice")
+                                or computed_meta_quick.get("px")
+                                or cw.get("price")
+                                or 0.0
+                            )
+                        except Exception:
+                            avg_price_quick = float(cw.get("price") or 0.0)
+                        leverage_quick = None
+                        try:
+                            leverage_quick = float(
+                                info_meta_quick.get("leverage")
+                                or computed_meta_quick.get("lev")
+                                or cw.get("leverage")
+                                or 0.0
+                            )
+                        except Exception:
+                            leverage_quick = None
                         if self.trade_cb:
-                            self.trade_cb({
+                            event_payload = {
                                 'symbol': cw['symbol'],
                                 'interval': cw.get('interval'),
                                 'side': side,
                                 'qty': qty_emit,
+                                'executed_qty': qty_emit,
                                 'price': cw.get('price'),
+                                'avg_price': avg_price_quick if avg_price_quick > 0.0 else cw.get('price'),
+                                'leverage': leverage_quick,
+                                'trigger_indicators': list(trigger_labels or []),
+                                'trigger_desc': str(trigger_desc_for_order or ""),
+                                'event_uid': order_event_uid,
                                 'time': datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S'),
                                 'status': 'placed',
-                                'ok': bool(order_res.get('ok', True))
-                            })
+                                'ok': bool(order_res.get('ok', True)),
+                            }
+                            if trigger_actions_for_order:
+                                event_payload['trigger_actions'] = dict(trigger_actions_for_order)
+                            if order_id_quick is not None:
+                                event_payload['order_id'] = order_id_quick
+                            if client_order_id_quick is not None:
+                                event_payload['client_order_id'] = client_order_id_quick
+                            if fills_meta_quick:
+                                event_payload['fills_meta'] = {
+                                    'order_id': fills_meta_quick.get('order_id'),
+                                    'trade_count': fills_meta_quick.get('trade_count'),
+                                }
+                                commission_quick = fills_meta_quick.get('commission_usdt')
+                                if commission_quick is not None:
+                                    try:
+                                        event_payload['commission_usdt'] = float(commission_quick)
+                                    except Exception:
+                                        event_payload['commission_usdt'] = commission_quick
+                                realized_quick = fills_meta_quick.get('net_realized')
+                                if realized_quick is not None:
+                                    try:
+                                        event_payload['net_realized_usdt'] = float(realized_quick)
+                                    except Exception:
+                                        event_payload['net_realized_usdt'] = realized_quick
+                            self.trade_cb(event_payload)
                     except Exception:
                         pass
                     try:
@@ -8033,6 +8224,7 @@ class StrategyEngine:
                                     'trigger_signature': signature_list,
                                     'trigger_indicators': list(trigger_labels),
                                     'trigger_desc': trigger_desc_for_order,
+                                    'event_uid': order_event_uid,
                                 }
                                 if trigger_actions_for_order:
                                     entry_payload['trigger_actions'] = dict(trigger_actions_for_order)
@@ -8154,8 +8346,10 @@ class StrategyEngine:
                     "leverage": leverage_used,
                     "trigger_indicators": trigger_labels,
                     "trigger_desc": trigger_desc_for_order,
+                    "event_uid": order_event_uid,
                     "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                     "status": "placed",
+                    "ok": bool(order_res.get("ok", True)),
                 }
                 if trigger_actions_for_order:
                     order_info["trigger_actions"] = dict(trigger_actions_for_order)
