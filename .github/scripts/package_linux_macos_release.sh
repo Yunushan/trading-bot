@@ -4,6 +4,7 @@ set -euo pipefail
 mkdir -p release
 arch="$(uname -m)"
 python_bin="Languages/Python/dist/Trading-Bot-Python"
+release_version="$(python -c 'import os,re; tag=(os.environ.get("TB_RELEASE_TAG") or "").strip(); m=re.search(r"(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)", tag); print((m.group(1).replace("_",".").replace("-",".") if m else "0.0.0"))')"
 
 if [[ ! -f "${python_bin}" ]]; then
   echo "Python binary not found at ${python_bin}" >&2
@@ -11,10 +12,13 @@ if [[ ! -f "${python_bin}" ]]; then
 fi
 
 if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
-  cp "${python_bin}" "release/Trading-Bot-Python-linux-${arch}"
-  chmod +x "release/Trading-Bot-Python-linux-${arch}"
-  tar -C release -czf "release/Trading-Bot-Python-linux-${arch}.tar.gz" "Trading-Bot-Python-linux-${arch}"
-  tar -C release -czf "release/Trading-Bot-C++-linux-${arch}.tar.gz" "Trading-Bot-C++"
+  linux_python_asset="release/Trading-Bot-Python-linux-${arch}"
+  cp "${python_bin}" "${linux_python_asset}"
+  chmod +x "${linux_python_asset}"
+  tar -C release -czf "release/Trading-Bot-Python-linux-${arch}-${release_version}.tar.gz" "Trading-Bot-Python-linux-${arch}"
+  # Keep only the archive in release assets to avoid duplicate standalone + tarball uploads.
+  rm -f "${linux_python_asset}"
+  tar -C release -czf "release/Trading-Bot-C++-linux-${arch}-${release_version}.tar.gz" "Trading-Bot-C++"
 
   deb_arch="amd64"
   rpm_arch="x86_64"
@@ -32,8 +36,6 @@ if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
       rpm_arch="${arch}"
       ;;
   esac
-
-  release_version="$(python -c 'import os,re; tag=(os.environ.get("TB_RELEASE_TAG") or "").strip(); m=re.search(r"(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)", tag); print((m.group(1).replace("_",".").replace("-",".") if m else "0.0.0"))')"
 
   pkg_root="build/package/linux-python"
   rm -rf "${pkg_root}"
@@ -85,14 +87,28 @@ if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
     -p "release/trading-bot-python_VERSION_ARCH.TYPE" \
     .
 else
-  macos_python_asset="release/Trading-Bot-Python-macos-${arch}"
+  macos_asset_label="${TB_ASSET_LABEL:-}"
+  if [[ -z "${macos_asset_label}" ]]; then
+    macos_asset_label="${arch}"
+  fi
+  macos_asset_label="$(printf '%s' "${macos_asset_label}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+  if [[ -z "${macos_asset_label}" ]]; then
+    macos_asset_label="${arch}"
+  fi
+
+  macos_asset_suffix="${macos_asset_label}"
+  if [[ "${macos_asset_suffix}" != macos-* ]]; then
+    macos_asset_suffix="macos-${macos_asset_suffix}"
+  fi
+
+  macos_python_asset="release/Trading-Bot-Python-${macos_asset_suffix}-${release_version}"
   cp "${python_bin}" "${macos_python_asset}"
   chmod +x "${macos_python_asset}"
   ditto -c -k --sequesterRsrc --keepParent \
     "${macos_python_asset}" \
-    "release/Trading-Bot-Python-macos-${arch}.zip"
+    "release/Trading-Bot-Python-${macos_asset_suffix}-${release_version}.zip"
   rm -f "${macos_python_asset}"
   ditto -c -k --sequesterRsrc --keepParent \
     "release/Trading-Bot-C++" \
-    "release/Trading-Bot-C++-macos-${arch}.zip"
+    "release/Trading-Bot-C++-${macos_asset_suffix}-${release_version}.zip"
 fi

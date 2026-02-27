@@ -72,6 +72,7 @@ jobs:
     env:
       TB_PLATFORM: ${{ matrix.platform }}
       TB_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      TB_ASSET_LABEL: ${{ matrix.id }}
 
     steps:
       - name: Checkout repository

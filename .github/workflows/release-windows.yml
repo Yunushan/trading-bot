@@ -349,12 +349,23 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
+          $releaseTag = "$env:TB_RELEASE_TAG".Trim()
+          $releaseVersion = "0.0.0"
+          if (-not [string]::IsNullOrWhiteSpace($releaseTag)) {
+            if ($releaseTag -match "(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)") {
+              $releaseVersion = $Matches[1].Replace("_", ".")
+              $releaseTag = $releaseVersion
+            }
+          }
+
           $pythonExe = "Languages/Python/dist/Trading-Bot-Python.exe"
           if (!(Test-Path $pythonExe)) {
             throw "Python executable not found after build."
           }
 
-          $pythonExeAsset = "release/${{ matrix.python_asset }}"
+          $pythonAssetBaseName = [System.IO.Path]::GetFileNameWithoutExtension("${{ matrix.python_asset }}")
+          $pythonAssetExtension = [System.IO.Path]::GetExtension("${{ matrix.python_asset }}")
+          $pythonExeAsset = "release/$pythonAssetBaseName-$releaseVersion$pythonAssetExtension"
           Copy-Item $pythonExe $pythonExeAsset
 
           $cppExe = "build/binance_cpp/Release/binance_backtest_tab.exe"
@@ -384,12 +395,6 @@ jobs:
           }
           & $windeployqtPath --release --compiler-runtime (Join-Path $cppBundleDir "Trading-Bot-C++.exe")
 
-          $releaseTag = "$env:TB_RELEASE_TAG".Trim()
-          if (-not [string]::IsNullOrWhiteSpace($releaseTag)) {
-            if ($releaseTag -match "(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)") {
-              $releaseTag = $Matches[1].Replace("_", ".")
-            }
-          }
           if (-not [string]::IsNullOrWhiteSpace($releaseTag)) {
             $releaseInfoPath = Join-Path $cppBundleDir "release-info.json"
             $releaseInfoPayload = @{
@@ -495,15 +500,18 @@ jobs:
           } | ConvertTo-Json -Depth 6
           Set-Content -Path $cppDepsPath -Value $cppDepsPayload -Encoding utf8
 
-          Compress-Archive -Path "$cppBundleDir/*" -DestinationPath "release/${{ matrix.cpp_zip }}" -Force
+          $cppZipBaseName = [System.IO.Path]::GetFileNameWithoutExtension("${{ matrix.cpp_zip }}")
+          $cppZipExtension = [System.IO.Path]::GetExtension("${{ matrix.cpp_zip }}")
+          $cppZipAsset = "release/$cppZipBaseName-$releaseVersion$cppZipExtension"
+          Compress-Archive -Path "$cppBundleDir/*" -DestinationPath $cppZipAsset -Force
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: |
-            release/${{ matrix.python_asset }}
-            release/${{ matrix.cpp_zip }}
+            release/Trading-Bot-Python*.exe
+            release/Trading-Bot-C++*.zip
           if-no-files-found: error
 
   publish-release:
