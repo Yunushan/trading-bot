@@ -1875,7 +1875,13 @@ def _cpp_custom_installed_value(target: dict[str, str]) -> str | None:
             qt_version = _cpp_qt_version_display()
             return qt_version if _cpp_qt_websockets_available() and qt_version != "Not detected" else "Not installed"
         if custom == "cpp_file_version":
-            return _cpp_source_fingerprint(target.get("path"))
+            release_tag, _ = _cpp_runtime_release_snapshot()
+            if release_tag:
+                return release_tag
+            fingerprint = _cpp_source_fingerprint(target.get("path"))
+            if str(fingerprint).strip().lower() == "missing" and _cpp_packaged_runtime_exe() is not None:
+                return "Installed"
+            return fingerprint
         if custom == "cpp_eigen":
             return _cpp_detect_eigen_version() or "Not installed"
         if custom == "cpp_xtensor":

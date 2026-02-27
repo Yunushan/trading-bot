@@ -363,9 +363,12 @@ jobs:
             throw "Python executable not found after build."
           }
 
-          $pythonAssetBaseName = [System.IO.Path]::GetFileNameWithoutExtension("${{ matrix.python_asset }}")
-          $pythonAssetExtension = [System.IO.Path]::GetExtension("${{ matrix.python_asset }}")
-          $pythonExeAsset = "release/$pythonAssetBaseName-$releaseVersion$pythonAssetExtension"
+          $assetTag = "${{ matrix.id }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($assetTag)) {
+            $assetTag = "windows"
+          }
+
+          $pythonExeAsset = "release/Trading-Bot-Python-$assetTag-$releaseVersion.exe"
           Copy-Item $pythonExe $pythonExeAsset
 
           $cppExe = "build/binance_cpp/Release/binance_backtest_tab.exe"
@@ -500,9 +503,7 @@ jobs:
           } | ConvertTo-Json -Depth 6
           Set-Content -Path $cppDepsPath -Value $cppDepsPayload -Encoding utf8
 
-          $cppZipBaseName = [System.IO.Path]::GetFileNameWithoutExtension("${{ matrix.cpp_zip }}")
-          $cppZipExtension = [System.IO.Path]::GetExtension("${{ matrix.cpp_zip }}")
-          $cppZipAsset = "release/$cppZipBaseName-$releaseVersion$cppZipExtension"
+          $cppZipAsset = "release/Trading-Bot-C++-$assetTag-$releaseVersion.zip"
           Compress-Archive -Path "$cppBundleDir/*" -DestinationPath $cppZipAsset -Force
 
       - name: Upload workflow artifacts

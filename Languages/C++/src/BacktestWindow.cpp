@@ -675,6 +675,86 @@ QString packagedInstalledVersion(const QStringList &names) {
     return QString();
 }
 
+QString releaseTagFromMetadataDirs() {
+    static QString cachedTag;
+    static bool ready = false;
+    if (ready) {
+        return cachedTag;
+    }
+    ready = true;
+
+    const QStringList metadataNames = {
+        QStringLiteral("release-info.json"),
+        QStringLiteral("tb-release.json"),
+        QStringLiteral("release-tag.txt"),
+        QStringLiteral("tb-release.txt"),
+    };
+    const QStringList jsonKeys = {
+        QStringLiteral("release_tag"),
+        QStringLiteral("tag_name"),
+        QStringLiteral("tag"),
+        QStringLiteral("version"),
+    };
+
+    auto tagFromText = [](const QString &text) -> QString {
+        const QString normalized = normalizeVersionText(text);
+        return isMissingVersionMarker(normalized) ? QString() : normalized;
+    };
+
+    auto tagFromJsonObject = [&](const QJsonObject &obj) -> QString {
+        for (const QString &key : jsonKeys) {
+            const QString value = obj.value(key).toString();
+            const QString normalized = tagFromText(value);
+            if (!normalized.isEmpty()) {
+                return normalized;
+            }
+        }
+        return QString();
+    };
+
+    QDir dir(QCoreApplication::applicationDirPath());
+    for (int i = 0; i < 4; ++i) {
+        for (const QString &name : metadataNames) {
+            const QString path = dir.filePath(name);
+            QFile file(path);
+            if (!file.exists() || !file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                continue;
+            }
+            const QByteArray payload = file.readAll();
+            file.close();
+            if (payload.isEmpty()) {
+                continue;
+            }
+
+            QString resolvedTag;
+            if (name.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive)) {
+                QJsonParseError parseError{};
+                const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+                if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+                    resolvedTag = tagFromJsonObject(doc.object());
+                }
+            } else {
+                const QStringList lines = QString::fromUtf8(payload).split(QRegularExpression(QStringLiteral("\\r?\\n")));
+                for (const QString &line : lines) {
+                    const QString normalized = tagFromText(line);
+                    if (!normalized.isEmpty()) {
+                        resolvedTag = normalized;
+                        break;
+                    }
+                }
+            }
+            if (!resolvedTag.isEmpty()) {
+                cachedTag = resolvedTag;
+                return cachedTag;
+            }
+        }
+        if (!dir.cdUp()) {
+            break;
+        }
+    }
+    return QString();
+}
+
 QMap<QString, QString> loadVcpkgInstalledVersions() {
     static QMap<QString, QString> cache;
     static bool ready = false;
@@ -2671,6 +2751,35 @@ QWidget *BacktestWindow::createCodeTab() {
         bool hasCheckingPlaceholder = false;
         const auto resolveInstalledFromLabel = [](const QString &name) -> QString {
             const QString key = name.trimmed().toLower();
+            if (key == QStringLiteral("binance rest client (native)")) {
+                const QString packagedVersion = packagedInstalledVersion({QStringLiteral("Binance REST client (native)")});
+                if (!isMissingVersionMarker(packagedVersion)) {
+                    return packagedVersion;
+                }
+                const QString releaseTag = releaseTagFromMetadataDirs();
+                if (!isMissingVersionMarker(releaseTag)) {
+                    return releaseTag;
+                }
+                const QDir appDir(QCoreApplication::applicationDirPath());
+                const bool hasQtNetworkDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Network.dll")))
+                    || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6Networkd.dll")));
+                return hasQtNetworkDll ? QStringLiteral("Active") : QStringLiteral("Not installed");
+            }
+            if (key == QStringLiteral("binance websocket client (native)")) {
+                const QString packagedVersion = packagedInstalledVersion({QStringLiteral("Binance WebSocket client (native)")});
+                if (!isMissingVersionMarker(packagedVersion)) {
+                    return packagedVersion;
+                }
+                const QString releaseTag = releaseTagFromMetadataDirs();
+                if (!isMissingVersionMarker(releaseTag)) {
+                    return releaseTag;
+                }
+                const QDir appDir(QCoreApplication::applicationDirPath());
+                const bool hasQtWebSocketsDll = QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSockets.dll")))
+                    || QFileInfo::exists(appDir.filePath(QStringLiteral("Qt6WebSocketsd.dll")));
+                const bool wsReady = (HAS_QT_WEBSOCKETS != 0) && hasQtWebSocketsDll;
+                return wsReady ? QStringLiteral("Active") : QStringLiteral("Not installed");
+            }
             if (key == QStringLiteral("eigen")) {
                 return installedOrMissing(detectEigenVersion());
             }
@@ -2730,7 +2839,7 @@ QWidget *BacktestWindow::createCodeTab() {
                     if ((latest.isEmpty()
                          || latestLower == QStringLiteral("checking...")
                          || latestLower == QStringLiteral("not checked")
-                         || latestLower == QStringLiteral("unknown"))
+                         || isMissingVersionMarker(latest))
                         && !isMissingVersionMarker(installed)) {
                         latest = installed;
                     }
