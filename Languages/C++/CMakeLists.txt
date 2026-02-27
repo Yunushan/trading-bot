@@ -14,30 +14,43 @@ set(CMAKE_AUTORCC ON)
 option(TB_REQUIRE_QT_WEBENGINE "Require Qt WebEngine for embedded TradingView/Binance chart modes." ON)
 
 if (WIN32)
-    # Prefer a local Qt kit that includes WebEngine so the C++ chart tab can mirror Python modes.
-    file(GLOB _tb_qt6_candidates "C:/Qt/6.*/msvc2022_64/lib/cmake/Qt6")
-    list(SORT _tb_qt6_candidates COMPARE NATURAL ORDER DESCENDING)
-
-    set(_tb_selected_qt6_dir "")
-    foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
-        if (EXISTS "${_tb_candidate}/Qt6Config.cmake"
-            AND EXISTS "${_tb_candidate}/../Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake")
-            set(_tb_selected_qt6_dir "${_tb_candidate}")
-            break()
+    # Respect caller-provided Qt6_DIR (for example CI ARM64 jobs). Only auto-detect when absent.
+    if ((NOT DEFINED Qt6_DIR) OR Qt6_DIR STREQUAL "")
+        set(_tb_qt6_candidates "")
+        if (CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+            file(GLOB _tb_qt6_candidates
+                "C:/Qt/6.*/msvc2022_arm64/lib/cmake/Qt6"
+                "C:/Qt/6.*/msvc2022_arm64_cross_compiled/lib/cmake/Qt6")
+        else()
+            # Prefer a local Qt x64 kit that includes WebEngine so the C++ chart tab can mirror Python modes.
+            file(GLOB _tb_qt6_candidates "C:/Qt/6.*/msvc2022_64/lib/cmake/Qt6")
         endif()
-    endforeach()
+        list(SORT _tb_qt6_candidates COMPARE NATURAL ORDER DESCENDING)
 
-    if (_tb_selected_qt6_dir STREQUAL "")
+        set(_tb_selected_qt6_dir "")
         foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
-            if (EXISTS "${_tb_candidate}/Qt6Config.cmake")
+            if (EXISTS "${_tb_candidate}/Qt6Config.cmake"
+                AND EXISTS "${_tb_candidate}/../Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake")
                 set(_tb_selected_qt6_dir "${_tb_candidate}")
                 break()
             endif()
         endforeach()
+
+        if (_tb_selected_qt6_dir STREQUAL "")
+            foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
+                if (EXISTS "${_tb_candidate}/Qt6Config.cmake")
+                    set(_tb_selected_qt6_dir "${_tb_candidate}")
+                    break()
+                endif()
+            endforeach()
+        endif()
+
+        if (NOT _tb_selected_qt6_dir STREQUAL "")
+            set(Qt6_DIR "${_tb_selected_qt6_dir}" CACHE PATH "Qt6 CMake config path" FORCE)
+        endif()
     endif()
 
-    if (NOT _tb_selected_qt6_dir STREQUAL "")
-        set(Qt6_DIR "${_tb_selected_qt6_dir}" CACHE PATH "Qt6 CMake config path" FORCE)
+    if (DEFINED Qt6_DIR AND NOT Qt6_DIR STREQUAL "")
         message(STATUS "Using Qt6_DIR=${Qt6_DIR}")
     endif()
 
