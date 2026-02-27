@@ -47,6 +47,58 @@ try {
     Set-Content -Path $releaseInfoPath -Value $releaseInfoPayload -Encoding utf8
   }
 
+  $moduleProbe = @"
+import importlib.util
+import sys
+print("1" if importlib.util.find_spec(sys.argv[1]) else "0")
+"@
+
+  $distributionProbe = @"
+import importlib.metadata as metadata
+import sys
+try:
+    metadata.distribution(sys.argv[1])
+except metadata.PackageNotFoundError:
+    print("0")
+except Exception:
+    print("0")
+else:
+    print("1")
+"@
+
+  function Test-PythonModuleAvailable {
+    param(
+      [Parameter(Mandatory = $true)][string]$PythonExe,
+      [Parameter(Mandatory = $true)][string]$ModuleName
+    )
+    $result = (& $PythonExe -c $moduleProbe $ModuleName | Select-Object -First 1)
+    return ("$result".Trim() -eq "1")
+  }
+
+  function Test-PythonDistributionAvailable {
+    param(
+      [Parameter(Mandatory = $true)][string]$PythonExe,
+      [Parameter(Mandatory = $true)][string]$DistributionName
+    )
+    $result = (& $PythonExe -c $distributionProbe $DistributionName | Select-Object -First 1)
+    return ("$result".Trim() -eq "1")
+  }
+
+  $optionalSubmodulePackages = @(
+    "binance_sdk_derivatives_trading_usds_futures",
+    "binance_sdk_derivatives_trading_coin_futures",
+    "binance_sdk_spot"
+  )
+
+  $optionalMetadataDistributions = @(
+    "python-binance",
+    "binance-connector",
+    "ccxt",
+    "binance-sdk-derivatives-trading-usds-futures",
+    "binance-sdk-derivatives-trading-coin-futures",
+    "binance-sdk-spot"
+  )
+
   $pyInstallerArgs = @(
     "-m", "PyInstaller",
     "main.py",
@@ -55,18 +107,27 @@ try {
     "--clean",
     "--noconfirm",
     "--specpath", "build",
-    "--collect-submodules", "binance_sdk_derivatives_trading_usds_futures",
-    "--collect-submodules", "binance_sdk_derivatives_trading_coin_futures",
-    "--collect-submodules", "binance_sdk_spot",
-    "--copy-metadata", "python-binance",
-    "--copy-metadata", "binance-connector",
-    "--copy-metadata", "ccxt",
-    "--copy-metadata", "binance-sdk-derivatives-trading-usds-futures",
-    "--copy-metadata", "binance-sdk-derivatives-trading-coin-futures",
-    "--copy-metadata", "binance-sdk-spot",
     "--hidden-import", "binance.client",
     "--hidden-import", "binance.spot"
   )
+
+  foreach ($moduleName in $optionalSubmodulePackages) {
+    if (Test-PythonModuleAvailable -PythonExe $Python -ModuleName $moduleName) {
+      $pyInstallerArgs += @("--collect-submodules", $moduleName)
+    }
+    else {
+      Write-Host "Skipping --collect-submodules $moduleName (module not installed)."
+    }
+  }
+
+  foreach ($distributionName in $optionalMetadataDistributions) {
+    if (Test-PythonDistributionAvailable -PythonExe $Python -DistributionName $distributionName) {
+      $pyInstallerArgs += @("--copy-metadata", $distributionName)
+    }
+    else {
+      Write-Host "Skipping --copy-metadata $distributionName (distribution not installed)."
+    }
+  }
 
   if ($Console) {
     $pyInstallerArgs += "--console"

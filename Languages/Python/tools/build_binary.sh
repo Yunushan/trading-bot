@@ -156,15 +156,6 @@ pyinstaller_args=(
   --clean
   --noconfirm
   --specpath build
-  --collect-submodules binance_sdk_derivatives_trading_usds_futures
-  --collect-submodules binance_sdk_derivatives_trading_coin_futures
-  --collect-submodules binance_sdk_spot
-  --copy-metadata python-binance
-  --copy-metadata binance-connector
-  --copy-metadata ccxt
-  --copy-metadata binance-sdk-derivatives-trading-usds-futures
-  --copy-metadata binance-sdk-derivatives-trading-coin-futures
-  --copy-metadata binance-sdk-spot
   --hidden-import binance.client
   --hidden-import binance.spot
 )
@@ -193,6 +184,61 @@ fi
 if [[ -n "${release_info_path}" && -f "${release_info_path}" ]]; then
   pyinstaller_args+=(--add-data "${release_info_path}${data_sep}app")
 fi
+
+module_is_available() {
+  local module_name="$1"
+  "${PYTHON_BIN}" - "$module_name" <<'PY'
+import importlib.util
+import sys
+sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 1)
+PY
+}
+
+distribution_is_available() {
+  local distribution_name="$1"
+  "${PYTHON_BIN}" - "$distribution_name" <<'PY'
+import importlib.metadata as metadata
+import sys
+try:
+    metadata.distribution(sys.argv[1])
+except metadata.PackageNotFoundError:
+    raise SystemExit(1)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+optional_submodules=(
+  binance_sdk_derivatives_trading_usds_futures
+  binance_sdk_derivatives_trading_coin_futures
+  binance_sdk_spot
+)
+
+optional_metadata_distributions=(
+  python-binance
+  binance-connector
+  ccxt
+  binance-sdk-derivatives-trading-usds-futures
+  binance-sdk-derivatives-trading-coin-futures
+  binance-sdk-spot
+)
+
+for module_name in "${optional_submodules[@]}"; do
+  if module_is_available "${module_name}"; then
+    pyinstaller_args+=(--collect-submodules "${module_name}")
+  else
+    echo "Skipping --collect-submodules ${module_name} (module not installed)." >&2
+  fi
+done
+
+for distribution_name in "${optional_metadata_distributions[@]}"; do
+  if distribution_is_available "${distribution_name}"; then
+    pyinstaller_args+=(--copy-metadata "${distribution_name}")
+  else
+    echo "Skipping --copy-metadata ${distribution_name} (distribution not installed)." >&2
+  fi
+done
 
 "${PYTHON_BIN}" "${pyinstaller_args[@]}"
 
