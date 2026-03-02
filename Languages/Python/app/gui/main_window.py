@@ -14640,6 +14640,10 @@ def _init_code_language_tab(self):
     self._sync_language_exchange_lists_from_config()
     self._update_bot_status()
     self._refresh_code_tab_from_config()
+    try:
+        self._ensure_cpp_process_watchdog()
+    except Exception:
+        pass
     return tab
 
 def _cpp_executable_names() -> set[str]:
@@ -16551,6 +16555,10 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
 
             if retry_succeeded:
                 self._cpp_code_tab_process = process
+                try:
+                    self._ensure_cpp_process_watchdog()
+                except Exception:
+                    pass
                 self.log(f"Launched C++ bot ({trigger}): {exe_path}")
                 if runtime_bundle_touched:
                     QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
@@ -16573,6 +16581,10 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
             return False
 
         self._cpp_code_tab_process = process
+        try:
+            self._ensure_cpp_process_watchdog()
+        except Exception:
+            pass
         self.log(f"Launched C++ bot ({trigger}): {exe_path}")
         if runtime_bundle_touched:
             QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
@@ -16673,6 +16685,54 @@ def _code_tab_visible(self) -> bool:
         return tabs.currentWidget() is code_tab
     except Exception:
         return False
+
+
+def _ensure_cpp_process_watchdog(self) -> None:
+    timer = getattr(self, "_cpp_process_watchdog_timer", None)
+    if timer is None:
+        try:
+            timer = QtCore.QTimer(self)
+            timer.setInterval(1000)
+            timer.timeout.connect(self._poll_cpp_process_state)
+            self._cpp_process_watchdog_timer = timer
+        except Exception:
+            return
+    try:
+        if not timer.isActive():
+            timer.start()
+    except Exception:
+        pass
+
+
+def _poll_cpp_process_state(self) -> None:
+    proc = getattr(self, "_cpp_code_tab_process", None)
+    if proc is None:
+        return
+    try:
+        exit_code = proc.poll()
+    except Exception:
+        exit_code = 0
+    if exit_code is None:
+        return
+
+    self._cpp_code_tab_process = None
+    switched_to_python = False
+    try:
+        if self.config.get("code_language") == CPP_CODE_LANGUAGE_KEY:
+            self.config["code_language"] = PYTHON_CODE_LANGUAGE_KEY
+            switched_to_python = True
+    except Exception:
+        switched_to_python = False
+
+    if switched_to_python:
+        try:
+            self._refresh_code_tab_from_config()
+        except Exception:
+            pass
+        try:
+            self.log(f"C++ bot exited (code {exit_code}). Switched code language to Python.")
+        except Exception:
+            pass
 
 
 def _start_dependency_usage_auto_poll(self) -> None:
@@ -21279,6 +21339,8 @@ try:
     MainWindow._code_tab_select_forex = _code_tab_select_forex
     MainWindow._refresh_code_tab_from_config = _refresh_code_tab_from_config
     MainWindow._code_tab_visible = _code_tab_visible
+    MainWindow._ensure_cpp_process_watchdog = _ensure_cpp_process_watchdog
+    MainWindow._poll_cpp_process_state = _poll_cpp_process_state
     MainWindow._start_dependency_usage_auto_poll = _start_dependency_usage_auto_poll
     MainWindow._stop_dependency_usage_auto_poll = _stop_dependency_usage_auto_poll
     MainWindow._poll_dependency_usage_states = _poll_dependency_usage_states

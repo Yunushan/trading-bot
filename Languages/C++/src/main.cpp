@@ -64,6 +64,7 @@ int main(int argc, char *argv[]) {
     applyAppUserModelID();
 #endif
 
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
     QApplication app(argc, argv);
     app.setApplicationDisplayName("Trading Bot");
     app.setApplicationName("Trading Bot");

@@ -21,6 +21,9 @@ public:
     struct BalanceResult {
         bool ok = false;
         double usdtBalance = 0.0;
+        double totalUsdtBalance = 0.0;
+        double availableUsdtBalance = 0.0;
+        QString asset = QStringLiteral("USDT");
         QString error;
     };
 
@@ -41,12 +44,16 @@ public:
         const QString &apiSecret,
         bool futures,
         bool testnet,
-        int timeoutMs = 10000);
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
 
     static SymbolsResult fetchUsdtSymbols(
         bool futures,
         bool testnet,
-        int timeoutMs = 10000);
+        int timeoutMs = 10000,
+        bool sortByVolume = false,
+        int topN = 0,
+        const QString &baseUrlOverride = {});
 
     static KlinesResult fetchKlines(
         const QString &symbol,
@@ -54,7 +61,8 @@ public:
         bool futures,
         bool testnet,
         int limit = 300,
-        int timeoutMs = 10000);
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
 
 private:
     static QString hmacSha256Hex(const QString &secret, const QString &message);

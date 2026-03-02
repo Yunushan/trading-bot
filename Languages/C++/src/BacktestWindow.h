@@ -1,6 +1,9 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QMap>
+#include <QSet>
+#include <QVariantMap>
 #include <chrono>
 
 class QListWidget;
@@ -16,6 +19,7 @@ class QDateEdit;
 class QTimer;
 class QTabWidget;
 class QWidget;
+class QTextEdit;
 
 class BacktestWindow final : public QMainWindow {
     Q_OBJECT
@@ -45,6 +49,13 @@ private:
     void showIndicatorDialog(const QString &indicatorName);
     void refreshDashboardBalance();
     void refreshDashboardSymbols();
+    void applyDashboardTemplate(const QString &templateKey);
+    void startDashboardRuntime();
+    void stopDashboardRuntime();
+    void runDashboardRuntimeCycle();
+    void appendDashboardAllLog(const QString &message);
+    void appendDashboardPositionLog(const QString &message);
+    void appendDashboardWaitingLog(const QString &message);
     void wireSignals();
     void ensureBotTimer(bool running);
     void updateStatusMessage(const QString &message);
@@ -75,11 +86,36 @@ private:
     QPushButton *dashboardRefreshBtn_;
     QComboBox *dashboardAccountTypeCombo_;
     QComboBox *dashboardModeCombo_;
+    QComboBox *dashboardConnectorCombo_;
     QComboBox *dashboardExchangeCombo_;
     QComboBox *dashboardIndicatorSourceCombo_;
+    QComboBox *dashboardTemplateCombo_;
+    QComboBox *dashboardMarginModeCombo_;
+    QDoubleSpinBox *dashboardPositionPctSpin_;
+    QSpinBox *dashboardLeverageSpin_;
     QListWidget *dashboardSymbolList_;
     QListWidget *dashboardIntervalList_;
     QPushButton *dashboardRefreshSymbolsBtn_;
+    QMap<QString, QCheckBox *> dashboardIndicatorChecks_;
+    QMap<QString, QPushButton *> dashboardIndicatorButtons_;
+    QMap<QString, QVariantMap> dashboardIndicatorParams_;
+    QPushButton *dashboardStartBtn_;
+    QPushButton *dashboardStopBtn_;
+    QTableWidget *dashboardOverridesTable_;
+    QTextEdit *dashboardAllLogsEdit_;
+    QTextEdit *dashboardPositionLogsEdit_;
+    QTextEdit *dashboardWaitingLogsEdit_;
+    QTimer *dashboardRuntimeTimer_;
+    QMap<QString, qint64> dashboardRuntimeLastEvalMs_;
+    QSet<QString> dashboardRuntimeConnectorWarnings_;
+    struct RuntimePosition {
+        QString side;
+        QString interval;
+        double entryPrice = 0.0;
+        double quantity = 0.0;
+        double leverage = 1.0;
+    };
+    QMap<QString, RuntimePosition> dashboardRuntimeOpenPositions_;
 
     QComboBox *chartMarketCombo_;
     QComboBox *chartSymbolCombo_;
@@ -90,4 +126,5 @@ private:
     QLabel *chartPnlClosedLabel_;
     QLabel *chartBotStatusLabel_;
     QLabel *chartBotTimeLabel_;
+    QTableWidget *positionsTable_;
 };
