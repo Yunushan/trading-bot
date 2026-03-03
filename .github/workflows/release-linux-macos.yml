@@ -86,6 +86,12 @@ jobs:
           cache-dependency-path: |
             Languages/Python/requirements.txt
 
+      - name: Refresh README LOC snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/update_loc_snapshot.py --readme README.md
+
       - name: Install Linux packaging dependencies
         if: matrix.platform == 'linux'
         shell: bash

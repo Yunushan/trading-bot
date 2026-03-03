@@ -15,6 +15,10 @@
 #include <shobjidl.h>
 #endif
 
+// Entrypoint notes:
+// - Keep shell/taskbar identity stable on Windows.
+// - Resolve icon from Qt resources first, then filesystem fallback.
+// - Start the main window maximized to match Python-side UX defaults.
 namespace {
 QString findIconPath() {
     // Prefer the embedded Qt resource (always available after build)
@@ -52,7 +56,7 @@ QIcon loadAppIcon() {
 
 #ifdef Q_OS_WIN
 void applyAppUserModelID() {
-    // Ensures taskbar pinning and icon association work consistently on Windows.
+    // Ensures taskbar pinning/grouping and jump-list identity stay consistent.
     const wchar_t *appid = L"TradingBot.Desktop.Cpp";
     SetCurrentProcessExplicitAppUserModelID(appid);
 }
@@ -61,6 +65,7 @@ void applyAppUserModelID() {
 
 int main(int argc, char *argv[]) {
 #ifdef Q_OS_WIN
+    // Apply AppUserModelID before QApplication is created.
     applyAppUserModelID();
 #endif
 

@@ -22,6 +22,12 @@ class QTabWidget;
 class QWidget;
 class QTextEdit;
 
+// Main Qt window for the C++ desktop runtime.
+//
+// Design intent:
+// - Mirror core Python dashboard/backtest interactions.
+// - Keep UI state explicit via typed members for cross-tab synchronization.
+// - Host lightweight runtime simulation hooks (logs, queue state, position table).
 class BacktestWindow final : public QMainWindow {
     Q_OBJECT
 
@@ -36,6 +42,7 @@ private slots:
     void applyDashboardTheme(const QString &themeName);
 
 private:
+    // Tab/page creation helpers.
     QWidget *createMarketsGroup();
     QWidget *createParametersGroup();
     QWidget *createIndicatorsGroup();
@@ -46,6 +53,7 @@ private:
     QWidget *createBacktestTab();
     QWidget *createCodeTab();
     QWidget *createPlaceholderTab(const QString &title, const QString &body);
+    // Runtime/data flow helpers.
     void populateDefaults();
     void showIndicatorDialog(const QString &indicatorName);
     void refreshDashboardBalance();
@@ -58,6 +66,7 @@ private:
     void appendDashboardPositionLog(const QString &message);
     void appendDashboardWaitingLog(const QString &message);
     void refreshDashboardWaitingQueueTable();
+    // Utility/UI state helpers.
     void wireSignals();
     void ensureBotTimer(bool running);
     void updateStatusMessage(const QString &message);

@@ -33,6 +33,7 @@ This repository packages a cross‑platform trading workstation that ships with 
 14. [Troubleshooting & FAQ](#troubleshooting--faq)
 15. [Safety notes](#safety-notes)
 16. [License](#license)
+17. [Developer documentation, comments, and LOC tracking](#developer-documentation-comments-and-loc-tracking)
 
 ---
 
@@ -70,6 +71,90 @@ Languages/
 ```
 
 Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). Other language folders are stubs reserved for future ports.
+
+---
+
+## Developer documentation, comments, and LOC tracking
+
+Use this section when you want consistent, detailed documentation across Python/C++ code and README updates.
+
+### Current LOC snapshot
+
+<!-- LOC-SNAPSHOT:START -->
+- Snapshot date: `2026-03-03`
+- Total tracked code/config/script lines: `55,603`
+- Non-empty tracked code/config/script lines (SLOC-style): `51,822`
+- Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
+<!-- LOC-SNAPSHOT:END -->
+
+Auto-refresh command:
+
+```bash
+python tools/update_loc_snapshot.py
+```
+
+### 1) Track lines of code (LOC)
+
+Recommended (`cloc`):
+
+```bash
+cloc --exclude-dir=.git,.venv,.vcpkg,build .
+```
+
+Per-language quick checks with `rg` + `wc`:
+
+```bash
+rg --files Languages/Python -g "*.py" | xargs wc -l
+rg --files Languages/C++ -g "*.cpp" -g "*.h" | xargs wc -l
+```
+
+Windows PowerShell fallback (non-empty lines):
+
+```powershell
+$py = Get-ChildItem Languages/Python -Recurse -File -Include *.py | Get-Content | Where-Object { $_.Trim() -ne "" } | Measure-Object
+$cpp = Get-ChildItem Languages/C++ -Recurse -File -Include *.cpp,*.h | Get-Content | Where-Object { $_.Trim() -ne "" } | Measure-Object
+"Python non-empty lines: $($py.Count)"
+"C++ non-empty lines: $($cpp.Count)"
+```
+
+### 2) Python comment/docstring style
+
+- Put a module-level docstring at the top of important entry files.
+- Add function docstrings for behavior, side effects, and expected environment flags.
+- Prefer comments that explain intent/tradeoffs (not restating obvious code).
+
+Template:
+
+```python
+def some_function(arg: str) -> bool:
+    """
+    Purpose: What this function is responsible for.
+    Inputs: Explain accepted values and defaults.
+    Returns: Explain success/failure semantics.
+    Side effects: Files/network/UI/environment updates.
+    """
+```
+
+### 3) C++ comment style
+
+- Add high-level comments before startup/bootstrap logic and platform-specific blocks.
+- Document Qt wiring points where state is shared between tabs/timers/runtime loops.
+- Use concise Doxygen-style comments for public API in headers.
+
+Template:
+
+```cpp
+/// Applies runtime lock state to dashboard controls while bot loop is active.
+/// Keeps UI settings immutable during live execution to avoid inconsistent state.
+void setDashboardRuntimeControlsEnabled(bool enabled);
+```
+
+### 4) README maintenance rule
+
+- When you add a major feature in Python or C++, also add:
+  - short behavior summary,
+  - where it lives (path),
+  - how to validate it quickly (command or UI steps).
 
 ---
 

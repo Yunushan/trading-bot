@@ -1,3 +1,21 @@
+"""
+Trading Bot desktop entrypoint.
+
+This module is intentionally verbose because it is the first execution layer for
+the Python app and handles platform quirks before the main GUI is created.
+
+Startup responsibilities, in order:
+1. Establish Windows taskbar identity (AppUserModelID + display name).
+2. Ensure project paths are importable when launched from direct file execution.
+3. Apply safe subprocess defaults to avoid transient console popups on Windows.
+4. Sanitize high-risk QtWebEngine CLI arguments.
+5. Configure startup suppression safeguards to reduce helper-window flicker.
+6. Resolve startup mode (`starter` vs `direct`) and dispatch into `main()`.
+
+Environment-variable behavior is implemented as "opt-in where risky, safe
+defaults where possible" so production launches remain stable on Windows 10/11.
+"""
+
 import os
 import shutil
 import sys
@@ -7,6 +25,8 @@ from pathlib import Path
 APP_DISPLAY_NAME = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "Trading Bot").strip() or "Trading Bot"
 APP_USER_MODEL_ID = str(os.environ.get("BOT_APP_USER_MODEL_ID") or "com.tradingbot.TradingBot").strip() or "com.tradingbot.TradingBot"
 if sys.platform == "win32":
+    # These Qt variables improve taskbar grouping consistency when Qt creates
+    # helper processes/windows during startup.
     os.environ["QT_WIN_APPID"] = APP_USER_MODEL_ID
     os.environ["QT_QPA_PLATFORM_WINDOWS_USER_MODEL_ID"] = APP_USER_MODEL_ID
     try:
@@ -16,6 +36,9 @@ if sys.platform == "win32":
         pass
 
 # Ensure repo root is importable so shared helpers can be used when launched directly.
+# `PROJECT_ROOT` is used by both Python and C++ integration helpers.
+# Keep this path stable before importing internal modules so relative imports
+# behave the same whether launched from IDE, terminal, or packaged runtime.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT_STR = str(PROJECT_ROOT)
 if PROJECT_ROOT_STR not in sys.path:

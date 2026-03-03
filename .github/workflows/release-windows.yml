@@ -93,6 +93,11 @@ jobs:
           cache: pip
           cache-dependency-path: ${{ matrix.python_requirements }}
 
+      - name: Refresh README LOC snapshot
+        shell: pwsh
+        run: |
+          python tools/update_loc_snapshot.py --readme README.md
+
       - name: Set up MSVC toolchain
         if: matrix.msvc_arch != ''
         uses: ilammy/msvc-dev-cmd@v1
