@@ -2178,9 +2178,10 @@ def main() -> int:
             win.setWindowState(win.windowState() | QtCore.Qt.WindowState.WindowMaximized)
         except Exception:
             pass
-        win.show()
-    else:
+    try:
         win.showMaximized()
+    except Exception:
+        win.show()
     _boot_log("MainWindow shown")
     _suppress_stop = True  # stop transient window suppression thread
     if splash is not None:
@@ -2247,10 +2248,7 @@ def main() -> int:
                 pass
             try:
                 if not win.isVisible():
-                    if sys.platform == "win32":
-                        win.show()
-                    else:
-                        win.showMaximized()
+                    win.showMaximized()
             except Exception:
                 pass
             try:
@@ -2327,7 +2325,7 @@ def main() -> int:
                         return
                     try:
                         if not win.isVisible() or win.windowState() & QtCore.Qt.WindowState.WindowMinimized:
-                            win.showNormal()
+                            win.showMaximized()
                             win.raise_()
                             win.activateWindow()
                     except Exception:
@@ -2351,7 +2349,7 @@ def main() -> int:
             except Exception:
                 return
             try:
-                win.showNormal()
+                win.showMaximized()
                 win.raise_()
                 win.activateWindow()
             except Exception:

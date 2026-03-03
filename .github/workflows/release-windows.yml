@@ -371,7 +371,13 @@ jobs:
           $pythonExeAsset = "release/Trading-Bot-Python-$assetTag-$releaseVersion.exe"
           Copy-Item $pythonExe $pythonExeAsset
 
-          $cppExe = "build/binance_cpp/Release/binance_backtest_tab.exe"
+          $cppExe = "build/binance_cpp/Release/Trading-Bot-C++.exe"
+          if (!(Test-Path $cppExe)) {
+            $cppExe = "build/binance_cpp/Release/binance_backtest_tab.exe"
+          }
+          if (!(Test-Path $cppExe)) {
+            $cppExe = "build/binance_cpp/Trading-Bot-C++.exe"
+          }
           if (!(Test-Path $cppExe)) {
             $cppExe = "build/binance_cpp/binance_backtest_tab.exe"
           }

@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.21)
 
 project(BinanceBacktestTabCpp LANGUAGES CXX)
 
+set(TB_EXECUTABLE_NAME "Trading-Bot-C++")
+set(TB_LEGACY_EXECUTABLE_NAME "binance_backtest_tab")
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -129,6 +132,7 @@ add_executable(binance_backtest_tab
 )
 
 target_link_libraries(binance_backtest_tab PRIVATE Qt6::Widgets Qt6::Network)
+set_target_properties(binance_backtest_tab PROPERTIES OUTPUT_NAME "${TB_EXECUTABLE_NAME}")
 
 if (HAS_WEBENGINE)
     target_link_libraries(binance_backtest_tab PRIVATE Qt6::WebEngineWidgets)

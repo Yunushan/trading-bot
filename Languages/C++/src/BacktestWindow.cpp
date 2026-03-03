@@ -1296,6 +1296,131 @@ qint64 loopSecondsFromText(QString loopText) {
     return 60;
 }
 
+qint64 intervalTokenToSeconds(QString intervalText) {
+    intervalText = intervalText.trimmed().toLower();
+    if (intervalText.isEmpty()) {
+        return 0;
+    }
+    static const QRegularExpression compactRe(QStringLiteral("^(\\d+)\\s*(s|m|h|d|w|mo)$"));
+    QRegularExpressionMatch compactMatch = compactRe.match(intervalText);
+    if (!compactMatch.hasMatch()) {
+        static const QRegularExpression longRe(
+            QStringLiteral("^(\\d+)\\s*(second|seconds|sec|s|minute|minutes|min|m|hour|hours|h|day|days|d|week|weeks|w|month|months|mo)$"));
+        compactMatch = longRe.match(intervalText);
+    }
+    if (compactMatch.hasMatch()) {
+        bool ok = false;
+        const qint64 value = compactMatch.captured(1).toLongLong(&ok);
+        if (!ok || value <= 0) {
+            return 0;
+        }
+        const QString unit = compactMatch.captured(2).toLower();
+        if (unit == "s" || unit == "sec" || unit == "second" || unit == "seconds") return value;
+        if (unit == "m" || unit == "min" || unit == "minute" || unit == "minutes") return value * 60;
+        if (unit == "h" || unit == "hour" || unit == "hours") return value * 3600;
+        if (unit == "d" || unit == "day" || unit == "days") return value * 86400;
+        if (unit == "w" || unit == "week" || unit == "weeks") return value * 604800;
+        if (unit == "mo" || unit == "month" || unit == "months") return value * 2592000;
+    }
+    return 0;
+}
+
+QString intervalFloorToBinanceToken(qint64 seconds) {
+    static const QVector<QPair<qint64, QString>> kSupported = {
+        {60, QStringLiteral("1m")},
+        {180, QStringLiteral("3m")},
+        {300, QStringLiteral("5m")},
+        {900, QStringLiteral("15m")},
+        {1800, QStringLiteral("30m")},
+        {3600, QStringLiteral("1h")},
+        {7200, QStringLiteral("2h")},
+        {14400, QStringLiteral("4h")},
+        {21600, QStringLiteral("6h")},
+        {28800, QStringLiteral("8h")},
+        {43200, QStringLiteral("12h")},
+        {86400, QStringLiteral("1d")},
+        {259200, QStringLiteral("3d")},
+        {604800, QStringLiteral("1w")},
+        {2592000, QStringLiteral("1M")},
+    };
+    if (seconds <= 0) {
+        return QStringLiteral("1m");
+    }
+    QString best = kSupported.first().second;
+    for (const auto &entry : kSupported) {
+        if (seconds < entry.first) {
+            break;
+        }
+        best = entry.second;
+    }
+    return best;
+}
+
+QString normalizeBinanceKlineInterval(QString intervalText, QString *warningOut = nullptr) {
+    const QString original = intervalText.trimmed();
+    if (warningOut) {
+        warningOut->clear();
+    }
+    if (original.isEmpty()) {
+        return original;
+    }
+    if (original == QStringLiteral("1M")) {
+        return QStringLiteral("1M");
+    }
+
+    const QString lower = original.toLower();
+    static const QSet<QString> kSupportedLower = {
+        QStringLiteral("1m"),
+        QStringLiteral("3m"),
+        QStringLiteral("5m"),
+        QStringLiteral("15m"),
+        QStringLiteral("30m"),
+        QStringLiteral("1h"),
+        QStringLiteral("2h"),
+        QStringLiteral("4h"),
+        QStringLiteral("6h"),
+        QStringLiteral("8h"),
+        QStringLiteral("12h"),
+        QStringLiteral("1d"),
+        QStringLiteral("3d"),
+        QStringLiteral("1w"),
+    };
+    if (kSupportedLower.contains(lower)) {
+        return lower;
+    }
+    if (lower == QStringLiteral("1mo")
+        || lower == QStringLiteral("1month")
+        || lower == QStringLiteral("1months")) {
+        return QStringLiteral("1M");
+    }
+
+    const qint64 seconds = intervalTokenToSeconds(lower);
+    if (seconds <= 0) {
+        return original;
+    }
+    const QString fallback = intervalFloorToBinanceToken(seconds);
+    if (warningOut && fallback.compare(original, Qt::CaseInsensitive) != 0) {
+        *warningOut = QStringLiteral("Interval '%1' is not supported by Binance REST; using '%2' fallback.")
+                          .arg(original, fallback);
+    }
+    return fallback;
+}
+
+constexpr double kWaitingPositionLateThresholdSec = 45.0;
+
+QString waitingSideLabelFor(bool allowLong, bool allowShort) {
+    if (allowLong && allowShort) {
+        return QStringLiteral("BOTH");
+    }
+    if (allowLong) {
+        return QStringLiteral("BUY");
+    }
+    if (allowShort) {
+        return QStringLiteral("SELL");
+    }
+    return QStringLiteral("-");
+}
+
 double latestRsiValue(const QVector<BinanceRestClient::KlineCandle> &candles, int period, bool *okOut = nullptr) {
     if (okOut) {
         *okOut = false;
@@ -1437,8 +1562,11 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       dashboardAllLogsEdit_(nullptr),
       dashboardPositionLogsEdit_(nullptr),
       dashboardWaitingLogsEdit_(nullptr),
+      dashboardWaitingQueueTable_(nullptr),
       dashboardRuntimeTimer_(nullptr),
       codePage_(nullptr),
+      dashboardBotStatusLabel_(nullptr),
+      dashboardBotTimeLabel_(nullptr),
       chartMarketCombo_(nullptr),
       chartSymbolCombo_(nullptr),
       chartIntervalCombo_(nullptr),
@@ -1448,7 +1576,16 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       chartPnlClosedLabel_(nullptr),
       chartBotStatusLabel_(nullptr),
       chartBotTimeLabel_(nullptr),
-      positionsTable_(nullptr) {
+      positionsTable_(nullptr),
+      dashboardLeadTraderEnableCheck_(nullptr),
+      dashboardLeadTraderCombo_(nullptr),
+      dashboardStopLossEnableCheck_(nullptr),
+      dashboardStopLossModeCombo_(nullptr),
+      dashboardStopLossScopeCombo_(nullptr),
+      dashboardStopLossUsdtSpin_(nullptr),
+      dashboardStopLossPercentSpin_(nullptr),
+      positionsAutoRowHeightCheck_(nullptr),
+      positionsAutoColumnWidthCheck_(nullptr) {
     setWindowTitle("Trading Bot");
     setMinimumSize(640, 420);
     resize(1350, 900);
@@ -1986,6 +2123,8 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardApiKey_ = nullptr;
     dashboardApiSecret_ = nullptr;
     dashboardBalanceLabel_ = nullptr;
+    dashboardBotStatusLabel_ = nullptr;
+    dashboardBotTimeLabel_ = nullptr;
     dashboardRefreshBtn_ = nullptr;
     dashboardAccountTypeCombo_ = nullptr;
     dashboardModeCombo_ = nullptr;
@@ -2005,8 +2144,22 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardAllLogsEdit_ = nullptr;
     dashboardPositionLogsEdit_ = nullptr;
     dashboardWaitingLogsEdit_ = nullptr;
+    dashboardWaitingQueueTable_ = nullptr;
     dashboardRuntimeLastEvalMs_.clear();
     dashboardRuntimeConnectorWarnings_.clear();
+    dashboardRuntimeIntervalWarnings_.clear();
+    dashboardRuntimeLockWidgets_.clear();
+    dashboardLeadTraderEnableCheck_ = nullptr;
+    dashboardLeadTraderCombo_ = nullptr;
+    dashboardStopLossEnableCheck_ = nullptr;
+    dashboardStopLossModeCombo_ = nullptr;
+    dashboardStopLossScopeCombo_ = nullptr;
+    dashboardStopLossUsdtSpin_ = nullptr;
+    dashboardStopLossPercentSpin_ = nullptr;
+    dashboardRuntimeActive_ = false;
+    dashboardWaitingActiveEntries_.clear();
+    dashboardWaitingHistoryEntries_.clear();
+    dashboardWaitingHistoryMax_ = 500;
     dashboardRuntimeOpenPositions_.clear();
     dashboardIndicatorChecks_.clear();
     dashboardIndicatorButtons_.clear();
@@ -2030,6 +2183,15 @@ QWidget *BacktestWindow::createDashboardTab() {
     auto *root = new QVBoxLayout(content);
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(12);
+
+    auto registerRuntimeLockWidget = [this](QWidget *widget) {
+        if (!widget) {
+            return;
+        }
+        if (!dashboardRuntimeLockWidgets_.contains(widget)) {
+            dashboardRuntimeLockWidgets_.append(widget);
+        }
+    };
 
     const QStringList dashboardIndicatorSources = {
         "Binance spot",
@@ -2063,14 +2225,17 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardApiKey_ = new QLineEdit(accountBox);
     dashboardApiKey_->setPlaceholderText("API Key");
     dashboardApiKey_->setMinimumWidth(140);
+    registerRuntimeLockWidget(dashboardApiKey_);
     addPair(0, col, "API Key:", dashboardApiKey_, 2);
 
     dashboardModeCombo_ = new QComboBox(accountBox);
     dashboardModeCombo_->addItems({"Live", "Demo"});
+    registerRuntimeLockWidget(dashboardModeCombo_);
     addPair(0, col, "Mode:", dashboardModeCombo_);
 
     dashboardThemeCombo_ = new QComboBox(accountBox);
     dashboardThemeCombo_->addItems({"Dark", "Light"});
+    registerRuntimeLockWidget(dashboardThemeCombo_);
     addPair(0, col, "Theme:", dashboardThemeCombo_);
     connect(dashboardThemeCombo_, &QComboBox::currentTextChanged, this, &BacktestWindow::applyDashboardTheme);
 
@@ -2084,11 +2249,13 @@ QWidget *BacktestWindow::createDashboardTab() {
 
     auto *botStatus = new QLabel("OFF", accountBox);
     botStatus->setStyleSheet("color: #ef4444; font-weight: 700;");
+    dashboardBotStatusLabel_ = botStatus;
     addPair(0, col, "Bot Status:", botStatus);
 
     accountGrid->addWidget(new QLabel("Bot Active Time:", accountBox), 0, col++);
     auto *botTime = new QLabel("--", accountBox);
     botTime->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    dashboardBotTimeLabel_ = botTime;
     accountGrid->addWidget(botTime, 0, col, 1, 2);
     accountGrid->setColumnStretch(col, 1);
 
@@ -2097,14 +2264,17 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardApiSecret_->setEchoMode(QLineEdit::Password);
     dashboardApiSecret_->setPlaceholderText("API Secret Key");
     dashboardApiSecret_->setMinimumWidth(140);
+    registerRuntimeLockWidget(dashboardApiSecret_);
     addPair(1, col, "API Secret Key:", dashboardApiSecret_, 2);
 
     dashboardAccountTypeCombo_ = new QComboBox(accountBox);
     dashboardAccountTypeCombo_->addItems({"Futures", "Spot"});
+    registerRuntimeLockWidget(dashboardAccountTypeCombo_);
     addPair(1, col, "Account Type:", dashboardAccountTypeCombo_);
 
     auto *accountModeCombo = new QComboBox(accountBox);
     accountModeCombo->addItems({"Classic Trading", "Multi-Asset Mode"});
+    registerRuntimeLockWidget(accountModeCombo);
     addPair(1, col, "Account Mode:", accountModeCombo);
 
     auto *connectorCombo = new QComboBox(accountBox);
@@ -2119,6 +2289,7 @@ QWidget *BacktestWindow::createDashboardTab() {
         "Custom reads CUSTOM_CONNECTOR_[FUTURES|SPOT]_BASE_URL (or CUSTOM_CONNECTOR_BASE_URL).");
     connectorCombo->setMinimumWidth(180);
     dashboardConnectorCombo_ = connectorCombo;
+    registerRuntimeLockWidget(connectorCombo);
     addPair(1, col, "Connector:", connectorCombo, 3);
 
     col = 0;
@@ -2127,6 +2298,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     addPair(2, col, "Total USDT balance:", dashboardBalanceLabel_);
 
     dashboardRefreshBtn_ = new QPushButton("Refresh Balance", accountBox);
+    registerRuntimeLockWidget(dashboardRefreshBtn_);
     connect(dashboardRefreshBtn_, &QPushButton::clicked, this, &BacktestWindow::refreshDashboardBalance);
     accountGrid->addWidget(dashboardRefreshBtn_, 2, col++);
 
@@ -2134,19 +2306,23 @@ QWidget *BacktestWindow::createDashboardTab() {
     leverageSpin->setRange(1, 125);
     leverageSpin->setValue(20);
     dashboardLeverageSpin_ = leverageSpin;
+    registerRuntimeLockWidget(leverageSpin);
     addPair(2, col, "Leverage (Futures):", leverageSpin);
 
     auto *marginModeCombo = new QComboBox(accountBox);
     marginModeCombo->addItems({"Isolated", "Cross"});
     dashboardMarginModeCombo_ = marginModeCombo;
+    registerRuntimeLockWidget(marginModeCombo);
     addPair(2, col, "Margin Mode (Futures):", marginModeCombo);
 
     auto *positionModeCombo = new QComboBox(accountBox);
     positionModeCombo->addItems({"Hedge", "One-way"});
+    registerRuntimeLockWidget(positionModeCombo);
     addPair(2, col, "Position Mode:", positionModeCombo);
 
     auto *assetsModeCombo = new QComboBox(accountBox);
     assetsModeCombo->addItems({"Single-Asset Mode", "Multi-Asset Mode"});
+    registerRuntimeLockWidget(assetsModeCombo);
     addPair(2, col, "Assets Mode:", assetsModeCombo);
 
     col = 0;
@@ -2155,14 +2331,17 @@ QWidget *BacktestWindow::createDashboardTab() {
     indicatorSourceCombo->setCurrentText("Binance futures");
     indicatorSourceCombo->setMinimumWidth(140);
     dashboardIndicatorSourceCombo_ = indicatorSourceCombo;
+    registerRuntimeLockWidget(indicatorSourceCombo);
     addPair(3, col, "Indicator Source:", indicatorSourceCombo, 2);
 
     auto *orderTypeCombo = new QComboBox(accountBox);
     orderTypeCombo->addItems({"GTC", "IOC", "FOK"});
+    registerRuntimeLockWidget(orderTypeCombo);
     addPair(3, col, "Order Type:", orderTypeCombo);
 
     auto *expiryCombo = new QComboBox(accountBox);
     expiryCombo->addItems({"30 min (GTD)", "1h (GTD)", "4h (GTD)", "GTC"});
+    registerRuntimeLockWidget(expiryCombo);
     addPair(3, col, "Expiry / TIF:", expiryCombo);
 
     for (int stretchCol : {1, 2, 4, 6, 8, 10, 12}) {
@@ -2177,6 +2356,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     exchangeLayout->addWidget(new QLabel("Select exchange", exchangeBox));
     auto *exchangeCombo = new QComboBox(exchangeBox);
     dashboardExchangeCombo_ = exchangeCombo;
+    registerRuntimeLockWidget(exchangeCombo);
     exchangeLayout->addWidget(exchangeCombo);
     struct ExchangeOption {
         QString title;
@@ -2227,6 +2407,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardSymbolList->setMinimumHeight(220);
     dashboardSymbolList->setMaximumHeight(260);
     dashboardSymbolList_ = dashboardSymbolList;
+    registerRuntimeLockWidget(dashboardSymbolList);
     listsGrid->addWidget(dashboardSymbolList, 1, 0, 2, 1);
 
     auto *dashboardIntervalList = new QListWidget(marketsBox);
@@ -2237,16 +2418,20 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardIntervalList->setMinimumHeight(220);
     dashboardIntervalList->setMaximumHeight(260);
     dashboardIntervalList_ = dashboardIntervalList;
+    registerRuntimeLockWidget(dashboardIntervalList);
     listsGrid->addWidget(dashboardIntervalList, 1, 1, 2, 1);
 
     dashboardRefreshSymbolsBtn_ = new QPushButton("Refresh Symbols", marketsBox);
+    registerRuntimeLockWidget(dashboardRefreshSymbolsBtn_);
     connect(dashboardRefreshSymbolsBtn_, &QPushButton::clicked, this, &BacktestWindow::refreshDashboardSymbols);
     listsGrid->addWidget(dashboardRefreshSymbolsBtn_, 3, 0, 1, 1);
 
     auto *customIntervalEdit = new QLineEdit(marketsBox);
     customIntervalEdit->setPlaceholderText("e.g., 45s or 7m or 90m, comma-separated");
+    registerRuntimeLockWidget(customIntervalEdit);
     listsGrid->addWidget(customIntervalEdit, 3, 1, 1, 1);
     auto *customButton = new QPushButton("Add Custom Interval(s)", marketsBox);
+    registerRuntimeLockWidget(customButton);
     listsGrid->addWidget(customButton, 3, 2, 1, 1);
     marketsLayout->addLayout(listsGrid);
 
@@ -2367,7 +2552,9 @@ QWidget *BacktestWindow::createDashboardTab() {
     int row = 0;
     strategyGrid->addWidget(new QLabel("Side:", strategyBox), row, 0);
     auto *sideCombo = new QComboBox(strategyBox);
-    sideCombo->addItems({"Both (Long/Short)", "Long Only", "Short Only"});
+    sideCombo->addItems({"Buy (Long)", "Sell (Short)", "Both (Long/Short)"});
+    sideCombo->setCurrentText("Both (Long/Short)");
+    registerRuntimeLockWidget(sideCombo);
     strategyGrid->addWidget(sideCombo, row, 1);
 
     strategyGrid->addWidget(new QLabel("Position % of Balance:", strategyBox), row, 2);
@@ -2377,53 +2564,100 @@ QWidget *BacktestWindow::createDashboardTab() {
     positionPct->setValue(2.0);
     positionPct->setSuffix(" %");
     dashboardPositionPctSpin_ = positionPct;
+    registerRuntimeLockWidget(positionPct);
     strategyGrid->addWidget(positionPct, row, 3);
 
     strategyGrid->addWidget(new QLabel("Loop Interval Override:", strategyBox), row, 4);
     auto *loopOverride = new QComboBox(strategyBox);
-    loopOverride->addItems({"Off", "30 seconds", "1 minute", "5 minutes"});
+    loopOverride->addItems({
+        "30 seconds",
+        "45 seconds",
+        "1 minute",
+        "2 minutes",
+        "3 minutes",
+        "5 minutes",
+        "10 minutes",
+        "30 minutes",
+        "1 hour",
+        "2 hours",
+    });
     loopOverride->setCurrentText("1 minute");
+    registerRuntimeLockWidget(loopOverride);
     strategyGrid->addWidget(loopOverride, row, 5);
 
     ++row;
     auto *enableLeadTrader = new QCheckBox("Enable Lead Trader", strategyBox);
+    dashboardLeadTraderEnableCheck_ = enableLeadTrader;
+    registerRuntimeLockWidget(enableLeadTrader);
     strategyGrid->addWidget(enableLeadTrader, row, 0, 1, 2);
     auto *leadTraderCombo = new QComboBox(strategyBox);
-    leadTraderCombo->addItems({"Futures Public Lead Trader", "Signals Feed", "Manual Lead"});
+    leadTraderCombo->addItems({
+        "Futures Public Lead Trader",
+        "Futures Private Lead Trader",
+        "Spot Public Lead Trader",
+        "Spot Private Lead Trader",
+    });
+    dashboardLeadTraderCombo_ = leadTraderCombo;
     leadTraderCombo->setEnabled(false);
-    connect(enableLeadTrader, &QCheckBox::toggled, leadTraderCombo, &QWidget::setEnabled);
     strategyGrid->addWidget(leadTraderCombo, row, 2, 1, 2);
+    connect(enableLeadTrader, &QCheckBox::toggled, this, [this](bool checked) {
+        if (dashboardLeadTraderCombo_) {
+            dashboardLeadTraderCombo_->setEnabled(!dashboardRuntimeActive_ && checked);
+        }
+    });
+
+    ++row;
+    auto *liveIndicatorValuesCheck = new QCheckBox("Use live candle values for signals (repaints)", strategyBox);
+    liveIndicatorValuesCheck->setToolTip(
+        "When unchecked, signals use the previous closed candle (no repaint), matching candle-close backtests."
+    );
+    registerRuntimeLockWidget(liveIndicatorValuesCheck);
+    strategyGrid->addWidget(liveIndicatorValuesCheck, row, 0, 1, 6);
 
     ++row;
     auto *oneWayCheck = new QCheckBox("Add-only in current net direction (one-way)", strategyBox);
-    strategyGrid->addWidget(oneWayCheck, row, 0, 1, 3);
-    auto *hedgeStackCheck = new QCheckBox("Allow simultaneous long / short positions (hedge stacking)", strategyBox);
-    strategyGrid->addWidget(hedgeStackCheck, row, 3, 1, 3);
+    registerRuntimeLockWidget(oneWayCheck);
+    strategyGrid->addWidget(oneWayCheck, row, 0, 1, 6);
+
+    ++row;
+    auto *hedgeStackCheck = new QCheckBox("Allow simultaneous long & short positions (hedge stacking)", strategyBox);
+    registerRuntimeLockWidget(hedgeStackCheck);
+    strategyGrid->addWidget(hedgeStackCheck, row, 0, 1, 6);
 
     ++row;
     auto *stopWithoutCloseCheck = new QCheckBox("Stop Bot Without Closing Active Positions", strategyBox);
     stopWithoutCloseCheck->setToolTip(
         "When checked, the Stop button will halt strategy threads but keep existing positions open."
     );
-    strategyGrid->addWidget(stopWithoutCloseCheck, row, 0, 1, 3);
-    auto *windowCloseCheck = new QCheckBox("Market Close All Active Positions On Window Close (WIP)", strategyBox);
+    registerRuntimeLockWidget(stopWithoutCloseCheck);
+    strategyGrid->addWidget(stopWithoutCloseCheck, row, 0, 1, 6);
+
+    ++row;
+    auto *windowCloseCheck = new QCheckBox("Market Close All Active Positions On Window Close (Working in progress)", strategyBox);
     windowCloseCheck->setEnabled(false);
-    strategyGrid->addWidget(windowCloseCheck, row, 3, 1, 3);
+    strategyGrid->addWidget(windowCloseCheck, row, 0, 1, 6);
 
     ++row;
     strategyGrid->addWidget(new QLabel("Stop Loss:", strategyBox), row, 0);
     auto *stopLossEnable = new QCheckBox("Enable", strategyBox);
+    dashboardStopLossEnableCheck_ = stopLossEnable;
+    registerRuntimeLockWidget(stopLossEnable);
     strategyGrid->addWidget(stopLossEnable, row, 1);
 
-    auto *stopScopeCombo = new QComboBox(strategyBox);
-    stopScopeCombo->addItems({"Per Trade Stop Loss", "Global Portfolio Stop", "Trailing Stop"});
-    strategyGrid->addWidget(stopScopeCombo, row, 2, 1, 2);
+    auto *stopModeCombo = new QComboBox(strategyBox);
+    stopModeCombo->addItem("USDT Based Stop Loss", "usdt");
+    stopModeCombo->addItem("Percentage Based Stop Loss", "percent");
+    stopModeCombo->addItem("Both Stop Loss (USDT & Percentage)", "both");
+    stopModeCombo->setCurrentIndex(0);
+    dashboardStopLossModeCombo_ = stopModeCombo;
+    strategyGrid->addWidget(stopModeCombo, row, 2, 1, 2);
 
     auto *stopUsdtSpin = new QDoubleSpinBox(strategyBox);
-    stopUsdtSpin->setRange(0.0, 1'000'000.0);
+    stopUsdtSpin->setRange(0.0, 1'000'000'000.0);
     stopUsdtSpin->setDecimals(2);
     stopUsdtSpin->setSuffix(" USDT");
     stopUsdtSpin->setEnabled(false);
+    dashboardStopLossUsdtSpin_ = stopUsdtSpin;
     strategyGrid->addWidget(stopUsdtSpin, row, 4);
 
     auto *stopPctSpin = new QDoubleSpinBox(strategyBox);
@@ -2431,11 +2665,23 @@ QWidget *BacktestWindow::createDashboardTab() {
     stopPctSpin->setDecimals(2);
     stopPctSpin->setSuffix(" %");
     stopPctSpin->setEnabled(false);
+    dashboardStopLossPercentSpin_ = stopPctSpin;
     strategyGrid->addWidget(stopPctSpin, row, 5);
 
-    connect(stopLossEnable, &QCheckBox::toggled, stopScopeCombo, &QWidget::setEnabled);
-    connect(stopLossEnable, &QCheckBox::toggled, stopUsdtSpin, &QWidget::setEnabled);
-    connect(stopLossEnable, &QCheckBox::toggled, stopPctSpin, &QWidget::setEnabled);
+    ++row;
+    strategyGrid->addWidget(new QLabel("Stop Loss Scope:", strategyBox), row, 0);
+    auto *stopScopeCombo = new QComboBox(strategyBox);
+    stopScopeCombo->addItems({"Per Trade Stop Loss", "Cumulative Stop Loss", "Entire Account Stop Loss"});
+    dashboardStopLossScopeCombo_ = stopScopeCombo;
+    strategyGrid->addWidget(stopScopeCombo, row, 1, 1, 2);
+
+    connect(stopLossEnable, &QCheckBox::toggled, this, [this](bool) {
+        updateDashboardStopLossWidgetState();
+    });
+    connect(stopModeCombo, &QComboBox::currentTextChanged, this, [this](const QString &) {
+        updateDashboardStopLossWidgetState();
+    });
+    updateDashboardStopLossWidgetState();
 
     ++row;
     strategyGrid->addWidget(new QLabel("Template:", strategyBox), row, 0);
@@ -2445,6 +2691,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     templateCombo->addItem("Top 50 %2 per trade 20x", "top50");
     templateCombo->addItem("Top 100 %1 per trade 5x", "top100");
     dashboardTemplateCombo_ = templateCombo;
+    registerRuntimeLockWidget(templateCombo);
     connect(templateCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, templateCombo](int) {
         applyDashboardTemplate(templateCombo->currentData().toString());
     });
@@ -2463,6 +2710,12 @@ QWidget *BacktestWindow::createDashboardTab() {
     auto addIndicatorRow = [indicatorsBox, indGrid, this](int rowIndex, const QString &name) {
         auto *cb = new QCheckBox(name, indicatorsBox);
         auto *btn = new QPushButton("Buy-Sell Values", indicatorsBox);
+        if (!dashboardRuntimeLockWidgets_.contains(cb)) {
+            dashboardRuntimeLockWidgets_.append(cb);
+        }
+        if (!dashboardRuntimeLockWidgets_.contains(btn)) {
+            dashboardRuntimeLockWidgets_.append(btn);
+        }
         btn->setMinimumWidth(150);
         btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         btn->setEnabled(false);
@@ -2498,6 +2751,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     overridesLayout->setSpacing(8);
 
     auto *overridesTable = new QTableWidget(overridesBox);
+    registerRuntimeLockWidget(overridesTable);
     overridesTable->setColumnCount(8);
     overridesTable->setHorizontalHeaderLabels({
         "Symbol",
@@ -2523,6 +2777,9 @@ QWidget *BacktestWindow::createDashboardTab() {
     auto *addSelectedOverrideBtn = new QPushButton("Add Selected", overridesBox);
     auto *removeSelectedOverrideBtn = new QPushButton("Remove Selected", overridesBox);
     auto *clearOverridesBtn = new QPushButton("Clear All", overridesBox);
+    registerRuntimeLockWidget(addSelectedOverrideBtn);
+    registerRuntimeLockWidget(removeSelectedOverrideBtn);
+    registerRuntimeLockWidget(clearOverridesBtn);
     overrideActions->addWidget(addSelectedOverrideBtn);
     overrideActions->addWidget(removeSelectedOverrideBtn);
     overrideActions->addWidget(clearOverridesBtn);
@@ -2538,6 +2795,8 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashStopBtn->setEnabled(false);
     auto *dashSaveBtn = new QPushButton("Save Config", page);
     auto *dashLoadBtn = new QPushButton("Load Config", page);
+    registerRuntimeLockWidget(dashSaveBtn);
+    registerRuntimeLockWidget(dashLoadBtn);
     runtimeActions->addWidget(dashStartBtn);
     runtimeActions->addWidget(dashStopBtn);
     runtimeActions->addWidget(dashSaveBtn);
@@ -2551,14 +2810,37 @@ QWidget *BacktestWindow::createDashboardTab() {
     auto *logsTabs = new QTabWidget(logsBox);
     auto *allLogsEdit = new QTextEdit(logsTabs);
     auto *positionLogsEdit = new QTextEdit(logsTabs);
-    auto *waitingLogsEdit = new QTextEdit(logsTabs);
-    for (QTextEdit *edit : {allLogsEdit, positionLogsEdit, waitingLogsEdit}) {
+    for (QTextEdit *edit : {allLogsEdit, positionLogsEdit}) {
         edit->setReadOnly(true);
         edit->setMinimumHeight(130);
     }
+    auto *waitingQueueTable = new QTableWidget(logsTabs);
+    waitingQueueTable->setColumnCount(6);
+    waitingQueueTable->setHorizontalHeaderLabels({
+        "Symbol",
+        "Interval",
+        "Side",
+        "Context",
+        "State",
+        "Age (s)",
+    });
+    waitingQueueTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    waitingQueueTable->setSelectionMode(QAbstractItemView::NoSelection);
+    waitingQueueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    waitingQueueTable->setFocusPolicy(Qt::NoFocus);
+    waitingQueueTable->setMinimumHeight(130);
+    waitingQueueTable->setAlternatingRowColors(false);
+    if (auto *header = waitingQueueTable->horizontalHeader()) {
+        header->setStretchLastSection(true);
+        header->setSectionResizeMode(QHeaderView::Stretch);
+    }
+    if (auto *vHeader = waitingQueueTable->verticalHeader()) {
+        vHeader->setVisible(false);
+    }
+
     logsTabs->addTab(allLogsEdit, "All Logs");
     logsTabs->addTab(positionLogsEdit, "Position Trigger Logs");
-    logsTabs->addTab(waitingLogsEdit, "Waiting Positions (Queue)");
+    logsTabs->addTab(waitingQueueTable, "Waiting Positions (Queue)");
     logsLayout->addWidget(logsTabs);
     root->addWidget(logsBox);
 
@@ -2567,7 +2849,9 @@ QWidget *BacktestWindow::createDashboardTab() {
     dashboardOverridesTable_ = overridesTable;
     dashboardAllLogsEdit_ = allLogsEdit;
     dashboardPositionLogsEdit_ = positionLogsEdit;
-    dashboardWaitingLogsEdit_ = waitingLogsEdit;
+    dashboardWaitingLogsEdit_ = nullptr;
+    dashboardWaitingQueueTable_ = waitingQueueTable;
+    refreshDashboardWaitingQueueTable();
 
     auto appendLog = [allLogsEdit](const QString &msg) {
         const QString ts = QDateTime::currentDateTime().toString("[dd.MM.yyyy HH:mm:ss]");
@@ -2577,9 +2861,9 @@ QWidget *BacktestWindow::createDashboardTab() {
         const QString ts = QDateTime::currentDateTime().toString("[dd.MM.yyyy HH:mm:ss]");
         positionLogsEdit->append(QString("%1 %2").arg(ts, msg));
     };
-    auto appendWaitingLog = [waitingLogsEdit](const QString &msg) {
+    auto appendWaitingLog = [allLogsEdit](const QString &msg) {
         const QString ts = QDateTime::currentDateTime().toString("[dd.MM.yyyy HH:mm:ss]");
-        waitingLogsEdit->append(QString("%1 %2").arg(ts, msg));
+        allLogsEdit->append(QString("%1 [Waiting] %2").arg(ts, msg));
     };
 
     auto enabledIndicatorsSummary = [this]() -> QString {
@@ -2596,32 +2880,47 @@ QWidget *BacktestWindow::createDashboardTab() {
         return enabled.isEmpty() ? QStringLiteral("None") : enabled.join(", ");
     };
 
-    auto stopLossSummary = [stopLossEnable, stopScopeCombo, stopUsdtSpin, stopPctSpin]() -> QString {
+    auto stopLossSummary = [stopLossEnable, stopModeCombo, stopScopeCombo, stopUsdtSpin, stopPctSpin]() -> QString {
         if (!stopLossEnable || !stopLossEnable->isChecked()) {
             return QStringLiteral("Disabled");
         }
+        QString modeKey = stopModeCombo ? stopModeCombo->currentData().toString().trimmed().toLower() : QString();
+        if (modeKey.isEmpty()) {
+            modeKey = QStringLiteral("usdt");
+        }
+        const QString modeText = stopModeCombo ? stopModeCombo->currentText().trimmed() : QString();
         QStringList values;
-        if (stopUsdtSpin && stopUsdtSpin->value() > 0.0) {
+        if ((modeKey == "usdt" || modeKey == "both") && stopUsdtSpin && stopUsdtSpin->value() > 0.0) {
             values << QString("%1 USDT").arg(QString::number(stopUsdtSpin->value(), 'f', 2));
         }
-        if (stopPctSpin && stopPctSpin->value() > 0.0) {
+        if ((modeKey == "percent" || modeKey == "both") && stopPctSpin && stopPctSpin->value() > 0.0) {
             values << QString("%1%").arg(QString::number(stopPctSpin->value(), 'f', 2));
         }
         const QString valueText = values.isEmpty() ? QStringLiteral("Enabled") : values.join(" / ");
         const QString scope = stopScopeCombo ? stopScopeCombo->currentText().trimmed() : QString();
-        if (scope.isEmpty()) {
+        if (modeText.isEmpty() && scope.isEmpty()) {
             return valueText;
         }
-        return QString("%1 (%2)").arg(valueText, scope);
+        QStringList details;
+        if (!modeText.isEmpty()) {
+            details << modeText;
+        }
+        if (!scope.isEmpty()) {
+            details << scope;
+        }
+        return QString("%1 (%2)").arg(valueText, details.join(" | "));
     };
 
-    auto strategySummary = [sideCombo, enableLeadTrader, leadTraderCombo, oneWayCheck, hedgeStackCheck]() -> QString {
+    auto strategySummary = [sideCombo, enableLeadTrader, leadTraderCombo, liveIndicatorValuesCheck, oneWayCheck, hedgeStackCheck]() -> QString {
         QStringList values;
         if (sideCombo) {
             values << sideCombo->currentText().trimmed();
         }
         if (enableLeadTrader && enableLeadTrader->isChecked() && leadTraderCombo) {
             values << QString("Lead: %1").arg(leadTraderCombo->currentText().trimmed());
+        }
+        if (liveIndicatorValuesCheck && liveIndicatorValuesCheck->isChecked()) {
+            values << QStringLiteral("Live candles");
         }
         if (oneWayCheck && oneWayCheck->isChecked()) {
             values << QStringLiteral("Add-only");
@@ -2657,7 +2956,7 @@ QWidget *BacktestWindow::createDashboardTab() {
         const int rowIdx = overridesTable->rowCount();
         overridesTable->insertRow(rowIdx);
         const QString connectorText = connectorCombo ? connectorCombo->currentText().trimmed() : QStringLiteral("Default");
-        const QString loopText = loopOverride ? loopOverride->currentText().trimmed() : QStringLiteral("Off");
+        const QString loopText = loopOverride ? loopOverride->currentText().trimmed() : QStringLiteral("1 minute");
         const QString leverageText = dashboardLeverageSpin_ ? QString::number(dashboardLeverageSpin_->value()) : QStringLiteral("20");
         const QString indicatorsText = enabledIndicatorsSummary();
         const QString strategyText = strategySummary();
@@ -2848,6 +3147,7 @@ QWidget *BacktestWindow::createDashboardTab() {
 
     root->addStretch();
 
+    setDashboardRuntimeControlsEnabled(true);
     applyDashboardTheme(dashboardThemeCombo_ ? dashboardThemeCombo_->currentText() : QString());
     return page;
 }
@@ -3481,9 +3781,11 @@ QWidget *BacktestWindow::createPositionsTab() {
     auto *autoRowHeightCheck = new QCheckBox("Auto Row Height", page);
     autoRowHeightCheck->setToolTip("Resize rows to fit multi-line indicator values.");
     autoRowHeightCheck->setChecked(true);
+    positionsAutoRowHeightCheck_ = autoRowHeightCheck;
     auto *autoColumnWidthCheck = new QCheckBox("Auto Column Width", page);
     autoColumnWidthCheck->setToolTip("Resize columns to fit full indicator text.");
     autoColumnWidthCheck->setChecked(true);
+    positionsAutoColumnWidthCheck_ = autoColumnWidthCheck;
 
     ctrlLayout->addWidget(refreshPosBtn);
     ctrlLayout->addWidget(closeAllBtn);
@@ -3563,27 +3865,7 @@ QWidget *BacktestWindow::createPositionsTab() {
     buttonsLayout->addStretch();
     layout->addLayout(buttonsLayout);
 
-    auto applyRowSizing = [table](bool enabled) {
-        if (enabled) {
-            table->resizeRowsToContents();
-            return;
-        }
-        table->verticalHeader()->setDefaultSectionSize(44);
-    };
-    auto applyColumnSizing = [table](bool enabled) {
-        if (enabled) {
-            table->resizeColumnsToContents();
-            table->horizontalHeader()->setStretchLastSection(true);
-            return;
-        }
-        QHeaderView *header = table->horizontalHeader();
-        header->setStretchLastSection(true);
-        for (int i = 0; i < header->count(); ++i) {
-            header->setSectionResizeMode(i, QHeaderView::Interactive);
-        }
-    };
-    applyRowSizing(autoRowHeightCheck->isChecked());
-    applyColumnSizing(autoColumnWidthCheck->isChecked());
+    refreshPositionsTableSizing();
 
     connect(refreshPosBtn, &QPushButton::clicked, this, [=]() {
         updateStatusMessage("Positions refresh requested.");
@@ -3599,10 +3881,12 @@ QWidget *BacktestWindow::createPositionsTab() {
         updateStatusMessage(QString("Positions view changed to %1.").arg(viewText));
     });
     connect(autoRowHeightCheck, &QCheckBox::toggled, this, [=](bool enabled) {
-        applyRowSizing(enabled);
+        Q_UNUSED(enabled);
+        refreshPositionsTableSizing();
     });
     connect(autoColumnWidthCheck, &QCheckBox::toggled, this, [=](bool enabled) {
-        applyColumnSizing(enabled);
+        Q_UNUSED(enabled);
+        refreshPositionsTableSizing();
     });
     connect(clearSelectedBtn, &QPushButton::clicked, this, [=]() {
         QSet<int> selectedRows;
@@ -4333,6 +4617,9 @@ void BacktestWindow::updateBotActiveTime() {
     if (chartBotTimeLabel_) {
         chartBotTimeLabel_->setText(text);
     }
+    if (dashboardRuntimeActive_ && dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText(formatDuration(elapsed.count()));
+    }
 }
 
 void BacktestWindow::ensureBotTimer(bool running) {
@@ -4345,6 +4632,109 @@ void BacktestWindow::ensureBotTimer(bool running) {
         botTimer_->start();
     } else {
         botTimer_->stop();
+    }
+}
+
+void BacktestWindow::refreshPositionsTableSizing() {
+    if (!positionsTable_) {
+        return;
+    }
+
+    const bool autoRows = positionsAutoRowHeightCheck_ && positionsAutoRowHeightCheck_->isChecked();
+    const bool autoColumns = positionsAutoColumnWidthCheck_ && positionsAutoColumnWidthCheck_->isChecked();
+
+    if (autoRows) {
+        positionsTable_->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+        positionsTable_->resizeRowsToContents();
+    } else {
+        positionsTable_->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+        positionsTable_->verticalHeader()->setDefaultSectionSize(44);
+    }
+
+    QHeaderView *header = positionsTable_->horizontalHeader();
+    if (autoColumns) {
+        header->setStretchLastSection(false);
+        for (int i = 0; i < header->count(); ++i) {
+            header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+        }
+        positionsTable_->resizeColumnsToContents();
+        header->setStretchLastSection(true);
+    } else {
+        header->setStretchLastSection(true);
+        for (int i = 0; i < header->count(); ++i) {
+            header->setSectionResizeMode(i, QHeaderView::Interactive);
+        }
+    }
+}
+
+void BacktestWindow::updateDashboardStopLossWidgetState() {
+    if (!dashboardStopLossEnableCheck_) {
+        return;
+    }
+    const bool runtimeActive = dashboardRuntimeActive_;
+    const bool stopLossEnabled = dashboardStopLossEnableCheck_->isChecked() && !runtimeActive;
+
+    if (dashboardStopLossModeCombo_) {
+        dashboardStopLossModeCombo_->setEnabled(stopLossEnabled);
+    }
+    if (dashboardStopLossScopeCombo_) {
+        dashboardStopLossScopeCombo_->setEnabled(stopLossEnabled);
+    }
+
+    QString mode = dashboardStopLossModeCombo_
+        ? dashboardStopLossModeCombo_->currentData().toString().trimmed().toLower()
+        : QString();
+    if (mode.isEmpty()) {
+        mode = QStringLiteral("usdt");
+    }
+    const bool enableUsdt = stopLossEnabled && (mode == "usdt" || mode == "both");
+    const bool enablePercent = stopLossEnabled && (mode == "percent" || mode == "both");
+
+    if (dashboardStopLossUsdtSpin_) {
+        dashboardStopLossUsdtSpin_->setEnabled(enableUsdt);
+    }
+    if (dashboardStopLossPercentSpin_) {
+        dashboardStopLossPercentSpin_->setEnabled(enablePercent);
+    }
+}
+
+void BacktestWindow::setDashboardRuntimeControlsEnabled(bool enabled) {
+    for (QWidget *widget : dashboardRuntimeLockWidgets_) {
+        if (widget) {
+            widget->setEnabled(enabled);
+        }
+    }
+
+    if (dashboardLeadTraderCombo_) {
+        const bool leadEnabled = enabled
+            && dashboardLeadTraderEnableCheck_
+            && dashboardLeadTraderEnableCheck_->isChecked();
+        dashboardLeadTraderCombo_->setEnabled(leadEnabled);
+    }
+
+    for (auto it = dashboardIndicatorChecks_.begin(); it != dashboardIndicatorChecks_.end(); ++it) {
+        if (QCheckBox *cb = it.value()) {
+            cb->setEnabled(enabled);
+        }
+    }
+    for (auto it = dashboardIndicatorButtons_.begin(); it != dashboardIndicatorButtons_.end(); ++it) {
+        QPushButton *btn = it.value();
+        QCheckBox *cb = dashboardIndicatorChecks_.value(it.key(), nullptr);
+        if (btn) {
+            btn->setEnabled(enabled && cb && cb->isChecked());
+        }
+    }
+
+    if (dashboardStopLossEnableCheck_) {
+        dashboardStopLossEnableCheck_->setEnabled(enabled);
+    }
+    updateDashboardStopLossWidgetState();
+
+    if (dashboardStartBtn_) {
+        dashboardStartBtn_->setEnabled(enabled);
+    }
+    if (dashboardStopBtn_) {
+        dashboardStopBtn_->setEnabled(!enabled);
     }
 }
 
@@ -4383,11 +4773,75 @@ void BacktestWindow::appendDashboardPositionLog(const QString &message) {
 }
 
 void BacktestWindow::appendDashboardWaitingLog(const QString &message) {
-    if (!dashboardWaitingLogsEdit_) {
+    const QString ts = QDateTime::currentDateTime().toString("[dd.MM.yyyy HH:mm:ss]");
+    if (dashboardWaitingLogsEdit_) {
+        dashboardWaitingLogsEdit_->append(QString("%1 %2").arg(ts, message));
         return;
     }
-    const QString ts = QDateTime::currentDateTime().toString("[dd.MM.yyyy HH:mm:ss]");
-    dashboardWaitingLogsEdit_->append(QString("%1 %2").arg(ts, message));
+    if (dashboardAllLogsEdit_) {
+        dashboardAllLogsEdit_->append(QString("%1 [Waiting] %2").arg(ts, message));
+    }
+}
+
+void BacktestWindow::refreshDashboardWaitingQueueTable() {
+    if (!dashboardWaitingQueueTable_) {
+        return;
+    }
+
+    QList<QVariantMap> combinedEntries = dashboardWaitingActiveEntries_.values();
+    combinedEntries.append(dashboardWaitingHistoryEntries_);
+
+    std::sort(combinedEntries.begin(), combinedEntries.end(), [](const QVariantMap &a, const QVariantMap &b) {
+        const QString stateA = a.value(QStringLiteral("state")).toString().trimmed().toLower();
+        const QString stateB = b.value(QStringLiteral("state")).toString().trimmed().toLower();
+        const int endedRankA = stateA == QStringLiteral("ended") ? 1 : 0;
+        const int endedRankB = stateB == QStringLiteral("ended") ? 1 : 0;
+        if (endedRankA != endedRankB) {
+            return endedRankA < endedRankB;
+        }
+        const double ageA = a.value(QStringLiteral("age")).toDouble();
+        const double ageB = b.value(QStringLiteral("age")).toDouble();
+        if (!qFuzzyCompare(ageA + 1.0, ageB + 1.0)) {
+            return ageA > ageB;
+        }
+        const QString symbolA = a.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        const QString symbolB = b.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        return symbolA < symbolB;
+    });
+
+    dashboardWaitingQueueTable_->setSortingEnabled(false);
+    dashboardWaitingQueueTable_->clearContents();
+    dashboardWaitingQueueTable_->setRowCount(combinedEntries.size());
+
+    for (int row = 0; row < combinedEntries.size(); ++row) {
+        const QVariantMap &entry = combinedEntries.at(row);
+        const QString symbol = entry.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        const QString interval = entry.value(QStringLiteral("interval")).toString().trimmed().toUpper();
+        const QString side = entry.value(QStringLiteral("side")).toString().trimmed().toUpper();
+        const QString context = entry.value(QStringLiteral("context")).toString().trimmed();
+        const QString state = entry.value(QStringLiteral("state")).toString().trimmed();
+        int ageSeconds = entry.value(QStringLiteral("age_seconds")).toInt();
+        if (ageSeconds < 0) {
+            ageSeconds = 0;
+        }
+
+        auto makeItem = [](const QString &text, bool centered = false) -> QTableWidgetItem * {
+            auto *item = new QTableWidgetItem(text);
+            if (centered) {
+                item->setTextAlignment(Qt::AlignCenter);
+            }
+            return item;
+        };
+
+        dashboardWaitingQueueTable_->setItem(row, 0, makeItem(symbol.isEmpty() ? QStringLiteral("-") : symbol, true));
+        dashboardWaitingQueueTable_->setItem(row, 1, makeItem(interval.isEmpty() ? QStringLiteral("-") : interval, true));
+        dashboardWaitingQueueTable_->setItem(row, 2, makeItem(side.isEmpty() ? QStringLiteral("-") : side, true));
+        dashboardWaitingQueueTable_->setItem(row, 3, makeItem(context.isEmpty() ? QStringLiteral("-") : context, false));
+        dashboardWaitingQueueTable_->setItem(row, 4, makeItem(state.isEmpty() ? QStringLiteral("-") : state, true));
+        dashboardWaitingQueueTable_->setItem(row, 5, makeItem(QString::number(ageSeconds), true));
+    }
+
+    dashboardWaitingQueueTable_->setSortingEnabled(true);
 }
 
 void BacktestWindow::startDashboardRuntime() {
@@ -4409,6 +4863,15 @@ void BacktestWindow::startDashboardRuntime() {
     }
 
     handleRunBacktest();
+    dashboardRuntimeActive_ = true;
+    setDashboardRuntimeControlsEnabled(false);
+    if (dashboardBotStatusLabel_) {
+        dashboardBotStatusLabel_->setText("ON");
+        dashboardBotStatusLabel_->setStyleSheet("color: #16a34a; font-weight: 700;");
+    }
+    if (dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText("0s");
+    }
 
     if (!dashboardRuntimeTimer_) {
         dashboardRuntimeTimer_ = new QTimer(this);
@@ -4417,6 +4880,10 @@ void BacktestWindow::startDashboardRuntime() {
     }
     dashboardRuntimeLastEvalMs_.clear();
     dashboardRuntimeConnectorWarnings_.clear();
+    dashboardRuntimeIntervalWarnings_.clear();
+    dashboardWaitingActiveEntries_.clear();
+    dashboardWaitingHistoryEntries_.clear();
+    refreshDashboardWaitingQueueTable();
     dashboardRuntimeTimer_->start();
 
     appendDashboardAllLog("Start triggered from Dashboard.");
@@ -4428,14 +4895,44 @@ void BacktestWindow::startDashboardRuntime() {
 }
 
 void BacktestWindow::stopDashboardRuntime() {
+    dashboardRuntimeActive_ = false;
     if (dashboardRuntimeTimer_) {
         dashboardRuntimeTimer_->stop();
     }
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = dashboardWaitingActiveEntries_.begin(); it != dashboardWaitingActiveEntries_.end(); ++it) {
+        QVariantMap endedEntry = it.value();
+        endedEntry.insert(QStringLiteral("state"), QStringLiteral("Ended"));
+        endedEntry.insert(QStringLiteral("ended_at_ms"), nowMs);
+        const qint64 firstSeenMs = endedEntry.value(QStringLiteral("first_seen_ms")).toLongLong();
+        const qint64 elapsedMs = firstSeenMs > 0 ? std::max<qint64>(0, nowMs - firstSeenMs) : 0;
+        endedEntry.insert(QStringLiteral("age"), static_cast<double>(elapsedMs) / 1000.0);
+        endedEntry.insert(QStringLiteral("age_seconds"), static_cast<int>(elapsedMs / 1000));
+        dashboardWaitingHistoryEntries_.append(endedEntry);
+    }
+    dashboardWaitingActiveEntries_.clear();
+    if (dashboardWaitingHistoryEntries_.size() > dashboardWaitingHistoryMax_) {
+        const int extra = dashboardWaitingHistoryEntries_.size() - dashboardWaitingHistoryMax_;
+        dashboardWaitingHistoryEntries_.erase(
+            dashboardWaitingHistoryEntries_.begin(),
+            dashboardWaitingHistoryEntries_.begin() + extra);
+    }
+    refreshDashboardWaitingQueueTable();
+
     if (dashboardStopBtn_) {
         dashboardStopBtn_->setEnabled(false);
     }
     if (dashboardStartBtn_) {
         dashboardStartBtn_->setEnabled(true);
+    }
+    setDashboardRuntimeControlsEnabled(true);
+    if (dashboardBotStatusLabel_) {
+        dashboardBotStatusLabel_->setText("OFF");
+        dashboardBotStatusLabel_->setStyleSheet("color: #ef4444; font-weight: 700;");
+    }
+    if (dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText("--");
     }
     handleStopBacktest();
     appendDashboardAllLog("Stop triggered from Dashboard.");
@@ -4446,6 +4943,9 @@ void BacktestWindow::runDashboardRuntimeCycle() {
     if (!dashboardOverridesTable_ || dashboardOverridesTable_->rowCount() <= 0) {
         return;
     }
+    bool positionsTableMutated = false;
+    QSet<QString> waitingSeenThisCycle;
+    const qint64 cycleNowMs = QDateTime::currentMSecsSinceEpoch();
 
     const bool futures = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith("fut")
@@ -4509,6 +5009,31 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         }
     }
 
+    auto touchWaitingEntry = [this, &waitingSeenThisCycle](const QString &waitingKey, qint64 nowMs) {
+        auto waitingIt = dashboardWaitingActiveEntries_.find(waitingKey);
+        if (waitingIt == dashboardWaitingActiveEntries_.end()) {
+            return;
+        }
+        waitingSeenThisCycle.insert(waitingKey);
+        QVariantMap waitingEntry = waitingIt.value();
+        qint64 firstSeenMs = waitingEntry.value(QStringLiteral("first_seen_ms")).toLongLong();
+        if (firstSeenMs <= 0) {
+            firstSeenMs = nowMs;
+        }
+        const qint64 elapsedMs = std::max<qint64>(0, nowMs - firstSeenMs);
+        const double ageSeconds = static_cast<double>(elapsedMs) / 1000.0;
+        waitingEntry.insert(QStringLiteral("first_seen_ms"), firstSeenMs);
+        waitingEntry.insert(QStringLiteral("updated_ms"), nowMs);
+        waitingEntry.insert(QStringLiteral("age"), ageSeconds);
+        waitingEntry.insert(QStringLiteral("age_seconds"), static_cast<int>(elapsedMs / 1000));
+        waitingEntry.insert(
+            QStringLiteral("state"),
+            ageSeconds >= kWaitingPositionLateThresholdSec
+                ? QStringLiteral("Late")
+                : QStringLiteral("Queued"));
+        waitingIt.value() = waitingEntry;
+    };
+
     for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
         const auto *symbolItem = dashboardOverridesTable_->item(row, 0);
         const auto *intervalItem = dashboardOverridesTable_->item(row, 1);
@@ -4543,6 +5068,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 lastMs = dashboardRuntimeLastEvalMs_.value(key, 0);
         if (lastMs > 0 && (nowMs - lastMs) < (loopSeconds * 1000)) {
+            touchWaitingEntry(key, nowMs);
             continue;
         }
         dashboardRuntimeLastEvalMs_.insert(key, nowMs);
@@ -4553,18 +5079,33 @@ void BacktestWindow::runDashboardRuntimeCycle() {
             continue;
         }
 
+        QString intervalWarning;
+        const QString requestInterval = normalizeBinanceKlineInterval(interval, &intervalWarning);
+        if (!intervalWarning.isEmpty()) {
+            const QString warningKey = QStringLiteral("%1|%2")
+                                           .arg(interval.trimmed().toLower(), requestInterval.trimmed().toLower());
+            if (!dashboardRuntimeIntervalWarnings_.contains(warningKey)) {
+                dashboardRuntimeIntervalWarnings_.insert(warningKey);
+                appendDashboardAllLog(intervalWarning);
+            }
+        }
+
         const auto candles = BinanceRestClient::fetchKlines(
             symbol,
-            interval,
+            requestInterval,
             futures,
             isTestnet,
             240,
             10000,
             rowConnectorCfg.baseUrl);
         if (!candles.ok || candles.candles.isEmpty()) {
+            const QString intervalLabel = requestInterval.compare(interval, Qt::CaseInsensitive) == 0
+                ? interval
+                : QString("%1->%2").arg(interval, requestInterval);
             appendDashboardPositionLog(
                 QString("%1@%2 data fetch failed (%3): %4")
-                    .arg(symbol, interval, rowConnectorText, candles.error));
+                    .arg(symbol, intervalLabel, rowConnectorText, candles.error));
+            touchWaitingEntry(key, nowMs);
             continue;
         }
 
@@ -4573,6 +5114,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         const double price = candles.candles.constLast().close;
         if (!rsiOk || !qIsFinite(price) || price <= 0.0) {
             appendDashboardPositionLog(QString("%1@%2 skipped: invalid RSI/price data.").arg(symbol, interval));
+            touchWaitingEntry(key, nowMs);
             continue;
         }
 
@@ -4613,13 +5155,33 @@ void BacktestWindow::runDashboardRuntimeCycle() {
             }
 
             if (openSide.isEmpty()) {
-                appendDashboardWaitingLog(
-                    QString("%1@%2 waiting: RSI=%3 (buy<=%4 / sell>=%5)")
-                        .arg(symbol,
-                             interval,
-                             QString::number(rsi, 'f', 2),
-                             QString::number(buyThreshold, 'f', 2),
-                             QString::number(sellThreshold, 'f', 2)));
+                const QString context = QString("RSI=%1 (buy<=%2 / sell>=%3)")
+                                            .arg(QString::number(rsi, 'f', 2),
+                                                 QString::number(buyThreshold, 'f', 2),
+                                                 QString::number(sellThreshold, 'f', 2));
+                waitingSeenThisCycle.insert(key);
+                QVariantMap waitingEntry = dashboardWaitingActiveEntries_.value(key);
+                qint64 firstSeenMs = waitingEntry.value(QStringLiteral("first_seen_ms")).toLongLong();
+                if (firstSeenMs <= 0) {
+                    firstSeenMs = nowMs;
+                }
+                const qint64 elapsedMs = std::max<qint64>(0, nowMs - firstSeenMs);
+                const double ageSeconds = static_cast<double>(elapsedMs) / 1000.0;
+                waitingEntry.insert(QStringLiteral("key"), key);
+                waitingEntry.insert(QStringLiteral("symbol"), symbol);
+                waitingEntry.insert(QStringLiteral("interval"), interval);
+                waitingEntry.insert(QStringLiteral("side"), waitingSideLabelFor(allowLong, allowShort));
+                waitingEntry.insert(QStringLiteral("context"), context);
+                waitingEntry.insert(QStringLiteral("first_seen_ms"), firstSeenMs);
+                waitingEntry.insert(QStringLiteral("updated_ms"), nowMs);
+                waitingEntry.insert(QStringLiteral("age"), ageSeconds);
+                waitingEntry.insert(QStringLiteral("age_seconds"), static_cast<int>(elapsedMs / 1000));
+                waitingEntry.insert(
+                    QStringLiteral("state"),
+                    ageSeconds >= kWaitingPositionLateThresholdSec
+                        ? QStringLiteral("Late")
+                        : QStringLiteral("Queued"));
+                dashboardWaitingActiveEntries_.insert(key, waitingEntry);
                 continue;
             }
 
@@ -4661,6 +5223,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                 setCell(16, "OPEN");
                 setCell(17, QString("Auto [%1]").arg(rowConnectorCfg.key));
                 positionsTable_->setSortingEnabled(sorting);
+                positionsTableMutated = true;
             }
             appendDashboardPositionLog(
                 QString("%1 %2@%3 opened at %4 (RSI=%5, connector=%6)")
@@ -4714,6 +5277,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                             .arg(QString::number(pnlUsdt, 'f', 2),
                                  QString::number(pnlPct, 'f', 2)));
             setOrCreate(11, QString("RSI %1").arg(QString::number(rsi, 'f', 2)));
+            positionsTableMutated = true;
         }
 
         if (!shouldCloseLong && !shouldCloseShort) {
@@ -4732,6 +5296,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
             };
             setOrCreate(14, QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
             setOrCreate(16, "CLOSED");
+            positionsTableMutated = true;
         }
         appendDashboardPositionLog(
             QString("%1 %2@%3 closed at %4, PNL=%5 USDT (%6%%), connector=%7")
@@ -4744,6 +5309,35 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                      rowConnectorCfg.key));
         dashboardRuntimeOpenPositions_.remove(key);
     }
+
+    if (!dashboardWaitingActiveEntries_.isEmpty()) {
+        const QList<QString> activeKeys = dashboardWaitingActiveEntries_.keys();
+        for (const QString &activeKey : activeKeys) {
+            if (waitingSeenThisCycle.contains(activeKey)) {
+                continue;
+            }
+            QVariantMap endedEntry = dashboardWaitingActiveEntries_.take(activeKey);
+            qint64 firstSeenMs = endedEntry.value(QStringLiteral("first_seen_ms")).toLongLong();
+            if (firstSeenMs <= 0) {
+                firstSeenMs = cycleNowMs;
+            }
+            const qint64 elapsedMs = std::max<qint64>(0, cycleNowMs - firstSeenMs);
+            endedEntry.insert(QStringLiteral("first_seen_ms"), firstSeenMs);
+            endedEntry.insert(QStringLiteral("updated_ms"), cycleNowMs);
+            endedEntry.insert(QStringLiteral("ended_at_ms"), cycleNowMs);
+            endedEntry.insert(QStringLiteral("age"), static_cast<double>(elapsedMs) / 1000.0);
+            endedEntry.insert(QStringLiteral("age_seconds"), static_cast<int>(elapsedMs / 1000));
+            endedEntry.insert(QStringLiteral("state"), QStringLiteral("Ended"));
+            dashboardWaitingHistoryEntries_.append(endedEntry);
+        }
+    }
+    if (dashboardWaitingHistoryEntries_.size() > dashboardWaitingHistoryMax_) {
+        const int extra = dashboardWaitingHistoryEntries_.size() - dashboardWaitingHistoryMax_;
+        dashboardWaitingHistoryEntries_.erase(
+            dashboardWaitingHistoryEntries_.begin(),
+            dashboardWaitingHistoryEntries_.begin() + extra);
+    }
+    refreshDashboardWaitingQueueTable();
 
     if (positionsTable_ && chartPnlActiveLabel_ && chartPnlClosedLabel_) {
         double activePnl = 0.0;
@@ -4764,5 +5358,8 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         }
         chartPnlActiveLabel_->setText(QString("Total PNL Active Positions: %1 USDT").arg(QString::number(activePnl, 'f', 2)));
         chartPnlClosedLabel_->setText(QString("Total PNL Closed Positions: %1 USDT").arg(QString::number(closedPnl, 'f', 2)));
+    }
+    if (positionsTableMutated) {
+        refreshPositionsTableSizing();
     }
 }

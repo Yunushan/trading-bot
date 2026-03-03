@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QList>
 #include <QMap>
 #include <QSet>
 #include <QVariantMap>
@@ -56,10 +57,14 @@ private:
     void appendDashboardAllLog(const QString &message);
     void appendDashboardPositionLog(const QString &message);
     void appendDashboardWaitingLog(const QString &message);
+    void refreshDashboardWaitingQueueTable();
     void wireSignals();
     void ensureBotTimer(bool running);
     void updateStatusMessage(const QString &message);
     void appendUniqueInterval(const QString &interval);
+    void refreshPositionsTableSizing();
+    void updateDashboardStopLossWidgetState();
+    void setDashboardRuntimeControlsEnabled(bool enabled);
 
     QListWidget *symbolList_;
     QListWidget *intervalList_;
@@ -83,6 +88,8 @@ private:
     QLineEdit *dashboardApiKey_;
     QLineEdit *dashboardApiSecret_;
     QLabel *dashboardBalanceLabel_;
+    QLabel *dashboardBotStatusLabel_;
+    QLabel *dashboardBotTimeLabel_;
     QPushButton *dashboardRefreshBtn_;
     QComboBox *dashboardAccountTypeCombo_;
     QComboBox *dashboardModeCombo_;
@@ -105,9 +112,23 @@ private:
     QTextEdit *dashboardAllLogsEdit_;
     QTextEdit *dashboardPositionLogsEdit_;
     QTextEdit *dashboardWaitingLogsEdit_;
+    QTableWidget *dashboardWaitingQueueTable_;
     QTimer *dashboardRuntimeTimer_;
     QMap<QString, qint64> dashboardRuntimeLastEvalMs_;
     QSet<QString> dashboardRuntimeConnectorWarnings_;
+    QSet<QString> dashboardRuntimeIntervalWarnings_;
+    QList<QWidget *> dashboardRuntimeLockWidgets_;
+    QCheckBox *dashboardLeadTraderEnableCheck_;
+    QComboBox *dashboardLeadTraderCombo_;
+    QCheckBox *dashboardStopLossEnableCheck_;
+    QComboBox *dashboardStopLossModeCombo_;
+    QComboBox *dashboardStopLossScopeCombo_;
+    QDoubleSpinBox *dashboardStopLossUsdtSpin_;
+    QDoubleSpinBox *dashboardStopLossPercentSpin_;
+    bool dashboardRuntimeActive_ = false;
+    QMap<QString, QVariantMap> dashboardWaitingActiveEntries_;
+    QList<QVariantMap> dashboardWaitingHistoryEntries_;
+    int dashboardWaitingHistoryMax_ = 500;
     struct RuntimePosition {
         QString side;
         QString interval;
@@ -127,4 +148,6 @@ private:
     QLabel *chartBotStatusLabel_;
     QLabel *chartBotTimeLabel_;
     QTableWidget *positionsTable_;
+    QCheckBox *positionsAutoRowHeightCheck_;
+    QCheckBox *positionsAutoColumnWidthCheck_;
 };

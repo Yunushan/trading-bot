@@ -1,4 +1,4 @@
-# Binance Trading Bot Workspace
+# Trading Bot Workspace
 
 This repository packages a cross‑platform trading workstation that ships with a production‑ready **Binance desktop bot (PyQt6)** and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
 

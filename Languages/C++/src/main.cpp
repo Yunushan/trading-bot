@@ -53,7 +53,7 @@ QIcon loadAppIcon() {
 #ifdef Q_OS_WIN
 void applyAppUserModelID() {
     // Ensures taskbar pinning and icon association work consistently on Windows.
-    const wchar_t *appid = L"Binance.TradingBot.Cpp";
+    const wchar_t *appid = L"TradingBot.Desktop.Cpp";
     SetCurrentProcessExplicitAppUserModelID(appid);
 }
 #endif
@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
     if (!icon.isNull()) {
         window.setWindowIcon(icon);
     }
-    window.show();
+    window.showMaximized();
 
     return app.exec();
 }

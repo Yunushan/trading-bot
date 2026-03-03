@@ -646,7 +646,8 @@ else:
 PYTHON_CODE_LANGUAGE_KEY = "Python (PyQt)"
 CPP_CODE_LANGUAGE_KEY = "C++ (Qt/C++23)"
 CPP_SUPPORTED_EXCHANGE_KEY = "Binance"
-CPP_EXECUTABLE_BASENAME = "binance_backtest_tab"
+CPP_EXECUTABLE_BASENAME = "Trading-Bot-C++"
+CPP_EXECUTABLE_LEGACY_BASENAME = "binance_backtest_tab"
 CPP_PACKAGED_EXECUTABLE_BASENAME = "Trading-Bot-C++"
 CPP_RELEASE_OWNER = "Yunushan"
 CPP_RELEASE_REPO = "trading-bot"
@@ -10200,11 +10201,11 @@ class MainWindow(QtWidgets.QWidget):
                 return
             try:
                 if not self.isVisible():
-                    self.showNormal()
+                    self.showMaximized()
                     self.raise_()
                     self.activateWindow()
                 elif self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
-                    self.showNormal()
+                    self.showMaximized()
                     self.raise_()
                     self.activateWindow()
             except Exception:
@@ -10235,7 +10236,7 @@ class MainWindow(QtWidgets.QWidget):
         def _tick():
             try:
                 if not self.isVisible() or self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
-                    self.showNormal()
+                    self.showMaximized()
                     self.raise_()
                     self.activateWindow()
             except Exception:
@@ -14647,7 +14648,11 @@ def _init_code_language_tab(self):
     return tab
 
 def _cpp_executable_names() -> set[str]:
-    base_names = {CPP_EXECUTABLE_BASENAME, CPP_PACKAGED_EXECUTABLE_BASENAME}
+    base_names = {
+        CPP_EXECUTABLE_BASENAME,
+        CPP_PACKAGED_EXECUTABLE_BASENAME,
+        CPP_EXECUTABLE_LEGACY_BASENAME,
+    }
     names = set(base_names)
     if sys.platform == "win32":
         names.update({f"{name}.exe" for name in base_names})
@@ -15487,6 +15492,7 @@ def _find_cpp_code_tab_executable() -> Path | None:
     candidate_stems = {Path(name).stem.lower() for name in candidate_names}
     packaged_stem = CPP_PACKAGED_EXECUTABLE_BASENAME.lower()
     default_stem = CPP_EXECUTABLE_BASENAME.lower()
+    legacy_stem = CPP_EXECUTABLE_LEGACY_BASENAME.lower()
     suffixes = {""}
     if sys.platform == "win32":
         suffixes.add(".exe")
@@ -15580,8 +15586,10 @@ def _find_cpp_code_tab_executable() -> Path | None:
                 return 1
             return 0
         if stem == default_stem:
-            return 2
+            return 3
         if stem == packaged_stem:
+            return 2
+        if stem == legacy_stem:
             return 1
         return 0
 
@@ -16234,7 +16242,7 @@ def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
 
     exe_path = _find_cpp_code_tab_executable()
     if exe_path is None or not exe_path.is_file():
-        return None, "Build completed but binance_backtest_tab executable was not found."
+        return None, "Build completed but Trading-Bot-C++ executable was not found."
     return exe_path, None
 
 
@@ -22132,7 +22140,7 @@ def _restore_window_after_guard(self) -> None:
                 if state & QtCore.Qt.WindowState.WindowMaximized:
                     self.showMaximized()
                 else:
-                    self.showNormal()
+                    self.showMaximized()
             except Exception:
                 pass
         elif not visible:
@@ -22140,7 +22148,7 @@ def _restore_window_after_guard(self) -> None:
                 if state & QtCore.Qt.WindowState.WindowMaximized:
                     self.showMaximized()
                 else:
-                    self.show()
+                    self.showMaximized()
             except Exception:
                 pass
         try:

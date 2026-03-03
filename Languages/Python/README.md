@@ -1,11 +1,11 @@
 <p style="color:#b71c1c; font-weight:bold; text-align:center;">
-  WARNING: Binance Trading Bot is still in BETA. It may contain mistakes, bugs, or errors.
+  WARNING: Trading Bot is still in BETA. It may contain mistakes, bugs, or errors.
 </p>
 <p style="color:#b71c1c; text-align:center;">
   Neither the author nor this bot accepts any legal responsibility for trading outcomes. Use it at your own risk.
 </p>
 
-# Binance Trading Bot (Python → Languages/Python)
+# Trading Bot (Python → Languages/Python)
 
 A PyQt6 desktop GUI for spot and futures trading on Binance.
 
@@ -98,7 +98,7 @@ Closing the window or pressing Alt+F4 will market-close all active positions (be
 
 ## License
 
-Copyright (c) 2025 Binance Trading Bot contributors
+Copyright (c) 2025 Trading Bot contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

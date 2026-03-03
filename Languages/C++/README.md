@@ -1,6 +1,6 @@
 ## Binance Backtest Tab (Qt/C++23)
 
-This directory contains a standalone Qt Widgets application that recreates the Binance Trading Bot's **Backtest** tab UI using modern C++23. It is intended as the starting point for the multi-language re-platform effort requested for the project.
+This directory contains a standalone Qt Widgets application that recreates the Trading Bot's **Backtest** tab UI using modern C++23. It is intended as the starting point for the multi-language re-platform effort requested for the project.
 
 ### Features
 
@@ -39,7 +39,7 @@ cmake --build build/binance_cpp
 3. Run the demo executable:
 
 ```bash
-build/binance_cpp/binance_backtest_tab
+build/binance_cpp/Trading-Bot-C++
 ```
 
 The resulting window mirrors the Python UI and now uses native C++ exchange connectivity for the dashboard refresh actions.
