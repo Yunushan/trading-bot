@@ -490,10 +490,161 @@ QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futur
     return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"};
 }
 
+struct ConnectorOption {
+    QString label;
+    QString key;
+};
+
+const QString kConnectorUsdsFutures = QStringLiteral("binance-sdk-derivatives-trading-usds-futures");
+const QString kConnectorCoinFutures = QStringLiteral("binance-sdk-derivatives-trading-coin-futures");
+const QString kConnectorSpot = QStringLiteral("binance-sdk-spot");
+const QString kConnectorBinanceConnector = QStringLiteral("binance-connector");
+const QString kConnectorCcxt = QStringLiteral("ccxt");
+const QString kConnectorPyBinance = QStringLiteral("python-binance");
+const QString kConnectorLegacyGateway = QStringLiteral("gateway");
+const QString kConnectorLegacyCustom = QStringLiteral("custom");
+
+const QVector<ConnectorOption> kConnectorOptions = {
+    {QStringLiteral("Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)"), kConnectorUsdsFutures},
+    {QStringLiteral("Binance SDK Derivatives Trading COIN-M Futures"), kConnectorCoinFutures},
+    {QStringLiteral("Binance SDK Spot (Official Recommended)"), kConnectorSpot},
+    {QStringLiteral("Binance Connector Python"), kConnectorBinanceConnector},
+    {QStringLiteral("CCXT (Unified)"), kConnectorCcxt},
+    {QStringLiteral("python-binance (Community)"), kConnectorPyBinance},
+};
+
+const QSet<QString> kFuturesConnectorKeys = {
+    kConnectorUsdsFutures,
+    kConnectorCoinFutures,
+    kConnectorBinanceConnector,
+    kConnectorCcxt,
+    kConnectorPyBinance,
+};
+
+const QSet<QString> kSpotConnectorKeys = {
+    kConnectorSpot,
+    kConnectorBinanceConnector,
+    kConnectorCcxt,
+    kConnectorPyBinance,
+};
+
+QString recommendedConnectorKey(bool futures) {
+    return futures ? kConnectorUsdsFutures : kConnectorSpot;
+}
+
+bool connectorAllowedForAccount(const QString &connectorKey, bool futures) {
+    return futures ? kFuturesConnectorKeys.contains(connectorKey) : kSpotConnectorKeys.contains(connectorKey);
+}
+
+QString connectorLabelForKey(const QString &connectorKey) {
+    for (const auto &option : kConnectorOptions) {
+        if (option.key == connectorKey) {
+            return option.label;
+        }
+    }
+    return connectorKey.trimmed();
+}
+
+QVector<ConnectorOption> connectorOptionsForAccount(bool futures) {
+    const QSet<QString> &allowed = futures ? kFuturesConnectorKeys : kSpotConnectorKeys;
+    QVector<ConnectorOption> filtered;
+    filtered.reserve(kConnectorOptions.size());
+    for (const auto &option : kConnectorOptions) {
+        if (allowed.contains(option.key)) {
+            filtered.push_back(option);
+        }
+    }
+    return filtered;
+}
+
+QString normalizeConnectorBackend(const QString &value) {
+    const QString textRaw = value.trimmed();
+    if (textRaw.isEmpty()) {
+        return kConnectorUsdsFutures;
+    }
+    const QString text = textRaw.toLower();
+
+    // Legacy C++ labels still supported when loading older rows/configs.
+    if (text.contains(QStringLiteral("gateway"))) {
+        return kConnectorLegacyGateway;
+    }
+    if (text.contains(QStringLiteral("custom")) || text.startsWith(QStringLiteral("http"))) {
+        return kConnectorLegacyCustom;
+    }
+
+    if (text == kConnectorUsdsFutures
+        || text == QStringLiteral("binance_sdk_derivatives_trading_usds_futures")
+        || (text.contains(QStringLiteral("sdk"))
+            && text.contains(QStringLiteral("future"))
+            && (text.contains(QStringLiteral("usd")) || text.contains(QStringLiteral("usds"))))) {
+        return kConnectorUsdsFutures;
+    }
+    if (text == kConnectorCoinFutures
+        || text == QStringLiteral("binance_sdk_derivatives_trading_coin_futures")
+        || (text.contains(QStringLiteral("sdk"))
+            && text.contains(QStringLiteral("coin"))
+            && text.contains(QStringLiteral("future")))) {
+        return kConnectorCoinFutures;
+    }
+    if (text == kConnectorSpot
+        || text == QStringLiteral("binance_sdk_spot")
+        || (text.contains(QStringLiteral("sdk")) && text.contains(QStringLiteral("spot")))) {
+        return kConnectorSpot;
+    }
+    if (text == QStringLiteral("ccxt") || text.contains(QStringLiteral("ccxt"))) {
+        return kConnectorCcxt;
+    }
+    if (text == kConnectorBinanceConnector
+        || text.contains(QStringLiteral("connector"))
+        || text.contains(QStringLiteral("official"))) {
+        return kConnectorBinanceConnector;
+    }
+    if (text.contains(QStringLiteral("python")) && text.contains(QStringLiteral("binance"))) {
+        return kConnectorPyBinance;
+    }
+    return kConnectorUsdsFutures;
+}
+
+void rebuildDashboardConnectorComboForAccount(QComboBox *combo, bool futures, bool forceDefault = false) {
+    if (!combo) {
+        return;
+    }
+
+    QString currentKey = normalizeConnectorBackend(combo->currentData().toString().trimmed());
+    if (currentKey.trimmed().isEmpty()) {
+        currentKey = normalizeConnectorBackend(combo->currentText().trimmed());
+    }
+    const QString recommended = recommendedConnectorKey(futures);
+    if (forceDefault || !connectorAllowedForAccount(currentKey, futures)) {
+        currentKey = recommended;
+    }
+
+    const QSignalBlocker blocker(combo);
+    combo->clear();
+    const auto options = connectorOptionsForAccount(futures);
+    for (const auto &option : options) {
+        combo->addItem(option.label, option.key);
+    }
+
+    if (combo->count() <= 0) {
+        return;
+    }
+
+    int idx = combo->findData(currentKey);
+    if (idx < 0) {
+        idx = combo->findData(recommended);
+    }
+    if (idx < 0) {
+        idx = 0;
+    }
+    combo->setCurrentIndex(idx);
+}
+
 struct ConnectorRuntimeConfig {
     QString key;
     QString label;
     QString baseUrl;
+    QString warning;
     QString error;
 
     bool ok() const {
@@ -523,9 +674,10 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
     ConnectorRuntimeConfig cfg;
     cfg.label = connectorText.trimmed();
     const QString normalized = connectorText.trimmed().toLower();
+    const QString selectedKey = normalizeConnectorBackend(connectorText);
 
-    if (normalized.contains(QStringLiteral("gateway"))) {
-        cfg.key = QStringLiteral("gateway");
+    if (selectedKey == kConnectorLegacyGateway) {
+        cfg.key = kConnectorLegacyGateway;
         const QString raw = firstEnvValue(
             futures
                 ? QStringList{
@@ -547,8 +699,8 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
         return cfg;
     }
 
-    if (normalized.contains(QStringLiteral("custom")) || normalized.startsWith(QStringLiteral("http"))) {
-        cfg.key = QStringLiteral("custom");
+    if (selectedKey == kConnectorLegacyCustom || normalized.startsWith(QStringLiteral("http"))) {
+        cfg.key = kConnectorLegacyCustom;
         QString raw = normalized.startsWith(QStringLiteral("http")) ? connectorText.trimmed() : QString();
         if (raw.isEmpty()) {
             raw = firstEnvValue(
@@ -573,7 +725,49 @@ ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool
         return cfg;
     }
 
-    cfg.key = QStringLiteral("official");
+    auto setWarning = [&cfg](const QString &message) {
+        if (cfg.warning.trimmed().isEmpty()) {
+            cfg.warning = message;
+        }
+    };
+
+    const QString recommended = recommendedConnectorKey(futures);
+    QString effectiveKey = cfg.label.isEmpty() ? recommended : selectedKey;
+    if (effectiveKey.trimmed().isEmpty()) {
+        effectiveKey = recommended;
+    }
+
+    if (!connectorAllowedForAccount(effectiveKey, futures)) {
+        const QString chosenLabel = cfg.label.isEmpty() ? connectorLabelForKey(effectiveKey) : cfg.label;
+        setWarning(
+            QStringLiteral("Connector '%1' is not available for %2. Using '%3'.")
+                .arg(chosenLabel,
+                     futures ? QStringLiteral("Futures") : QStringLiteral("Spot"),
+                     connectorLabelForKey(recommended)));
+        effectiveKey = recommended;
+    }
+
+    // C++ runtime currently executes native Binance REST endpoints.
+    // Community/SDK bridge options are mapped to native equivalents for compatibility.
+    if (effectiveKey == kConnectorCoinFutures) {
+        setWarning(
+            QStringLiteral("Connector '%1' is not implemented in C++ yet. Using '%2'.")
+                .arg(cfg.label.isEmpty() ? connectorLabelForKey(kConnectorCoinFutures) : cfg.label,
+                     connectorLabelForKey(kConnectorUsdsFutures)));
+        effectiveKey = kConnectorUsdsFutures;
+    } else if (effectiveKey == kConnectorBinanceConnector
+               || effectiveKey == kConnectorCcxt
+               || effectiveKey == kConnectorPyBinance) {
+        setWarning(
+            QStringLiteral("Connector '%1' maps to native Binance REST in C++ runtime.")
+                .arg(cfg.label.isEmpty() ? connectorLabelForKey(effectiveKey) : cfg.label));
+        effectiveKey = recommended;
+    }
+
+    cfg.key = effectiveKey;
+    if (cfg.label.isEmpty()) {
+        cfg.label = connectorLabelForKey(effectiveKey);
+    }
     cfg.baseUrl.clear();
     return cfg;
 }
@@ -1543,6 +1737,15 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       addSelectedBtn_(nullptr),
       addAllBtn_(nullptr),
       symbolSourceCombo_(nullptr),
+      backtestRefreshSymbolsBtn_(nullptr),
+      backtestSymbolIntervalTable_(nullptr),
+      backtestConnectorCombo_(nullptr),
+      backtestLoopCombo_(nullptr),
+      backtestLeverageSpin_(nullptr),
+      backtestStopLossEnableCheck_(nullptr),
+      backtestStopLossModeCombo_(nullptr),
+      backtestStopLossScopeCombo_(nullptr),
+      backtestSideCombo_(nullptr),
       resultsTable_(nullptr),
       botTimer_(nullptr),
       tabs_(nullptr),
@@ -1604,8 +1807,9 @@ BacktestWindow::BacktestWindow(QWidget *parent)
     tabs_->addTab(createPositionsTab(), "Positions");
     backtestTab_ = createBacktestTab();
     tabs_->addTab(backtestTab_, "Backtest");
+    tabs_->addTab(createLiquidationHeatmapTab(), "Liquidation Heatmap");
     tabs_->addTab(createCodeTab(), "Code Languages");
-    tabs_->setCurrentWidget(backtestTab_);
+    tabs_->setCurrentIndex(0);
 
     rootLayout->addWidget(tabs_);
 
@@ -1622,18 +1826,35 @@ BacktestWindow::BacktestWindow(QWidget *parent)
         if (chartIdx < 0 || prevIdx < 0 || chartIdx == prevIdx) {
             return;
         }
-        const bool hadUpdates = updatesEnabled();
-        setUpdatesEnabled(false);
-        tabs_->setCurrentIndex(chartIdx);
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-        tabs_->setCurrentIndex(prevIdx);
-        setUpdatesEnabled(hadUpdates);
+        {
+            QSignalBlocker blocker(tabs_);
+            tabs_->setCurrentIndex(chartIdx);
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            tabs_->setCurrentIndex(prevIdx);
+        }
+        tabs_->update();
+        update();
     });
 
     // Ensure the initial theme applies after all tabs/widgets exist.
     if (dashboardThemeCombo_) {
         applyDashboardTheme(dashboardThemeCombo_->currentText());
     }
+
+    // Align backtest symbol ordering/selection with Python logic (volume-sorted fetch at startup).
+    QTimer::singleShot(0, this, [this]() {
+        refreshBacktestSymbols();
+    });
+
+    // Force first-frame paint; some Windows/Qt builds can stay white until the first manual resize.
+    QTimer::singleShot(0, this, [this]() {
+        if (auto *cw = centralWidget()) {
+            cw->update();
+            cw->repaint();
+        }
+        update();
+        repaint();
+    });
 }
 
 QWidget *BacktestWindow::createPlaceholderTab(const QString &title, const QString &body) {
@@ -1954,6 +2175,9 @@ void BacktestWindow::refreshDashboardBalance() {
         resetButton();
         return;
     }
+    if (!connectorCfg.warning.trimmed().isEmpty()) {
+        updateStatusMessage(QString("Connector fallback: %1").arg(connectorCfg.warning));
+    }
 
     const auto result = BinanceRestClient::fetchUsdtBalance(
         apiKey,
@@ -2056,6 +2280,9 @@ void BacktestWindow::refreshDashboardSymbols() {
         resetButton();
         return;
     }
+    if (!connectorCfg.warning.trimmed().isEmpty()) {
+        updateStatusMessage(QString("Connector fallback: %1").arg(connectorCfg.warning));
+    }
 
     const auto result = BinanceRestClient::fetchUsdtSymbols(isFutures, isTestnet, 10000, true, 0, connectorCfg.baseUrl);
     if (!result.ok) {
@@ -2067,6 +2294,238 @@ void BacktestWindow::refreshDashboardSymbols() {
     applySymbols(result.symbols);
 
     resetButton();
+}
+
+void BacktestWindow::refreshBacktestSymbols() {
+    if (!symbolList_) {
+        return;
+    }
+
+    if (backtestRefreshSymbolsBtn_) {
+        backtestRefreshSymbolsBtn_->setEnabled(false);
+        backtestRefreshSymbolsBtn_->setText("Refreshing...");
+    }
+    auto resetButton = [this]() {
+        if (backtestRefreshSymbolsBtn_) {
+            backtestRefreshSymbolsBtn_->setEnabled(true);
+            backtestRefreshSymbolsBtn_->setText("Refresh Symbols");
+        }
+    };
+
+    QSet<QString> previousSelections;
+    for (auto *item : symbolList_->selectedItems()) {
+        if (item) {
+            previousSelections.insert(item->text().trimmed().toUpper());
+        }
+    }
+
+    const bool futures = symbolSourceCombo_
+        ? symbolSourceCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+        : true;
+    const bool isTestnet = dashboardModeCombo_ ? isTestnetModeLabel(dashboardModeCombo_->currentText()) : false;
+    const QString connectorText = backtestConnectorCombo_
+        ? backtestConnectorCombo_->currentText().trimmed()
+        : connectorLabelForKey(recommendedConnectorKey(futures));
+    const ConnectorRuntimeConfig connectorCfg = resolveConnectorConfig(connectorText, futures);
+    if (!connectorCfg.ok()) {
+        updateStatusMessage(QString("Backtest symbols: connector error: %1").arg(connectorCfg.error));
+        if (symbolList_->count() == 0) {
+            symbolList_->addItems(placeholderSymbolsForExchange(QStringLiteral("Binance"), futures));
+            if (symbolList_->count() > 0) {
+                symbolList_->item(0)->setSelected(true);
+            }
+        }
+        resetButton();
+        return;
+    }
+
+    constexpr int kBacktestSymbolTopN = 200;
+    const auto result = BinanceRestClient::fetchUsdtSymbols(
+        futures,
+        isTestnet,
+        10000,
+        true,
+        kBacktestSymbolTopN,
+        connectorCfg.baseUrl);
+
+    if (!result.ok || result.symbols.isEmpty()) {
+        if (symbolList_->count() == 0) {
+            symbolList_->clear();
+            symbolList_->addItems(placeholderSymbolsForExchange(QStringLiteral("Binance"), futures));
+            if (symbolList_->count() > 0) {
+                symbolList_->item(0)->setSelected(true);
+            }
+        }
+        const QString err = result.error.trimmed().isEmpty() ? QStringLiteral("no symbols returned") : result.error.trimmed();
+        updateStatusMessage(QString("Backtest symbol refresh failed: %1").arg(err));
+        resetButton();
+        return;
+    }
+
+    symbolList_->clear();
+    symbolList_->addItems(result.symbols);
+
+    bool anySelected = false;
+    for (int i = 0; i < symbolList_->count(); ++i) {
+        auto *item = symbolList_->item(i);
+        if (!item) {
+            continue;
+        }
+        const QString key = item->text().trimmed().toUpper();
+        if (previousSelections.contains(key)) {
+            item->setSelected(true);
+            anySelected = true;
+        }
+    }
+    if (!anySelected && symbolList_->count() > 0) {
+        symbolList_->item(0)->setSelected(true);
+    }
+
+    updateStatusMessage(QString("Loaded %1 %2 symbols for backtest.")
+                            .arg(result.symbols.size())
+                            .arg(futures ? QStringLiteral("FUTURES") : QStringLiteral("SPOT")));
+    resetButton();
+}
+
+void BacktestWindow::refreshBacktestSymbolIntervalTable() {
+    if (!backtestSymbolIntervalTable_) {
+        return;
+    }
+    backtestSymbolIntervalTable_->resizeColumnsToContents();
+}
+
+void BacktestWindow::addSelectedBacktestSymbolIntervalPairs() {
+    if (!backtestSymbolIntervalTable_ || !symbolList_ || !intervalList_) {
+        return;
+    }
+
+    QStringList symbols;
+    for (auto *item : symbolList_->selectedItems()) {
+        if (!item) {
+            continue;
+        }
+        const QString value = item->text().trimmed().toUpper();
+        if (!value.isEmpty()) {
+            symbols.push_back(value);
+        }
+    }
+    symbols.removeDuplicates();
+
+    QStringList intervals;
+    for (auto *item : intervalList_->selectedItems()) {
+        if (!item) {
+            continue;
+        }
+        const QString value = item->text().trimmed();
+        if (!value.isEmpty()) {
+            intervals.push_back(value);
+        }
+    }
+    intervals.removeDuplicates();
+
+    if (symbols.isEmpty() || intervals.isEmpty()) {
+        updateStatusMessage("Select at least one symbol and interval before adding overrides.");
+        return;
+    }
+
+    QSet<QString> existingKeys;
+    for (int row = 0; row < backtestSymbolIntervalTable_->rowCount(); ++row) {
+        const auto *symItem = backtestSymbolIntervalTable_->item(row, 0);
+        const auto *intItem = backtestSymbolIntervalTable_->item(row, 1);
+        const QString sym = symItem ? symItem->text().trimmed().toUpper() : QString();
+        const QString iv = intItem ? intItem->text().trimmed() : QString();
+        if (!sym.isEmpty() && !iv.isEmpty()) {
+            existingKeys.insert(sym + "|" + iv);
+        }
+    }
+
+    const QString connectorText = backtestConnectorCombo_
+        ? backtestConnectorCombo_->currentText().trimmed()
+        : QStringLiteral("-");
+    const QString loopText = backtestLoopCombo_
+        ? backtestLoopCombo_->currentText().trimmed()
+        : QStringLiteral("-");
+    const QString leverageText = backtestLeverageSpin_
+        ? QString("%1x").arg(backtestLeverageSpin_->value())
+        : QStringLiteral("-");
+    const QString sideText = backtestSideCombo_
+        ? backtestSideCombo_->currentText().trimmed()
+        : QStringLiteral("Default");
+    QString stopLossText = QStringLiteral("No");
+    if (backtestStopLossEnableCheck_ && backtestStopLossEnableCheck_->isChecked()) {
+        const QString mode = backtestStopLossModeCombo_
+            ? backtestStopLossModeCombo_->currentData().toString().trimmed().toLower()
+            : QStringLiteral("usdt");
+        const QString scope = backtestStopLossScopeCombo_
+            ? backtestStopLossScopeCombo_->currentData().toString().trimmed().toLower().replace('_', '-')
+            : QStringLiteral("per-trade");
+        stopLossText = QString("Yes (%1 | %2)")
+                           .arg(mode.isEmpty() ? QStringLiteral("usdt") : mode,
+                                scope.isEmpty() ? QStringLiteral("per-trade") : scope);
+    }
+    const QString strategyText = QString("Side: %1").arg(sideText);
+
+    int added = 0;
+    const bool wasSorting = backtestSymbolIntervalTable_->isSortingEnabled();
+    backtestSymbolIntervalTable_->setSortingEnabled(false);
+    for (const QString &sym : symbols) {
+        for (const QString &iv : intervals) {
+            const QString key = sym + "|" + iv;
+            if (existingKeys.contains(key)) {
+                continue;
+            }
+            existingKeys.insert(key);
+            const int row = backtestSymbolIntervalTable_->rowCount();
+            backtestSymbolIntervalTable_->insertRow(row);
+            backtestSymbolIntervalTable_->setItem(row, 0, new QTableWidgetItem(sym));
+            backtestSymbolIntervalTable_->setItem(row, 1, new QTableWidgetItem(iv));
+            backtestSymbolIntervalTable_->setItem(row, 2, new QTableWidgetItem("Default"));
+            backtestSymbolIntervalTable_->setItem(row, 3, new QTableWidgetItem(loopText));
+            backtestSymbolIntervalTable_->setItem(row, 4, new QTableWidgetItem(leverageText));
+            backtestSymbolIntervalTable_->setItem(row, 5, new QTableWidgetItem(connectorText.isEmpty() ? "-" : connectorText));
+            backtestSymbolIntervalTable_->setItem(row, 6, new QTableWidgetItem(strategyText));
+            backtestSymbolIntervalTable_->setItem(row, 7, new QTableWidgetItem(stopLossText));
+            ++added;
+        }
+    }
+    backtestSymbolIntervalTable_->setSortingEnabled(wasSorting);
+    refreshBacktestSymbolIntervalTable();
+    updateStatusMessage(QString("Backtest overrides updated: added %1 row(s).").arg(added));
+}
+
+void BacktestWindow::removeSelectedBacktestSymbolIntervalPairs() {
+    if (!backtestSymbolIntervalTable_) {
+        return;
+    }
+
+    QList<int> rows;
+    const auto selectedRows = backtestSymbolIntervalTable_->selectionModel()
+        ? backtestSymbolIntervalTable_->selectionModel()->selectedRows()
+        : QModelIndexList{};
+    for (const QModelIndex &idx : selectedRows) {
+        if (idx.isValid()) {
+            rows.push_back(idx.row());
+        }
+    }
+    std::sort(rows.begin(), rows.end(), std::greater<int>());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+
+    for (int row : rows) {
+        if (row >= 0 && row < backtestSymbolIntervalTable_->rowCount()) {
+            backtestSymbolIntervalTable_->removeRow(row);
+        }
+    }
+    refreshBacktestSymbolIntervalTable();
+    updateStatusMessage(QString("Backtest overrides updated: removed %1 row(s).").arg(rows.size()));
+}
+
+void BacktestWindow::clearBacktestSymbolIntervalPairs() {
+    if (!backtestSymbolIntervalTable_) {
+        return;
+    }
+    const int rowCount = backtestSymbolIntervalTable_->rowCount();
+    backtestSymbolIntervalTable_->setRowCount(0);
+    updateStatusMessage(QString("Backtest overrides cleared: %1 row(s).").arg(rowCount));
 }
 
 void BacktestWindow::applyDashboardTemplate(const QString &templateKey) {
@@ -2234,7 +2693,8 @@ QWidget *BacktestWindow::createDashboardTab() {
     addPair(0, col, "Mode:", dashboardModeCombo_);
 
     dashboardThemeCombo_ = new QComboBox(accountBox);
-    dashboardThemeCombo_->addItems({"Dark", "Light"});
+    dashboardThemeCombo_->addItems({"Light", "Dark", "Blue", "Yellow", "Green", "Red"});
+    dashboardThemeCombo_->setCurrentText("Dark");
     registerRuntimeLockWidget(dashboardThemeCombo_);
     addPair(0, col, "Theme:", dashboardThemeCombo_);
     connect(dashboardThemeCombo_, &QComboBox::currentTextChanged, this, &BacktestWindow::applyDashboardTheme);
@@ -2278,19 +2738,21 @@ QWidget *BacktestWindow::createDashboardTab() {
     addPair(1, col, "Account Mode:", accountModeCombo);
 
     auto *connectorCombo = new QComboBox(accountBox);
-    connectorCombo->addItems({
-        "Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)",
-        "Binance Gateway",
-        "Custom Connector"
-    });
+    rebuildDashboardConnectorComboForAccount(connectorCombo, true, true);
     connectorCombo->setToolTip(
-        "Official uses direct Binance REST.\n"
-        "Gateway reads BINANCE_GATEWAY_[FUTURES|SPOT]_BASE_URL (or BINANCE_GATEWAY_BASE_URL).\n"
-        "Custom reads CUSTOM_CONNECTOR_[FUTURES|SPOT]_BASE_URL (or CUSTOM_CONNECTOR_BASE_URL).");
-    connectorCombo->setMinimumWidth(180);
+        "Matches Python connector options.\n"
+        "C++ currently runs native Binance REST under the hood.\n"
+        "Unsupported connector backends are auto-mapped to native equivalents.");
+    connectorCombo->setMinimumWidth(340);
     dashboardConnectorCombo_ = connectorCombo;
     registerRuntimeLockWidget(connectorCombo);
     addPair(1, col, "Connector:", connectorCombo, 3);
+    if (dashboardAccountTypeCombo_) {
+        connect(dashboardAccountTypeCombo_, &QComboBox::currentTextChanged, this, [this](const QString &accountText) {
+            const bool isFutures = accountText.trimmed().toLower().startsWith(QStringLiteral("fut"));
+            rebuildDashboardConnectorComboForAccount(dashboardConnectorCombo_, isFutures, false);
+        });
+    }
 
     col = 0;
     dashboardBalanceLabel_ = new QLabel("N/A", accountBox);
@@ -3157,7 +3619,8 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         return;
     }
 
-    const bool isLight = themeName.compare("Light", Qt::CaseInsensitive) == 0;
+    const QString themeNorm = themeName.trimmed().toLower();
+    const bool isLight = themeNorm == QStringLiteral("light");
     const QString darkCss = R"(
         #dashboardPage { background: #0b0f16; }
         #dashboardPage QLabel { color: #e5e7eb; }
@@ -3201,7 +3664,7 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         QTabWidget::pane { border: 1px solid #1f2937; background: #0b0f16; }
         QTabBar::tab { background: #111827; color: #e5e7eb; padding: 6px 10px; }
         QTabBar::tab:selected { background: #1f2937; }
-        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage, QWidget#dashboardPage { background: #0b0f16; color: #e5e7eb; }
+        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage, QWidget#dashboardPage, QWidget#liquidationPage { background: #0b0f16; color: #e5e7eb; }
         QScrollArea#dashboardScrollArea { background: #0b0f16; border: none; }
         QWidget#dashboardScrollWidget { background: #0b0f16; }
         QScrollArea#backtestScrollArea { background: #0b0f16; border: none; }
@@ -3228,7 +3691,7 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         QTabWidget::pane { border: 1px solid #d1d5db; background: #f5f7fb; }
         QTabBar::tab { background: #e5e7eb; color: #0f172a; padding: 6px 10px; }
         QTabBar::tab:selected { background: #ffffff; }
-        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage, QWidget#dashboardPage { background: #f5f7fb; color: #0f172a; }
+        QWidget#chartPage, QWidget#positionsPage, QWidget#backtestPage, QWidget#codePage, QWidget#dashboardPage, QWidget#liquidationPage { background: #f5f7fb; color: #0f172a; }
         QScrollArea#dashboardScrollArea { background: #f5f7fb; border: none; }
         QWidget#dashboardScrollWidget { background: #f5f7fb; }
         QScrollArea#backtestScrollArea { background: #f5f7fb; border: none; }
@@ -3250,29 +3713,92 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         QHeaderView::section { background: #e5e7eb; color: #0f172a; border: 1px solid #d1d5db; }
     )";
 
+    QString accent;
+    QString accentHover;
+    QString accentPressed;
+    QString accentOutline;
+    QString accentText = QStringLiteral("#ffffff");
+    if (themeNorm == QStringLiteral("blue")) {
+        accent = QStringLiteral("#2563eb");
+        accentHover = QStringLiteral("#3b82f6");
+        accentPressed = QStringLiteral("#1d4ed8");
+        accentOutline = QStringLiteral("#1e40af");
+    } else if (themeNorm == QStringLiteral("yellow")) {
+        accent = QStringLiteral("#fbbf24");
+        accentHover = QStringLiteral("#fcd34d");
+        accentPressed = QStringLiteral("#d97706");
+        accentOutline = QStringLiteral("#92400e");
+        accentText = QStringLiteral("#0c0f16");
+    } else if (themeNorm == QStringLiteral("green")) {
+        accent = QStringLiteral("#22c55e");
+        accentHover = QStringLiteral("#4ade80");
+        accentPressed = QStringLiteral("#16a34a");
+        accentOutline = QStringLiteral("#166534");
+    } else if (themeNorm == QStringLiteral("red")) {
+        accent = QStringLiteral("#ef4444");
+        accentHover = QStringLiteral("#f87171");
+        accentPressed = QStringLiteral("#dc2626");
+        accentOutline = QStringLiteral("#991b1b");
+    }
+
+    QString accentCss;
+    if (!accent.isEmpty()) {
+        accentCss = QStringLiteral(
+            "QPushButton { background-color: %1; border: 1px solid %1; color: #ffffff; }"
+            "QPushButton:hover { background-color: %2; border-color: %2; }"
+            "QPushButton:pressed { background-color: %3; border-color: %3; }"
+            "QToolButton { background-color: %1; border: 1px solid %1; color: #ffffff; }"
+            "QToolButton:hover { background-color: %2; border-color: %2; }"
+            "QToolButton:pressed { background-color: %3; border-color: %3; }"
+            "QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit, QPlainTextEdit {"
+            "selection-background-color: %1; selection-color: %4; }"
+            "QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover { border: 1px solid %1; }"
+            "QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus { border: 1px solid %1; outline: none; }"
+            "QComboBox::drop-down { border-left: 1px solid %1; background-color: %1; width: 18px; }"
+            "QCheckBox::indicator:checked { background-color: %1; border-color: %1; }"
+            "QCheckBox::indicator:hover { border-color: %1; }"
+            "QRadioButton::indicator:checked { background-color: %1; border: 1px solid %1; }"
+            "QRadioButton::indicator:hover { border: 1px solid %1; }"
+            "QTabBar::tab:selected { background-color: %1; border: 1px solid %1; color: %4; }"
+            "QTabBar::tab:hover { border: 1px solid %1; }"
+            "QTabWidget::pane { border: 1px solid %5; }"
+            "QGroupBox::title { color: %1; }"
+            "QGroupBox { border: 1px solid %5; }"
+            "QAbstractItemView::item:selected { background-color: %1; color: %4; }"
+            "QAbstractItemView::item:hover { background-color: %2; color: %4; }"
+            "QHeaderView::section { border: 1px solid %5; }"
+            "QProgressBar::chunk { background-color: %1; }"
+            "QSlider::handle:horizontal, QSlider::handle:vertical { background: %1; border: 1px solid %5; }"
+            "QSlider::sub-page:horizontal, QSlider::sub-page:vertical { background: %1; }"
+            "QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: %1; border: 1px solid %5; border-radius: 4px; }"
+            "QMenu::item:selected { background-color: %1; color: %4; }")
+                        .arg(accent, accentHover, accentPressed, accentText, accentOutline);
+    }
+
     // Apply to the whole window (covers Chart/Positions/Backtest/Code tabs)
-    this->setStyleSheet(isLight ? lightGlobal : darkGlobal);
+    this->setStyleSheet((isLight ? lightGlobal : darkGlobal) + accentCss);
 
     // Apply dashboard-specific overrides
-    dashboardPage_->setStyleSheet(isLight ? lightCss : darkCss);
+    dashboardPage_->setStyleSheet((isLight ? lightCss : darkCss) + accentCss);
 
     // Apply code tab readability (headings + content on matching background)
     if (codePage_) {
-        const QString codeCss = isLight
-                                    ? QStringLiteral(
-                                          "QWidget#codePage { background: #f5f7fb; color: #0f172a; }"
-                                          "QScrollArea#codeScrollArea { background: #f5f7fb; border: none; }"
-                                          "QWidget#codeContent { background: #f5f7fb; }"
-                                          "QLabel { color: #0f172a; }"
-                                          "QTableWidget { background: #ffffff; color: #0f172a; gridline-color: #d1d5db; }"
-                                          "QHeaderView::section { background: #e5e7eb; color: #0f172a; }")
-                                    : QStringLiteral(
-                                          "QWidget#codePage { background: #0b0f16; color: #e5e7eb; }"
-                                          "QScrollArea#codeScrollArea { background: #0b1220; border: none; }"
-                                          "QWidget#codeContent { background: #0b1220; }"
-                                          "QLabel { color: #e5e7eb; }"
-                                          "QTableWidget { background: #0d1117; color: #e5e7eb; gridline-color: #1f2937; }"
-                                          "QHeaderView::section { background: #111827; color: #e5e7eb; }");
+        QString codeCss = isLight
+                              ? QStringLiteral(
+                                    "QWidget#codePage { background: #f5f7fb; color: #0f172a; }"
+                                    "QScrollArea#codeScrollArea { background: #f5f7fb; border: none; }"
+                                    "QWidget#codeContent { background: #f5f7fb; }"
+                                    "QLabel { color: #0f172a; }"
+                                    "QTableWidget { background: #ffffff; color: #0f172a; gridline-color: #d1d5db; }"
+                                    "QHeaderView::section { background: #e5e7eb; color: #0f172a; }")
+                              : QStringLiteral(
+                                    "QWidget#codePage { background: #0b0f16; color: #e5e7eb; }"
+                                    "QScrollArea#codeScrollArea { background: #0b1220; border: none; }"
+                                    "QWidget#codeContent { background: #0b1220; }"
+                                    "QLabel { color: #e5e7eb; }"
+                                    "QTableWidget { background: #0d1117; color: #e5e7eb; gridline-color: #1f2937; }"
+                                    "QHeaderView::section { background: #111827; color: #e5e7eb; }");
+        codeCss += accentCss;
         codePage_->setStyleSheet(codeCss);
     }
 }
@@ -3936,42 +4462,254 @@ QWidget *BacktestWindow::createBacktestTab() {
     contentLayout->addLayout(topLayout);
 
     topLayout->addWidget(createMarketsGroup(), 4);
-    topLayout->addWidget(createParametersGroup(), 3);
-    topLayout->addWidget(createIndicatorsGroup(), 2);
+    topLayout->addWidget(createParametersGroup(), 5);
+    topLayout->addWidget(createIndicatorsGroup(), 3);
+
+    auto *outputGroup = new QGroupBox("Backtest Output", page);
+    auto *outputLayout = new QVBoxLayout(outputGroup);
+    outputLayout->setContentsMargins(12, 12, 12, 12);
+    outputLayout->setSpacing(12);
 
     auto *controlsLayout = new QHBoxLayout();
-    runButton_ = new QPushButton("Run Backtest", page);
+    runButton_ = new QPushButton("Run Backtest", outputGroup);
     controlsLayout->addWidget(runButton_);
-    stopButton_ = new QPushButton("Stop", page);
+    stopButton_ = new QPushButton("Stop", outputGroup);
     stopButton_->setEnabled(false);
     controlsLayout->addWidget(stopButton_);
 
-    statusLabel_ = new QLabel(page);
-    statusLabel_->setMinimumWidth(140);
+    statusLabel_ = new QLabel(outputGroup);
+    statusLabel_->setMinimumWidth(180);
     controlsLayout->addWidget(statusLabel_);
 
-    addSelectedBtn_ = new QPushButton("Add Selected to Dashboard", page);
+    addSelectedBtn_ = new QPushButton("Add Selected to Dashboard", outputGroup);
     controlsLayout->addWidget(addSelectedBtn_);
-    addAllBtn_ = new QPushButton("Add All to Dashboard", page);
+    addAllBtn_ = new QPushButton("Add All to Dashboard", outputGroup);
     controlsLayout->addWidget(addAllBtn_);
     controlsLayout->addStretch();
 
-    auto *botStatusWidget = new QWidget(page);
-    auto *botStatusLayout = new QHBoxLayout(botStatusWidget);
-    botStatusLayout->setContentsMargins(0, 0, 0, 0);
-    botStatusLayout->setSpacing(8);
-    botStatusLabel_ = new QLabel("Bot Status: Idle", botStatusWidget);
-    botTimeLabel_ = new QLabel("Bot Active Time: --", botStatusWidget);
+    auto *tabStatusWidget = new QWidget(outputGroup);
+    auto *tabStatusLayout = new QHBoxLayout(tabStatusWidget);
+    tabStatusLayout->setContentsMargins(0, 0, 0, 0);
+    tabStatusLayout->setSpacing(8);
+
+    auto *pnlActiveLabel = new QLabel("Total PNL Active Positions: --", tabStatusWidget);
+    auto *pnlClosedLabel = new QLabel("Total PNL Closed Positions: --", tabStatusWidget);
+    pnlActiveLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    pnlClosedLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    tabStatusLayout->addWidget(pnlActiveLabel);
+    tabStatusLayout->addWidget(pnlClosedLabel);
+    tabStatusLayout->addStretch();
+
+    botStatusLabel_ = new QLabel("Bot Status: OFF", tabStatusWidget);
+    botTimeLabel_ = new QLabel("Bot Active Time: --", tabStatusWidget);
     botStatusLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     botTimeLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    botStatusLayout->addWidget(botStatusLabel_);
-    botStatusLayout->addWidget(botTimeLabel_);
-    controlsLayout->addWidget(botStatusWidget);
+    tabStatusLayout->addWidget(botStatusLabel_);
+    tabStatusLayout->addWidget(botTimeLabel_);
+    controlsLayout->addWidget(tabStatusWidget);
 
-    contentLayout->addLayout(controlsLayout);
-    contentLayout->addWidget(createResultsGroup(), 1);
+    outputLayout->addLayout(controlsLayout);
+    outputLayout->addWidget(createResultsGroup(), 1);
+
+    contentLayout->addWidget(outputGroup, 1);
 
     return page;
+}
+
+bool BacktestWindow::openExternalUrl(const QString &url) {
+    const QString target = url.trimmed();
+    if (target.isEmpty()) {
+        return false;
+    }
+    return QDesktopServices::openUrl(QUrl::fromUserInput(target));
+}
+
+QWidget *BacktestWindow::createLiquidationWebPanel(const QString &title, const QString &url, const QString &note) {
+    auto *panel = new QWidget(this);
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    auto *headerLayout = new QHBoxLayout();
+    auto *titleLabel = new QLabel(title, panel);
+    titleLabel->setStyleSheet("font-size: 16px; font-weight: 600;");
+    headerLayout->addWidget(titleLabel);
+    headerLayout->addStretch();
+    auto *openBtn = new QPushButton("Open in Browser", panel);
+    headerLayout->addWidget(openBtn);
+    auto *reloadBtn = new QPushButton("Reload", panel);
+    headerLayout->addWidget(reloadBtn);
+    layout->addLayout(headerLayout);
+
+    if (!note.trimmed().isEmpty()) {
+        auto *noteLabel = new QLabel(note, panel);
+        noteLabel->setWordWrap(true);
+        noteLabel->setStyleSheet("color: #94a3b8;");
+        layout->addWidget(noteLabel);
+    }
+
+    auto *urlRow = new QHBoxLayout();
+    urlRow->addWidget(new QLabel("URL:", panel));
+    auto *urlEdit = new QLineEdit(panel);
+    urlEdit->setPlaceholderText("https://");
+    urlEdit->setText(url.trimmed());
+    urlRow->addWidget(urlEdit, 1);
+    auto *goBtn = new QPushButton("Go", panel);
+    urlRow->addWidget(goBtn);
+    layout->addLayout(urlRow);
+
+    const auto normalizedUrlText = [urlEdit]() -> QString {
+        const QString raw = urlEdit ? urlEdit->text().trimmed() : QString();
+        if (raw.isEmpty()) {
+            return QString();
+        }
+        const QUrl parsed = QUrl::fromUserInput(raw);
+        return parsed.isValid() ? parsed.toString() : raw;
+    };
+
+    connect(openBtn, &QPushButton::clicked, this, [this, normalizedUrlText]() {
+        const QString target = normalizedUrlText();
+        if (!openExternalUrl(target)) {
+            updateStatusMessage(QString("Could not open URL: %1").arg(target));
+        }
+    });
+
+#if HAS_QT_WEBENGINE
+    auto *webView = new QWebEngineView(panel);
+    layout->addWidget(webView, 1);
+
+    const auto applyUrl = [this, urlEdit, webView]() {
+        const QString raw = urlEdit ? urlEdit->text().trimmed() : QString();
+        if (raw.isEmpty()) {
+            return;
+        }
+        const QUrl parsed = QUrl::fromUserInput(raw);
+        if (!parsed.isValid()) {
+            updateStatusMessage(QString("Invalid URL: %1").arg(raw));
+            return;
+        }
+        if (urlEdit) {
+            urlEdit->setText(parsed.toString());
+        }
+        webView->load(parsed);
+    };
+
+    connect(goBtn, &QPushButton::clicked, this, [applyUrl]() {
+        applyUrl();
+    });
+    connect(urlEdit, &QLineEdit::returnPressed, this, [applyUrl]() {
+        applyUrl();
+    });
+    connect(reloadBtn, &QPushButton::clicked, webView, &QWebEngineView::reload);
+
+    QTimer::singleShot(0, this, [applyUrl]() {
+        applyUrl();
+    });
+#else
+    auto *fallback = new QLabel(
+        "Qt WebEngine is not available in this C++ build.\n"
+        "Use 'Open in Browser' to view the heatmap.",
+        panel);
+    fallback->setWordWrap(true);
+    fallback->setStyleSheet("color: #f59e0b;");
+    layout->addWidget(fallback, 1);
+
+    connect(goBtn, &QPushButton::clicked, this, [this, normalizedUrlText]() {
+        const QString target = normalizedUrlText();
+        if (!openExternalUrl(target)) {
+            updateStatusMessage(QString("Could not open URL: %1").arg(target));
+        }
+    });
+    connect(urlEdit, &QLineEdit::returnPressed, this, [this, normalizedUrlText]() {
+        const QString target = normalizedUrlText();
+        if (!openExternalUrl(target)) {
+            updateStatusMessage(QString("Could not open URL: %1").arg(target));
+        }
+    });
+    connect(reloadBtn, &QPushButton::clicked, this, [this]() {
+        updateStatusMessage("Reload is unavailable: Qt WebEngine is not enabled in this build.");
+    });
+#endif
+
+    return panel;
+}
+
+QWidget *BacktestWindow::createLiquidationHeatmapTab() {
+    auto *tab = new QWidget(this);
+    tab->setObjectName("liquidationPage");
+
+    auto *outerLayout = new QVBoxLayout(tab);
+    outerLayout->setContentsMargins(10, 10, 10, 10);
+    outerLayout->setSpacing(12);
+
+    auto *intro = new QLabel(
+        "Liquidation heatmaps from multiple providers. "
+        "If a heatmap does not load, use 'Open in Browser'.",
+        tab);
+    intro->setWordWrap(true);
+    outerLayout->addWidget(intro);
+
+    auto *tabs = new QTabWidget(tab);
+    outerLayout->addWidget(tabs, 1);
+
+    auto *coinglassTab = new QWidget(tab);
+    auto *coinglassLayout = new QVBoxLayout(coinglassTab);
+    coinglassLayout->setContentsMargins(0, 0, 0, 0);
+    auto *coinglassNote = new QLabel(
+        "Use the on-page controls for Model 1/2/3, pair, symbol, and time selection.",
+        coinglassTab);
+    coinglassNote->setWordWrap(true);
+    coinglassLayout->addWidget(coinglassNote);
+
+    auto *coinglassModels = new QTabWidget(coinglassTab);
+    coinglassLayout->addWidget(coinglassModels, 1);
+    const QVector<QPair<int, QString>> coinglassModelUrls = {
+        {1, QStringLiteral("https://www.coinglass.com/pro/futures/LiquidationHeatMap")},
+        {2, QStringLiteral("https://www.coinglass.com/pro/futures/LiquidationHeatMapNew")},
+        {3, QStringLiteral("https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3")},
+    };
+    for (const auto &entry : coinglassModelUrls) {
+        const int model = entry.first;
+        const QString modelUrl = entry.second;
+        coinglassModels->addTab(
+            createLiquidationWebPanel(
+                QString("Coinglass Heatmap Model %1").arg(model),
+                modelUrl),
+            QString("Model %1").arg(model));
+    }
+    tabs->addTab(coinglassTab, "Coinglass Heatmap");
+
+    tabs->addTab(
+        createLiquidationWebPanel(
+            "Coinank Liquidation Heatmap",
+            "https://coinank.com/chart/derivatives/liq-heat-map"),
+        "Coinank");
+
+    tabs->addTab(
+        createLiquidationWebPanel(
+            "Bitcoin Counterflow Liquidation Heatmap",
+            "https://www.bitcoincounterflow.com/liquidation-heatmap/"),
+        "Bitcoin Counterflow");
+
+    tabs->addTab(
+        createLiquidationWebPanel(
+            "Hyblock Capital Liquidation Heatmap",
+            "https://hyblockcapital.com/"),
+        "Hyblock Capital");
+
+    tabs->addTab(
+        createLiquidationWebPanel(
+            "Coinglass Liquidation Map",
+            "https://www.coinglass.com/pro/futures/LiquidationMap"),
+        "Coinglass Map");
+
+    tabs->addTab(
+        createLiquidationWebPanel(
+            "Hyperliquid Liquidation Map",
+            "https://www.coinglass.com/hyperliquid-liquidation-map"),
+        "Hyperliquid Map");
+
+    return tab;
 }
 
 QWidget *BacktestWindow::createCodeTab() {
@@ -4033,25 +4771,35 @@ QWidget *BacktestWindow::createCodeTab() {
                         bool disabled = false,
                         std::function<void()> onClick = nullptr) {
         auto *button = new QPushButton(container);
+        button->setObjectName("codeLangCardButton");
         button->setFlat(true);
         button->setCursor(disabled ? Qt::ArrowCursor : Qt::PointingHandCursor);
-        button->setStyleSheet("QPushButton { border: none; padding: 0; text-align: left; }");
-        button->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
         auto *card = new QFrame(button);
+        card->setObjectName("codeLangCardSurface");
         card->setMinimumHeight(130);
         card->setMaximumHeight(150);
-        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         if (!disabled) {
-            card->setStyleSheet(QString(
-                "QFrame { border: 2px solid #1f2937; border-radius: 10px; background: #0d1117; padding: 8px; }"
-                "QLabel { color: #e6edf3; }"
-                "QPushButton:hover QFrame { border-color: %1; }"
-                "QPushButton:pressed QFrame { border-color: %1; background: #0f172a; }").arg(border));
+            button->setStyleSheet(QString(
+                "QPushButton#codeLangCardButton { border: none; padding: 0; margin: 0; text-align: left; background: transparent; }"
+                "QPushButton#codeLangCardButton:hover { background: transparent; border: none; }"
+                "QPushButton#codeLangCardButton:pressed { background: transparent; border: none; }"
+                "QPushButton#codeLangCardButton:focus { outline: none; }"
+                "QPushButton#codeLangCardButton QFrame#codeLangCardSurface { border: 2px solid #1f2937; border-radius: 10px; background: #0d1117; padding: 8px; }"
+                "QPushButton#codeLangCardButton:hover QFrame#codeLangCardSurface { border-color: %1; }"
+                "QPushButton#codeLangCardButton:pressed QFrame#codeLangCardSurface { border-color: %1; background: #0f172a; }"
+                "QPushButton#codeLangCardButton QLabel { color: #e6edf3; }")
+                                     .arg(border));
         } else {
-            card->setStyleSheet(
-                "QFrame { border: 2px solid #1f2937; border-radius: 10px; background: #0d1117; padding: 8px; }"
-                "QLabel { color: #6b7280; }");
+            button->setStyleSheet(
+                "QPushButton#codeLangCardButton { border: none; padding: 0; margin: 0; text-align: left; background: transparent; }"
+                "QPushButton#codeLangCardButton:hover { background: transparent; border: none; }"
+                "QPushButton#codeLangCardButton:pressed { background: transparent; border: none; }"
+                "QPushButton#codeLangCardButton:focus { outline: none; }"
+                "QPushButton#codeLangCardButton QFrame#codeLangCardSurface { border: 2px solid #1f2937; border-radius: 10px; background: #0d1117; padding: 8px; }"
+                "QPushButton#codeLangCardButton QLabel { color: #6b7280; }");
         }
         auto *v = new QVBoxLayout(card);
         v->setContentsMargins(12, 10, 12, 10);
@@ -4071,7 +4819,10 @@ QWidget *BacktestWindow::createCodeTab() {
 
         auto *btnLayout = new QVBoxLayout(button);
         btnLayout->setContentsMargins(0, 0, 0, 0);
+        btnLayout->setSpacing(0);
         btnLayout->addWidget(card);
+        button->setMinimumHeight(card->minimumHeight());
+        button->setMaximumHeight(card->maximumHeight());
 
         button->setEnabled(!disabled);
         if (onClick && !disabled) {
@@ -4352,13 +5103,16 @@ QWidget *BacktestWindow::createCodeTab() {
 }
 
 QWidget *BacktestWindow::createMarketsGroup() {
-    auto *group = new QGroupBox("Markets", this);
+    auto *group = new QGroupBox("Markets & Intervals", this);
     auto *layout = new QGridLayout(group);
+    layout->setHorizontalSpacing(10);
+    layout->setVerticalSpacing(8);
 
     auto *symbolLabel = new QLabel("Symbol Source:", group);
     symbolSourceCombo_ = new QComboBox(group);
     symbolSourceCombo_->addItems({"Futures", "Spot"});
-    auto *refreshBtn = new QPushButton("Refresh", group);
+    auto *refreshBtn = new QPushButton("Refresh Symbols", group);
+    backtestRefreshSymbolsBtn_ = refreshBtn;
     layout->addWidget(symbolLabel, 0, 0);
     layout->addWidget(symbolSourceCombo_, 0, 1);
     layout->addWidget(refreshBtn, 0, 2);
@@ -4367,34 +5121,87 @@ QWidget *BacktestWindow::createMarketsGroup() {
     layout->addWidget(symbolsInfo, 1, 0, 1, 3);
     symbolList_ = new QListWidget(group);
     symbolList_->setSelectionMode(QAbstractItemView::MultiSelection);
-    symbolList_->setMinimumWidth(140);
-    symbolList_->setMaximumWidth(220);
+    symbolList_->setMinimumHeight(260);
     layout->addWidget(symbolList_, 2, 0, 4, 3);
 
     auto *intervalInfo = new QLabel("Intervals (select 1 or more):", group);
     layout->addWidget(intervalInfo, 1, 3);
     intervalList_ = new QListWidget(group);
     intervalList_->setSelectionMode(QAbstractItemView::MultiSelection);
-    intervalList_->setMinimumWidth(120);
-    intervalList_->setMaximumWidth(200);
+    intervalList_->setMinimumHeight(260);
     layout->addWidget(intervalList_, 2, 3, 4, 2);
 
     customIntervalEdit_ = new QLineEdit(group);
-    customIntervalEdit_->setPlaceholderText("e.g., 45s, 7m, 90m");
-    layout->addWidget(customIntervalEdit_, 6, 3, 1, 1);
+    customIntervalEdit_->setPlaceholderText("e.g., 45s or 7m or 90m, comma-separated");
+    layout->addWidget(customIntervalEdit_, 6, 0, 1, 4);
     auto *addBtn = new QPushButton("Add Custom Interval(s)", group);
     layout->addWidget(addBtn, 6, 4, 1, 1);
     connect(addBtn, &QPushButton::clicked, this, &BacktestWindow::handleAddCustomIntervals);
-    connect(refreshBtn, &QPushButton::clicked, this, [this]() {
-        updateStatusMessage("Symbol catalog refreshed from " + symbolSourceCombo_->currentText());
+    connect(refreshBtn, &QPushButton::clicked, this, &BacktestWindow::refreshBacktestSymbols);
+    if (symbolSourceCombo_) {
+        connect(symbolSourceCombo_, &QComboBox::currentTextChanged, this, [this](const QString &) {
+            if (backtestConnectorCombo_) {
+                const bool futures = symbolSourceCombo_
+                    ? symbolSourceCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+                    : true;
+                rebuildDashboardConnectorComboForAccount(backtestConnectorCombo_, futures, true);
+            }
+            refreshBacktestSymbols();
+        });
+    }
+
+    auto *pairGroup = new QGroupBox("Symbol / Interval Overrides", group);
+    auto *pairLayout = new QVBoxLayout(pairGroup);
+    pairLayout->setContentsMargins(8, 8, 8, 8);
+    pairLayout->setSpacing(8);
+
+    backtestSymbolIntervalTable_ = new QTableWidget(0, 8, pairGroup);
+    backtestSymbolIntervalTable_->setHorizontalHeaderLabels({
+        "Symbol",
+        "Interval",
+        "Indicators",
+        "Loop",
+        "Leverage",
+        "Connector",
+        "Strategy Controls",
+        "Stop-Loss",
     });
+    QHeaderView *overrideHeader = backtestSymbolIntervalTable_->horizontalHeader();
+    overrideHeader->setStretchLastSection(false);
+    overrideHeader->setSectionResizeMode(QHeaderView::ResizeToContents);
+    overrideHeader->setSectionsMovable(true);
+    backtestSymbolIntervalTable_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    backtestSymbolIntervalTable_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    backtestSymbolIntervalTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    backtestSymbolIntervalTable_->setSelectionMode(QAbstractItemView::MultiSelection);
+    backtestSymbolIntervalTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    backtestSymbolIntervalTable_->setSortingEnabled(true);
+    backtestSymbolIntervalTable_->setMinimumHeight(180);
+    backtestSymbolIntervalTable_->verticalHeader()->setDefaultSectionSize(28);
+    pairLayout->addWidget(backtestSymbolIntervalTable_);
+
+    auto *pairButtons = new QHBoxLayout();
+    auto *addPairBtn = new QPushButton("Add Selected", pairGroup);
+    auto *removePairBtn = new QPushButton("Remove Selected", pairGroup);
+    auto *clearPairBtn = new QPushButton("Clear All", pairGroup);
+    pairButtons->addWidget(addPairBtn);
+    pairButtons->addWidget(removePairBtn);
+    pairButtons->addWidget(clearPairBtn);
+    pairButtons->addStretch();
+    pairLayout->addLayout(pairButtons);
+    connect(addPairBtn, &QPushButton::clicked, this, &BacktestWindow::addSelectedBacktestSymbolIntervalPairs);
+    connect(removePairBtn, &QPushButton::clicked, this, &BacktestWindow::removeSelectedBacktestSymbolIntervalPairs);
+    connect(clearPairBtn, &QPushButton::clicked, this, &BacktestWindow::clearBacktestSymbolIntervalPairs);
+    layout->addWidget(pairGroup, 7, 0, 1, 5);
 
     return group;
 }
 
 QWidget *BacktestWindow::createParametersGroup() {
-    auto *group = new QGroupBox("Parameters", this);
+    auto *group = new QGroupBox("Backtest Parameters", this);
     auto *form = new QFormLayout(group);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
     auto addCombo = [form](const QString &label, const QStringList &items) {
         auto *combo = new QComboBox(form->parentWidget());
@@ -4403,47 +5210,131 @@ QWidget *BacktestWindow::createParametersGroup() {
         return combo;
     };
 
-    addCombo("Logic:", {"AND", "OR"});
+    addCombo("Signal Logic:", {"AND", "OR", "SEPARATE"});
+    addCombo("MDD Logic:", {"Per Trade MDD", "Cumulative MDD", "Entire Account MDD"});
+
     auto *startDate = new QDateEdit(QDate::currentDate().addMonths(-1), group);
     startDate->setCalendarPopup(true);
+    startDate->setDisplayFormat("yyyy-MM-dd");
     form->addRow("Start Date:", startDate);
     auto *endDate = new QDateEdit(QDate::currentDate(), group);
     endDate->setCalendarPopup(true);
+    endDate->setDisplayFormat("yyyy-MM-dd");
     form->addRow("End Date:", endDate);
 
     auto *capitalSpin = new QDoubleSpinBox(group);
     capitalSpin->setSuffix(" USDT");
     capitalSpin->setRange(0.0, 1'000'000.0);
+    capitalSpin->setDecimals(2);
     capitalSpin->setValue(1000.0);
-    form->addRow("Capital:", capitalSpin);
+    form->addRow("Capital (USDT):", capitalSpin);
 
     auto *positionPct = new QDoubleSpinBox(group);
     positionPct->setSuffix(" %");
     positionPct->setRange(0.1, 100.0);
     positionPct->setSingleStep(0.1);
+    positionPct->setDecimals(2);
     positionPct->setValue(2.0);
-    form->addRow("Position %:", positionPct);
+    form->addRow("Position % of Balance:", positionPct);
 
-    auto *sideCombo = addCombo("Side:", {"BOTH", "BUY", "SELL"});
-    sideCombo->setCurrentText("BOTH");
+    auto *loopCombo = new QComboBox(group);
+    loopCombo->addItem("30 seconds", "30s");
+    loopCombo->addItem("45 seconds", "45s");
+    loopCombo->addItem("1 minute", "1m");
+    loopCombo->addItem("2 minutes", "2m");
+    loopCombo->addItem("3 minutes", "3m");
+    loopCombo->addItem("5 minutes", "5m");
+    loopCombo->addItem("10 minutes", "10m");
+    loopCombo->addItem("30 minutes", "30m");
+    loopCombo->addItem("1 hour", "1h");
+    loopCombo->addItem("2 hours", "2h");
+    loopCombo->setCurrentIndex(loopCombo->findData("1m"));
+    backtestLoopCombo_ = loopCombo;
+    form->addRow("Loop Interval Override:", loopCombo);
 
-    addCombo("Margin Mode:", {"Isolated", "Cross"});
+    auto *stopLossRow = new QWidget(group);
+    auto *stopLossLayout = new QHBoxLayout(stopLossRow);
+    stopLossLayout->setContentsMargins(0, 0, 0, 0);
+    stopLossLayout->setSpacing(6);
+    auto *stopEnable = new QCheckBox("Enable", stopLossRow);
+    auto *stopMode = new QComboBox(stopLossRow);
+    stopMode->addItem("USDT Based Stop Loss", "usdt");
+    stopMode->addItem("Percentage Based Stop Loss", "percent");
+    stopMode->addItem("Both Stop Loss (USDT & Percentage)", "both");
+    auto *stopScope = new QComboBox(stopLossRow);
+    stopScope->addItem("Per Trade Stop Loss", "per_trade");
+    stopScope->addItem("Cumulative Stop Loss", "cumulative");
+    stopScope->addItem("Entire Account Stop Loss", "entire_account");
+    auto *stopUsdt = new QDoubleSpinBox(stopLossRow);
+    stopUsdt->setPrefix("USDT ");
+    stopUsdt->setRange(0.0, 1'000'000.0);
+    stopUsdt->setDecimals(2);
+    stopUsdt->setSingleStep(1.0);
+    stopUsdt->setValue(25.0);
+    auto *stopPct = new QDoubleSpinBox(stopLossRow);
+    stopPct->setSuffix(" %");
+    stopPct->setRange(0.0, 100.0);
+    stopPct->setDecimals(2);
+    stopPct->setSingleStep(0.1);
+    stopPct->setValue(2.0);
+
+    stopLossLayout->addWidget(stopEnable);
+    stopLossLayout->addWidget(stopMode, 1);
+    stopLossLayout->addWidget(stopScope, 1);
+    stopLossLayout->addWidget(stopUsdt);
+    stopLossLayout->addWidget(stopPct);
+    form->addRow("Stop Loss:", stopLossRow);
+    backtestStopLossEnableCheck_ = stopEnable;
+    backtestStopLossModeCombo_ = stopMode;
+    backtestStopLossScopeCombo_ = stopScope;
+
+    const auto updateStopLossWidgets = [stopEnable, stopMode, stopScope, stopUsdt, stopPct]() {
+        const bool enabled = stopEnable->isChecked();
+        stopMode->setEnabled(enabled);
+        stopScope->setEnabled(enabled);
+        stopUsdt->setEnabled(enabled);
+        stopPct->setEnabled(enabled);
+        const QString mode = stopMode->currentData().toString();
+        stopUsdt->setVisible(enabled && (mode == "usdt" || mode == "both"));
+        stopPct->setVisible(enabled && (mode == "percent" || mode == "both"));
+    };
+    connect(stopEnable, &QCheckBox::toggled, this, [updateStopLossWidgets](bool) {
+        updateStopLossWidgets();
+    });
+    connect(stopMode, &QComboBox::currentIndexChanged, this, [updateStopLossWidgets](int) {
+        updateStopLossWidgets();
+    });
+    updateStopLossWidgets();
+
+    auto *sideCombo = addCombo("Side:", {"Buy (Long)", "Sell (Short)", "Both (Long/Short)"});
+    sideCombo->setCurrentText("Both (Long/Short)");
+    backtestSideCombo_ = sideCombo;
+
+    addCombo("Margin Mode (Futures):", {"Isolated", "Cross"});
     addCombo("Position Mode:", {"Hedge", "One-way"});
-    addCombo("Assets Mode:", {"Single-Asset", "Multi-Asset"});
+    auto *assetsCombo = new QComboBox(group);
+    assetsCombo->addItem("Single-Asset Mode", "Single-Asset");
+    assetsCombo->addItem("Multi-Assets Mode", "Multi-Assets");
+    form->addRow("Assets Mode:", assetsCombo);
     addCombo("Account Mode:", {"Classic Trading", "Multi-Asset Mode"});
 
+    auto *connectorCombo = new QComboBox(group);
+    const bool sourceFutures = symbolSourceCombo_
+        ? symbolSourceCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+        : true;
+    rebuildDashboardConnectorComboForAccount(connectorCombo, sourceFutures, true);
+    connectorCombo->setMinimumWidth(220);
+    form->addRow("Connector:", connectorCombo);
+    backtestConnectorCombo_ = connectorCombo;
+    connect(connectorCombo, &QComboBox::currentTextChanged, this, [this](const QString &) {
+        refreshBacktestSymbols();
+    });
+
     auto *leverageSpin = new QSpinBox(group);
-    leverageSpin->setRange(1, 125);
+    leverageSpin->setRange(1, 150);
     leverageSpin->setValue(5);
-    form->addRow("Leverage:", leverageSpin);
-
-    auto *loopSpin = new QSpinBox(group);
-    loopSpin->setRange(1, 10'000);
-    loopSpin->setSuffix(" ms");
-    loopSpin->setValue(500);
-    form->addRow("Loop Interval:", loopSpin);
-
-    addCombo("MDD Logic:", {"Per Trade", "Cumulative", "Entire Account"});
+    backtestLeverageSpin_ = leverageSpin;
+    form->addRow("Leverage (Futures):", leverageSpin);
 
     auto *templateEnable = new QCheckBox("Enable", group);
     templateEnable->setChecked(false);
@@ -4456,14 +5347,35 @@ QWidget *BacktestWindow::createParametersGroup() {
     templateCombo->setEnabled(false);
 
     connect(templateEnable, &QCheckBox::toggled, templateCombo, &QWidget::setEnabled);
-    form->addRow(templateEnable);
     form->addRow("Template:", templateCombo);
+    form->addRow("", templateEnable);
+
+    auto *scanRow = new QWidget(group);
+    auto *scanLayout = new QHBoxLayout(scanRow);
+    scanLayout->setContentsMargins(0, 0, 0, 0);
+    scanLayout->setSpacing(6);
+    auto *scanMddSpin = new QDoubleSpinBox(scanRow);
+    scanMddSpin->setRange(0.0, 100.0);
+    scanMddSpin->setDecimals(2);
+    scanMddSpin->setSuffix(" %");
+    scanMddSpin->setValue(0.0);
+    auto *scanBtn = new QPushButton("Scan Symbols", scanRow);
+    scanLayout->addWidget(scanMddSpin);
+    scanLayout->addWidget(scanBtn);
+    scanLayout->addStretch();
+    connect(scanBtn, &QPushButton::clicked, this, [this, scanMddSpin]() {
+        updateStatusMessage(QString("Backtest symbol scan simulated (Max MDD: %1%).").arg(scanMddSpin->value(), 0, 'f', 2));
+    });
+    form->addRow("Max MDD Scanner:", scanRow);
 
     return group;
 }
 
 QWidget *BacktestWindow::createIndicatorsGroup() {
     auto *group = new QGroupBox("Indicators", this);
+    group->setMinimumWidth(220);
+    group->setMaximumWidth(340);
+    group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *grid = new QGridLayout(group);
     grid->setHorizontalSpacing(14);
     grid->setVerticalSpacing(8);
@@ -4479,7 +5391,7 @@ QWidget *BacktestWindow::createIndicatorsGroup() {
     int row = 0;
     for (const auto &ind : indicators) {
         auto *cb = new QCheckBox(ind, group);
-        auto *btn = new QPushButton("Params...", group);
+        auto *btn = new QPushButton("Buy-Sell Values", group);
         btn->setMinimumWidth(140);
         btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         btn->setEnabled(false);
@@ -4495,13 +5407,49 @@ QWidget *BacktestWindow::createIndicatorsGroup() {
 QWidget *BacktestWindow::createResultsGroup() {
     auto *group = new QGroupBox("Backtest Results", this);
     auto *layout = new QVBoxLayout(group);
-    resultsTable_ = new QTableWidget(0, 10, group);
+    resultsTable_ = new QTableWidget(0, 21, group);
     resultsTable_->setHorizontalHeaderLabels({
-        "Symbol", "Interval", "Logic", "Trades", "Loop Interval",
-        "Start Date", "End Date", "Position %", "ROI (USDT)", "ROI (%)"
+        "Symbol",
+        "Interval",
+        "Logic",
+        "Indicators",
+        "Trades",
+        "Loop Interval",
+        "Start Date",
+        "End Date",
+        "Position % Of Balance",
+        "Stop-Loss Options",
+        "Margin Mode (Futures)",
+        "Position Mode",
+        "Assets Mode",
+        "Account Mode",
+        "Leverage (Futures)",
+        "ROI (USDT)",
+        "ROI (%)",
+        "Max Drawdown During Position (USDT)",
+        "Max Drawdown During Position (%)",
+        "Max Drawdown Results (USDT)",
+        "Max Drawdown Results (%)",
     });
-    resultsTable_->horizontalHeader()->setStretchLastSection(true);
+    QHeaderView *header = resultsTable_->horizontalHeader();
+    header->setStretchLastSection(false);
+    header->setSectionsMovable(true);
+    header->setSectionResizeMode(QHeaderView::Interactive);
+    QFontMetrics fm(header->font());
+    for (int col = 0; col < resultsTable_->columnCount(); ++col) {
+        const auto *item = resultsTable_->horizontalHeaderItem(col);
+        const QString text = item ? item->text() : QString();
+        header->resizeSection(col, std::max(80, fm.horizontalAdvance(text) + 28));
+    }
+    resultsTable_->setSortingEnabled(true);
     resultsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    resultsTable_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    resultsTable_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    resultsTable_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    resultsTable_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    resultsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    resultsTable_->setSelectionMode(QAbstractItemView::MultiSelection);
+    resultsTable_->setMinimumHeight(420);
     layout->addWidget(resultsTable_);
     return group;
 }
@@ -4516,7 +5464,10 @@ void BacktestWindow::populateDefaults() {
         }
     }
     if (intervalList_) {
-        intervalList_->addItems({"1m", "3m", "5m", "15m", "1h", "4h", "1d"});
+        intervalList_->addItems({
+            "1m", "3m", "5m", "10m", "15m", "20m", "30m",
+            "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h",
+        });
         for (int i = 0; i < intervalList_->count() && i < 2; ++i) {
             intervalList_->item(i)->setSelected(true);
         }
@@ -4567,7 +5518,7 @@ void BacktestWindow::handleAddCustomIntervals() {
 void BacktestWindow::handleRunBacktest() {
     botStart_ = std::chrono::steady_clock::now();
     ensureBotTimer(true);
-    botStatusLabel_->setText("Bot Status: Running");
+    botStatusLabel_->setText("Bot Status: ON");
     if (chartBotStatusLabel_) {
         chartBotStatusLabel_->setText("Bot Status: ON");
         chartBotStatusLabel_->setStyleSheet("color: #16a34a; font-weight: 700;");
@@ -4578,22 +5529,38 @@ void BacktestWindow::handleRunBacktest() {
 
     const int currentRow = resultsTable_->rowCount();
     resultsTable_->insertRow(currentRow);
-    resultsTable_->setItem(currentRow, 0, new QTableWidgetItem("BTCUSDT"));
-    resultsTable_->setItem(currentRow, 1, new QTableWidgetItem("1h"));
-    resultsTable_->setItem(currentRow, 2, new QTableWidgetItem("AND"));
-    resultsTable_->setItem(currentRow, 3, new QTableWidgetItem("42"));
-    resultsTable_->setItem(currentRow, 4, new QTableWidgetItem("500 ms"));
-    resultsTable_->setItem(currentRow, 5, new QTableWidgetItem("2024-01-01"));
-    resultsTable_->setItem(currentRow, 6, new QTableWidgetItem("2024-02-01"));
-    resultsTable_->setItem(currentRow, 7, new QTableWidgetItem("2%"));
-    resultsTable_->setItem(currentRow, 8, new QTableWidgetItem("+152.4"));
-    resultsTable_->setItem(currentRow, 9, new QTableWidgetItem("+15.2%"));
+    const QStringList values = {
+        "BTCUSDT",
+        "1h",
+        "AND",
+        "RSI, Stochastic RSI, MACD",
+        "42",
+        "1 minute",
+        "2024-01-01",
+        "2024-02-01",
+        "2.00%",
+        "Enabled (USDT 25.00 | Per Trade)",
+        "Isolated",
+        "Hedge",
+        "Single-Asset",
+        "Classic Trading",
+        "20x",
+        "+152.40",
+        "+15.24%",
+        "-38.12",
+        "-3.81%",
+        "-74.85",
+        "-7.49%",
+    };
+    for (int col = 0; col < values.size() && col < resultsTable_->columnCount(); ++col) {
+        resultsTable_->setItem(currentRow, col, new QTableWidgetItem(values.at(col)));
+    }
 }
 
 void BacktestWindow::handleStopBacktest() {
     ensureBotTimer(false);
     botTimeLabel_->setText("Bot Active Time: --");
-    botStatusLabel_->setText("Bot Status: Stopped");
+    botStatusLabel_->setText("Bot Status: OFF");
     if (chartBotTimeLabel_) {
         chartBotTimeLabel_->setText("Bot Active Time: --");
     }
@@ -4953,7 +5920,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
     const bool isTestnet = dashboardModeCombo_ ? isTestnetModeLabel(dashboardModeCombo_->currentText()) : false;
     const QString defaultConnectorText = dashboardConnectorCombo_
         ? dashboardConnectorCombo_->currentText().trimmed()
-        : QStringLiteral("Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)");
+        : connectorLabelForKey(recommendedConnectorKey(futures));
     const ConnectorRuntimeConfig defaultConnectorCfg = resolveConnectorConfig(defaultConnectorText, futures);
 
     double buyThreshold = 30.0;
@@ -4987,24 +5954,33 @@ void BacktestWindow::runDashboardRuntimeCycle() {
             dashboardRuntimeConnectorWarnings_.insert(warningKey);
             appendDashboardAllLog(QString("Connector warning: %1").arg(defaultConnectorCfg.error));
         }
-    } else if (!apiKey.isEmpty() && !apiSecret.isEmpty()) {
-        const auto balance = BinanceRestClient::fetchUsdtBalance(
-            apiKey,
-            apiSecret,
-            futures,
-            isTestnet,
-            6000,
-            defaultConnectorCfg.baseUrl);
-        if (!balance.ok) {
-            appendDashboardPositionLog(
-                QString("Balance fetch failed (%1): %2")
-                    .arg(defaultConnectorText, balance.error));
-        } else {
-            const double candidate = balance.availableUsdtBalance > 0.0
-                ? balance.availableUsdtBalance
-                : (balance.totalUsdtBalance > 0.0 ? balance.totalUsdtBalance : balance.usdtBalance);
-            if (qIsFinite(candidate) && candidate > 0.0) {
-                availableUsdt = candidate;
+    } else {
+        if (!defaultConnectorCfg.warning.trimmed().isEmpty()) {
+            const QString warningKey = QStringLiteral("balance-connector-warning|") + defaultConnectorCfg.warning;
+            if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+                dashboardRuntimeConnectorWarnings_.insert(warningKey);
+                appendDashboardAllLog(QString("Connector fallback: %1").arg(defaultConnectorCfg.warning));
+            }
+        }
+        if (!apiKey.isEmpty() && !apiSecret.isEmpty()) {
+            const auto balance = BinanceRestClient::fetchUsdtBalance(
+                apiKey,
+                apiSecret,
+                futures,
+                isTestnet,
+                6000,
+                defaultConnectorCfg.baseUrl);
+            if (!balance.ok) {
+                appendDashboardPositionLog(
+                    QString("Balance fetch failed (%1): %2")
+                        .arg(defaultConnectorText, balance.error));
+            } else {
+                const double candidate = balance.availableUsdtBalance > 0.0
+                    ? balance.availableUsdtBalance
+                    : (balance.totalUsdtBalance > 0.0 ? balance.totalUsdtBalance : balance.usdtBalance);
+                if (qIsFinite(candidate) && candidate > 0.0) {
+                    availableUsdt = candidate;
+                }
             }
         }
     }
@@ -5060,6 +6036,15 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                     QString("Connector warning (%1): %2").arg(rowConnectorText, rowConnectorCfg.error));
             }
             continue;
+        }
+        if (!rowConnectorCfg.warning.trimmed().isEmpty()) {
+            const QString warningKey = QStringLiteral("row-connector-warning|%1|%2")
+                                           .arg(rowConnectorText, rowConnectorCfg.warning);
+            if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+                dashboardRuntimeConnectorWarnings_.insert(warningKey);
+                appendDashboardAllLog(
+                    QString("Connector fallback (%1): %2").arg(rowConnectorText, rowConnectorCfg.warning));
+            }
         }
         const QString connectorToken = rowConnectorCfg.key + "|" + rowConnectorCfg.baseUrl;
         const QString key = runtimeKeyFor(symbol, interval, connectorToken);

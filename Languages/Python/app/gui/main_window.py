@@ -5642,6 +5642,13 @@ class MainWindow(QtWidgets.QWidget):
                         tabs.setCurrentIndex(idx)
             except Exception:
                 pass
+        # Always start on Dashboard for consistent startup UX across runtimes.
+        try:
+            tabs = getattr(self, "tabs", None)
+            if tabs is not None and tabs.count() > 0:
+                tabs.setCurrentIndex(0)
+        except Exception:
+            pass
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
         try:

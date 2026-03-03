@@ -51,6 +51,8 @@ private:
     QWidget *createChartTab();
     QWidget *createPositionsTab();
     QWidget *createBacktestTab();
+    QWidget *createLiquidationHeatmapTab();
+    QWidget *createLiquidationWebPanel(const QString &title, const QString &url, const QString &note = QString());
     QWidget *createCodeTab();
     QWidget *createPlaceholderTab(const QString &title, const QString &body);
     // Runtime/data flow helpers.
@@ -58,7 +60,12 @@ private:
     void showIndicatorDialog(const QString &indicatorName);
     void refreshDashboardBalance();
     void refreshDashboardSymbols();
+    void refreshBacktestSymbols();
     void applyDashboardTemplate(const QString &templateKey);
+    void addSelectedBacktestSymbolIntervalPairs();
+    void removeSelectedBacktestSymbolIntervalPairs();
+    void clearBacktestSymbolIntervalPairs();
+    void refreshBacktestSymbolIntervalTable();
     void startDashboardRuntime();
     void stopDashboardRuntime();
     void runDashboardRuntimeCycle();
@@ -74,6 +81,7 @@ private:
     void refreshPositionsTableSizing();
     void updateDashboardStopLossWidgetState();
     void setDashboardRuntimeControlsEnabled(bool enabled);
+    bool openExternalUrl(const QString &url);
 
     QListWidget *symbolList_;
     QListWidget *intervalList_;
@@ -86,6 +94,15 @@ private:
     QPushButton *addSelectedBtn_;
     QPushButton *addAllBtn_;
     QComboBox *symbolSourceCombo_;
+    QPushButton *backtestRefreshSymbolsBtn_;
+    QTableWidget *backtestSymbolIntervalTable_;
+    QComboBox *backtestConnectorCombo_;
+    QComboBox *backtestLoopCombo_;
+    QSpinBox *backtestLeverageSpin_;
+    QCheckBox *backtestStopLossEnableCheck_;
+    QComboBox *backtestStopLossModeCombo_;
+    QComboBox *backtestStopLossScopeCombo_;
+    QComboBox *backtestSideCombo_;
     QTableWidget *resultsTable_;
     QTimer *botTimer_;
     std::chrono::steady_clock::time_point botStart_;
