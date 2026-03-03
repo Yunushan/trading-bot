@@ -4,6 +4,7 @@ project(BinanceBacktestTabCpp LANGUAGES CXX)
 
 set(TB_EXECUTABLE_NAME "Trading-Bot-C++")
 set(TB_LEGACY_EXECUTABLE_NAME "binance_backtest_tab")
+set(TB_QT_VERSION "6.10.2" CACHE STRING "Pinned Qt version for reproducible builds")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,61 +17,70 @@ set(CMAKE_AUTORCC ON)
 
 option(TB_REQUIRE_QT_WEBENGINE "Require Qt WebEngine for embedded TradingView/Binance chart modes." ON)
 
-if (WIN32)
-    # Respect caller-provided Qt6_DIR (for example CI ARM64 jobs). Only auto-detect when absent.
-    if ((NOT DEFINED Qt6_DIR) OR Qt6_DIR STREQUAL "")
-        set(_tb_qt6_candidates "")
+if ((NOT DEFINED Qt6_DIR) OR Qt6_DIR STREQUAL "" OR Qt6_DIR MATCHES "NOTFOUND")
+    set(_tb_qt6_candidates "")
+    if (WIN32)
+        # Respect caller-provided Qt6_DIR (for example CI ARM64 jobs). Only auto-detect when absent.
         if (CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
-            file(GLOB _tb_qt6_candidates
-                "C:/Qt/6.*/msvc2022_arm64/lib/cmake/Qt6"
-                "C:/Qt/6.*/msvc2022_arm64_cross_compiled/lib/cmake/Qt6")
+            list(APPEND _tb_qt6_candidates
+                "C:/Qt/${TB_QT_VERSION}/msvc2022_arm64/lib/cmake/Qt6"
+                "C:/Qt/${TB_QT_VERSION}/msvc2022_arm64_cross_compiled/lib/cmake/Qt6")
         else()
-            # Prefer a local Qt x64 kit that includes WebEngine so the C++ chart tab can mirror Python modes.
-            file(GLOB _tb_qt6_candidates "C:/Qt/6.*/msvc2022_64/lib/cmake/Qt6")
+            # Prefer the pinned x64 kit that includes WebEngine so the C++ chart tab can mirror Python modes.
+            list(APPEND _tb_qt6_candidates "C:/Qt/${TB_QT_VERSION}/msvc2022_64/lib/cmake/Qt6")
         endif()
+    else()
+        # Search common Unix-style Qt install roots within the pinned Qt version.
+        file(GLOB _tb_qt6_candidates
+            "$ENV{HOME}/Qt/${TB_QT_VERSION}/*/lib/cmake/Qt6"
+            "/opt/Qt/${TB_QT_VERSION}/*/lib/cmake/Qt6"
+            "/usr/local/Qt/${TB_QT_VERSION}/*/lib/cmake/Qt6")
         list(SORT _tb_qt6_candidates COMPARE NATURAL ORDER DESCENDING)
+    endif()
 
-        set(_tb_selected_qt6_dir "")
+    set(_tb_selected_qt6_dir "")
+    foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
+        if (EXISTS "${_tb_candidate}/Qt6Config.cmake"
+            AND EXISTS "${_tb_candidate}/../Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake")
+            set(_tb_selected_qt6_dir "${_tb_candidate}")
+            break()
+        endif()
+    endforeach()
+
+    if (_tb_selected_qt6_dir STREQUAL "")
         foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
-            if (EXISTS "${_tb_candidate}/Qt6Config.cmake"
-                AND EXISTS "${_tb_candidate}/../Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake")
+            if (EXISTS "${_tb_candidate}/Qt6Config.cmake")
                 set(_tb_selected_qt6_dir "${_tb_candidate}")
                 break()
             endif()
         endforeach()
-
-        if (_tb_selected_qt6_dir STREQUAL "")
-            foreach(_tb_candidate IN LISTS _tb_qt6_candidates)
-                if (EXISTS "${_tb_candidate}/Qt6Config.cmake")
-                    set(_tb_selected_qt6_dir "${_tb_candidate}")
-                    break()
-                endif()
-            endforeach()
-        endif()
-
-        if (NOT _tb_selected_qt6_dir STREQUAL "")
-            set(Qt6_DIR "${_tb_selected_qt6_dir}" CACHE PATH "Qt6 CMake config path" FORCE)
-        endif()
     endif()
 
-    if (DEFINED Qt6_DIR AND NOT Qt6_DIR STREQUAL "")
-        message(STATUS "Using Qt6_DIR=${Qt6_DIR}")
+    if (NOT _tb_selected_qt6_dir STREQUAL "")
+        set(Qt6_DIR "${_tb_selected_qt6_dir}" CACHE PATH "Qt6 CMake config path" FORCE)
     endif()
+endif()
 
-    # Keep optional Qt modules pinned to the same kit as Qt6_DIR to avoid
-    # mixed-kit CMake cache entries (for example Qt 6.10 + stale Qt 6.5 paths).
-    set(_tb_qt6_cmake_root "")
-    if (DEFINED Qt6_DIR AND NOT Qt6_DIR STREQUAL "")
-        get_filename_component(_tb_qt6_cmake_root "${Qt6_DIR}" DIRECTORY)
-        if (EXISTS "${_tb_qt6_cmake_root}")
-            set(QT_ADDITIONAL_PACKAGES_PREFIX_PATH "${_tb_qt6_cmake_root}" CACHE STRING "Qt package search root" FORCE)
-            foreach(_tb_qt_module IN ITEMS Qt6WebEngineWidgets Qt6WebEngineCore Qt6WebChannel Qt6Positioning Qt6WebSockets)
-                if (EXISTS "${_tb_qt6_cmake_root}/${_tb_qt_module}/${_tb_qt_module}Config.cmake")
-                    set(${_tb_qt_module}_DIR "${_tb_qt6_cmake_root}/${_tb_qt_module}" CACHE PATH "${_tb_qt_module} config path" FORCE)
-                endif()
-            endforeach()
-        endif()
+if (DEFINED Qt6_DIR AND NOT Qt6_DIR STREQUAL "" AND NOT Qt6_DIR MATCHES "NOTFOUND")
+    message(STATUS "Using Qt6_DIR=${Qt6_DIR}")
+endif()
+
+# Keep optional Qt modules pinned to the same kit as Qt6_DIR to avoid
+# mixed-kit CMake cache entries (for example Qt 6.10 + stale Qt 6.5 paths).
+set(_tb_qt6_cmake_root "")
+if (DEFINED Qt6_DIR AND NOT Qt6_DIR STREQUAL "" AND NOT Qt6_DIR MATCHES "NOTFOUND")
+    get_filename_component(_tb_qt6_cmake_root "${Qt6_DIR}" DIRECTORY)
+    if (EXISTS "${_tb_qt6_cmake_root}")
+        set(QT_ADDITIONAL_PACKAGES_PREFIX_PATH "${_tb_qt6_cmake_root}" CACHE STRING "Qt package search root" FORCE)
+        foreach(_tb_qt_module IN ITEMS Qt6WebEngineWidgets Qt6WebEngineCore Qt6WebChannel Qt6Positioning Qt6WebSockets)
+            if (EXISTS "${_tb_qt6_cmake_root}/${_tb_qt_module}/${_tb_qt_module}Config.cmake")
+                set(${_tb_qt_module}_DIR "${_tb_qt6_cmake_root}/${_tb_qt_module}" CACHE PATH "${_tb_qt_module} config path" FORCE)
+            endif()
+        endforeach()
     endif()
+endif()
+
+if (WIN32)
 
     if ((NOT DEFINED Vulkan_INCLUDE_DIR)
         OR Vulkan_INCLUDE_DIR STREQUAL ""
@@ -92,9 +102,9 @@ if (WIN32)
     endif()
 endif()
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network)
-find_package(Qt6WebEngineWidgets QUIET)
-find_package(Qt6WebSockets QUIET)
+find_package(Qt6 ${TB_QT_VERSION} EXACT REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} EXACT QUIET)
+find_package(Qt6WebSockets ${TB_QT_VERSION} EXACT QUIET)
 
 set(HAS_WEBENGINE 0)
 if (TARGET Qt6::WebEngineWidgets)
@@ -108,7 +118,7 @@ endif()
 if (TB_REQUIRE_QT_WEBENGINE AND NOT HAS_WEBENGINE)
     message(FATAL_ERROR
         "Qt6 WebEngineWidgets was not found for the selected Qt kit. "
-        "Install a Qt kit with WebEngine (for example C:/Qt/6.10.1/msvc2022_64) "
+        "Install Qt ${TB_QT_VERSION} with WebEngine (for example C:/Qt/${TB_QT_VERSION}/msvc2022_64) "
         "or configure with -DTB_REQUIRE_QT_WEBENGINE=OFF.")
 endif()
 

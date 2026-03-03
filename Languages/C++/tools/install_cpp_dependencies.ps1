@@ -1,11 +1,10 @@
 param(
+  [string]$AqtInstallVersion = "3.3.0",
   [string]$QtVersion = "6.10.2",
   [string]$QtArch = "win64_msvc2022_64",
   [string]$QtOutputDir = "C:/Qt",
   [string]$Triplet = "x64-windows",
-  [ValidateSet("pinned", "latest")]
-  [string]$VcpkgMode = "pinned",
-  [string]$VcpkgRef = "26283ac5e8a068561a718ce18b169bfad84c7dab"
+  [string]$VcpkgRef = "c1f21baeaf7127c13ee141fe1bdaa49eed371c0c"
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,8 +24,9 @@ if (Test-Path $venvPython) {
 Write-Host "Using Python: $pythonExe"
 Write-Host "Repository root: $repoRoot"
 
-Write-Host "Installing aqtinstall..."
-& $pythonExe -m pip install --upgrade aqtinstall
+$aqtInstallSpec = "aqtinstall==$AqtInstallVersion"
+Write-Host "Installing $aqtInstallSpec..."
+& $pythonExe -m pip install --upgrade $aqtInstallSpec
 
 $qtModules = @("qtwebengine", "qtwebsockets", "qtwebchannel", "qtpositioning")
 Write-Host "Installing Qt $QtVersion ($QtArch) with modules: $($qtModules -join ', ')"
@@ -41,22 +41,11 @@ if (!(Test-Path (Join-Path $localVcpkg "vcpkg.exe"))) {
 
 Push-Location $localVcpkg
 git fetch --tags --force
-if ($VcpkgMode -eq "latest") {
-  $remoteHead = git symbolic-ref refs/remotes/origin/HEAD
-  $branch = ($remoteHead -replace "^refs/remotes/origin/", "").Trim()
-  if ([string]::IsNullOrWhiteSpace($branch)) {
-    $branch = "master"
-  }
-  git checkout $branch
-  git pull --ff-only origin $branch
-  Write-Host "Using latest vcpkg from branch: $branch"
-} else {
-  if ([string]::IsNullOrWhiteSpace($VcpkgRef)) {
-    throw "VcpkgRef cannot be empty when VcpkgMode is 'pinned'."
-  }
-  git checkout $VcpkgRef
-  Write-Host "Using pinned vcpkg ref: $VcpkgRef"
+if ([string]::IsNullOrWhiteSpace($VcpkgRef)) {
+  throw "VcpkgRef cannot be empty."
 }
+git checkout $VcpkgRef
+Write-Host "Using pinned vcpkg ref: $VcpkgRef"
 Pop-Location
 
 Write-Host "Bootstrapping vcpkg..."

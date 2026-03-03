@@ -12,29 +12,37 @@ This directory contains a standalone Qt Widgets application that recreates the T
 
 ### Building
 
-Optional one-shot dependency setup on Windows:
+Optional one-shot dependency setup:
 
 ```powershell
+# Windows
 ./Languages/C++/tools/install_cpp_dependencies.ps1
 ```
 
-Dependency mode options:
-
-```powershell
-# Reproducible (same versions each run)
-./Languages/C++/tools/install_cpp_dependencies.ps1 -VcpkgMode pinned
-
-# Always update to latest vcpkg baseline before install
-./Languages/C++/tools/install_cpp_dependencies.ps1 -VcpkgMode latest
+```bash
+# macOS / Linux
+chmod +x ./Languages/C++/tools/install_cpp_dependencies.sh
+./Languages/C++/tools/install_cpp_dependencies.sh
 ```
 
-1. Ensure Qt 6.5+ with Widgets and Network is installed and available in your environment.
+Pinned versions installed by the script:
+
+```powershell
+QtVersion         = 6.10.2
+AqtInstallVersion = 3.3.0
+VcpkgRef          = c1f21baeaf7127c13ee141fe1bdaa49eed371c0c
+```
+
+1. Ensure Qt `6.10.2` with Widgets/Network is installed and available in your environment.
 2. Configure and build with CMake:
 
 ```bash
-cmake -S Languages/C++ -B build/binance_cpp -DCMAKE_PREFIX_PATH="path/to/Qt/6.x/gcc_64"
+cmake -S Languages/C++ -B build/binance_cpp
 cmake --build build/binance_cpp
 ```
+
+`CMakeLists.txt` requires `Qt6 6.10.2 EXACT`, so builds stay reproducible for future clones.
+If auto-detection misses your Qt install, pass `-DQt6_DIR=/absolute/path/to/lib/cmake/Qt6`.
 
 3. Run the demo executable:
 

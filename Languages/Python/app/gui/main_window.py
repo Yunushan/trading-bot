@@ -894,6 +894,7 @@ _DEPENDENCY_USAGE_PASSIVE_COLOR = "#dc2626"
 _DEPENDENCY_USAGE_PENDING_COLOR = "#d97706"
 _DEPENDENCY_USAGE_UNKNOWN_COLOR = "#64748b"
 _DEPENDENCY_USAGE_POLL_INTERVAL_MS = 1500
+_CPP_AUTO_SETUP_DEFAULT_COOLDOWN_SEC = 300.0
 
 
 def _normalize_dependency_key(value: str | None) -> str:
@@ -1947,6 +1948,280 @@ def _cpp_custom_usage_value(target: dict[str, str]) -> str:
         return "Active" if _cpp_dependency_file_exists(target.get("path")) else "Passive"
     installed_value = _cpp_custom_installed_value(target)
     return "Active" if _cpp_version_is_installed_marker(installed_value) else "Passive"
+
+
+def _cpp_auto_setup_enabled() -> bool:
+    raw_value = str(os.environ.get("TB_CPP_AUTO_SETUP", "1") or "1").strip().lower()
+    return raw_value not in {"0", "false", "no", "off"}
+
+
+def _cpp_auto_setup_cooldown_seconds() -> float:
+    raw_value = str(os.environ.get("TB_CPP_AUTO_SETUP_COOLDOWN_SEC", "") or "").strip()
+    if not raw_value:
+        return _CPP_AUTO_SETUP_DEFAULT_COOLDOWN_SEC
+    try:
+        return max(0.0, float(raw_value))
+    except Exception:
+        return _CPP_AUTO_SETUP_DEFAULT_COOLDOWN_SEC
+
+
+def _cpp_pinned_qt_version() -> str:
+    cache = globals().setdefault("_CPP_PINNED_QT_VERSION_CACHE", {})
+    try:
+        cached_value = str(cache.get("value") or "").strip()
+    except Exception:
+        cached_value = ""
+    if cached_value:
+        return cached_value
+
+    default_value = "6.10.2"
+    cmake_path = CPP_PROJECT_PATH / "CMakeLists.txt"
+    try:
+        text = cmake_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        cache["value"] = default_value
+        return default_value
+
+    match = re.search(r'set\s*\(\s*TB_QT_VERSION\s+"([^"]+)"', text, flags=re.IGNORECASE)
+    if not match:
+        cache["value"] = default_value
+        return default_value
+
+    detected = _extract_semver_from_text(match.group(1))
+    value = detected or default_value
+    cache["value"] = value
+    return value
+
+
+def _cpp_target_requires_pinned_qt(target: dict[str, str]) -> bool:
+    custom = str(target.get("custom") or "").strip().lower()
+    return custom in {
+        "cpp_qt",
+        "cpp_qt_network",
+        "cpp_qt_webengine",
+        "cpp_qt_websockets",
+    }
+
+
+def _cpp_target_meets_requirement(target: dict[str, str], installed_value: str | None) -> bool:
+    installed = str(installed_value or "").strip()
+    if _cpp_target_requires_pinned_qt(target):
+        pinned_qt = _extract_semver_from_text(_cpp_pinned_qt_version())
+        installed_qt = _extract_semver_from_text(installed)
+        if not pinned_qt or not installed_qt:
+            return False
+        return installed_qt == pinned_qt
+    return _cpp_version_is_installed_marker(installed)
+
+
+def _cpp_env_dependency_targets(
+    targets: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    source = targets if targets is not None else _CPP_DEPENDENCY_VERSION_TARGETS
+    resolved: list[dict[str, str]] = []
+    for target in source or []:
+        if not isinstance(target, dict):
+            continue
+        custom = str(target.get("custom") or "").strip().lower()
+        if custom.startswith("cpp_"):
+            resolved.append(target)
+    return resolved
+
+
+def _cpp_missing_dependency_labels(
+    targets: list[dict[str, str]] | None = None,
+) -> list[str]:
+    missing: list[str] = []
+    _reset_cpp_dependency_caches()
+    for target in _cpp_env_dependency_targets(targets):
+        label = str(target.get("label") or "").strip()
+        custom = str(target.get("custom") or "").strip().lower()
+        if not label:
+            continue
+        installed = str(_cpp_custom_installed_value(target) or "").strip()
+        if custom == "cpp_file_version":
+            if _cpp_dependency_file_exists(target.get("path")) and installed.lower() != "unknown":
+                continue
+            missing.append(label)
+            continue
+        if not _cpp_target_meets_requirement(target, installed):
+            missing.append(label)
+    return missing
+
+
+def _cpp_dependency_installer_command() -> tuple[list[str], Path] | tuple[None, None]:
+    tools_dir = CPP_PROJECT_PATH / "tools"
+    if sys.platform == "win32":
+        script_path = tools_dir / "install_cpp_dependencies.ps1"
+        shell_exe = shutil.which("pwsh") or shutil.which("powershell")
+        if not script_path.is_file() or not shell_exe:
+            return None, None
+        command = [
+            shell_exe,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+        ]
+        return command, _BASE_PROJECT_PATH
+
+    script_path = tools_dir / "install_cpp_dependencies.sh"
+    bash_exe = shutil.which("bash")
+    if not script_path.is_file() or not bash_exe:
+        return None, None
+    return [bash_exe, str(script_path)], _BASE_PROJECT_PATH
+
+
+def _tail_text(value: str | None, *, max_lines: int = 20, max_chars: int = 4000) -> str:
+    text = str(value or "")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if lines:
+        text = "\n".join(lines[-max_lines:])
+    text = text.strip()
+    if len(text) > max_chars:
+        text = text[-max_chars:]
+    return text
+
+
+def _cpp_run_dependency_installer() -> tuple[bool, str]:
+    command, cwd = _cpp_dependency_installer_command()
+    if not command or cwd is None:
+        if sys.platform == "win32":
+            return False, "Missing installer command or script: Languages/C++/tools/install_cpp_dependencies.ps1"
+        return False, "Missing installer command or script: Languages/C++/tools/install_cpp_dependencies.sh"
+    with _CPP_AUTO_SETUP_LOCK:
+        return _run_command_capture_hidden(command, cwd=cwd)
+
+
+def _cpp_auto_prepare_environment_result(
+    *,
+    reason: str,
+    targets: list[dict[str, str]] | None = None,
+    install_when_missing: bool = True,
+) -> dict[str, object]:
+    target_list = _cpp_env_dependency_targets(targets)
+    missing_before = _cpp_missing_dependency_labels(target_list)
+    attempted = False
+    install_ok = True
+    install_output = ""
+
+    if missing_before and install_when_missing and _cpp_auto_setup_enabled():
+        attempted = True
+        install_ok, install_output = _cpp_run_dependency_installer()
+
+    _reset_cpp_dependency_caches()
+    missing_after = _cpp_missing_dependency_labels(target_list)
+
+    return {
+        "reason": str(reason or "").strip(),
+        "attempted": attempted,
+        "install_ok": bool(install_ok),
+        "missing_before": list(missing_before),
+        "missing_after": list(missing_after),
+        "ready": not missing_after,
+        "install_output": _tail_text(install_output),
+    }
+
+
+def _apply_cpp_auto_prepare_result(
+    self,
+    result: dict | None,
+    *,
+    refresh_versions: bool = True,
+) -> None:
+    payload = result if isinstance(result, dict) else {}
+    attempted = bool(payload.get("attempted"))
+    install_ok = bool(payload.get("install_ok", True))
+    ready = bool(payload.get("ready"))
+    reason = str(payload.get("reason") or "").strip() or "cpp-auto-setup"
+    missing_before = payload.get("missing_before") if isinstance(payload.get("missing_before"), list) else []
+    missing_after = payload.get("missing_after") if isinstance(payload.get("missing_after"), list) else []
+    install_output = str(payload.get("install_output") or "").strip()
+
+    if attempted and ready:
+        missing_text = ", ".join(str(item) for item in missing_before) if missing_before else "dependencies"
+        self.log(f"C++ dependency auto-setup ({reason}) completed: {missing_text}")
+    elif attempted and not ready:
+        missing_text = ", ".join(str(item) for item in missing_after) if missing_after else "unknown"
+        self.log(f"C++ dependency auto-setup ({reason}) did not complete fully. Missing: {missing_text}")
+        if install_output:
+            self.log(_tail_text(install_output, max_lines=12, max_chars=1800))
+    elif not ready and not _cpp_auto_setup_enabled():
+        missing_text = ", ".join(str(item) for item in missing_after) if missing_after else "unknown"
+        self.log(f"C++ auto-setup is disabled (TB_CPP_AUTO_SETUP=0). Missing: {missing_text}")
+    elif not ready and not install_ok and install_output:
+        self.log(_tail_text(install_output, max_lines=12, max_chars=1800))
+
+    if refresh_versions:
+        _reset_cpp_dependency_caches()
+        try:
+            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
+        except Exception:
+            pass
+
+
+@QtCore.pyqtSlot(object)
+def _on_cpp_auto_prepare_finished(self, result: dict | None) -> None:
+    self._cpp_auto_setup_inflight = False
+    self._cpp_auto_setup_last_completed_at = time.time()
+    _apply_cpp_auto_prepare_result(self, result, refresh_versions=True)
+
+
+def _maybe_auto_prepare_cpp_environment(
+    self,
+    *,
+    resolved_targets: list[dict[str, str]] | None = None,
+    reason: str = "code-tab",
+    force: bool = False,
+) -> bool:
+    if _is_frozen_python_app():
+        return False
+    if not _cpp_auto_setup_enabled():
+        return False
+
+    cpp_targets = _cpp_env_dependency_targets(resolved_targets)
+    if not cpp_targets:
+        return False
+
+    if getattr(self, "_cpp_auto_setup_inflight", False):
+        return False
+
+    now = time.time()
+    cooldown_sec = _cpp_auto_setup_cooldown_seconds()
+    last_attempt = float(getattr(self, "_cpp_auto_setup_last_attempt_at", 0.0) or 0.0)
+    if not force and cooldown_sec > 0.0 and now - last_attempt < cooldown_sec:
+        return False
+
+    missing_now = _cpp_missing_dependency_labels(cpp_targets)
+    if not missing_now:
+        return False
+
+    self._cpp_auto_setup_inflight = True
+    self._cpp_auto_setup_last_attempt_at = now
+    missing_text = ", ".join(missing_now)
+    self.log(f"C++ dependencies missing ({reason}): {missing_text}. Starting automatic setup...")
+
+    def _worker():
+        result = _cpp_auto_prepare_environment_result(
+            reason=reason,
+            targets=cpp_targets,
+            install_when_missing=True,
+        )
+        try:
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_on_cpp_auto_prepare_finished",
+                QtCore.Qt.ConnectionType.QueuedConnection,
+                QtCore.Q_ARG(object, result),
+            )
+        except Exception:
+            # Best-effort fallback when queued invoke fails.
+            self._cpp_auto_setup_inflight = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return True
 
 
 def _dependency_usage_state(
@@ -12471,6 +12746,11 @@ class MainWindow(QtWidgets.QWidget):
         try:
             if widget is getattr(self, "code_tab", None):
                 self._start_dependency_usage_auto_poll()
+                if str(self.config.get("code_language") or "") == CPP_CODE_LANGUAGE_KEY:
+                    self._maybe_auto_prepare_cpp_environment(
+                        resolved_targets=getattr(self, "_dep_version_targets", None),
+                        reason="code-tab-visible",
+                    )
             else:
                 self._stop_dependency_usage_auto_poll()
         except Exception:
@@ -16349,6 +16629,30 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
         return None
 
     try:
+        if not _is_frozen_python_app() and _cpp_auto_setup_enabled():
+            _progress("Ensuring pinned C++ dependencies...")
+            prep_result = _run_callable_with_ui_pump(
+                _cpp_auto_prepare_environment_result,
+                reason=f"launch:{trigger}",
+                targets=_CPP_DEPENDENCY_VERSION_TARGETS,
+                install_when_missing=True,
+                poll_interval_s=0.05,
+            )
+            _apply_cpp_auto_prepare_result(self, prep_result, refresh_versions=False)
+            if isinstance(prep_result, dict) and not bool(prep_result.get("ready")):
+                missing_after = prep_result.get("missing_after") if isinstance(prep_result.get("missing_after"), list) else []
+                missing_text = ", ".join(str(item) for item in missing_after) if missing_after else "unknown"
+                detail = str(prep_result.get("install_output") or "").strip()
+                if detail:
+                    detail = _tail_text(detail, max_lines=10, max_chars=1200)
+                    detail = f"\n\nInstaller output tail:\n{detail}"
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "C++ dependency setup failed",
+                    f"Automatic C++ setup could not provision all required environment dependencies.\n\nMissing: {missing_text}{detail}",
+                )
+                return False
+
         _progress("Resolving C++ executable...")
         exe_path = _find_cpp_code_tab_executable()
         auto_runtime_error = ""
@@ -16923,6 +17227,16 @@ def _refresh_dependency_versions(self) -> None:
                 self._dep_version_targets = list(resolved_targets or [])
             except Exception:
                 pass
+    except Exception:
+        pass
+
+    # When C++ dependencies are shown in the Code Languages tab, keep them
+    # auto-provisioned so users don't need to run installer scripts manually.
+    try:
+        self._maybe_auto_prepare_cpp_environment(
+            resolved_targets=resolved_targets,
+            reason="dependency-refresh",
+        )
     except Exception:
         pass
 
@@ -21344,6 +21658,8 @@ try:
     MainWindow._rebuild_dependency_version_rows = _rebuild_dependency_version_rows
     MainWindow._refresh_dependency_versions = _refresh_dependency_versions
     MainWindow._apply_dependency_version_results = _apply_dependency_version_results
+    MainWindow._maybe_auto_prepare_cpp_environment = _maybe_auto_prepare_cpp_environment
+    MainWindow._on_cpp_auto_prepare_finished = _on_cpp_auto_prepare_finished
     MainWindow._on_code_language_changed = _on_code_language_changed
     MainWindow._on_exchange_selection_changed = _on_exchange_selection_changed
     MainWindow._on_exchange_list_changed = _on_exchange_list_changed
@@ -24213,3 +24529,5 @@ _LATEST_CPP_VERSION_CACHE: dict[str, tuple[str, float]] = {}
 _CPP_INCLUDE_DIR_CACHE: tuple[list[Path], float] = ([], 0.0)
 _CPP_INSTALLED_VALUE_CACHE: dict[str, tuple[str | None, float]] = {}
 _CPP_VCPKG_STATUS_CACHE: tuple[dict[str, str], float] = ({}, 0.0)
+_CPP_PINNED_QT_VERSION_CACHE: dict[str, str] = {}
+_CPP_AUTO_SETUP_LOCK = threading.Lock()
