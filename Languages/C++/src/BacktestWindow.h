@@ -81,6 +81,7 @@ private:
     void refreshPositionsTableSizing();
     void updateDashboardStopLossWidgetState();
     void setDashboardRuntimeControlsEnabled(bool enabled);
+    void applyPositionsViewMode();
     bool openExternalUrl(const QString &url);
 
     QListWidget *symbolList_;
@@ -124,6 +125,7 @@ private:
     QComboBox *dashboardIndicatorSourceCombo_;
     QComboBox *dashboardTemplateCombo_;
     QComboBox *dashboardMarginModeCombo_;
+    QComboBox *dashboardPositionModeCombo_;
     QDoubleSpinBox *dashboardPositionPctSpin_;
     QSpinBox *dashboardLeverageSpin_;
     QListWidget *dashboardSymbolList_;
@@ -146,18 +148,23 @@ private:
     QList<QWidget *> dashboardRuntimeLockWidgets_;
     QCheckBox *dashboardLeadTraderEnableCheck_;
     QComboBox *dashboardLeadTraderCombo_;
+    QCheckBox *dashboardStopWithoutCloseCheck_;
     QCheckBox *dashboardStopLossEnableCheck_;
     QComboBox *dashboardStopLossModeCombo_;
     QComboBox *dashboardStopLossScopeCombo_;
     QDoubleSpinBox *dashboardStopLossUsdtSpin_;
     QDoubleSpinBox *dashboardStopLossPercentSpin_;
     bool dashboardRuntimeActive_ = false;
+    bool dashboardRuntimeStopping_ = false;
     QMap<QString, QVariantMap> dashboardWaitingActiveEntries_;
     QList<QVariantMap> dashboardWaitingHistoryEntries_;
     int dashboardWaitingHistoryMax_ = 500;
     struct RuntimePosition {
         QString side;
         QString interval;
+        QString signalSource;
+        QString connectorKey;
+        QString connectorBaseUrl;
         double entryPrice = 0.0;
         double quantity = 0.0;
         double leverage = 1.0;
@@ -173,6 +180,8 @@ private:
     QLabel *chartPnlClosedLabel_;
     QLabel *chartBotStatusLabel_;
     QLabel *chartBotTimeLabel_;
+    QComboBox *positionsViewCombo_;
+    bool positionsCumulativeView_ = false;
     QTableWidget *positionsTable_;
     QCheckBox *positionsAutoRowHeightCheck_;
     QCheckBox *positionsAutoColumnWidthCheck_;

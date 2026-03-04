@@ -69,6 +69,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <set>
 
@@ -1602,19 +1603,6 @@ QString normalizeBinanceKlineInterval(QString intervalText, QString *warningOut 
 
 constexpr double kWaitingPositionLateThresholdSec = 45.0;
 
-QString waitingSideLabelFor(bool allowLong, bool allowShort) {
-    if (allowLong && allowShort) {
-        return QStringLiteral("BOTH");
-    }
-    if (allowLong) {
-        return QStringLiteral("BUY");
-    }
-    if (allowShort) {
-        return QStringLiteral("SELL");
-    }
-    return QStringLiteral("-");
-}
-
 double latestRsiValue(const QVector<BinanceRestClient::KlineCandle> &candles, int period, bool *okOut = nullptr) {
     if (okOut) {
         *okOut = false;
@@ -1664,6 +1652,238 @@ double latestRsiValue(const QVector<BinanceRestClient::KlineCandle> &candles, in
     return qIsFinite(rsi) ? rsi : 0.0;
 }
 
+QSet<QString> parseIndicatorKeysFromSummary(const QString &summary) {
+    QSet<QString> keys;
+    const QString text = summary.trimmed();
+    if (text.isEmpty()) {
+        return keys;
+    }
+
+    const QStringList parts = text.split(',', Qt::SkipEmptyParts);
+    for (const QString &raw : parts) {
+        const QString segment = raw.trimmed();
+        if (segment.isEmpty()) {
+            continue;
+        }
+        const QString lower = segment.toLower();
+        if (lower == QStringLiteral("none") || lower == QStringLiteral("default")) {
+            continue;
+        }
+        const QString key = normalizedIndicatorKey(segment);
+        if (!key.isEmpty() && key != QStringLiteral("generic")) {
+            keys.insert(key);
+        }
+    }
+
+    const QString lower = text.toLower();
+    if (lower.contains(QStringLiteral("relative strength index"))) {
+        keys.insert(QStringLiteral("rsi"));
+    }
+    if (lower.contains(QStringLiteral("stochastic rsi"))
+        || lower.contains(QStringLiteral("stoch rsi"))
+        || lower.contains(QStringLiteral("stoch_rsi"))
+        || lower.contains(QStringLiteral("stochrsi"))) {
+        keys.insert(QStringLiteral("stoch_rsi"));
+    }
+    if (lower.contains(QStringLiteral("williams"))
+        || lower.contains(QStringLiteral("willr"))
+        || lower.contains(QStringLiteral("%r"))) {
+        keys.insert(QStringLiteral("willr"));
+    }
+
+    if (keys.isEmpty()
+        && lower.contains(QStringLiteral("rsi"))
+        && !lower.contains(QStringLiteral("stoch"))) {
+        keys.insert(QStringLiteral("rsi"));
+    }
+
+    return keys;
+}
+
+QVector<double> computeRsiSeries(const QVector<BinanceRestClient::KlineCandle> &candles, int period) {
+    QVector<double> out(candles.size(), qQNaN());
+    if (period <= 0 || candles.size() <= period) {
+        return out;
+    }
+
+    double gains = 0.0;
+    double losses = 0.0;
+    for (int i = 1; i <= period; ++i) {
+        const double diff = candles.at(i).close - candles.at(i - 1).close;
+        if (!qIsFinite(diff)) {
+            return out;
+        }
+        if (diff >= 0.0) {
+            gains += diff;
+        } else {
+            losses += -diff;
+        }
+    }
+
+    double avgGain = gains / period;
+    double avgLoss = losses / period;
+
+    auto toRsi = [](double gain, double loss) -> double {
+        if (loss <= 1e-12) {
+            return 100.0;
+        }
+        const double rs = gain / loss;
+        const double rsi = 100.0 - (100.0 / (1.0 + rs));
+        return qIsFinite(rsi) ? rsi : qQNaN();
+    };
+
+    out[period] = toRsi(avgGain, avgLoss);
+    for (int i = period + 1; i < candles.size(); ++i) {
+        const double diff = candles.at(i).close - candles.at(i - 1).close;
+        if (!qIsFinite(diff)) {
+            continue;
+        }
+        const double gain = diff > 0.0 ? diff : 0.0;
+        const double loss = diff < 0.0 ? -diff : 0.0;
+        avgGain = ((avgGain * (period - 1)) + gain) / period;
+        avgLoss = ((avgLoss * (period - 1)) + loss) / period;
+        out[i] = toRsi(avgGain, avgLoss);
+    }
+    return out;
+}
+
+double latestFiniteValue(const QVector<double> &values, bool *okOut = nullptr) {
+    for (int i = values.size() - 1; i >= 0; --i) {
+        const double v = values.at(i);
+        if (qIsFinite(v)) {
+            if (okOut) {
+                *okOut = true;
+            }
+            return v;
+        }
+    }
+    if (okOut) {
+        *okOut = false;
+    }
+    return 0.0;
+}
+
+double latestStochRsiValue(
+    const QVector<BinanceRestClient::KlineCandle> &candles,
+    int length,
+    int smoothK,
+    int /*smoothD*/,
+    bool *okOut = nullptr) {
+    if (okOut) {
+        *okOut = false;
+    }
+    length = std::max(2, length);
+    smoothK = std::max(1, smoothK);
+    if (candles.size() <= (length + smoothK)) {
+        return 0.0;
+    }
+
+    const QVector<double> rsiSeries = computeRsiSeries(candles, length);
+    if (rsiSeries.isEmpty()) {
+        return 0.0;
+    }
+
+    QVector<double> raw(rsiSeries.size(), qQNaN());
+    for (int i = length - 1; i < rsiSeries.size(); ++i) {
+        const int start = std::max(0, i - length + 1);
+        double minV = std::numeric_limits<double>::infinity();
+        double maxV = -std::numeric_limits<double>::infinity();
+        int valid = 0;
+        for (int j = start; j <= i; ++j) {
+            const double v = rsiSeries.at(j);
+            if (!qIsFinite(v)) {
+                continue;
+            }
+            minV = std::min(minV, v);
+            maxV = std::max(maxV, v);
+            ++valid;
+        }
+        const double current = rsiSeries.at(i);
+        if (valid < length || !qIsFinite(current)) {
+            continue;
+        }
+        const double denom = maxV - minV;
+        if (!qIsFinite(denom) || denom <= 1e-12) {
+            raw[i] = 50.0;
+            continue;
+        }
+        raw[i] = ((current - minV) / denom) * 100.0;
+    }
+
+    QVector<double> smooth(raw.size(), qQNaN());
+    for (int i = smoothK - 1; i < raw.size(); ++i) {
+        double sum = 0.0;
+        int valid = 0;
+        for (int j = i - smoothK + 1; j <= i; ++j) {
+            const double v = raw.at(j);
+            if (!qIsFinite(v)) {
+                continue;
+            }
+            sum += v;
+            ++valid;
+        }
+        if (valid < smoothK) {
+            continue;
+        }
+        smooth[i] = sum / smoothK;
+    }
+
+    return latestFiniteValue(smooth, okOut);
+}
+
+double latestWilliamsRValue(const QVector<BinanceRestClient::KlineCandle> &candles, int length, bool *okOut = nullptr) {
+    if (okOut) {
+        *okOut = false;
+    }
+    length = std::max(2, length);
+    if (candles.size() < length) {
+        return 0.0;
+    }
+
+    const int start = candles.size() - length;
+    double highest = -std::numeric_limits<double>::infinity();
+    double lowest = std::numeric_limits<double>::infinity();
+    for (int i = start; i < candles.size(); ++i) {
+        const auto &c = candles.at(i);
+        if (!qIsFinite(c.high) || !qIsFinite(c.low)) {
+            return 0.0;
+        }
+        highest = std::max(highest, c.high);
+        lowest = std::min(lowest, c.low);
+    }
+    const double close = candles.constLast().close;
+    if (!qIsFinite(highest) || !qIsFinite(lowest) || !qIsFinite(close)) {
+        return 0.0;
+    }
+    const double range = highest - lowest;
+    if (range <= 1e-12) {
+        if (okOut) {
+            *okOut = true;
+        }
+        return -50.0;
+    }
+    double wr = -100.0 * ((highest - close) / range);
+    wr = std::max(-100.0, std::min(0.0, wr));
+    if (okOut) {
+        *okOut = qIsFinite(wr);
+    }
+    return qIsFinite(wr) ? wr : 0.0;
+}
+
+QString indicatorDisplayName(const QString &key) {
+    const QString normalized = key.trimmed().toLower();
+    if (normalized == QStringLiteral("rsi")) {
+        return QStringLiteral("RSI");
+    }
+    if (normalized == QStringLiteral("stoch_rsi")) {
+        return QStringLiteral("StochRSI");
+    }
+    if (normalized == QStringLiteral("willr")) {
+        return QStringLiteral("Williams %R");
+    }
+    return normalized.toUpper();
+}
+
 bool strategyAllowsLong(const QString &summary) {
     const QString s = summary.trimmed().toLower();
     if (s.contains("both")) {
@@ -1701,6 +1921,300 @@ double firstNumberInText(const QString &text, bool *okOut = nullptr) {
         *okOut = ok;
     }
     return ok ? value : 0.0;
+}
+
+double normalizeFuturesOrderQuantity(
+    double desiredQty,
+    double markPrice,
+    const BinanceRestClient::FuturesSymbolFilters &filters) {
+    if (!qIsFinite(desiredQty) || desiredQty <= 0.0 || !qIsFinite(markPrice) || markPrice <= 0.0) {
+        return 0.0;
+    }
+
+    const double minQty = (qIsFinite(filters.minQty) && filters.minQty > 0.0) ? filters.minQty : 0.0;
+    const double maxQty = (qIsFinite(filters.maxQty) && filters.maxQty > 0.0) ? filters.maxQty : 0.0;
+    const double minNotionalQty = (qIsFinite(filters.minNotional) && filters.minNotional > 0.0)
+        ? (filters.minNotional / markPrice)
+        : 0.0;
+    const double requiredQty = std::max(minQty, minNotionalQty);
+    double qty = std::max(desiredQty, requiredQty);
+    if (maxQty > 0.0) {
+        qty = std::min(qty, maxQty);
+    }
+
+    const double step = (qIsFinite(filters.stepSize) && filters.stepSize > 0.0) ? filters.stepSize : 0.0;
+    if (step > 0.0) {
+        qty = std::ceil((qty / step) - 1e-12) * step;
+    }
+
+    if (maxQty > 0.0 && qty > maxQty) {
+        if (step > 0.0) {
+            qty = std::floor((maxQty / step) + 1e-12) * step;
+        } else {
+            qty = maxQty;
+        }
+    }
+
+    const int precision = std::max(0, std::min(16, filters.quantityPrecision));
+    if (precision > 0) {
+        const double scale = std::pow(10.0, precision);
+        qty = std::ceil((qty * scale) - 1e-9) / scale;
+    }
+
+    if (step > 0.0) {
+        qty = std::ceil((qty / step) - 1e-12) * step;
+    }
+
+    if (!qIsFinite(qty) || qty <= 0.0) {
+        return 0.0;
+    }
+
+    if (requiredQty > 0.0 && qty + 1e-12 < requiredQty) {
+        return 0.0;
+    }
+    return qty;
+}
+
+double floorToOrderStep(double qty, double step, int precisionHint) {
+    if (!qIsFinite(qty) || qty <= 0.0) {
+        return 0.0;
+    }
+
+    double normalized = qty;
+    if (qIsFinite(step) && step > 0.0) {
+        normalized = std::floor((normalized / step) + 1e-12) * step;
+    }
+
+    const int precision = std::max(0, std::min(16, precisionHint));
+    if (precision > 0) {
+        const double scale = std::pow(10.0, precision);
+        normalized = std::floor((normalized * scale) + 1e-9) / scale;
+    }
+
+    if (qIsFinite(step) && step > 0.0) {
+        normalized = std::floor((normalized / step) + 1e-12) * step;
+    }
+
+    return (qIsFinite(normalized) && normalized > 0.0) ? normalized : 0.0;
+}
+
+bool isPercentPriceFilterError(const QString &errorText) {
+    const QString err = errorText.trimmed().toLower();
+    return err.contains(QStringLiteral("-4131"))
+        || err.contains(QStringLiteral("percent_price"))
+        || err.contains(QStringLiteral("best price does not meet"));
+}
+
+bool isMaxQuantityExceededError(const QString &errorText) {
+    const QString err = errorText.trimmed().toLower();
+    return err.contains(QStringLiteral("-4005"))
+        || err.contains(QStringLiteral("greater than max quantity"))
+        || err.contains(QStringLiteral("max quantity"));
+}
+
+BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    const QString &side,
+    double quantity,
+    bool testnet,
+    bool reduceOnly,
+    const QString &positionSide,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    BinanceRestClient::FuturesOrderResult aggregated;
+    aggregated.symbol = symbol.trimmed().toUpper();
+    aggregated.side = side.trimmed().toUpper();
+    aggregated.positionSide = positionSide.trimmed().toUpper();
+    if (apiKey.trimmed().isEmpty() || apiSecret.trimmed().isEmpty()) {
+        aggregated.error = QStringLiteral("Missing API credentials");
+        return aggregated;
+    }
+    if (aggregated.symbol.isEmpty()) {
+        aggregated.error = QStringLiteral("Symbol is required");
+        return aggregated;
+    }
+    if (aggregated.side != QStringLiteral("BUY") && aggregated.side != QStringLiteral("SELL")) {
+        aggregated.error = QStringLiteral("Side must be BUY or SELL");
+        return aggregated;
+    }
+    if (!qIsFinite(quantity) || quantity <= 0.0) {
+        aggregated.error = QStringLiteral("Quantity must be > 0");
+        return aggregated;
+    }
+
+    constexpr double kQtyEpsilon = 1e-10;
+
+    const auto filters = BinanceRestClient::fetchFuturesSymbolFilters(
+        aggregated.symbol,
+        testnet,
+        timeoutMs,
+        baseUrlOverride);
+    const double stepSize = (filters.ok && qIsFinite(filters.stepSize) && filters.stepSize > 0.0) ? filters.stepSize : 0.0;
+    const double minQty = (filters.ok && qIsFinite(filters.minQty) && filters.minQty > 0.0)
+        ? filters.minQty
+        : (stepSize > 0.0 ? stepSize : 0.0);
+    const double maxQty = (filters.ok && qIsFinite(filters.maxQty) && filters.maxQty > 0.0) ? filters.maxQty : 0.0;
+    const int quantityPrecision = (filters.ok && filters.quantityPrecision > 0) ? filters.quantityPrecision : 8;
+    int maxAttempts = 20;
+    if (maxQty > 0.0) {
+        maxAttempts = std::max(
+            maxAttempts,
+            std::min(400, static_cast<int>(std::ceil(quantity / maxQty)) + 8));
+    }
+
+    double remainingQty = quantity;
+    double chunkQty = (maxQty > 0.0) ? std::min(remainingQty, maxQty) : remainingQty;
+    double weightedPriceSum = 0.0;
+    double totalExecutedQty = 0.0;
+    QStringList orderIds;
+    int attempts = 0;
+
+    auto nextChunkFrom = [&](double desired) -> double {
+        double chunk = desired;
+        if (maxQty > 0.0) {
+            chunk = std::min(chunk, maxQty);
+        }
+        if (stepSize > 0.0) {
+            chunk = floorToOrderStep(chunk, stepSize, quantityPrecision);
+        }
+        if (chunk <= 0.0 && desired > 0.0) {
+            chunk = (maxQty > 0.0) ? std::min(desired, maxQty) : desired;
+        }
+        if (minQty > 0.0 && chunk + kQtyEpsilon < minQty) {
+            if (remainingQty + kQtyEpsilon < minQty) {
+                chunk = remainingQty;
+            } else {
+                chunk = minQty;
+            }
+            if (maxQty > 0.0) {
+                chunk = std::min(chunk, maxQty);
+            }
+            if (stepSize > 0.0) {
+                chunk = floorToOrderStep(chunk, stepSize, quantityPrecision);
+            }
+        }
+        if (maxQty > 0.0 && chunk > maxQty) {
+            chunk = maxQty;
+            if (stepSize > 0.0) {
+                chunk = floorToOrderStep(chunk, stepSize, quantityPrecision);
+            }
+        }
+        if (chunk > remainingQty) {
+            chunk = remainingQty;
+        }
+        return (qIsFinite(chunk) && chunk > 0.0) ? chunk : 0.0;
+    };
+
+    while (remainingQty > kQtyEpsilon && attempts < maxAttempts) {
+        chunkQty = nextChunkFrom(chunkQty > 0.0 ? chunkQty : remainingQty);
+        if (chunkQty <= 0.0) {
+            aggregated.error = QStringLiteral("Unable to derive valid close quantity.");
+            break;
+        }
+
+        ++attempts;
+        const auto order = BinanceRestClient::placeFuturesMarketOrder(
+            apiKey,
+            apiSecret,
+            aggregated.symbol,
+            aggregated.side,
+            chunkQty,
+            testnet,
+            reduceOnly,
+            aggregated.positionSide,
+            timeoutMs,
+            baseUrlOverride);
+        if (order.ok) {
+            const double filledQty = (qIsFinite(order.executedQty) && order.executedQty > 0.0)
+                ? std::min(chunkQty, order.executedQty)
+                : chunkQty;
+            if (!qIsFinite(filledQty) || filledQty <= kQtyEpsilon) {
+                aggregated.error = QStringLiteral("Close order returned zero fill.");
+                break;
+            }
+
+            totalExecutedQty += filledQty;
+            const double fillPrice = (qIsFinite(order.avgPrice) && order.avgPrice > 0.0) ? order.avgPrice : 0.0;
+            if (fillPrice > 0.0) {
+                weightedPriceSum += (fillPrice * filledQty);
+            }
+            if (!order.orderId.trimmed().isEmpty()) {
+                orderIds.append(order.orderId.trimmed());
+            }
+
+            remainingQty = std::max(0.0, remainingQty - filledQty);
+            chunkQty = remainingQty;
+            continue;
+        }
+
+        const QString orderError = order.error.trimmed();
+        if (isPercentPriceFilterError(orderError)) {
+            double reducedChunk = chunkQty * 0.5;
+            if (stepSize > 0.0) {
+                reducedChunk = floorToOrderStep(reducedChunk, stepSize, quantityPrecision);
+            }
+            if (reducedChunk > kQtyEpsilon && reducedChunk + kQtyEpsilon < chunkQty) {
+                chunkQty = reducedChunk;
+                if (aggregated.error.isEmpty()) {
+                    aggregated.error = QStringLiteral("Close fallback activated due to PERCENT_PRICE filter.");
+                }
+                continue;
+            }
+        } else if (isMaxQuantityExceededError(orderError)) {
+            double reducedChunk = maxQty > 0.0 ? std::min(chunkQty * 0.5, maxQty) : (chunkQty * 0.5);
+            if (stepSize > 0.0) {
+                reducedChunk = floorToOrderStep(reducedChunk, stepSize, quantityPrecision);
+            }
+            if (reducedChunk > kQtyEpsilon && reducedChunk + kQtyEpsilon < chunkQty) {
+                chunkQty = reducedChunk;
+                if (aggregated.error.isEmpty()) {
+                    aggregated.error = QStringLiteral("Close fallback activated due to MAX_QTY filter.");
+                }
+                continue;
+            }
+        }
+
+        aggregated.error = orderError.isEmpty() ? QStringLiteral("Close order failed") : orderError;
+        break;
+    }
+
+    aggregated.executedQty = totalExecutedQty;
+    if (totalExecutedQty > 0.0 && weightedPriceSum > 0.0) {
+        aggregated.avgPrice = weightedPriceSum / totalExecutedQty;
+    }
+    aggregated.orderId = orderIds.join(QStringLiteral(","));
+    if (remainingQty <= kQtyEpsilon && totalExecutedQty > 0.0) {
+        aggregated.ok = true;
+        aggregated.status = QStringLiteral("FILLED");
+        if (aggregated.error.startsWith(QStringLiteral("Close fallback activated"))) {
+            aggregated.error.clear();
+        }
+        return aggregated;
+    }
+    if (totalExecutedQty > 0.0) {
+        aggregated.ok = true;
+        aggregated.status = QStringLiteral("PARTIALLY_FILLED");
+        const QString partialMessage = QStringLiteral(
+            "Partial close: executed=%1 requested=%2 remaining=%3 attempts=%4")
+                                           .arg(QString::number(totalExecutedQty, 'f', 8),
+                                                QString::number(quantity, 'f', 8),
+                                                QString::number(std::max(0.0, remainingQty), 'f', 8),
+                                                QString::number(attempts));
+        if (aggregated.error.isEmpty()) {
+            aggregated.error = partialMessage;
+        } else {
+            aggregated.error = partialMessage + QStringLiteral(" | ") + aggregated.error;
+        }
+        return aggregated;
+    }
+
+    if (aggregated.error.isEmpty()) {
+        aggregated.error = QStringLiteral("Close order failed without fill.");
+    }
+    aggregated.status = QStringLiteral("FAILED");
+    return aggregated;
 }
 
 QString formatDuration(qint64 seconds) {
@@ -1754,6 +2268,7 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       dashboardPage_(nullptr),
       dashboardTemplateCombo_(nullptr),
       dashboardMarginModeCombo_(nullptr),
+      dashboardPositionModeCombo_(nullptr),
       dashboardPositionPctSpin_(nullptr),
       dashboardLeverageSpin_(nullptr),
       dashboardConnectorCombo_(nullptr),
@@ -1779,9 +2294,11 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       chartPnlClosedLabel_(nullptr),
       chartBotStatusLabel_(nullptr),
       chartBotTimeLabel_(nullptr),
+      positionsViewCombo_(nullptr),
       positionsTable_(nullptr),
       dashboardLeadTraderEnableCheck_(nullptr),
       dashboardLeadTraderCombo_(nullptr),
+      dashboardStopWithoutCloseCheck_(nullptr),
       dashboardStopLossEnableCheck_(nullptr),
       dashboardStopLossModeCombo_(nullptr),
       dashboardStopLossScopeCombo_(nullptr),
@@ -2779,6 +3296,7 @@ QWidget *BacktestWindow::createDashboardTab() {
 
     auto *positionModeCombo = new QComboBox(accountBox);
     positionModeCombo->addItems({"Hedge", "One-way"});
+    dashboardPositionModeCombo_ = positionModeCombo;
     registerRuntimeLockWidget(positionModeCombo);
     addPair(2, col, "Position Mode:", positionModeCombo);
 
@@ -3091,6 +3609,7 @@ QWidget *BacktestWindow::createDashboardTab() {
     stopWithoutCloseCheck->setToolTip(
         "When checked, the Stop button will halt strategy threads but keep existing positions open."
     );
+    dashboardStopWithoutCloseCheck_ = stopWithoutCloseCheck;
     registerRuntimeLockWidget(stopWithoutCloseCheck);
     strategyGrid->addWidget(stopWithoutCloseCheck, row, 0, 1, 6);
 
@@ -4304,6 +4823,8 @@ QWidget *BacktestWindow::createPositionsTab() {
     auto *positionsViewCombo = new QComboBox(page);
     positionsViewCombo->addItems({"Cumulative View", "Per Trade View"});
     positionsViewCombo->setCurrentIndex(0);
+    positionsViewCombo_ = positionsViewCombo;
+    positionsCumulativeView_ = true;
     auto *autoRowHeightCheck = new QCheckBox("Auto Row Height", page);
     autoRowHeightCheck->setToolTip("Resize rows to fit multi-line indicator values.");
     autoRowHeightCheck->setChecked(true);
@@ -4394,17 +4915,109 @@ QWidget *BacktestWindow::createPositionsTab() {
     refreshPositionsTableSizing();
 
     connect(refreshPosBtn, &QPushButton::clicked, this, [=]() {
-        updateStatusMessage("Positions refresh requested.");
+        const bool futuresMode = dashboardAccountTypeCombo_
+            ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+            : true;
+        if (!futuresMode) {
+            updateStatusMessage("Positions refresh currently supports Futures account only.");
+            return;
+        }
+
+        const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
+        const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
+        if (apiKey.isEmpty() || apiSecret.isEmpty()) {
+            updateStatusMessage("Positions refresh skipped: missing API credentials.");
+            return;
+        }
+
+        const bool isTestnet = dashboardModeCombo_ ? isTestnetModeLabel(dashboardModeCombo_->currentText()) : false;
+        const QString connectorText = dashboardConnectorCombo_
+            ? dashboardConnectorCombo_->currentText().trimmed()
+            : connectorLabelForKey(recommendedConnectorKey(true));
+        const ConnectorRuntimeConfig connectorCfg = resolveConnectorConfig(connectorText, true);
+        if (!connectorCfg.ok()) {
+            updateStatusMessage(QString("Positions refresh connector error: %1").arg(connectorCfg.error));
+            return;
+        }
+
+        const auto livePositions = BinanceRestClient::fetchOpenFuturesPositions(
+            apiKey,
+            apiSecret,
+            isTestnet,
+            10000,
+            connectorCfg.baseUrl);
+        if (!livePositions.ok) {
+            updateStatusMessage(QString("Positions refresh failed: %1").arg(livePositions.error));
+            return;
+        }
+
+        QSet<QString> liveSymbols;
+        for (const auto &pos : livePositions.positions) {
+            const QString sym = pos.symbol.trimmed().toUpper();
+            if (!sym.isEmpty()) {
+                liveSymbols.insert(sym);
+            }
+        }
+
+        auto setOrCreateCell = [table](int row, int col, const QString &text) {
+            QTableWidgetItem *item = table->item(row, col);
+            if (!item) {
+                item = new QTableWidgetItem(text);
+                table->setItem(row, col, item);
+            } else {
+                item->setText(text);
+            }
+            item->setData(Qt::UserRole, text);
+        };
+
+        int closedCount = 0;
+        QSet<QString> staleSymbols;
+        const QString nowText = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const QString status = table->item(row, 16) ? table->item(row, 16)->text().trimmed().toUpper() : QString();
+            if (status != QStringLiteral("OPEN")) {
+                continue;
+            }
+            const QString symbol = table->item(row, 0) ? table->item(row, 0)->text().trimmed().toUpper() : QString();
+            if (symbol.isEmpty() || liveSymbols.contains(symbol)) {
+                continue;
+            }
+            staleSymbols.insert(symbol);
+            setOrCreateCell(row, 16, QStringLiteral("CLOSED"));
+            const QString existingClose = table->item(row, 14) ? table->item(row, 14)->text().trimmed() : QString();
+            if (existingClose.isEmpty() || existingClose == QStringLiteral("-")) {
+                setOrCreateCell(row, 14, nowText);
+            }
+            ++closedCount;
+        }
+
+        if (!staleSymbols.isEmpty()) {
+            QList<QString> runtimeKeys = dashboardRuntimeOpenPositions_.keys();
+            for (const QString &runtimeKey : runtimeKeys) {
+                const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
+                if (staleSymbols.contains(symbol)) {
+                    dashboardRuntimeOpenPositions_.remove(runtimeKey);
+                }
+            }
+        }
+
+        updateStatusMessage(
+            QString("Positions synced from Binance: %1 live symbol(s), %2 stale local row(s) closed.")
+                .arg(liveSymbols.size())
+                .arg(closedCount));
+        applyPositionsViewMode();
     });
     connect(closeAllBtn, &QPushButton::clicked, this, [=]() {
         const int rowCount = table->rowCount();
         table->setRowCount(0);
+        dashboardRuntimeOpenPositions_.clear();
         botStatusLabel->setText("Bot Status: OFF");
         botTimeLabel->setText("Bot Active Time: --");
         updateStatusMessage(QString("Market close-all simulated for %1 row(s).").arg(rowCount));
     });
     connect(positionsViewCombo, &QComboBox::currentTextChanged, this, [=](const QString &viewText) {
         updateStatusMessage(QString("Positions view changed to %1.").arg(viewText));
+        applyPositionsViewMode();
     });
     connect(autoRowHeightCheck, &QCheckBox::toggled, this, [=](bool enabled) {
         Q_UNUSED(enabled);
@@ -4422,6 +5035,33 @@ QWidget *BacktestWindow::createPositionsTab() {
                 selectedRows.insert(item->row());
             }
         }
+        QSet<QString> clearedPrefixes;
+        for (int row : selectedRows) {
+            const auto rawText = [table](int r, int c) -> QString {
+                QTableWidgetItem *item = table->item(r, c);
+                if (!item) {
+                    return {};
+                }
+                const QVariant raw = item->data(Qt::UserRole);
+                return raw.isValid() ? raw.toString() : item->text();
+            };
+            const QString symbol = rawText(row, 0).trimmed().toUpper();
+            const QString interval = rawText(row, 8).trimmed().toLower();
+            if (!symbol.isEmpty() && !interval.isEmpty()) {
+                clearedPrefixes.insert(QStringLiteral("%1|%2|").arg(symbol, interval));
+            }
+        }
+        if (!clearedPrefixes.isEmpty()) {
+            const QList<QString> keys = dashboardRuntimeOpenPositions_.keys();
+            for (const QString &runtimeKey : keys) {
+                for (const QString &prefix : clearedPrefixes) {
+                    if (runtimeKey.startsWith(prefix, Qt::CaseInsensitive)) {
+                        dashboardRuntimeOpenPositions_.remove(runtimeKey);
+                        break;
+                    }
+                }
+            }
+        }
         QList<int> rows = selectedRows.values();
         std::sort(rows.begin(), rows.end(), std::greater<int>());
         for (int rowIdx : rows) {
@@ -4432,8 +5072,11 @@ QWidget *BacktestWindow::createPositionsTab() {
     connect(clearAllBtn, &QPushButton::clicked, this, [=]() {
         const int rowCount = table->rowCount();
         table->setRowCount(0);
+        dashboardRuntimeOpenPositions_.clear();
         updateStatusMessage(QString("Positions cleared: %1 total row(s).").arg(rowCount));
     });
+
+    applyPositionsViewMode();
 
     return page;
 }
@@ -5634,6 +6277,220 @@ void BacktestWindow::refreshPositionsTableSizing() {
     }
 }
 
+void BacktestWindow::applyPositionsViewMode() {
+    if (!positionsTable_) {
+        return;
+    }
+
+    const bool cumulativeMode = !positionsViewCombo_
+        || positionsViewCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("cumulative"));
+    positionsCumulativeView_ = cumulativeMode;
+
+    const bool sortingWasEnabled = positionsTable_->isSortingEnabled();
+    positionsTable_->setSortingEnabled(false);
+
+    auto ensureItem = [this](int row, int col) -> QTableWidgetItem * {
+        QTableWidgetItem *item = positionsTable_->item(row, col);
+        if (!item) {
+            item = new QTableWidgetItem();
+            positionsTable_->setItem(row, col, item);
+        }
+        return item;
+    };
+    auto restoreRawText = [](QTableWidgetItem *item) {
+        if (!item) {
+            return;
+        }
+        const QVariant raw = item->data(Qt::UserRole);
+        if (!raw.isValid()) {
+            item->setData(Qt::UserRole, item->text());
+            return;
+        }
+        item->setText(raw.toString());
+    };
+    auto rawText = [](QTableWidgetItem *item) -> QString {
+        if (!item) {
+            return {};
+        }
+        const QVariant raw = item->data(Qt::UserRole);
+        if (raw.isValid()) {
+            return raw.toString();
+        }
+        return item->text();
+    };
+    auto parseNumeric = [](const QString &text) -> double {
+        bool ok = false;
+        const double value = firstNumberInText(text, &ok);
+        return (ok && qIsFinite(value)) ? value : 0.0;
+    };
+
+    for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+        positionsTable_->setRowHidden(row, false);
+        for (int col = 0; col < positionsTable_->columnCount(); ++col) {
+            restoreRawText(positionsTable_->item(row, col));
+        }
+    }
+
+    if (!cumulativeMode) {
+        positionsTable_->setSortingEnabled(sortingWasEnabled);
+        refreshPositionsTableSizing();
+        return;
+    }
+
+    struct AggregateBucket {
+        int primaryRow = -1;
+        QList<int> rows;
+        QStringList intervals;
+        QStringList indicators;
+        QStringList triggeredValues;
+        QStringList currentValues;
+        QSet<QString> intervalSet;
+        QSet<QString> indicatorSet;
+        QSet<QString> triggeredSet;
+        QSet<QString> currentSet;
+        double sizeUsdt = 0.0;
+        double marginUsdt = 0.0;
+        double quantity = 0.0;
+        double pnlUsdt = 0.0;
+        double marginRatio = 0.0;
+        double liqPrice = 0.0;
+        QString openTime;
+        QString closeTime;
+        QStringList connectors;
+        QSet<QString> connectorSet;
+    };
+
+    QMap<QString, AggregateBucket> groups;
+    const auto appendUnique = [](QStringList &ordered, QSet<QString> &seen, const QString &rawValue) {
+        const QString value = rawValue.trimmed();
+        if (value.isEmpty() || value == QStringLiteral("-")) {
+            return;
+        }
+        const QString key = value.toLower();
+        if (seen.contains(key)) {
+            return;
+        }
+        seen.insert(key);
+        ordered.append(value);
+    };
+    const auto appendUniqueLines = [&appendUnique](QStringList &ordered, QSet<QString> &seen, const QString &multiLine) {
+        const QStringList parts = multiLine.split('\n', Qt::SkipEmptyParts);
+        if (parts.isEmpty()) {
+            appendUnique(ordered, seen, multiLine);
+            return;
+        }
+        for (const QString &part : parts) {
+            appendUnique(ordered, seen, part);
+        }
+    };
+    const auto connectorBase = [](const QString &rawConnector) -> QString {
+        QString text = rawConnector.trimmed();
+        const int hashPos = text.indexOf('#');
+        if (hashPos > 0) {
+            text = text.left(hashPos).trimmed();
+        }
+        const int pipePos = text.indexOf('|');
+        if (pipePos > 0) {
+            text = text.left(pipePos).trimmed();
+        }
+        return text;
+    };
+
+    for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+        const QString symbol = rawText(positionsTable_->item(row, 0)).trimmed().toUpper();
+        const QString side = rawText(positionsTable_->item(row, 12)).trimmed().toUpper();
+        const QString status = rawText(positionsTable_->item(row, 16)).trimmed().toUpper();
+        if (symbol.isEmpty()) {
+            continue;
+        }
+
+        const QString groupKey = QStringLiteral("%1|%2|%3")
+                                     .arg(symbol, side, status);
+        AggregateBucket &bucket = groups[groupKey];
+        if (bucket.primaryRow < 0) {
+            bucket.primaryRow = row;
+        }
+        bucket.rows.append(row);
+        appendUnique(bucket.intervals, bucket.intervalSet, rawText(positionsTable_->item(row, 8)));
+        appendUnique(bucket.indicators, bucket.indicatorSet, rawText(positionsTable_->item(row, 9)));
+        appendUniqueLines(bucket.triggeredValues, bucket.triggeredSet, rawText(positionsTable_->item(row, 10)));
+        appendUniqueLines(bucket.currentValues, bucket.currentSet, rawText(positionsTable_->item(row, 11)));
+        appendUnique(bucket.connectors, bucket.connectorSet, connectorBase(rawText(positionsTable_->item(row, 17))));
+        bucket.sizeUsdt += parseNumeric(rawText(positionsTable_->item(row, 1)));
+        bucket.marginUsdt += parseNumeric(rawText(positionsTable_->item(row, 5)));
+        bucket.quantity += parseNumeric(rawText(positionsTable_->item(row, 6)));
+        bucket.pnlUsdt += parseNumeric(rawText(positionsTable_->item(row, 7)));
+        bucket.marginRatio = std::max(bucket.marginRatio, parseNumeric(rawText(positionsTable_->item(row, 3))));
+        bucket.liqPrice = std::max(bucket.liqPrice, parseNumeric(rawText(positionsTable_->item(row, 4))));
+
+        const QString openTime = rawText(positionsTable_->item(row, 13)).trimmed();
+        if (!openTime.isEmpty() && openTime != QStringLiteral("-")) {
+            if (bucket.openTime.isEmpty() || openTime < bucket.openTime) {
+                bucket.openTime = openTime;
+            }
+        }
+        const QString closeTime = rawText(positionsTable_->item(row, 14)).trimmed();
+        if (!closeTime.isEmpty() && closeTime != QStringLiteral("-")) {
+            if (bucket.closeTime.isEmpty() || closeTime > bucket.closeTime) {
+                bucket.closeTime = closeTime;
+            }
+        }
+    }
+
+    for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
+        const AggregateBucket &bucket = it.value();
+        if (bucket.primaryRow < 0 || bucket.rows.isEmpty()) {
+            continue;
+        }
+        for (int i = 1; i < bucket.rows.size(); ++i) {
+            positionsTable_->setRowHidden(bucket.rows.at(i), true);
+        }
+
+        const int row = bucket.primaryRow;
+        const int tradeCount = bucket.rows.size();
+        const double pnlPct = bucket.marginUsdt > 1e-9 ? (bucket.pnlUsdt / bucket.marginUsdt) * 100.0 : 0.0;
+        const QString intervalText = bucket.intervals.isEmpty() ? QStringLiteral("-") : bucket.intervals.join(QStringLiteral(", "));
+        const QString indicatorText = bucket.indicators.isEmpty() ? QStringLiteral("-") : bucket.indicators.join(QStringLiteral(", "));
+        const QString triggeredText = bucket.triggeredValues.isEmpty() ? QStringLiteral("-") : bucket.triggeredValues.join(QStringLiteral("\n"));
+        const QString currentText = bucket.currentValues.isEmpty() ? QStringLiteral("-") : bucket.currentValues.join(QStringLiteral("\n"));
+        const QString marginRatioText = bucket.marginRatio > 0.0
+            ? QStringLiteral("%1%").arg(QString::number(bucket.marginRatio, 'f', 2))
+            : QStringLiteral("-");
+        const QString liqPriceText = bucket.liqPrice > 0.0
+            ? QString::number(bucket.liqPrice, 'f', 6)
+            : QStringLiteral("-");
+
+        ensureItem(row, 1)->setText(QString::number(bucket.sizeUsdt, 'f', 2));
+        ensureItem(row, 3)->setText(marginRatioText);
+        ensureItem(row, 4)->setText(liqPriceText);
+        ensureItem(row, 5)->setText(QString::number(bucket.marginUsdt, 'f', 2));
+        ensureItem(row, 6)->setText(QString::number(bucket.quantity, 'f', 6));
+        ensureItem(row, 7)->setText(
+            QStringLiteral("%1 (%2%)")
+                .arg(QString::number(bucket.pnlUsdt, 'f', 2),
+                     QString::number(pnlPct, 'f', 2)));
+        ensureItem(row, 8)->setText(intervalText);
+        ensureItem(row, 9)->setText(indicatorText);
+        ensureItem(row, 10)->setText(triggeredText);
+        ensureItem(row, 11)->setText(currentText);
+        if (!bucket.openTime.isEmpty()) {
+            ensureItem(row, 13)->setText(bucket.openTime);
+        }
+        const QString status = rawText(positionsTable_->item(row, 16)).trimmed().toUpper();
+        ensureItem(row, 14)->setText(
+            status == QStringLiteral("OPEN")
+                ? QStringLiteral("-")
+                : (bucket.closeTime.isEmpty() ? QStringLiteral("-") : bucket.closeTime));
+        if (!bucket.connectors.isEmpty()) {
+            const QString connectorText = bucket.connectors.join(QStringLiteral(", "));
+            ensureItem(row, 17)->setText(QStringLiteral("%1 | %2 trade(s)").arg(connectorText).arg(tradeCount));
+        }
+    }
+
+    positionsTable_->setSortingEnabled(sortingWasEnabled);
+    refreshPositionsTableSizing();
+}
+
 void BacktestWindow::updateDashboardStopLossWidgetState() {
     if (!dashboardStopLossEnableCheck_) {
         return;
@@ -5812,6 +6669,10 @@ void BacktestWindow::refreshDashboardWaitingQueueTable() {
 }
 
 void BacktestWindow::startDashboardRuntime() {
+    if (dashboardRuntimeStopping_) {
+        appendDashboardAllLog("Start ignored: runtime stop/close sequence is still in progress.");
+        return;
+    }
     if (!dashboardOverridesTable_) {
         return;
     }
@@ -5831,6 +6692,7 @@ void BacktestWindow::startDashboardRuntime() {
 
     handleRunBacktest();
     dashboardRuntimeActive_ = true;
+    dashboardRuntimeStopping_ = false;
     setDashboardRuntimeControlsEnabled(false);
     if (dashboardBotStatusLabel_) {
         dashboardBotStatusLabel_->setText("ON");
@@ -5848,6 +6710,11 @@ void BacktestWindow::startDashboardRuntime() {
     dashboardRuntimeLastEvalMs_.clear();
     dashboardRuntimeConnectorWarnings_.clear();
     dashboardRuntimeIntervalWarnings_.clear();
+    const int staleOpenCount = dashboardRuntimeOpenPositions_.size();
+    dashboardRuntimeOpenPositions_.clear();
+    if (staleOpenCount > 0) {
+        appendDashboardPositionLog(QString("Reset %1 stale in-memory open position(s) before start.").arg(staleOpenCount));
+    }
     dashboardWaitingActiveEntries_.clear();
     dashboardWaitingHistoryEntries_.clear();
     refreshDashboardWaitingQueueTable();
@@ -5862,6 +6729,10 @@ void BacktestWindow::startDashboardRuntime() {
 }
 
 void BacktestWindow::stopDashboardRuntime() {
+    if (dashboardRuntimeStopping_) {
+        return;
+    }
+    dashboardRuntimeStopping_ = true;
     dashboardRuntimeActive_ = false;
     if (dashboardRuntimeTimer_) {
         dashboardRuntimeTimer_->stop();
@@ -5887,6 +6758,406 @@ void BacktestWindow::stopDashboardRuntime() {
     }
     refreshDashboardWaitingQueueTable();
 
+    const bool keepOpenPositions = dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked();
+    const bool futures = dashboardAccountTypeCombo_
+        ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+        : true;
+    const bool isTestnet = dashboardModeCombo_ ? isTestnetModeLabel(dashboardModeCombo_->currentText()) : false;
+    const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
+    const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
+    const bool hasApiCredentials = !apiKey.isEmpty() && !apiSecret.isEmpty();
+    const bool hedgeMode = dashboardPositionModeCombo_
+        ? dashboardPositionModeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("hedge"))
+        : true;
+    const QString defaultConnectorText = dashboardConnectorCombo_
+        ? dashboardConnectorCombo_->currentText().trimmed()
+        : connectorLabelForKey(recommendedConnectorKey(futures));
+    const ConnectorRuntimeConfig defaultConnectorCfg = resolveConnectorConfig(defaultConnectorText, futures);
+    QMap<QString, ConnectorRuntimeConfig> closeConnectorConfigs;
+    auto addCloseConnectorConfig = [&closeConnectorConfigs](const ConnectorRuntimeConfig &cfg) {
+        if (!cfg.ok()) {
+            return;
+        }
+        const QString dedupeKey = QStringLiteral("%1|%2")
+                                      .arg(cfg.key.trimmed().toLower(), cfg.baseUrl.trimmed().toLower());
+        if (!closeConnectorConfigs.contains(dedupeKey)) {
+            closeConnectorConfigs.insert(dedupeKey, cfg);
+        }
+    };
+    addCloseConnectorConfig(defaultConnectorCfg);
+
+    auto setOrCreateCell = [this](int row, int col, const QString &text) {
+        if (!positionsTable_) {
+            return;
+        }
+        QTableWidgetItem *item = positionsTable_->item(row, col);
+        if (!item) {
+            item = new QTableWidgetItem(text);
+            positionsTable_->setItem(row, col, item);
+        } else {
+            item->setText(text);
+        }
+        item->setData(Qt::UserRole, text);
+    };
+    auto tableCellRaw = [this](int row, int col) -> QString {
+        if (!positionsTable_) {
+            return {};
+        }
+        QTableWidgetItem *item = positionsTable_->item(row, col);
+        if (!item) {
+            return {};
+        }
+        const QVariant raw = item->data(Qt::UserRole);
+        return raw.isValid() ? raw.toString() : item->text();
+    };
+    if (dashboardOverridesTable_) {
+        for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
+            const QTableWidgetItem *connectorItem = dashboardOverridesTable_->item(row, 5);
+            const QString rowConnectorText = connectorItem && !connectorItem->text().trimmed().isEmpty()
+                ? connectorItem->text().trimmed()
+                : defaultConnectorText;
+            addCloseConnectorConfig(resolveConnectorConfig(rowConnectorText, futures));
+        }
+    }
+    for (auto it = dashboardRuntimeOpenPositions_.cbegin(); it != dashboardRuntimeOpenPositions_.cend(); ++it) {
+        const RuntimePosition &openPos = it.value();
+        ConnectorRuntimeConfig cfg;
+        cfg.key = openPos.connectorKey.trimmed();
+        cfg.label = cfg.key;
+        cfg.baseUrl = openPos.connectorBaseUrl.trimmed();
+        addCloseConnectorConfig(cfg);
+    }
+
+    int closeRequested = 0;
+    int closeSucceeded = 0;
+    int closePartial = 0;
+    int closeFailed = 0;
+    QSet<QString> fullyClosedKeys;
+    if (keepOpenPositions) {
+        appendDashboardPositionLog("Stop requested with 'Stop Without Closing Active Positions' enabled: keeping exchange positions open.");
+    } else if (!dashboardRuntimeOpenPositions_.isEmpty()) {
+        if (!futures) {
+            appendDashboardPositionLog("Stop close skipped: auto-close is supported for Futures account type only.");
+            closeFailed = dashboardRuntimeOpenPositions_.size();
+        } else if (!hasApiCredentials) {
+            appendDashboardPositionLog("Stop close skipped: missing API credentials.");
+            closeFailed = dashboardRuntimeOpenPositions_.size();
+        } else {
+            const QString nowText = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            for (auto it = dashboardRuntimeOpenPositions_.begin(); it != dashboardRuntimeOpenPositions_.end(); ++it) {
+                const QString runtimeKey = it.key();
+                RuntimePosition &openPos = it.value();
+                const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
+                const QString interval = openPos.interval.trimmed();
+                const QStringList keyParts = runtimeKey.split('|');
+                QString connectorKey = openPos.connectorKey.trimmed().toLower();
+                QString connectorBaseUrl = openPos.connectorBaseUrl.trimmed();
+                if (connectorKey.isEmpty() && keyParts.size() >= 3) {
+                    connectorKey = keyParts.at(2).trimmed().toLower();
+                }
+                if (connectorBaseUrl.isEmpty() && keyParts.size() >= 4) {
+                    connectorBaseUrl = keyParts.mid(3).join(QStringLiteral("|")).trimmed();
+                }
+
+                if (symbol.isEmpty() || !qIsFinite(openPos.quantity) || openPos.quantity <= 0.0) {
+                    ++closeFailed;
+                    appendDashboardPositionLog(
+                        QString("Stop close skipped: invalid runtime position key=%1 symbol=%2 qty=%3")
+                            .arg(runtimeKey, symbol, QString::number(openPos.quantity, 'f', 8)));
+                    continue;
+                }
+
+                const QString closeOrderSide = (openPos.side == QStringLiteral("LONG")) ? QStringLiteral("SELL")
+                                                                                         : QStringLiteral("BUY");
+                const QString closePositionSide = hedgeMode ? openPos.side : QString();
+                const bool closeReduceOnly = !hedgeMode;
+                ++closeRequested;
+                const auto closeOrder = placeFuturesCloseOrderWithFallback(
+                    apiKey,
+                    apiSecret,
+                    symbol,
+                    closeOrderSide,
+                    openPos.quantity,
+                    isTestnet,
+                    closeReduceOnly,
+                    closePositionSide,
+                    10000,
+                    connectorBaseUrl);
+
+                if (!closeOrder.ok) {
+                    ++closeFailed;
+                    appendDashboardPositionLog(
+                        QString("Stop close failed %1 %2@%3 (%4): %5")
+                            .arg(openPos.side,
+                                 symbol,
+                                 interval,
+                                 connectorKey.isEmpty() ? QStringLiteral("default") : connectorKey,
+                                 closeOrder.error));
+                    continue;
+                }
+
+                const double closePrice = (qIsFinite(closeOrder.avgPrice) && closeOrder.avgPrice > 0.0)
+                    ? closeOrder.avgPrice
+                    : openPos.entryPrice;
+                const double closeQty = (qIsFinite(closeOrder.executedQty) && closeOrder.executedQty > 0.0)
+                    ? closeOrder.executedQty
+                    : openPos.quantity;
+                const double effectiveCloseQty = std::max(0.0, std::min(openPos.quantity, closeQty));
+                if (effectiveCloseQty <= 0.0) {
+                    ++closeFailed;
+                    appendDashboardPositionLog(
+                        QString("Stop close failed %1 %2@%3: zero filled quantity.")
+                            .arg(openPos.side, symbol, interval));
+                    continue;
+                }
+
+                const double closeMarginUsed = std::max(
+                    1e-9,
+                    (openPos.entryPrice * effectiveCloseQty) / std::max(1.0, openPos.leverage));
+                const double realizedPnlUsdt = (openPos.side == QStringLiteral("LONG"))
+                    ? (closePrice - openPos.entryPrice) * effectiveCloseQty
+                    : (openPos.entryPrice - closePrice) * effectiveCloseQty;
+                const double realizedPnlPct = (realizedPnlUsdt / closeMarginUsed) * 100.0;
+
+                int targetRow = -1;
+                if (positionsTable_) {
+                    for (int row = positionsTable_->rowCount() - 1; row >= 0; --row) {
+                        const QString rowSymbol = tableCellRaw(row, 0).trimmed().toUpper();
+                        const QString rowInterval = tableCellRaw(row, 8).trimmed();
+                        const QString rowStatus = tableCellRaw(row, 16).trimmed().toUpper();
+                        const QString rowConnectorHint = tableCellRaw(row, 17).trimmed().toLower();
+                        if (rowSymbol == symbol
+                            && rowInterval.compare(interval, Qt::CaseInsensitive) == 0
+                            && rowStatus == QStringLiteral("OPEN")
+                            && (connectorKey.isEmpty() || rowConnectorHint.contains(connectorKey))) {
+                            targetRow = row;
+                            break;
+                        }
+                    }
+                }
+
+                if (targetRow >= 0) {
+                    setOrCreateCell(targetRow, 2, QString::number(closePrice, 'f', 6));
+                    setOrCreateCell(
+                        targetRow,
+                        7,
+                        QStringLiteral("%1 (%2%)")
+                            .arg(QString::number(realizedPnlUsdt, 'f', 2),
+                                 QString::number(realizedPnlPct, 'f', 2)));
+                }
+
+                const bool partialClose = (effectiveCloseQty + 1e-9) < openPos.quantity;
+                if (partialClose) {
+                    ++closePartial;
+                    openPos.quantity = std::max(0.0, openPos.quantity - effectiveCloseQty);
+                    if (targetRow >= 0) {
+                        const double remainingNotional = std::max(0.0, openPos.quantity * closePrice);
+                        setOrCreateCell(targetRow, 1, QString::number(remainingNotional, 'f', 2));
+                        setOrCreateCell(
+                            targetRow,
+                            5,
+                            QString::number(remainingNotional / std::max(1.0, openPos.leverage), 'f', 2));
+                        setOrCreateCell(targetRow, 6, QString::number(openPos.quantity, 'f', 6));
+                    }
+                    appendDashboardPositionLog(
+                        QString("Stop partially closed %1 %2@%3 qty=%4 remaining=%5 (connector=%6, orderId=%7): %8")
+                            .arg(openPos.side,
+                                 symbol,
+                                 interval,
+                                 QString::number(effectiveCloseQty, 'f', 6),
+                                 QString::number(openPos.quantity, 'f', 6),
+                                 connectorKey.isEmpty() ? QStringLiteral("default") : connectorKey,
+                                 closeOrder.orderId,
+                                 closeOrder.error.isEmpty() ? QStringLiteral("remaining exposure still open")
+                                                            : closeOrder.error));
+                } else {
+                    ++closeSucceeded;
+                    fullyClosedKeys.insert(runtimeKey);
+                    if (targetRow >= 0) {
+                        setOrCreateCell(targetRow, 14, nowText);
+                        setOrCreateCell(targetRow, 16, QStringLiteral("CLOSED"));
+                    }
+                    appendDashboardPositionLog(
+                        QString("Stop closed %1 %2@%3 at %4 PNL=%5 USDT (%6%%) (connector=%7, orderId=%8)")
+                            .arg(openPos.side,
+                                 symbol,
+                                 interval,
+                                 QString::number(closePrice, 'f', 6),
+                                 QString::number(realizedPnlUsdt, 'f', 2),
+                                 QString::number(realizedPnlPct, 'f', 2),
+                                 connectorKey.isEmpty() ? QStringLiteral("default") : connectorKey,
+                                 closeOrder.orderId));
+                }
+            }
+            for (const QString &closedKey : fullyClosedKeys) {
+                dashboardRuntimeOpenPositions_.remove(closedKey);
+            }
+        }
+    }
+
+    int sweepRequested = 0;
+    int sweepSucceeded = 0;
+    int sweepPartial = 0;
+    int sweepFailed = 0;
+    if (!keepOpenPositions && futures && hasApiCredentials && !closeConnectorConfigs.isEmpty()) {
+        QSet<QString> attemptedSweepKeys;
+        for (auto cfgIt = closeConnectorConfigs.cbegin(); cfgIt != closeConnectorConfigs.cend(); ++cfgIt) {
+            const ConnectorRuntimeConfig &cfg = cfgIt.value();
+            const auto snapshot = BinanceRestClient::fetchOpenFuturesPositions(
+                apiKey,
+                apiSecret,
+                isTestnet,
+                10000,
+                cfg.baseUrl);
+            if (!snapshot.ok) {
+                ++sweepFailed;
+                appendDashboardPositionLog(
+                    QString("Stop sweep fetch failed (%1): %2")
+                        .arg(cfg.key.isEmpty() ? QStringLiteral("default") : cfg.key,
+                             snapshot.error));
+                continue;
+            }
+            for (const auto &pos : snapshot.positions) {
+                const QString symbol = pos.symbol.trimmed().toUpper();
+                if (symbol.isEmpty()) {
+                    continue;
+                }
+                const double qty = std::fabs(pos.positionAmt);
+                if (!qIsFinite(qty) || qty <= 1e-10) {
+                    continue;
+                }
+                const bool isLong = pos.positionAmt > 0.0;
+                const QString runtimeSide = isLong ? QStringLiteral("LONG") : QStringLiteral("SHORT");
+                QString positionSide = pos.positionSide.trimmed().toUpper();
+                if (hedgeMode) {
+                    if (positionSide != QStringLiteral("LONG") && positionSide != QStringLiteral("SHORT")) {
+                        positionSide = runtimeSide;
+                    }
+                } else {
+                    positionSide.clear();
+                }
+                const QString closeOrderSide = isLong ? QStringLiteral("SELL") : QStringLiteral("BUY");
+                const bool closeReduceOnly = !hedgeMode;
+                const QString dedupeKey = QStringLiteral("%1|%2|%3|%4|%5")
+                                              .arg(cfg.key.trimmed().toLower(),
+                                                   cfg.baseUrl.trimmed().toLower(),
+                                                   symbol,
+                                                   closeOrderSide,
+                                                   positionSide);
+                if (attemptedSweepKeys.contains(dedupeKey)) {
+                    continue;
+                }
+                attemptedSweepKeys.insert(dedupeKey);
+                ++sweepRequested;
+                const auto closeOrder = placeFuturesCloseOrderWithFallback(
+                    apiKey,
+                    apiSecret,
+                    symbol,
+                    closeOrderSide,
+                    qty,
+                    isTestnet,
+                    closeReduceOnly,
+                    positionSide,
+                    10000,
+                    cfg.baseUrl);
+                if (!closeOrder.ok) {
+                    ++sweepFailed;
+                    appendDashboardPositionLog(
+                        QString("Stop sweep close failed %1 %2 qty=%3 (%4): %5")
+                            .arg(runtimeSide,
+                                 symbol,
+                                 QString::number(qty, 'f', 6),
+                                 cfg.key.isEmpty() ? QStringLiteral("default") : cfg.key,
+                                 closeOrder.error));
+                    continue;
+                }
+                const double filledQty = (qIsFinite(closeOrder.executedQty) && closeOrder.executedQty > 0.0)
+                    ? std::min(qty, closeOrder.executedQty)
+                    : qty;
+                if (!qIsFinite(filledQty) || filledQty <= 1e-10) {
+                    ++sweepFailed;
+                    appendDashboardPositionLog(
+                        QString("Stop sweep close failed %1 %2 qty=%3 (%4): zero fill.")
+                            .arg(runtimeSide,
+                                 symbol,
+                                 QString::number(qty, 'f', 6),
+                                 cfg.key.isEmpty() ? QStringLiteral("default") : cfg.key));
+                    continue;
+                }
+                const bool partialSweep = (filledQty + 1e-9) < qty;
+                if (partialSweep) {
+                    ++sweepPartial;
+                    appendDashboardPositionLog(
+                        QString("Stop sweep partially closed %1 %2 filled=%3 requested=%4 (%5, orderId=%6): %7")
+                            .arg(runtimeSide,
+                                 symbol,
+                                 QString::number(filledQty, 'f', 6),
+                                 QString::number(qty, 'f', 6),
+                                 cfg.key.isEmpty() ? QStringLiteral("default") : cfg.key,
+                                 closeOrder.orderId,
+                                 closeOrder.error.isEmpty() ? QStringLiteral("remaining exposure still open")
+                                                            : closeOrder.error));
+                    continue;
+                }
+                ++sweepSucceeded;
+                appendDashboardPositionLog(
+                    QString("Stop sweep closed %1 %2 qty=%3 (%4, orderId=%5)")
+                        .arg(runtimeSide,
+                             symbol,
+                             QString::number(qty, 'f', 6),
+                             cfg.key.isEmpty() ? QStringLiteral("default") : cfg.key,
+                             closeOrder.orderId));
+
+                if (positionsTable_) {
+                    const QString nowText = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                    for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+                        const QString rowSymbol = tableCellRaw(row, 0).trimmed().toUpper();
+                        const QString rowStatus = tableCellRaw(row, 16).trimmed().toUpper();
+                        if (rowSymbol != symbol || rowStatus != QStringLiteral("OPEN")) {
+                            continue;
+                        }
+                        setOrCreateCell(row, 14, nowText);
+                        setOrCreateCell(row, 16, QStringLiteral("CLOSED"));
+                    }
+                }
+                const QList<QString> runtimeKeys = dashboardRuntimeOpenPositions_.keys();
+                for (const QString &runtimeKey : runtimeKeys) {
+                    const RuntimePosition runtimePos = dashboardRuntimeOpenPositions_.value(runtimeKey);
+                    const QString runtimeSymbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
+                    if (runtimeSymbol != symbol) {
+                        continue;
+                    }
+                    if (runtimePos.side.trimmed().toUpper() != runtimeSide) {
+                        continue;
+                    }
+                    dashboardRuntimeOpenPositions_.remove(runtimeKey);
+                }
+            }
+        }
+    }
+
+    if (!keepOpenPositions) {
+        if (closeRequested > 0 || closeFailed > 0) {
+            appendDashboardPositionLog(
+                QString("Stop close summary: requested=%1 succeeded=%2 partial=%3 failed=%4.")
+                    .arg(closeRequested)
+                    .arg(closeSucceeded)
+                    .arg(closePartial)
+                    .arg(closeFailed));
+        } else if (dashboardRuntimeOpenPositions_.isEmpty()) {
+            appendDashboardPositionLog("Stop close summary: no active runtime positions to close.");
+        }
+        if (sweepRequested > 0 || sweepFailed > 0) {
+            appendDashboardPositionLog(
+                QString("Stop sweep summary: requested=%1 succeeded=%2 partial=%3 failed=%4.")
+                    .arg(sweepRequested)
+                    .arg(sweepSucceeded)
+                    .arg(sweepPartial)
+                    .arg(sweepFailed));
+        }
+    }
+    applyPositionsViewMode();
+
     if (dashboardStopBtn_) {
         dashboardStopBtn_->setEnabled(false);
     }
@@ -5904,9 +7175,13 @@ void BacktestWindow::stopDashboardRuntime() {
     handleStopBacktest();
     appendDashboardAllLog("Stop triggered from Dashboard.");
     appendDashboardPositionLog("Runtime strategy loop stopped.");
+    dashboardRuntimeStopping_ = false;
 }
 
 void BacktestWindow::runDashboardRuntimeCycle() {
+    if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_) {
+        return;
+    }
     if (!dashboardOverridesTable_ || dashboardOverridesTable_->rowCount() <= 0) {
         return;
     }
@@ -5923,31 +7198,159 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         : connectorLabelForKey(recommendedConnectorKey(futures));
     const ConnectorRuntimeConfig defaultConnectorCfg = resolveConnectorConfig(defaultConnectorText, futures);
 
-    double buyThreshold = 30.0;
-    double sellThreshold = 70.0;
-    const QVariantMap rsiCfg = dashboardIndicatorParams_.value(QStringLiteral("rsi"));
-    if (rsiCfg.contains(QStringLiteral("buy_value"))) {
-        bool ok = false;
-        const double v = rsiCfg.value(QStringLiteral("buy_value")).toDouble(&ok);
-        if (ok && v >= 0.0 && v <= 100.0) {
-            buyThreshold = v;
+    const auto indicatorParamDouble =
+        [this](const QString &indicatorKey, const QString &fieldKey, double fallback) -> double {
+        const QVariantMap cfg = dashboardIndicatorParams_.value(indicatorKey);
+        if (!cfg.contains(fieldKey)) {
+            return fallback;
         }
-    }
-    if (rsiCfg.contains(QStringLiteral("sell_value"))) {
         bool ok = false;
-        const double v = rsiCfg.value(QStringLiteral("sell_value")).toDouble(&ok);
-        if (ok && v >= 0.0 && v <= 100.0) {
-            sellThreshold = v;
+        const double value = cfg.value(fieldKey).toDouble(&ok);
+        return (ok && qIsFinite(value)) ? value : fallback;
+    };
+    const auto indicatorParamInt =
+        [this](const QString &indicatorKey, const QString &fieldKey, int fallback) -> int {
+        const QVariantMap cfg = dashboardIndicatorParams_.value(indicatorKey);
+        if (!cfg.contains(fieldKey)) {
+            return fallback;
         }
+        bool ok = false;
+        const int value = cfg.value(fieldKey).toInt(&ok);
+        return (ok && value > 0) ? value : fallback;
+    };
+
+    double rsiBuyThreshold = indicatorParamDouble(QStringLiteral("rsi"), QStringLiteral("buy_value"), 30.0);
+    double rsiSellThreshold = indicatorParamDouble(QStringLiteral("rsi"), QStringLiteral("sell_value"), 70.0);
+    if (rsiBuyThreshold < 0.0 || rsiBuyThreshold > 100.0
+        || rsiSellThreshold < 0.0 || rsiSellThreshold > 100.0
+        || rsiBuyThreshold >= rsiSellThreshold) {
+        rsiBuyThreshold = 30.0;
+        rsiSellThreshold = 70.0;
     }
-    if (buyThreshold >= sellThreshold) {
-        buyThreshold = 30.0;
-        sellThreshold = 70.0;
+
+    double stochBuyThreshold = indicatorParamDouble(QStringLiteral("stoch_rsi"), QStringLiteral("buy_value"), 20.0);
+    double stochSellThreshold = indicatorParamDouble(QStringLiteral("stoch_rsi"), QStringLiteral("sell_value"), 80.0);
+    if (stochBuyThreshold < 0.0 || stochBuyThreshold > 100.0
+        || stochSellThreshold < 0.0 || stochSellThreshold > 100.0
+        || stochBuyThreshold >= stochSellThreshold) {
+        stochBuyThreshold = 20.0;
+        stochSellThreshold = 80.0;
     }
+
+    double willrBuyThreshold = indicatorParamDouble(QStringLiteral("willr"), QStringLiteral("buy_value"), -80.0);
+    double willrSellThreshold = indicatorParamDouble(QStringLiteral("willr"), QStringLiteral("sell_value"), -20.0);
+    willrBuyThreshold = std::max(-100.0, std::min(0.0, willrBuyThreshold));
+    willrSellThreshold = std::max(-100.0, std::min(0.0, willrSellThreshold));
+    if (willrBuyThreshold >= willrSellThreshold) {
+        willrBuyThreshold = -80.0;
+        willrSellThreshold = -20.0;
+    }
+
+    const int rsiLength = std::max(2, indicatorParamInt(QStringLiteral("rsi"), QStringLiteral("length"), 14));
+    const int stochLength = std::max(2, indicatorParamInt(QStringLiteral("stoch_rsi"), QStringLiteral("length"), 14));
+    const int stochSmoothK = std::max(1, indicatorParamInt(QStringLiteral("stoch_rsi"), QStringLiteral("smooth_k"), 3));
+    const int stochSmoothD = std::max(1, indicatorParamInt(QStringLiteral("stoch_rsi"), QStringLiteral("smooth_d"), 3));
+    const int willrLength = std::max(2, indicatorParamInt(QStringLiteral("willr"), QStringLiteral("length"), 14));
 
     double availableUsdt = 1000.0;
     const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
     const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
+    const bool hasApiCredentials = !apiKey.isEmpty() && !apiSecret.isEmpty();
+    const bool hedgeMode = dashboardPositionModeCombo_
+        ? dashboardPositionModeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("hedge"))
+        : true;
+    QMap<QString, BinanceRestClient::FuturesSymbolFilters> symbolFiltersCache;
+    QMap<QString, BinanceRestClient::FuturesPositionsResult> livePositionsCache;
+    const auto connectorCacheKeyFor = [isTestnet](const ConnectorRuntimeConfig &cfg) {
+        return QStringLiteral("%1|%2|%3")
+            .arg(cfg.key.trimmed().toLower(),
+                 cfg.baseUrl.trimmed().toLower(),
+                 isTestnet ? QStringLiteral("testnet") : QStringLiteral("live"));
+    };
+    const auto fetchLivePositionsForConnector =
+        [this, futures, hasApiCredentials, &apiKey, &apiSecret, isTestnet, &livePositionsCache, &connectorCacheKeyFor](
+            const ConnectorRuntimeConfig &cfg) -> const BinanceRestClient::FuturesPositionsResult * {
+        if (!futures || !hasApiCredentials || !cfg.ok()) {
+            return nullptr;
+        }
+        const QString cacheKey = connectorCacheKeyFor(cfg);
+        auto it = livePositionsCache.find(cacheKey);
+        if (it == livePositionsCache.end()) {
+            const auto result = BinanceRestClient::fetchOpenFuturesPositions(
+                apiKey,
+                apiSecret,
+                isTestnet,
+                10000,
+                cfg.baseUrl);
+            it = livePositionsCache.insert(cacheKey, result);
+            if (!result.ok) {
+                const QString warningKey = QStringLiteral("live-positions|%1|%2")
+                                               .arg(cacheKey, result.error);
+                if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+                    dashboardRuntimeConnectorWarnings_.insert(warningKey);
+                    appendDashboardPositionLog(
+                        QString("Live position snapshot failed (%1): %2")
+                            .arg(cfg.key, result.error));
+                }
+            }
+        }
+        return &it.value();
+    };
+    const auto pickLivePosition =
+        [hedgeMode](
+            const BinanceRestClient::FuturesPositionsResult *snapshot,
+            const QString &symbol,
+            const QString &runtimeSide) -> const BinanceRestClient::FuturesPosition * {
+        if (!snapshot || !snapshot->ok) {
+            return nullptr;
+        }
+        const QString sym = symbol.trimmed().toUpper();
+        const QString side = runtimeSide.trimmed().toUpper();
+        const BinanceRestClient::FuturesPosition *best = nullptr;
+        double bestAbsAmt = 0.0;
+        for (const auto &pos : snapshot->positions) {
+            if (pos.symbol.trimmed().toUpper() != sym) {
+                continue;
+            }
+            const double absAmt = std::fabs(pos.positionAmt);
+            if (absAmt <= 1e-10) {
+                continue;
+            }
+            const QString posSide = pos.positionSide.trimmed().toUpper();
+            const bool sideMatches = (side == QStringLiteral("LONG") && pos.positionAmt > 0.0)
+                || (side == QStringLiteral("SHORT") && pos.positionAmt < 0.0)
+                || side.isEmpty();
+            if (hedgeMode) {
+                if ((side == QStringLiteral("LONG") && posSide == QStringLiteral("LONG"))
+                    || (side == QStringLiteral("SHORT") && posSide == QStringLiteral("SHORT"))) {
+                    return &pos;
+                }
+            } else if ((posSide.isEmpty() || posSide == QStringLiteral("BOTH")) && sideMatches) {
+                return &pos;
+            }
+            if (sideMatches && absAmt > bestAbsAmt) {
+                bestAbsAmt = absAmt;
+                best = &pos;
+            }
+        }
+        return best;
+    };
+
+    if (!futures) {
+        const QString warningKey = QStringLiteral("runtime-account-type|spot-unsupported");
+        if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+            dashboardRuntimeConnectorWarnings_.insert(warningKey);
+            appendDashboardAllLog("Runtime warning: C++ auto-trading currently supports Futures mode only.");
+        }
+    }
+    if (!hasApiCredentials) {
+        const QString warningKey = QStringLiteral("runtime-auth|missing-credentials");
+        if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+            dashboardRuntimeConnectorWarnings_.insert(warningKey);
+            appendDashboardAllLog("Runtime warning: API key/secret required. Trades will not be submitted.");
+        }
+    }
+
     if (!defaultConnectorCfg.ok()) {
         const QString warningKey = QStringLiteral("balance-connector|") + defaultConnectorCfg.error;
         if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
@@ -5962,7 +7365,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                 appendDashboardAllLog(QString("Connector fallback: %1").arg(defaultConnectorCfg.warning));
             }
         }
-        if (!apiKey.isEmpty() && !apiSecret.isEmpty()) {
+        if (hasApiCredentials) {
             const auto balance = BinanceRestClient::fetchUsdtBalance(
                 apiKey,
                 apiSecret,
@@ -6009,8 +7412,22 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                 : QStringLiteral("Queued"));
         waitingIt.value() = waitingEntry;
     };
+    const auto tableCellRaw = [this](int row, int col) -> QString {
+        if (!positionsTable_) {
+            return {};
+        }
+        QTableWidgetItem *item = positionsTable_->item(row, col);
+        if (!item) {
+            return {};
+        }
+        const QVariant raw = item->data(Qt::UserRole);
+        return raw.isValid() ? raw.toString() : item->text();
+    };
 
     for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
+        if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_) {
+            break;
+        }
         const auto *symbolItem = dashboardOverridesTable_->item(row, 0);
         const auto *intervalItem = dashboardOverridesTable_->item(row, 1);
         if (!symbolItem || !intervalItem) {
@@ -6052,15 +7469,100 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         const qint64 loopSeconds = std::max<qint64>(1, loopSecondsFromText(loopItem ? loopItem->text() : QString()));
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 lastMs = dashboardRuntimeLastEvalMs_.value(key, 0);
+        auto openIt = dashboardRuntimeOpenPositions_.find(key);
         if (lastMs > 0 && (nowMs - lastMs) < (loopSeconds * 1000)) {
+            if (openIt != dashboardRuntimeOpenPositions_.end() && positionsTable_) {
+                RuntimePosition &openPos = openIt.value();
+                const auto *liveSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
+                const auto *livePos = pickLivePosition(liveSnapshot, symbol, openPos.side);
+                if (livePos && qIsFinite(livePos->positionAmt) && std::fabs(livePos->positionAmt) > 1e-10) {
+                    openPos.quantity = std::fabs(livePos->positionAmt);
+                    if (qIsFinite(livePos->entryPrice) && livePos->entryPrice > 0.0) {
+                        openPos.entryPrice = livePos->entryPrice;
+                    }
+                }
+
+                const double rowQty = std::max(0.0, openPos.quantity);
+                const double markPrice = (livePos && qIsFinite(livePos->markPrice) && livePos->markPrice > 0.0)
+                    ? livePos->markPrice
+                    : openPos.entryPrice;
+                const double markPnlUsdt = (openPos.side == QStringLiteral("LONG"))
+                    ? (markPrice - openPos.entryPrice) * rowQty
+                    : (openPos.entryPrice - markPrice) * rowQty;
+                const double marginUsed = std::max(
+                    1e-9,
+                    (openPos.entryPrice * rowQty) / std::max(1.0, openPos.leverage));
+                const double markPnlPct = (markPnlUsdt / marginUsed) * 100.0;
+                const double sizeUsdt = std::max(0.0, rowQty * markPrice);
+                const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
+                const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
+                const QString marginRatioText = marginRatio > 0.0
+                    ? QStringLiteral("%1%").arg(QString::number(marginRatio, 'f', 2))
+                    : QStringLiteral("-");
+                const QString liqText = liqPrice > 0.0 ? QString::number(liqPrice, 'f', 6) : QStringLiteral("-");
+
+                int targetRow = -1;
+                for (int t = positionsTable_->rowCount() - 1; t >= 0; --t) {
+                    const QString rowSymbol = tableCellRaw(t, 0).trimmed().toUpper();
+                    const QString rowInterval = tableCellRaw(t, 8).trimmed();
+                    const QString rowStatus = tableCellRaw(t, 16).trimmed().toUpper();
+                    const QString rowConnectorHint = tableCellRaw(t, 17).toLower();
+                    if (rowSymbol == symbol
+                        && rowInterval.compare(interval, Qt::CaseInsensitive) == 0
+                        && rowStatus == QStringLiteral("OPEN")
+                        && rowConnectorHint.contains(rowConnectorCfg.key.toLower())) {
+                        targetRow = t;
+                        break;
+                    }
+                }
+
+                if (targetRow >= 0) {
+                    auto setOrCreate = [this, targetRow](int col, const QString &text, bool preserveWhenUnavailable = false) {
+                        QTableWidgetItem *item = positionsTable_->item(targetRow, col);
+                        QString finalText = text;
+                        if (preserveWhenUnavailable && (text.trimmed().isEmpty() || text.trimmed() == QStringLiteral("-"))) {
+                            QString existing;
+                            if (item) {
+                                const QVariant raw = item->data(Qt::UserRole);
+                                existing = raw.isValid() ? raw.toString() : item->text();
+                            }
+                            existing = existing.trimmed();
+                            if (!existing.isEmpty() && existing != QStringLiteral("-")) {
+                                finalText = existing;
+                            }
+                        }
+                        if (!item) {
+                            item = new QTableWidgetItem(finalText);
+                            positionsTable_->setItem(targetRow, col, item);
+                        } else {
+                            item->setText(finalText);
+                        }
+                        item->setData(Qt::UserRole, finalText);
+                    };
+                    setOrCreate(1, QString::number(sizeUsdt, 'f', 2));
+                    setOrCreate(2, QString::number(markPrice, 'f', 6));
+                    setOrCreate(3, marginRatioText, true);
+                    setOrCreate(4, liqText, true);
+                    setOrCreate(5, QString::number(marginUsed, 'f', 2));
+                    setOrCreate(6, QString::number(rowQty, 'f', 6));
+                    setOrCreate(7, QString("%1 (%2%)")
+                                    .arg(QString::number(markPnlUsdt, 'f', 2),
+                                         QString::number(markPnlPct, 'f', 2)));
+                    positionsTableMutated = true;
+                }
+            }
             touchWaitingEntry(key, nowMs);
             continue;
         }
         dashboardRuntimeLastEvalMs_.insert(key, nowMs);
 
         const auto *indicatorItem = dashboardOverridesTable_->item(row, 2);
-        const QString indicatorText = indicatorItem ? indicatorItem->text().toLower() : QString();
-        if (!indicatorText.contains(QStringLiteral("rsi"))) {
+        const QString indicatorSummary = indicatorItem ? indicatorItem->text() : QString();
+        const QSet<QString> indicatorKeys = parseIndicatorKeysFromSummary(indicatorSummary);
+        const bool useRsi = indicatorKeys.contains(QStringLiteral("rsi"));
+        const bool useStochRsi = indicatorKeys.contains(QStringLiteral("stoch_rsi"));
+        const bool useWillr = indicatorKeys.contains(QStringLiteral("willr"));
+        if (!useRsi && !useStochRsi && !useWillr) {
             continue;
         }
 
@@ -6094,14 +7596,44 @@ void BacktestWindow::runDashboardRuntimeCycle() {
             continue;
         }
 
-        bool rsiOk = false;
-        const double rsi = latestRsiValue(candles.candles, 14, &rsiOk);
         const double price = candles.candles.constLast().close;
-        if (!rsiOk || !qIsFinite(price) || price <= 0.0) {
-            appendDashboardPositionLog(QString("%1@%2 skipped: invalid RSI/price data.").arg(symbol, interval));
+        if (!qIsFinite(price) || price <= 0.0) {
+            appendDashboardPositionLog(QString("%1@%2 skipped: invalid price data.").arg(symbol, interval));
             touchWaitingEntry(key, nowMs);
             continue;
         }
+
+        bool rsiOk = false;
+        double rsi = 0.0;
+        if (useRsi) {
+            rsi = latestRsiValue(candles.candles, rsiLength, &rsiOk);
+        }
+
+        bool stochRsiOk = false;
+        double stochRsi = 0.0;
+        if (useStochRsi) {
+            stochRsi = latestStochRsiValue(candles.candles, stochLength, stochSmoothK, stochSmoothD, &stochRsiOk);
+        }
+
+        bool willrOk = false;
+        double willr = 0.0;
+        if (useWillr) {
+            willr = latestWilliamsRValue(candles.candles, willrLength, &willrOk);
+        }
+
+        QStringList indicatorValueParts;
+        if (useRsi && rsiOk) {
+            indicatorValueParts << QString("RSI %1").arg(QString::number(rsi, 'f', 2));
+        }
+        if (useStochRsi && stochRsiOk) {
+            indicatorValueParts << QString("StochRSI %1").arg(QString::number(stochRsi, 'f', 2));
+        }
+        if (useWillr && willrOk) {
+            indicatorValueParts << QString("W%R %1").arg(QString::number(willr, 'f', 2));
+        }
+        const QString indicatorValueSummary = indicatorValueParts.isEmpty()
+            ? QStringLiteral("-")
+            : indicatorValueParts.join(QStringLiteral(" | "));
 
         const auto *strategyItem = dashboardOverridesTable_->item(row, 6);
         const QString strategySummary = strategyItem ? strategyItem->text() : QString();
@@ -6120,63 +7652,173 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         leverage = std::max(1.0, leverage);
 
         const double positionPct = dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0;
-        const double notionalUsdt = std::max(10.0, availableUsdt * (std::max(0.1, positionPct) / 100.0) * leverage);
-        const double quantity = std::max(0.000001, notionalUsdt / price);
+        const double targetNotionalUsdt = std::max(10.0, availableUsdt * (std::max(0.1, positionPct) / 100.0) * leverage);
+        const double requestedQty = std::max(0.000001, targetNotionalUsdt / price);
 
-        auto openIt = dashboardRuntimeOpenPositions_.find(key);
         if (openIt == dashboardRuntimeOpenPositions_.end()) {
             QString openSide;
             QString triggerText;
-            if (allowLong && rsi <= buyThreshold) {
+            QString triggerSource = QStringLiteral("rsi");
+            auto setLongTrigger = [&openSide, &triggerText, &triggerSource](const QString &src, const QString &txt) {
                 openSide = QStringLiteral("LONG");
-                triggerText = QString("RSI %1 <= %2")
-                                  .arg(QString::number(rsi, 'f', 2),
-                                       QString::number(buyThreshold, 'f', 2));
-            } else if (allowShort && rsi >= sellThreshold) {
+                triggerSource = src;
+                triggerText = txt;
+            };
+            auto setShortTrigger = [&openSide, &triggerText, &triggerSource](const QString &src, const QString &txt) {
                 openSide = QStringLiteral("SHORT");
-                triggerText = QString("RSI %1 >= %2")
-                                  .arg(QString::number(rsi, 'f', 2),
-                                       QString::number(sellThreshold, 'f', 2));
+                triggerSource = src;
+                triggerText = txt;
+            };
+
+            if (useRsi && rsiOk) {
+                if (allowLong && rsi <= rsiBuyThreshold) {
+                    setLongTrigger(
+                        QStringLiteral("rsi"),
+                        QString("RSI %1 <= %2")
+                            .arg(QString::number(rsi, 'f', 2), QString::number(rsiBuyThreshold, 'f', 2)));
+                } else if (allowShort && rsi >= rsiSellThreshold) {
+                    setShortTrigger(
+                        QStringLiteral("rsi"),
+                        QString("RSI %1 >= %2")
+                            .arg(QString::number(rsi, 'f', 2), QString::number(rsiSellThreshold, 'f', 2)));
+                }
+            }
+            if (openSide.isEmpty() && useStochRsi && stochRsiOk) {
+                if (allowLong && stochRsi <= stochBuyThreshold) {
+                    setLongTrigger(
+                        QStringLiteral("stoch_rsi"),
+                        QString("StochRSI %1 <= %2")
+                            .arg(QString::number(stochRsi, 'f', 2), QString::number(stochBuyThreshold, 'f', 2)));
+                } else if (allowShort && stochRsi >= stochSellThreshold) {
+                    setShortTrigger(
+                        QStringLiteral("stoch_rsi"),
+                        QString("StochRSI %1 >= %2")
+                            .arg(QString::number(stochRsi, 'f', 2), QString::number(stochSellThreshold, 'f', 2)));
+                }
+            }
+            if (openSide.isEmpty() && useWillr && willrOk) {
+                if (allowLong && willr <= willrBuyThreshold) {
+                    setLongTrigger(
+                        QStringLiteral("willr"),
+                        QString("Williams %%R %1 <= %2")
+                            .arg(QString::number(willr, 'f', 2), QString::number(willrBuyThreshold, 'f', 2)));
+                } else if (allowShort && willr >= willrSellThreshold) {
+                    setShortTrigger(
+                        QStringLiteral("willr"),
+                        QString("Williams %%R %1 >= %2")
+                            .arg(QString::number(willr, 'f', 2), QString::number(willrSellThreshold, 'f', 2)));
+                }
             }
 
             if (openSide.isEmpty()) {
-                const QString context = QString("RSI=%1 (buy<=%2 / sell>=%3)")
-                                            .arg(QString::number(rsi, 'f', 2),
-                                                 QString::number(buyThreshold, 'f', 2),
-                                                 QString::number(sellThreshold, 'f', 2));
-                waitingSeenThisCycle.insert(key);
-                QVariantMap waitingEntry = dashboardWaitingActiveEntries_.value(key);
-                qint64 firstSeenMs = waitingEntry.value(QStringLiteral("first_seen_ms")).toLongLong();
-                if (firstSeenMs <= 0) {
-                    firstSeenMs = nowMs;
-                }
-                const qint64 elapsedMs = std::max<qint64>(0, nowMs - firstSeenMs);
-                const double ageSeconds = static_cast<double>(elapsedMs) / 1000.0;
-                waitingEntry.insert(QStringLiteral("key"), key);
-                waitingEntry.insert(QStringLiteral("symbol"), symbol);
-                waitingEntry.insert(QStringLiteral("interval"), interval);
-                waitingEntry.insert(QStringLiteral("side"), waitingSideLabelFor(allowLong, allowShort));
-                waitingEntry.insert(QStringLiteral("context"), context);
-                waitingEntry.insert(QStringLiteral("first_seen_ms"), firstSeenMs);
-                waitingEntry.insert(QStringLiteral("updated_ms"), nowMs);
-                waitingEntry.insert(QStringLiteral("age"), ageSeconds);
-                waitingEntry.insert(QStringLiteral("age_seconds"), static_cast<int>(elapsedMs / 1000));
-                waitingEntry.insert(
-                    QStringLiteral("state"),
-                    ageSeconds >= kWaitingPositionLateThresholdSec
-                        ? QStringLiteral("Late")
-                        : QStringLiteral("Queued"));
-                dashboardWaitingActiveEntries_.insert(key, waitingEntry);
+                // "No trigger yet" is a normal monitoring state, not a pending queue item.
+                // Keeping these in waiting queue caused rows to stay Late indefinitely.
                 continue;
             }
+
+            if (!futures) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 signal ignored: runtime trading supports Futures only.")
+                        .arg(openSide, symbol, interval));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
+            if (!hasApiCredentials) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 signal queued: API credentials are missing.")
+                        .arg(openSide, symbol, interval));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
+
+            const QString filterCacheKey = QStringLiteral("%1|%2|%3")
+                                               .arg(symbol, rowConnectorCfg.baseUrl, isTestnet ? QStringLiteral("testnet")
+                                                                                                 : QStringLiteral("live"));
+            BinanceRestClient::FuturesSymbolFilters symbolFilters = symbolFiltersCache.value(filterCacheKey);
+            if (!symbolFilters.ok) {
+                symbolFilters = BinanceRestClient::fetchFuturesSymbolFilters(
+                    symbol,
+                    isTestnet,
+                    10000,
+                    rowConnectorCfg.baseUrl);
+                symbolFiltersCache.insert(filterCacheKey, symbolFilters);
+            }
+            if (!symbolFilters.ok) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 blocked: symbol filters fetch failed (%4): %5")
+                        .arg(openSide, symbol, interval, rowConnectorCfg.key, symbolFilters.error));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
+
+            const double orderQty = normalizeFuturesOrderQuantity(requestedQty, price, symbolFilters);
+            if (!qIsFinite(orderQty) || orderQty <= 0.0) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 blocked: normalized order quantity is invalid (requested=%4).")
+                        .arg(openSide, symbol, interval, QString::number(requestedQty, 'f', 8)));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
+
+            const QString openOrderSide = (openSide == QStringLiteral("LONG")) ? QStringLiteral("BUY") : QStringLiteral("SELL");
+            const QString openPositionSide = hedgeMode ? openSide : QString();
+            const auto openOrder = BinanceRestClient::placeFuturesMarketOrder(
+                apiKey,
+                apiSecret,
+                symbol,
+                openOrderSide,
+                orderQty,
+                isTestnet,
+                false,
+                openPositionSide,
+                10000,
+                rowConnectorCfg.baseUrl);
+            if (!openOrder.ok) {
+                appendDashboardPositionLog(
+                    QString("%1 %2@%3 order failed (%4): %5")
+                        .arg(openSide, symbol, interval, rowConnectorCfg.key, openOrder.error));
+                touchWaitingEntry(key, nowMs);
+                continue;
+            }
+
+            const double filledQty = (qIsFinite(openOrder.executedQty) && openOrder.executedQty > 0.0)
+                ? openOrder.executedQty
+                : orderQty;
+            double entryPrice = (qIsFinite(openOrder.avgPrice) && openOrder.avgPrice > 0.0)
+                ? openOrder.avgPrice
+                : price;
+            livePositionsCache.remove(connectorCacheKeyFor(rowConnectorCfg));
+            const auto *liveSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
+            const auto *livePos = pickLivePosition(liveSnapshot, symbol, openSide);
+            if (livePos && qIsFinite(livePos->entryPrice) && livePos->entryPrice > 0.0) {
+                entryPrice = livePos->entryPrice;
+            }
+            double rowQty = filledQty;
+            if (livePos && qIsFinite(livePos->positionAmt) && std::fabs(livePos->positionAmt) > 1e-10) {
+                rowQty = std::fabs(livePos->positionAmt);
+            }
+            const double markPrice = (livePos && qIsFinite(livePos->markPrice) && livePos->markPrice > 0.0)
+                ? livePos->markPrice
+                : price;
+            const double sizeUsdt = std::max(0.0, rowQty * markPrice);
+            const double marginUsdt = std::max(0.0, (entryPrice * rowQty) / leverage);
+            const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
+            const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
+            const QString marginRatioText = marginRatio > 0.0
+                ? QStringLiteral("%1%").arg(QString::number(marginRatio, 'f', 2))
+                : QStringLiteral("-");
+            const QString liqText = liqPrice > 0.0 ? QString::number(liqPrice, 'f', 6) : QStringLiteral("-");
 
             dashboardRuntimeOpenPositions_.insert(
                 key,
                 RuntimePosition{
                     openSide,
                     interval,
-                    price,
-                    quantity,
+                    triggerSource,
+                    rowConnectorCfg.key,
+                    rowConnectorCfg.baseUrl,
+                    entryPrice,
+                    rowQty,
                     leverage,
                 });
 
@@ -6187,56 +7829,112 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                 positionsTable_->insertRow(rowIdx);
                 const QString nowText = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
                 const auto setCell = [this, rowIdx](int col, const QString &text) {
-                    positionsTable_->setItem(rowIdx, col, new QTableWidgetItem(text));
+                    auto *item = new QTableWidgetItem(text);
+                    item->setData(Qt::UserRole, text);
+                    positionsTable_->setItem(rowIdx, col, item);
                 };
                 setCell(0, symbol);
-                setCell(1, QString::number(notionalUsdt, 'f', 2));
-                setCell(2, QString::number(price, 'f', 6));
-                setCell(3, "-");
-                setCell(4, "-");
-                setCell(5, QString::number(notionalUsdt / leverage, 'f', 2));
-                setCell(6, QString::number(quantity, 'f', 6));
+                setCell(1, QString::number(sizeUsdt, 'f', 2));
+                setCell(2, QString::number(markPrice, 'f', 6));
+                setCell(3, marginRatioText);
+                setCell(4, liqText);
+                setCell(5, QString::number(marginUsdt, 'f', 2));
+                setCell(6, QString::number(rowQty, 'f', 6));
                 setCell(7, "0.00 (0.00%)");
                 setCell(8, interval);
-                setCell(9, "RSI");
+                setCell(9, indicatorDisplayName(triggerSource));
                 setCell(10, triggerText);
-                setCell(11, QString("RSI %1").arg(QString::number(rsi, 'f', 2)));
+                setCell(11, indicatorValueSummary);
                 setCell(12, openSide);
                 setCell(13, nowText);
                 setCell(14, "-");
                 setCell(15, dashboardOverridesTable_->item(row, 7) ? dashboardOverridesTable_->item(row, 7)->text() : QStringLiteral("Disabled"));
                 setCell(16, "OPEN");
-                setCell(17, QString("Auto [%1]").arg(rowConnectorCfg.key));
+                setCell(17, QString("Auto [%1] #%2").arg(rowConnectorCfg.key, openOrder.orderId));
                 positionsTable_->setSortingEnabled(sorting);
                 positionsTableMutated = true;
+                if (positionsCumulativeView_) {
+                    applyPositionsViewMode();
+                } else {
+                    refreshPositionsTableSizing();
+                }
             }
             appendDashboardPositionLog(
-                QString("%1 %2@%3 opened at %4 (RSI=%5, connector=%6)")
+                QString("%1 %2@%3 opened at %4 qty=%5 (%6, values: %7, connector=%8, orderId=%9)")
                     .arg(openSide,
                          symbol,
                          interval,
-                         QString::number(price, 'f', 6),
-                         QString::number(rsi, 'f', 2),
-                         rowConnectorCfg.key));
+                         QString::number(entryPrice, 'f', 6),
+                         QString::number(rowQty, 'f', 6),
+                         triggerText,
+                         indicatorValueSummary,
+                         rowConnectorCfg.key,
+                         openOrder.orderId));
             continue;
         }
 
         RuntimePosition &openPos = openIt.value();
-        const bool shouldCloseLong = (openPos.side == "LONG") && (rsi >= sellThreshold);
-        const bool shouldCloseShort = (openPos.side == "SHORT") && (rsi <= buyThreshold);
-        const double pnlUsdt = (openPos.side == "LONG")
-            ? (price - openPos.entryPrice) * openPos.quantity
-            : (openPos.entryPrice - price) * openPos.quantity;
-        const double marginUsed = std::max(1e-9, (openPos.entryPrice * openPos.quantity) / std::max(1.0, openPos.leverage));
-        const double pnlPct = (pnlUsdt / marginUsed) * 100.0;
+        const QString signalSource = openPos.signalSource.trimmed().toLower();
+        const auto shouldCloseBySource = [&](const QString &source, bool isLong) -> bool {
+            if (source == QStringLiteral("stoch_rsi")) {
+                if (stochRsiOk) {
+                    return isLong ? (stochRsi >= stochSellThreshold) : (stochRsi <= stochBuyThreshold);
+                }
+                if (rsiOk) {
+                    return isLong ? (rsi >= rsiSellThreshold) : (rsi <= rsiBuyThreshold);
+                }
+                return false;
+            }
+            if (source == QStringLiteral("willr")) {
+                if (willrOk) {
+                    return isLong ? (willr >= willrSellThreshold) : (willr <= willrBuyThreshold);
+                }
+                if (rsiOk) {
+                    return isLong ? (rsi >= rsiSellThreshold) : (rsi <= rsiBuyThreshold);
+                }
+                return false;
+            }
+            if (!rsiOk) {
+                return false;
+            }
+            return isLong ? (rsi >= rsiSellThreshold) : (rsi <= rsiBuyThreshold);
+        };
+        const bool shouldCloseLong = (openPos.side == "LONG") && shouldCloseBySource(signalSource, true);
+        const bool shouldCloseShort = (openPos.side == "SHORT") && shouldCloseBySource(signalSource, false);
+        const auto *liveSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
+        const auto *livePos = pickLivePosition(liveSnapshot, symbol, openPos.side);
+        if (livePos && qIsFinite(livePos->positionAmt) && std::fabs(livePos->positionAmt) > 1e-10) {
+            openPos.quantity = std::fabs(livePos->positionAmt);
+            if (qIsFinite(livePos->entryPrice) && livePos->entryPrice > 0.0) {
+                openPos.entryPrice = livePos->entryPrice;
+            }
+        }
+        const double rowQty = std::max(0.0, openPos.quantity);
+        const double markPrice = (livePos && qIsFinite(livePos->markPrice) && livePos->markPrice > 0.0)
+            ? livePos->markPrice
+            : price;
+        const double markPnlUsdt = (openPos.side == "LONG")
+            ? (markPrice - openPos.entryPrice) * rowQty
+            : (openPos.entryPrice - markPrice) * rowQty;
+        const double marginUsed = std::max(
+            1e-9,
+            (openPos.entryPrice * rowQty) / std::max(1.0, openPos.leverage));
+        const double markPnlPct = (markPnlUsdt / marginUsed) * 100.0;
+        const double sizeUsdt = std::max(0.0, rowQty * markPrice);
+        const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
+        const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
+        const QString marginRatioText = marginRatio > 0.0
+            ? QStringLiteral("%1%").arg(QString::number(marginRatio, 'f', 2))
+            : QStringLiteral("-");
+        const QString liqText = liqPrice > 0.0 ? QString::number(liqPrice, 'f', 6) : QStringLiteral("-");
 
         int targetRow = -1;
         if (positionsTable_) {
             for (int t = positionsTable_->rowCount() - 1; t >= 0; --t) {
-                const QString rowSymbol = positionsTable_->item(t, 0) ? positionsTable_->item(t, 0)->text().trimmed().toUpper() : QString();
-                const QString rowInterval = positionsTable_->item(t, 8) ? positionsTable_->item(t, 8)->text().trimmed() : QString();
-                const QString rowStatus = positionsTable_->item(t, 16) ? positionsTable_->item(t, 16)->text().trimmed().toUpper() : QString();
-                const QString rowConnectorHint = positionsTable_->item(t, 17) ? positionsTable_->item(t, 17)->text().toLower() : QString();
+                const QString rowSymbol = tableCellRaw(t, 0).trimmed().toUpper();
+                const QString rowInterval = tableCellRaw(t, 8).trimmed();
+                const QString rowStatus = tableCellRaw(t, 16).trimmed().toUpper();
+                const QString rowConnectorHint = tableCellRaw(t, 17).toLower();
                 if (rowSymbol == symbol
                     && rowInterval.compare(interval, Qt::CaseInsensitive) == 0
                     && rowStatus == "OPEN"
@@ -6248,20 +7946,38 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         }
 
         if (targetRow >= 0 && positionsTable_) {
-            auto setOrCreate = [this, targetRow](int col, const QString &text) {
+            auto setOrCreate = [this, targetRow](int col, const QString &text, bool preserveWhenUnavailable = false) {
                 QTableWidgetItem *item = positionsTable_->item(targetRow, col);
-                if (!item) {
-                    item = new QTableWidgetItem(text);
-                    positionsTable_->setItem(targetRow, col, item);
-                    return;
+                QString finalText = text;
+                if (preserveWhenUnavailable && (text.trimmed().isEmpty() || text.trimmed() == QStringLiteral("-"))) {
+                    QString existing;
+                    if (item) {
+                        const QVariant raw = item->data(Qt::UserRole);
+                        existing = raw.isValid() ? raw.toString() : item->text();
+                    }
+                    existing = existing.trimmed();
+                    if (!existing.isEmpty() && existing != QStringLiteral("-")) {
+                        finalText = existing;
+                    }
                 }
-                item->setText(text);
+                if (!item) {
+                    item = new QTableWidgetItem(finalText);
+                    positionsTable_->setItem(targetRow, col, item);
+                } else {
+                    item->setText(finalText);
+                }
+                item->setData(Qt::UserRole, finalText);
             };
-            setOrCreate(2, QString::number(price, 'f', 6));
+            setOrCreate(1, QString::number(sizeUsdt, 'f', 2));
+            setOrCreate(2, QString::number(markPrice, 'f', 6));
+            setOrCreate(3, marginRatioText, true);
+            setOrCreate(4, liqText, true);
+            setOrCreate(5, QString::number(marginUsed, 'f', 2));
+            setOrCreate(6, QString::number(rowQty, 'f', 6));
             setOrCreate(7, QString("%1 (%2%)")
-                            .arg(QString::number(pnlUsdt, 'f', 2),
-                                 QString::number(pnlPct, 'f', 2)));
-            setOrCreate(11, QString("RSI %1").arg(QString::number(rsi, 'f', 2)));
+                            .arg(QString::number(markPnlUsdt, 'f', 2),
+                                 QString::number(markPnlPct, 'f', 2)));
+            setOrCreate(11, indicatorValueSummary);
             positionsTableMutated = true;
         }
 
@@ -6269,29 +7985,118 @@ void BacktestWindow::runDashboardRuntimeCycle() {
             continue;
         }
 
+        if (!futures || !hasApiCredentials) {
+            appendDashboardPositionLog(
+                QString("%1 %2@%3 close signal deferred: %4.")
+                    .arg(openPos.side,
+                         symbol,
+                         interval,
+                         !futures ? QStringLiteral("Futures mode is required")
+                                  : QStringLiteral("missing API credentials")));
+            continue;
+        }
+
+        const QString closeOrderSide = (openPos.side == QStringLiteral("LONG")) ? QStringLiteral("SELL")
+                                                                                 : QStringLiteral("BUY");
+        const QString closePositionSide = hedgeMode ? openPos.side : QString();
+        const bool closeReduceOnly = !hedgeMode;
+        const auto closeOrder = placeFuturesCloseOrderWithFallback(
+            apiKey,
+            apiSecret,
+            symbol,
+            closeOrderSide,
+            openPos.quantity,
+            isTestnet,
+            closeReduceOnly,
+            closePositionSide,
+            10000,
+            rowConnectorCfg.baseUrl);
+        if (!closeOrder.ok) {
+            appendDashboardPositionLog(
+                QString("%1 %2@%3 close order failed (%4): %5")
+                    .arg(openPos.side, symbol, interval, rowConnectorCfg.key, closeOrder.error));
+            continue;
+        }
+
+        const double closePrice = (qIsFinite(closeOrder.avgPrice) && closeOrder.avgPrice > 0.0)
+            ? closeOrder.avgPrice
+            : price;
+        const double closeQty = (qIsFinite(closeOrder.executedQty) && closeOrder.executedQty > 0.0)
+            ? closeOrder.executedQty
+            : openPos.quantity;
+        const double effectiveCloseQty = std::max(0.0, std::min(openPos.quantity, closeQty));
+        if (effectiveCloseQty <= 0.0) {
+            appendDashboardPositionLog(
+                QString("%1 %2@%3 close order returned zero fill; keeping position open.")
+                    .arg(openPos.side, symbol, interval));
+            continue;
+        }
+        const double closeMarginUsed = std::max(
+            1e-9,
+            (openPos.entryPrice * effectiveCloseQty) / std::max(1.0, openPos.leverage));
+        const double realizedPnlUsdt = (openPos.side == "LONG")
+            ? (closePrice - openPos.entryPrice) * effectiveCloseQty
+            : (openPos.entryPrice - closePrice) * effectiveCloseQty;
+        const double realizedPnlPct = (realizedPnlUsdt / closeMarginUsed) * 100.0;
+        const bool partialClose = (effectiveCloseQty + 1e-9) < openPos.quantity;
+
         if (targetRow >= 0 && positionsTable_) {
             auto setOrCreate = [this, targetRow](int col, const QString &text) {
                 QTableWidgetItem *item = positionsTable_->item(targetRow, col);
                 if (!item) {
                     item = new QTableWidgetItem(text);
                     positionsTable_->setItem(targetRow, col, item);
-                    return;
+                } else {
+                    item->setText(text);
                 }
-                item->setText(text);
+                item->setData(Qt::UserRole, text);
             };
-            setOrCreate(14, QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
-            setOrCreate(16, "CLOSED");
+            setOrCreate(2, QString::number(closePrice, 'f', 6));
+            setOrCreate(7, QString("%1 (%2%)")
+                            .arg(QString::number(realizedPnlUsdt, 'f', 2),
+                                 QString::number(realizedPnlPct, 'f', 2)));
+            if (partialClose) {
+                const double remainingQty = std::max(0.0, openPos.quantity - effectiveCloseQty);
+                const double remainingNotional = std::max(0.0, remainingQty * closePrice);
+                setOrCreate(1, QString::number(remainingNotional, 'f', 2));
+                setOrCreate(5, QString::number(remainingNotional / std::max(1.0, openPos.leverage), 'f', 2));
+                setOrCreate(6, QString::number(remainingQty, 'f', 6));
+            } else {
+                setOrCreate(14, QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
+                setOrCreate(16, "CLOSED");
+            }
             positionsTableMutated = true;
         }
+
+        if (partialClose) {
+            openPos.quantity = std::max(0.0, openPos.quantity - effectiveCloseQty);
+            appendDashboardPositionLog(
+                QString("%1 %2@%3 partially closed at %4, qty=%5 remaining=%6, PNL=%7 USDT (%8%%), connector=%9, orderId=%10: %11")
+                    .arg(openPos.side,
+                         symbol,
+                         interval,
+                         QString::number(closePrice, 'f', 6),
+                         QString::number(effectiveCloseQty, 'f', 6),
+                         QString::number(openPos.quantity, 'f', 6),
+                         QString::number(realizedPnlUsdt, 'f', 2),
+                         QString::number(realizedPnlPct, 'f', 2),
+                         rowConnectorCfg.key,
+                         closeOrder.orderId,
+                         closeOrder.error.isEmpty() ? QStringLiteral("remaining exposure still open")
+                                                    : closeOrder.error));
+            continue;
+        }
+
         appendDashboardPositionLog(
-            QString("%1 %2@%3 closed at %4, PNL=%5 USDT (%6%%), connector=%7")
+            QString("%1 %2@%3 closed at %4, PNL=%5 USDT (%6%%), connector=%7, orderId=%8")
                 .arg(openPos.side,
                      symbol,
                      interval,
-                     QString::number(price, 'f', 6),
-                     QString::number(pnlUsdt, 'f', 2),
-                     QString::number(pnlPct, 'f', 2),
-                     rowConnectorCfg.key));
+                     QString::number(closePrice, 'f', 6),
+                     QString::number(realizedPnlUsdt, 'f', 2),
+                     QString::number(realizedPnlPct, 'f', 2),
+                     rowConnectorCfg.key,
+                     closeOrder.orderId));
         dashboardRuntimeOpenPositions_.remove(key);
     }
 
@@ -6327,9 +8132,16 @@ void BacktestWindow::runDashboardRuntimeCycle() {
     if (positionsTable_ && chartPnlActiveLabel_ && chartPnlClosedLabel_) {
         double activePnl = 0.0;
         double closedPnl = 0.0;
+        const auto rawCellText = [](const QTableWidgetItem *item) -> QString {
+            if (!item) {
+                return {};
+            }
+            const QVariant raw = item->data(Qt::UserRole);
+            return raw.isValid() ? raw.toString() : item->text();
+        };
         for (int row = 0; row < positionsTable_->rowCount(); ++row) {
-            const QString pnlText = positionsTable_->item(row, 7) ? positionsTable_->item(row, 7)->text() : QString();
-            const QString status = positionsTable_->item(row, 16) ? positionsTable_->item(row, 16)->text().trimmed().toUpper() : QString();
+            const QString pnlText = rawCellText(positionsTable_->item(row, 7));
+            const QString status = rawCellText(positionsTable_->item(row, 16)).trimmed().toUpper();
             bool ok = false;
             const double pnlValue = firstNumberInText(pnlText, &ok);
             if (!ok) {
@@ -6345,6 +8157,9 @@ void BacktestWindow::runDashboardRuntimeCycle() {
         chartPnlClosedLabel_->setText(QString("Total PNL Closed Positions: %1 USDT").arg(QString::number(closedPnl, 'f', 2)));
     }
     if (positionsTableMutated) {
-        refreshPositionsTableSizing();
+        applyPositionsViewMode();
+    } else if (positionsCumulativeView_) {
+        // Keep aggregation labels (trade counts / summed values) fresh while bot is running.
+        applyPositionsViewMode();
     }
 }

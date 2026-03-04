@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QList>
 #include <QPair>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -39,6 +40,55 @@ public:
         QString error;
     };
 
+    struct FuturesPosition {
+        QString symbol;
+        QString positionSide;
+        double positionAmt = 0.0;
+        double notional = 0.0;
+        double initialMargin = 0.0;
+        double positionInitialMargin = 0.0;
+        double openOrderMargin = 0.0;
+        double isolatedWallet = 0.0;
+        double isolatedMargin = 0.0;
+        double maintMargin = 0.0;
+        double marginBalance = 0.0;
+        double walletBalance = 0.0;
+        double marginRatio = 0.0;
+        double leverage = 0.0;
+        double unrealizedProfit = 0.0;
+        double entryPrice = 0.0;
+        double markPrice = 0.0;
+        double liquidationPrice = 0.0;
+    };
+
+    struct FuturesPositionsResult {
+        bool ok = false;
+        QVector<FuturesPosition> positions;
+        QString error;
+    };
+
+    struct FuturesSymbolFilters {
+        bool ok = false;
+        double stepSize = 0.0;
+        double minQty = 0.0;
+        double maxQty = 0.0;
+        double minNotional = 0.0;
+        int quantityPrecision = 0;
+        QString error;
+    };
+
+    struct FuturesOrderResult {
+        bool ok = false;
+        QString symbol;
+        QString side;
+        QString positionSide;
+        QString orderId;
+        QString status;
+        double executedQty = 0.0;
+        double avgPrice = 0.0;
+        QString error;
+    };
+
     static BalanceResult fetchUsdtBalance(
         const QString &apiKey,
         const QString &apiSecret,
@@ -61,6 +111,31 @@ public:
         bool futures,
         bool testnet,
         int limit = 300,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesPositionsResult fetchOpenFuturesPositions(
+        const QString &apiKey,
+        const QString &apiSecret,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesSymbolFilters fetchFuturesSymbolFilters(
+        const QString &symbol,
+        bool testnet,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesOrderResult placeFuturesMarketOrder(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        const QString &side,
+        double quantity,
+        bool testnet,
+        bool reduceOnly = false,
+        const QString &positionSide = {},
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
