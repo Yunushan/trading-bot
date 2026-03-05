@@ -12,6 +12,10 @@ from pathlib import Path
 
 START_MARKER = "<!-- LOC-SNAPSHOT:START -->"
 END_MARKER = "<!-- LOC-SNAPSHOT:END -->"
+SNAPSHOT_TIME_PATTERN = re.compile(
+    r"^- Snapshot date: `(\d{2}\.\d{2}\.\d{4}) GMT\+3 Time \d{2}:\d{2}:\d{2}`$",
+    flags=re.MULTILINE,
+)
 
 # Count only tracked source/config/script-like files.
 COUNTED_EXTENSIONS = {
@@ -75,6 +79,14 @@ def _count_lines(path: Path) -> tuple[int, int]:
     return total, non_empty
 
 
+def _normalized_snapshot_time(text: str) -> str:
+    """Normalize volatile time-of-day so --check stays meaningful."""
+    return SNAPSHOT_TIME_PATTERN.sub(
+        r"- Snapshot date: `\1 GMT+3 Time <time>`",
+        text,
+    )
+
+
 def build_snapshot_block(repo_root: Path) -> str:
     tracked = _tracked_files(repo_root)
     total = 0
@@ -84,10 +96,14 @@ def build_snapshot_block(repo_root: Path) -> str:
         total += t
         non_empty += n
 
-    today = dt.date.today().isoformat()
+    gmt_plus_3 = dt.timezone(dt.timedelta(hours=3))
+    snapshot_dt = dt.datetime.now(gmt_plus_3)
+    snapshot_label = (
+        f"{snapshot_dt.strftime('%d.%m.%Y')} GMT+3 Time {snapshot_dt.strftime('%H:%M:%S')}"
+    )
     return "\n".join(
         [
-            f"- Snapshot date: `{today}`",
+            f"- Snapshot date: `{snapshot_label}`",
             f"- Total tracked code/config/script lines: `{total:,}`",
             f"- Non-empty tracked code/config/script lines (SLOC-style): `{non_empty:,}`",
             f"- Counting scope: {COUNT_SCOPE_TEXT}",
@@ -140,6 +156,11 @@ def main() -> int:
 
     if args.check:
         if changed:
+            original = readme_path.read_text(encoding="utf-8")
+            # Ignore time-only drift; still enforce date, counts, and scope text.
+            if _normalized_snapshot_time(original) == _normalized_snapshot_time(updated):
+                print("LOC snapshot is up-to-date.")
+                return 0
             print("LOC snapshot is outdated.")
             return 1
         print("LOC snapshot is up-to-date.")
@@ -155,4 +176,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
