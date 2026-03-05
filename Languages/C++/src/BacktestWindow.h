@@ -82,6 +82,7 @@ private:
     void updateDashboardStopLossWidgetState();
     void setDashboardRuntimeControlsEnabled(bool enabled);
     void applyPositionsViewMode();
+    void refreshPositionsSummaryLabels();
     bool openExternalUrl(const QString &url);
 
     QListWidget *symbolList_;
@@ -180,6 +181,14 @@ private:
     QLabel *chartPnlClosedLabel_;
     QLabel *chartBotStatusLabel_;
     QLabel *chartBotTimeLabel_;
+    QLabel *positionsPnlActiveLabel_;
+    QLabel *positionsPnlClosedLabel_;
+    QLabel *positionsTotalBalanceLabel_;
+    QLabel *positionsAvailableBalanceLabel_;
+    QLabel *positionsBotStatusLabel_;
+    QLabel *positionsBotTimeLabel_;
+    double positionsLastTotalBalanceUsdt_;
+    double positionsLastAvailableBalanceUsdt_;
     QComboBox *positionsViewCombo_;
     bool positionsCumulativeView_ = false;
     QTableWidget *positionsTable_;

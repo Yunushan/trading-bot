@@ -2294,6 +2294,14 @@ BacktestWindow::BacktestWindow(QWidget *parent)
       chartPnlClosedLabel_(nullptr),
       chartBotStatusLabel_(nullptr),
       chartBotTimeLabel_(nullptr),
+      positionsPnlActiveLabel_(nullptr),
+      positionsPnlClosedLabel_(nullptr),
+      positionsTotalBalanceLabel_(nullptr),
+      positionsAvailableBalanceLabel_(nullptr),
+      positionsBotStatusLabel_(nullptr),
+      positionsBotTimeLabel_(nullptr),
+      positionsLastTotalBalanceUsdt_(std::numeric_limits<double>::quiet_NaN()),
+      positionsLastAvailableBalanceUsdt_(std::numeric_limits<double>::quiet_NaN()),
       positionsViewCombo_(nullptr),
       positionsTable_(nullptr),
       dashboardLeadTraderEnableCheck_(nullptr),
@@ -2714,7 +2722,9 @@ void BacktestWindow::refreshDashboardBalance() {
 
     if (dashboardBalanceLabel_) {
         const double totalValue = std::max(0.0, (result.totalUsdtBalance > 0.0) ? result.totalUsdtBalance : result.usdtBalance);
-        const double availableValue = std::max(0.0, result.availableUsdtBalance);
+        const double availableValue = std::max(0.0, (result.availableUsdtBalance > 0.0) ? result.availableUsdtBalance : totalValue);
+        positionsLastTotalBalanceUsdt_ = totalValue;
+        positionsLastAvailableBalanceUsdt_ = availableValue;
         const QString totalText = QString::number(totalValue, 'f', 3);
         const QString availableText = QString::number(availableValue, 'f', 3);
         if (qAbs(totalValue - availableValue) > 1e-6) {
@@ -2724,6 +2734,7 @@ void BacktestWindow::refreshDashboardBalance() {
         }
         dashboardBalanceLabel_->setStyleSheet("color: #22c55e; font-weight: 700;");
     }
+    refreshPositionsSummaryLabels();
     resetButton();
 }
 
@@ -4809,6 +4820,12 @@ QWidget *BacktestWindow::createChartTab() {
 QWidget *BacktestWindow::createPositionsTab() {
     auto *page = new QWidget(this);
     page->setObjectName("positionsPage");
+    positionsPnlActiveLabel_ = nullptr;
+    positionsPnlClosedLabel_ = nullptr;
+    positionsTotalBalanceLabel_ = nullptr;
+    positionsAvailableBalanceLabel_ = nullptr;
+    positionsBotStatusLabel_ = nullptr;
+    positionsBotTimeLabel_ = nullptr;
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(12);
@@ -4855,6 +4872,12 @@ QWidget *BacktestWindow::createPositionsTab() {
     auto *availableBalanceLabel = new QLabel("Available Balance: --", statusWidget);
     auto *botStatusLabel = new QLabel("Bot Status: OFF", statusWidget);
     auto *botTimeLabel = new QLabel("Bot Active Time: --", statusWidget);
+    positionsPnlActiveLabel_ = pnlActiveLabel;
+    positionsPnlClosedLabel_ = pnlClosedLabel;
+    positionsTotalBalanceLabel_ = totalBalanceLabel;
+    positionsAvailableBalanceLabel_ = availableBalanceLabel;
+    positionsBotStatusLabel_ = botStatusLabel;
+    positionsBotTimeLabel_ = botTimeLabel;
 
     for (QLabel *lbl : {pnlActiveLabel, pnlClosedLabel, totalBalanceLabel, availableBalanceLabel}) {
         lbl->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -4950,6 +4973,23 @@ QWidget *BacktestWindow::createPositionsTab() {
             updateStatusMessage(QString("Positions refresh failed: %1").arg(livePositions.error));
             return;
         }
+        const auto balance = BinanceRestClient::fetchUsdtBalance(
+            apiKey,
+            apiSecret,
+            true,
+            isTestnet,
+            10000,
+            connectorCfg.baseUrl);
+        if (balance.ok) {
+            const double totalBalance = std::max(
+                0.0,
+                (balance.totalUsdtBalance > 0.0) ? balance.totalUsdtBalance : balance.usdtBalance);
+            const double availableBalance = std::max(
+                0.0,
+                (balance.availableUsdtBalance > 0.0) ? balance.availableUsdtBalance : totalBalance);
+            positionsLastTotalBalanceUsdt_ = totalBalance;
+            positionsLastAvailableBalanceUsdt_ = availableBalance;
+        }
 
         QSet<QString> liveSymbols;
         for (const auto &pos : livePositions.positions) {
@@ -5011,9 +5051,8 @@ QWidget *BacktestWindow::createPositionsTab() {
         const int rowCount = table->rowCount();
         table->setRowCount(0);
         dashboardRuntimeOpenPositions_.clear();
-        botStatusLabel->setText("Bot Status: OFF");
-        botTimeLabel->setText("Bot Active Time: --");
         updateStatusMessage(QString("Market close-all simulated for %1 row(s).").arg(rowCount));
+        applyPositionsViewMode();
     });
     connect(positionsViewCombo, &QComboBox::currentTextChanged, this, [=](const QString &viewText) {
         updateStatusMessage(QString("Positions view changed to %1.").arg(viewText));
@@ -5068,12 +5107,14 @@ QWidget *BacktestWindow::createPositionsTab() {
             table->removeRow(rowIdx);
         }
         updateStatusMessage(QString("Positions cleared: %1 selected row(s).").arg(rows.size()));
+        applyPositionsViewMode();
     });
     connect(clearAllBtn, &QPushButton::clicked, this, [=]() {
         const int rowCount = table->rowCount();
         table->setRowCount(0);
         dashboardRuntimeOpenPositions_.clear();
         updateStatusMessage(QString("Positions cleared: %1 total row(s).").arg(rowCount));
+        applyPositionsViewMode();
     });
 
     applyPositionsViewMode();
@@ -6169,6 +6210,7 @@ void BacktestWindow::handleRunBacktest() {
     runButton_->setEnabled(false);
     stopButton_->setEnabled(true);
     updateStatusMessage("Running backtest...");
+    refreshPositionsSummaryLabels();
 
     const int currentRow = resultsTable_->rowCount();
     resultsTable_->insertRow(currentRow);
@@ -6214,6 +6256,7 @@ void BacktestWindow::handleStopBacktest() {
     runButton_->setEnabled(true);
     stopButton_->setEnabled(false);
     updateStatusMessage("Backtest stopped.");
+    refreshPositionsSummaryLabels();
 }
 
 void BacktestWindow::updateBotActiveTime() {
@@ -6230,6 +6273,7 @@ void BacktestWindow::updateBotActiveTime() {
     if (dashboardRuntimeActive_ && dashboardBotTimeLabel_) {
         dashboardBotTimeLabel_->setText(formatDuration(elapsed.count()));
     }
+    refreshPositionsSummaryLabels();
 }
 
 void BacktestWindow::ensureBotTimer(bool running) {
@@ -6274,6 +6318,90 @@ void BacktestWindow::refreshPositionsTableSizing() {
         for (int i = 0; i < header->count(); ++i) {
             header->setSectionResizeMode(i, QHeaderView::Interactive);
         }
+    }
+}
+
+void BacktestWindow::refreshPositionsSummaryLabels() {
+    double activePnl = 0.0;
+    double closedPnl = 0.0;
+    if (positionsTable_) {
+        const auto rawCellText = [](const QTableWidgetItem *item) -> QString {
+            if (!item) {
+                return {};
+            }
+            const QVariant raw = item->data(Qt::UserRole);
+            return raw.isValid() ? raw.toString() : item->text();
+        };
+        for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+            const QString pnlText = rawCellText(positionsTable_->item(row, 7));
+            const QString status = rawCellText(positionsTable_->item(row, 16)).trimmed().toUpper();
+            bool ok = false;
+            const double pnlValue = firstNumberInText(pnlText, &ok);
+            if (!ok || !qIsFinite(pnlValue)) {
+                continue;
+            }
+            if (status == QStringLiteral("OPEN")) {
+                activePnl += pnlValue;
+            } else if (status == QStringLiteral("CLOSED")) {
+                closedPnl += pnlValue;
+            }
+        }
+    }
+
+    const QString activePnlText = QStringLiteral("Total PNL Active Positions: %1 USDT")
+                                      .arg(QString::number(activePnl, 'f', 2));
+    const QString closedPnlText = QStringLiteral("Total PNL Closed Positions: %1 USDT")
+                                      .arg(QString::number(closedPnl, 'f', 2));
+    if (chartPnlActiveLabel_) {
+        chartPnlActiveLabel_->setText(activePnlText);
+    }
+    if (chartPnlClosedLabel_) {
+        chartPnlClosedLabel_->setText(closedPnlText);
+    }
+    if (positionsPnlActiveLabel_) {
+        positionsPnlActiveLabel_->setText(activePnlText);
+    }
+    if (positionsPnlClosedLabel_) {
+        positionsPnlClosedLabel_->setText(closedPnlText);
+    }
+
+    if (positionsTotalBalanceLabel_) {
+        if (qIsFinite(positionsLastTotalBalanceUsdt_) && positionsLastTotalBalanceUsdt_ >= 0.0) {
+            positionsTotalBalanceLabel_->setText(
+                QStringLiteral("Total Balance: %1 USDT")
+                    .arg(QString::number(positionsLastTotalBalanceUsdt_, 'f', 3)));
+        } else {
+            positionsTotalBalanceLabel_->setText(QStringLiteral("Total Balance: --"));
+        }
+    }
+    if (positionsAvailableBalanceLabel_) {
+        if (qIsFinite(positionsLastAvailableBalanceUsdt_) && positionsLastAvailableBalanceUsdt_ >= 0.0) {
+            positionsAvailableBalanceLabel_->setText(
+                QStringLiteral("Available Balance: %1 USDT")
+                    .arg(QString::number(positionsLastAvailableBalanceUsdt_, 'f', 3)));
+        } else {
+            positionsAvailableBalanceLabel_->setText(QStringLiteral("Available Balance: --"));
+        }
+    }
+
+    QString statusText = botStatusLabel_ ? botStatusLabel_->text().trimmed() : QStringLiteral("Bot Status: OFF");
+    if (!statusText.startsWith(QStringLiteral("Bot Status:"), Qt::CaseInsensitive)) {
+        statusText = QStringLiteral("Bot Status: %1").arg(statusText);
+    }
+    const bool isOn = statusText.contains(QStringLiteral("ON"), Qt::CaseInsensitive);
+    if (positionsBotStatusLabel_) {
+        positionsBotStatusLabel_->setText(statusText);
+        positionsBotStatusLabel_->setStyleSheet(
+            isOn ? QStringLiteral("color: #16a34a; font-weight: 700;")
+                 : QStringLiteral("color: #ef4444; font-weight: 700;"));
+    }
+
+    QString activeTimeText = botTimeLabel_ ? botTimeLabel_->text().trimmed() : QStringLiteral("Bot Active Time: --");
+    if (!activeTimeText.startsWith(QStringLiteral("Bot Active Time:"), Qt::CaseInsensitive)) {
+        activeTimeText = QStringLiteral("Bot Active Time: %1").arg(activeTimeText);
+    }
+    if (positionsBotTimeLabel_) {
+        positionsBotTimeLabel_->setText(activeTimeText);
     }
 }
 
@@ -6334,6 +6462,7 @@ void BacktestWindow::applyPositionsViewMode() {
     if (!cumulativeMode) {
         positionsTable_->setSortingEnabled(sortingWasEnabled);
         refreshPositionsTableSizing();
+        refreshPositionsSummaryLabels();
         return;
     }
 
@@ -6489,6 +6618,7 @@ void BacktestWindow::applyPositionsViewMode() {
 
     positionsTable_->setSortingEnabled(sortingWasEnabled);
     refreshPositionsTableSizing();
+    refreshPositionsSummaryLabels();
 }
 
 void BacktestWindow::updateDashboardStopLossWidgetState() {
@@ -7378,11 +7508,20 @@ void BacktestWindow::runDashboardRuntimeCycle() {
                     QString("Balance fetch failed (%1): %2")
                         .arg(defaultConnectorText, balance.error));
             } else {
-                const double candidate = balance.availableUsdtBalance > 0.0
-                    ? balance.availableUsdtBalance
-                    : (balance.totalUsdtBalance > 0.0 ? balance.totalUsdtBalance : balance.usdtBalance);
-                if (qIsFinite(candidate) && candidate > 0.0) {
-                    availableUsdt = candidate;
+                const double totalBalance = std::max(
+                    0.0,
+                    (balance.totalUsdtBalance > 0.0) ? balance.totalUsdtBalance : balance.usdtBalance);
+                const double availableBalance = std::max(
+                    0.0,
+                    (balance.availableUsdtBalance > 0.0) ? balance.availableUsdtBalance : totalBalance);
+                if (qIsFinite(totalBalance) && totalBalance >= 0.0) {
+                    positionsLastTotalBalanceUsdt_ = totalBalance;
+                }
+                if (qIsFinite(availableBalance) && availableBalance >= 0.0) {
+                    positionsLastAvailableBalanceUsdt_ = availableBalance;
+                }
+                if (qIsFinite(availableBalance) && availableBalance > 0.0) {
+                    availableUsdt = availableBalance;
                 }
             }
         }
@@ -8129,33 +8268,7 @@ void BacktestWindow::runDashboardRuntimeCycle() {
     }
     refreshDashboardWaitingQueueTable();
 
-    if (positionsTable_ && chartPnlActiveLabel_ && chartPnlClosedLabel_) {
-        double activePnl = 0.0;
-        double closedPnl = 0.0;
-        const auto rawCellText = [](const QTableWidgetItem *item) -> QString {
-            if (!item) {
-                return {};
-            }
-            const QVariant raw = item->data(Qt::UserRole);
-            return raw.isValid() ? raw.toString() : item->text();
-        };
-        for (int row = 0; row < positionsTable_->rowCount(); ++row) {
-            const QString pnlText = rawCellText(positionsTable_->item(row, 7));
-            const QString status = rawCellText(positionsTable_->item(row, 16)).trimmed().toUpper();
-            bool ok = false;
-            const double pnlValue = firstNumberInText(pnlText, &ok);
-            if (!ok) {
-                continue;
-            }
-            if (status == "OPEN") {
-                activePnl += pnlValue;
-            } else if (status == "CLOSED") {
-                closedPnl += pnlValue;
-            }
-        }
-        chartPnlActiveLabel_->setText(QString("Total PNL Active Positions: %1 USDT").arg(QString::number(activePnl, 'f', 2)));
-        chartPnlClosedLabel_->setText(QString("Total PNL Closed Positions: %1 USDT").arg(QString::number(closedPnl, 'f', 2)));
-    }
+    refreshPositionsSummaryLabels();
     if (positionsTableMutated) {
         applyPositionsViewMode();
     } else if (positionsCumulativeView_) {
