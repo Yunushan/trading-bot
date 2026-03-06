@@ -1,6 +1,7 @@
 #include "BacktestWindow.h"
 #include "BinanceRestClient.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -30,14 +31,17 @@
 #include <QFile>
 #include <QFontMetrics>
 #include <QEventLoop>
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPaintEvent>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QStandardPaths>
 #include <QVariant>
 #include <QScrollArea>
@@ -194,6 +198,154 @@ DashboardTemplatePreset dashboardTemplatePresetForKey(const QString &templateKey
     }
     return preset;
 }
+
+class LanguageSwitchSplash final : public QWidget {
+public:
+    explicit LanguageSwitchSplash(const QString &statusText, QWidget *parent = nullptr)
+        : QWidget(parent),
+          statusText_(statusText.trimmed().isEmpty() ? QStringLiteral("Loading…") : statusText.trimmed()),
+          logoPixmap_(QStringLiteral(":/icons/crypto_forex_logo.png")) {
+        setWindowFlags(
+            Qt::FramelessWindowHint
+            | Qt::WindowStaysOnTopHint
+            | Qt::Tool
+            | Qt::WindowDoesNotAcceptFocus
+            | Qt::NoDropShadowWindowHint);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        setFixedSize(420, 320);
+
+        if (!logoPixmap_.isNull()) {
+            logoPixmap_ = logoPixmap_.scaled(
+                72,
+                72,
+                Qt::KeepAspectRatio,
+                Qt::SmoothTransformation);
+        }
+
+        if (QScreen *screen = QGuiApplication::primaryScreen()) {
+            const QRect geo = screen->geometry();
+            move(
+                geo.x() + (geo.width() - width()) / 2,
+                geo.y() + (geo.height() - height()) / 2);
+        }
+
+        spinnerTimer_ = new QTimer(this);
+        spinnerTimer_->setInterval(40);
+        connect(spinnerTimer_, &QTimer::timeout, this, [this]() {
+            spinnerAngle_ = (spinnerAngle_ + 8) % 360;
+            update();
+        });
+        spinnerTimer_->start();
+
+        show();
+        raise();
+        activateWindow();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 30);
+    }
+
+    void setStatusText(const QString &statusText) {
+        statusText_ = statusText.trimmed().isEmpty() ? QStringLiteral("Loading…") : statusText.trimmed();
+        update();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        Q_UNUSED(event);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const qreal w = width();
+        const qreal h = height();
+        const QRectF panelRect(0, 0, w, h);
+        QPainterPath panelPath;
+        panelPath.addRoundedRect(panelRect, 24.0, 24.0);
+        painter.setClipPath(panelPath);
+
+        QLinearGradient bgGrad(0, 0, 0, h);
+        bgGrad.setColorAt(0.0, QColor(16, 22, 32, 245));
+        bgGrad.setColorAt(1.0, QColor(10, 14, 22, 250));
+        painter.fillRect(rect(), bgGrad);
+
+        painter.setClipping(false);
+        QPen borderPen(QColor(56, 189, 248, 80));
+        borderPen.setWidthF(1.5);
+        painter.setPen(borderPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(QRectF(0.75, 0.75, w - 1.5, h - 1.5), 24.0, 24.0);
+
+        const QRectF accentRect(40.0, 0.0, w - 80.0, 3.0);
+        QLinearGradient accentGrad(40.0, 0.0, w - 40.0, 0.0);
+        accentGrad.setColorAt(0.0, QColor(56, 189, 248, 0));
+        accentGrad.setColorAt(0.3, QColor(56, 189, 248, 180));
+        accentGrad.setColorAt(0.5, QColor(52, 211, 153, 200));
+        accentGrad.setColorAt(0.7, QColor(56, 189, 248, 180));
+        accentGrad.setColorAt(1.0, QColor(56, 189, 248, 0));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(accentGrad);
+        painter.drawRoundedRect(accentRect, 1.5, 1.5);
+
+        int cy = 40;
+        if (!logoPixmap_.isNull()) {
+            painter.drawPixmap((width() - logoPixmap_.width()) / 2, cy, logoPixmap_);
+            cy += 88;
+        } else {
+            cy += 20;
+        }
+
+        QFont titleFont(QStringLiteral("Segoe UI"), 18, QFont::Bold);
+        painter.setFont(titleFont);
+        painter.setPen(QColor(230, 237, 243));
+        const QString titleText = QGuiApplication::applicationDisplayName().trimmed().isEmpty()
+            ? QStringLiteral("Trading Bot")
+            : QGuiApplication::applicationDisplayName();
+        painter.drawText(
+            QRectF(0, cy, w, 30),
+            int(Qt::AlignHCenter | Qt::AlignTop),
+            titleText);
+        cy += 36;
+
+        painter.setFont(QFont(QStringLiteral("Segoe UI"), 11));
+        painter.setPen(QColor(148, 163, 184));
+        painter.drawText(QRectF(0, cy, w, 22), int(Qt::AlignHCenter | Qt::AlignTop), statusText_);
+        cy += 34;
+
+        const QRectF spinnerRect((w - 44.0) / 2.0, cy, 44.0, 44.0);
+        QPen trackPen(QColor(148, 163, 184, 40));
+        trackPen.setWidthF(3.0);
+        trackPen.setCapStyle(Qt::RoundCap);
+        painter.setPen(trackPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(spinnerRect);
+
+        QPainterPath arcPath;
+        arcPath.arcMoveTo(spinnerRect, spinnerAngle_);
+        arcPath.arcTo(spinnerRect, spinnerAngle_, 100.0);
+        QPen arcPen(QColor(56, 189, 248));
+        arcPen.setWidthF(3.0);
+        arcPen.setCapStyle(Qt::RoundCap);
+        painter.setPen(arcPen);
+        painter.drawPath(arcPath);
+
+        QPainterPath arcPath2;
+        const int angle2 = (spinnerAngle_ + 180) % 360;
+        arcPath2.arcMoveTo(spinnerRect, angle2);
+        arcPath2.arcTo(spinnerRect, angle2, 60.0);
+        QPen arcPen2(QColor(52, 211, 153, 180));
+        arcPen2.setWidthF(3.0);
+        arcPen2.setCapStyle(Qt::RoundCap);
+        painter.setPen(arcPen2);
+        painter.drawPath(arcPath2);
+    }
+
+private:
+    QString statusText_;
+    QPixmap logoPixmap_;
+    QTimer *spinnerTimer_ = nullptr;
+    int spinnerAngle_ = 0;
+};
 
 class NativeKlineChartWidget final : public QWidget {
 public:
@@ -884,6 +1036,241 @@ QStringList dependencyProjectRoots() {
     addAncestors(QCoreApplication::applicationDirPath());
     addAncestors(QDir::currentPath());
     return roots;
+}
+
+QString existingFilePath(const QString &pathValue) {
+    const QFileInfo info(QDir::cleanPath(pathValue.trimmed()));
+    if (!info.exists() || !info.isFile()) {
+        return QString();
+    }
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+
+QString findFirstExistingFile(const QStringList &rootCandidates, const QStringList &relativeCandidates) {
+    for (const QString &rootPath : rootCandidates) {
+        const QDir rootDir(rootPath);
+        for (const QString &relativePath : relativeCandidates) {
+            const QString resolved = existingFilePath(rootDir.filePath(relativePath));
+            if (!resolved.isEmpty()) {
+                return resolved;
+            }
+        }
+    }
+    return QString();
+}
+
+QStringList pythonRuntimeRoots() {
+    QStringList roots = dependencyProjectRoots();
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    appendUniquePath(roots, env.value(QStringLiteral("TB_PROJECT_ROOT")).trimmed(), true);
+    return roots;
+}
+
+QStringList pythonInterpreterCandidatesForScript(const QString &scriptPath) {
+    QStringList programs;
+    const QFileInfo scriptInfo(scriptPath);
+    const QDir scriptDir(scriptInfo.absolutePath());
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+
+    auto appendProgram = [&programs](const QString &candidate, bool searchPath = false) {
+        QString resolved;
+        if (searchPath) {
+            resolved = QStandardPaths::findExecutable(candidate.trimmed());
+        } else {
+            resolved = existingFilePath(candidate);
+        }
+        if (resolved.isEmpty()) {
+            return;
+        }
+        if (!programs.contains(resolved, Qt::CaseInsensitive)) {
+            programs.push_back(resolved);
+        }
+    };
+
+    appendProgram(scriptDir.filePath(QStringLiteral(".venv/Scripts/pythonw.exe")));
+    appendProgram(scriptDir.filePath(QStringLiteral(".venv/Scripts/python.exe")));
+    appendProgram(scriptDir.filePath(QStringLiteral(".venv/bin/python3")));
+    appendProgram(scriptDir.filePath(QStringLiteral(".venv/bin/python")));
+    appendProgram(env.value(QStringLiteral("PYTHON_EXECUTABLE")).trimmed());
+
+#ifdef Q_OS_WIN
+    appendProgram(QStringLiteral("pythonw.exe"), true);
+    appendProgram(QStringLiteral("pythonw"), true);
+    appendProgram(QStringLiteral("python.exe"), true);
+    appendProgram(QStringLiteral("python"), true);
+    appendProgram(QStringLiteral("py.exe"), true);
+    appendProgram(QStringLiteral("py"), true);
+#else
+    appendProgram(QStringLiteral("python3"), true);
+    appendProgram(QStringLiteral("python"), true);
+#endif
+
+    return programs;
+}
+
+QProcessEnvironment pythonLaunchEnvironment() {
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("TB_CPP_EXE_DIR"), QCoreApplication::applicationDirPath());
+    env.insert(QStringLiteral("TB_CPP_EXE_PATH"), QCoreApplication::applicationFilePath());
+    env.remove(QStringLiteral("QT_PLUGIN_PATH"));
+    env.remove(QStringLiteral("QT_QPA_PLATFORM_PLUGIN_PATH"));
+    env.remove(QStringLiteral("QML_IMPORT_PATH"));
+    env.remove(QStringLiteral("QML2_IMPORT_PATH"));
+    env.remove(QStringLiteral("QT_CONF_PATH"));
+    env.remove(QStringLiteral("QT_QPA_FONTDIR"));
+    env.remove(QStringLiteral("QT_QPA_PLATFORMTHEME"));
+    env.remove(QStringLiteral("QTWEBENGINEPROCESS_PATH"));
+    env.remove(QStringLiteral("QTWEBENGINE_RESOURCES_PATH"));
+    env.remove(QStringLiteral("QTWEBENGINE_LOCALES_PATH"));
+    env.insert(QStringLiteral("BOT_DISABLE_SPLASH"), QStringLiteral("0"));
+    if (env.value(QStringLiteral("TB_PROJECT_ROOT")).trimmed().isEmpty()) {
+        const QStringList roots = pythonRuntimeRoots();
+        for (const QString &rootPath : roots) {
+            if (QFileInfo::exists(QDir(rootPath).filePath(QStringLiteral("Languages")))) {
+                env.insert(QStringLiteral("TB_PROJECT_ROOT"), rootPath);
+                break;
+            }
+        }
+    }
+    return env;
+}
+
+bool tryStartDetachedProgram(
+    const QString &program,
+    const QStringList &arguments,
+    const QString &workingDirectory,
+    const QProcessEnvironment &environment,
+    QStringList *attemptsOut,
+    const QString &label) {
+    if (program.trimmed().isEmpty()) {
+        return false;
+    }
+    qint64 pid = 0;
+    QProcess process;
+    process.setProgram(program);
+    process.setArguments(arguments);
+    process.setWorkingDirectory(workingDirectory);
+    process.setProcessEnvironment(environment);
+    const bool ok = process.startDetached(&pid);
+    if (ok) {
+        return true;
+    }
+    if (attemptsOut != nullptr) {
+        const QString renderedArgs = arguments.isEmpty() ? QString() : QStringLiteral(" %1").arg(arguments.join(' '));
+        const QString descriptor = label.trimmed().isEmpty()
+            ? QStringLiteral("%1%2").arg(program, renderedArgs)
+            : label.trimmed();
+        attemptsOut->push_back(
+            QStringLiteral("%1 (cwd: %2)").arg(descriptor, workingDirectory.trimmed().isEmpty() ? QDir::currentPath() : workingDirectory));
+    }
+    return false;
+}
+
+bool launchPythonRuntime(QString *errorOut = nullptr) {
+    const QStringList roots = pythonRuntimeRoots();
+    const QProcessEnvironment launchEnv = pythonLaunchEnvironment();
+    QStringList failedAttempts;
+
+    const QString hintedFrozenExe = existingFilePath(launchEnv.value(QStringLiteral("TB_PY_FROZEN_EXE")).trimmed());
+    if (!hintedFrozenExe.isEmpty()) {
+        const QFileInfo hintedInfo(hintedFrozenExe);
+        if (tryStartDetachedProgram(
+                hintedFrozenExe,
+                {QStringLiteral("--direct")},
+                hintedInfo.absolutePath(),
+                launchEnv,
+                &failedAttempts,
+                QStringLiteral("Hinted Python runtime"))) {
+            return true;
+        }
+    }
+
+    const QString hintedSourceScript = existingFilePath(launchEnv.value(QStringLiteral("TB_PY_SOURCE_SCRIPT")).trimmed());
+    const QString hintedSourcePython = existingFilePath(launchEnv.value(QStringLiteral("TB_PY_SOURCE_PYTHON")).trimmed());
+    QString hintedSourceWorkdir = launchEnv.value(QStringLiteral("TB_PY_SOURCE_WORKDIR")).trimmed();
+    if (hintedSourceWorkdir.isEmpty() && !hintedSourceScript.isEmpty()) {
+        hintedSourceWorkdir = QFileInfo(hintedSourceScript).absolutePath();
+    }
+    if (!hintedSourceScript.isEmpty() && !hintedSourcePython.isEmpty()) {
+        if (tryStartDetachedProgram(
+                hintedSourcePython,
+                {hintedSourceScript, QStringLiteral("--direct")},
+                hintedSourceWorkdir,
+                launchEnv,
+                &failedAttempts,
+                QStringLiteral("Hinted Python source runtime"))) {
+            return true;
+        }
+    }
+
+#ifdef Q_OS_WIN
+    const QStringList packagedRelativeCandidates = {
+        QStringLiteral("Trading-Bot-Python.exe"),
+        QStringLiteral("Trading-Bot-Python-arm64.exe"),
+        QStringLiteral("Binance-Trading-Bot.exe"),
+        QStringLiteral("dist/Trading-Bot-Python.exe"),
+        QStringLiteral("dist/Trading-Bot-Python-arm64.exe"),
+        QStringLiteral("dist/Binance-Trading-Bot.exe"),
+        QStringLiteral("Languages/Python/dist/Trading-Bot-Python.exe"),
+        QStringLiteral("Languages/Python/dist/Trading-Bot-Python-arm64.exe"),
+        QStringLiteral("Languages/Python/dist/Binance-Trading-Bot.exe"),
+    };
+#else
+    const QStringList packagedRelativeCandidates = {
+        QStringLiteral("Trading-Bot-Python"),
+        QStringLiteral("dist/Trading-Bot-Python"),
+        QStringLiteral("Languages/Python/dist/Trading-Bot-Python"),
+    };
+#endif
+
+    const QString packagedRuntime = findFirstExistingFile(roots, packagedRelativeCandidates);
+    if (!packagedRuntime.isEmpty()) {
+        const QFileInfo packagedInfo(packagedRuntime);
+        if (tryStartDetachedProgram(
+                packagedRuntime,
+                {QStringLiteral("--direct")},
+                packagedInfo.absolutePath(),
+                launchEnv,
+                &failedAttempts,
+                QStringLiteral("Packaged Python runtime"))) {
+            return true;
+        }
+    }
+
+    const QString scriptPath = findFirstExistingFile(roots, {QStringLiteral("Languages/Python/main.py")});
+    if (!scriptPath.isEmpty()) {
+        const QFileInfo scriptInfo(scriptPath);
+        const QStringList interpreterCandidates = pythonInterpreterCandidatesForScript(scriptPath);
+        for (const QString &program : interpreterCandidates) {
+            QStringList arguments;
+            const QString fileName = QFileInfo(program).fileName().trimmed().toLower();
+            if (fileName == QStringLiteral("py") || fileName == QStringLiteral("py.exe")) {
+                arguments << QStringLiteral("-3");
+            }
+            arguments << scriptPath << QStringLiteral("--direct");
+            if (tryStartDetachedProgram(
+                    program,
+                    arguments,
+                    scriptInfo.absolutePath(),
+                    launchEnv,
+                    &failedAttempts,
+                    QStringLiteral("Python script runtime"))) {
+                return true;
+            }
+        }
+    }
+
+    QString message = QStringLiteral(
+        "Could not launch the Python runtime automatically.\n\n"
+        "Looked for Trading-Bot-Python and Languages/Python/main.py with a local/system Python interpreter.");
+    if (!failedAttempts.isEmpty()) {
+        message += QStringLiteral("\n\nLaunch attempts:\n- %1").arg(failedAttempts.join(QStringLiteral("\n- ")));
+    }
+    if (errorOut != nullptr) {
+        *errorOut = message;
+    }
+    return false;
 }
 
 QStringList dependencyVcpkgRoots() {
@@ -4149,7 +4536,10 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
         return;
     }
 
-    const QString themeNorm = themeName.trimmed().toLower();
+    QString themeNorm = themeName.trimmed().toLower();
+    if (themeNorm == QStringLiteral("gren")) {
+        themeNorm = QStringLiteral("green");
+    }
     const bool isLight = themeNorm == QStringLiteral("light");
     const QString darkCss = R"(
         #dashboardPage { background: #0b0f16; }
@@ -4273,36 +4663,66 @@ void BacktestWindow::applyDashboardTheme(const QString &themeName) {
 
     QString accentCss;
     if (!accent.isEmpty()) {
+        const QColor accentColor(accent);
+        if (accentColor.isValid()) {
+            accentOutline = accentColor.darker(230).name();
+        }
+        const QString hoverFill = QStringLiteral("rgba(%1, %2, %3, 52)")
+                                      .arg(accentColor.red())
+                                      .arg(accentColor.green())
+                                      .arg(accentColor.blue());
+        const QString controlBg = isLight ? QStringLiteral("#ffffff") : QStringLiteral("#0d1117");
+        const QString controlHoverBg = isLight ? QStringLiteral("#f8fafc") : QStringLiteral("#18202d");
+        const QString headerBg = isLight ? QStringLiteral("#f1f5f9") : QStringLiteral("#111827");
+        const QString disabledBg = isLight ? QStringLiteral("#f1f5f9") : QStringLiteral("#0b1020");
+        const QString disabledBorder = isLight ? QStringLiteral("#d1d5db") : QStringLiteral("#1f2937");
+        const QString baseText = isLight ? QStringLiteral("#0f172a") : QStringLiteral("#e5e7eb");
+
         accentCss = QStringLiteral(
-            "QPushButton { background-color: %1; border: 1px solid %1; color: #ffffff; }"
-            "QPushButton:hover { background-color: %2; border-color: %2; }"
-            "QPushButton:pressed { background-color: %3; border-color: %3; }"
-            "QToolButton { background-color: %1; border: 1px solid %1; color: #ffffff; }"
-            "QToolButton:hover { background-color: %2; border-color: %2; }"
-            "QToolButton:pressed { background-color: %3; border-color: %3; }"
-            "QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit, QPlainTextEdit {"
-            "selection-background-color: %1; selection-color: %4; }"
-            "QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover { border: 1px solid %1; }"
-            "QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus { border: 1px solid %1; outline: none; }"
-            "QComboBox::drop-down { border-left: 1px solid %1; background-color: %1; width: 18px; }"
-            "QCheckBox::indicator:checked { background-color: %1; border-color: %1; }"
-            "QCheckBox::indicator:hover { border-color: %1; }"
-            "QRadioButton::indicator:checked { background-color: %1; border: 1px solid %1; }"
-            "QRadioButton::indicator:hover { border: 1px solid %1; }"
-            "QTabBar::tab:selected { background-color: %1; border: 1px solid %1; color: %4; }"
-            "QTabBar::tab:hover { border: 1px solid %1; }"
-            "QTabWidget::pane { border: 1px solid %5; }"
-            "QGroupBox::title { color: %1; }"
-            "QGroupBox { border: 1px solid %5; }"
-            "QAbstractItemView::item:selected { background-color: %1; color: %4; }"
-            "QAbstractItemView::item:hover { background-color: %2; color: %4; }"
-            "QHeaderView::section { border: 1px solid %5; }"
-            "QProgressBar::chunk { background-color: %1; }"
-            "QSlider::handle:horizontal, QSlider::handle:vertical { background: %1; border: 1px solid %5; }"
-            "QSlider::sub-page:horizontal, QSlider::sub-page:vertical { background: %1; }"
-            "QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: %1; border: 1px solid %5; border-radius: 4px; }"
-            "QMenu::item:selected { background-color: %1; color: %4; }")
-                        .arg(accent, accentHover, accentPressed, accentText, accentOutline);
+                        "QPushButton { background-color: %1; border: 1px solid %1; color: %4; }"
+                        "QPushButton:hover { background-color: %2; border-color: %2; }"
+                        "QPushButton:pressed, QPushButton:checked { background-color: %3; border-color: %3; }"
+                        "QPushButton:disabled { background-color: %9; border: 1px solid %10; color: #808080; }"
+                        "QLineEdit QToolButton, QComboBox QToolButton, QAbstractSpinBox QToolButton {"
+                        "background: transparent; border: none; padding: 0px; margin: 0px; }"
+                        "QLineEdit QToolButton:hover, QComboBox QToolButton:hover, QAbstractSpinBox QToolButton:hover {"
+                        "background: transparent; border: none; }"
+                        "QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit, QPlainTextEdit {"
+                        "selection-background-color: %1; selection-color: %4; }"
+                        "QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover "
+                        "{ border: 1px solid %1; }"
+                        "QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus "
+                        "{ border: 1px solid %1; outline: none; }"
+                        "QCheckBox::indicator:checked { background-color: %1; border-color: %1; }"
+                        "QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: %1; }"
+                        "QRadioButton::indicator:checked { background-color: %1; border: 1px solid %1; }"
+                        "QTabBar::tab:selected { background-color: %1; border: 1px solid %1; color: %4; }"
+                        "QTabBar::tab:hover { border: 1px solid %1; }"
+                        "QTabWidget::pane { border: 1px solid %5; }"
+                        "QGroupBox::title { color: %1; }"
+                        "QGroupBox { border: 1px solid %5; }"
+                        "QAbstractItemView { selection-background-color: %1; selection-color: %4; }"
+                        "QAbstractItemView::item:selected { background-color: %1; color: %4; }"
+                        "QAbstractItemView::item:hover { background-color: %6; color: %11; }"
+                        "QHeaderView::section { background-color: %12; border: 1px solid %5; }"
+                        "QProgressBar { border: 1px solid %5; background-color: %7; }"
+                        "QProgressBar::chunk { background-color: %1; }"
+                        "QSlider::handle:horizontal, QSlider::handle:vertical { background: %1; border: 1px solid %5; }"
+                        "QSlider::sub-page:horizontal, QSlider::sub-page:vertical { background: %1; }"
+                        "QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: %2; border: 1px solid %5; border-radius: 4px; }"
+                        "QMenu::item:selected { background-color: %1; color: %4; }")
+                        .arg(accent)
+                        .arg(accentHover)
+                        .arg(accentPressed)
+                        .arg(accentText)
+                        .arg(accentOutline)
+                        .arg(hoverFill)
+                        .arg(controlBg)
+                        .arg(controlHoverBg)
+                        .arg(disabledBg)
+                        .arg(disabledBorder)
+                        .arg(baseText)
+                        .arg(headerBg);
     }
 
     // Apply to the whole window (covers Chart/Positions/Backtest/Code tabs)
@@ -5533,11 +5953,37 @@ QWidget *BacktestWindow::createCodeTab() {
     addSection("Choose your language",
                {makeCard("Python", "Use Languages/Python/main.py for Python runtime", "#1f2937", "External",
                          "#1f2937", false, [this]() {
-                             QMessageBox::information(
-                                 this,
-                                 "Python runtime",
-                                 "This C++ app now uses native C++ clients.\n"
-                                 "Run Languages/Python/main.py separately for the Python runtime.");
+                             if (QMessageBox::question(
+                                     this,
+                                     tr("Switch to Python?"),
+                                     tr("This will close the current C++ trading bot window completely and open the Python trading bot instead.\n\nDo you want to continue?"),
+                                     QMessageBox::Yes | QMessageBox::No,
+                                     QMessageBox::No) != QMessageBox::Yes) {
+                                 return;
+                             }
+                             auto *splash = new LanguageSwitchSplash(QStringLiteral("Launching Python runtime…"));
+                             hide();
+                             QString launchError;
+                             if (!launchPythonRuntime(&launchError)) {
+                                 splash->close();
+                                 splash->deleteLater();
+                                 showMaximized();
+                                 raise();
+                                 activateWindow();
+                                 QMessageBox::warning(
+                                     this,
+                                     "Python runtime",
+                                     launchError);
+                                 return;
+                             }
+                             updateStatusMessage("Launching Python runtime...");
+                             QTimer::singleShot(450, splash, [splash]() {
+                                 splash->close();
+                                 splash->deleteLater();
+                             });
+                             QTimer::singleShot(450, this, []() {
+                                 QCoreApplication::quit();
+                             });
                          }),
                 makeCard("C++", "Qt native desktop (active)", "#2563eb", "Active", "#1f2937", false, [this]() {
                     if (tabs_ && backtestTab_) {

@@ -14947,7 +14947,7 @@ def _cpp_executable_names() -> set[str]:
 
 
 def _is_frozen_python_app() -> bool:
-    return bool(getattr(sys, "frozen", False))
+    return bool(getattr(sys, "frozen", False) or getattr(sys, "_MEIPASS", None))
 
 
 def _normalize_release_tag_text(value) -> str | None:
@@ -16174,30 +16174,326 @@ def _discover_cpp_qt_bin_dirs_for_code_tab() -> list[Path]:
     return unique
 
 
-def _create_cpp_launch_progress_dialog(parent: QtWidgets.QWidget | None) -> QtWidgets.QProgressDialog | None:
+_LANGUAGE_SWITCH_DISPLAY_NAME = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "Trading Bot").strip() or "Trading Bot"
+
+
+def _language_switch_logo_pixmap() -> QtGui.QPixmap | None:
     try:
-        dialog = QtWidgets.QProgressDialog("Preparing C++ bot...", "", 0, 0, parent)
-        dialog.setWindowTitle("C++ Launch")
-        dialog.setCancelButton(None)
-        dialog.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
-        dialog.setMinimumDuration(0)
-        dialog.setValue(0)
-        dialog.show()
-        QtWidgets.QApplication.processEvents()
-        return dialog
+        icon = load_app_icon()
+    except Exception:
+        icon = QtGui.QIcon()
+    if icon.isNull():
+        return None
+    for size in (72, 96, 128):
+        try:
+            pixmap = icon.pixmap(size, size)
+        except Exception:
+            continue
+        if pixmap is not None and not pixmap.isNull():
+            return pixmap
+    return None
+
+
+class _LanguageSwitchSplash:
+    def __init__(self, status_text: str = "Loading…") -> None:
+        self._widget: QtWidgets.QWidget | None = None
+        self._spinner_angle = 0
+        self._status_text = str(status_text or "Loading…")
+        self._logo_pixmap = _language_switch_logo_pixmap()
+        self._timer: QtCore.QTimer | None = None
+        self._created_at = time.monotonic()
+
+        try:
+            screen = QtGui.QGuiApplication.primaryScreen()
+            screen_geo = screen.geometry() if screen else QtCore.QRect(0, 0, 1920, 1080)
+
+            class _Widget(QtWidgets.QWidget):
+                def paintEvent(inner_self, event):  # noqa: N802, ANN001
+                    Q_UNUSED = event
+                    splash_ref = getattr(inner_self, "_splash_ref", None)
+                    if splash_ref is None:
+                        return
+                    painter = None
+                    try:
+                        painter = QtGui.QPainter(inner_self)
+                        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+
+                        w = inner_self.width()
+                        h = inner_self.height()
+                        panel_rect = QtCore.QRectF(0, 0, w, h)
+                        panel_path = QtGui.QPainterPath()
+                        panel_path.addRoundedRect(panel_rect, 24, 24)
+                        painter.setClipPath(panel_path)
+
+                        bg_grad = QtGui.QLinearGradient(0, 0, 0, h)
+                        bg_grad.setColorAt(0.0, QtGui.QColor(16, 22, 32, 245))
+                        bg_grad.setColorAt(1.0, QtGui.QColor(10, 14, 22, 250))
+                        painter.fillRect(inner_self.rect(), bg_grad)
+
+                        painter.setClipping(False)
+                        border_pen = QtGui.QPen(QtGui.QColor(56, 189, 248, 80))
+                        border_pen.setWidthF(1.5)
+                        painter.setPen(border_pen)
+                        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                        painter.drawRoundedRect(QtCore.QRectF(0.75, 0.75, w - 1.5, h - 1.5), 24, 24)
+
+                        accent_rect = QtCore.QRectF(40, 0, w - 80, 3)
+                        accent_grad = QtGui.QLinearGradient(40, 0, w - 40, 0)
+                        accent_grad.setColorAt(0.0, QtGui.QColor(56, 189, 248, 0))
+                        accent_grad.setColorAt(0.3, QtGui.QColor(56, 189, 248, 180))
+                        accent_grad.setColorAt(0.5, QtGui.QColor(52, 211, 153, 200))
+                        accent_grad.setColorAt(0.7, QtGui.QColor(56, 189, 248, 180))
+                        accent_grad.setColorAt(1.0, QtGui.QColor(56, 189, 248, 0))
+                        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                        painter.setBrush(accent_grad)
+                        painter.drawRoundedRect(accent_rect, 1.5, 1.5)
+
+                        cy = 40
+                        logo = splash_ref._logo_pixmap
+                        if logo is not None and not logo.isNull():
+                            scaled = logo.scaled(
+                                72,
+                                72,
+                                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                                QtCore.Qt.TransformationMode.SmoothTransformation,
+                            )
+                            painter.drawPixmap((w - scaled.width()) // 2, cy, scaled)
+                            cy += 88
+                        else:
+                            cy += 20
+
+                        title_font = QtGui.QFont("Segoe UI", 18, QtGui.QFont.Weight.Bold)
+                        painter.setFont(title_font)
+                        painter.setPen(QtGui.QColor(230, 237, 243))
+                        painter.drawText(
+                            QtCore.QRectF(0, cy, w, 30),
+                            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop,
+                            _LANGUAGE_SWITCH_DISPLAY_NAME,
+                        )
+                        cy += 36
+
+                        painter.setFont(QtGui.QFont("Segoe UI", 11))
+                        painter.setPen(QtGui.QColor(148, 163, 184))
+                        painter.drawText(
+                            QtCore.QRectF(0, cy, w, 22),
+                            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop,
+                            splash_ref._status_text,
+                        )
+                        cy += 34
+
+                        spinner_rect = QtCore.QRectF((w - 44) // 2, cy, 44, 44)
+                        track_pen = QtGui.QPen(QtGui.QColor(148, 163, 184, 40))
+                        track_pen.setWidthF(3.0)
+                        track_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+                        painter.setPen(track_pen)
+                        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                        painter.drawEllipse(spinner_rect)
+
+                        arc_path = QtGui.QPainterPath()
+                        arc_path.arcMoveTo(spinner_rect, splash_ref._spinner_angle)
+                        arc_path.arcTo(spinner_rect, splash_ref._spinner_angle, 100)
+                        arc_pen = QtGui.QPen(QtGui.QColor(56, 189, 248))
+                        arc_pen.setWidthF(3.0)
+                        arc_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+                        painter.setPen(arc_pen)
+                        painter.drawPath(arc_path)
+
+                        arc_path2 = QtGui.QPainterPath()
+                        angle2 = (splash_ref._spinner_angle + 180) % 360
+                        arc_path2.arcMoveTo(spinner_rect, angle2)
+                        arc_path2.arcTo(spinner_rect, angle2, 60)
+                        arc_pen2 = QtGui.QPen(QtGui.QColor(52, 211, 153, 180))
+                        arc_pen2.setWidthF(3.0)
+                        arc_pen2.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+                        painter.setPen(arc_pen2)
+                        painter.drawPath(arc_path2)
+                    except Exception:
+                        pass
+                    finally:
+                        if painter is not None:
+                            try:
+                                painter.end()
+                            except Exception:
+                                pass
+
+            widget = _Widget(
+                None,
+                QtCore.Qt.WindowType.FramelessWindowHint
+                | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                | QtCore.Qt.WindowType.Tool
+                | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
+                | QtCore.Qt.WindowType.NoDropShadowWindowHint,
+            )
+            widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+            widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            widget.setFixedSize(420, 320)
+            widget.move(
+                screen_geo.x() + (screen_geo.width() - 420) // 2,
+                screen_geo.y() + (screen_geo.height() - 320) // 2,
+            )
+            widget._splash_ref = self  # type: ignore[attr-defined]
+            self._widget = widget
+            widget.show()
+            widget.raise_()
+            widget.activateWindow()
+            QtWidgets.QApplication.processEvents()
+
+            timer = QtCore.QTimer()
+            timer.setInterval(40)
+            timer.timeout.connect(self._tick)
+            timer.start()
+            self._timer = timer
+        except Exception:
+            self._widget = None
+
+    def _tick(self) -> None:
+        self._spinner_angle = (self._spinner_angle + 8) % 360
+        if self._widget is not None:
+            try:
+                self._widget.update()
+            except Exception:
+                pass
+
+    def set_status(self, text: str) -> None:
+        self._status_text = str(text or "Loading…")
+        if self._widget is not None:
+            try:
+                self._widget.update()
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
+
+    def raise_window(self) -> None:
+        if self._widget is None:
+            return
+        try:
+            self._widget.show()
+            self._widget.raise_()
+            self._widget.activateWindow()
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        if self._timer is not None:
+            try:
+                self._timer.stop()
+            except Exception:
+                pass
+            self._timer = None
+        if self._widget is not None:
+            try:
+                self._widget.hide()
+                self._widget.deleteLater()
+            except Exception:
+                pass
+            self._widget = None
+
+
+def _create_cpp_launch_progress_dialog(parent: QtWidgets.QWidget | None) -> _LanguageSwitchSplash | None:
+    Q_UNUSED = parent
+    try:
+        splash = _LanguageSwitchSplash("Preparing C++ bot...")
+        splash.raise_window()
+        return splash
     except Exception:
         return None
 
 
-def _update_cpp_launch_progress(dialog: QtWidgets.QProgressDialog | None, text: str) -> None:
+def _detach_cpp_launch_progress_dialog(dialog: _LanguageSwitchSplash | None) -> None:
     if dialog is None:
         return
     try:
-        dialog.setLabelText(str(text or "Working..."))
-        dialog.setValue(0)
-        QtWidgets.QApplication.processEvents()
+        dialog.raise_window()
+    except Exception:
+        pass
+
+
+def _hide_python_window_for_cpp_launch(self, progress_dialog: _LanguageSwitchSplash | None) -> bool:
+    _detach_cpp_launch_progress_dialog(progress_dialog)
+    hidden = False
+    try:
+        self._cpp_launch_handoff_active = True
+        self.hide()
+        hidden = not bool(self.isVisible())
+    except Exception:
+        hidden = False
+    finally:
+        try:
+            self._cpp_launch_handoff_active = False
+        except Exception:
+            pass
+    try:
+        self._cpp_window_hidden_for_cpp_handoff = bool(hidden)
+    except Exception:
+        pass
+    return bool(hidden)
+
+
+def _restore_python_window_after_cpp_launch(self) -> None:
+    try:
+        hidden_for_handoff = bool(getattr(self, "_cpp_window_hidden_for_cpp_handoff", False))
+    except Exception:
+        hidden_for_handoff = False
+    if not hidden_for_handoff:
+        return
+    try:
+        self._cpp_window_hidden_for_cpp_handoff = False
+    except Exception:
+        pass
+    try:
+        state = self.windowState()
+    except Exception:
+        state = QtCore.Qt.WindowState.WindowNoState
+    try:
+        if state & QtCore.Qt.WindowState.WindowMaximized:
+            self.showMaximized()
+        else:
+            self.show()
+    except Exception:
+        try:
+            self.showMaximized()
+        except Exception:
+            pass
+    try:
+        self.raise_()
+        self.activateWindow()
+    except Exception:
+        pass
+
+
+def _shutdown_python_after_cpp_launch(self) -> None:
+    try:
+        self._cpp_window_hidden_for_cpp_handoff = False
+    except Exception:
+        pass
+    try:
+        self._force_close = True
+    except Exception:
+        pass
+    try:
+        QtWidgets.QWidget.close(self)
+        return
+    except Exception:
+        pass
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            setattr(app, "_exiting", True)
+            arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
+            if callable(arm_hard_exit):
+                arm_hard_exit()
+            app.quit()
+    except Exception:
+        pass
+
+
+def _update_cpp_launch_progress(dialog: _LanguageSwitchSplash | None, text: str) -> None:
+    if dialog is None:
+        return
+    try:
+        dialog.set_status(str(text or "Working..."))
     except Exception:
         pass
 
@@ -16312,6 +16608,7 @@ def _prepare_cpp_launch_env(
     launch_bins: list[Path] = [exe_path.parent]
     launch_bins.extend(qt_bins or [])
     env["PATH"] = _compose_cpp_launch_path(launch_bins, env.get("PATH", ""))
+    env["TB_CPP_LAUNCH_PATH"] = os.pathsep.join(str(path) for path in launch_bins if str(path).strip())
 
     plugin_root = exe_path.parent
     platform_plugins = plugin_root / "platforms"
@@ -16606,14 +16903,26 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
     try:
         if existing is not None and existing.poll() is None:
             self.log("C++ bot is already running.")
+            QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_cpp_launch(self))
             return True
     except Exception:
         pass
 
     progress_dialog = _create_cpp_launch_progress_dialog(self)
+    _hide_python_window_for_cpp_launch(self, progress_dialog)
+    launch_succeeded = False
 
     def _progress(message: str) -> None:
         _update_cpp_launch_progress(progress_dialog, message)
+
+    def _dismiss_progress_dialog() -> None:
+        nonlocal progress_dialog
+        try:
+            if progress_dialog is not None:
+                progress_dialog.close()
+        except Exception:
+            pass
+        progress_dialog = None
 
     def _poll_early_exit(proc: subprocess.Popen, timeout_s: float = 0.45) -> int | None:
         deadline = time.time() + max(0.1, float(timeout_s))
@@ -16646,6 +16955,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                 if detail:
                     detail = _tail_text(detail, max_lines=10, max_chars=1200)
                     detail = f"\n\nInstaller output tail:\n{detail}"
+                _dismiss_progress_dialog()
+                _restore_python_window_after_cpp_launch(self)
                 QtWidgets.QMessageBox.warning(
                     self,
                     "C++ dependency setup failed",
@@ -16717,6 +17028,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                             "Automatic C++ runtime download failed. "
                             "Extract Trading-Bot-C++.zip from this release next to Trading-Bot-Python.exe."
                         )
+                    _dismiss_progress_dialog()
+                    _restore_python_window_after_cpp_launch(self)
                     QtWidgets.QMessageBox.warning(
                         self,
                         "C++ launch failed",
@@ -16732,6 +17045,17 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
         _progress("Preparing Qt runtime...")
         qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
         env = _prepare_cpp_launch_env(exe_path, qt_bins, os.environ.copy())
+        env["TB_CPP_EXE_DIR"] = str(exe_path.parent)
+        env["TB_CPP_EXE_PATH"] = str(exe_path)
+        env["TB_PROJECT_ROOT"] = str(_BASE_PROJECT_PATH)
+        if _is_frozen_python_app():
+            env["TB_PY_FROZEN_EXE"] = str(Path(sys.executable).resolve())
+        else:
+            source_entry = (_BASE_PROJECT_PATH / "Languages" / "Python" / "main.py").resolve()
+            if source_entry.is_file():
+                env["TB_PY_SOURCE_SCRIPT"] = str(source_entry)
+                env["TB_PY_SOURCE_WORKDIR"] = str(source_entry.parent)
+            env["TB_PY_SOURCE_PYTHON"] = str(Path(sys.executable).resolve())
 
         if not _is_frozen_python_app():
             deploy_ok, deploy_output = _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=False)
@@ -16764,6 +17088,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                         "Extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe."
                     )
                     extra = f"\n\nAuto-repair error: {cached_err}" if cached_err else ""
+                    _dismiss_progress_dialog()
+                    _restore_python_window_after_cpp_launch(self)
                     QtWidgets.QMessageBox.warning(
                         self,
                         "C++ launch failed",
@@ -16772,6 +17098,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                     return False
             else:
                 hint = "Run windeployqt or install Qt + CMake and try again."
+                _dismiss_progress_dialog()
+                _restore_python_window_after_cpp_launch(self)
                 QtWidgets.QMessageBox.warning(
                     self,
                     "C++ launch failed",
@@ -16814,6 +17142,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
             process = _spawn_cpp()
         except Exception as exc:
             self.log(f"C++ launch failed: {exc}")
+            _dismiss_progress_dialog()
+            _restore_python_window_after_cpp_launch(self)
             QtWidgets.QMessageBox.warning(self, "C++ launch failed", str(exc))
             return False
 
@@ -16882,6 +17212,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                 if runtime_bundle_touched:
                     QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
                     QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
+                QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_cpp_launch(self))
+                launch_succeeded = True
                 return True
 
             exit_text = _format_windows_exit_code(exit_code)
@@ -16890,6 +17222,8 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
                 extra = "\nWindows status 0xC0000139 usually means Qt DLL mismatch."
             if retry_reason:
                 extra = f"{extra}\nAuto-repair attempt failed: {retry_reason}".rstrip()
+            _dismiss_progress_dialog()
+            _restore_python_window_after_cpp_launch(self)
             QtWidgets.QMessageBox.warning(
                 self,
                 "C++ launch failed",
@@ -16908,8 +17242,12 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
         if runtime_bundle_touched:
             QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
             QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
+        QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_cpp_launch(self))
+        launch_succeeded = True
         return True
     finally:
+        if not launch_succeeded:
+            _restore_python_window_after_cpp_launch(self)
         try:
             if progress_dialog is not None:
                 progress_dialog.close()
@@ -16923,6 +17261,22 @@ def _code_tab_select_language(self, config_key: str) -> None:
     card = getattr(self, "_starter_language_cards", {}).get(config_key)
     if card is not None and card.is_disabled():
         return
+    if config_key == CPP_CODE_LANGUAGE_KEY:
+        try:
+            if QtWidgets.QMessageBox.question(
+                self,
+                "Switch to C++?",
+                (
+                    "This will close the current Python trading bot window completely "
+                    "and open the C++ trading bot instead.\n\n"
+                    "Do you want to continue?"
+                ),
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            ) != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        except Exception:
+            return
     self.config["code_language"] = config_key
     if config_key == CPP_CODE_LANGUAGE_KEY and self.config.get("selected_exchange") != CPP_SUPPORTED_EXCHANGE_KEY:
         self.config["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
@@ -22406,7 +22760,11 @@ def _log_window_event(self, name: str, event=None) -> None:
 
 def _allow_guard_bypass(self) -> bool:
     try:
-        if bool(getattr(self, "_force_close", False)) or bool(getattr(self, "_close_in_progress", False)):
+        if (
+            bool(getattr(self, "_force_close", False))
+            or bool(getattr(self, "_close_in_progress", False))
+            or bool(getattr(self, "_cpp_launch_handoff_active", False))
+        ):
             return True
     except Exception:
         pass
@@ -22647,6 +23005,9 @@ def closeEvent(self, event):
             app = QtWidgets.QApplication.instance()
             if app is not None:
                 setattr(app, "_exiting", True)
+                arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
+                if callable(arm_hard_exit):
+                    arm_hard_exit()
                 app.quit()
         except Exception:
             pass
@@ -22685,6 +23046,9 @@ def closeEvent(self, event):
         app = QtWidgets.QApplication.instance()
         if app is not None:
             setattr(app, "_exiting", True)
+            arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
+            if callable(arm_hard_exit):
+                arm_hard_exit()
     except Exception:
         pass
 
@@ -22719,6 +23083,9 @@ def closeEvent(self, event):
         if event.isAccepted():
             app = QtWidgets.QApplication.instance()
             if app is not None:
+                arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
+                if callable(arm_hard_exit):
+                    arm_hard_exit()
                 app.quit()
     except Exception:
         pass
@@ -22766,7 +23133,8 @@ except Exception:
 
 
 def _gui_apply_theme(self, name: str):
-    theme = (name or '').strip().lower()
+    theme_raw = (name or '').strip().lower()
+    theme = {"gren": "green"}.get(theme_raw, theme_raw)
     base_stylesheet = self.DARK_THEME if theme.startswith('dark') or theme in {"blue", "yellow", "green", "red"} else self.LIGHT_THEME
 
     accents = {
@@ -22780,55 +23148,85 @@ def _gui_apply_theme(self, name: str):
     if accent:
         try:
             color = QtGui.QColor(accent)
+            red = color.red()
+            green = color.green()
+            blue = color.blue()
             hover = color.lighter(115).name()
-            pressed = color.darker(120).name()
+            pressed = color.darker(135).name()
             accent_text = "#0c0f16" if color.lightness() >= 160 else "#ffffff"
-            outline = color.darker(170).name()
+            outline = color.darker(230).name()
+            control_bg = "#1e1e1e"
+            control_hover_bg = "#242424"
+            header_bg = "#171717"
+            disabled_bg = "#2a2a2a"
+            disabled_border = "#444444"
+            base_text = "#e0e0e0"
+            hover_fill = f"rgba({red}, {green}, {blue}, 52)"
             accent_styles = f"""
             /* Buttons */
-            QPushButton {{
+            QPushButton, QToolButton {{
                 background-color: {accent};
                 border: 1px solid {accent};
-                color: #ffffff;
+                color: {accent_text};
             }}
-            QPushButton:hover {{
+            QPushButton:hover, QToolButton:hover {{
                 background-color: {hover};
                 border-color: {hover};
             }}
-            QPushButton:pressed {{
+            QPushButton:pressed, QPushButton:checked, QToolButton:pressed, QToolButton:checked {{
                 background-color: {pressed};
                 border-color: {pressed};
             }}
-            /* Tool buttons */
-            QToolButton {{
-                background-color: {accent};
-                border: 1px solid {accent};
-                color: #ffffff;
-            }}
-            QToolButton:hover {{
-                background-color: {hover};
-                border-color: {hover};
-            }}
-            QToolButton:pressed {{
-                background-color: {pressed};
-                border-color: {pressed};
+            QPushButton:disabled, QToolButton:disabled {{
+                background-color: {disabled_bg};
+                border: 1px solid {disabled_border};
+                color: #808080;
             }}
             /* Inputs */
             QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit, QPlainTextEdit {{
                 selection-background-color: {accent};
                 selection-color: {accent_text};
             }}
-            QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{
+            QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover {{
                 border: 1px solid {accent};
             }}
-            QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
+            QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
                 border: 1px solid {accent};
                 outline: none;
             }}
             QComboBox::drop-down {{
-                border-left: 1px solid {accent};
-                background-color: {accent};
+                border: none;
+                border-left: 1px solid {outline};
+                background-color: {control_bg};
                 width: 18px;
+            }}
+            QComboBox:hover::drop-down, QComboBox:on::drop-down {{
+                border-left: 1px solid {accent};
+                background-color: {control_hover_bg};
+            }}
+            QSpinBox::up-button, QDoubleSpinBox::up-button {{
+                background-color: {control_bg};
+                border: none;
+                border-left: 1px solid {outline};
+                border-bottom: 1px solid {outline};
+                width: 18px;
+            }}
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                background-color: {control_bg};
+                border: none;
+                border-left: 1px solid {outline};
+                width: 18px;
+            }}
+            QSpinBox:hover::up-button, QSpinBox:hover::down-button,
+            QDoubleSpinBox:hover::up-button, QDoubleSpinBox:hover::down-button,
+            QSpinBox:focus::up-button, QSpinBox:focus::down-button,
+            QDoubleSpinBox:focus::up-button, QDoubleSpinBox:focus::down-button {{
+                background-color: {control_hover_bg};
+                border-left: 1px solid {accent};
+            }}
+            QSpinBox:hover::up-button, QDoubleSpinBox:hover::up-button,
+            QSpinBox:focus::up-button, QDoubleSpinBox:focus::up-button {{
+                border-bottom: 1px solid {accent};
             }}
             /* Checkboxes / radios */
             QCheckBox::indicator:checked {{
@@ -22865,16 +23263,25 @@ def _gui_apply_theme(self, name: str):
                 border: 1px solid {outline};
             }}
             /* Selection / tables */
+            QAbstractItemView {{
+                selection-background-color: {accent};
+                selection-color: {accent_text};
+            }}
             QAbstractItemView::item:selected {{
                 background-color: {accent};
                 color: {accent_text};
             }}
             QAbstractItemView::item:hover {{
-                background-color: {hover};
-                color: {accent_text};
+                background-color: {hover_fill};
+                color: {base_text};
             }}
             QHeaderView::section {{
+                background-color: {header_bg};
                 border: 1px solid {outline};
+            }}
+            QProgressBar {{
+                border: 1px solid {outline};
+                background-color: {control_bg};
             }}
             QProgressBar::chunk {{
                 background-color: {accent};
@@ -22888,7 +23295,7 @@ def _gui_apply_theme(self, name: str):
                 background: {accent};
             }}
             QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
-                background: {accent};
+                background: {hover};
                 border: 1px solid {outline};
                 border-radius: 4px;
             }}
@@ -22903,7 +23310,10 @@ def _gui_apply_theme(self, name: str):
     # Apply only stylesheet-based accents to avoid globally recoloring controls.
     self.setStyleSheet(base_stylesheet + accent_styles)
     try:
-        self.config['theme'] = name.title() if name else "Dark"
+        stored_name = name if name else "Dark"
+        if theme_raw == "gren":
+            stored_name = "Green"
+        self.config['theme'] = stored_name.title() if stored_name else "Dark"
     except Exception:
         pass
 

@@ -19,6 +19,7 @@ defaults where possible" so production launches remain stable on Windows 10/11.
 import os
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -48,6 +49,77 @@ BINANCE_DIR = Path(__file__).resolve().parent
 BINANCE_DIR_STR = str(BINANCE_DIR)
 if BINANCE_DIR_STR not in sys.path:
     sys.path.insert(0, BINANCE_DIR_STR)
+
+
+def _normalized_env_path_key(path_value: str) -> str:
+    text = str(path_value or "").strip().strip('"').strip("'")
+    if not text:
+        return ""
+    try:
+        resolved = Path(text).expanduser().resolve()
+        text = str(resolved)
+    except Exception:
+        pass
+    return os.path.normcase(os.path.normpath(text))
+
+
+def _sanitize_inherited_cpp_qt_env() -> None:
+    """Drop C++ Qt runtime hints before Python/PyQt imports run."""
+    cpp_exe_dir = str(os.environ.get("TB_CPP_EXE_DIR") or "").strip()
+    cpp_launch_path = str(os.environ.get("TB_CPP_LAUNCH_PATH") or "").strip()
+    if not cpp_exe_dir and not cpp_launch_path:
+        return
+
+    for key in (
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "QML_IMPORT_PATH",
+        "QML2_IMPORT_PATH",
+        "QT_CONF_PATH",
+        "QT_QPA_FONTDIR",
+        "QT_QPA_PLATFORMTHEME",
+        "QTWEBENGINEPROCESS_PATH",
+        "QTWEBENGINE_RESOURCES_PATH",
+        "QTWEBENGINE_LOCALES_PATH",
+    ):
+        os.environ.pop(key, None)
+
+    blocked: set[str] = set()
+    cpp_dir_key = _normalized_env_path_key(cpp_exe_dir)
+    if cpp_dir_key:
+        blocked.add(cpp_dir_key)
+        blocked.add(_normalized_env_path_key(str(Path(cpp_exe_dir) / "platforms")))
+        blocked.add(_normalized_env_path_key(str(Path(cpp_exe_dir) / "styles")))
+        blocked.add(_normalized_env_path_key(str(Path(cpp_exe_dir) / "imageformats")))
+    for token in str(cpp_launch_path or "").split(os.pathsep):
+        key = _normalized_env_path_key(token)
+        if key:
+            blocked.add(key)
+
+    path_tokens = str(os.environ.get("PATH", "") or "").split(os.pathsep)
+    filtered_tokens: list[str] = []
+    seen: set[str] = set()
+    prefix = f"{cpp_dir_key}{os.sep}" if cpp_dir_key else ""
+    for raw_token in path_tokens:
+        token = str(raw_token or "").strip()
+        if not token:
+            continue
+        key = _normalized_env_path_key(token)
+        if not key:
+            continue
+        if key in blocked or (prefix and key.startswith(prefix)):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        filtered_tokens.append(token)
+    if filtered_tokens:
+        os.environ["PATH"] = os.pathsep.join(filtered_tokens)
+
+    os.environ["TB_CPP_QT_ENV_SANITIZED"] = "1"
+
+
+_sanitize_inherited_cpp_qt_env()
 
 
 def _env_flag(name: str) -> bool:
@@ -1826,6 +1898,72 @@ def main() -> int:
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setApplicationDisplayName(APP_DISPLAY_NAME)
     app._exiting = False  # type: ignore[attr-defined]
+    _hard_exit_lock = threading.Lock()
+    _hard_exit_state = {"armed": False}
+
+    def _visible_top_level_windows_snapshot() -> list:
+        try:
+            widgets = list(app.topLevelWidgets())
+        except Exception:
+            widgets = []
+        visible: list = []
+        for widget in widgets:
+            if widget is None:
+                continue
+            try:
+                if not widget.isWindow():
+                    continue
+            except Exception:
+                pass
+            try:
+                if not widget.isVisible():
+                    continue
+            except Exception:
+                continue
+            visible.append(widget)
+        return visible
+
+    def _arm_background_process_exit(delay_s: float = 1.5, watchdog_s: float = 8.0) -> None:
+        delay_s = max(0.5, min(float(delay_s), 5.0))
+        watchdog_s = max(delay_s + 0.5, min(float(watchdog_s), 20.0))
+        with _hard_exit_lock:
+            if _hard_exit_state["armed"]:
+                return
+            _hard_exit_state["armed"] = True
+
+        def _worker() -> None:
+            invisible_since = 0.0
+            deadline = time.monotonic() + watchdog_s
+            try:
+                while time.monotonic() < deadline:
+                    try:
+                        visible = bool(_visible_top_level_windows_snapshot())
+                    except Exception:
+                        visible = False
+                    if visible:
+                        invisible_since = 0.0
+                    else:
+                        now = time.monotonic()
+                        if invisible_since <= 0.0:
+                            invisible_since = now
+                        elif (now - invisible_since) >= delay_s:
+                            try:
+                                _uninstall_startup_window_suppression()
+                            except Exception:
+                                pass
+                            try:
+                                _uninstall_cbt_startup_window_suppression()
+                            except Exception:
+                                pass
+                            os._exit(0)
+                    time.sleep(0.1)
+            finally:
+                with _hard_exit_lock:
+                    _hard_exit_state["armed"] = False
+
+        threading.Thread(target=_worker, name="bot-hard-exit", daemon=True).start()
+
+    app._bot_arm_hard_exit = _arm_background_process_exit  # type: ignore[attr-defined]
     try:
         QtGui.QGuiApplication.setDesktopFileName(APP_USER_MODEL_ID)
     except Exception:
@@ -2071,7 +2209,6 @@ def main() -> int:
             _import_result["error"] = exc
         _import_done = True
 
-    import threading
     _import_thread = threading.Thread(target=_bg_import, daemon=True)
     _import_thread.start()
     while not _import_done:
@@ -2360,6 +2497,83 @@ def main() -> int:
             except Exception:
                 pass
     try:
+        def _visible_top_level_windows() -> list:
+            try:
+                widgets = list(app.topLevelWidgets())
+            except Exception:
+                widgets = []
+            visible: list = []
+            for widget in widgets:
+                if widget is None:
+                    continue
+                try:
+                    if not widget.isWindow():
+                        continue
+                except Exception:
+                    pass
+                try:
+                    if not widget.isVisible():
+                        continue
+                except Exception:
+                    continue
+                visible.append(widget)
+            return visible
+
+        def _terminate_background_app() -> None:
+            try:
+                if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
+                    arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
+                    if callable(arm_hard_exit):
+                        arm_hard_exit()
+                    return
+            except Exception:
+                pass
+            try:
+                setattr(app, "_exiting", True)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            try:
+                arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
+                if callable(arm_hard_exit):
+                    arm_hard_exit()
+            except Exception:
+                pass
+            try:
+                if win is not None:
+                    win._cpp_window_hidden_for_cpp_handoff = False
+                    win._force_close = True
+            except Exception:
+                pass
+            try:
+                if win is not None:
+                    QtWidgets.QWidget.close(win)
+                    return
+            except Exception:
+                pass
+            try:
+                app.quit()
+            except Exception:
+                pass
+
+        def _ensure_not_left_running_in_background() -> None:
+            try:
+                if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
+                    return
+            except Exception:
+                pass
+            try:
+                if _visible_top_level_windows():
+                    return
+            except Exception:
+                pass
+            try:
+                if bool(getattr(win, "_cpp_launch_handoff_active", False)):
+                    QtCore.QTimer.singleShot(250, _ensure_not_left_running_in_background)
+                    return
+            except Exception:
+                pass
+            _terminate_background_app()
+
         def _restore_main_window():  # noqa: N802
             try:
                 if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
@@ -2367,9 +2581,17 @@ def main() -> int:
             except Exception:
                 pass
             try:
+                hidden_for_handoff = bool(getattr(win, "_cpp_window_hidden_for_cpp_handoff", False))
+            except Exception:
+                hidden_for_handoff = False
+            if hidden_for_handoff:
+                QtCore.QTimer.singleShot(300, _ensure_not_left_running_in_background)
+                return
+            try:
                 if win is None or win.isVisible():
                     return
             except Exception:
+                QtCore.QTimer.singleShot(300, _ensure_not_left_running_in_background)
                 return
             try:
                 win.showMaximized()
@@ -2377,6 +2599,7 @@ def main() -> int:
                 win.activateWindow()
             except Exception:
                 pass
+            QtCore.QTimer.singleShot(300, _ensure_not_left_running_in_background)
 
         app.lastWindowClosed.connect(_restore_main_window)
     except Exception:
@@ -2499,7 +2722,26 @@ def main() -> int:
         QtCore.QTimer.singleShot(auto_exit_ms, app.quit)
 
     _boot_log("entering event loop")
-    return app.exec()
+    exit_code = int(app.exec())
+    try:
+        _uninstall_startup_window_suppression()
+    except Exception:
+        pass
+    try:
+        _uninstall_cbt_startup_window_suppression()
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":
