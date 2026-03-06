@@ -274,22 +274,29 @@ def _configure_startup_window_suppression_defaults() -> None:
     """Set safe Windows startup suppression defaults unless user already configured them."""
     if sys.platform != "win32":
         return
-    # Stability-first default: do not run WinEvent/CBT startup hooks unless explicitly
-    # forced. This prevents occasional post-startup UI hangs on some systems.
-    # Instead, use a full-screen startup mask to hide transient Qt windows.
-    # The mask is made Win32-level click-through (WS_EX_TRANSPARENT) so it does not
-    # block mouse input on Windows 11.
+    if _env_flag("BOT_NO_STARTUP_WINDOW_SUPPRESS"):
+        return
+    # Default to the lightweight built-in suppression thread only. The broader
+    # WinEvent/CBT startup hooks can hide or stall the real UI on some systems,
+    # and the full-screen mask is intentionally left off to avoid covering the
+    # user's monitors during launch.
     if not _env_flag("BOT_FORCE_STARTUP_WINDOW_HOOKS"):
-        # Both WinEvent and CBT hooks can cause UI hangs on some Windows 11 systems.
-        # Use polling-based suppression instead (handled in main()).
         os.environ["BOT_DISABLE_STARTUP_WINDOW_HOOKS"] = "1"
-        os.environ["BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS"] = "0"
-        os.environ.setdefault("BOT_STARTUP_MASK_ENABLED", "0")
+        # Enable only the current-thread CBT hook by default so tiny helper
+        # windows can be hidden at create-time without turning on the broader
+        # WinEvent/poll suppression bundle.
+        os.environ.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
+        os.environ.setdefault("BOT_CBT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "2500")
+        os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_MS", "3500")
+        os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_INTERVAL_MS", "5")
+        os.environ.setdefault("BOT_STARTUP_MASK_ENABLED", "1")
+        os.environ.setdefault("BOT_STARTUP_MASK_MODE", "snapshot")
+        os.environ.setdefault("BOT_STARTUP_MASK_HIDE_MS", "1400")
+        os.environ.setdefault("BOT_STARTUP_MASK_SCOPE", "primary")
+        os.environ.setdefault("BOT_NATIVE_STARTUP_COVER_ENABLED", "1")
         os.environ.setdefault("BOT_STARTUP_REVEAL_DELAY_MS", "0")
         return
     if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
-        return
-    if _env_flag("BOT_NO_STARTUP_WINDOW_SUPPRESS"):
         return
 
     # Keep suppression short and process-scoped by default. Aggressive global hooks can
@@ -406,6 +413,7 @@ def _install_cbt_startup_window_suppression() -> None:
         "ClipboardView",
         "ScreenChangeObserverWindow",
         "ThemeChangeObserverWindow",
+        "QWindowToolSaveBits",
     )
 
     def _read_cs_string(value) -> str:  # noqa: ANN001
@@ -454,12 +462,16 @@ def _install_cbt_startup_window_suppression() -> None:
 
     def _looks_like_qt_internal_helper_window(*, class_name: str, title: str) -> bool:
         name = str(class_name or "").strip()
+        if name == "_q_titlebar":
+            return True
         if name.startswith("QEventDispatcherWin32_"):
             return True
         if name.startswith("Qt") and any(name.endswith(suffix) for suffix in _QT_INTERNAL_WINDOW_SUFFIXES):
             return True
         ttl = str(title or "").strip()
         # Titles often omit the version digits (e.g., "QtPowerDummyWindow").
+        if ttl == "_q_titlebar":
+            return True
         if ttl.startswith("QEventDispatcherWin32_"):
             return True
         if ttl.startswith("Qt") and any(ttl.endswith(suffix) for suffix in _QT_INTERNAL_WINDOW_SUFFIXES):
@@ -493,14 +505,26 @@ def _install_cbt_startup_window_suppression() -> None:
             # Hide them at create-time to avoid visible flashes before the main UI shows.
             class_name = cs_class or _read_hwnd_class(hwnd_val)
             title_text = cs_title or _read_hwnd_title(hwnd_val)
-            if class_name.startswith("QEventDispatcherWin32_Internal_Widget"):
-                return user32.CallNextHookEx(0, n_code, w_param, l_param)
             if _looks_like_qt_internal_helper_window(class_name=class_name, title=title_text):
+                is_q_titlebar_helper = class_name == "_q_titlebar" or title_text == "_q_titlebar"
+                if is_q_titlebar_helper:
+                    if debug_window_events:
+                        try:
+                            with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
+                                fh.write(
+                                    f"cbt-veto-qt-helper hwnd={hwnd_val} size={width}x{height} class={class_name!r} title={title_text!r} "
+                                    f"style=0x{style:08X} exstyle=0x{int(cs.dwExStyle) & 0xFFFFFFFF:08X}\n"
+                                )
+                        except Exception:
+                            pass
+                    return 1
                 cs.style = int(style & ~WS_VISIBLE)
                 ex_style = int(cs.dwExStyle) & 0xFFFFFFFF
                 cs.dwExStyle = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
                 cs.x = -32000
                 cs.y = -32000
+                cs.cx = 1
+                cs.cy = 1
                 if debug_window_events:
                     try:
                         with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
@@ -511,16 +535,25 @@ def _install_cbt_startup_window_suppression() -> None:
                     except Exception:
                         pass
                 return user32.CallNextHookEx(0, n_code, w_param, l_param)
-            # Never touch anything that looks like the actual app window.
-            if width >= 500 and height >= 300:
+            # Never touch anything that looks like the actual app window or our
+            # startup splash. The splash is intentionally medium-sized
+            # (420x320), so the generic fallback below must stay much stricter
+            # than that.
+            if width >= 360 and height >= 220:
                 return user32.CallNextHookEx(0, n_code, w_param, l_param)
-            # Target only tiny top-level helpers that can flash (titlebar-sized).
-            if height <= 800 and width <= 4000:
+            # Target only tiny top-level helpers that can flash:
+            # - titlebar-sized strips that can span most of the screen width
+            # - small popup-sized helpers
+            is_tiny_strip = height <= 120 and width <= 4000
+            is_tiny_popup = width <= 320 and height <= 320
+            if is_tiny_strip or is_tiny_popup:
                 cs.style = int(style & ~WS_VISIBLE)
                 ex_style = int(cs.dwExStyle) & 0xFFFFFFFF
                 cs.dwExStyle = int((ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
                 cs.x = -32000
                 cs.y = -32000
+                cs.cx = 1
+                cs.cy = 1
                 if debug_window_events:
                     try:
                         with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
@@ -545,21 +578,10 @@ def _install_cbt_startup_window_suppression() -> None:
     except Exception:
         pass
 
-    def _thread_has_message_queue(thread_id: int) -> bool:
-        if not thread_id:
-            return False
-        try:
-            # WM_NULL = 0. Fails if the target thread has no message queue.
-            return bool(user32.PostThreadMessageW(int(thread_id), 0, 0, 0))
-        except Exception:
-            return False
-
     def _install_hook_for_thread(thread_id: int) -> None:
         if not thread_id:
             return
         if _CBT_STARTUP_WINDOW_PROC is None or _CBT_STARTUP_WINDOW_LOCK is None:
-            return
-        if not _thread_has_message_queue(int(thread_id)):
             return
         with _CBT_STARTUP_WINDOW_LOCK:
             if thread_id in _CBT_STARTUP_WINDOW_HOOKS:
@@ -920,12 +942,8 @@ def _install_startup_window_suppression() -> None:
                 )
             ):
                 return True
-            if class_name.startswith("QEventDispatcherWin32_Internal_Widget"):
-                return False
             if class_name.startswith("QEventDispatcherWin32_"):
                 return True
-            if title.startswith("QEventDispatcherWin32_Internal_Widget"):
-                return False
             if title.startswith("QEventDispatcherWin32_"):
                 return True
             if class_name in {"ConsoleWindowClass", "PseudoConsoleWindow"}:
@@ -1506,6 +1524,284 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
     return applied
 
 
+class _NativeStartupCover:
+    def __init__(self, hwnd: int = 0, hbitmap: int = 0):
+        self.hwnd = int(hwnd or 0)
+        self.hbitmap = int(hbitmap or 0)
+        self._stop_event = threading.Event()
+        self._raise_thread = None
+        if self.hwnd:
+            thread = threading.Thread(target=self._raise_loop, name="bot-native-startup-cover", daemon=True)
+            self._raise_thread = thread
+            thread.start()
+
+    def _raise_loop(self) -> None:
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+            user32 = ctypes.windll.user32
+            HWND_TOPMOST = -1
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            SWP_SHOWWINDOW = 0x0040
+        except Exception:
+            return
+        deadline = time.monotonic() + 8.0
+        while not self._stop_event.is_set() and time.monotonic() < deadline:
+            hwnd = int(self.hwnd or 0)
+            if not hwnd:
+                return
+            try:
+                user32.SetWindowPos(
+                    wintypes.HWND(hwnd),
+                    wintypes.HWND(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                )
+            except Exception:
+                pass
+            self._stop_event.wait(0.015)
+
+    def close(self) -> None:
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+        except Exception:
+            return
+        hwnd = int(self.hwnd or 0)
+        hbitmap = int(self.hbitmap or 0)
+        self.hwnd = 0
+        self.hbitmap = 0
+        try:
+            self._stop_event.set()
+        except Exception:
+            pass
+        try:
+            thread = self._raise_thread
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=0.2)
+        except Exception:
+            pass
+        self._raise_thread = None
+        try:
+            if hwnd:
+                ctypes.windll.user32.DestroyWindow(ctypes.c_void_p(hwnd))
+        except Exception:
+            pass
+        try:
+            if hbitmap:
+                ctypes.windll.gdi32.DeleteObject(ctypes.c_void_p(hbitmap))
+        except Exception:
+            pass
+
+
+def _show_native_startup_cover() -> _NativeStartupCover | None:
+    if sys.platform != "win32":
+        return None
+    if not _env_flag("BOT_STARTUP_MASK_ENABLED"):
+        return None
+    if not _env_flag("BOT_NATIVE_STARTUP_COVER_ENABLED"):
+        return None
+    startup_mask_mode = str(os.environ.get("BOT_STARTUP_MASK_MODE") or "snapshot").strip().lower()
+    if startup_mask_mode not in {"", "snapshot", "screen"}:
+        return None
+    try:
+        import ctypes
+        import ctypes.wintypes as wintypes
+    except Exception:
+        return None
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+
+    MONITOR_DEFAULTTOPRIMARY = 1
+    WS_EX_TOPMOST = 0x00000008
+    WS_EX_TOOLWINDOW = 0x00000080
+    WS_EX_NOACTIVATE = 0x08000000
+    WS_POPUP = 0x80000000
+    SS_BITMAP = 0x0000000E
+    HWND_TOPMOST = -1
+    SWP_NOACTIVATE = 0x0010
+    SWP_SHOWWINDOW = 0x0040
+    STM_SETIMAGE = 0x0172
+    IMAGE_BITMAP = 0
+    SRCCOPY = 0x00CC0020
+    CAPTUREBLT = 0x40000000
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", wintypes.LONG),
+            ("top", wintypes.LONG),
+            ("right", wintypes.LONG),
+            ("bottom", wintypes.LONG),
+        ]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", RECT),
+            ("rcWork", RECT),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    try:
+        user32.MonitorFromPoint.argtypes = [POINT, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = wintypes.HMONITOR
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        user32.CreateWindowExW.argtypes = [
+            wintypes.DWORD,
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.HWND,
+            wintypes.HMENU,
+            wintypes.HINSTANCE,
+            wintypes.LPVOID,
+        ]
+        user32.CreateWindowExW.restype = wintypes.HWND
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.SendMessageW.restype = wintypes.LRESULT
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        user32.UpdateWindow.argtypes = [wintypes.HWND]
+        user32.UpdateWindow.restype = wintypes.BOOL
+        user32.GetDC.argtypes = [wintypes.HWND]
+        user32.GetDC.restype = wintypes.HDC
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        user32.ReleaseDC.restype = ctypes.c_int
+        gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+        gdi32.CreateCompatibleDC.restype = wintypes.HDC
+        gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+        gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        gdi32.SelectObject.restype = wintypes.HGDIOBJ
+        gdi32.BitBlt.argtypes = [
+            wintypes.HDC,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.HDC,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.DWORD,
+        ]
+        gdi32.BitBlt.restype = wintypes.BOOL
+        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        gdi32.DeleteDC.restype = wintypes.BOOL
+        gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi32.DeleteObject.restype = wintypes.BOOL
+    except Exception:
+        pass
+
+    try:
+        monitor = user32.MonitorFromPoint(POINT(0, 0), MONITOR_DEFAULTTOPRIMARY)
+        if not monitor:
+            return None
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(mi)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+            return None
+        left = int(mi.rcMonitor.left)
+        top = int(mi.rcMonitor.top)
+        width = int(mi.rcMonitor.right - mi.rcMonitor.left)
+        height = int(mi.rcMonitor.bottom - mi.rcMonitor.top)
+        if width <= 0 or height <= 0:
+            return None
+    except Exception:
+        return None
+
+    screen_dc = None
+    mem_dc = None
+    bitmap = 0
+    old_obj = 0
+    hwnd = 0
+    try:
+        screen_dc = user32.GetDC(0)
+        if not screen_dc:
+            return None
+        mem_dc = gdi32.CreateCompatibleDC(screen_dc)
+        if not mem_dc:
+            return None
+        bitmap = int(gdi32.CreateCompatibleBitmap(screen_dc, width, height) or 0)
+        if not bitmap:
+            return None
+        old_obj = int(gdi32.SelectObject(mem_dc, bitmap) or 0)
+        if not gdi32.BitBlt(mem_dc, 0, 0, width, height, screen_dc, left, top, SRCCOPY | CAPTUREBLT):
+            return None
+        hwnd = int(
+            user32.CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                "Static",
+                None,
+                WS_POPUP | SS_BITMAP,
+                left,
+                top,
+                width,
+                height,
+                0,
+                0,
+                0,
+                None,
+            )
+            or 0
+        )
+        if not hwnd:
+            return None
+        user32.SendMessageW(hwnd, STM_SETIMAGE, IMAGE_BITMAP, bitmap)
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, left, top, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        user32.UpdateWindow(hwnd)
+        return _NativeStartupCover(hwnd=hwnd, hbitmap=bitmap)
+    except Exception:
+        if hwnd:
+            try:
+                user32.DestroyWindow(hwnd)
+            except Exception:
+                pass
+        if bitmap:
+            try:
+                gdi32.DeleteObject(bitmap)
+            except Exception:
+                pass
+        return None
+    finally:
+        try:
+            if mem_dc:
+                if old_obj:
+                    gdi32.SelectObject(mem_dc, old_obj)
+                gdi32.DeleteDC(mem_dc)
+        except Exception:
+            pass
+        try:
+            if screen_dc:
+                user32.ReleaseDC(0, screen_dc)
+        except Exception:
+            pass
+
+
 def _apply_qt_icon(app, window) -> bool:
     from PyQt6 import QtGui
     from app.gui.app_icon import load_app_icon, find_primary_icon_file
@@ -1600,7 +1896,7 @@ class _SplashScreen:
     Made Win32-level click-through so it never blocks mouse input.
     """
 
-    def __init__(self, app, QtCore, QtGui, QWidget):  # noqa: N803
+    def __init__(self, app, QtCore, QtGui, QWidget, *, host_widget=None):  # noqa: N803
         self._app = app
         self._QtCore = QtCore
         self._QtGui = QtGui
@@ -1618,35 +1914,57 @@ class _SplashScreen:
             self._logo_pixmap = None
 
         try:
-            screen = QtGui.QGuiApplication.primaryScreen()
-            screen_geo = screen.geometry() if screen else QtCore.QRect(0, 0, 1920, 1080)
-
             splash_w, splash_h = 420, 320
-
-            splash = _SplashWidget(
-                None,
-                QtCore.Qt.WindowType.FramelessWindowHint
-                | QtCore.Qt.WindowType.WindowStaysOnTopHint
-                | QtCore.Qt.WindowType.Tool
-                | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
-                | QtCore.Qt.WindowType.NoDropShadowWindowHint,
-            )
-            splash.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            if host_widget is not None:
+                try:
+                    host_rect = host_widget.rect()
+                except Exception:
+                    host_rect = QtCore.QRect(0, 0, 1920, 1080)
+                splash = _SplashWidget(host_widget)
+            else:
+                screen = QtGui.QGuiApplication.primaryScreen()
+                screen_geo = screen.geometry() if screen else QtCore.QRect(0, 0, 1920, 1080)
+                splash = _SplashWidget(
+                    None,
+                    QtCore.Qt.WindowType.SplashScreen
+                    | QtCore.Qt.WindowType.FramelessWindowHint
+                    | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                    | QtCore.Qt.WindowType.NoDropShadowWindowHint,
+                )
             splash.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             splash.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            try:
+                splash.setWindowTitle("")
+            except Exception:
+                pass
             splash.setFixedSize(splash_w, splash_h)
+            try:
+                rounded_path = QtGui.QPainterPath()
+                rounded_path.addRoundedRect(QtCore.QRectF(0, 0, splash_w, splash_h), 24, 24)
+                splash.setMask(QtGui.QRegion(rounded_path.toFillPolygon().toPolygon()))
+            except Exception:
+                pass
 
-            x = screen_geo.x() + (screen_geo.width() - splash_w) // 2
-            y = screen_geo.y() + (screen_geo.height() - splash_h) // 2
-            splash.move(x, y)
+            if host_widget is not None:
+                x = (host_rect.width() - splash_w) // 2
+                y = (host_rect.height() - splash_h) // 2
+                splash.move(max(0, x), max(0, y))
+            else:
+                x = screen_geo.x() + (screen_geo.width() - splash_w) // 2
+                y = screen_geo.y() + (screen_geo.height() - splash_h) // 2
+                splash.move(x, y)
 
             splash._splash_ref = self  # back-reference for paint
             self._widget = splash
             splash.show()
+            try:
+                splash.raise_()
+            except Exception:
+                pass
             app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 30)
 
             # Win32 click-through
-            if sys.platform == "win32":
+            if sys.platform == "win32" and host_widget is None:
                 try:
                     import ctypes
                     import ctypes.wintypes as wintypes
@@ -1835,10 +2153,19 @@ def _make_splash_widget_class(QWidget, QtCore, QtGui):  # noqa: N803
 
 def main() -> int:
     _configure_startup_window_suppression_defaults()
+    native_startup_cover = None
+    if sys.platform == "win32":
+        try:
+            native_startup_cover = _show_native_startup_cover()
+        except Exception:
+            native_startup_cover = None
+        if native_startup_cover is not None:
+            _boot_log("native startup cover shown")
+    if _env_flag("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS"):
+        _install_cbt_startup_window_suppression()
     if _env_flag("BOT_DISABLE_STARTUP_WINDOW_HOOKS"):
         _boot_log("startup window hooks disabled")
     else:
-        _install_cbt_startup_window_suppression()
         _install_startup_window_suppression()
 
     # Version banner / environment setup must run before importing PyQt modules
@@ -1871,7 +2198,9 @@ def main() -> int:
         "BOT_STARTUP_MASK_ENABLED="
         f"{os.environ.get('BOT_STARTUP_MASK_ENABLED', '')!r} "
         "BOT_STARTUP_MASK_MODE="
-        f"{os.environ.get('BOT_STARTUP_MASK_MODE', '')!r}"
+        f"{os.environ.get('BOT_STARTUP_MASK_MODE', '')!r} "
+        "BOT_NATIVE_STARTUP_COVER_ENABLED="
+        f"{os.environ.get('BOT_NATIVE_STARTUP_COVER_ENABLED', '')!r}"
     )
 
     force_app_icon = _env_flag("BOT_FORCE_APP_ICON")
@@ -1893,6 +2222,348 @@ def main() -> int:
                 QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
             except Exception:
                 pass
+
+    # --- Suppress transient startup windows via WinEvent hook on dedicated thread ---
+    # Qt/QtWebEngine create small helper windows during init that flash briefly.
+    # We install a WinEvent hook (EVENT_OBJECT_SHOW) on a DEDICATED background thread
+    # with its own Win32 message loop BEFORE QApplication is created, because Qt may
+    # flash tiny helper windows during app initialization. A threading.Event ensures
+    # the hook is active before we proceed.
+    _suppress_stop = False
+    _suppress_thread_id = 0
+    _suppress_known_ok: set[int] = set()  # whitelisted HWNDs (splash, main window)
+    _hook_ready = None  # threading.Event set when hook is installed
+
+    def _suppress_via_winevent():
+        nonlocal _suppress_thread_id
+        if sys.platform != "win32":
+            if _hook_ready is not None:
+                _hook_ready.set()
+            return
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+            import time
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+
+            _suppress_thread_id = kernel32.GetCurrentThreadId()
+            pid = kernel32.GetCurrentProcessId()
+            debug_window_events = _env_flag("BOT_DEBUG_WINDOW_EVENTS")
+            debug_log_path = Path(os.getenv("TEMP") or ".").resolve() / "binance_window_events.log"
+
+            SW_HIDE = 0
+            GWL_STYLE = -16
+            GWL_EXSTYLE = -20
+            WS_CHILD = 0x40000000
+            WS_VISIBLE = 0x10000000
+            EVENT_OBJECT_CREATE = 0x8000
+            EVENT_OBJECT_SHOW = 0x8002
+            WINEVENT_OUTOFCONTEXT = 0x0000
+            _get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+            _get_exstyle = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+            try:
+                user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+                user32.EnumWindows.restype = wintypes.BOOL
+            except Exception:
+                pass
+
+            def _enum_descendant_pids(root_pid: int) -> set[int]:
+                tracked: set[int] = {int(root_pid)}
+                if not root_pid:
+                    return tracked
+                try:
+                    TH32CS_SNAPPROCESS = 0x00000002
+                    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+                    if snapshot in (0, ctypes.c_void_p(-1).value):
+                        return tracked
+
+                    class PROCESSENTRY32(ctypes.Structure):
+                        _fields_ = [
+                            ("dwSize", wintypes.DWORD),
+                            ("cntUsage", wintypes.DWORD),
+                            ("th32ProcessID", wintypes.DWORD),
+                            ("th32DefaultHeapID", ctypes.c_void_p),
+                            ("th32ModuleID", wintypes.DWORD),
+                            ("cntThreads", wintypes.DWORD),
+                            ("th32ParentProcessID", wintypes.DWORD),
+                            ("pcPriClassBase", wintypes.LONG),
+                            ("dwFlags", wintypes.DWORD),
+                            ("szExeFile", wintypes.WCHAR * 260),
+                        ]
+
+                    parent_to_children: dict[int, list[int]] = {}
+                    entry = PROCESSENTRY32()
+                    entry.dwSize = ctypes.sizeof(entry)
+                    try:
+                        if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                            while True:
+                                child_pid = int(entry.th32ProcessID)
+                                parent_pid = int(entry.th32ParentProcessID)
+                                parent_to_children.setdefault(parent_pid, []).append(child_pid)
+                                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                                    break
+                    finally:
+                        try:
+                            kernel32.CloseHandle(snapshot)
+                        except Exception:
+                            pass
+
+                    queue = [int(root_pid)]
+                    while queue:
+                        current = queue.pop()
+                        for child_pid in parent_to_children.get(current, []):
+                            if child_pid not in tracked:
+                                tracked.add(child_pid)
+                                queue.append(child_pid)
+                except Exception:
+                    return tracked
+                return tracked
+
+            tracked_lock = threading.Lock()
+            tracked_state = {"pids": {int(pid)}, "ts": 0.0}
+
+            def _refresh_descendant_pids(force: bool = False) -> set[int]:
+                now = time.monotonic()
+                with tracked_lock:
+                    last_ts = float(tracked_state["ts"])
+                    if not force and (now - last_ts) < 0.1:
+                        return set(tracked_state["pids"])
+                refreshed = _enum_descendant_pids(int(pid))
+                with tracked_lock:
+                    tracked_state["pids"] = set(refreshed)
+                    tracked_state["ts"] = now
+                    return set(refreshed)
+
+            def _pid_is_tracked(pid_value: int) -> bool:
+                if not pid_value:
+                    return False
+                with tracked_lock:
+                    if int(pid_value) in tracked_state["pids"]:
+                        return True
+                return int(pid_value) in _refresh_descendant_pids(force=False)
+
+            def _window_text(hwnd_value: int) -> str:
+                try:
+                    buf = ctypes.create_unicode_buffer(256)
+                    user32.GetWindowTextW(wintypes.HWND(int(hwnd_value)), buf, 256)
+                    return str(buf.value or "").strip()
+                except Exception:
+                    return ""
+
+            def _window_class(hwnd_value: int) -> str:
+                try:
+                    buf = ctypes.create_unicode_buffer(256)
+                    user32.GetClassNameW(wintypes.HWND(int(hwnd_value)), buf, 256)
+                    return str(buf.value or "").strip()
+                except Exception:
+                    return ""
+
+            def _is_tiny_helper_window(hwnd_value: int) -> bool:
+                try:
+                    rect = wintypes.RECT()
+                    if not user32.GetWindowRect(wintypes.HWND(int(hwnd_value)), ctypes.byref(rect)):
+                        return False
+                    width = int(rect.right - rect.left)
+                    height = int(rect.bottom - rect.top)
+                    if width <= 0 or height <= 0:
+                        return False
+                    try:
+                        style = int(_get_style(wintypes.HWND(int(hwnd_value)), GWL_STYLE))
+                    except Exception:
+                        style = 0
+                    if style & WS_CHILD:
+                        return False
+                    class_name = _window_class(hwnd_value)
+                    title = _window_text(hwnd_value)
+                    if class_name == "_q_titlebar" or title == "_q_titlebar":
+                        return True
+                    if class_name.startswith("QEventDispatcherWin32_") or title.startswith("QEventDispatcherWin32_"):
+                        return True
+                    qt_suffixes = (
+                        "PowerDummyWindow",
+                        "ClipboardView",
+                        "ScreenChangeObserverWindow",
+                        "ThemeChangeObserverWindow",
+                        "QWindowToolSaveBits",
+                    )
+                    if class_name.startswith("Qt") and any(class_name.endswith(suffix) for suffix in qt_suffixes):
+                        return True
+                    if title.startswith("Qt") and any(title.endswith(suffix) for suffix in qt_suffixes):
+                        return True
+                    if class_name in {"ConsoleWindowClass", "PseudoConsoleWindow"}:
+                        return True
+                    if class_name == "Intermediate D3D Window":
+                        return height <= 500 and width <= 4000
+                    if class_name.startswith("Chrome_WidgetWin_"):
+                        return height <= 400 and width <= 4000
+                    try:
+                        exstyle = int(_get_exstyle(wintypes.HWND(int(hwnd_value)), GWL_EXSTYLE))
+                    except Exception:
+                        exstyle = 0
+                    # Treat tiny popup/tool surfaces as startup helpers, but never the real app window.
+                    if width >= 500 and height >= 300 and not (exstyle & 0x00000080):
+                        return False
+                    return height <= 260 and width <= 3200
+                except Exception:
+                    return False
+
+            def _hide_window(hwnd_value: int) -> None:
+                try:
+                    user32.MoveWindow(wintypes.HWND(int(hwnd_value)), -32000, -32000, 1, 1, False)
+                except Exception:
+                    pass
+                try:
+                    user32.ShowWindow(wintypes.HWND(int(hwnd_value)), SW_HIDE)
+                except Exception:
+                    pass
+
+            def _log_window_event(hwnd_value: int, reason: str) -> None:
+                if not debug_window_events:
+                    return
+                try:
+                    rect = wintypes.RECT()
+                    user32.GetWindowRect(wintypes.HWND(int(hwnd_value)), ctypes.byref(rect))
+                    width = int(rect.right - rect.left)
+                    height = int(rect.bottom - rect.top)
+                    try:
+                        style = int(_get_style(wintypes.HWND(int(hwnd_value)), GWL_STYLE))
+                    except Exception:
+                        style = 0
+                    try:
+                        exstyle = int(_get_exstyle(wintypes.HWND(int(hwnd_value)), GWL_EXSTYLE))
+                    except Exception:
+                        exstyle = 0
+                    with open(debug_log_path, "a", encoding="utf-8", errors="ignore") as fh:
+                        fh.write(
+                            f"{reason} hwnd={int(hwnd_value)} class={_window_class(hwnd_value)!r} "
+                            f"title={_window_text(hwnd_value)!r} size={width}x{height} "
+                            f"style=0x{style:08X} exstyle=0x{exstyle:08X}\n"
+                        )
+                except Exception:
+                    pass
+
+            def _maybe_hide_window(hwnd_value: int, *, reason: str) -> bool:
+                if not hwnd_value or hwnd_value in _suppress_known_ok:
+                    return False
+                try:
+                    if not _is_tiny_helper_window(hwnd_value):
+                        _suppress_known_ok.add(hwnd_value)
+                        return False
+                    _hide_window(hwnd_value)
+                    _log_window_event(hwnd_value, reason)
+                    return True
+                except Exception:
+                    return False
+
+            # WinEvent callback — fires instantly when any window becomes visible
+            WINEVENTPROC = ctypes.WINFUNCTYPE(
+                None,
+                wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                ctypes.c_long, ctypes.c_long, wintypes.DWORD, wintypes.DWORD,
+            )
+
+            def _on_show(_hook, _event, hwnd, id_object, _id_child, _tid, _time):
+                if id_object != 0:  # OBJID_WINDOW = 0
+                    return
+                h = int(hwnd) if hwnd else 0
+                if not h or h in _suppress_known_ok:
+                    return
+                try:
+                    w_pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
+                    if not _pid_is_tracked(int(w_pid.value)):
+                        return
+
+                    is_create_event = int(_event) == EVENT_OBJECT_CREATE
+                    _log_window_event(
+                        h,
+                        reason="winevent-seen-create" if is_create_event else "winevent-seen-show",
+                    )
+                    if not is_create_event:
+                        style = int(_get_style(hwnd, GWL_STYLE))
+                        if not (style & WS_VISIBLE):
+                            return
+
+                    if not _maybe_hide_window(
+                        h,
+                        reason="winevent-hide-create" if is_create_event else "winevent-hide-show",
+                    ):
+                        return
+                except Exception:
+                    pass
+
+            cb = WINEVENTPROC(_on_show)
+
+            EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+            def _poll_once() -> None:
+                def _enum_cb(hwnd_obj, _lparam):
+                    try:
+                        h = int(hwnd_obj) if hwnd_obj else 0
+                        if not h or h in _suppress_known_ok:
+                            return True
+                        w_pid = wintypes.DWORD()
+                        user32.GetWindowThreadProcessId(hwnd_obj, ctypes.byref(w_pid))
+                        if not _pid_is_tracked(int(w_pid.value)):
+                            return True
+                        _maybe_hide_window(h, reason="winevent-hide-poll")
+                    except Exception:
+                        return True
+                    return True
+
+                cb_enum = EnumWindowsProc(_enum_cb)
+                try:
+                    user32.EnumWindows(cb_enum, 0)
+                except Exception:
+                    pass
+
+            hook = user32.SetWinEventHook(
+                EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW,
+                None, cb, 0, 0, WINEVENT_OUTOFCONTEXT,
+            )
+
+            # Signal main thread that hook is installed
+            if _hook_ready is not None:
+                _hook_ready.set()
+
+            if not hook:
+                return
+
+            deadline = time.monotonic() + 5.0
+            next_pid_refresh = time.monotonic()
+            next_poll = time.monotonic()
+            msg = wintypes.MSG()
+            while not _suppress_stop and time.monotonic() < deadline:
+                now = time.monotonic()
+                if now >= next_pid_refresh:
+                    _refresh_descendant_pids(force=True)
+                    next_pid_refresh = now + 0.05
+                if now >= next_poll:
+                    _poll_once()
+                    next_poll = now + 0.015
+                while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                    if msg.message == 0x0012:  # WM_QUIT
+                        user32.UnhookWinEvent(hook)
+                        return
+                    user32.TranslateMessage(ctypes.byref(msg))
+                    user32.DispatchMessageW(ctypes.byref(msg))
+                time.sleep(0.001)
+
+            user32.UnhookWinEvent(hook)
+        except Exception:
+            if _hook_ready is not None:
+                _hook_ready.set()
+
+    # Start hook thread and wait for it to be ready BEFORE creating any Qt windows
+    if sys.platform == "win32":
+        import threading as _th
+        _hook_ready = _th.Event()
+        _suppress_thread = _th.Thread(target=_suppress_via_winevent, daemon=True)
+        _suppress_thread.start()
+        _hook_ready.wait(timeout=0.5)  # wait up to 500ms for hook to be installed
+        _boot_log("transient window suppression hook ready")
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
@@ -1973,133 +2644,18 @@ def main() -> int:
             app.setQuitOnLastWindowClosed(False)
         except Exception:
             pass
-    # --- Suppress transient startup windows via WinEvent hook on dedicated thread ---
-    # Qt/QtWebEngine create small helper windows during init that flash briefly.
-    # We install a WinEvent hook (EVENT_OBJECT_SHOW) on a DEDICATED background thread
-    # with its own Win32 message loop BEFORE creating any Qt windows (including the
-    # splash screen). A threading.Event ensures the hook is active before we proceed.
-    _suppress_stop = False
-    _suppress_thread_id = 0
-    _suppress_known_ok: set[int] = set()  # whitelisted HWNDs (splash, main window)
-    _hook_ready = None  # threading.Event set when hook is installed
 
-    def _suppress_via_winevent():
-        nonlocal _suppress_thread_id
-        if sys.platform != "win32":
-            if _hook_ready is not None:
-                _hook_ready.set()
+    def _close_native_startup_cover() -> None:
+        nonlocal native_startup_cover
+        cover = native_startup_cover
+        native_startup_cover = None
+        if cover is None:
             return
         try:
-            import ctypes
-            import ctypes.wintypes as wintypes
-
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-
-            _suppress_thread_id = kernel32.GetCurrentThreadId()
-            pid = kernel32.GetCurrentProcessId()
-
-            SW_HIDE = 0
-            GWL_STYLE = -16
-            WS_VISIBLE = 0x10000000
-            EVENT_OBJECT_SHOW = 0x8002
-            WINEVENT_OUTOFCONTEXT = 0x0000
-            _get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
-
-            # WinEvent callback — fires instantly when any window becomes visible
-            WINEVENTPROC = ctypes.WINFUNCTYPE(
-                None,
-                wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
-                ctypes.c_long, ctypes.c_long, wintypes.DWORD, wintypes.DWORD,
-            )
-
-            def _on_show(_hook, _event, hwnd, id_object, _id_child, _tid, _time):
-                if id_object != 0:  # OBJID_WINDOW = 0
-                    return
-                h = int(hwnd) if hwnd else 0
-                if not h or h in _suppress_known_ok:
-                    return
-                try:
-                    w_pid = wintypes.DWORD()
-                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
-                    if w_pid.value != pid:
-                        return
-
-                    style = int(_get_style(hwnd, GWL_STYLE))
-                    if not (style & WS_VISIBLE):
-                        return
-
-                    rect = wintypes.RECT()
-                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    w = rect.right - rect.left
-                    h_val = rect.bottom - rect.top
-                    if w > 400 and h_val > 300:
-                        _suppress_known_ok.add(h)
-                        return
-
-                    # Move off-screen instantly (MoveWindow is immediate, doesn't
-                    # need the target thread to process messages like ShowWindow does)
-                    user32.MoveWindow(hwnd, -32000, -32000, 1, 1, False)
-                    user32.ShowWindow(hwnd, SW_HIDE)
-                except Exception:
-                    pass
-
-            cb = WINEVENTPROC(_on_show)
-
-            hook = user32.SetWinEventHook(
-                EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW,
-                None, cb, pid, 0, WINEVENT_OUTOFCONTEXT,
-            )
-
-            # Signal main thread that hook is installed
-            if _hook_ready is not None:
-                _hook_ready.set()
-
-            if not hook:
-                return
-
-            import time
-            deadline = time.monotonic() + 5.0
-            msg = wintypes.MSG()
-            while not _suppress_stop and time.monotonic() < deadline:
-                while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
-                    if msg.message == 0x0012:  # WM_QUIT
-                        user32.UnhookWinEvent(hook)
-                        return
-                    user32.TranslateMessage(ctypes.byref(msg))
-                    user32.DispatchMessageW(ctypes.byref(msg))
-                time.sleep(0.001)
-
-            user32.UnhookWinEvent(hook)
+            cover.close()
+            _boot_log("native startup cover hidden")
         except Exception:
-            if _hook_ready is not None:
-                _hook_ready.set()
-
-    # Start hook thread and wait for it to be ready BEFORE creating any Qt windows
-    if sys.platform == "win32":
-        import threading as _th
-        _hook_ready = _th.Event()
-        _suppress_thread = _th.Thread(target=_suppress_via_winevent, daemon=True)
-        _suppress_thread.start()
-        _hook_ready.wait(timeout=0.5)  # wait up to 500ms for hook to be installed
-        _boot_log("transient window suppression hook ready")
-
-    # --- Show loading splash screen ---
-    global _SplashWidget
-    _SplashWidget = _make_splash_widget_class(QWidget, QtCore, QtGui)
-    splash = None
-    if not _env_flag("BOT_DISABLE_SPLASH"):
-        try:
-            splash = _SplashScreen(app, QtCore, QtGui, QWidget)
-            _boot_log("splash screen shown")
-            # Whitelist splash HWND so the hook doesn't hide it
-            if splash._widget is not None:
-                try:
-                    _suppress_known_ok.add(int(splash._widget.winId()))
-                except Exception:
-                    pass
-        except Exception:
-            splash = None
+            pass
 
     startup_masks: list[QWidget] = []
     startup_mask_hide_ms = 0
@@ -2110,9 +2666,25 @@ def main() -> int:
         except Exception:
             startup_mask_hide_ms = 500
         startup_mask_mode = str(os.environ.get("BOT_STARTUP_MASK_MODE") or "snapshot").strip().lower()
+        startup_mask_scope = str(os.environ.get("BOT_STARTUP_MASK_SCOPE") or "all").strip().lower()
         startup_mask_hide_ms = max(100, min(startup_mask_hide_ms, 5000))
         try:
-            screens = list(QtGui.QGuiApplication.screens() or [])
+            screens: list = []
+            all_screens = list(QtGui.QGuiApplication.screens() or [])
+            if startup_mask_scope in {"primary", "main"}:
+                primary = QtGui.QGuiApplication.primaryScreen()
+                if primary is not None:
+                    screens = [primary]
+            elif startup_mask_scope in {"cursor", "active"}:
+                try:
+                    cursor_pos = QtGui.QCursor.pos()
+                except Exception:
+                    cursor_pos = None
+                chosen = QtGui.QGuiApplication.screenAt(cursor_pos) if cursor_pos is not None else None
+                if chosen is not None:
+                    screens = [chosen]
+            if not screens:
+                screens = all_screens
             if not screens:
                 primary = QtGui.QGuiApplication.primaryScreen()
                 if primary is not None:
@@ -2121,14 +2693,17 @@ def main() -> int:
             for screen in screens:
                 mask = QWidget(
                     None,
-                    QtCore.Qt.WindowType.FramelessWindowHint
-                    | QtCore.Qt.WindowType.Tool
+                    QtCore.Qt.WindowType.SplashScreen
+                    | QtCore.Qt.WindowType.FramelessWindowHint
                     | QtCore.Qt.WindowType.WindowStaysOnTopHint
-                    | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
                     | QtCore.Qt.WindowType.NoDropShadowWindowHint,
                 )
                 mask.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
                 mask.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                try:
+                    mask.setWindowTitle("")
+                except Exception:
+                    pass
                 mask.setGeometry(screen.geometry())
                 mask_is_snapshot = False
                 if startup_mask_mode == "snapshot":
@@ -2181,15 +2756,71 @@ def main() -> int:
             except Exception:
                 pass
             mask_mode_effective = "snapshot" if snapshot_count == len(startup_masks) and startup_masks else "solid"
-            _boot_log(f"startup masks shown count={len(startup_masks)} mode={mask_mode_effective}")
+            _boot_log(
+                f"startup masks shown count={len(startup_masks)} mode={mask_mode_effective} scope={startup_mask_scope or 'all'}"
+            )
         except Exception:
             startup_masks = []
+
+    # --- Show loading splash screen ---
+    global _SplashWidget
+    _SplashWidget = _make_splash_widget_class(QWidget, QtCore, QtGui)
+    splash = None
+    splash_host_widget = startup_masks[0] if startup_masks else None
+    if not _env_flag("BOT_DISABLE_SPLASH"):
+        try:
+            splash = _SplashScreen(app, QtCore, QtGui, QWidget, host_widget=splash_host_widget)
+            _boot_log("splash screen shown")
+            # Whitelist splash HWND so the hook doesn't hide it
+            if splash._widget is not None and splash_host_widget is None:
+                try:
+                    _suppress_known_ok.add(int(splash._widget.winId()))
+                except Exception:
+                    pass
+            if splash._widget is not None and startup_masks:
+                try:
+                    splash._widget.raise_()
+                except Exception:
+                    pass
+                try:
+                    app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 25)
+                except Exception:
+                    pass
+        except Exception:
+            splash = None
+
+    if splash is not None or startup_masks:
+        _close_native_startup_cover()
 
     if splash is not None:
         try:
             splash.set_status("Loading modules…")
         except Exception:
             pass
+
+    startup_overlay_raise_timer = None
+
+    def _raise_startup_overlays() -> None:
+        for mask in list(startup_masks):
+            try:
+                mask.raise_()
+            except Exception:
+                pass
+        if splash is not None and getattr(splash, "_widget", None) is not None:
+            try:
+                splash._widget.raise_()
+            except Exception:
+                pass
+
+    if sys.platform == "win32" and (startup_masks or splash is not None):
+        try:
+            startup_overlay_raise_timer = QtCore.QTimer(app)
+            startup_overlay_raise_timer.setInterval(15)
+            startup_overlay_raise_timer.timeout.connect(_raise_startup_overlays)
+            startup_overlay_raise_timer.start()
+            _raise_startup_overlays()
+        except Exception:
+            startup_overlay_raise_timer = None
 
     # --- Deferred heavy imports (after splash is visible) ---
     # Run imports in a background thread so the Qt event loop stays alive
@@ -2343,19 +2974,16 @@ def main() -> int:
     except Exception:
         win.show()
     _boot_log("MainWindow shown")
-    _suppress_stop = True  # stop transient window suppression thread
-    if splash is not None:
-        try:
-            splash.close()
-            _boot_log("splash screen closed")
-        except Exception:
-            pass
-        splash = None
+    _close_native_startup_cover()
     try:
-        win.winId()
+        main_hwnd = int(win.winId())
     except Exception:
-        pass
+        main_hwnd = 0
+    if main_hwnd:
+        _suppress_known_ok.add(main_hwnd)
     mask_unmask_deadline = time.monotonic() + 4.0
+    startup_transition_deadline = time.monotonic() + 4.0
+    startup_transition_done = False
 
     def _main_window_ready_for_unmask() -> bool:
         try:
@@ -2379,6 +3007,34 @@ def main() -> int:
             except Exception:
                 pass
         return True
+
+    def _finish_startup_transition() -> None:
+        nonlocal splash, startup_transition_done, _suppress_stop, startup_overlay_raise_timer
+        if startup_transition_done:
+            return
+        if not _main_window_ready_for_unmask() and time.monotonic() < startup_transition_deadline:
+            QtCore.QTimer.singleShot(60, _finish_startup_transition)
+            return
+        startup_transition_done = True
+        if startup_overlay_raise_timer is not None:
+            try:
+                startup_overlay_raise_timer.stop()
+            except Exception:
+                pass
+            try:
+                startup_overlay_raise_timer.deleteLater()
+            except Exception:
+                pass
+            startup_overlay_raise_timer = None
+        _suppress_stop = True
+        if splash is not None:
+            try:
+                splash.close()
+                _boot_log("splash screen closed")
+            except Exception:
+                pass
+            splash = None
+        _try_hide_startup_mask()
 
     def _try_hide_startup_mask() -> None:
         nonlocal startup_masks
@@ -2416,13 +3072,16 @@ def main() -> int:
                 win.activateWindow()
             except Exception:
                 pass
-            _try_hide_startup_mask()
+            _finish_startup_transition()
 
         QtCore.QTimer.singleShot(startup_reveal_ms, _reveal_main_window)
         if startup_masks:
             QtCore.QTimer.singleShot(max(startup_mask_hide_ms, startup_reveal_ms + 300), _try_hide_startup_mask)
     elif startup_masks:
         QtCore.QTimer.singleShot(startup_mask_hide_ms or 1300, _try_hide_startup_mask)
+        QtCore.QTimer.singleShot(0, _finish_startup_transition)
+    else:
+        QtCore.QTimer.singleShot(0, _finish_startup_transition)
     # Safety valve: startup window hooks help suppress flashes during creation, but
     # keeping them active too long can make some Windows setups feel unresponsive.
     if sys.platform == "win32":
