@@ -33,6 +33,29 @@ BinanceWsClient::BinanceWsClient(QObject *parent)
             return;
         }
         const QJsonObject obj = doc.object();
+        const QJsonObject klineObj = obj.value(QStringLiteral("k")).toObject();
+        if (!klineObj.isEmpty()) {
+            const QString symbol = klineObj.value(QStringLiteral("s")).toString(obj.value(QStringLiteral("s")).toString());
+            const QString interval = klineObj.value(QStringLiteral("i")).toString();
+            bool openTimeOk = false;
+            const qint64 openTimeMs = klineObj.value(QStringLiteral("t")).toVariant().toLongLong(&openTimeOk);
+            bool openOk = false;
+            bool highOk = false;
+            bool lowOk = false;
+            bool closeOk = false;
+            bool volumeOk = false;
+            const double open = klineObj.value(QStringLiteral("o")).toVariant().toDouble(&openOk);
+            const double high = klineObj.value(QStringLiteral("h")).toVariant().toDouble(&highOk);
+            const double low = klineObj.value(QStringLiteral("l")).toVariant().toDouble(&lowOk);
+            const double close = klineObj.value(QStringLiteral("c")).toVariant().toDouble(&closeOk);
+            const double volume = klineObj.value(QStringLiteral("v")).toVariant().toDouble(&volumeOk);
+            const bool isClosed = klineObj.value(QStringLiteral("x")).toBool(false);
+            if (!symbol.isEmpty() && !interval.isEmpty() && openTimeOk && openOk && highOk && lowOk && closeOk && volumeOk) {
+                emit kline(symbol, interval, openTimeMs, open, high, low, close, volume, isClosed);
+            }
+            return;
+        }
+
         const QString symbol = obj.value(QStringLiteral("s")).toString();
         bool bidOk = false;
         bool askOk = false;
@@ -78,6 +101,39 @@ void BinanceWsClient::connectBookTicker(const QString &symbol, bool futures, boo
     socket_->open(url);
 #else
     Q_UNUSED(symbol)
+    Q_UNUSED(futures)
+    Q_UNUSED(testnet)
+    emit errorOccurred(QStringLiteral("Qt WebSockets module is not available in this build."));
+#endif
+}
+
+void BinanceWsClient::connectKline(const QString &symbol, const QString &interval, bool futures, bool testnet) {
+#if HAS_QT_WEBSOCKETS
+    if (!socket_) {
+        emit errorOccurred(QStringLiteral("WebSocket client is not initialized."));
+        return;
+    }
+    const QString streamSymbol = normalizedStreamSymbol(symbol);
+    QString streamInterval = interval.trimmed().toLower();
+    streamInterval.remove(' ');
+    if (streamSymbol.isEmpty() || streamInterval.isEmpty()) {
+        emit errorOccurred(QStringLiteral("Symbol or interval is empty."));
+        return;
+    }
+    const QString stream = streamSymbol + QStringLiteral("@kline_") + streamInterval;
+    const QString base = futures
+        ? (testnet ? QStringLiteral("wss://stream.binancefuture.com/ws")
+                   : QStringLiteral("wss://fstream.binance.com/ws"))
+        : (testnet ? QStringLiteral("wss://testnet.binance.vision/ws")
+                   : QStringLiteral("wss://stream.binance.com:9443/ws"));
+    const QUrl url(base + QStringLiteral("/") + stream);
+    if (socket_->state() != QAbstractSocket::UnconnectedState) {
+        socket_->close();
+    }
+    socket_->open(url);
+#else
+    Q_UNUSED(symbol)
+    Q_UNUSED(interval)
     Q_UNUSED(futures)
     Q_UNUSED(testnet)
     emit errorOccurred(QStringLiteral("Qt WebSockets module is not available in this build."));

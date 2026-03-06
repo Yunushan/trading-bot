@@ -1,4 +1,4 @@
-#include "BacktestWindow.h"
+#include "TradingBotWindow.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
         QGuiApplication::setWindowIcon(icon);
     }
 
-    BacktestWindow window;
+    TradingBotWindow window;
     if (!icon.isNull()) {
         window.setWindowIcon(icon);
     }
@@ -88,3 +88,4 @@ int main(int argc, char *argv[]) {
 
     return app.exec();
 }
+

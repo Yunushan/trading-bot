@@ -135,8 +135,8 @@ add_executable(binance_backtest_tab
     src/BinanceRestClient.h
     src/BinanceWsClient.cpp
     src/BinanceWsClient.h
-    src/BacktestWindow.cpp
-    src/BacktestWindow.h
+    src/TradingBotWindow.cpp
+    src/TradingBotWindow.h
     resources.qrc
     ${APP_ICON_RC}
 )
@@ -185,3 +185,4 @@ if (COMMAND qt_generate_deploy_app_script)
     )
     install(SCRIPT ${tb_deploy_script})
 endif()
+

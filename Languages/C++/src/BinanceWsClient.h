@@ -19,6 +19,7 @@ public:
     ~BinanceWsClient() override;
 
     void connectBookTicker(const QString &symbol, bool futures, bool testnet);
+    void connectKline(const QString &symbol, const QString &interval, bool futures, bool testnet);
     void disconnectFromStream();
 
 signals:
@@ -26,6 +27,16 @@ signals:
     void disconnected();
     void errorOccurred(const QString &message);
     void bookTicker(const QString &symbol, double bidPrice, double askPrice);
+    void kline(
+        const QString &symbol,
+        const QString &interval,
+        qint64 openTimeMs,
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        bool isClosed);
 
 private:
 #if HAS_QT_WEBSOCKETS

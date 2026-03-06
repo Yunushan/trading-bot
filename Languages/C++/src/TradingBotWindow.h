@@ -1,5 +1,7 @@
 #pragma once
 
+#include "BinanceRestClient.h"
+
 #include <QMainWindow>
 #include <QList>
 #include <QMap>
@@ -21,6 +23,7 @@ class QTimer;
 class QTabWidget;
 class QWidget;
 class QTextEdit;
+class BinanceWsClient;
 
 // Main Qt window for the C++ desktop runtime.
 //
@@ -28,11 +31,11 @@ class QTextEdit;
 // - Mirror core Python dashboard/backtest interactions.
 // - Keep UI state explicit via typed members for cross-tab synchronization.
 // - Host lightweight runtime simulation hooks (logs, queue state, position table).
-class BacktestWindow final : public QMainWindow {
+class TradingBotWindow final : public QMainWindow {
     Q_OBJECT
 
 public:
-    explicit BacktestWindow(QWidget *parent = nullptr);
+    explicit TradingBotWindow(QWidget *parent = nullptr);
 
 private slots:
     void handleAddCustomIntervals();
@@ -77,6 +80,8 @@ private:
     void wireSignals();
     void ensureBotTimer(bool running);
     void updateStatusMessage(const QString &message);
+    double currentDashboardPaperBalanceUsdt() const;
+    void syncDashboardPaperBalanceUi();
     void appendUniqueInterval(const QString &interval);
     void refreshPositionsTableSizing();
     void updateDashboardStopLossWidgetState();
@@ -91,6 +96,8 @@ private:
     QLabel *statusLabel_;
     QLabel *botStatusLabel_;
     QLabel *botTimeLabel_;
+    QLabel *backtestPnlActiveLabel_;
+    QLabel *backtestPnlClosedLabel_;
     QPushButton *runButton_;
     QPushButton *stopButton_;
     QPushButton *addSelectedBtn_;
@@ -116,14 +123,23 @@ private:
     QLineEdit *dashboardApiKey_;
     QLineEdit *dashboardApiSecret_;
     QLabel *dashboardBalanceLabel_;
+    QLabel *dashboardPaperBalanceTitleLabel_;
+    QDoubleSpinBox *dashboardPaperBalanceSpin_;
+    QLabel *dashboardPnlActiveLabel_;
+    QLabel *dashboardPnlClosedLabel_;
     QLabel *dashboardBotStatusLabel_;
     QLabel *dashboardBotTimeLabel_;
+    QLabel *codePnlActiveLabel_;
+    QLabel *codePnlClosedLabel_;
+    QLabel *codeBotStatusLabel_;
+    QLabel *codeBotTimeLabel_;
     QPushButton *dashboardRefreshBtn_;
     QComboBox *dashboardAccountTypeCombo_;
     QComboBox *dashboardModeCombo_;
     QComboBox *dashboardConnectorCombo_;
     QComboBox *dashboardExchangeCombo_;
     QComboBox *dashboardIndicatorSourceCombo_;
+    QComboBox *dashboardSignalFeedCombo_;
     QComboBox *dashboardTemplateCombo_;
     QComboBox *dashboardMarginModeCombo_;
     QComboBox *dashboardPositionModeCombo_;
@@ -144,8 +160,14 @@ private:
     QTableWidget *dashboardWaitingQueueTable_;
     QTimer *dashboardRuntimeTimer_;
     QMap<QString, qint64> dashboardRuntimeLastEvalMs_;
+    QMap<QString, qint64> dashboardRuntimeEntryRetryAfterMs_;
+    QMap<QString, double> dashboardRuntimeOpenQtyCaps_;
     QSet<QString> dashboardRuntimeConnectorWarnings_;
     QSet<QString> dashboardRuntimeIntervalWarnings_;
+    QMap<QString, BinanceWsClient *> dashboardRuntimeSignalSockets_;
+    QMap<QString, QVector<BinanceRestClient::KlineCandle>> dashboardRuntimeSignalCandles_;
+    QMap<QString, bool> dashboardRuntimeSignalLastClosed_;
+    QMap<QString, qint64> dashboardRuntimeSignalUpdateMs_;
     QList<QWidget *> dashboardRuntimeLockWidgets_;
     QCheckBox *dashboardLeadTraderEnableCheck_;
     QComboBox *dashboardLeadTraderCombo_;
@@ -169,6 +191,8 @@ private:
         double entryPrice = 0.0;
         double quantity = 0.0;
         double leverage = 1.0;
+        double roiBasisUsdt = 0.0;
+        double displayMarginUsdt = 0.0;
     };
     QMap<QString, RuntimePosition> dashboardRuntimeOpenPositions_;
 
@@ -195,3 +219,4 @@ private:
     QCheckBox *positionsAutoRowHeightCheck_;
     QCheckBox *positionsAutoColumnWidthCheck_;
 };
+
