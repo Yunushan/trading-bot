@@ -43,7 +43,9 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QScreen>
+#include <QShowEvent>
 #include <QStandardPaths>
 #include <QVariant>
 #include <QScrollArea>
@@ -81,6 +83,9 @@
 
 namespace {
 constexpr int kTableCellNumericRole = Qt::UserRole + 2;
+constexpr int kPositionsRowSequenceRole = Qt::UserRole + 3;
+constexpr int kTableCellRawNumericRole = Qt::UserRole + 4;
+constexpr int kTableCellRawRoiBasisRole = Qt::UserRole + 5;
 
 void setTableCellText(QTableWidget *table, int row, int col, const QString &text) {
     if (!table) {
@@ -107,8 +112,10 @@ void setTableCellNumeric(QTableWidget *table, int row, int col, double value) {
     }
     if (qIsFinite(value)) {
         item->setData(kTableCellNumericRole, value);
+        item->setData(kTableCellRawNumericRole, value);
     } else {
         item->setData(kTableCellNumericRole, QVariant());
+        item->setData(kTableCellRawNumericRole, QVariant());
     }
 }
 
@@ -122,6 +129,105 @@ double tableCellNumeric(const QTableWidgetItem *item, double fallback = 0.0) {
         return value;
     }
     return fallback;
+}
+
+double tableCellRawNumeric(const QTableWidgetItem *item, double fallback = 0.0) {
+    if (!item) {
+        return fallback;
+    }
+    bool ok = false;
+    const double rawValue = item->data(kTableCellRawNumericRole).toDouble(&ok);
+    if (ok && qIsFinite(rawValue)) {
+        return rawValue;
+    }
+    return tableCellNumeric(item, fallback);
+}
+
+void setTableCellRoiBasis(QTableWidgetItem *item, double value) {
+    if (!item) {
+        return;
+    }
+    if (qIsFinite(value)) {
+        item->setData(Qt::UserRole + 1, value);
+        item->setData(kTableCellRawRoiBasisRole, value);
+    } else {
+        item->setData(Qt::UserRole + 1, QVariant());
+        item->setData(kTableCellRawRoiBasisRole, QVariant());
+    }
+}
+
+double tableCellRawRoiBasis(const QTableWidgetItem *item, double fallback = 0.0) {
+    if (!item) {
+        return fallback;
+    }
+    bool ok = false;
+    const double rawValue = item->data(kTableCellRawRoiBasisRole).toDouble(&ok);
+    if (ok && qIsFinite(rawValue)) {
+        return rawValue;
+    }
+    const double displayValue = item->data(Qt::UserRole + 1).toDouble(&ok);
+    if (ok && qIsFinite(displayValue)) {
+        return displayValue;
+    }
+    return fallback;
+}
+
+class ScopedTableSortingPause final {
+public:
+    explicit ScopedTableSortingPause(QTableWidget *table)
+        : table_(table),
+          restoreSorting_(table_ && table_->isSortingEnabled()) {
+        if (restoreSorting_) {
+            table_->setSortingEnabled(false);
+        }
+    }
+
+    ~ScopedTableSortingPause() {
+        if (restoreSorting_ && table_) {
+            table_->setSortingEnabled(true);
+        }
+    }
+
+private:
+    QTableWidget *table_ = nullptr;
+    bool restoreSorting_ = false;
+};
+
+class ScopedTableUpdatesPause final {
+public:
+    explicit ScopedTableUpdatesPause(QTableWidget *table, bool enabled = true)
+        : table_(enabled ? table : nullptr),
+          tableUpdatesWereEnabled_(table_ && table_->updatesEnabled()),
+          viewport_(table_ ? table_->viewport() : nullptr),
+          viewportUpdatesWereEnabled_(viewport_ && viewport_->updatesEnabled()) {
+        if (tableUpdatesWereEnabled_) {
+            table_->setUpdatesEnabled(false);
+        }
+        if (viewportUpdatesWereEnabled_) {
+            viewport_->setUpdatesEnabled(false);
+        }
+    }
+
+    ~ScopedTableUpdatesPause() {
+        if (viewport_ && viewportUpdatesWereEnabled_) {
+            viewport_->setUpdatesEnabled(true);
+            viewport_->update();
+        }
+        if (table_ && tableUpdatesWereEnabled_) {
+            table_->setUpdatesEnabled(true);
+            table_->update();
+        }
+    }
+
+private:
+    QTableWidget *table_ = nullptr;
+    bool tableUpdatesWereEnabled_ = false;
+    QWidget *viewport_ = nullptr;
+    bool viewportUpdatesWereEnabled_ = false;
+};
+
+void pumpUiEvents(int maxMs = 5) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, maxMs);
 }
 
 bool isTestnetModeLabel(const QString &modeText) {
@@ -701,6 +807,40 @@ private:
     QVector<BinanceRestClient::KlineCandle> candles_;
     QString overlayMessage_;
 };
+
+#if HAS_QT_WEBENGINE
+class ResizeAwareWebEngineView final : public QWebEngineView {
+public:
+    explicit ResizeAwareWebEngineView(QWidget *parent = nullptr)
+        : QWebEngineView(parent) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+
+    void setResizeCallback(std::function<void()> callback) {
+        resizeCallback_ = std::move(callback);
+    }
+
+protected:
+    void showEvent(QShowEvent *event) override {
+        QWebEngineView::showEvent(event);
+        notifyResize();
+    }
+
+    void resizeEvent(QResizeEvent *event) override {
+        QWebEngineView::resizeEvent(event);
+        notifyResize();
+    }
+
+private:
+    void notifyResize() {
+        if (resizeCallback_) {
+            resizeCallback_();
+        }
+    }
+
+    std::function<void()> resizeCallback_;
+};
+#endif
 
 QString tradingViewIntervalFor(QString interval) {
     interval = interval.trimmed().toLower();
@@ -2693,6 +2833,35 @@ double floorToOrderStep(double qty, double step, int precisionHint) {
     return (qIsFinite(normalized) && normalized > 0.0) ? normalized : 0.0;
 }
 
+double normalizePriceToTick(double price, double tickSize, int precisionHint, bool roundUp) {
+    if (!qIsFinite(price) || price <= 0.0) {
+        return 0.0;
+    }
+
+    double normalized = price;
+    if (qIsFinite(tickSize) && tickSize > 0.0) {
+        normalized = roundUp
+            ? (std::ceil((normalized / tickSize) - 1e-12) * tickSize)
+            : (std::floor((normalized / tickSize) + 1e-12) * tickSize);
+    }
+
+    const int precision = std::max(0, std::min(16, precisionHint));
+    if (precision > 0) {
+        const double scale = std::pow(10.0, precision);
+        normalized = roundUp
+            ? (std::ceil((normalized * scale) - 1e-9) / scale)
+            : (std::floor((normalized * scale) + 1e-9) / scale);
+    }
+
+    if (qIsFinite(tickSize) && tickSize > 0.0) {
+        normalized = roundUp
+            ? (std::ceil((normalized / tickSize) - 1e-12) * tickSize)
+            : (std::floor((normalized / tickSize) + 1e-12) * tickSize);
+    }
+
+    return (qIsFinite(normalized) && normalized > 0.0) ? normalized : 0.0;
+}
+
 bool isPercentPriceFilterError(const QString &errorText) {
     const QString err = errorText.trimmed().toLower();
     return err.contains(QStringLiteral("-4131"))
@@ -2763,7 +2932,8 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     bool reduceOnly,
     const QString &positionSide,
     int timeoutMs,
-    const QString &baseUrlOverride) {
+    const QString &baseUrlOverride,
+    double referencePrice = 0.0) {
     BinanceRestClient::FuturesOrderResult aggregated;
     aggregated.symbol = symbol.trimmed().toUpper();
     aggregated.side = side.trimmed().toUpper();
@@ -2793,11 +2963,13 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
         timeoutMs,
         baseUrlOverride);
     const double stepSize = (filters.ok && qIsFinite(filters.stepSize) && filters.stepSize > 0.0) ? filters.stepSize : 0.0;
+    const double tickSize = (filters.ok && qIsFinite(filters.tickSize) && filters.tickSize > 0.0) ? filters.tickSize : 0.0;
     const double minQty = (filters.ok && qIsFinite(filters.minQty) && filters.minQty > 0.0)
         ? filters.minQty
         : (stepSize > 0.0 ? stepSize : 0.0);
     const double maxQty = (filters.ok && qIsFinite(filters.maxQty) && filters.maxQty > 0.0) ? filters.maxQty : 0.0;
     const int quantityPrecision = (filters.ok && filters.quantityPrecision > 0) ? filters.quantityPrecision : 8;
+    const int pricePrecision = (filters.ok && filters.pricePrecision > 0) ? filters.pricePrecision : 8;
     int maxAttempts = 20;
     if (maxQty > 0.0) {
         maxAttempts = std::max(
@@ -2811,6 +2983,30 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     double totalExecutedQty = 0.0;
     QStringList orderIds;
     int attempts = 0;
+    bool limitFallbackAttempted = false;
+
+    auto consumeOrderFill = [&](const BinanceRestClient::FuturesOrderResult &order, double requestedQty) -> bool {
+        const double filledQty = (qIsFinite(order.executedQty) && order.executedQty > 0.0)
+            ? std::min(requestedQty, order.executedQty)
+            : requestedQty;
+        if (!qIsFinite(filledQty) || filledQty <= kQtyEpsilon) {
+            aggregated.error = QStringLiteral("Close order returned zero fill.");
+            return false;
+        }
+
+        totalExecutedQty += filledQty;
+        const double fillPrice = (qIsFinite(order.avgPrice) && order.avgPrice > 0.0) ? order.avgPrice : 0.0;
+        if (fillPrice > 0.0) {
+            weightedPriceSum += (fillPrice * filledQty);
+        }
+        if (!order.orderId.trimmed().isEmpty()) {
+            orderIds.append(order.orderId.trimmed());
+        }
+
+        remainingQty = std::max(0.0, remainingQty - filledQty);
+        chunkQty = remainingQty;
+        return true;
+    };
 
     auto nextChunkFrom = [&](double desired) -> double {
         double chunk = desired;
@@ -2868,25 +3064,10 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
             timeoutMs,
             baseUrlOverride);
         if (order.ok) {
-            const double filledQty = (qIsFinite(order.executedQty) && order.executedQty > 0.0)
-                ? std::min(chunkQty, order.executedQty)
-                : chunkQty;
-            if (!qIsFinite(filledQty) || filledQty <= kQtyEpsilon) {
-                aggregated.error = QStringLiteral("Close order returned zero fill.");
+            if (!consumeOrderFill(order, chunkQty)) {
                 break;
             }
-
-            totalExecutedQty += filledQty;
-            const double fillPrice = (qIsFinite(order.avgPrice) && order.avgPrice > 0.0) ? order.avgPrice : 0.0;
-            if (fillPrice > 0.0) {
-                weightedPriceSum += (fillPrice * filledQty);
-            }
-            if (!order.orderId.trimmed().isEmpty()) {
-                orderIds.append(order.orderId.trimmed());
-            }
-
-            remainingQty = std::max(0.0, remainingQty - filledQty);
-            chunkQty = remainingQty;
+            limitFallbackAttempted = false;
             continue;
         }
 
@@ -2902,6 +3083,48 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
                     aggregated.error = QStringLiteral("Close fallback activated due to PERCENT_PRICE filter.");
                 }
                 continue;
+            }
+            if (!limitFallbackAttempted && qIsFinite(referencePrice) && referencePrice > 0.0) {
+                limitFallbackAttempted = true;
+                const bool isBuy = aggregated.side == QStringLiteral("BUY");
+                const double aggressiveReference = referencePrice * (isBuy ? 1.01 : 0.99);
+                const double limitPrice = normalizePriceToTick(
+                    aggressiveReference,
+                    tickSize,
+                    pricePrecision,
+                    isBuy);
+                if (limitPrice > 0.0) {
+                    const auto limitOrder = BinanceRestClient::placeFuturesLimitOrder(
+                        apiKey,
+                        apiSecret,
+                        aggregated.symbol,
+                        aggregated.side,
+                        chunkQty,
+                        limitPrice,
+                        testnet,
+                        reduceOnly,
+                        aggregated.positionSide,
+                        QStringLiteral("IOC"),
+                        timeoutMs,
+                        baseUrlOverride);
+                    if (limitOrder.ok) {
+                        if (!consumeOrderFill(limitOrder, chunkQty)) {
+                            break;
+                        }
+                        if (aggregated.error.isEmpty()) {
+                            aggregated.error = QStringLiteral("Close IOC limit fallback activated due to PERCENT_PRICE filter.");
+                        }
+                        continue;
+                    }
+                    const QString limitErrorDetail = limitOrder.error.trimmed().isEmpty()
+                        ? QStringLiteral("unknown error")
+                        : limitOrder.error.trimmed();
+                    aggregated.error = QStringLiteral("%1 | IOC limit fallback failed at %2: %3")
+                                           .arg(orderError,
+                                                QString::number(limitPrice, 'f', std::max(0, std::min(8, pricePrecision))),
+                                                limitErrorDetail);
+                    break;
+                }
             }
         } else if (isMaxQuantityExceededError(orderError)) {
             double reducedChunk = maxQty > 0.0 ? std::min(chunkQty * 0.5, maxQty) : (chunkQty * 0.5);
@@ -2929,7 +3152,8 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
     if (remainingQty <= kQtyEpsilon && totalExecutedQty > 0.0) {
         aggregated.ok = true;
         aggregated.status = QStringLiteral("FILLED");
-        if (aggregated.error.startsWith(QStringLiteral("Close fallback activated"))) {
+        if (aggregated.error.startsWith(QStringLiteral("Close fallback activated"))
+            || aggregated.error.startsWith(QStringLiteral("Close IOC limit fallback activated"))) {
             aggregated.error.clear();
         }
         return aggregated;
@@ -5255,11 +5479,26 @@ void TradingBotWindow::applyDashboardTheme(const QString &themeName) {
         #dashboardPage QListWidget { background: #0d1117; color: #e5e7eb; border: 1px solid #1f2937; }
         #dashboardPage QPushButton { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 6px 10px; }
         #dashboardPage QPushButton:hover { background: #1f2937; }
-        #dashboardPage QComboBox:disabled, #dashboardPage QListWidget:disabled {
-            background: #0b1020; color: #6b7280; border: 1px solid #1f2937;
+        #dashboardPage QLineEdit:disabled, #dashboardPage QComboBox:disabled, #dashboardPage QDoubleSpinBox:disabled,
+        #dashboardPage QSpinBox:disabled, #dashboardPage QDateEdit:disabled, #dashboardPage QListWidget:disabled {
+            background: #0b1020; color: #94a3b8; border: 1px solid #334155;
         }
         #dashboardPage QPushButton:disabled {
-            background: #0b1020; color: #6b7280; border: 1px solid #1f2937;
+            background: #101826; color: #94a3b8; border: 1px solid #334155;
+        }
+        #dashboardPage QCheckBox:disabled { color: #9ca3af; }
+        #dashboardPage QCheckBox::indicator:disabled { background: #0b1020; border: 1px solid #475569; }
+        #dashboardPage QCheckBox::indicator:checked:disabled {
+            background: #2563eb; border-color: #2563eb;
+            image: url(:/qt-project.org/styles/commonstyle/images/checkboxchecked.png);
+        }
+        #dashboardPage QComboBox::drop-down:disabled, #dashboardPage QDateEdit::drop-down:disabled,
+        #dashboardPage QSpinBox::up-button:disabled, #dashboardPage QSpinBox::down-button:disabled,
+        #dashboardPage QDoubleSpinBox::up-button:disabled, #dashboardPage QDoubleSpinBox::down-button:disabled {
+            background: #101826; border-left: 1px solid #334155;
+        }
+        #dashboardPage QSpinBox::up-button:disabled, #dashboardPage QDoubleSpinBox::up-button:disabled {
+            border-bottom: 1px solid #334155;
         }
     )";
 
@@ -5274,11 +5513,26 @@ void TradingBotWindow::applyDashboardTheme(const QString &themeName) {
         #dashboardPage QListWidget { background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }
         #dashboardPage QPushButton { background: #e5e7eb; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px 10px; }
         #dashboardPage QPushButton:hover { background: #dbeafe; }
-        #dashboardPage QComboBox:disabled, #dashboardPage QListWidget:disabled {
-            background: #f1f5f9; color: #94a3b8; border: 1px solid #d1d5db;
+        #dashboardPage QLineEdit:disabled, #dashboardPage QComboBox:disabled, #dashboardPage QDoubleSpinBox:disabled,
+        #dashboardPage QSpinBox:disabled, #dashboardPage QDateEdit:disabled, #dashboardPage QListWidget:disabled {
+            background: #eef2f7; color: #64748b; border: 1px solid #94a3b8;
         }
         #dashboardPage QPushButton:disabled {
-            background: #f1f5f9; color: #94a3b8; border: 1px solid #d1d5db;
+            background: #e5e7eb; color: #64748b; border: 1px solid #94a3b8;
+        }
+        #dashboardPage QCheckBox:disabled { color: #6b7280; }
+        #dashboardPage QCheckBox::indicator:disabled { background: #f8fafc; border: 1px solid #94a3b8; }
+        #dashboardPage QCheckBox::indicator:checked:disabled {
+            background: #2563eb; border-color: #2563eb;
+            image: url(:/qt-project.org/styles/commonstyle/images/checkboxchecked.png);
+        }
+        #dashboardPage QComboBox::drop-down:disabled, #dashboardPage QDateEdit::drop-down:disabled,
+        #dashboardPage QSpinBox::up-button:disabled, #dashboardPage QSpinBox::down-button:disabled,
+        #dashboardPage QDoubleSpinBox::up-button:disabled, #dashboardPage QDoubleSpinBox::down-button:disabled {
+            background: #e5e7eb; border-left: 1px solid #94a3b8;
+        }
+        #dashboardPage QSpinBox::up-button:disabled, #dashboardPage QDoubleSpinBox::up-button:disabled {
+            border-bottom: 1px solid #94a3b8;
         }
     )";
 
@@ -5542,15 +5796,19 @@ QWidget *TradingBotWindow::createChartTab() {
     layout->addWidget(status);
 
     auto *chartStack = new QStackedWidget(page);
+    chartStack->setMinimumHeight(560);
+    chartStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     layout->addWidget(chartStack, 1);
 
     auto *originalPage = new QWidget(chartStack);
+    originalPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *originalLayout = new QVBoxLayout(originalPage);
     originalLayout->setContentsMargins(0, 0, 0, 0);
 #if HAS_QT_WEBENGINE
     auto *binanceView = new QWebEngineView(originalPage);
     binanceView->setContextMenuPolicy(Qt::NoContextMenu);
-    binanceView->setMinimumHeight(460);
+    binanceView->setMinimumHeight(520);
+    binanceView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     originalLayout->addWidget(binanceView, 1);
 #else
     auto *chartWidget = new NativeKlineChartWidget(originalPage);
@@ -5559,14 +5817,50 @@ QWidget *TradingBotWindow::createChartTab() {
     chartStack->addWidget(originalPage);
 
     auto *tradingPage = new QWidget(chartStack);
+    tradingPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *tradingLayout = new QVBoxLayout(tradingPage);
     tradingLayout->setContentsMargins(0, 0, 0, 0);
     tradingLayout->setSpacing(8);
 #if HAS_QT_WEBENGINE
-    auto *tradingView = new QWebEngineView(tradingPage);
-    tradingView->setMinimumHeight(460);
+    auto *tradingView = new ResizeAwareWebEngineView(tradingPage);
+    tradingView->setMinimumHeight(560);
     tradingView->setContextMenuPolicy(Qt::NoContextMenu);
     tradingLayout->addWidget(tradingView, 1);
+    auto syncTradingViewEmbed = [tradingView]() {
+        if (!tradingView || !tradingView->page()) {
+            return;
+        }
+        const int hostHeight = std::max(560, tradingView->height());
+        const QString js = QStringLiteral(R"JS(
+(function(hostHeight) {
+  if (typeof window.__tv_sync_host === "function") {
+    window.__tv_sync_host(hostHeight);
+  }
+})(%1);
+        )JS").arg(hostHeight);
+        tradingView->page()->runJavaScript(js);
+    };
+    auto *tradingViewResizeTimer = new QTimer(tradingView);
+    tradingViewResizeTimer->setSingleShot(true);
+    tradingViewResizeTimer->setInterval(90);
+    connect(tradingViewResizeTimer, &QTimer::timeout, tradingPage, [syncTradingViewEmbed]() {
+        syncTradingViewEmbed();
+    });
+    tradingView->setResizeCallback([tradingViewResizeTimer]() {
+        tradingViewResizeTimer->start();
+    });
+    connect(tradingView, &QWebEngineView::loadFinished, tradingPage, [tradingView, syncTradingViewEmbed](bool ok) {
+        if (!ok) {
+            return;
+        }
+        syncTradingViewEmbed();
+        QTimer::singleShot(120, tradingView, [syncTradingViewEmbed]() {
+            syncTradingViewEmbed();
+        });
+        QTimer::singleShot(500, tradingView, [syncTradingViewEmbed]() {
+            syncTradingViewEmbed();
+        });
+    });
 #else
     auto *tvUnavailable = new QLabel(
         "Qt WebEngine is not available in this C++ build, so embedded TradingView is disabled. "
@@ -5729,6 +6023,7 @@ QWidget *TradingBotWindow::createChartTab() {
             return;
         }
         const QString tvInterval = tradingViewIntervalFor(intervalCombo->currentText());
+        const int hostHeight = std::max(560, tradingView->height());
         const QString html = QStringLiteral(R"(
 <!DOCTYPE html>
 <html lang="en">
@@ -5736,44 +6031,144 @@ QWidget *TradingBotWindow::createChartTab() {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    html, body { width: 100%%; height: 100%%; margin: 0; padding: 0; background: #0b1020; overflow: hidden; }
-    body { position: fixed; inset: 0; }
-    #container, .tradingview-widget-container, #tradingview_embed {
-      width: 100%%;
-      height: 100%%;
+    html, body {
       margin: 0;
       padding: 0;
+      width: 100%%;
+      height: 100%%;
+      overflow: hidden;
+      background: #0b1020;
+      color: #d1d4dc;
+      font-family: "Segoe UI", sans-serif;
+    }
+    #tv_container {
+      position: absolute;
+      inset: 0;
+      width: 100%%;
+      height: 100%%;
+      min-height: %3px;
+    }
+    #tv_container iframe {
+      width: 100%% !important;
+      height: 100%% !important;
+      min-height: %3px !important;
+    }
+    #fallback {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 100%%;
+      height: 100%%;
+      background: #0b1020;
+      color: #94a3b8;
+      font-size: 14px;
     }
     ::-webkit-scrollbar { width: 0px; height: 0px; display: none; }
   </style>
 </head>
 <body>
-  <div id="container">
-    <div class="tradingview-widget-container">
-      <div id="tradingview_embed"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-        new TradingView.widget({
-          "autosize": true,
-          "symbol": "BINANCE:%1",
-          "interval": "%2",
-          "timezone": "Etc/UTC",
-          "theme": "dark",
-          "style": "1",
-          "locale": "en",
-          "toolbar_bg": "#0b1020",
-          "enable_publishing": false,
-          "hide_top_toolbar": false,
-          "hide_legend": false,
-          "allow_symbol_change": true,
-          "container_id": "tradingview_embed"
+  <script type="text/javascript">
+    window.open = function(_url) { return null; };
+    window.close = function() { return false; };
+  </script>
+  <div id="tv_container"></div>
+  <div id="fallback">Loading TradingView...</div>
+  <script type="text/javascript">
+    (function() {
+      const minimumHeight = %3;
+
+      function resolveHeight(requested) {
+        const viewport = Math.max(
+          window.innerHeight || 0,
+          document.documentElement ? document.documentElement.clientHeight : 0,
+          document.body ? document.body.clientHeight : 0,
+          minimumHeight);
+        return Math.max(minimumHeight, requested || 0, viewport);
+      }
+
+      function syncHostSize(requested) {
+        const height = resolveHeight(requested);
+        [document.documentElement, document.body, document.getElementById("tv_container")].forEach(function(el) {
+          if (!el) {
+            return;
+          }
+          el.style.width = "100%%";
+          el.style.height = height + "px";
+          el.style.minHeight = height + "px";
+          el.style.overflow = "hidden";
         });
-      </script>
-    </div>
-  </div>
+        const iframe = document.querySelector("#tv_container iframe");
+        if (iframe) {
+          iframe.style.width = "100%%";
+          iframe.style.height = height + "px";
+          iframe.style.minHeight = height + "px";
+        }
+        return height;
+      }
+
+      window.__tv_sync_host = syncHostSize;
+
+      function ensureTradingView(callback) {
+        if (window.TradingView && typeof window.TradingView.widget === "function") {
+          callback();
+          return;
+        }
+        setTimeout(function() { ensureTradingView(callback); }, 120);
+      }
+
+      function mountWidget() {
+        ensureTradingView(function() {
+          try {
+            document.getElementById("fallback").style.display = "none";
+            const resolvedHeight = syncHostSize();
+            new TradingView.widget({
+              "autosize": true,
+              "width": "100%%",
+              "height": resolvedHeight,
+              "symbol": "BINANCE:%1",
+              "interval": "%2",
+              "timezone": "Etc/UTC",
+              "theme": "dark",
+              "style": "1",
+              "locale": "en",
+              "toolbar_bg": "#0b1020",
+              "enable_publishing": false,
+              "hide_top_toolbar": false,
+              "hide_legend": false,
+              "allow_symbol_change": true,
+              "container_id": "tv_container",
+              "support_host": "https://www.tradingview.com"
+            });
+            syncHostSize(resolvedHeight);
+            setTimeout(function() { syncHostSize(resolvedHeight); }, 120);
+            setTimeout(function() { syncHostSize(resolvedHeight); }, 600);
+            window.addEventListener("resize", function() { syncHostSize(); }, { passive: true });
+            if (typeof ResizeObserver === "function") {
+              const observer = new ResizeObserver(function() { syncHostSize(); });
+              observer.observe(document.documentElement);
+              observer.observe(document.body);
+            }
+          } catch (_err) {
+            const fallback = document.getElementById("fallback");
+            if (fallback) {
+              fallback.style.display = "flex";
+              fallback.textContent = "TradingView failed to load.";
+            }
+          }
+        });
+      }
+
+      const fallback = document.getElementById("fallback");
+      if (fallback) {
+        fallback.style.display = "flex";
+      }
+      mountWidget();
+    })();
+  </script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </body>
 </html>
-        )").arg(rawSymbol, tvInterval);
+        )").arg(rawSymbol, tvInterval, QString::number(hostHeight));
         tradingView->setHtml(html, QUrl("https://www.tradingview.com/"));
         status->setText(QString("TradingView loaded: %1 (%2)").arg(rawSymbol, intervalCombo->currentText()));
     };
@@ -7374,10 +7769,36 @@ void TradingBotWindow::handleAddCustomIntervals() {
 void TradingBotWindow::handleRunBacktest() {
     botStart_ = std::chrono::steady_clock::now();
     ensureBotTimer(true);
-    botStatusLabel_->setText("Bot Status: ON");
+    const QString statusText = QStringLiteral("Bot Status: ON");
+    const QString statusStyle = QStringLiteral("color: #16a34a; font-weight: 700;");
+    const QString activeTimeText = QStringLiteral("Bot Active Time: 0s");
+    if (botStatusLabel_) {
+        botStatusLabel_->setText(statusText);
+        botStatusLabel_->setStyleSheet(statusStyle);
+    }
     if (chartBotStatusLabel_) {
-        chartBotStatusLabel_->setText("Bot Status: ON");
-        chartBotStatusLabel_->setStyleSheet("color: #16a34a; font-weight: 700;");
+        chartBotStatusLabel_->setText(statusText);
+        chartBotStatusLabel_->setStyleSheet(statusStyle);
+    }
+    if (positionsBotStatusLabel_) {
+        positionsBotStatusLabel_->setText(statusText);
+        positionsBotStatusLabel_->setStyleSheet(statusStyle);
+    }
+    if (codeBotStatusLabel_) {
+        codeBotStatusLabel_->setText(statusText);
+        codeBotStatusLabel_->setStyleSheet(statusStyle);
+    }
+    if (botTimeLabel_) {
+        botTimeLabel_->setText(activeTimeText);
+    }
+    if (chartBotTimeLabel_) {
+        chartBotTimeLabel_->setText(activeTimeText);
+    }
+    if (positionsBotTimeLabel_) {
+        positionsBotTimeLabel_->setText(activeTimeText);
+    }
+    if (codeBotTimeLabel_) {
+        codeBotTimeLabel_->setText(activeTimeText);
     }
     runButton_->setEnabled(false);
     stopButton_->setEnabled(true);
@@ -7416,14 +7837,43 @@ void TradingBotWindow::handleRunBacktest() {
 
 void TradingBotWindow::handleStopBacktest() {
     ensureBotTimer(false);
-    botTimeLabel_->setText("Bot Active Time: --");
-    botStatusLabel_->setText("Bot Status: OFF");
+    const QString statusText = QStringLiteral("Bot Status: OFF");
+    const QString statusStyle = QStringLiteral("color: #ef4444; font-weight: 700;");
+    const QString activeTimeText = QStringLiteral("Bot Active Time: --");
+    if (botTimeLabel_) {
+        botTimeLabel_->setText(activeTimeText);
+    }
+    if (botStatusLabel_) {
+        botStatusLabel_->setText(statusText);
+        botStatusLabel_->setStyleSheet(statusStyle);
+    }
     if (chartBotTimeLabel_) {
-        chartBotTimeLabel_->setText("Bot Active Time: --");
+        chartBotTimeLabel_->setText(activeTimeText);
     }
     if (chartBotStatusLabel_) {
-        chartBotStatusLabel_->setText("Bot Status: OFF");
-        chartBotStatusLabel_->setStyleSheet("color: #ef4444; font-weight: 700;");
+        chartBotStatusLabel_->setText(statusText);
+        chartBotStatusLabel_->setStyleSheet(statusStyle);
+    }
+    if (positionsBotTimeLabel_) {
+        positionsBotTimeLabel_->setText(activeTimeText);
+    }
+    if (positionsBotStatusLabel_) {
+        positionsBotStatusLabel_->setText(statusText);
+        positionsBotStatusLabel_->setStyleSheet(statusStyle);
+    }
+    if (codeBotTimeLabel_) {
+        codeBotTimeLabel_->setText(activeTimeText);
+    }
+    if (codeBotStatusLabel_) {
+        codeBotStatusLabel_->setText(statusText);
+        codeBotStatusLabel_->setStyleSheet(statusStyle);
+    }
+    if (!dashboardRuntimeActive_ && dashboardBotTimeLabel_) {
+        dashboardBotTimeLabel_->setText("--");
+    }
+    if (!dashboardRuntimeActive_ && dashboardBotStatusLabel_) {
+        dashboardBotStatusLabel_->setText("OFF");
+        dashboardBotStatusLabel_->setStyleSheet(statusStyle);
     }
     runButton_->setEnabled(true);
     stopButton_->setEnabled(false);
@@ -7438,9 +7888,17 @@ void TradingBotWindow::updateBotActiveTime() {
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - botStart_);
     const QString text = "Bot Active Time: " + formatDuration(elapsed.count());
-    botTimeLabel_->setText(text);
+    if (botTimeLabel_) {
+        botTimeLabel_->setText(text);
+    }
     if (chartBotTimeLabel_) {
         chartBotTimeLabel_->setText(text);
+    }
+    if (positionsBotTimeLabel_) {
+        positionsBotTimeLabel_->setText(text);
+    }
+    if (codeBotTimeLabel_) {
+        codeBotTimeLabel_->setText(text);
     }
     if (dashboardRuntimeActive_ && dashboardBotTimeLabel_) {
         dashboardBotTimeLabel_->setText(formatDuration(elapsed.count()));
@@ -7461,7 +7919,7 @@ void TradingBotWindow::ensureBotTimer(bool running) {
     }
 }
 
-void TradingBotWindow::refreshPositionsTableSizing() {
+void TradingBotWindow::refreshPositionsTableSizing(bool resizeColumns, bool resizeRows) {
     if (!positionsTable_) {
         return;
     }
@@ -7470,20 +7928,31 @@ void TradingBotWindow::refreshPositionsTableSizing() {
     const bool autoColumns = positionsAutoColumnWidthCheck_ && positionsAutoColumnWidthCheck_->isChecked();
 
     if (autoRows) {
-        positionsTable_->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-        positionsTable_->resizeRowsToContents();
+        if (resizeRows) {
+            positionsTable_->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+            positionsTable_->resizeRowsToContents();
+        }
+        positionsTable_->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     } else {
         positionsTable_->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
         positionsTable_->verticalHeader()->setDefaultSectionSize(44);
+        for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+            positionsTable_->setRowHeight(row, 44);
+        }
     }
 
     QHeaderView *header = positionsTable_->horizontalHeader();
     if (autoColumns) {
         header->setStretchLastSection(false);
-        for (int i = 0; i < header->count(); ++i) {
-            header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+        if (resizeColumns) {
+            for (int i = 0; i < header->count(); ++i) {
+                header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+            }
+            positionsTable_->resizeColumnsToContents();
         }
-        positionsTable_->resizeColumnsToContents();
+        for (int i = 0; i < header->count(); ++i) {
+            header->setSectionResizeMode(i, QHeaderView::Interactive);
+        }
         header->setStretchLastSection(true);
     } else {
         header->setStretchLastSection(true);
@@ -7507,12 +7976,23 @@ void TradingBotWindow::refreshPositionsSummaryLabels() {
         for (int row = 0; row < positionsTable_->rowCount(); ++row) {
             const QString pnlText = rawCellText(positionsTable_->item(row, 7));
             const QString status = rawCellText(positionsTable_->item(row, 16)).trimmed().toUpper();
+            const QString quantityText = rawCellText(positionsTable_->item(row, 6));
             bool ok = false;
             const double pnlValue = firstNumberInText(pnlText, &ok);
             if (!ok || !qIsFinite(pnlValue)) {
                 continue;
             }
+            bool qtyOk = false;
+            double quantityValue = tableCellRawNumeric(positionsTable_->item(row, 6), std::numeric_limits<double>::quiet_NaN());
+            if (!qIsFinite(quantityValue)) {
+                quantityValue = firstNumberInText(quantityText, &qtyOk);
+            } else {
+                qtyOk = true;
+            }
             if (status == QStringLiteral("OPEN")) {
+                if (!qtyOk || !qIsFinite(quantityValue) || std::fabs(quantityValue) <= 1e-10) {
+                    continue;
+                }
                 activePnl += pnlValue;
             } else if (status == QStringLiteral("CLOSED")) {
                 closedPnl += pnlValue;
@@ -7635,13 +8115,15 @@ void TradingBotWindow::refreshPositionsSummaryLabels() {
     }
 }
 
-void TradingBotWindow::applyPositionsViewMode() {
+void TradingBotWindow::applyPositionsViewMode(bool resizeColumns, bool resizeRows) {
     if (!positionsTable_) {
         return;
     }
+    ScopedTableUpdatesPause updatesPause(positionsTable_);
 
     const bool cumulativeMode = !positionsViewCombo_
         || positionsViewCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("cumulative"));
+    const bool viewModeChanged = positionsCumulativeView_ != cumulativeMode;
     positionsCumulativeView_ = cumulativeMode;
 
     const bool sortingWasEnabled = positionsTable_->isSortingEnabled();
@@ -7665,6 +8147,12 @@ void TradingBotWindow::applyPositionsViewMode() {
             return;
         }
         item->setText(raw.toString());
+        const QVariant rawNumeric = item->data(kTableCellRawNumericRole);
+        item->setData(kTableCellNumericRole, rawNumeric);
+        const QVariant rawRoiBasis = item->data(kTableCellRawRoiBasisRole);
+        if (rawRoiBasis.isValid()) {
+            item->setData(Qt::UserRole + 1, rawRoiBasis);
+        }
     };
     auto rawText = [](QTableWidgetItem *item) -> QString {
         if (!item) {
@@ -7685,45 +8173,77 @@ void TradingBotWindow::applyPositionsViewMode() {
         if (!item) {
             return 0.0;
         }
-        const double storedValue = tableCellNumeric(item, std::numeric_limits<double>::quiet_NaN());
+        const double storedValue = tableCellRawNumeric(item, std::numeric_limits<double>::quiet_NaN());
         if (qIsFinite(storedValue)) {
             return storedValue;
         }
         return parseNumeric(rawText(item));
     };
+    auto rowSequenceFor = [this, &ensureItem](int row) -> qint64 {
+        QTableWidgetItem *item = ensureItem(row, 0);
+        bool ok = false;
+        const qint64 existing = item->data(kPositionsRowSequenceRole).toLongLong(&ok);
+        if (ok && existing > 0) {
+            return existing;
+        }
+        const qint64 fallback = static_cast<qint64>(row) + 1;
+        item->setData(kPositionsRowSequenceRole, fallback);
+        positionsRowSequenceCounter_ = std::max(positionsRowSequenceCounter_, fallback + 1);
+        return fallback;
+    };
+    auto setDisplayText = [&ensureItem](int row, int col, const QString &text) -> QTableWidgetItem * {
+        QTableWidgetItem *item = ensureItem(row, col);
+        if (!item->data(Qt::UserRole).isValid()) {
+            item->setData(Qt::UserRole, item->text());
+        }
+        item->setText(text);
+        return item;
+    };
 
-    for (int row = 0; row < positionsTable_->rowCount(); ++row) {
-        positionsTable_->setRowHidden(row, false);
-        for (int col = 0; col < positionsTable_->columnCount(); ++col) {
-            restoreRawText(positionsTable_->item(row, col));
+    if (viewModeChanged || !cumulativeMode) {
+        for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+            positionsTable_->setRowHidden(row, false);
+            for (int col = 0; col < positionsTable_->columnCount(); ++col) {
+                restoreRawText(positionsTable_->item(row, col));
+            }
         }
     }
 
     if (!cumulativeMode) {
         positionsTable_->setSortingEnabled(sortingWasEnabled);
-        refreshPositionsTableSizing();
+        refreshPositionsTableSizing(resizeColumns, resizeRows);
         refreshPositionsSummaryLabels();
         return;
     }
 
     struct AggregateBucket {
         int primaryRow = -1;
+        qint64 primarySequence = std::numeric_limits<qint64>::max();
         QList<int> rows;
         QStringList intervals;
         QStringList indicators;
+        QStringList sides;
+        QStringList stopLosses;
+        QStringList statuses;
         QStringList triggeredValues;
         QStringList currentValues;
         QSet<QString> intervalSet;
         QSet<QString> indicatorSet;
+        QSet<QString> sideSet;
+        QSet<QString> stopLossSet;
+        QSet<QString> statusSet;
         QSet<QString> triggeredSet;
         QSet<QString> currentSet;
         double sizeUsdt = 0.0;
+        double lastPrice = 0.0;
         double marginUsdt = 0.0;
         double roiBasisUsdt = 0.0;
         double quantity = 0.0;
         double pnlUsdt = 0.0;
         double marginRatio = 0.0;
         double liqPrice = 0.0;
+        int openCount = 0;
+        int closedCount = 0;
         QString openTime;
         QString closeTime;
         QStringList connectors;
@@ -7774,26 +8294,29 @@ void TradingBotWindow::applyPositionsViewMode() {
             continue;
         }
 
-        const QString groupKey = QStringLiteral("%1|%2|%3")
-                                     .arg(symbol, side, status);
+        const QString groupKey = symbol;
         AggregateBucket &bucket = groups[groupKey];
-        if (bucket.primaryRow < 0) {
+        const qint64 rowSequence = rowSequenceFor(row);
+        if (bucket.primaryRow < 0 || rowSequence < bucket.primarySequence) {
             bucket.primaryRow = row;
+            bucket.primarySequence = rowSequence;
         }
         bucket.rows.append(row);
         appendUnique(bucket.intervals, bucket.intervalSet, rawText(positionsTable_->item(row, 8)));
         appendUnique(bucket.indicators, bucket.indicatorSet, rawText(positionsTable_->item(row, 9)));
+        appendUnique(bucket.sides, bucket.sideSet, side);
+        appendUnique(bucket.stopLosses, bucket.stopLossSet, rawText(positionsTable_->item(row, 15)));
+        appendUnique(bucket.statuses, bucket.statusSet, status);
         appendUniqueLines(bucket.triggeredValues, bucket.triggeredSet, rawText(positionsTable_->item(row, 10)));
         appendUniqueLines(bucket.currentValues, bucket.currentSet, rawText(positionsTable_->item(row, 11)));
         appendUnique(bucket.connectors, bucket.connectorSet, connectorBase(rawText(positionsTable_->item(row, 17))));
         bucket.sizeUsdt += numericValue(positionsTable_->item(row, 1));
+        const double lastPrice = numericValue(positionsTable_->item(row, 2));
+        if (qIsFinite(lastPrice) && lastPrice > 0.0) {
+            bucket.lastPrice = lastPrice;
+        }
         bucket.marginUsdt += numericValue(positionsTable_->item(row, 5));
-        const QVariant roiBasisData = positionsTable_->item(row, 7)
-            ? positionsTable_->item(row, 7)->data(Qt::UserRole + 1)
-            : QVariant();
-        const double roiBasisValue = roiBasisData.isValid()
-            ? roiBasisData.toDouble()
-            : numericValue(positionsTable_->item(row, 5));
+        const double roiBasisValue = tableCellRawRoiBasis(positionsTable_->item(row, 7), numericValue(positionsTable_->item(row, 5)));
         if (qIsFinite(roiBasisValue) && roiBasisValue > 0.0) {
             bucket.roiBasisUsdt += roiBasisValue;
         }
@@ -7801,6 +8324,11 @@ void TradingBotWindow::applyPositionsViewMode() {
         bucket.pnlUsdt += numericValue(positionsTable_->item(row, 7));
         bucket.marginRatio = std::max(bucket.marginRatio, numericValue(positionsTable_->item(row, 3)));
         bucket.liqPrice = std::max(bucket.liqPrice, numericValue(positionsTable_->item(row, 4)));
+        if (status == QStringLiteral("OPEN")) {
+            ++bucket.openCount;
+        } else if (status == QStringLiteral("CLOSED")) {
+            ++bucket.closedCount;
+        }
 
         const QString openTime = rawText(positionsTable_->item(row, 13)).trimmed();
         if (!openTime.isEmpty() && openTime != QStringLiteral("-")) {
@@ -7816,13 +8344,16 @@ void TradingBotWindow::applyPositionsViewMode() {
         }
     }
 
+    QSet<int> secondaryRows;
     for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
         const AggregateBucket &bucket = it.value();
         if (bucket.primaryRow < 0 || bucket.rows.isEmpty()) {
             continue;
         }
-        for (int i = 1; i < bucket.rows.size(); ++i) {
-            positionsTable_->setRowHidden(bucket.rows.at(i), true);
+        for (int bucketRow : bucket.rows) {
+            if (bucketRow != bucket.primaryRow) {
+                secondaryRows.insert(bucketRow);
+            }
         }
 
         const int row = bucket.primaryRow;
@@ -7830,6 +8361,8 @@ void TradingBotWindow::applyPositionsViewMode() {
         const double pnlPct = bucket.roiBasisUsdt > 1e-9 ? (bucket.pnlUsdt / bucket.roiBasisUsdt) * 100.0 : 0.0;
         const QString intervalText = bucket.intervals.isEmpty() ? QStringLiteral("-") : bucket.intervals.join(QStringLiteral(", "));
         const QString indicatorText = bucket.indicators.isEmpty() ? QStringLiteral("-") : bucket.indicators.join(QStringLiteral(", "));
+        const QString sideText = bucket.sides.isEmpty() ? QStringLiteral("-") : bucket.sides.join(QStringLiteral(", "));
+        const QString stopLossText = bucket.stopLosses.isEmpty() ? QStringLiteral("-") : bucket.stopLosses.join(QStringLiteral(", "));
         const QString triggeredText = bucket.triggeredValues.isEmpty() ? QStringLiteral("-") : bucket.triggeredValues.join(QStringLiteral("\n"));
         const QString currentText = bucket.currentValues.isEmpty() ? QStringLiteral("-") : bucket.currentValues.join(QStringLiteral("\n"));
         const QString marginRatioText = bucket.marginRatio > 0.0
@@ -7838,45 +8371,88 @@ void TradingBotWindow::applyPositionsViewMode() {
         const QString liqPriceText = bucket.liqPrice > 0.0
             ? QString::number(bucket.liqPrice, 'f', 6)
             : QStringLiteral("-");
+        const QString lastPriceText = bucket.lastPrice > 0.0
+            ? QString::number(bucket.lastPrice, 'f', 6)
+            : QStringLiteral("-");
+        QString statusText;
+        if (bucket.openCount > 0 && bucket.closedCount > 0) {
+            statusText = QStringLiteral("OPEN + CLOSED");
+        } else if (bucket.openCount > 0) {
+            statusText = QStringLiteral("OPEN");
+        } else if (bucket.closedCount > 0) {
+            statusText = QStringLiteral("CLOSED");
+        } else {
+            statusText = bucket.statuses.isEmpty() ? QStringLiteral("-") : bucket.statuses.join(QStringLiteral(", "));
+        }
         const QString symbol = rawText(positionsTable_->item(row, 0)).trimmed().toUpper();
 
-        ensureItem(row, 1)->setText(formatPositionSizeText(bucket.sizeUsdt, bucket.quantity, symbol));
-        ensureItem(row, 3)->setText(marginRatioText);
-        ensureItem(row, 4)->setText(liqPriceText);
-        ensureItem(row, 5)->setText(QString::number(bucket.marginUsdt, 'f', 2));
-        ensureItem(row, 6)->setText(formatQuantityWithSymbol(bucket.quantity, symbol));
+        setDisplayText(row, 0, symbol);
+        setDisplayText(row, 1, formatPositionSizeText(bucket.sizeUsdt, bucket.quantity, symbol));
+        setDisplayText(row, 2, lastPriceText);
+        setDisplayText(row, 3, marginRatioText);
+        setDisplayText(row, 4, liqPriceText);
+        setDisplayText(row, 5, QString::number(bucket.marginUsdt, 'f', 2));
+        setDisplayText(row, 6, formatQuantityWithSymbol(bucket.quantity, symbol));
         ensureItem(row, 1)->setData(kTableCellNumericRole, bucket.sizeUsdt);
+        ensureItem(row, 2)->setData(kTableCellNumericRole, bucket.lastPrice);
         ensureItem(row, 3)->setData(kTableCellNumericRole, bucket.marginRatio);
         ensureItem(row, 4)->setData(kTableCellNumericRole, bucket.liqPrice);
         ensureItem(row, 5)->setData(kTableCellNumericRole, bucket.marginUsdt);
         ensureItem(row, 6)->setData(kTableCellNumericRole, bucket.quantity);
-        QTableWidgetItem *pnlItem = ensureItem(row, 7);
-        pnlItem->setText(
-            QStringLiteral("%1 (%2%)")
-                .arg(QString::number(bucket.pnlUsdt, 'f', 2),
-                     QString::number(pnlPct, 'f', 2)));
+        QTableWidgetItem *pnlItem = setDisplayText(row, 7, QStringLiteral("%1 (%2%)")
+                                                        .arg(QString::number(bucket.pnlUsdt, 'f', 2),
+                                                             QString::number(pnlPct, 'f', 2)));
         pnlItem->setData(Qt::UserRole + 1, bucket.roiBasisUsdt);
         pnlItem->setData(kTableCellNumericRole, bucket.pnlUsdt);
-        ensureItem(row, 8)->setText(intervalText);
-        ensureItem(row, 9)->setText(indicatorText);
-        ensureItem(row, 10)->setText(triggeredText);
-        ensureItem(row, 11)->setText(currentText);
-        if (!bucket.openTime.isEmpty()) {
-            ensureItem(row, 13)->setText(bucket.openTime);
-        }
-        const QString status = rawText(positionsTable_->item(row, 16)).trimmed().toUpper();
-        ensureItem(row, 14)->setText(
-            status == QStringLiteral("OPEN")
+        setDisplayText(row, 8, intervalText);
+        setDisplayText(row, 9, indicatorText);
+        setDisplayText(row, 10, triggeredText);
+        setDisplayText(row, 11, currentText);
+        setDisplayText(row, 12, sideText);
+        setDisplayText(row, 13, bucket.openTime.isEmpty() ? QStringLiteral("-") : bucket.openTime);
+        setDisplayText(
+            row,
+            14,
+            bucket.openCount > 0
                 ? QStringLiteral("-")
                 : (bucket.closeTime.isEmpty() ? QStringLiteral("-") : bucket.closeTime));
-        if (!bucket.connectors.isEmpty()) {
-            const QString connectorText = bucket.connectors.join(QStringLiteral(", "));
-            ensureItem(row, 17)->setText(QStringLiteral("%1 | %2 trade(s)").arg(connectorText).arg(tradeCount));
+        setDisplayText(row, 15, stopLossText);
+        setDisplayText(row, 16, statusText);
+        const QString connectorText = bucket.connectors.isEmpty()
+            ? QStringLiteral("-")
+            : bucket.connectors.join(QStringLiteral(", "));
+        setDisplayText(row, 17, QStringLiteral("%1 | %2 trade(s)").arg(connectorText).arg(tradeCount));
+
+        for (int i = 0; i < bucket.rows.size(); ++i) {
+            const int bucketRow = bucket.rows.at(i);
+            if (bucketRow == row) {
+                continue;
+            }
+            for (int col = 0; col < positionsTable_->columnCount(); ++col) {
+                QTableWidgetItem *sourceItem = positionsTable_->item(row, col);
+                QTableWidgetItem *targetItem = ensureItem(bucketRow, col);
+                if (!targetItem->data(Qt::UserRole).isValid()) {
+                    targetItem->setData(Qt::UserRole, targetItem->text());
+                }
+                targetItem->setText(sourceItem ? sourceItem->text() : QString());
+                targetItem->setData(
+                    kTableCellNumericRole,
+                    sourceItem ? sourceItem->data(kTableCellNumericRole) : QVariant());
+                if (col == 7) {
+                    targetItem->setData(
+                        Qt::UserRole + 1,
+                        sourceItem ? sourceItem->data(Qt::UserRole + 1) : QVariant());
+                }
+            }
         }
     }
 
+    for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+        positionsTable_->setRowHidden(row, secondaryRows.contains(row));
+    }
+
     positionsTable_->setSortingEnabled(sortingWasEnabled);
-    refreshPositionsTableSizing();
+    refreshPositionsTableSizing(resizeColumns, resizeRows);
     refreshPositionsSummaryLabels();
 }
 
@@ -8092,6 +8668,7 @@ void TradingBotWindow::startDashboardRuntime() {
     if (dashboardBotTimeLabel_) {
         dashboardBotTimeLabel_->setText("0s");
     }
+    refreshPositionsSummaryLabels();
 
     if (!dashboardRuntimeTimer_) {
         dashboardRuntimeTimer_ = new QTimer(this);
@@ -8273,6 +8850,45 @@ void TradingBotWindow::stopDashboardRuntime() {
     const auto clearStopLivePositionsCache = [&stopLivePositionsCache, &stopSnapshotCacheKeyFor](const QString &baseUrl) {
         stopLivePositionsCache.remove(stopSnapshotCacheKeyFor(baseUrl));
     };
+    const auto pickStopLivePosition =
+        [hedgeMode](
+            const BinanceRestClient::FuturesPositionsResult *snapshot,
+            const QString &symbol,
+            const QString &runtimeSide) -> const BinanceRestClient::FuturesPosition * {
+        if (!snapshot || !snapshot->ok) {
+            return nullptr;
+        }
+        const QString sym = symbol.trimmed().toUpper();
+        const QString side = runtimeSide.trimmed().toUpper();
+        const BinanceRestClient::FuturesPosition *best = nullptr;
+        double bestAbsAmt = 0.0;
+        for (const auto &pos : snapshot->positions) {
+            if (pos.symbol.trimmed().toUpper() != sym) {
+                continue;
+            }
+            const double absAmt = std::fabs(pos.positionAmt);
+            if (!qIsFinite(absAmt) || absAmt <= 1e-10) {
+                continue;
+            }
+            const QString posSide = pos.positionSide.trimmed().toUpper();
+            const bool sideMatches = (side == QStringLiteral("LONG") && pos.positionAmt > 0.0)
+                || (side == QStringLiteral("SHORT") && pos.positionAmt < 0.0)
+                || side.isEmpty();
+            if (hedgeMode) {
+                if ((side == QStringLiteral("LONG") && posSide == QStringLiteral("LONG"))
+                    || (side == QStringLiteral("SHORT") && posSide == QStringLiteral("SHORT"))) {
+                    return &pos;
+                }
+            } else if ((posSide.isEmpty() || posSide == QStringLiteral("BOTH")) && sideMatches) {
+                return &pos;
+            }
+            if (sideMatches && absAmt > bestAbsAmt) {
+                bestAbsAmt = absAmt;
+                best = &pos;
+            }
+        }
+        return best;
+    };
     QSet<QString> fullyClosedKeys;
     const QString stopNowText = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
     if (keepOpenPositions) {
@@ -8281,6 +8897,7 @@ void TradingBotWindow::stopDashboardRuntime() {
         int paperClosed = 0;
         const QList<QString> runtimeKeys = dashboardRuntimeOpenPositions_.keys();
         for (const QString &runtimeKey : runtimeKeys) {
+            pumpUiEvents();
             const RuntimePosition openPos = dashboardRuntimeOpenPositions_.value(runtimeKey);
             const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
             const QString interval = openPos.interval.trimmed();
@@ -8334,6 +8951,7 @@ void TradingBotWindow::stopDashboardRuntime() {
             closeFailed = dashboardRuntimeOpenPositions_.size();
         } else {
             for (auto it = dashboardRuntimeOpenPositions_.begin(); it != dashboardRuntimeOpenPositions_.end(); ++it) {
+                pumpUiEvents();
                 const QString runtimeKey = it.key();
                 RuntimePosition &openPos = it.value();
                 const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
@@ -8346,6 +8964,35 @@ void TradingBotWindow::stopDashboardRuntime() {
                 }
                 if (connectorBaseUrl.isEmpty() && keyParts.size() >= 4) {
                     connectorBaseUrl = keyParts.mid(3).join(QStringLiteral("|")).trimmed();
+                }
+
+                const auto *liveSnapshot = fetchStopLivePositions(connectorBaseUrl);
+                const auto *livePos = pickStopLivePosition(liveSnapshot, symbol, openPos.side);
+                if (livePos) {
+                    const double liveQty = std::fabs(livePos->positionAmt);
+                    if (qIsFinite(liveQty) && liveQty > 1e-10) {
+                        openPos.quantity = liveQty;
+                    }
+                    if (qIsFinite(livePos->entryPrice) && livePos->entryPrice > 0.0) {
+                        openPos.entryPrice = livePos->entryPrice;
+                    }
+                    if (qIsFinite(livePos->leverage) && livePos->leverage > 0.0) {
+                        openPos.leverage = livePos->leverage;
+                    }
+                    const double marginFallback = std::max(
+                        1e-9,
+                        (std::max(0.0, openPos.entryPrice) * std::max(0.0, openPos.quantity))
+                            / std::max(1.0, openPos.leverage));
+                    openPos.displayMarginUsdt = std::max(
+                        1e-9,
+                        livePositionTotalDisplayMargin(
+                            livePos,
+                            std::max(marginFallback, openPos.displayMarginUsdt)));
+                    openPos.roiBasisUsdt = std::max(
+                        1e-9,
+                        livePositionTotalRoiBasis(
+                            livePos,
+                            std::max(marginFallback, openPos.roiBasisUsdt)));
                 }
 
                 if (symbol.isEmpty() || !qIsFinite(openPos.quantity) || openPos.quantity <= 0.0) {
@@ -8376,6 +9023,19 @@ void TradingBotWindow::stopDashboardRuntime() {
                         }
                     }
                 }
+                double fallbackClosePrice = (livePos && qIsFinite(livePos->markPrice) && livePos->markPrice > 0.0)
+                    ? livePos->markPrice
+                    : 0.0;
+                if (fallbackClosePrice <= 0.0 && targetRow >= 0) {
+                    bool tablePriceOk = false;
+                    const double tablePrice = firstNumberInText(tableCellRaw(targetRow, 2), &tablePriceOk);
+                    if (tablePriceOk && qIsFinite(tablePrice) && tablePrice > 0.0) {
+                        fallbackClosePrice = tablePrice;
+                    }
+                }
+                if (fallbackClosePrice <= 0.0 && qIsFinite(openPos.entryPrice) && openPos.entryPrice > 0.0) {
+                    fallbackClosePrice = openPos.entryPrice;
+                }
                 ++closeRequested;
                 const auto closeOrder = placeFuturesCloseOrderWithFallback(
                     apiKey,
@@ -8387,7 +9047,8 @@ void TradingBotWindow::stopDashboardRuntime() {
                     closeReduceOnly,
                     closePositionSide,
                     10000,
-                    connectorBaseUrl);
+                    connectorBaseUrl,
+                    fallbackClosePrice);
 
                 if (!closeOrder.ok) {
                     if (isReduceOnlyRejectedError(closeOrder.error)) {
@@ -8423,7 +9084,7 @@ void TradingBotWindow::stopDashboardRuntime() {
 
                 const double closePrice = (qIsFinite(closeOrder.avgPrice) && closeOrder.avgPrice > 0.0)
                     ? closeOrder.avgPrice
-                    : openPos.entryPrice;
+                    : fallbackClosePrice;
                 const double closeQty = (qIsFinite(closeOrder.executedQty) && closeOrder.executedQty > 0.0)
                     ? closeOrder.executedQty
                     : openPos.quantity;
@@ -8462,7 +9123,7 @@ void TradingBotWindow::stopDashboardRuntime() {
                     setTableCellNumeric(positionsTable_, targetRow, 2, closePrice);
                     setTableCellNumeric(positionsTable_, targetRow, 7, realizedPnlUsdt);
                     if (QTableWidgetItem *pnlItem = positionsTable_->item(targetRow, 7)) {
-                        pnlItem->setData(Qt::UserRole + 1, closeRoiBasisUsed);
+                        setTableCellRoiBasis(pnlItem, closeRoiBasisUsed);
                     }
                 }
 
@@ -8493,7 +9154,7 @@ void TradingBotWindow::stopDashboardRuntime() {
                         setTableCellNumeric(positionsTable_, targetRow, 5, remainingDisplayMarginUsdt);
                         setTableCellNumeric(positionsTable_, targetRow, 6, openPos.quantity);
                         if (QTableWidgetItem *pnlItem = positionsTable_->item(targetRow, 7)) {
-                            pnlItem->setData(Qt::UserRole + 1, remainingRoiBasisUsdt);
+                            setTableCellRoiBasis(pnlItem, remainingRoiBasisUsdt);
                         }
                     }
                     appendDashboardPositionLog(
@@ -8536,9 +9197,14 @@ void TradingBotWindow::stopDashboardRuntime() {
     int sweepSucceeded = 0;
     int sweepPartial = 0;
     int sweepFailed = 0;
-    if (!keepOpenPositions && !paperTrading && futures && hasApiCredentials && !closeConnectorConfigs.isEmpty()) {
+    const bool stopNeedsSweep = closeRequested == 0
+        || !dashboardRuntimeOpenPositions_.isEmpty()
+        || closeFailed > 0
+        || closePartial > 0;
+    if (!keepOpenPositions && !paperTrading && futures && hasApiCredentials && !closeConnectorConfigs.isEmpty() && stopNeedsSweep) {
         QSet<QString> attemptedSweepKeys;
         for (auto cfgIt = closeConnectorConfigs.cbegin(); cfgIt != closeConnectorConfigs.cend(); ++cfgIt) {
+            pumpUiEvents();
             const ConnectorRuntimeConfig &cfg = cfgIt.value();
             const auto snapshot = BinanceRestClient::fetchOpenFuturesPositions(
                 apiKey,
@@ -8555,6 +9221,7 @@ void TradingBotWindow::stopDashboardRuntime() {
                 continue;
             }
             for (const auto &pos : snapshot.positions) {
+                pumpUiEvents();
                 const QString symbol = pos.symbol.trimmed().toUpper();
                 if (symbol.isEmpty()) {
                     continue;
@@ -8596,7 +9263,10 @@ void TradingBotWindow::stopDashboardRuntime() {
                     closeReduceOnly,
                     positionSide,
                     10000,
-                    cfg.baseUrl);
+                    cfg.baseUrl,
+                    (qIsFinite(pos.markPrice) && pos.markPrice > 0.0)
+                        ? pos.markPrice
+                        : pos.entryPrice);
                 if (!closeOrder.ok) {
                     if (isReduceOnlyRejectedError(closeOrder.error)) {
                         clearStopLivePositionsCache(cfg.baseUrl);
@@ -8733,18 +9403,46 @@ void TradingBotWindow::stopDashboardRuntime() {
 }
 
 void TradingBotWindow::runDashboardRuntimeCycle() {
-    if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_) {
+    if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeCycleInProgress_) {
         return;
     }
     if (!dashboardOverridesTable_ || dashboardOverridesTable_->rowCount() <= 0) {
         return;
     }
+    dashboardRuntimeCycleInProgress_ = true;
+    struct RuntimeCycleGuard final {
+        bool *flag = nullptr;
+        ~RuntimeCycleGuard() {
+            if (flag) {
+                *flag = false;
+            }
+        }
+    } runtimeCycleGuard{&dashboardRuntimeCycleInProgress_};
+
     bool positionsTableMutated = false;
     bool positionsTableStructureChanged = false;
-    const bool positionsSortingWasEnabled = positionsTable_ ? positionsTable_->isSortingEnabled() : false;
-    if (positionsTable_ && positionsSortingWasEnabled) {
-        positionsTable_->setSortingEnabled(false);
-    }
+    auto flushPendingPositionsView = [&]() {
+        if (!positionsTableMutated) {
+            return;
+        }
+        if (positionsCumulativeView_) {
+            applyPositionsViewMode(positionsTableStructureChanged, positionsTableStructureChanged);
+        } else {
+            refreshPositionsSummaryLabels();
+            if (positionsTableStructureChanged) {
+                refreshPositionsTableSizing();
+            }
+        }
+        positionsTableMutated = false;
+        positionsTableStructureChanged = false;
+    };
+    auto applyCumulativeViewImmediately = [&]() {
+        if (!positionsCumulativeView_ || !positionsTable_ || !positionsTableMutated) {
+            return;
+        }
+        ScopedTableUpdatesPause updatesPause(positionsTable_);
+        applyPositionsViewMode(false, false);
+    };
     QSet<QString> waitingSeenThisCycle;
     const qint64 cycleNowMs = QDateTime::currentMSecsSinceEpoch();
 
@@ -9126,6 +9824,13 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_) {
             break;
         }
+        if (row > 0) {
+            flushPendingPositionsView();
+            pumpUiEvents();
+            if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_) {
+                break;
+            }
+        }
         const auto *symbolItem = dashboardOverridesTable_->item(row, 0);
         const auto *intervalItem = dashboardOverridesTable_->item(row, 1);
         if (!symbolItem || !intervalItem) {
@@ -9242,7 +9947,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 }
 
                 if (targetRow >= 0) {
-                    auto setOrCreate = [this, targetRow](int col, const QString &text, bool preserveWhenUnavailable = false) {
+                    ScopedTableSortingPause sortingPause(positionsTable_);
+                    const bool updateVisibleText = !positionsCumulativeView_;
+                    auto setOrCreate = [this, targetRow, updateVisibleText](int col, const QString &text, bool preserveWhenUnavailable = false) {
                         QTableWidgetItem *item = positionsTable_->item(targetRow, col);
                         QString finalText = text;
                         if (preserveWhenUnavailable && (text.trimmed().isEmpty() || text.trimmed() == QStringLiteral("-"))) {
@@ -9259,7 +9966,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                         if (!item) {
                             item = new QTableWidgetItem(finalText);
                             positionsTable_->setItem(targetRow, col, item);
-                        } else {
+                        } else if (updateVisibleText) {
                             item->setText(finalText);
                         }
                         item->setData(Qt::UserRole, finalText);
@@ -9281,7 +9988,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     setTableCellNumeric(positionsTable_, targetRow, 6, rowQty);
                     setTableCellNumeric(positionsTable_, targetRow, 7, markPnlUsdt);
                     if (QTableWidgetItem *pnlItem = positionsTable_->item(targetRow, 7)) {
-                        pnlItem->setData(Qt::UserRole + 1, openPos.roiBasisUsdt);
+                        setTableCellRoiBasis(pnlItem, openPos.roiBasisUsdt);
                     }
                     positionsTableMutated = true;
                 }
@@ -9672,6 +10379,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             runtimeQtyByExposureKey[exposureKey] = groupQty;
 
             if (positionsTable_) {
+                ScopedTableSortingPause sortingPause(positionsTable_);
                 const int rowIdx = positionsTable_->rowCount();
                 positionsTable_->insertRow(rowIdx);
                 positionsTableStructureChanged = true;
@@ -9692,7 +10400,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 setTableCellText(positionsTable_, rowIdx, 7, "0.00 (0.00%)");
                 setTableCellNumeric(positionsTable_, rowIdx, 7, 0.0);
                 if (QTableWidgetItem *pnlItem = positionsTable_->item(rowIdx, 7)) {
-                    pnlItem->setData(Qt::UserRole + 1, roiBasisUsdt);
+                    setTableCellRoiBasis(pnlItem, roiBasisUsdt);
                 }
                 setTableCellText(positionsTable_, rowIdx, 8, interval);
                 setTableCellText(positionsTable_, rowIdx, 9, indicatorDisplayName(triggerSource));
@@ -9708,8 +10416,12 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                     dashboardOverridesTable_->item(row, 7) ? dashboardOverridesTable_->item(row, 7)->text() : QStringLiteral("Disabled"));
                 setTableCellText(positionsTable_, rowIdx, 16, "OPEN");
                 setTableCellText(positionsTable_, rowIdx, 17, QString("Auto [%1] #%2").arg(rowConnectorCfg.key, openOrderId));
+                if (QTableWidgetItem *symbolItem = positionsTable_->item(rowIdx, 0)) {
+                    symbolItem->setData(kPositionsRowSequenceRole, positionsRowSequenceCounter_++);
+                }
                 positionsTableMutated = true;
             }
+            applyCumulativeViewImmediately();
             appendDashboardPositionLog(
                 QString("%1 %2@%3 opened at %4 qty=%5 (%6, values: %7, connector=%8, orderId=%9%10)")
                     .arg(openSide,
@@ -9817,7 +10529,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         }
 
         if (targetRow >= 0 && positionsTable_) {
-            auto setOrCreate = [this, targetRow](int col, const QString &text, bool preserveWhenUnavailable = false) {
+            ScopedTableSortingPause sortingPause(positionsTable_);
+            const bool updateVisibleText = !positionsCumulativeView_;
+            auto setOrCreate = [this, targetRow, updateVisibleText](int col, const QString &text, bool preserveWhenUnavailable = false) {
                 QTableWidgetItem *item = positionsTable_->item(targetRow, col);
                 QString finalText = text;
                 if (preserveWhenUnavailable && (text.trimmed().isEmpty() || text.trimmed() == QStringLiteral("-"))) {
@@ -9834,7 +10548,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 if (!item) {
                     item = new QTableWidgetItem(finalText);
                     positionsTable_->setItem(targetRow, col, item);
-                } else {
+                } else if (updateVisibleText) {
                     item->setText(finalText);
                 }
                 item->setData(Qt::UserRole, finalText);
@@ -9856,7 +10570,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             setTableCellNumeric(positionsTable_, targetRow, 6, rowQty);
             setTableCellNumeric(positionsTable_, targetRow, 7, markPnlUsdt);
             if (QTableWidgetItem *pnlItem = positionsTable_->item(targetRow, 7)) {
-                pnlItem->setData(Qt::UserRole + 1, openPos.roiBasisUsdt);
+                setTableCellRoiBasis(pnlItem, openPos.roiBasisUsdt);
             }
             setOrCreate(11, indicatorValueSummary);
             positionsTableMutated = true;
@@ -9898,19 +10612,22 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 closeReduceOnly,
                 closePositionSide,
                 10000,
-                rowConnectorCfg.baseUrl);
+                rowConnectorCfg.baseUrl,
+                price);
             if (!closeOrder.ok) {
                 if (isReduceOnlyRejectedError(closeOrder.error)) {
                     livePositionsCache.remove(connectorCacheKeyFor(rowConnectorCfg));
                     const auto *latestSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
                     if (!hasMatchingOpenFuturesPosition(latestSnapshot, symbol, openPos.side, hedgeMode)) {
                         if (targetRow >= 0 && positionsTable_) {
-                            auto setOrCreate = [this, targetRow](int col, const QString &text) {
+                            ScopedTableSortingPause sortingPause(positionsTable_);
+                            const bool updateVisibleText = !positionsCumulativeView_;
+                            auto setOrCreate = [this, targetRow, updateVisibleText](int col, const QString &text) {
                                 QTableWidgetItem *item = positionsTable_->item(targetRow, col);
                                 if (!item) {
                                     item = new QTableWidgetItem(text);
                                     positionsTable_->setItem(targetRow, col, item);
-                                } else {
+                                } else if (updateVisibleText) {
                                     item->setText(text);
                                 }
                                 item->setData(Qt::UserRole, text);
@@ -9919,9 +10636,13 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                             setOrCreate(16, "CLOSED");
                             positionsTableMutated = true;
                         }
+                        applyCumulativeViewImmediately();
                         appendDashboardPositionLog(
                             QString("%1 %2@%3 close confirmed (%4): position is already flat on exchange.")
                                 .arg(openPos.side, symbol, interval, rowConnectorCfg.key));
+                        dashboardRuntimeLastEvalMs_.remove(key);
+                        dashboardRuntimeEntryRetryAfterMs_.remove(key);
+                        dashboardRuntimeOpenQtyCaps_.remove(key);
                         dashboardRuntimeOpenPositions_.remove(key);
                         continue;
                     }
@@ -9959,12 +10680,14 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         const bool partialClose = (effectiveCloseQty + 1e-9) < openPos.quantity;
 
         if (targetRow >= 0 && positionsTable_) {
-            auto setOrCreate = [this, targetRow](int col, const QString &text) {
+            ScopedTableSortingPause sortingPause(positionsTable_);
+            const bool updateVisibleText = !positionsCumulativeView_;
+            auto setOrCreate = [this, targetRow, updateVisibleText](int col, const QString &text) {
                 QTableWidgetItem *item = positionsTable_->item(targetRow, col);
                 if (!item) {
                     item = new QTableWidgetItem(text);
                     positionsTable_->setItem(targetRow, col, item);
-                } else {
+                } else if (updateVisibleText) {
                     item->setText(text);
                 }
                 item->setData(Qt::UserRole, text);
@@ -9976,7 +10699,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             setTableCellNumeric(positionsTable_, targetRow, 2, closePrice);
             setTableCellNumeric(positionsTable_, targetRow, 7, realizedPnlUsdt);
             if (QTableWidgetItem *pnlItem = positionsTable_->item(targetRow, 7)) {
-                pnlItem->setData(Qt::UserRole + 1, closeRoiBasisUsed);
+                setTableCellRoiBasis(pnlItem, closeRoiBasisUsed);
             }
             if (partialClose) {
                 const double remainingQty = std::max(0.0, openPos.quantity - effectiveCloseQty);
@@ -9995,7 +10718,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 setTableCellNumeric(positionsTable_, targetRow, 5, remainingDisplayMarginUsdt);
                 setTableCellNumeric(positionsTable_, targetRow, 6, remainingQty);
                 if (QTableWidgetItem *pnlItem = positionsTable_->item(targetRow, 7)) {
-                    pnlItem->setData(Qt::UserRole + 1, remainingRoiBasisUsdt);
+                    setTableCellRoiBasis(pnlItem, remainingRoiBasisUsdt);
                 }
             } else {
                 setOrCreate(14, QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
@@ -10003,6 +10726,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             }
             positionsTableMutated = true;
         }
+        applyCumulativeViewImmediately();
 
         if (partialClose) {
             openPos.quantity = std::max(0.0, openPos.quantity - effectiveCloseQty);
@@ -10036,6 +10760,9 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                      QString::number(realizedPnlPct, 'f', 2),
                      rowConnectorCfg.key,
                      closeOrderId));
+        dashboardRuntimeLastEvalMs_.remove(key);
+        dashboardRuntimeEntryRetryAfterMs_.remove(key);
+        dashboardRuntimeOpenQtyCaps_.remove(key);
         dashboardRuntimeOpenPositions_.remove(key);
     }
 
@@ -10068,17 +10795,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     }
     refreshDashboardWaitingQueueTable();
 
-    if (positionsCumulativeView_ && positionsTableMutated) {
-        applyPositionsViewMode();
-    } else {
-        refreshPositionsSummaryLabels();
-        if (positionsTableStructureChanged) {
-            refreshPositionsTableSizing();
-        }
-    }
-
-    if (positionsTable_ && positionsSortingWasEnabled && !positionsTable_->isSortingEnabled()) {
-        positionsTable_->setSortingEnabled(true);
-    }
+    flushPendingPositionsView();
+    refreshPositionsSummaryLabels();
 }
 

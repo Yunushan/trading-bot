@@ -847,6 +847,9 @@ BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFil
         bool qpOk = false;
         const int quantityPrecision = symObj.value(QStringLiteral("quantityPrecision")).toVariant().toInt(&qpOk);
         result.quantityPrecision = qpOk ? std::max(0, quantityPrecision) : 0;
+        bool ppOk = false;
+        const int pricePrecision = symObj.value(QStringLiteral("pricePrecision")).toVariant().toInt(&ppOk);
+        result.pricePrecision = ppOk ? std::max(0, pricePrecision) : 0;
 
         double lotStepSize = 0.0;
         double lotMinQty = 0.0;
@@ -854,6 +857,7 @@ BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFil
         double marketStepSize = 0.0;
         double marketMinQty = 0.0;
         double marketMaxQty = 0.0;
+        double priceTickSize = 0.0;
         const QJsonArray filters = symObj.value(QStringLiteral("filters")).toArray();
         for (const QJsonValue &fValue : filters) {
             const QJsonObject f = fValue.toObject();
@@ -871,10 +875,13 @@ BinanceRestClient::FuturesSymbolFilters BinanceRestClient::fetchFuturesSymbolFil
                 if (!parseJsonNumber(f.value(QStringLiteral("notional")), &result.minNotional)) {
                     parseJsonNumber(f.value(QStringLiteral("minNotional")), &result.minNotional);
                 }
+            } else if (filterType == QStringLiteral("PRICE_FILTER")) {
+                parseJsonNumber(f.value(QStringLiteral("tickSize")), &priceTickSize);
             }
         }
 
         result.stepSize = marketStepSize > 0.0 ? marketStepSize : lotStepSize;
+        result.tickSize = std::max(0.0, priceTickSize);
         result.minQty = marketMinQty > 0.0 ? marketMinQty : lotMinQty;
         result.maxQty = marketMaxQty > 0.0 ? marketMaxQty : lotMaxQty;
         result.stepSize = std::max(0.0, result.stepSize);
@@ -936,6 +943,107 @@ BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesMarketOrder
         && result.positionSide != QStringLiteral("BOTH")
         && (result.positionSide == QStringLiteral("LONG") || result.positionSide == QStringLiteral("SHORT"));
     // Binance Futures rejects `reduceOnly` in hedge-mode orders with LONG/SHORT `positionSide`.
+    if (reduceOnly && !hasDirectionalPositionSide) {
+        query.addQueryItem(QStringLiteral("reduceOnly"), QStringLiteral("true"));
+    }
+    if (hasDirectionalPositionSide) {
+        query.addQueryItem(QStringLiteral("positionSide"), result.positionSide);
+    }
+    query.addQueryItem(QStringLiteral("timestamp"), QString::number(QDateTime::currentMSecsSinceEpoch()));
+    query.addQueryItem(QStringLiteral("recvWindow"), QStringLiteral("5000"));
+
+    const QString queryString = query.toString(QUrl::FullyEncoded);
+    const QString signature = hmacSha256Hex(apiSecret, queryString);
+    const QString url = QStringLiteral("%1/fapi/v1/order?%2&signature=%3").arg(base, queryString, signature);
+
+    QString requestError;
+    const QJsonDocument doc = httpRequestJson(
+        QStringLiteral("POST"),
+        url,
+        {{QByteArrayLiteral("X-MBX-APIKEY"), apiKey.toUtf8()}},
+        timeoutMs,
+        &requestError);
+    if (doc.isNull() || !doc.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance order response") : requestError;
+        return result;
+    }
+
+    const QJsonObject obj = doc.object();
+    if (obj.contains(QStringLiteral("code")) || obj.contains(QStringLiteral("msg"))) {
+        result.error = QStringLiteral("Binance order error: %1")
+                           .arg(obj.value(QStringLiteral("msg")).toString(QStringLiteral("unknown")));
+        return result;
+    }
+
+    result.status = obj.value(QStringLiteral("status")).toString().trimmed().toUpper();
+    result.orderId = obj.value(QStringLiteral("orderId")).toVariant().toString();
+    parseJsonNumber(obj.value(QStringLiteral("executedQty")), &result.executedQty);
+    parseJsonNumber(obj.value(QStringLiteral("avgPrice")), &result.avgPrice);
+    if (!qIsFinite(result.avgPrice) || result.avgPrice <= 0.0) {
+        parseJsonNumber(obj.value(QStringLiteral("price")), &result.avgPrice);
+    }
+    if (!qIsFinite(result.executedQty) || result.executedQty <= 0.0) {
+        parseJsonNumber(obj.value(QStringLiteral("origQty")), &result.executedQty);
+    }
+    result.ok = true;
+    return result;
+}
+
+BinanceRestClient::FuturesOrderResult BinanceRestClient::placeFuturesLimitOrder(
+    const QString &apiKey,
+    const QString &apiSecret,
+    const QString &symbol,
+    const QString &side,
+    double quantity,
+    double price,
+    bool testnet,
+    bool reduceOnly,
+    const QString &positionSide,
+    const QString &timeInForce,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    FuturesOrderResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    result.side = side.trimmed().toUpper();
+    result.positionSide = positionSide.trimmed().toUpper();
+    if (apiKey.trimmed().isEmpty() || apiSecret.trimmed().isEmpty()) {
+        result.error = QStringLiteral("Missing API credentials");
+        return result;
+    }
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+    if (result.side != QStringLiteral("BUY") && result.side != QStringLiteral("SELL")) {
+        result.error = QStringLiteral("Side must be BUY or SELL");
+        return result;
+    }
+    if (!qIsFinite(quantity) || quantity <= 0.0) {
+        result.error = QStringLiteral("Quantity must be > 0");
+        return result;
+    }
+    if (!qIsFinite(price) || price <= 0.0) {
+        result.error = QStringLiteral("Price must be > 0");
+        return result;
+    }
+
+    const QString defaultBase = testnet
+        ? QStringLiteral("https://testnet.binancefuture.com")
+        : QStringLiteral("https://fapi.binance.com");
+    const QString overrideBase = baseUrlOverride.trimmed();
+    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
+
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("symbol"), result.symbol);
+    query.addQueryItem(QStringLiteral("side"), result.side);
+    query.addQueryItem(QStringLiteral("type"), QStringLiteral("LIMIT"));
+    query.addQueryItem(QStringLiteral("timeInForce"), timeInForce.trimmed().isEmpty() ? QStringLiteral("IOC")
+                                                                                      : timeInForce.trimmed().toUpper());
+    query.addQueryItem(QStringLiteral("quantity"), formatDecimalForOrder(quantity, 8));
+    query.addQueryItem(QStringLiteral("price"), formatDecimalForOrder(price, 8));
+    const bool hasDirectionalPositionSide = !result.positionSide.isEmpty()
+        && result.positionSide != QStringLiteral("BOTH")
+        && (result.positionSide == QStringLiteral("LONG") || result.positionSide == QStringLiteral("SHORT"));
     if (reduceOnly && !hasDirectionalPositionSide) {
         query.addQueryItem(QStringLiteral("reduceOnly"), QStringLiteral("true"));
     }

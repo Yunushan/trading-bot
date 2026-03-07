@@ -83,10 +83,10 @@ private:
     double currentDashboardPaperBalanceUsdt() const;
     void syncDashboardPaperBalanceUi();
     void appendUniqueInterval(const QString &interval);
-    void refreshPositionsTableSizing();
+    void refreshPositionsTableSizing(bool resizeColumns = true, bool resizeRows = true);
     void updateDashboardStopLossWidgetState();
     void setDashboardRuntimeControlsEnabled(bool enabled);
-    void applyPositionsViewMode();
+    void applyPositionsViewMode(bool resizeColumns = true, bool resizeRows = true);
     void refreshPositionsSummaryLabels();
     bool openExternalUrl(const QString &url);
 
@@ -179,6 +179,7 @@ private:
     QDoubleSpinBox *dashboardStopLossPercentSpin_;
     bool dashboardRuntimeActive_ = false;
     bool dashboardRuntimeStopping_ = false;
+    bool dashboardRuntimeCycleInProgress_ = false;
     QMap<QString, QVariantMap> dashboardWaitingActiveEntries_;
     QList<QVariantMap> dashboardWaitingHistoryEntries_;
     int dashboardWaitingHistoryMax_ = 500;
@@ -218,5 +219,6 @@ private:
     QTableWidget *positionsTable_;
     QCheckBox *positionsAutoRowHeightCheck_;
     QCheckBox *positionsAutoColumnWidthCheck_;
+    qint64 positionsRowSequenceCounter_ = 1;
 };
 

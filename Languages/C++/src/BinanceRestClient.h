@@ -70,10 +70,12 @@ public:
     struct FuturesSymbolFilters {
         bool ok = false;
         double stepSize = 0.0;
+        double tickSize = 0.0;
         double minQty = 0.0;
         double maxQty = 0.0;
         double minNotional = 0.0;
         int quantityPrecision = 0;
+        int pricePrecision = 0;
         QString error;
     };
 
@@ -136,6 +138,20 @@ public:
         bool testnet,
         bool reduceOnly = false,
         const QString &positionSide = {},
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static FuturesOrderResult placeFuturesLimitOrder(
+        const QString &apiKey,
+        const QString &apiSecret,
+        const QString &symbol,
+        const QString &side,
+        double quantity,
+        double price,
+        bool testnet,
+        bool reduceOnly = false,
+        const QString &positionSide = {},
+        const QString &timeInForce = QStringLiteral("IOC"),
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
