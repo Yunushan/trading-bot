@@ -66,11 +66,14 @@ Languages/
   - CMakeLists.txt
   - resources.qrc
   - src/                  # Qt C++ prototype for the Backtest UI
-- C/
 - Rust/
+  - Cargo.toml
+  - crates/               # shared contracts/core
+  - apps/                 # Tauri/Slint/egui/Iced/Dioxus desktop shells
+  - README.md
 ```
 
-Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). Other language folders are stubs reserved for future ports.
+Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). `Languages/C++` is the native desktop preview, and `Languages/Rust` now contains a shared-core workspace with multiple Rust shells/services.
 
 ---
 
@@ -386,9 +389,9 @@ Backtests run locally; however, ensure you respect exchange rate limits by spaci
 This tab lists the supported code languages and keeps the scaffolding paths organized. Use it to scaffold folders when you plan to port the bot or build auxiliary tools:
 
 1. **Choose your language** (Python, C++, Rust, etc.).
-2. The workspace ensures the language folder exists so you can keep related assets organized.
+2. The workspace ensures the language folder exists so you can keep related assets organized. When Rust is selected, you can also choose a Rust desktop framework scaffold such as Tauri, Slint, egui, Iced, or Dioxus Desktop.
 
-It's a documentation hub as well-each card includes a subtitle describing the stack and badge labels (Recommended, Coming Soon, etc.).
+It's a documentation hub as well-each card includes a subtitle describing the stack and badge labels (Recommended, Preview, Scaffold, etc.).
 
 ---
 

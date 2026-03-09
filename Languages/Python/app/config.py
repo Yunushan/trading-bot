@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "loop_interval_override": "1m",
     "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
     "code_language": "Python (PyQt)",
+    "selected_rust_framework": "",
     "selected_exchange": "Binance",
     "selected_forex_broker": None,
     "indicator_flip_cooldown_bars": 1,

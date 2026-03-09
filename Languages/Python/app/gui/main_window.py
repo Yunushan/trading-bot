@@ -6,11 +6,13 @@ import os
 import sys
 import json
 import math
+import platform
 import re
 import shutil
 import subprocess
 import threading
 import time
+import tempfile
 import traceback
 import types
 import concurrent.futures
@@ -645,6 +647,7 @@ else:
 
 PYTHON_CODE_LANGUAGE_KEY = "Python (PyQt)"
 CPP_CODE_LANGUAGE_KEY = "C++ (Qt/C++23)"
+RUST_CODE_LANGUAGE_KEY = "Rust"
 CPP_SUPPORTED_EXCHANGE_KEY = "Binance"
 CPP_EXECUTABLE_BASENAME = "Trading-Bot-C++"
 CPP_EXECUTABLE_LEGACY_BASENAME = "binance_backtest_tab"
@@ -656,6 +659,7 @@ CPP_CACHE_META_FILE = "cpp-runtime-meta.json"
 RELEASE_INFO_JSON_NAME = "release-info.json"
 RELEASE_TAG_TEXT_NAME = "release-tag.txt"
 CPP_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "C++").resolve()
+RUST_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "Rust").resolve()
 CPP_BUILD_ROOT = (_BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
 
 # Startup knobs to avoid slow/flashy QtWebEngine init on Windows
@@ -670,9 +674,29 @@ _SYMBOL_FETCH_TOP_N = max(50, min(_SYMBOL_FETCH_TOP_N, 5000))
 LANGUAGE_PATHS = {
     "Python (PyQt)": "Languages/Python",
     "C++ (Qt/C++23)": "Languages/C++",
-    "C": "Languages/C",
     "Rust": "Languages/Rust",
 }
+
+RUST_FRAMEWORK_PATHS = {
+    "Tauri": "Languages/Rust/apps/tauri-desktop",
+    "Slint": "Languages/Rust/apps/slint-desktop",
+    "egui": "Languages/Rust/apps/egui-desktop",
+    "Iced": "Languages/Rust/apps/iced-desktop",
+    "Dioxus Desktop": "Languages/Rust/apps/dioxus-desktop",
+}
+
+RUST_FRAMEWORK_PACKAGES = {
+    "Tauri": "trading-bot-tauri-desktop",
+    "Slint": "trading-bot-slint-desktop",
+    "egui": "trading-bot-egui-desktop",
+    "Iced": "trading-bot-iced-desktop",
+    "Dioxus Desktop": "trading-bot-dioxus-desktop",
+}
+
+RUST_SHARED_PATHS = [
+    "Languages/Rust/crates/contracts",
+    "Languages/Rust/crates/core",
+]
 
 EXCHANGE_PATHS = {
     "Binance": None,
@@ -707,20 +731,49 @@ STARTER_LANGUAGE_OPTIONS = [
         "badge": "Preview",
     },
     {
-        "config_key": "Rust",
+        "config_key": RUST_CODE_LANGUAGE_KEY,
         "title": "Rust",
-        "subtitle": "Memory safe - coming soon",
+        "subtitle": "Shared core with desktop framework shells",
         "accent": "#fb923c",
-        "badge": "Coming Soon",
-        "disabled": True,
+        "badge": "Scaffold",
+    },
+]
+
+RUST_FRAMEWORK_OPTIONS = [
+    {
+        "key": "Tauri",
+        "title": "Tauri",
+        "subtitle": "Desktop shell with web UI",
+        "accent": "#f59e0b",
+        "badge": "Desktop",
     },
     {
-        "config_key": "C",
-        "title": "C",
-        "subtitle": "Low-level power - coming soon",
-        "accent": "#f87171",
-        "badge": "Coming Soon",
-        "disabled": True,
+        "key": "Slint",
+        "title": "Slint",
+        "subtitle": "Native declarative desktop UI",
+        "accent": "#22c55e",
+        "badge": "Desktop",
+    },
+    {
+        "key": "egui",
+        "title": "egui",
+        "subtitle": "Fast trader dashboard UI",
+        "accent": "#38bdf8",
+        "badge": "Desktop",
+    },
+    {
+        "key": "Iced",
+        "title": "Iced",
+        "subtitle": "Pure Rust reactive desktop UI",
+        "accent": "#a78bfa",
+        "badge": "Desktop",
+    },
+    {
+        "key": "Dioxus Desktop",
+        "title": "Dioxus Desktop",
+        "subtitle": "Rust component UI with desktop renderer",
+        "accent": "#ec4899",
+        "badge": "Desktop",
     },
 ]
 
@@ -861,6 +914,34 @@ _CPP_DEPENDENCY_VERSION_TARGETS = [
     {"label": "libcurl", "custom": "cpp_libcurl", "latest_key": "libcurl"},
     {"label": "cpr", "custom": "cpp_cpr", "latest_key": "cpr"},
 ]
+
+_RUST_BASE_DEPENDENCY_VERSION_TARGETS = [
+    {"label": "rustc", "custom": "rust_rustc", "latest": "Install rustup"},
+    {"label": "cargo", "custom": "rust_cargo", "latest": "Install rustup"},
+    {
+        "label": "Trading Bot Rust workspace",
+        "custom": "rust_file_version",
+        "path": "Languages/Rust/Cargo.toml",
+        "usage": "Active",
+    },
+    {
+        "label": "trading-bot-core",
+        "custom": "rust_file_version",
+        "path": "Languages/Rust/crates/core/Cargo.toml",
+        "usage": "Active",
+    },
+    {
+        "label": "trading-bot-contracts",
+        "custom": "rust_file_version",
+        "path": "Languages/Rust/crates/contracts/Cargo.toml",
+        "usage": "Active",
+    },
+]
+
+_RUST_AUTO_INSTALL_DEFAULT_COOLDOWN_SEC = 180.0
+_RUSTUP_WINDOWS_INSTALLER_URL_BASE = "https://win.rustup.rs"
+_RUSTUP_UNIX_INSTALLER_URL = "https://sh.rustup.rs"
+_RUST_AUTO_INSTALL_LOCK = threading.Lock()
 
 _CONNECTOR_DEPENDENCY_KEYS = {
     "python-binance",
@@ -1138,6 +1219,8 @@ def _installed_version_for_dependency_target(target: dict[str, str]) -> str | No
         return getattr(QtCore, "QT_VERSION_STR", None)
     if custom.startswith("cpp_"):
         return _cpp_custom_installed_value(target)
+    if custom.startswith("rust_"):
+        return _rust_custom_installed_value(target)
 
     dependency_key = _normalize_dependency_key(target.get("package") or target.get("label"))
     metadata_candidates: list[str] = []
@@ -1950,6 +2033,363 @@ def _cpp_custom_usage_value(target: dict[str, str]) -> str:
     return "Active" if _cpp_version_is_installed_marker(installed_value) else "Passive"
 
 
+def _rust_framework_option(config_or_key: dict | str | None = None) -> dict[str, str]:
+    selected_key = ""
+    if isinstance(config_or_key, dict):
+        try:
+            selected_key = str(config_or_key.get("selected_rust_framework") or "").strip()
+        except Exception:
+            selected_key = ""
+    elif config_or_key is not None:
+        selected_key = str(config_or_key).strip()
+    for option in RUST_FRAMEWORK_OPTIONS:
+        if str(option.get("key") or "").strip() == selected_key:
+            return option
+    return {}
+
+
+def _rust_framework_key(config: dict | None = None) -> str:
+    return str(_rust_framework_option(config).get("key") or "").strip()
+
+
+def _rust_framework_title(config: dict | None = None) -> str:
+    return str(_rust_framework_option(config).get("title") or _rust_framework_key(config) or "Rust").strip()
+
+
+def _rust_framework_path(config: dict | None = None) -> Path | None:
+    relative_path = RUST_FRAMEWORK_PATHS.get(_rust_framework_key(config))
+    if not relative_path:
+        return None
+    return (_BASE_PROJECT_PATH / relative_path).resolve()
+
+
+def _rust_framework_dependency_target(config: dict | None = None) -> dict[str, str] | None:
+    option = _rust_framework_option(config)
+    framework_key = str(option.get("key") or "").strip()
+    framework_path = RUST_FRAMEWORK_PATHS.get(framework_key)
+    if not framework_key or not framework_path:
+        return None
+    manifest_path = f"{framework_path}/Cargo.toml"
+    badge = str(option.get("badge") or "").strip() or "Framework"
+    return {
+        "label": f"{framework_key} ({badge})",
+        "custom": "rust_file_version",
+        "path": manifest_path,
+        "usage": "Active",
+    }
+
+
+def _rust_dependency_targets_for_config(config: dict | None = None) -> list[dict[str, str]]:
+    targets = copy.deepcopy(_RUST_BASE_DEPENDENCY_VERSION_TARGETS)
+    framework_target = _rust_framework_dependency_target(config)
+    if framework_target:
+        targets.append(framework_target)
+    return targets
+
+
+def _rust_manifest_path(path_value: str | None = None) -> Path:
+    relative_path = str(path_value or "").strip()
+    if relative_path:
+        return (_BASE_PROJECT_PATH / relative_path).resolve()
+    return RUST_PROJECT_PATH / "Cargo.toml"
+
+
+def _rust_package_metadata(path_value: str | None = None) -> dict[str, str]:
+    cache = globals().setdefault("_RUST_PACKAGE_METADATA_CACHE", {})
+    manifest_path = _rust_manifest_path(path_value)
+    cache_key = str(manifest_path)
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        return dict(cached)
+
+    metadata: dict[str, str] = {}
+    try:
+        text = manifest_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        cache[cache_key] = metadata
+        return metadata
+
+    current_section = ""
+    for raw_line in text.splitlines():
+        stripped = str(raw_line or "").strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped.strip("[]").strip().lower()
+            continue
+        if current_section != "package":
+            continue
+        match = re.match(r'(?i)(name|version)\s*=\s*"([^"]+)"', stripped)
+        if not match:
+            continue
+        metadata[str(match.group(1)).strip().lower()] = str(match.group(2)).strip()
+
+    cache[cache_key] = dict(metadata)
+    return metadata
+
+
+def _rust_project_version(path_value: str | None = None) -> str | None:
+    version_text = str(_rust_package_metadata(path_value).get("version") or "").strip()
+    return version_text or None
+
+
+def _rust_toolchain_bin_dir() -> Path:
+    cargo_home = str(os.environ.get("CARGO_HOME") or "").strip()
+    if cargo_home:
+        try:
+            return Path(cargo_home).expanduser().resolve() / "bin"
+        except Exception:
+            return Path(cargo_home).expanduser() / "bin"
+    return Path.home() / ".cargo" / "bin"
+
+
+def _rust_tool_path(executable: str) -> Path | None:
+    base_name = str(executable or "").strip()
+    if not base_name:
+        return None
+
+    candidates = [base_name]
+    if sys.platform == "win32" and not base_name.lower().endswith(".exe"):
+        candidates.insert(0, f"{base_name}.exe")
+
+    for name in candidates:
+        found = shutil.which(name)
+        if found:
+            try:
+                return Path(found).resolve()
+            except Exception:
+                return Path(found)
+
+    bin_dir = _rust_toolchain_bin_dir()
+    for name in candidates:
+        path = bin_dir / name
+        try:
+            if path.is_file():
+                return path.resolve()
+        except Exception:
+            continue
+    return None
+
+
+def _rust_toolchain_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(base_env or os.environ.copy())
+    cargo_bin = _rust_toolchain_bin_dir()
+    try:
+        cargo_bin_text = str(cargo_bin.resolve())
+    except Exception:
+        cargo_bin_text = str(cargo_bin)
+    if cargo_bin_text and cargo_bin.is_dir():
+        current_path = str(env.get("PATH") or "")
+        parts = [part for part in current_path.split(os.pathsep) if str(part or "").strip()]
+        normalized_parts = {os.path.normcase(os.path.normpath(part)) for part in parts}
+        normalized_bin = os.path.normcase(os.path.normpath(cargo_bin_text))
+        if normalized_bin not in normalized_parts:
+            env["PATH"] = os.pathsep.join([cargo_bin_text, *parts]) if parts else cargo_bin_text
+    return env
+
+
+def _reset_rust_dependency_caches() -> None:
+    for cache_name in (
+        "_RUST_PACKAGE_METADATA_CACHE",
+        "_RUST_TOOL_VERSION_CACHE",
+    ):
+        cache = globals().get(cache_name)
+        if isinstance(cache, dict):
+            cache.clear()
+
+
+def _rust_tool_version(command: list[str], *, cache_key: str) -> str | None:
+    cache = globals().setdefault("_RUST_TOOL_VERSION_CACHE", {})
+    now = time.time()
+    cached = cache.get(cache_key)
+    if isinstance(cached, tuple) and len(cached) == 2:
+        cached_value, cached_at = cached
+        try:
+            if now - float(cached_at) < 20.0:
+                return str(cached_value or "").strip() or None
+        except Exception:
+            pass
+
+    executable = str(command[0] if command else "").strip()
+    tool_path = _rust_tool_path(executable)
+    if not executable or tool_path is None:
+        cache[cache_key] = (None, now)
+        return None
+
+    version_text = None
+    try:
+        resolved_command = [str(tool_path), *command[1:]]
+        result = subprocess.run(
+            resolved_command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=4.0,
+            env=_rust_toolchain_env(),
+        )
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+        version_text = _extract_semver_from_text(output)
+    except Exception:
+        version_text = None
+
+    cache[cache_key] = (version_text, now)
+    return version_text
+
+
+def _rust_custom_installed_value(target: dict[str, str]) -> str | None:
+    custom = str(target.get("custom") or "").strip().lower()
+    if custom == "rust_rustc":
+        return _rust_tool_version(["rustc", "--version"], cache_key="rustc")
+    if custom == "rust_cargo":
+        return _rust_tool_version(["cargo", "--version"], cache_key="cargo")
+    if custom == "rust_file_version":
+        manifest_path = _rust_manifest_path(target.get("path"))
+        version_text = _rust_project_version(target.get("path"))
+        if version_text:
+            return version_text
+        if manifest_path.is_file():
+            return "Scaffolded"
+    return None
+
+
+def _rust_custom_latest_value(target: dict[str, str], installed_value: str) -> str:
+    custom = str(target.get("custom") or "").strip().lower()
+    latest_text = str(target.get("latest") or "").strip()
+    if custom == "rust_file_version":
+        return installed_value or latest_text or "Unknown"
+    if _cpp_version_is_installed_marker(installed_value):
+        return installed_value
+    return latest_text or "Unknown"
+
+
+def _rust_custom_usage_value(target: dict[str, str]) -> str:
+    custom = str(target.get("custom") or "").strip().lower()
+    if custom == "rust_file_version":
+        return "Active" if _rust_manifest_path(target.get("path")).is_file() else "Passive"
+    installed_value = _rust_custom_installed_value(target)
+    return "Active" if _cpp_version_is_installed_marker(installed_value) else "Passive"
+
+
+def _rust_auto_install_enabled() -> bool:
+    raw_value = str(os.environ.get("TB_RUST_AUTO_INSTALL", "1") or "1").strip().lower()
+    return raw_value not in {"0", "false", "no", "off"}
+
+
+def _rust_auto_install_cooldown_seconds() -> float:
+    raw_value = str(os.environ.get("TB_RUST_AUTO_INSTALL_COOLDOWN_SEC", "") or "").strip()
+    if not raw_value:
+        return _RUST_AUTO_INSTALL_DEFAULT_COOLDOWN_SEC
+    try:
+        return max(0.0, float(raw_value))
+    except Exception:
+        return _RUST_AUTO_INSTALL_DEFAULT_COOLDOWN_SEC
+
+
+def _rust_missing_tool_labels() -> list[str]:
+    missing: list[str] = []
+    if _rust_tool_path("rustc") is None:
+        missing.append("rustc")
+    if _rust_tool_path("cargo") is None:
+        missing.append("cargo")
+    return missing
+
+
+def _rust_toolchain_is_ready() -> bool:
+    return not _rust_missing_tool_labels()
+
+
+def _rust_installer_cache_dir() -> Path:
+    root = (
+        str(os.environ.get("LOCALAPPDATA") or "").strip()
+        or str(os.environ.get("TEMP") or "").strip()
+        or tempfile.gettempdir()
+    )
+    return (Path(root).expanduser() / "trading-bot-rustup").resolve()
+
+
+def _rustup_windows_install_url() -> str:
+    machine = str(platform.machine() or "").strip().lower()
+    arch = "x86_64"
+    if machine in {"arm64", "aarch64"}:
+        arch = "aarch64"
+    elif machine in {"x86", "i386", "i686"}:
+        arch = "i686"
+    return f"{_RUSTUP_WINDOWS_INSTALLER_URL_BASE}/{arch}"
+
+
+def _download_to_path(url: str, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
+    with urllib.request.urlopen(request, timeout=45.0) as response:
+        with open(destination, "wb") as fh:
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
+
+
+def _install_rust_toolchain() -> tuple[bool, str]:
+    with _RUST_AUTO_INSTALL_LOCK:
+        if _rust_toolchain_is_ready():
+            return True, "Rust toolchain already installed."
+
+        cache_dir = _rust_installer_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        if sys.platform == "win32":
+            installer_path = cache_dir / "rustup-init.exe"
+            install_url = _rustup_windows_install_url()
+            command = [
+                str(installer_path),
+                "-y",
+                "--default-toolchain",
+                "stable",
+                "--profile",
+                "minimal",
+            ]
+        else:
+            installer_path = cache_dir / "rustup-init.sh"
+            install_url = _RUSTUP_UNIX_INSTALLER_URL
+            sh_path = shutil.which("sh") or "/bin/sh"
+            command = [
+                str(sh_path),
+                str(installer_path),
+                "-y",
+                "--default-toolchain",
+                "stable",
+                "--profile",
+                "minimal",
+            ]
+
+        try:
+            _download_to_path(install_url, installer_path)
+        except Exception as exc:
+            return False, f"Failed to download rustup installer from {install_url}: {exc}"
+
+        if sys.platform != "win32":
+            try:
+                installer_path.chmod(0o755)
+            except Exception:
+                pass
+
+        ok, output = _run_command_capture_hidden(command, cwd=cache_dir, env=_rust_toolchain_env())
+        env_with_cargo = _rust_toolchain_env()
+        try:
+            os.environ["PATH"] = env_with_cargo.get("PATH", os.environ.get("PATH", ""))
+        except Exception:
+            pass
+
+        _reset_rust_dependency_caches()
+        ready = _rust_toolchain_is_ready()
+        if ok and ready:
+            return True, output or "Rust toolchain installed."
+        tail = _tail_text(output, max_lines=20, max_chars=4000)
+        if ready:
+            return True, tail or "Rust toolchain installed."
+        return False, tail or "rustup installation did not make cargo/rustc available."
+
+
 def _cpp_auto_setup_enabled() -> bool:
     raw_value = str(os.environ.get("TB_CPP_AUTO_SETUP", "1") or "1").strip().lower()
     return raw_value not in {"0", "false", "no", "off"}
@@ -2233,6 +2673,8 @@ def _dependency_usage_state(
     custom = str(target.get("custom") or "").strip().lower()
     if custom.startswith("cpp_"):
         return _cpp_custom_usage_value(target)
+    if custom.startswith("rust_"):
+        return _rust_custom_usage_value(target)
 
     dependency_key = _normalize_dependency_key(target.get("package") or target.get("label"))
     if dependency_key in _CONNECTOR_DEPENDENCY_KEYS:
@@ -2384,6 +2826,8 @@ def _resolve_dependency_targets_for_config(config: dict | None = None) -> list[d
         language_key = ""
     if language_key == CPP_CODE_LANGUAGE_KEY:
         return copy.deepcopy(_CPP_DEPENDENCY_VERSION_TARGETS)
+    if language_key == RUST_CODE_LANGUAGE_KEY:
+        return _rust_dependency_targets_for_config(config)
     return _dependency_targets_from_requirements(_iter_candidate_requirement_paths(config))
 
 
@@ -4186,6 +4630,10 @@ def _collect_dependency_versions(
                     installed_display = installed_map.get(target["label"], "Unknown")
                     latest_map[target["label"]] = _cpp_custom_latest_value(target, installed_display)
                     continue
+                if custom.startswith("rust_"):
+                    installed_display = installed_map.get(target["label"], "Unknown")
+                    latest_map[target["label"]] = _rust_custom_latest_value(target, installed_display)
+                    continue
                 if custom == "qt":
                     latest_map[target["label"]] = installed_map.get(target["label"], "Unknown")
                     continue
@@ -5670,8 +6118,10 @@ class MainWindow(QtWidgets.QWidget):
         self.config.setdefault("positions_auto_resize_rows", True)
         self.config.setdefault("positions_auto_resize_columns", True)
         self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
+        self.config.setdefault("selected_rust_framework", "")
         self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
         self.config.setdefault("code_language", next(iter(LANGUAGE_PATHS)))
+        self.config.setdefault("selected_rust_framework", "")
         self.config.setdefault("selected_exchange", next(iter(EXCHANGE_PATHS)))
         if FOREX_BROKER_PATHS:
             self.config.setdefault("selected_forex_broker", next(iter(FOREX_BROKER_PATHS)))
@@ -5894,9 +6344,15 @@ class MainWindow(QtWidgets.QWidget):
         self.exchange_list = None
         self._exchange_list_items = {}
         self._starter_language_cards = {}
+        self._starter_rust_framework_cards = {}
         self._starter_market_cards = {}
         self._starter_crypto_cards = {}
         self._starter_forex_cards = {}
+        self._rust_code_tab_process = None
+        self._rust_process_watchdog_timer = None
+        self._rust_auto_install_inflight = False
+        self._rust_auto_install_last_attempt_at = 0.0
+        self._rust_auto_install_last_completed_at = 0.0
         self._code_tab_selected_market = self.config.get("code_market") or "crypto"
         self._open_code_tab_on_start = str(os.environ.get("BOT_OPEN_CODE_TAB", "")).strip().lower() in {
             "1",
@@ -14826,6 +15282,8 @@ def _init_code_language_tab(self):
 
     self._starter_language_cards: dict[str, _StarterCard] = {}
     self._starter_language_base_subtitles: dict[str, str] = {}
+    self._starter_rust_framework_cards: dict[str, _StarterCard] = {}
+    self._starter_rust_framework_base_subtitles: dict[str, str] = {}
     self._starter_market_cards: dict[str, _StarterCard] = {}
     self._starter_crypto_cards: dict[str, _StarterCard] = {}
     self._starter_forex_cards: dict[str, _StarterCard] = {}
@@ -14851,6 +15309,33 @@ def _init_code_language_tab(self):
         self._starter_language_base_subtitles[opt["config_key"]] = str(opt.get("subtitle") or "").strip()
     lang_row.addStretch()
     layout.addLayout(lang_row)
+
+    rust_framework_label = QtWidgets.QLabel("Choose your Rust framework")
+    rust_framework_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+    layout.addWidget(rust_framework_label)
+    self._rust_framework_section_label = rust_framework_label
+
+    rust_framework_widget = QtWidgets.QWidget()
+    rust_framework_row = QtWidgets.QHBoxLayout(rust_framework_widget)
+    rust_framework_row.setContentsMargins(0, 0, 0, 0)
+    rust_framework_row.setSpacing(12)
+    for opt in RUST_FRAMEWORK_OPTIONS:
+        card = _StarterCard(
+            opt["key"],
+            opt["title"],
+            opt["subtitle"],
+            opt["accent"],
+            opt.get("badge"),
+            disabled=opt.get("disabled", False),
+        )
+        card.clicked.connect(self._code_tab_select_rust_framework)
+        card.setMinimumWidth(170)
+        rust_framework_row.addWidget(card, 1)
+        self._starter_rust_framework_cards[opt["key"]] = card
+        self._starter_rust_framework_base_subtitles[opt["key"]] = str(opt.get("subtitle") or "").strip()
+    rust_framework_row.addStretch()
+    layout.addWidget(rust_framework_widget)
+    self._rust_framework_cards_widget = rust_framework_widget
 
     status_widget = QtWidgets.QWidget()
     status_layout = QtWidgets.QHBoxLayout(status_widget)
@@ -14930,6 +15415,10 @@ def _init_code_language_tab(self):
     self._refresh_code_tab_from_config()
     try:
         self._ensure_cpp_process_watchdog()
+    except Exception:
+        pass
+    try:
+        self._ensure_rust_process_watchdog()
     except Exception:
         pass
     return tab
@@ -15138,6 +15627,22 @@ def _cpp_runtime_release_line() -> str:
     return "Release: Unknown"
 
 
+def _rust_runtime_release_line(config: dict | None = None) -> str:
+    release_text = _rust_project_version()
+    rustc_version = _rust_tool_version(["rustc", "--version"], cache_key="rustc")
+    framework_title = _rust_framework_title(config)
+    framework_prefix = f"{framework_title} | " if _rust_framework_key(config) else ""
+    if release_text and rustc_version:
+        return f"{framework_prefix}Release: {release_text} | rustc {rustc_version}"
+    if release_text:
+        return f"{framework_prefix}Release: {release_text}"
+    if _rust_manifest_path().is_file() and rustc_version:
+        return f"{framework_prefix}Release: Scaffolded | rustc {rustc_version}"
+    if _rust_manifest_path().is_file():
+        return f"{framework_prefix}Release: Scaffolded"
+    return f"{framework_prefix}Release: Not initialized"
+
+
 def _refresh_code_language_card_release_labels(self) -> None:
     cards = getattr(self, "_starter_language_cards", None)
     if not isinstance(cards, dict) or not cards:
@@ -15149,6 +15654,7 @@ def _refresh_code_language_card_release_labels(self) -> None:
     release_lines = {
         PYTHON_CODE_LANGUAGE_KEY: _python_runtime_release_line(),
         CPP_CODE_LANGUAGE_KEY: _cpp_runtime_release_line(),
+        RUST_CODE_LANGUAGE_KEY: _rust_runtime_release_line(getattr(self, "config", None)),
     }
 
     for key, card in cards.items():
@@ -16717,6 +17223,338 @@ def _run_callable_with_ui_pump(
         return future.result()
 
 
+def _create_rust_launch_progress_dialog(parent: QtWidgets.QWidget | None) -> _LanguageSwitchSplash | None:
+    Q_UNUSED = parent
+    try:
+        splash = _LanguageSwitchSplash("Preparing Rust bot...")
+        splash.raise_window()
+        return splash
+    except Exception:
+        return None
+
+
+def _hide_python_window_for_rust_launch(self, progress_dialog: _LanguageSwitchSplash | None) -> bool:
+    _detach_cpp_launch_progress_dialog(progress_dialog)
+    hidden = False
+    try:
+        self._rust_launch_handoff_active = True
+        self.hide()
+        hidden = not bool(self.isVisible())
+    except Exception:
+        hidden = False
+    finally:
+        try:
+            self._rust_launch_handoff_active = False
+        except Exception:
+            pass
+    try:
+        self._rust_window_hidden_for_rust_handoff = bool(hidden)
+    except Exception:
+        pass
+    return bool(hidden)
+
+
+def _restore_python_window_after_rust_launch(self) -> None:
+    try:
+        hidden_for_handoff = bool(getattr(self, "_rust_window_hidden_for_rust_handoff", False))
+    except Exception:
+        hidden_for_handoff = False
+    if not hidden_for_handoff:
+        return
+    try:
+        self._rust_window_hidden_for_rust_handoff = False
+    except Exception:
+        pass
+    try:
+        state = self.windowState()
+    except Exception:
+        state = QtCore.Qt.WindowState.WindowNoState
+    try:
+        if state & QtCore.Qt.WindowState.WindowMaximized:
+            self.showMaximized()
+        else:
+            self.show()
+    except Exception:
+        try:
+            self.showMaximized()
+        except Exception:
+            pass
+    try:
+        self.raise_()
+        self.activateWindow()
+    except Exception:
+        pass
+
+
+def _shutdown_python_after_rust_launch(self) -> None:
+    try:
+        self._rust_window_hidden_for_rust_handoff = False
+    except Exception:
+        pass
+    try:
+        self._force_close = True
+    except Exception:
+        pass
+    try:
+        QtWidgets.QWidget.close(self)
+        return
+    except Exception:
+        pass
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            setattr(app, "_exiting", True)
+            arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
+            if callable(arm_hard_exit):
+                arm_hard_exit()
+            app.quit()
+    except Exception:
+        pass
+
+
+def _rust_framework_package_name(config: dict | None = None) -> str:
+    return str(RUST_FRAMEWORK_PACKAGES.get(_rust_framework_key(config)) or "").strip()
+
+
+def _build_rust_desktop_executable_for_code_tab(config: dict | None = None) -> tuple[Path | None, str | None]:
+    config_snapshot = dict(config or {})
+    framework_title = _rust_framework_title(config_snapshot)
+    package_name = _rust_framework_package_name(config_snapshot)
+    if not framework_title or not package_name:
+        return None, "No Rust desktop framework is selected."
+    if not RUST_PROJECT_PATH.is_dir():
+        return None, f"Rust workspace directory is missing: {RUST_PROJECT_PATH}"
+
+    cargo_path = _rust_tool_path("cargo")
+    if cargo_path is None:
+        return None, "cargo is not installed."
+
+    command = [
+        str(cargo_path),
+        "build",
+        "--manifest-path",
+        str(RUST_PROJECT_PATH / "Cargo.toml"),
+        "-p",
+        package_name,
+    ]
+    ok, output = _run_command_capture_hidden(command, cwd=RUST_PROJECT_PATH, env=_rust_toolchain_env())
+    if not ok:
+        tail = _tail_text(output, max_lines=25, max_chars=5000)
+        return None, f"Cargo build failed for {framework_title}.\n{tail}".strip()
+
+    executable_name = package_name
+    if sys.platform == "win32":
+        executable_name = f"{executable_name}.exe"
+    candidates = [
+        RUST_PROJECT_PATH / "target" / "debug" / executable_name,
+        RUST_PROJECT_PATH / "target" / "release" / executable_name,
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate.resolve(), None
+        except Exception:
+            continue
+    return None, f"Cargo build completed but {framework_title} executable was not found."
+
+
+def _launch_rust_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
+    existing = getattr(self, "_rust_code_tab_process", None)
+    try:
+        if existing is not None and existing.poll() is None:
+            self.log("Rust bot is already running.")
+            QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_rust_launch(self))
+            return True
+    except Exception:
+        pass
+
+    progress_dialog = _create_rust_launch_progress_dialog(self)
+    _hide_python_window_for_rust_launch(self, progress_dialog)
+    launch_succeeded = False
+
+    def _progress(message: str) -> None:
+        _update_cpp_launch_progress(progress_dialog, message)
+
+    def _dismiss_progress_dialog() -> None:
+        nonlocal progress_dialog
+        try:
+            if progress_dialog is not None:
+                progress_dialog.close()
+        except Exception:
+            pass
+        progress_dialog = None
+
+    def _poll_early_exit(proc: subprocess.Popen, timeout_s: float = 0.6) -> int | None:
+        deadline = time.time() + max(0.15, float(timeout_s))
+        while time.time() < deadline:
+            try:
+                exit_code = proc.poll()
+            except Exception:
+                exit_code = 0
+            if exit_code is not None:
+                return exit_code
+            try:
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        return None
+
+    try:
+        framework_title = _rust_framework_title(self.config)
+        missing_tools = _rust_missing_tool_labels()
+        toolchain_installed = False
+        if missing_tools:
+            if not _rust_auto_install_enabled():
+                _dismiss_progress_dialog()
+                _restore_python_window_after_rust_launch(self)
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Rust launch failed",
+                    "Rust desktop launch requires rustup/cargo/rustc, and automatic installation is disabled.",
+                )
+                return False
+
+            if getattr(self, "_rust_auto_install_inflight", False):
+                _dismiss_progress_dialog()
+                _restore_python_window_after_rust_launch(self)
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Rust installation in progress",
+                    "Rust toolchain installation is already running. Please wait for it to finish.",
+                )
+                return False
+
+            now = time.time()
+            cooldown_sec = _rust_auto_install_cooldown_seconds()
+            last_attempt = float(getattr(self, "_rust_auto_install_last_attempt_at", 0.0) or 0.0)
+            if cooldown_sec > 0.0 and now - last_attempt < cooldown_sec:
+                remaining = int(max(1.0, math.ceil(cooldown_sec - (now - last_attempt))))
+                _dismiss_progress_dialog()
+                _restore_python_window_after_rust_launch(self)
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Rust launch failed",
+                    f"Rust toolchain installation was attempted recently. Try again in about {remaining} seconds.",
+                )
+                return False
+
+            self._rust_auto_install_inflight = True
+            self._rust_auto_install_last_attempt_at = now
+            self.log(
+                "Rust toolchain missing "
+                f"({', '.join(missing_tools)}). Starting automatic rustup installation..."
+            )
+            _progress("Installing Rust toolchain...")
+            try:
+                install_ok, install_output = _run_callable_with_ui_pump(
+                    _install_rust_toolchain,
+                    poll_interval_s=0.05,
+                )
+            finally:
+                self._rust_auto_install_inflight = False
+                self._rust_auto_install_last_completed_at = time.time()
+            toolchain_installed = bool(install_ok)
+            _reset_rust_dependency_caches()
+            QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
+            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
+            if not install_ok:
+                self.log(f"Rust toolchain auto-install failed: {_tail_text(install_output, max_lines=12, max_chars=1800)}")
+                _dismiss_progress_dialog()
+                _restore_python_window_after_rust_launch(self)
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Rust launch failed",
+                    (
+                        "Automatic Rust installation failed.\n\n"
+                        f"{_tail_text(install_output, max_lines=20, max_chars=3000) or 'rustup did not complete.'}"
+                    ),
+                )
+                return False
+            self.log("Rust toolchain auto-install completed.")
+
+        build_config = dict(self.config or {})
+        _progress(f"Building Rust {framework_title} app...")
+        exe_path, build_error = _run_callable_with_ui_pump(
+            _build_rust_desktop_executable_for_code_tab,
+            build_config,
+            poll_interval_s=0.05,
+        )
+        if exe_path is None or not exe_path.is_file():
+            _dismiss_progress_dialog()
+            _restore_python_window_after_rust_launch(self)
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Rust launch failed",
+                build_error or f"Cargo build did not produce a runnable {framework_title} executable.",
+            )
+            return False
+
+        env = _rust_toolchain_env()
+        env["TB_RUST_SELECTED_FRAMEWORK"] = _rust_framework_key(build_config)
+        env["TB_RUST_FRAMEWORK_TITLE"] = framework_title
+
+        popen_kwargs: dict[str, object] = {
+            "cwd": str(exe_path.parent),
+            "env": env,
+        }
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = 0
+            try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 1
+                popen_kwargs["startupinfo"] = startupinfo
+            except Exception:
+                pass
+
+        _progress(f"Launching Rust {framework_title} bot...")
+        try:
+            process = subprocess.Popen([str(exe_path)], **popen_kwargs)
+        except Exception as exc:
+            self.log(f"Rust launch failed: {exc}")
+            _dismiss_progress_dialog()
+            _restore_python_window_after_rust_launch(self)
+            QtWidgets.QMessageBox.warning(self, "Rust launch failed", str(exc))
+            return False
+
+        early_exit = _poll_early_exit(process)
+        if early_exit is not None:
+            exit_text = _format_windows_exit_code(process.returncode)
+            _dismiss_progress_dialog()
+            _restore_python_window_after_rust_launch(self)
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Rust launch failed",
+                (
+                    f"Rust {framework_title} bot exited immediately (code {exit_text}).\n"
+                    "Check the cargo build output and desktop framework prerequisites."
+                ),
+            )
+            return False
+
+        self._rust_code_tab_process = process
+        try:
+            self._ensure_rust_process_watchdog()
+        except Exception:
+            pass
+        self.log(f"Launched Rust bot ({framework_title}, {trigger}): {exe_path}")
+        if toolchain_installed:
+            QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
+            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
+        QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_rust_launch(self))
+        launch_succeeded = True
+        return True
+    finally:
+        if not launch_succeeded:
+            _restore_python_window_after_rust_launch(self)
+        try:
+            if progress_dialog is not None:
+                progress_dialog.close()
+        except Exception:
+            pass
+
+
 def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
     if _is_frozen_python_app():
         return (
@@ -17278,6 +18116,8 @@ def _code_tab_select_language(self, config_key: str) -> None:
         except Exception:
             return
     self.config["code_language"] = config_key
+    if config_key == RUST_CODE_LANGUAGE_KEY:
+        self.config["selected_rust_framework"] = ""
     if config_key == CPP_CODE_LANGUAGE_KEY and self.config.get("selected_exchange") != CPP_SUPPORTED_EXCHANGE_KEY:
         self.config["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
         self.log("C++ preview supports Binance only. Switched exchange to Binance.")
@@ -17285,6 +18125,34 @@ def _code_tab_select_language(self, config_key: str) -> None:
     self._ensure_language_exchange_paths()
     if config_key == CPP_CODE_LANGUAGE_KEY:
         _launch_cpp_from_code_tab(self, trigger="language-card")
+
+
+def _code_tab_select_rust_framework(self, framework_key: str) -> None:
+    if framework_key not in RUST_FRAMEWORK_PATHS:
+        return
+    card = getattr(self, "_starter_rust_framework_cards", {}).get(framework_key)
+    if card is not None and card.is_disabled():
+        return
+    try:
+        if QtWidgets.QMessageBox.question(
+            self,
+            f"Switch to Rust {framework_key}?",
+            (
+                "This will close the current Python trading bot window completely "
+                f"and open the Rust {framework_key} trading bot instead.\n\n"
+                "Do you want to continue?"
+            ),
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        ) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+    except Exception:
+        return
+    self.config["code_language"] = RUST_CODE_LANGUAGE_KEY
+    self.config["selected_rust_framework"] = framework_key
+    self._refresh_code_tab_from_config()
+    self._ensure_language_exchange_paths()
+    _launch_rust_from_code_tab(self, trigger="framework-card")
 
 
 def _code_tab_select_market(self, market_key: str) -> None:
@@ -17332,6 +18200,19 @@ def _refresh_code_tab_from_config(self) -> None:
             self.config["code_language"] = lang_key
     for key, card in lang_cards.items():
         card.setSelected(bool(lang_key) and key == lang_key)
+    rust_framework_cards = getattr(self, "_starter_rust_framework_cards", {})
+    rust_framework_key = str(self.config.get("selected_rust_framework") or "").strip()
+    if rust_framework_key and rust_framework_key not in rust_framework_cards:
+        rust_framework_key = ""
+        self.config["selected_rust_framework"] = ""
+    for key, card in rust_framework_cards.items():
+        card.setSelected(
+            bool(lang_key)
+            and lang_key == RUST_CODE_LANGUAGE_KEY
+            and bool(rust_framework_key)
+            and key == rust_framework_key
+        )
+    self._update_code_tab_rust_sections()
     _refresh_code_language_card_release_labels(self)
     targets_changed = False
     try:
@@ -17404,6 +18285,54 @@ def _poll_cpp_process_state(self) -> None:
             pass
         try:
             self.log(f"C++ bot exited (code {exit_code}). Switched code language to Python.")
+        except Exception:
+            pass
+
+
+def _ensure_rust_process_watchdog(self) -> None:
+    timer = getattr(self, "_rust_process_watchdog_timer", None)
+    if timer is None:
+        try:
+            timer = QtCore.QTimer(self)
+            timer.setInterval(1000)
+            timer.timeout.connect(self._poll_rust_process_state)
+            self._rust_process_watchdog_timer = timer
+        except Exception:
+            return
+    try:
+        if not timer.isActive():
+            timer.start()
+    except Exception:
+        pass
+
+
+def _poll_rust_process_state(self) -> None:
+    proc = getattr(self, "_rust_code_tab_process", None)
+    if proc is None:
+        return
+    try:
+        exit_code = proc.poll()
+    except Exception:
+        exit_code = 0
+    if exit_code is None:
+        return
+
+    self._rust_code_tab_process = None
+    switched_to_python = False
+    try:
+        if self.config.get("code_language") == RUST_CODE_LANGUAGE_KEY:
+            self.config["code_language"] = PYTHON_CODE_LANGUAGE_KEY
+            switched_to_python = True
+    except Exception:
+        switched_to_python = False
+
+    if switched_to_python:
+        try:
+            self._refresh_code_tab_from_config()
+        except Exception:
+            pass
+        try:
+            self.log(f"Rust bot exited (code {exit_code}). Switched code language to Python.")
         except Exception:
             pass
 
@@ -17755,6 +18684,13 @@ def _update_code_tab_market_sections(self) -> None:
             widget.setVisible(show_forex)
 
 
+def _update_code_tab_rust_sections(self) -> None:
+    show_rust = str(self.config.get("code_language") or "").strip() == RUST_CODE_LANGUAGE_KEY
+    for widget in (getattr(self, "_rust_framework_section_label", None), getattr(self, "_rust_framework_cards_widget", None)):
+        if widget is not None:
+            widget.setVisible(show_rust)
+
+
 def _sync_language_exchange_lists_from_config(self):
     selections = [
         ("code_language", self.language_combo, LANGUAGE_PATHS),
@@ -17859,6 +18795,12 @@ def _ensure_language_exchange_paths(self):
     language_rel = LANGUAGE_PATHS.get(self.config.get("code_language"))
     language_root = (_BASE_PROJECT_PATH / language_rel).resolve() if language_rel else None
     _prepare_path(language_root)
+
+    if self.config.get("code_language") == RUST_CODE_LANGUAGE_KEY:
+        for shared_rel in RUST_SHARED_PATHS:
+            _prepare_path((_BASE_PROJECT_PATH / shared_rel).resolve())
+        rust_framework_rel = RUST_FRAMEWORK_PATHS.get(self.config.get("selected_rust_framework"))
+        _prepare_path((_BASE_PROJECT_PATH / rust_framework_rel).resolve() if rust_framework_rel else None)
 
     if language_root is None:
         base_path = _BASE_PROJECT_PATH
@@ -22019,6 +22961,7 @@ try:
     MainWindow._on_exchange_list_changed = _on_exchange_list_changed
     MainWindow._on_forex_selection_changed = _on_forex_selection_changed
     MainWindow._code_tab_select_language = _code_tab_select_language
+    MainWindow._code_tab_select_rust_framework = _code_tab_select_rust_framework
     MainWindow._code_tab_select_market = _code_tab_select_market
     MainWindow._code_tab_select_exchange = _code_tab_select_exchange
     MainWindow._code_tab_select_forex = _code_tab_select_forex
@@ -22026,10 +22969,13 @@ try:
     MainWindow._code_tab_visible = _code_tab_visible
     MainWindow._ensure_cpp_process_watchdog = _ensure_cpp_process_watchdog
     MainWindow._poll_cpp_process_state = _poll_cpp_process_state
+    MainWindow._ensure_rust_process_watchdog = _ensure_rust_process_watchdog
+    MainWindow._poll_rust_process_state = _poll_rust_process_state
     MainWindow._start_dependency_usage_auto_poll = _start_dependency_usage_auto_poll
     MainWindow._stop_dependency_usage_auto_poll = _stop_dependency_usage_auto_poll
     MainWindow._poll_dependency_usage_states = _poll_dependency_usage_states
     MainWindow._update_code_tab_market_sections = _update_code_tab_market_sections
+    MainWindow._update_code_tab_rust_sections = _update_code_tab_rust_sections
 except Exception:
     pass
 try:
@@ -22764,6 +23710,7 @@ def _allow_guard_bypass(self) -> bool:
             bool(getattr(self, "_force_close", False))
             or bool(getattr(self, "_close_in_progress", False))
             or bool(getattr(self, "_cpp_launch_handoff_active", False))
+            or bool(getattr(self, "_rust_launch_handoff_active", False))
         ):
             return True
     except Exception:

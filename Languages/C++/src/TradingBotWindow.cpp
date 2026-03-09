@@ -1464,6 +1464,46 @@ QString findFirstExistingFile(const QStringList &rootCandidates, const QStringLi
     return QString();
 }
 
+QString workspaceProjectRoot() {
+    const QStringList roots = dependencyProjectRoots();
+    for (const QString &rootPath : roots) {
+        if (QFileInfo::exists(QDir(rootPath).filePath(QStringLiteral("Languages")))) {
+            return rootPath;
+        }
+    }
+    if (!roots.isEmpty()) {
+        return roots.front();
+    }
+    return QDir::currentPath();
+}
+
+QString ensureWorkspaceDirectory(const QString &relativePath, QString *errorOut = nullptr) {
+    const QString trimmed = relativePath.trimmed();
+    if (trimmed.isEmpty()) {
+        if (errorOut != nullptr) {
+            *errorOut = QStringLiteral("Workspace path is empty.");
+        }
+        return QString();
+    }
+    const QString rootPath = workspaceProjectRoot();
+    if (rootPath.trimmed().isEmpty()) {
+        if (errorOut != nullptr) {
+            *errorOut = QStringLiteral("Could not resolve the project root.");
+        }
+        return QString();
+    }
+
+    const QString absolutePath = QDir(rootPath).filePath(trimmed);
+    QDir dir;
+    if (!dir.mkpath(absolutePath)) {
+        if (errorOut != nullptr) {
+            *errorOut = QStringLiteral("Could not create workspace directory: %1").arg(QDir::cleanPath(absolutePath));
+        }
+        return QString();
+    }
+    return QDir::cleanPath(absolutePath);
+}
+
 QStringList pythonRuntimeRoots() {
     QStringList roots = dependencyProjectRoots();
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -7107,8 +7147,22 @@ QWidget *TradingBotWindow::createCodeTab() {
                     }
                     updateStatusMessage("C++ workspace active.");
                 }),
-                makeCard("Rust", "Memory safe - coming soon", "#1f2937", "Coming Soon", "#1f2937", true),
-                makeCard("C", "Low-level power - coming soon", "#1f2937", "Coming Soon", "#1f2937", true)});
+                makeCard("Rust", "Desktop Cargo workspace", "#fb923c", "Scaffold", "#7c2d12", false, [this]() {
+                    QString workspaceError;
+                    const QString rustWorkspace = ensureWorkspaceDirectory(QStringLiteral("Languages/Rust"), &workspaceError);
+                    if (rustWorkspace.isEmpty()) {
+                        QMessageBox::warning(this, "Rust workspace", workspaceError);
+                        return;
+                    }
+                    const bool opened = QDesktopServices::openUrl(QUrl::fromLocalFile(rustWorkspace));
+                    if (!opened) {
+                        QMessageBox::information(
+                            this,
+                            "Rust workspace",
+                            QStringLiteral("Rust workspace prepared at:\n%1").arg(rustWorkspace));
+                    }
+                    updateStatusMessage(QStringLiteral("Rust workspace ready: %1").arg(rustWorkspace));
+                })});
 
     auto *envTitle = new QLabel("Environment Versions", container);
     envTitle->setStyleSheet(QString("font-size: 14px; font-weight: 700; color: %1;").arg(textColor));

@@ -1,0 +1,15 @@
+[package]
+name = "trading-bot-tauri-desktop"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+trading-bot-core = { path = "../../crates/core" }

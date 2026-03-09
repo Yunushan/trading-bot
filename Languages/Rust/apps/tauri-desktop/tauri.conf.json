@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Trading Bot Tauri",
+  "version": "0.1.0",
+  "identifier": "com.tradingbot.tauri",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "frontendDist": "ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Trading Bot Tauri",
+        "width": 1400,
+        "height": 900
+      }
+    ]
+  }
+}

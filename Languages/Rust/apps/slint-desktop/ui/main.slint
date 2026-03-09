@@ -1,0 +1,21 @@
+export component AppWindow inherits Window {
+    in property <string> app_title: "Trading Bot Slint";
+    title: app_title;
+    width: 960px;
+    height: 640px;
+
+    Text {
+        x: 24px;
+        y: 24px;
+        text: root.app_title;
+        font-size: 24px;
+    }
+
+    Text {
+        x: 24px;
+        y: 72px;
+        width: parent.width - 48px;
+        text: "Shared Rust core scaffold wired to the Slint shell.";
+        wrap: word-wrap;
+    }
+}

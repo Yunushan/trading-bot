@@ -1,0 +1,35 @@
+[package]
+name = "trading-bot-rust"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/contracts",
+    "crates/core",
+    "apps/tauri-desktop",
+    "apps/slint-desktop",
+    "apps/egui-desktop",
+    "apps/iced-desktop",
+    "apps/dioxus-desktop",
+]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2" }
+tauri-build = { version = "2" }
+slint = "1"
+slint-build = "1"
+eframe = "0.33"
+egui = "0.33"
+iced = "0.13"
+dioxus = { version = "0.7", features = ["desktop"] }
+
+[dependencies]
+trading-bot-core = { path = "crates/core" }

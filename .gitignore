@@ -11,5 +11,6 @@ CMakeFiles/
 .venv/
 .vcpkg/
 Languages/C++/build-*/
+Languages/Rust/target/
 .trading_bot_allocations.json
 /Trading-Bot-*.exe
