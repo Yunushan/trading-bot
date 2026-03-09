@@ -84,9 +84,9 @@ Use this section when you want consistent, detailed documentation across Python/
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `09.03.2026 GMT+3 Time 13:45:15`
-- Total tracked code/config/script lines: `65,013`
-- Non-empty tracked code/config/script lines (SLOC-style): `60,540`
+- Snapshot date: `09.03.2026 GMT+3 Time 16:20:53`
+- Total tracked code/config/script lines: `65,391`
+- Non-empty tracked code/config/script lines (SLOC-style): `60,807`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 
