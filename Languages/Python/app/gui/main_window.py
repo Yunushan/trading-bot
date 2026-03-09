@@ -19,7 +19,6 @@ import concurrent.futures
 import importlib
 import importlib.metadata as importlib_metadata
 import urllib.request
-import urllib.parse
 import zipfile
 import pandas as pd
 from dataclasses import asdict, is_dataclass
@@ -67,6 +66,56 @@ from app.workers import StopWorker, StartWorker, CallWorker
 from app.position_guard import IntervalPositionGuard
 from app.gui.param_dialog import ParamDialog
 from app.gui.app_icon import load_app_icon
+from app.gui import chart_embed, code_language_ui, dependency_versions_ui, window_runtime
+from app.gui.chart_embed import (
+    _DEFAULT_WEB_UA,
+    _binance_unavailable_reason,
+    _chart_safe_mode_enabled,
+    _configure_tradingview_webengine_env,
+    _lightweight_unavailable_reason,
+    _load_tradingview_widget,
+    _native_chart_host_prewarm_enabled,
+    _tradingview_external_preferred,
+    _tradingview_supported,
+    _tradingview_unavailable_reason,
+    _webengine_charts_allowed,
+    _webengine_embed_unavailable_reason,
+)
+from app.gui.code_language_catalog import (
+    BASE_PROJECT_PATH as _BASE_PROJECT_PATH,
+    CPP_BUILD_ROOT,
+    CPP_CACHE_META_FILE,
+    CPP_CODE_LANGUAGE_KEY,
+    CPP_DEPENDENCY_VERSION_TARGETS as _CPP_DEPENDENCY_VERSION_TARGETS,
+    CPP_EXECUTABLE_BASENAME,
+    CPP_EXECUTABLE_LEGACY_BASENAME,
+    CPP_PACKAGED_EXECUTABLE_BASENAME,
+    CPP_PROJECT_PATH,
+    CPP_RELEASE_CPP_ASSET,
+    CPP_RELEASE_OWNER,
+    CPP_RELEASE_REPO,
+    CPP_SUPPORTED_EXCHANGE_KEY,
+    DEFAULT_DEPENDENCY_VERSION_TARGETS as _DEFAULT_DEPENDENCY_VERSION_TARGETS,
+    EXCHANGE_PATHS,
+    FOREX_BROKER_PATHS,
+    LANGUAGE_PATHS,
+    MUTED_TEXT,
+    PYTHON_CODE_LANGUAGE_KEY,
+    RELEASE_INFO_JSON_NAME,
+    RELEASE_TAG_TEXT_NAME,
+    REQUIREMENTS_PATHS as _REQUIREMENTS_PATHS,
+    RUST_CODE_LANGUAGE_KEY,
+    RUST_FRAMEWORK_PACKAGES,
+    RUST_PROJECT_PATH,
+    STARTER_CRYPTO_EXCHANGES,
+    STARTER_FOREX_BROKERS,
+    STARTER_MARKET_OPTIONS,
+    _rust_dependency_targets_for_config,
+    _rust_framework_key,
+    _rust_framework_option,
+    _rust_framework_path,
+    _rust_framework_title,
+)
 from app.indicators import (
     rsi as rsi_indicator,
     stoch_rsi as stoch_rsi_indicator,
@@ -84,37 +133,6 @@ from app.indicators import (
     supertrend as supertrend_indicator,
     stochastic as stochastic_indicator,
 )
-
-# Lazy import TradingView to avoid spawning QtWebEngine helper windows during startup.
-TradingViewWidget = None  # type: ignore[assignment]
-TRADINGVIEW_EMBED_AVAILABLE = False
-_TRADINGVIEW_IMPORT_ERROR = None
-_TRADINGVIEW_ENV_CONFIGURED = False
-_TRADINGVIEW_EXTERNAL_PREFERRED = None
-BinanceWebWidget = None  # type: ignore[assignment]
-BINANCE_WEB_AVAILABLE = False
-_BINANCE_IMPORT_ERROR = None
-LightweightChartWidget = None  # type: ignore[assignment]
-LIGHTWEIGHT_CHART_AVAILABLE = False
-_LIGHTWEIGHT_IMPORT_ERROR = None
-_WEBENGINE_DISABLED_REASON = (
-    "WebEngine charts are disabled on Windows. "
-    "Unset BOT_DISABLE_WEBENGINE_CHARTS or set it to 0 to enable."
-)
-_DEFAULT_WEB_UA = os.environ.get(
-    "BOT_WEBENGINE_UA",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-)
-
-
-def _native_chart_host_prewarm_enabled() -> bool:
-    """Whether to pre-create native window handles for chart hosts."""
-    if sys.platform != "win32":
-        return True
-    flag = str(os.environ.get("BOT_PRIME_NATIVE_CHART_HOST", "0")).strip().lower()
-    return flag in {"1", "true", "yes", "on"}
-
 
 def _apply_window_icon(window) -> None:
     try:
@@ -140,322 +158,6 @@ def _apply_window_icon(window) -> None:
             handle.setIcon(icon)
         except Exception:
             pass
-
-
-def _configure_tradingview_webengine_env() -> None:
-    """Best-effort tweaks to stabilize QtWebEngine on Windows before importing it."""
-    global _TRADINGVIEW_ENV_CONFIGURED
-    if _TRADINGVIEW_ENV_CONFIGURED:
-        return
-    _TRADINGVIEW_ENV_CONFIGURED = True
-    if sys.platform != "win32":
-        return
-    flag = str(os.environ.get("BOT_TRADINGVIEW_DISABLE_GPU", "")).strip().lower()
-    if flag:
-        disable_gpu = flag in {"1", "true", "yes", "on"}
-    else:
-        force_gpu = str(os.environ.get("BOT_TRADINGVIEW_FORCE_GPU", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        if force_gpu:
-            disable_gpu = False
-        else:
-            disable_gpu = False
-    flags = str(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") or "").strip()
-    parts = [part for part in flags.split() if part]
-    # Always strip known unstable/global flags that can interfere with the app window.
-    base_cleaned = []
-    for part in parts:
-        lower = part.lower()
-        if part in {"--single-process", "--in-process-gpu"}:
-            continue
-        if lower.startswith("--window-position="):
-            continue
-        base_cleaned.append(part)
-    if base_cleaned != parts:
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(base_cleaned).strip()
-    parts = list(base_cleaned)
-    if not disable_gpu:
-        return
-    drop_flags = {
-        "--ignore-gpu-blocklist",
-        "--enable-zero-copy",
-        "--disable-software-rasterizer",
-        "--in-process-gpu",
-        "--single-process",
-    }
-    cleaned = []
-    for part in parts:
-        lower = part.lower()
-        if part in drop_flags:
-            continue
-        if lower.startswith("--use-gl=") or lower.startswith("--use-angle="):
-            continue
-        if lower.startswith("--enable-gpu"):
-            continue
-        if lower.startswith("--enable-features=") and ("vulkan" in lower or "useskiarenderer" in lower):
-            continue
-        cleaned.append(part)
-    required = [
-        "--disable-gpu",
-        "--disable-gpu-compositing",
-        "--disable-features=Vulkan,UseSkiaRenderer",
-    ]
-    use_swiftshader = str(os.environ.get("BOT_TRADINGVIEW_USE_SWIFTSHADER", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if use_swiftshader:
-        required.append("--use-gl=swiftshader")
-    for part in required:
-        if part not in cleaned:
-            cleaned.append(part)
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(cleaned).strip()
-    os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
-    os.environ.setdefault("QT_OPENGL", "software")
-    os.environ.setdefault("QSG_RHI_BACKEND", "software")
-    os.environ.setdefault("QT_QUICK_BACKEND", "software")
-
-
-def _webengine_charts_allowed() -> bool:
-    if sys.platform != "win32":
-        return True
-    flag = str(os.environ.get("BOT_DISABLE_WEBENGINE_CHARTS", "")).strip().lower()
-    if flag:
-        return flag not in {"1", "true", "yes", "on"}
-    return True
-
-
-def _chart_safe_mode_enabled() -> bool:
-    flag = str(os.environ.get("BOT_SAFE_CHART_TAB", "")).strip().lower()
-    if flag:
-        return flag in {"1", "true", "yes", "on"}
-    if sys.platform == "win32":
-        return False
-    try:
-        return bool(os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0)
-    except Exception:
-        return False
-
-def _resolve_dist_version(*names: str) -> str | None:
-    for name in names:
-        try:
-            return importlib_metadata.version(name)
-        except Exception:
-            continue
-    return None
-
-def _tradingview_embed_health() -> tuple[bool, str]:
-    if sys.platform != "win32":
-        return True, ""
-    pyqt_ver = _resolve_dist_version("PyQt6", "pyqt6")
-    web_ver = _resolve_dist_version("PyQt6-WebEngine", "pyqt6-webengine", "PyQt6_WebEngine")
-    if pyqt_ver and web_ver:
-        pyqt_norm = pyqt_ver.split("+", 1)[0]
-        web_norm = web_ver.split("+", 1)[0]
-        if pyqt_norm != web_norm:
-            return False, f"TradingView embed disabled: PyQt6 {pyqt_ver} and PyQt6-WebEngine {web_ver} must match."
-    exec_dir = ""
-    try:
-        exec_dir = QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.LibraryExecutablesPath)
-    except Exception:
-        try:
-            exec_dir = QtCore.QLibraryInfo.location(QtCore.QLibraryInfo.LibraryLocation.LibraryExecutablesPath)
-        except Exception:
-            exec_dir = ""
-    if exec_dir:
-        exe_name = "QtWebEngineProcess.exe" if sys.platform == "win32" else "QtWebEngineProcess"
-        exe_path = Path(exec_dir) / exe_name
-        if not exe_path.is_file():
-            return False, f"TradingView embed disabled: {exe_name} not found in {exec_dir}."
-    return True, ""
-
-def _webengine_embed_health() -> tuple[bool, str]:
-    ok, reason = _tradingview_embed_health()
-    if ok:
-        return True, ""
-    if reason:
-        reason = reason.replace("TradingView", "WebEngine")
-    return False, reason
-
-def _webengine_embed_unavailable_reason() -> str | None:
-    if _DISABLE_CHARTS:
-        return "Charts disabled. Set BOT_DISABLE_CHARTS=0 to enable web embeds."
-    if _chart_safe_mode_enabled():
-        return "Web embeds disabled for stability. Set BOT_SAFE_CHART_TAB=0 to enable."
-    if sys.platform == "win32" and not _webengine_charts_allowed():
-        return _WEBENGINE_DISABLED_REASON
-    ok, reason = _webengine_embed_health()
-    if not ok:
-        return reason or "WebEngine embed unavailable."
-    return None
-
-def _tradingview_unavailable_reason() -> str:
-    if sys.platform == "win32" and not _webengine_charts_allowed():
-        return _WEBENGINE_DISABLED_REASON
-    err = _TRADINGVIEW_IMPORT_ERROR
-    if err is not None:
-        return str(err)
-    return "TradingView embed unavailable."
-
-def _binance_unavailable_reason() -> str:
-    if sys.platform == "win32" and not _webengine_charts_allowed():
-        return _WEBENGINE_DISABLED_REASON
-    err = _BINANCE_IMPORT_ERROR
-    if err is not None:
-        return str(err)
-    return "Binance web embed unavailable."
-
-def _lightweight_unavailable_reason() -> str:
-    if sys.platform == "win32" and not _webengine_charts_allowed():
-        return _WEBENGINE_DISABLED_REASON
-    err = _LIGHTWEIGHT_IMPORT_ERROR
-    if err is not None:
-        return str(err)
-    return "Lightweight chart embed unavailable."
-
-def _load_tradingview_widget():
-    """Import TradingViewWidget only when the chart tab is needed."""
-    global TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE, _TRADINGVIEW_IMPORT_ERROR
-    if _DISABLE_TRADINGVIEW or _DISABLE_CHARTS:
-        return None, False
-    if sys.platform == "win32" and not _webengine_charts_allowed():
-        if _TRADINGVIEW_IMPORT_ERROR is None:
-            _TRADINGVIEW_IMPORT_ERROR = RuntimeError(_WEBENGINE_DISABLED_REASON)
-        return None, False
-    _configure_tradingview_webengine_env()
-    if TradingViewWidget is not None or _TRADINGVIEW_IMPORT_ERROR is not None:
-        return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
-    ok, reason = _tradingview_embed_health()
-    if not ok:
-        _TRADINGVIEW_IMPORT_ERROR = RuntimeError(reason)
-        TradingViewWidget = None  # type: ignore[assignment]
-        TRADINGVIEW_EMBED_AVAILABLE = False
-        return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
-    try:
-        from app.gui.tradingview_widget import TradingViewWidget as _TVW, TRADINGVIEW_EMBED_AVAILABLE as _EMBED  # type: ignore
-    except Exception as exc:
-        _TRADINGVIEW_IMPORT_ERROR = exc
-        TradingViewWidget = None  # type: ignore[assignment]
-        TRADINGVIEW_EMBED_AVAILABLE = False
-        return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
-    TradingViewWidget = _TVW  # type: ignore[assignment]
-    TRADINGVIEW_EMBED_AVAILABLE = bool(_EMBED and _TVW is not None)
-    return TradingViewWidget, TRADINGVIEW_EMBED_AVAILABLE
-
-def _load_binance_widget():
-    """Import BinanceWebWidget only when the chart tab is needed."""
-    global BinanceWebWidget, BINANCE_WEB_AVAILABLE, _BINANCE_IMPORT_ERROR
-    if _DISABLE_CHARTS:
-        return None, False
-    if sys.platform == "win32" and not _webengine_charts_allowed():
-        if _BINANCE_IMPORT_ERROR is None:
-            _BINANCE_IMPORT_ERROR = RuntimeError(_WEBENGINE_DISABLED_REASON)
-        return None, False
-    _configure_tradingview_webengine_env()
-    if BinanceWebWidget is not None or _BINANCE_IMPORT_ERROR is not None:
-        return BinanceWebWidget, BINANCE_WEB_AVAILABLE
-    ok, reason = _tradingview_embed_health()
-    if not ok:
-        _BINANCE_IMPORT_ERROR = RuntimeError(reason)
-        BinanceWebWidget = None  # type: ignore[assignment]
-        BINANCE_WEB_AVAILABLE = False
-        return BinanceWebWidget, BINANCE_WEB_AVAILABLE
-    try:
-        from app.gui.binance_web_widget import BinanceWebWidget as _BW  # type: ignore
-    except Exception as exc:
-        _BINANCE_IMPORT_ERROR = exc
-        BinanceWebWidget = None  # type: ignore[assignment]
-        BINANCE_WEB_AVAILABLE = False
-        return BinanceWebWidget, BINANCE_WEB_AVAILABLE
-    BinanceWebWidget = _BW  # type: ignore[assignment]
-    BINANCE_WEB_AVAILABLE = bool(_BW is not None)
-    return BinanceWebWidget, BINANCE_WEB_AVAILABLE
-
-def _load_lightweight_widget():
-    """Import LightweightChartWidget only when the chart tab is needed."""
-    global LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE, _LIGHTWEIGHT_IMPORT_ERROR
-    if _DISABLE_CHARTS:
-        return None, False
-    if sys.platform == "win32" and not _webengine_charts_allowed():
-        if _LIGHTWEIGHT_IMPORT_ERROR is None:
-            _LIGHTWEIGHT_IMPORT_ERROR = RuntimeError(_WEBENGINE_DISABLED_REASON)
-        return None, False
-    _configure_tradingview_webengine_env()
-    if LightweightChartWidget is not None or _LIGHTWEIGHT_IMPORT_ERROR is not None:
-        return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
-    ok, reason = _tradingview_embed_health()
-    if not ok:
-        _LIGHTWEIGHT_IMPORT_ERROR = RuntimeError(reason)
-        LightweightChartWidget = None  # type: ignore[assignment]
-        LIGHTWEIGHT_CHART_AVAILABLE = False
-        return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
-    try:
-        from app.gui.lightweight_widget import LightweightChartWidget as _LW  # type: ignore
-    except Exception as exc:
-        _LIGHTWEIGHT_IMPORT_ERROR = exc
-        LightweightChartWidget = None  # type: ignore[assignment]
-        LIGHTWEIGHT_CHART_AVAILABLE = False
-        return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
-    LightweightChartWidget = _LW  # type: ignore[assignment]
-    LIGHTWEIGHT_CHART_AVAILABLE = bool(_LW is not None)
-    return LightweightChartWidget, LIGHTWEIGHT_CHART_AVAILABLE
-
-def _tradingview_supported(*, probe: bool = False) -> bool:
-    if _DISABLE_TRADINGVIEW or _DISABLE_CHARTS:
-        return False
-    if TradingViewWidget is not None and TRADINGVIEW_EMBED_AVAILABLE:
-        return True
-    if _TRADINGVIEW_IMPORT_ERROR is not None:
-        return False
-    if not probe:
-        return False
-    tvw, available = _load_tradingview_widget()
-    return bool(available and tvw is not None)
-
-def _binance_supported(*, probe: bool = False) -> bool:
-    if _DISABLE_CHARTS:
-        return False
-    if BinanceWebWidget is not None and BINANCE_WEB_AVAILABLE:
-        return True
-    if _BINANCE_IMPORT_ERROR is not None:
-        return False
-    if not probe:
-        return False
-    bw, available = _load_binance_widget()
-    return bool(available and bw is not None)
-
-def _lightweight_supported(*, probe: bool = False) -> bool:
-    if _DISABLE_CHARTS:
-        return False
-    if LightweightChartWidget is not None and LIGHTWEIGHT_CHART_AVAILABLE:
-        return True
-    if _LIGHTWEIGHT_IMPORT_ERROR is not None:
-        return False
-    if not probe:
-        return False
-    lw, available = _load_lightweight_widget()
-    return bool(available and lw is not None)
-
-def _tradingview_external_preferred() -> bool:
-    global _TRADINGVIEW_EXTERNAL_PREFERRED
-    if _TRADINGVIEW_EXTERNAL_PREFERRED is not None:
-        return bool(_TRADINGVIEW_EXTERNAL_PREFERRED)
-    flag = str(os.environ.get("BOT_TRADINGVIEW_EXTERNAL", "")).strip().lower()
-    if flag:
-        _TRADINGVIEW_EXTERNAL_PREFERRED = flag in {"1", "true", "yes", "on"}
-        return bool(_TRADINGVIEW_EXTERNAL_PREFERRED)
-    _TRADINGVIEW_EXTERNAL_PREFERRED = False
-    return False
-
-def _build_tradingview_url(symbol: str, interval: str) -> str:
-    params = urllib.parse.urlencode({"symbol": symbol, "interval": interval}, safe=":")
-    return f"https://www.tradingview.com/chart/?{params}"
 
 BINANCE_SUPPORTED_INTERVALS = {
     "1m", "3m", "5m", "15m", "30m",
@@ -638,30 +340,6 @@ def _recommended_connector_for_key(account_key: str) -> str:
     key = (account_key or "").strip().upper()
     return RECOMMENDED_CONNECTOR_BY_ACCOUNT.get(key, DEFAULT_CONNECTOR_BACKEND)
 
-for _parent in _THIS_FILE.parents:
-    if (_parent / "Languages").exists():
-        _BASE_PROJECT_PATH = _parent
-        break
-else:
-    _BASE_PROJECT_PATH = _THIS_FILE.parents[2]
-
-PYTHON_CODE_LANGUAGE_KEY = "Python (PyQt)"
-CPP_CODE_LANGUAGE_KEY = "C++ (Qt/C++23)"
-RUST_CODE_LANGUAGE_KEY = "Rust"
-CPP_SUPPORTED_EXCHANGE_KEY = "Binance"
-CPP_EXECUTABLE_BASENAME = "Trading-Bot-C++"
-CPP_EXECUTABLE_LEGACY_BASENAME = "binance_backtest_tab"
-CPP_PACKAGED_EXECUTABLE_BASENAME = "Trading-Bot-C++"
-CPP_RELEASE_OWNER = "Yunushan"
-CPP_RELEASE_REPO = "trading-bot"
-CPP_RELEASE_CPP_ASSET = "Trading-Bot-C++.zip"
-CPP_CACHE_META_FILE = "cpp-runtime-meta.json"
-RELEASE_INFO_JSON_NAME = "release-info.json"
-RELEASE_TAG_TEXT_NAME = "release-tag.txt"
-CPP_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "C++").resolve()
-RUST_PROJECT_PATH = (_BASE_PROJECT_PATH / "Languages" / "Rust").resolve()
-CPP_BUILD_ROOT = (_BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
-
 # Startup knobs to avoid slow/flashy QtWebEngine init on Windows
 _DISABLE_CHARTS = str(os.environ.get("BOT_DISABLE_CHARTS", "")).strip().lower() in {"1", "true", "yes", "on"}
 _DISABLE_TRADINGVIEW = str(os.environ.get("BOT_DISABLE_TRADINGVIEW", "")).strip().lower() in {"1", "true", "yes", "on"}
@@ -670,273 +348,6 @@ try:
 except Exception:
     _SYMBOL_FETCH_TOP_N = 200
 _SYMBOL_FETCH_TOP_N = max(50, min(_SYMBOL_FETCH_TOP_N, 5000))
-
-LANGUAGE_PATHS = {
-    "Python (PyQt)": "Languages/Python",
-    "C++ (Qt/C++23)": "Languages/C++",
-    "Rust": "Languages/Rust",
-}
-
-RUST_FRAMEWORK_PATHS = {
-    "Tauri": "Languages/Rust/apps/tauri-desktop",
-    "Slint": "Languages/Rust/apps/slint-desktop",
-    "egui": "Languages/Rust/apps/egui-desktop",
-    "Iced": "Languages/Rust/apps/iced-desktop",
-    "Dioxus Desktop": "Languages/Rust/apps/dioxus-desktop",
-}
-
-RUST_FRAMEWORK_PACKAGES = {
-    "Tauri": "trading-bot-tauri-desktop",
-    "Slint": "trading-bot-slint-desktop",
-    "egui": "trading-bot-egui-desktop",
-    "Iced": "trading-bot-iced-desktop",
-    "Dioxus Desktop": "trading-bot-dioxus-desktop",
-}
-
-RUST_SHARED_PATHS = [
-    "Languages/Rust/crates/contracts",
-    "Languages/Rust/crates/core",
-]
-
-EXCHANGE_PATHS = {
-    "Binance": None,
-    "Bybit": None,
-    "OKX": None,
-    "Bitget": None,
-    "Gate": None,
-    "MEXC": None,
-    "KuCoin": None,
-    "HTX": None,
-    "Crypto.com Exchange": None,
-    "Kraken": None,
-    "Bitfinex": None,
-}
-
-FOREX_BROKER_PATHS: dict[str, str | None] = {}
-MUTED_TEXT = "#94a3b8"
-
-STARTER_LANGUAGE_OPTIONS = [
-    {
-        "config_key": "Python (PyQt)",
-        "title": "Python",
-        "subtitle": "Fast to build - Huge ecosystem",
-        "accent": "#3b82f6",
-        "badge": "Recommended",
-    },
-    {
-        "config_key": "C++ (Qt/C++23)",
-        "title": "C++",
-        "subtitle": "Qt native desktop (preview)",
-        "accent": "#38bdf8",
-        "badge": "Preview",
-    },
-    {
-        "config_key": RUST_CODE_LANGUAGE_KEY,
-        "title": "Rust",
-        "subtitle": "Shared core with desktop framework shells",
-        "accent": "#fb923c",
-        "badge": "Scaffold",
-    },
-]
-
-RUST_FRAMEWORK_OPTIONS = [
-    {
-        "key": "Tauri",
-        "title": "Tauri",
-        "subtitle": "Desktop shell with web UI",
-        "accent": "#f59e0b",
-        "badge": "Desktop",
-    },
-    {
-        "key": "Slint",
-        "title": "Slint",
-        "subtitle": "Native declarative desktop UI",
-        "accent": "#22c55e",
-        "badge": "Desktop",
-    },
-    {
-        "key": "egui",
-        "title": "egui",
-        "subtitle": "Fast trader dashboard UI",
-        "accent": "#38bdf8",
-        "badge": "Desktop",
-    },
-    {
-        "key": "Iced",
-        "title": "Iced",
-        "subtitle": "Pure Rust reactive desktop UI",
-        "accent": "#a78bfa",
-        "badge": "Desktop",
-    },
-    {
-        "key": "Dioxus Desktop",
-        "title": "Dioxus Desktop",
-        "subtitle": "Rust component UI with desktop renderer",
-        "accent": "#ec4899",
-        "badge": "Desktop",
-    },
-]
-
-STARTER_MARKET_OPTIONS = [
-    {"key": "crypto", "title": "Crypto Exchange", "subtitle": "Binance, Bybit, KuCoin", "accent": "#34d399"},
-    {
-        "key": "forex",
-        "title": "Forex Exchange",
-        "subtitle": "OANDA, FXCM, MetaTrader - coming soon",
-        "accent": "#93c5fd",
-        "badge": "Coming Soon",
-        "disabled": True,
-    },
-]
-
-STARTER_CRYPTO_EXCHANGES = [
-    {"key": "Binance", "title": "Binance", "subtitle": "Advanced desktop bot ready to launch", "accent": "#fbbf24"},
-    {
-        "key": "Bybit",
-        "title": "Bybit",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#fb7185",
-        "badge": "coming soon",
-        "disabled": True,
-    },
-    {
-        "key": "OKX",
-        "title": "OKX",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#a78bfa",
-        "badge": "coming soon",
-        "disabled": True,
-    },
-    {
-        "key": "Gate",
-        "title": "Gate",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#22c55e",
-        "badge": "coming soon",
-        "disabled": True,
-    },
-    {
-        "key": "Bitget",
-        "title": "Bitget",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#0ea5e9",
-        "badge": "coming soon",
-        "disabled": True,
-    },
-    {
-        "key": "MEXC",
-        "title": "MEXC",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#10b981",
-        "badge": "coming soon",
-        "disabled": True,
-    },
-    {
-        "key": "KuCoin",
-        "title": "KuCoin",
-        "subtitle": "Advanced desktop bot ready to launch",
-        "accent": "#eab308",
-        "badge": "coming soon",
-        "disabled": True,
-    },
-]
-
-STARTER_FOREX_BROKERS = [
-    {
-        "key": "OANDA",
-        "title": "OANDA",
-        "subtitle": "Popular REST API - coming soon",
-        "accent": "#60a5fa",
-        "badge": "Coming Soon",
-        "disabled": True,
-    },
-    {
-        "key": "FXCM",
-        "title": "FXCM",
-        "subtitle": "Streaming quotes - coming soon",
-        "accent": "#c084fc",
-        "badge": "Coming Soon",
-        "disabled": True,
-    },
-    {
-        "key": "IG",
-        "title": "IG",
-        "subtitle": "Global CFD trading - coming soon",
-        "accent": "#f472b6",
-        "badge": "Coming Soon",
-        "disabled": True,
-    },
-]
-
-_REQUIREMENTS_PATHS = [
-    _THIS_FILE.parents[2] / "requirements.txt",
-    _THIS_FILE.parents[3] / "requirements.txt",
-]
-
-_DEFAULT_DEPENDENCY_VERSION_TARGETS = [
-    {"label": "python-binance", "package": "python-binance"},
-    {"label": "binance-connector", "package": "binance-connector"},
-    {"label": "ccxt", "package": "ccxt"},
-    {"label": "PyQt6", "package": "PyQt6"},
-    {"label": "PyQt6-Qt6", "package": "PyQt6-Qt6"},
-    {"label": "PyQt6-WebEngine", "package": "PyQt6-WebEngine"},
-    {"label": "numba", "package": "numba"},
-    {"label": "llvmlite", "package": "llvmlite"},
-    {"label": "numpy", "package": "numpy"},
-    {"label": "pandas", "package": "pandas"},
-    {"label": "pandas-ta", "package": "pandas-ta"},
-    {"label": "requests", "package": "requests"},
-    {"label": "binance-sdk-derivatives-trading-usds-futures", "package": "binance-sdk-derivatives-trading-usds-futures"},
-    {"label": "binance-sdk-derivatives-trading-coin-futures", "package": "binance-sdk-derivatives-trading-coin-futures"},
-    {"label": "binance-sdk-spot", "package": "binance-sdk-spot"},
-]
-
-_CPP_DEPENDENCY_VERSION_TARGETS = [
-    {"label": "Qt6 (C++)", "custom": "cpp_qt", "latest_key": "qt6"},
-    {"label": "Qt6 Network (REST)", "custom": "cpp_qt_network", "latest_key": "qt6"},
-    {"label": "Qt6 WebEngine", "custom": "cpp_qt_webengine", "latest_key": "qt6"},
-    {"label": "Qt6 WebSockets", "custom": "cpp_qt_websockets", "latest_key": "qt6"},
-    {
-        "label": "Binance REST client (native)",
-        "custom": "cpp_file_version",
-        "path": "Languages/C++/src/BinanceRestClient.cpp",
-        "usage": "Active",
-    },
-    {
-        "label": "Binance WebSocket client (native)",
-        "custom": "cpp_file_version",
-        "path": "Languages/C++/src/BinanceWsClient.cpp",
-        "usage": "Active",
-    },
-    {"label": "Eigen", "custom": "cpp_eigen", "latest_key": "eigen"},
-    {"label": "xtensor", "custom": "cpp_xtensor", "latest_key": "xtensor"},
-    {"label": "TA-Lib", "custom": "cpp_talib", "latest_key": "ta-lib"},
-    {"label": "libcurl", "custom": "cpp_libcurl", "latest_key": "libcurl"},
-    {"label": "cpr", "custom": "cpp_cpr", "latest_key": "cpr"},
-]
-
-_RUST_BASE_DEPENDENCY_VERSION_TARGETS = [
-    {"label": "rustc", "custom": "rust_rustc", "latest": "Install rustup"},
-    {"label": "cargo", "custom": "rust_cargo", "latest": "Install rustup"},
-    {
-        "label": "Trading Bot Rust workspace",
-        "custom": "rust_file_version",
-        "path": "Languages/Rust/Cargo.toml",
-        "usage": "Active",
-    },
-    {
-        "label": "trading-bot-core",
-        "custom": "rust_file_version",
-        "path": "Languages/Rust/crates/core/Cargo.toml",
-        "usage": "Active",
-    },
-    {
-        "label": "trading-bot-contracts",
-        "custom": "rust_file_version",
-        "path": "Languages/Rust/crates/contracts/Cargo.toml",
-        "usage": "Active",
-    },
-]
 
 _RUST_AUTO_INSTALL_DEFAULT_COOLDOWN_SEC = 180.0
 _RUSTUP_WINDOWS_INSTALLER_URL_BASE = "https://win.rustup.rs"
@@ -2031,60 +1442,6 @@ def _cpp_custom_usage_value(target: dict[str, str]) -> str:
         return "Active" if _cpp_dependency_file_exists(target.get("path")) else "Passive"
     installed_value = _cpp_custom_installed_value(target)
     return "Active" if _cpp_version_is_installed_marker(installed_value) else "Passive"
-
-
-def _rust_framework_option(config_or_key: dict | str | None = None) -> dict[str, str]:
-    selected_key = ""
-    if isinstance(config_or_key, dict):
-        try:
-            selected_key = str(config_or_key.get("selected_rust_framework") or "").strip()
-        except Exception:
-            selected_key = ""
-    elif config_or_key is not None:
-        selected_key = str(config_or_key).strip()
-    for option in RUST_FRAMEWORK_OPTIONS:
-        if str(option.get("key") or "").strip() == selected_key:
-            return option
-    return {}
-
-
-def _rust_framework_key(config: dict | None = None) -> str:
-    return str(_rust_framework_option(config).get("key") or "").strip()
-
-
-def _rust_framework_title(config: dict | None = None) -> str:
-    return str(_rust_framework_option(config).get("title") or _rust_framework_key(config) or "Rust").strip()
-
-
-def _rust_framework_path(config: dict | None = None) -> Path | None:
-    relative_path = RUST_FRAMEWORK_PATHS.get(_rust_framework_key(config))
-    if not relative_path:
-        return None
-    return (_BASE_PROJECT_PATH / relative_path).resolve()
-
-
-def _rust_framework_dependency_target(config: dict | None = None) -> dict[str, str] | None:
-    option = _rust_framework_option(config)
-    framework_key = str(option.get("key") or "").strip()
-    framework_path = RUST_FRAMEWORK_PATHS.get(framework_key)
-    if not framework_key or not framework_path:
-        return None
-    manifest_path = f"{framework_path}/Cargo.toml"
-    badge = str(option.get("badge") or "").strip() or "Framework"
-    return {
-        "label": f"{framework_key} ({badge})",
-        "custom": "rust_file_version",
-        "path": manifest_path,
-        "usage": "Active",
-    }
-
-
-def _rust_dependency_targets_for_config(config: dict | None = None) -> list[dict[str, str]]:
-    targets = copy.deepcopy(_RUST_BASE_DEPENDENCY_VERSION_TARGETS)
-    framework_target = _rust_framework_dependency_target(config)
-    if framework_target:
-        targets.append(framework_target)
-    return targets
 
 
 def _rust_manifest_path(path_value: str | None = None) -> Path:
@@ -6348,6 +5705,7 @@ class MainWindow(QtWidgets.QWidget):
         self._starter_market_cards = {}
         self._starter_crypto_cards = {}
         self._starter_forex_cards = {}
+        self._webengine_runtime_prewarm_scheduled = False
         self._rust_code_tab_process = None
         self._rust_process_watchdog_timer = None
         self._rust_auto_install_inflight = False
@@ -6383,7 +5741,7 @@ class MainWindow(QtWidgets.QWidget):
         self.log_signal.connect(self._buffer_log)
         self.trade_signal.connect(self._on_trade_signal)
         try:
-            self._prewarm_webengine_runtime()
+            self._schedule_webengine_runtime_prewarm()
         except Exception:
             pass
         QtCore.QTimer.singleShot(250, self._handle_post_init_state)
@@ -10534,7 +9892,7 @@ class MainWindow(QtWidgets.QWidget):
 
         self.chart_tradingview = None
         self._chart_view_tradingview_available = (
-            (_TRADINGVIEW_IMPORT_ERROR is None)
+            (getattr(chart_embed, "_TRADINGVIEW_IMPORT_ERROR", None) is None)
             and (not _DISABLE_TRADINGVIEW)
             and (not _DISABLE_CHARTS)
             and _webengine_charts_allowed()
@@ -10542,12 +9900,12 @@ class MainWindow(QtWidgets.QWidget):
         self.chart_binance = None
         self.chart_lightweight = None
         self._chart_view_binance_available = (
-            (_BINANCE_IMPORT_ERROR is None)
+            (getattr(chart_embed, "_BINANCE_IMPORT_ERROR", None) is None)
             and (not _DISABLE_CHARTS)
             and _webengine_charts_allowed()
         )
         self._chart_view_lightweight_available = (
-            (_LIGHTWEIGHT_IMPORT_ERROR is None)
+            (getattr(chart_embed, "_LIGHTWEIGHT_IMPORT_ERROR", None) is None)
             and (not _DISABLE_CHARTS)
             and _webengine_charts_allowed()
         )
@@ -10668,452 +10026,76 @@ class MainWindow(QtWidgets.QWidget):
         return tab
 
     def _ensure_tradingview_widget(self):
-        """Lazily create the TradingView widget so QtWebEngine processes spawn only when needed."""
-        if _chart_safe_mode_enabled():
-            return None
-        if self.chart_tradingview is not None:
-            self._bind_tradingview_ready(self.chart_tradingview)
-            return self.chart_tradingview
-        if not self._chart_view_tradingview_available:
-            return None
-        tv_class, _ = _load_tradingview_widget()
-        if tv_class is None:
-            self._chart_view_tradingview_available = False
-            return None
-        self._start_webengine_close_guard()
-        try:
-            parent = getattr(self, "chart_view_stack", None) or self
-            widget = tv_class(parent)
-        except Exception:
-            self.chart_tradingview = None
-            self._chart_view_tradingview_available = False
-            return None
-        self.chart_tradingview = widget
-        self._chart_view_widgets["tradingview"] = widget
-        self.chart_view_stack.addWidget(widget)
-        self._bind_tradingview_ready(widget)
-        return widget
+        return chart_embed.ensure_tradingview_widget(self)
 
     def _bind_tradingview_ready(self, widget):
-        if widget is None:
-            return
-        if getattr(self, "_tradingview_ready_connected", False):
-            return
-        try:
-            if hasattr(widget, "ready"):
-                widget.ready.connect(self._on_tradingview_ready)
-                self._tradingview_ready_connected = True
-        except Exception:
-            pass
+        return chart_embed.bind_tradingview_ready(self, widget)
 
     def _ensure_binance_widget(self):
-        """Lazily create the Binance web widget so QtWebEngine spawns only when needed."""
-        if _chart_safe_mode_enabled():
-            return None
-        if self.chart_binance is not None:
-            return self.chart_binance
-        if not self._chart_view_binance_available:
-            return None
-        bw_class, available = _load_binance_widget()
-        if bw_class is None or not available:
-            self._chart_view_binance_available = False
-            return None
-        self._start_webengine_close_guard()
-        try:
-            parent = getattr(self, "chart_view_stack", None) or self
-            widget = bw_class(parent)
-        except Exception:
-            self._chart_view_binance_available = False
-            return None
-        self.chart_binance = widget
-        self._chart_view_widgets["original"] = widget
-        try:
-            self.chart_view_stack.addWidget(widget)
-        except Exception:
-            pass
-        return widget
+        return chart_embed.ensure_binance_widget(self)
 
     def _ensure_lightweight_widget(self):
-        """Lazily create the lightweight chart widget so QtWebEngine spawns only when needed."""
-        if _chart_safe_mode_enabled():
-            return None
-        if self.chart_lightweight is not None:
-            return self.chart_lightweight
-        if not self._chart_view_lightweight_available:
-            return None
-        lw_class, available = _load_lightweight_widget()
-        if lw_class is None or not available:
-            self._chart_view_lightweight_available = False
-            return None
-        self._start_webengine_close_guard()
-        try:
-            parent = getattr(self, "chart_view_stack", None) or self
-            widget = lw_class(parent)
-        except Exception:
-            self._chart_view_lightweight_available = False
-            return None
-        self.chart_lightweight = widget
-        self._chart_view_widgets["lightweight"] = widget
-        try:
-            self.chart_view_stack.addWidget(widget)
-        except Exception:
-            pass
-        return widget
+        return chart_embed.ensure_lightweight_widget(self)
 
     def _update_chart_overlay_geometry(self):
-        overlay = getattr(self, "_chart_switch_overlay", None)
-        stack = getattr(self, "chart_view_stack", None)
-        if overlay is None or stack is None:
-            return
-        try:
-            overlay.setGeometry(stack.rect())
-        except Exception:
-            pass
+        return chart_embed.update_chart_overlay_geometry(self)
 
     def _show_chart_switch_overlay(self):
-        if getattr(self, "_chart_switch_overlay_active", False):
-            return
-        overlay = getattr(self, "_chart_switch_overlay", None)
-        stack = getattr(self, "chart_view_stack", None)
-        if overlay is None or stack is None:
-            return
-        self._update_chart_overlay_geometry()
-        pixmap = None
-        try:
-            source = stack.currentWidget()
-            if source is not None:
-                pixmap = source.grab()
-        except Exception:
-            pixmap = None
-        try:
-            if pixmap is not None and not pixmap.isNull():
-                overlay.setPixmap(pixmap)
-                overlay.setText("")
-            else:
-                overlay.setPixmap(QtGui.QPixmap())
-                overlay.setText("Loading TradingView...")
-            overlay.setVisible(True)
-            overlay.raise_()
-            self._chart_switch_overlay_active = True
-        except Exception:
-            pass
+        return chart_embed.show_chart_switch_overlay(self)
 
     def _hide_chart_switch_overlay(self, delay_ms: int = 0):
-        overlay = getattr(self, "_chart_switch_overlay", None)
-        if overlay is None or not getattr(self, "_chart_switch_overlay_active", False):
-            return
-
-        def _do_hide():
-            try:
-                overlay.setVisible(False)
-                overlay.setPixmap(QtGui.QPixmap())
-                overlay.setText("")
-            except Exception:
-                pass
-            self._chart_switch_overlay_active = False
-
-        if delay_ms and delay_ms > 0:
-            QtCore.QTimer.singleShot(int(delay_ms), _do_hide)
-        else:
-            _do_hide()
+        return chart_embed.hide_chart_switch_overlay(self, delay_ms=delay_ms)
 
     def _schedule_tradingview_prewarm(self):
-        if getattr(self, "_tradingview_prewarm_scheduled", False) or getattr(self, "_tradingview_prewarmed", False):
-            return
-        if not getattr(self, "_chart_view_tradingview_available", False):
-            return
-        if sys.platform != "win32":
-            return
-        flag = str(os.environ.get("BOT_PREWARM_TRADINGVIEW", "0")).strip().lower()
-        if flag in {"0", "false", "no", "off"}:
-            return
-        try:
-            delay_ms = int(os.environ.get("BOT_PREWARM_TRADINGVIEW_DELAY_MS") or 1200)
-        except Exception:
-            delay_ms = 1200
-        delay_ms = max(100, min(delay_ms, 10000))
-        self._tradingview_prewarm_scheduled = True
-        QtCore.QTimer.singleShot(delay_ms, self._prewarm_tradingview)
+        return window_runtime.schedule_tradingview_prewarm(self)
+
+    def _schedule_webengine_runtime_prewarm(self):
+        return window_runtime.schedule_webengine_runtime_prewarm(self)
+
+    def _maybe_run_deferred_webengine_prewarm(self):
+        return window_runtime.maybe_run_deferred_webengine_prewarm(self)
 
     def _prewarm_webengine_runtime(self):
-        """Initialize QtWebEngine once while the app is booting to avoid first-tab flicker."""
-        if getattr(self, "_webengine_runtime_prewarmed", False):
-            return
-        if sys.platform != "win32":
-            return
-        if not _webengine_charts_allowed():
-            return
-        flag = str(os.environ.get("BOT_PREWARM_WEBENGINE", "1")).strip().lower()
-        if flag in {"0", "false", "no", "off"}:
-            return
-        if _webengine_embed_unavailable_reason():
-            return
-        try:
-            _configure_tradingview_webengine_env()
-        except Exception:
-            pass
-        try:
-            from PyQt6.QtWebEngineWidgets import QWebEngineView
-        except Exception:
-            return
-        try:
-            view = QWebEngineView(self)
-            view.setObjectName("botWebEnginePrewarm")
-            try:
-                view.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-            except Exception:
-                pass
-            try:
-                view.resize(1, 1)
-                view.move(-32000, -32000)
-                view.hide()
-            except Exception:
-                pass
-            try:
-                view.load(QtCore.QUrl("about:blank"))
-            except Exception:
-                pass
-            self._webengine_runtime_prewarm_view = view
-            self._webengine_runtime_prewarmed = True
-            try:
-                self._chart_debug_log("webengine_prewarm init=1")
-            except Exception:
-                pass
-        except Exception:
-            return
-
-        try:
-            hold_ms = int(os.environ.get("BOT_PREWARM_WEBENGINE_HOLD_MS") or 2200)
-        except Exception:
-            hold_ms = 2200
-        hold_ms = max(500, min(hold_ms, 10000))
-
-        def _cleanup():
-            view_obj = getattr(self, "_webengine_runtime_prewarm_view", None)
-            self._webengine_runtime_prewarm_view = None
-            if view_obj is not None:
-                try:
-                    view_obj.deleteLater()
-                except Exception:
-                    pass
-
-        QtCore.QTimer.singleShot(hold_ms, _cleanup)
+        return window_runtime.prewarm_webengine_runtime(
+            self,
+            webengine_charts_allowed=_webengine_charts_allowed,
+            webengine_embed_unavailable_reason=_webengine_embed_unavailable_reason,
+            configure_tradingview_webengine_env=_configure_tradingview_webengine_env,
+        )
 
     def _prewarm_tradingview(self):
-        self._tradingview_prewarm_scheduled = False
-        if getattr(self, "_tradingview_prewarmed", False):
-            return
-        if not getattr(self, "_chart_view_tradingview_available", False):
-            return
-        widget = self._ensure_tradingview_widget()
-        if widget is None:
-            return
-        self._tradingview_prewarmed = True
-        self._prime_tradingview_chart(widget)
+        return window_runtime.prewarm_tradingview(self)
 
     def _start_tradingview_visibility_guard(self):
-        if sys.platform != "win32":
-            return
-        if getattr(self, "_tv_visibility_guard_active", False):
-            return
-        try:
-            duration_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_GUARD_MS") or 2500)
-        except Exception:
-            duration_ms = 2500
-        duration_ms = max(500, min(duration_ms, 8000))
-        try:
-            interval_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_GUARD_INTERVAL_MS") or 50)
-        except Exception:
-            interval_ms = 50
-        interval_ms = max(20, min(interval_ms, 200))
-
-        timer = QtCore.QTimer(self)
-        timer.setInterval(interval_ms)
-        start_ts = time.monotonic()
-        self._tv_visibility_guard_active = True
-        self._tv_visibility_guard_timer = timer
-
-        def _tick():
-            if (time.monotonic() - start_ts) * 1000.0 >= duration_ms:
-                self._stop_tradingview_visibility_guard()
-                return
-            try:
-                if not self.isVisible():
-                    self.showMaximized()
-                    self.raise_()
-                    self.activateWindow()
-                elif self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
-                    self.showMaximized()
-                    self.raise_()
-                    self.activateWindow()
-            except Exception:
-                pass
-
-        timer.timeout.connect(_tick)
-        timer.start()
-        _tick()
+        return window_runtime.start_tradingview_visibility_guard(self)
 
     def _start_tradingview_visibility_watchdog(self):
-        if sys.platform != "win32":
-            return
-        if getattr(self, "_tv_visibility_watchdog_active", False):
-            return
-        flag = str(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_WATCHDOG", "1")).strip().lower()
-        if flag in {"0", "false", "no", "off"}:
-            return
-        try:
-            interval_ms = int(os.environ.get("BOT_TRADINGVIEW_VISIBILITY_WATCHDOG_INTERVAL_MS") or 200)
-        except Exception:
-            interval_ms = 200
-        interval_ms = max(50, min(interval_ms, 1000))
-        timer = QtCore.QTimer(self)
-        timer.setInterval(interval_ms)
-        self._tv_visibility_watchdog_active = True
-        self._tv_visibility_watchdog_timer = timer
-
-        def _tick():
-            try:
-                if not self.isVisible() or self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
-                    self.showMaximized()
-                    self.raise_()
-                    self.activateWindow()
-            except Exception:
-                pass
-
-        timer.timeout.connect(_tick)
-        timer.start()
-        _tick()
+        return window_runtime.start_tradingview_visibility_watchdog(self)
 
     def _start_tradingview_close_guard(self):
-        if sys.platform != "win32":
-            return
-        try:
-            duration_ms = int(os.environ.get("BOT_TRADINGVIEW_CLOSE_GUARD_MS") or 2500)
-        except Exception:
-            duration_ms = 2500
-        duration_ms = max(500, min(duration_ms, 8000))
-        try:
-            self._tv_close_guard_until = time.monotonic() + (duration_ms / 1000.0)
-        except Exception:
-            self._tv_close_guard_until = 0.0
-        self._tv_close_guard_active = True
+        return window_runtime.start_tradingview_close_guard(self)
 
     def _start_webengine_close_guard(self):
-        if sys.platform != "win32":
-            return
-        if not _webengine_charts_allowed():
-            return
-        try:
-            duration_ms = int(os.environ.get("BOT_WEBENGINE_CLOSE_GUARD_MS") or 3500)
-        except Exception:
-            duration_ms = 3500
-        duration_ms = max(800, min(duration_ms, 15000))
-        try:
-            until = time.monotonic() + (duration_ms / 1000.0)
-        except Exception:
-            until = 0.0
-        try:
-            prev_until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
-        except Exception:
-            prev_until = 0.0
-        self._webengine_close_guard_until = max(prev_until, until)
-        self._webengine_close_guard_active = True
-        self._start_webengine_visibility_watchdog()
-        try:
-            self._chart_debug_log(
-                f"webengine_close_guard start duration_ms={duration_ms} until={self._webengine_close_guard_until:.3f}"
-            )
-        except Exception:
-            pass
+        return window_runtime.start_webengine_close_guard(
+            self,
+            webengine_charts_allowed=_webengine_charts_allowed,
+        )
 
     def _start_webengine_visibility_watchdog(self):
-        if sys.platform != "win32":
-            return
-        if getattr(self, "_webengine_visibility_watchdog_active", False):
-            return
-        try:
-            interval_ms = int(os.environ.get("BOT_WEBENGINE_CLOSE_GUARD_WATCHDOG_INTERVAL_MS") or 120)
-        except Exception:
-            interval_ms = 120
-        interval_ms = max(30, min(interval_ms, 1000))
-        timer = QtCore.QTimer(self)
-        timer.setInterval(interval_ms)
-        self._webengine_visibility_watchdog_active = True
-        self._webengine_visibility_watchdog_timer = timer
-
-        def _tick():
-            if _allow_guard_bypass(self):
-                self._stop_webengine_visibility_watchdog()
-                return
-            try:
-                now = time.monotonic()
-            except Exception:
-                now = 0.0
-            try:
-                until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
-            except Exception:
-                until = 0.0
-            if not until or now >= until:
-                try:
-                    self._webengine_close_guard_active = False
-                except Exception:
-                    pass
-                self._stop_webengine_visibility_watchdog()
-                return
-            if not getattr(self, "_webengine_close_guard_active", False):
-                self._stop_webengine_visibility_watchdog()
-                return
-            try:
-                if not self.isVisible() or self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
-                    _restore_window_after_guard(self)
-            except Exception:
-                pass
-
-        timer.timeout.connect(_tick)
-        timer.start()
-        _tick()
+        return window_runtime.start_webengine_visibility_watchdog(
+            self,
+            allow_guard_bypass=_allow_guard_bypass,
+            restore_window_after_guard=_restore_window_after_guard,
+        )
 
     def _stop_webengine_visibility_watchdog(self):
-        timer = getattr(self, "_webengine_visibility_watchdog_timer", None)
-        if timer is not None:
-            try:
-                timer.stop()
-            except Exception:
-                pass
-            try:
-                timer.deleteLater()
-            except Exception:
-                pass
-        self._webengine_visibility_watchdog_timer = None
-        self._webengine_visibility_watchdog_active = False
+        return window_runtime.stop_webengine_visibility_watchdog(self)
 
     def _stop_tradingview_visibility_guard(self):
-        timer = getattr(self, "_tv_visibility_guard_timer", None)
-        if timer is not None:
-            try:
-                timer.stop()
-            except Exception:
-                pass
-            try:
-                timer.deleteLater()
-            except Exception:
-                pass
-        self._tv_visibility_guard_timer = None
-        self._tv_visibility_guard_active = False
+        return window_runtime.stop_tradingview_visibility_guard(self)
 
     def _stop_tradingview_visibility_watchdog(self):
-        timer = getattr(self, "_tv_visibility_watchdog_timer", None)
-        if timer is not None:
-            try:
-                timer.stop()
-            except Exception:
-                pass
-            try:
-                timer.deleteLater()
-            except Exception:
-                pass
-        self._tv_visibility_watchdog_timer = None
-        self._tv_visibility_watchdog_active = False
+        return window_runtime.stop_tradingview_visibility_watchdog(self)
 
     def _start_tradingview_window_suppression(self):
         if sys.platform != "win32":
@@ -11417,64 +10399,10 @@ class MainWindow(QtWidgets.QWidget):
         _tick()
 
     def _prime_tradingview_chart(self, widget):
-        if widget is None:
-            return
-        try:
-            symbol_text = (self.chart_symbol_combo.currentText() or "").strip().upper()
-            interval_text = (self.chart_interval_combo.currentText() or "").strip()
-        except Exception:
-            return
-        if not symbol_text or not interval_text:
-            return
-        interval_code = self._map_chart_interval(interval_text)
-        if not interval_code:
-            return
-        market_text = self._normalize_chart_market(
-            self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else None
-        )
-        tv_symbol = self._format_chart_symbol(symbol_text, market_text)
-        try:
-            theme_name = (self.theme_combo.currentText() or "").strip()
-        except Exception:
-            theme_name = self.config.get("theme", "Dark")
-        theme_code = "light" if str(theme_name or "").lower().startswith("light") else "dark"
-        try:
-            widget.set_chart(tv_symbol, interval_code, theme=theme_code, timezone="Etc/UTC")
-        except Exception:
-            return
-        try:
-            if hasattr(widget, "warmup"):
-                widget.warmup()
-        except Exception:
-            pass
+        return chart_embed.prime_tradingview_chart(self, widget)
 
     def _open_tradingview_external(self) -> bool:
-        try:
-            symbol_text = (self.chart_symbol_combo.currentText() or "").strip().upper()
-            interval_text = (self.chart_interval_combo.currentText() or "").strip()
-        except Exception:
-            return False
-        if not symbol_text or not interval_text:
-            return False
-        interval_code = self._map_chart_interval(interval_text)
-        if not interval_code:
-            interval_code = "60"
-        market_text = self._normalize_chart_market(
-            self.chart_market_combo.currentText() if hasattr(self, "chart_market_combo") else None
-        )
-        tv_symbol = self._format_chart_symbol(symbol_text, market_text)
-        try:
-            now = time.monotonic()
-        except Exception:
-            now = 0.0
-        if now and (now - float(getattr(self, "_tradingview_external_last_open_ts", 0.0) or 0.0)) < 1.0:
-            return False
-        self._tradingview_external_last_open_ts = now
-        url = _build_tradingview_url(tv_symbol, interval_code)
-        try:
-            return bool(QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)))
-        except Exception:
-            return False
+        return chart_embed.open_tradingview_external(self)
 
     def _on_tradingview_ready(self):
         if not getattr(self, "_pending_tradingview_switch", False):
@@ -15256,172 +14184,11 @@ def _init_liquidation_heatmap_tab(self):
 
 
 def _init_code_language_tab(self):
-    tab = QtWidgets.QWidget()
-    outer_layout = QtWidgets.QVBoxLayout(tab)
-    outer_layout.setContentsMargins(0, 0, 0, 0)
-    outer_layout.setSpacing(0)
-
-    scroll = QtWidgets.QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-    outer_layout.addWidget(scroll)
-
-    content = QtWidgets.QWidget()
-    layout = QtWidgets.QVBoxLayout(content)
-    layout.setContentsMargins(10, 10, 10, 10)
-    layout.setSpacing(12)
-    scroll.setWidget(content)
-
-    description = QtWidgets.QLabel(
-        "Select your preferred code language. "
-        "Folders for each language are created automatically inside the project so you can keep related assets organized."
+    return code_language_ui.init_code_language_tab(
+        self,
+        starter_card_cls=_StarterCard,
+        resolve_dependency_targets_for_config=_resolve_dependency_targets_for_config,
     )
-    description.setWordWrap(True)
-    layout.addWidget(description)
-
-    self._starter_language_cards: dict[str, _StarterCard] = {}
-    self._starter_language_base_subtitles: dict[str, str] = {}
-    self._starter_rust_framework_cards: dict[str, _StarterCard] = {}
-    self._starter_rust_framework_base_subtitles: dict[str, str] = {}
-    self._starter_market_cards: dict[str, _StarterCard] = {}
-    self._starter_crypto_cards: dict[str, _StarterCard] = {}
-    self._starter_forex_cards: dict[str, _StarterCard] = {}
-
-    lang_label = QtWidgets.QLabel("Choose your language")
-    lang_label.setStyleSheet("font-size: 20px; font-weight: 600;")
-    layout.addWidget(lang_label)
-    lang_row = QtWidgets.QHBoxLayout()
-    lang_row.setSpacing(12)
-    for opt in STARTER_LANGUAGE_OPTIONS:
-        card = _StarterCard(
-            opt["config_key"],
-            opt["title"],
-            opt["subtitle"],
-            opt["accent"],
-            opt.get("badge"),
-            disabled=opt.get("disabled", False),
-        )
-        card.clicked.connect(self._code_tab_select_language)
-        card.setMinimumWidth(180)
-        lang_row.addWidget(card, 1)
-        self._starter_language_cards[opt["config_key"]] = card
-        self._starter_language_base_subtitles[opt["config_key"]] = str(opt.get("subtitle") or "").strip()
-    lang_row.addStretch()
-    layout.addLayout(lang_row)
-
-    rust_framework_label = QtWidgets.QLabel("Choose your Rust framework")
-    rust_framework_label.setStyleSheet("font-size: 18px; font-weight: 600;")
-    layout.addWidget(rust_framework_label)
-    self._rust_framework_section_label = rust_framework_label
-
-    rust_framework_widget = QtWidgets.QWidget()
-    rust_framework_row = QtWidgets.QHBoxLayout(rust_framework_widget)
-    rust_framework_row.setContentsMargins(0, 0, 0, 0)
-    rust_framework_row.setSpacing(12)
-    for opt in RUST_FRAMEWORK_OPTIONS:
-        card = _StarterCard(
-            opt["key"],
-            opt["title"],
-            opt["subtitle"],
-            opt["accent"],
-            opt.get("badge"),
-            disabled=opt.get("disabled", False),
-        )
-        card.clicked.connect(self._code_tab_select_rust_framework)
-        card.setMinimumWidth(170)
-        rust_framework_row.addWidget(card, 1)
-        self._starter_rust_framework_cards[opt["key"]] = card
-        self._starter_rust_framework_base_subtitles[opt["key"]] = str(opt.get("subtitle") or "").strip()
-    rust_framework_row.addStretch()
-    layout.addWidget(rust_framework_widget)
-    self._rust_framework_cards_widget = rust_framework_widget
-
-    status_widget = QtWidgets.QWidget()
-    status_layout = QtWidgets.QHBoxLayout(status_widget)
-    status_layout.setContentsMargins(0, 0, 0, 0)
-    status_layout.setSpacing(12)
-    self.pnl_active_label_code_tab = QtWidgets.QLabel()
-    self.pnl_closed_label_code_tab = QtWidgets.QLabel()
-    self.bot_status_label_code_tab = QtWidgets.QLabel()
-    self.bot_time_label_code_tab = QtWidgets.QLabel("Bot Active Time: --")
-    for lbl in (self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab):
-        if lbl is not None:
-            lbl.setStyleSheet("font-weight: 600;")
-            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
-            status_layout.addWidget(lbl)
-    status_layout.addStretch()
-    for lbl in (self.bot_status_label_code_tab, self.bot_time_label_code_tab):
-        if lbl is not None:
-            lbl.setStyleSheet("font-weight: 600;")
-            status_layout.addWidget(lbl)
-    self._register_pnl_summary_labels(self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab)
-    layout.addWidget(status_widget)
-
-    self._dep_version_labels: dict[
-        str,
-        tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel],
-    ] = {}
-    self._dep_version_targets: list[dict[str, str]] = _resolve_dependency_targets_for_config(self.config)
-    versions_group = QtWidgets.QGroupBox("Environment Versions")
-    versions_group.setSizePolicy(
-        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-    )
-    versions_group_layout = QtWidgets.QVBoxLayout(versions_group)
-    versions_group_layout.setContentsMargins(8, 12, 8, 8)
-    versions_group_layout.setSpacing(6)
-
-    versions_container = QtWidgets.QWidget()
-    versions_layout = QtWidgets.QGridLayout(versions_container)
-    versions_layout.setContentsMargins(6, 6, 6, 6)
-    versions_layout.setColumnStretch(0, 0)
-    versions_layout.setColumnStretch(1, 0)
-    versions_layout.setColumnStretch(2, 0)
-    versions_layout.setColumnStretch(3, 0)
-    versions_layout.setColumnStretch(4, 0)
-    versions_layout.setColumnStretch(5, 1)
-    versions_layout.setVerticalSpacing(8)
-    versions_layout.setHorizontalSpacing(6)
-    versions_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
-
-    versions_scroll = QtWidgets.QScrollArea()
-    versions_scroll.setWidgetResizable(True)
-    versions_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-    versions_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    versions_scroll.setWidget(versions_container)
-    versions_scroll.setSizePolicy(
-        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-    )
-
-    self._dep_versions_container = versions_container
-    self._dep_versions_layout = versions_layout
-    self._dep_versions_scroll = versions_scroll
-    self._dep_versions_group = versions_group
-    self._rebuild_dependency_version_rows(self._dep_version_targets)
-
-    versions_group_layout.addWidget(versions_scroll, 1)
-    layout.addWidget(versions_group, 1)
-    version_btn_row = QtWidgets.QHBoxLayout()
-    version_btn_row.addStretch()
-    self._version_refresh_btn = QtWidgets.QPushButton("Check Versions")
-    self._version_refresh_btn.clicked.connect(self._refresh_dependency_versions)
-    version_btn_row.addWidget(self._version_refresh_btn)
-    layout.addLayout(version_btn_row)
-    # Refresh dependency versions lazily the first time this tab is opened (see _on_tab_changed),
-    # so the table doesn't stay at "Checking..." without slowing down initial startup.
-
-    self._sync_language_exchange_lists_from_config()
-    self._update_bot_status()
-    self._refresh_code_tab_from_config()
-    try:
-        self._ensure_cpp_process_watchdog()
-    except Exception:
-        pass
-    try:
-        self._ensure_rust_process_watchdog()
-    except Exception:
-        pass
-    return tab
 
 def _cpp_executable_names() -> set[str]:
     base_names = {
@@ -18094,151 +16861,44 @@ def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
 
 
 def _code_tab_select_language(self, config_key: str) -> None:
-    if config_key not in LANGUAGE_PATHS:
-        return
-    card = getattr(self, "_starter_language_cards", {}).get(config_key)
-    if card is not None and card.is_disabled():
-        return
-    if config_key == CPP_CODE_LANGUAGE_KEY:
-        try:
-            if QtWidgets.QMessageBox.question(
-                self,
-                "Switch to C++?",
-                (
-                    "This will close the current Python trading bot window completely "
-                    "and open the C++ trading bot instead.\n\n"
-                    "Do you want to continue?"
-                ),
-                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-                QtWidgets.QMessageBox.StandardButton.No,
-            ) != QtWidgets.QMessageBox.StandardButton.Yes:
-                return
-        except Exception:
-            return
-    self.config["code_language"] = config_key
-    if config_key == RUST_CODE_LANGUAGE_KEY:
-        self.config["selected_rust_framework"] = ""
-    if config_key == CPP_CODE_LANGUAGE_KEY and self.config.get("selected_exchange") != CPP_SUPPORTED_EXCHANGE_KEY:
-        self.config["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
-        self.log("C++ preview supports Binance only. Switched exchange to Binance.")
-    self._refresh_code_tab_from_config()
-    self._ensure_language_exchange_paths()
-    if config_key == CPP_CODE_LANGUAGE_KEY:
-        _launch_cpp_from_code_tab(self, trigger="language-card")
+    return code_language_ui.code_tab_select_language(
+        self,
+        config_key,
+        launch_cpp_from_code_tab=_launch_cpp_from_code_tab,
+    )
 
 
 def _code_tab_select_rust_framework(self, framework_key: str) -> None:
-    if framework_key not in RUST_FRAMEWORK_PATHS:
-        return
-    card = getattr(self, "_starter_rust_framework_cards", {}).get(framework_key)
-    if card is not None and card.is_disabled():
-        return
-    try:
-        if QtWidgets.QMessageBox.question(
-            self,
-            f"Switch to Rust {framework_key}?",
-            (
-                "This will close the current Python trading bot window completely "
-                f"and open the Rust {framework_key} trading bot instead.\n\n"
-                "Do you want to continue?"
-            ),
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
-        ) != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
-    except Exception:
-        return
-    self.config["code_language"] = RUST_CODE_LANGUAGE_KEY
-    self.config["selected_rust_framework"] = framework_key
-    self._refresh_code_tab_from_config()
-    self._ensure_language_exchange_paths()
-    _launch_rust_from_code_tab(self, trigger="framework-card")
+    return code_language_ui.code_tab_select_rust_framework(
+        self,
+        framework_key,
+        launch_rust_from_code_tab=_launch_rust_from_code_tab,
+    )
 
 
 def _code_tab_select_market(self, market_key: str) -> None:
-    if market_key not in {"crypto", "forex"}:
-        return
-    card = getattr(self, "_starter_market_cards", {}).get(market_key)
-    if card is not None and card.is_disabled():
-        return
-    self.config["code_market"] = market_key
-    self._code_tab_selected_market = market_key
-    self._refresh_code_tab_from_config()
-    self._ensure_language_exchange_paths()
+    return code_language_ui.code_tab_select_market(self, market_key)
 
 
 def _code_tab_select_exchange(self, exchange_key: str) -> None:
-    if exchange_key not in EXCHANGE_PATHS:
-        return
-    card = getattr(self, "_starter_crypto_cards", {}).get(exchange_key)
-    if card is not None and card.is_disabled():
-        return
-    self.config["selected_exchange"] = exchange_key
-    self._refresh_code_tab_from_config()
-    self._ensure_language_exchange_paths()
+    return code_language_ui.code_tab_select_exchange(self, exchange_key)
 
 
 def _code_tab_select_forex(self, broker_key: str) -> None:
-    if broker_key not in FOREX_BROKER_PATHS:
-        return
-    card = getattr(self, "_starter_forex_cards", {}).get(broker_key)
-    if card is not None and card.is_disabled():
-        return
-    self.config["selected_forex_broker"] = broker_key
-    self._code_tab_selected_market = "forex"
-    self.config["code_market"] = "forex"
-    self._refresh_code_tab_from_config()
-    self._ensure_language_exchange_paths()
+    return code_language_ui.code_tab_select_forex(self, broker_key)
 
 
 def _refresh_code_tab_from_config(self) -> None:
-    lang_cards = getattr(self, "_starter_language_cards", {})
-    lang_key = self.config.get("code_language")
-    if not lang_key or lang_key not in lang_cards or lang_cards[lang_key].is_disabled():
-        lang_key = next((k for k, c in lang_cards.items() if not c.is_disabled()), None)
-        if lang_key:
-            self.config["code_language"] = lang_key
-    for key, card in lang_cards.items():
-        card.setSelected(bool(lang_key) and key == lang_key)
-    rust_framework_cards = getattr(self, "_starter_rust_framework_cards", {})
-    rust_framework_key = str(self.config.get("selected_rust_framework") or "").strip()
-    if rust_framework_key and rust_framework_key not in rust_framework_cards:
-        rust_framework_key = ""
-        self.config["selected_rust_framework"] = ""
-    for key, card in rust_framework_cards.items():
-        card.setSelected(
-            bool(lang_key)
-            and lang_key == RUST_CODE_LANGUAGE_KEY
-            and bool(rust_framework_key)
-            and key == rust_framework_key
-        )
-    self._update_code_tab_rust_sections()
-    _refresh_code_language_card_release_labels(self)
-    targets_changed = False
-    try:
-        resolved_targets = _resolve_dependency_targets_for_config(self.config)
-    except Exception:
-        resolved_targets = list(getattr(self, "_dep_version_targets", []) or [])
-    if resolved_targets and resolved_targets != getattr(self, "_dep_version_targets", None):
-        self._rebuild_dependency_version_rows(resolved_targets)
-        targets_changed = True
-    elif not resolved_targets:
-        resolved_targets = list(getattr(self, "_dep_version_targets", []) or [])
-    if targets_changed and self._code_tab_visible():
-        QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-    # Dependency versions refresh lazily the first time this tab is opened (see _on_tab_changed).
-    _refresh_dependency_usage_labels(self, resolved_targets)
+    return code_language_ui.refresh_code_tab_from_config(
+        self,
+        resolve_dependency_targets_for_config=_resolve_dependency_targets_for_config,
+        refresh_code_language_card_release_labels=_refresh_code_language_card_release_labels,
+        refresh_dependency_usage_labels=_refresh_dependency_usage_labels,
+    )
 
 
 def _code_tab_visible(self) -> bool:
-    try:
-        tabs = getattr(self, "tabs", None)
-        code_tab = getattr(self, "code_tab", None)
-        if tabs is None or code_tab is None:
-            return False
-        return tabs.currentWidget() is code_tab
-    except Exception:
-        return False
+    return code_language_ui.code_tab_visible(self)
 
 
 def _ensure_cpp_process_watchdog(self) -> None:
@@ -18338,292 +16998,45 @@ def _poll_rust_process_state(self) -> None:
 
 
 def _start_dependency_usage_auto_poll(self) -> None:
-    timer = getattr(self, "_dep_usage_poll_timer", None)
-    if timer is None:
-        try:
-            timer = QtCore.QTimer(self)
-            timer.setInterval(_DEPENDENCY_USAGE_POLL_INTERVAL_MS)
-            timer.timeout.connect(self._poll_dependency_usage_states)
-            self._dep_usage_poll_timer = timer
-        except Exception:
-            return
-    try:
-        if not timer.isActive():
-            timer.start()
-    except Exception:
-        pass
-    self._poll_dependency_usage_states()
+    return dependency_versions_ui.start_dependency_usage_auto_poll(
+        self,
+        interval_ms=_DEPENDENCY_USAGE_POLL_INTERVAL_MS,
+    )
 
 
 def _stop_dependency_usage_auto_poll(self) -> None:
-    timer = getattr(self, "_dep_usage_poll_timer", None)
-    if timer is None:
-        return
-    try:
-        timer.stop()
-    except Exception:
-        pass
+    return dependency_versions_ui.stop_dependency_usage_auto_poll(self)
 
 
 def _poll_dependency_usage_states(self) -> None:
-    if not self._code_tab_visible():
-        return
-    _refresh_dependency_usage_labels(self)
+    return dependency_versions_ui.poll_dependency_usage_states(
+        self,
+        refresh_dependency_usage_labels=_refresh_dependency_usage_labels,
+    )
 
 
 def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None = None) -> None:
-    layout = getattr(self, "_dep_versions_layout", None)
-    container = getattr(self, "_dep_versions_container", None)
-    scroll = getattr(self, "_dep_versions_scroll", None)
-    group = getattr(self, "_dep_versions_group", None)
-    target_list = targets or getattr(self, "_dep_version_targets", []) or []
-    if layout is None or container is None or group is None:
-        return
-
-    while layout.count():
-        item = layout.takeAt(0)
-        widget = item.widget()
-        if widget is not None:
-            widget.deleteLater()
-
-    header_dep = QtWidgets.QLabel("Dependency")
-    header_dep.setStyleSheet("font-weight: 600; font-size: 12px;")
-    header_inst = QtWidgets.QLabel("Installed")
-    header_inst.setStyleSheet("font-weight: 600; font-size: 12px;")
-    header_latest = QtWidgets.QLabel("Latest")
-    header_latest.setStyleSheet("font-weight: 600; font-size: 12px;")
-    header_usage = QtWidgets.QLabel("Usage")
-    header_usage.setStyleSheet("font-weight: 600; font-size: 12px;")
-    header_usage_counter = QtWidgets.QLabel("Usage Change Counter")
-    header_usage_counter.setStyleSheet("font-weight: 600; font-size: 12px;")
-    layout.addWidget(header_dep, 0, 0)
-    layout.addWidget(header_inst, 0, 1)
-    layout.addWidget(header_latest, 0, 2)
-    layout.addWidget(header_usage, 0, 3)
-    layout.addWidget(header_usage_counter, 0, 4)
-
-    labels: dict[str, tuple[QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel]] = {}
-    count_map = getattr(self, "_dep_usage_change_counts", None)
-    if not isinstance(count_map, dict):
-        count_map = {}
-        self._dep_usage_change_counts = count_map
-    for row, target in enumerate(target_list, start=1):
-        label_widget = QtWidgets.QLabel(target["label"])
-        label_widget.setStyleSheet("font-weight: 600; font-size: 11px; padding: 2px;")
-        label_widget.setMinimumHeight(20)
-        _make_dependency_cell_copyable(label_widget)
-
-        installed_widget = QtWidgets.QLabel("Checking...")
-        installed_widget.setStyleSheet("font-size: 11px; padding: 2px;")
-        installed_widget.setMinimumHeight(20)
-        _make_dependency_cell_copyable(installed_widget)
-
-        latest_widget = QtWidgets.QLabel("Checking...")
-        latest_widget.setStyleSheet("font-size: 11px; padding: 2px;")
-        latest_widget.setMinimumHeight(20)
-        _make_dependency_cell_copyable(latest_widget)
-
-        usage_widget = QtWidgets.QLabel()
-        usage_widget.setMinimumHeight(20)
-        _make_dependency_cell_copyable(usage_widget)
-        _set_dependency_usage_widget(usage_widget, "Checking...")
-
-        usage_counter_widget = QtWidgets.QLabel()
-        usage_counter_widget.setMinimumHeight(20)
-        _make_dependency_cell_copyable(usage_counter_widget)
-        _set_dependency_usage_counter_widget(usage_counter_widget, count_map.get(target["label"], 0))
-
-        layout.addWidget(label_widget, row, 0)
-        layout.addWidget(installed_widget, row, 1)
-        layout.addWidget(latest_widget, row, 2)
-        layout.addWidget(usage_widget, row, 3)
-        layout.addWidget(usage_counter_widget, row, 4)
-        labels[target["label"]] = (installed_widget, latest_widget, usage_widget, usage_counter_widget)
-
-    self._dep_version_labels = labels
-    self._dep_version_targets = list(target_list)
-    tracked_labels = {str(t.get("label") or "").strip() for t in target_list}
-    try:
-        state_map = getattr(self, "_dep_usage_last_state", None)
-        if isinstance(state_map, dict):
-            for key in list(state_map.keys()):
-                if key not in tracked_labels:
-                    state_map.pop(key, None)
-    except Exception:
-        pass
-    try:
-        count_map_local = getattr(self, "_dep_usage_change_counts", None)
-        if isinstance(count_map_local, dict):
-            for key in list(count_map_local.keys()):
-                if key not in tracked_labels:
-                    count_map_local.pop(key, None)
-    except Exception:
-        pass
-    _refresh_dependency_usage_labels(self, target_list)
-
-    rows = len(target_list) + 1  # +1 for header
-    try:
-        fm = container.fontMetrics()
-        row_height = max(30, fm.height() + 12)
-    except Exception:
-        row_height = 30
-    target_height = rows * row_height + 32
-    try:
-        container.setMinimumHeight(target_height)
-        group.setMinimumHeight(min(800, max(480, target_height + 60)))
-    except Exception:
-        pass
-
-    if scroll is not None:
-        scroll.setMinimumHeight(min(720, max(420, target_height)))
-        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        try:
-            scroll.verticalScrollBar().setValue(0)
-        except Exception:
-            pass
+    return dependency_versions_ui.rebuild_dependency_version_rows(
+        self,
+        targets,
+        make_dependency_cell_copyable=_make_dependency_cell_copyable,
+        set_dependency_usage_widget=_set_dependency_usage_widget,
+        set_dependency_usage_counter_widget=_set_dependency_usage_counter_widget,
+        refresh_dependency_usage_labels=_refresh_dependency_usage_labels,
+    )
 
 
 def _refresh_dependency_versions(self) -> None:
-    if getattr(self, "_dep_version_refresh_inflight", False):
-        self._dep_version_refresh_pending = True
-        return
-
-    self._dep_version_refresh_inflight = True
-    self._dep_version_refresh_pending = False
-    self._dep_version_watchdog_token = time.monotonic()
-
-    try:
-        resolved_targets = _resolve_dependency_targets_for_config(self.config)
-    except Exception:
-        resolved_targets = copy.deepcopy(DEPENDENCY_VERSION_TARGETS)
-    try:
-        config_snapshot = dict(self.config or {})
-    except Exception:
-        config_snapshot = {}
-
-    # Ensure the UI rows exist for the resolved targets before applying values.
-    try:
-        if resolved_targets and resolved_targets != getattr(self, "_dep_version_targets", None):
-            self._rebuild_dependency_version_rows(resolved_targets)
-        else:
-            try:
-                self._dep_version_targets = list(resolved_targets or [])
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    # When C++ dependencies are shown in the Code Languages tab, keep them
-    # auto-provisioned so users don't need to run installer scripts manually.
-    try:
-        self._maybe_auto_prepare_cpp_environment(
-            resolved_targets=resolved_targets,
-            reason="dependency-refresh",
-        )
-    except Exception:
-        pass
-
-    labels = getattr(self, "_dep_version_labels", None)
-    if labels:
-        for label, widgets in labels.items():
-            _, latest_widget, _, _ = widgets
-            try:
-                latest_widget.setText("Checking...")
-            except Exception:
-                pass
-            _apply_dependency_usage_entry(self, label, "Checking...", widgets=widgets, track_change=False)
-
-    # Phase 1: populate installed versions immediately (no network).
-    try:
-        installed_snapshot = _collect_dependency_versions(
-            resolved_targets,
-            include_latest=False,
-            config=config_snapshot,
-        )
-    except Exception:
-        installed_snapshot = []
-    if labels and installed_snapshot:
-        for label, installed, _, usage in installed_snapshot:
-            widgets = labels.get(label)
-            if not widgets:
-                continue
-            installed_widget, _, _, _ = widgets
-            try:
-                installed_widget.setText(installed)
-            except Exception:
-                pass
-            _apply_dependency_usage_entry(self, label, usage, widgets=widgets, track_change=True)
-
-    def _watchdog(token: float):
-        try:
-            if not getattr(self, "_dep_version_refresh_inflight", False):
-                return
-            if token != getattr(self, "_dep_version_watchdog_token", None):
-                return
-            labels_local = getattr(self, "_dep_version_labels", None)
-            if labels_local:
-                for label, widgets in labels_local.items():
-                    _, latest_widget, _, _ = widgets
-                    try:
-                        latest_widget.setText("Unknown")
-                    except Exception:
-                        pass
-                    if _normalize_dependency_usage_text(widgets[2].text()) == "Checking...":
-                        _apply_dependency_usage_entry(self, label, "Passive", widgets=widgets, track_change=False)
-            self._dep_version_refresh_inflight = False
-        except Exception:
-            self._dep_version_refresh_inflight = False
-
-    QtCore.QTimer.singleShot(20000, lambda t=self._dep_version_watchdog_token: _watchdog(t))
-
-    # Phase 2: fetch latest versions in the background without blocking the UI.
-    def _run_latest():
-        try:
-            installed_snapshot = list(
-                _collect_dependency_versions(
-                    resolved_targets,
-                    include_latest=False,
-                    config=config_snapshot,
-                )
-            )
-        except Exception:
-            installed_snapshot = []
-
-        try:
-            results = list(
-                _collect_dependency_versions(
-                    resolved_targets,
-                    include_latest=True,
-                    config=config_snapshot,
-                )
-            )
-        except Exception:
-            results = []
-        if not results:
-            # Fall back to installed values with Unknown latest so the UI never stays at "Checking..."
-            if installed_snapshot:
-                results = [(label, inst, "Unknown", usage) for (label, inst, _, usage) in installed_snapshot]
-            else:
-                results = [
-                    (
-                        target["label"],
-                        "Not installed",
-                        "Unknown",
-                        _dependency_usage_state(target, config=config_snapshot),
-                    )
-                    for target in (resolved_targets or [])
-                ]
-
-        # Queue the UI update on the main thread using QMetaObject.invokeMethod for thread safety.
-        # QTimer.singleShot can fail silently when called from a non-main thread in PyQt6.
-        QtCore.QMetaObject.invokeMethod(
-            self,
-            "_apply_dependency_version_results",
-            QtCore.Qt.ConnectionType.QueuedConnection,
-            QtCore.Q_ARG(object, results),
-        )
-
-    threading.Thread(target=_run_latest, daemon=True).start()
+    return dependency_versions_ui.refresh_dependency_versions(
+        self,
+        resolve_dependency_targets_for_config=_resolve_dependency_targets_for_config,
+        dependency_targets_fallback=DEPENDENCY_VERSION_TARGETS,
+        collect_dependency_versions=_collect_dependency_versions,
+        apply_dependency_usage_entry=_apply_dependency_usage_entry,
+        maybe_auto_prepare_cpp_environment=_maybe_auto_prepare_cpp_environment,
+        dependency_usage_state=_dependency_usage_state,
+        normalize_dependency_usage_text=_normalize_dependency_usage_text,
+    )
 
 
 @QtCore.pyqtSlot(object)
@@ -18632,217 +17045,35 @@ def _apply_dependency_version_results(self, results: list) -> None:
     Apply the fetched dependency version results to the UI.
     This method is designed to be called via QMetaObject.invokeMethod from a background thread.
     """
-    try:
-        labels_local = getattr(self, "_dep_version_labels", None)
-        if labels_local:
-            installed_map = {}
-            latest_map = {}
-            usage_map = {}
-            for row in (results or []):
-                if not row:
-                    continue
-                label = row[0]
-                installed = row[1] if len(row) > 1 else "Not installed"
-                latest = row[2] if len(row) > 2 else "Unknown"
-                usage = row[3] if len(row) > 3 else "Passive"
-                installed_map[label] = installed
-                latest_map[label] = latest
-                usage_map[label] = usage
-
-            for label, widgets in labels_local.items():
-                if widgets is None:
-                    continue
-                installed_widget, latest_widget, _, _ = widgets
-                try:
-                    if label in installed_map:
-                        installed_widget.setText(installed_map[label])
-                except Exception:
-                    pass
-                try:
-                    latest_widget.setText(latest_map.get(label, "Unknown"))
-                except Exception:
-                    pass
-                _apply_dependency_usage_entry(self, label, usage_map.get(label, "Passive"), widgets=widgets, track_change=True)
-
-        self._dep_version_refresh_inflight = False
-        if getattr(self, "_dep_version_refresh_pending", False):
-            self._dep_version_refresh_pending = False
-            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-    except Exception:
-        self._dep_version_refresh_inflight = False
+    return dependency_versions_ui.apply_dependency_version_results(
+        self,
+        results,
+        apply_dependency_usage_entry=_apply_dependency_usage_entry,
+    )
 
 
 def _update_code_tab_market_sections(self) -> None:
-    market = getattr(self, "_code_tab_selected_market", None)
-    show_crypto = market == "crypto"
-    show_forex = market == "forex"
-    for widget in (getattr(self, "_crypto_section_label", None), getattr(self, "_crypto_cards_widget", None)):
-        if widget is not None:
-            widget.setVisible(show_crypto)
-    for widget in (getattr(self, "_forex_section_label", None), getattr(self, "_forex_cards_widget", None)):
-        if widget is not None:
-            widget.setVisible(show_forex)
+    return code_language_ui.update_code_tab_market_sections(self)
 
 
 def _update_code_tab_rust_sections(self) -> None:
-    show_rust = str(self.config.get("code_language") or "").strip() == RUST_CODE_LANGUAGE_KEY
-    for widget in (getattr(self, "_rust_framework_section_label", None), getattr(self, "_rust_framework_cards_widget", None)):
-        if widget is not None:
-            widget.setVisible(show_rust)
+    return code_language_ui.update_code_tab_rust_sections(self)
 
 
 def _sync_language_exchange_lists_from_config(self):
-    selections = [
-        ("code_language", self.language_combo, LANGUAGE_PATHS),
-        ("selected_exchange", self.exchange_combo, EXCHANGE_PATHS),
-        ("selected_forex_broker", self.forex_combo, FOREX_BROKER_PATHS),
-    ]
-    for key, widget, options_map in selections:
-        if widget is None:
-            continue
-        desired = self.config.get(key)
-        if not desired:
-            try:
-                blocker = QtCore.QSignalBlocker(widget)
-            except Exception:
-                blocker = None
-            try:
-                widget.setCurrentIndex(-1)
-                if widget.isEditable():
-                    widget.clearEditText()
-            except Exception:
-                pass
-            if blocker is not None:
-                del blocker
-            continue
-        if desired not in options_map and options_map:
-            desired = next(iter(options_map))
-            self.config[key] = desired
-        with QtCore.QSignalBlocker(widget):
-            idx = widget.findData(desired)
-            if idx < 0:
-                idx = widget.findText(desired, QtCore.Qt.MatchFlag.MatchExactly)
-            if idx >= 0:
-                try:
-                    item = widget.model().item(idx)
-                except Exception:
-                    item = None
-                if item is not None and not (item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled):
-                    idx = -1
-            if idx < 0 and widget.count() > 0:
-                fallback_idx = -1
-                fallback_value = None
-                for i in range(widget.count()):
-                    try:
-                        item = widget.model().item(i)
-                    except Exception:
-                        item = None
-                    if item is not None and not (item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled):
-                        continue
-                    data_value = widget.itemData(i)
-                    text_value = widget.itemText(i)
-                    if data_value in options_map:
-                        fallback_idx = i
-                        fallback_value = data_value
-                        break
-                    if text_value in options_map:
-                        fallback_idx = i
-                        fallback_value = text_value
-                        break
-                if fallback_idx >= 0:
-                    idx = fallback_idx
-                    desired = fallback_value
-                    self.config[key] = desired
-            if idx >= 0:
-                widget.setCurrentIndex(idx)
-    self._ensure_language_exchange_paths()
-    self._refresh_code_tab_from_config()
-    if self.exchange_list is not None:
-        desired_exchange = self.config.get("selected_exchange")
-        item = self._exchange_list_items.get(desired_exchange)
-        if item is None or not (item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled):
-            desired_exchange = None
-            for opt in STARTER_CRYPTO_EXCHANGES:
-                if opt.get("disabled", False):
-                    continue
-                desired_exchange = opt["key"]
-                break
-            if desired_exchange:
-                self.config["selected_exchange"] = desired_exchange
-                item = self._exchange_list_items.get(desired_exchange)
-        if item is not None:
-            with QtCore.QSignalBlocker(self.exchange_list):
-                self.exchange_list.setCurrentItem(item)
+    return code_language_ui.sync_language_exchange_lists_from_config(self)
 
 
 def _ensure_language_exchange_paths(self):
-    created_paths = []
-
-    def _prepare_path(path: Path | None):
-        if path is None:
-            return
-        try:
-            is_new = not path.exists()
-            path.mkdir(parents=True, exist_ok=True)
-            if is_new:
-                created_paths.append(path)
-        except Exception as exc:
-            try:
-                self.log(f"Failed to prepare {path}: {exc}")
-            except Exception:
-                pass
-
-    language_rel = LANGUAGE_PATHS.get(self.config.get("code_language"))
-    language_root = (_BASE_PROJECT_PATH / language_rel).resolve() if language_rel else None
-    _prepare_path(language_root)
-
-    if self.config.get("code_language") == RUST_CODE_LANGUAGE_KEY:
-        for shared_rel in RUST_SHARED_PATHS:
-            _prepare_path((_BASE_PROJECT_PATH / shared_rel).resolve())
-        rust_framework_rel = RUST_FRAMEWORK_PATHS.get(self.config.get("selected_rust_framework"))
-        _prepare_path((_BASE_PROJECT_PATH / rust_framework_rel).resolve() if rust_framework_rel else None)
-
-    if language_root is None:
-        base_path = _BASE_PROJECT_PATH
-    else:
-        base_path = language_root
-
-    exchange_rel = EXCHANGE_PATHS.get(self.config.get("selected_exchange"))
-    forex_rel = FOREX_BROKER_PATHS.get(self.config.get("selected_forex_broker"))
-    _prepare_path((base_path / exchange_rel).resolve() if exchange_rel else None)
-    _prepare_path((base_path / forex_rel).resolve() if forex_rel else None)
-
-    if created_paths:
-        try:
-            created_text = ", ".join(str(p) for p in created_paths)
-            self.log(f"Ensured directories: {created_text}")
-        except Exception:
-            pass
+    return code_language_ui.ensure_language_exchange_paths(self, base_project_path=_BASE_PROJECT_PATH)
 
 
 def _on_code_language_changed(self, text: str):
-    if not text or text not in LANGUAGE_PATHS:
-        return
-    self.config["code_language"] = text
-    self._ensure_language_exchange_paths()
+    return code_language_ui.on_code_language_changed(self, text)
 
 
 def _on_exchange_selection_changed(self, text: str):
-    exchange_key = str(text).strip() if text is not None else ""
-    if exchange_key not in EXCHANGE_PATHS:
-        combo = getattr(self, "exchange_combo", None)
-        if combo is not None:
-            data_key = combo.currentData()
-            if data_key in EXCHANGE_PATHS:
-                exchange_key = data_key
-            else:
-                text_key = combo.currentText()
-                if text_key in EXCHANGE_PATHS:
-                    exchange_key = text_key
-    if not exchange_key or exchange_key not in EXCHANGE_PATHS:
-        return
-    self.config["selected_exchange"] = exchange_key
-    self._ensure_language_exchange_paths()
+    return code_language_ui.on_exchange_selection_changed(self, text)
 
 
 def _on_exchange_list_changed(
@@ -18850,20 +17081,11 @@ def _on_exchange_list_changed(
     current: QtWidgets.QListWidgetItem | None,
     _previous: QtWidgets.QListWidgetItem | None = None,
 ) -> None:
-    if current is None:
-        return
-    exchange_key = current.data(QtCore.Qt.ItemDataRole.UserRole) or current.text()
-    if not exchange_key or exchange_key not in EXCHANGE_PATHS:
-        return
-    self.config["selected_exchange"] = exchange_key
-    self._ensure_language_exchange_paths()
+    return code_language_ui.on_exchange_list_changed(self, current, _previous)
 
 
 def _on_forex_selection_changed(self, text: str):
-    if not text or text not in FOREX_BROKER_PATHS:
-        return
-    self.config["selected_forex_broker"] = text
-    self._ensure_language_exchange_paths()
+    return code_language_ui.on_forex_selection_changed(self, text)
 
 
 def _gui_on_positions_ready(self, rows: list, acct: str):
@@ -23750,47 +21972,7 @@ def _is_recent_user_close_command(self) -> bool:
         return False
 
 def _restore_window_after_guard(self) -> None:
-    def _restore_once():
-        try:
-            state = self.windowState()
-        except Exception:
-            state = QtCore.Qt.WindowState.WindowNoState
-        try:
-            visible = bool(self.isVisible())
-        except Exception:
-            visible = False
-        try:
-            minimized = bool(state & QtCore.Qt.WindowState.WindowMinimized)
-        except Exception:
-            minimized = False
-        if minimized:
-            try:
-                if state & QtCore.Qt.WindowState.WindowMaximized:
-                    self.showMaximized()
-                else:
-                    self.showMaximized()
-            except Exception:
-                pass
-        elif not visible:
-            try:
-                if state & QtCore.Qt.WindowState.WindowMaximized:
-                    self.showMaximized()
-                else:
-                    self.showMaximized()
-            except Exception:
-                pass
-        try:
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-
-    _restore_once()
-    try:
-        QtCore.QTimer.singleShot(40, _restore_once)
-        QtCore.QTimer.singleShot(140, _restore_once)
-    except Exception:
-        pass
+    return window_runtime.restore_window_after_guard(self)
 
 def _active_close_protection_until(self) -> float:
     try:
