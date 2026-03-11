@@ -66,7 +66,19 @@ from app.workers import StopWorker, StartWorker, CallWorker
 from app.position_guard import IntervalPositionGuard
 from app.gui.param_dialog import ParamDialog
 from app.gui.app_icon import load_app_icon
-from app.gui import chart_embed, code_language_ui, dependency_versions_ui, window_runtime
+from app.gui.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
+from app.gui.chart_widgets import InteractiveChartView, SimpleCandlestickWidget
+from app.gui import (
+    chart_embed,
+    code_language_build,
+    code_language_launch,
+    code_language_launcher,
+    code_language_runtime,
+    code_language_status,
+    code_language_ui,
+    dependency_versions_ui,
+    window_runtime,
+)
 from app.gui.chart_embed import (
     _DEFAULT_WEB_UA,
     _binance_unavailable_reason,
@@ -2252,174 +2264,6 @@ def _latest_version_from_pypi(package: str, timeout: float = 8.0) -> str | None:
         return latest
     return None
 
-BACKTEST_TEMPLATE_DEFINITIONS = {
-    "volume_top50": {
-        "label": "First 50 Highest Volume",
-        "intervals": [
-            "1m",
-            "3m",
-            "5m",
-            "10m",
-            "15m",
-            "20m",
-            "30m",
-            "1h",
-            "2h",
-            "3h",
-            "4h",
-            "5h",
-            "6h",
-            "7h",
-            "8h",
-            "9h",
-            "10h",
-            "11h",
-            "12h",
-            "1d",
-            "3d",
-            "2d",
-            "4d",
-            "5d",
-            "6d",
-            "1w",
-        ],
-        "logic": "SEPARATE",
-        "position_pct": 2.0,
-        "side": "BOTH",
-        "stop_loss": {
-            "enabled": True,
-            "mode": "percent",
-            "percent": 30.0,
-            "usdt": 0.0,
-            "scope": "per_trade",
-        },
-        "date_range": {"months": 1},
-        "indicators": {
-            "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
-            "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
-            "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
-        },
-        "margin_mode": "Isolated",
-        "position_mode": "Hedge",
-        "assets_mode": "Single-Asset",
-        "account_mode": "Classic Trading",
-        "leverage": 20,
-        "mdd_logic": "per_trade",
-        "loop_interval_override": "30s",
-        "symbol_selection": {
-            "type": "top_volume",
-            "count": 50,
-            "source": "Futures",
-        },
-    },
-    "volume_last_week": {
-        "label": "Last 1 week · 2% per trade · 50 highest volume",
-        "intervals": [
-            "1m",
-            "3m",
-            "5m",
-            "10m",
-            "15m",
-            "20m",
-            "30m",
-            "1h",
-            "2h",
-            "3h",
-            "4h",
-            "6h",
-            "8h",
-            "12h",
-            "1d",
-        ],
-        "logic": "SEPARATE",
-        "position_pct": 2.0,
-        "side": "BOTH",
-        "loop_interval_override": "30s",
-        "stop_loss": {
-            "enabled": True,
-            "mode": "percent",
-            "percent": 20.0,
-            "scope": "per_trade",
-        },
-        "date_range": {"days": 7},
-        "indicators": {
-            "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
-            "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
-            "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
-        },
-        "margin_mode": "Isolated",
-        "position_mode": "Hedge",
-        "assets_mode": "Single-Asset",
-        "account_mode": "Classic Trading",
-        "leverage": 20,
-        "mdd_logic": "entire_account",
-        "connector_backend": "binance-connector",
-        "symbol_selection": {
-            "type": "top_volume",
-            "count": 50,
-            "source": "Futures",
-        },
-    },
-    "top100_isolated_1pct_sl": {
-        "label": "Top 100, %2 per trade, isolated, %20 (%1 Actual Move) per trade SL",
-        "intervals": [
-            "1m",
-            "3m",
-            "5m",
-            "10m",
-            "15m",
-            "20m",
-            "30m",
-            "1h",
-            "2h",
-            "3h",
-            "4h",
-            "5h",
-            "6h",
-            "7h",
-            "8h",
-            "9h",
-            "10h",
-            "11h",
-            "12h",
-            "1d",
-            "2d",
-            "3d",
-            "4d",
-            "5d",
-            "6d",
-            "1w",
-        ],
-        "logic": "SEPARATE",
-        "position_pct": 2.0,
-        "side": "BOTH",
-        "loop_interval_override": "30s",
-        "stop_loss": {
-            "enabled": True,
-            "mode": "percent",
-            "percent": 20.0,
-            "scope": "per_trade",
-        },
-        "margin_mode": "Isolated",
-        "position_mode": "Hedge",
-        "assets_mode": "Single-Asset",
-        "account_mode": "Classic Trading",
-        "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
-        "leverage": 20,
-        "mdd_logic": "entire_account",
-        "indicators": {
-            "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
-            "stoch_rsi": {"enabled": True, "buy_value": 20, "sell_value": 80},
-            "willr": {"enabled": True, "buy_value": -80, "sell_value": -20},
-        },
-        "symbol_selection": {
-            "type": "top_volume",
-            "count": 100,
-            "source": "Futures",
-        },
-    },
-}
-
 CHART_INTERVAL_OPTIONS = BACKTEST_INTERVAL_ORDER[:]
 
 CHART_MARKET_OPTIONS = ["Futures", "Spot"]
@@ -2443,474 +2287,6 @@ SIDE_LABELS = {
     "BOTH": "Both (Long/Short)",
 }
 SIDE_LABEL_LOOKUP = {label.lower(): code for code, label in SIDE_LABELS.items()}
-
-class SimpleCandlestickWidget(QtWidgets.QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._candles: list[dict] = []
-        self._message: str | None = "Charts unavailable."
-        self._message_color: str = "#f75467"
-        self.setMinimumHeight(320)
-        self.setMouseTracking(True)
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        self._view_start = 0
-        self._view_end = 0
-        self._min_visible = 10
-        self._manual_view = False
-        self._pan_active = False
-        self._pan_last_pos: QtCore.QPointF | None = None
-        self._fib_start: float | None = None
-        self._fib_end: float | None = None
-        self._fib_dragging = False
-        self._show_hint = True
-
-    def set_message(self, message: str, color: str = "#d1d4dc") -> None:
-        self._candles = []
-        self._message = message
-        self._message_color = color
-        self._fib_start = None
-        self._fib_end = None
-        self._reset_view()
-        self.update()
-
-    def set_candles(self, candles: list[dict]) -> None:
-        self._candles = candles or []
-        if not self._candles:
-            self._message = "No data available."
-            self._message_color = "#f75467"
-            self._fib_start = None
-            self._fib_end = None
-            self._reset_view()
-        else:
-            self._message = None
-            if self._manual_view:
-                self._clamp_view()
-            else:
-                self._reset_view()
-        self.update()
-
-    def _reset_view(self) -> None:
-        self._view_start = 0
-        self._view_end = len(self._candles)
-        self._manual_view = False
-
-    def _clamp_view(self) -> None:
-        total = len(self._candles)
-        if total <= 0:
-            self._view_start = 0
-            self._view_end = 0
-            return
-        start = int(self._view_start)
-        end = int(self._view_end) if self._view_end else total
-        start = max(0, min(start, total - 1))
-        end = max(start + 1, min(end, total))
-        self._view_start = start
-        self._view_end = end
-
-    def _get_visible_range(self) -> tuple[int, int]:
-        if not self._candles:
-            return 0, 0
-        self._clamp_view()
-        return self._view_start, self._view_end
-
-    def _chart_rect(self) -> QtCore.QRect:
-        rect = self.rect()
-        margin_x = max(int(rect.width() * 0.05), 40)
-        margin_y = max(int(rect.height() * 0.1), 30)
-        return rect.adjusted(margin_x, margin_y, -margin_x, -margin_y)
-
-    def _visible_min_max(self, candles: list[dict]) -> tuple[float, float] | None:
-        highs = [float(c.get("high", 0.0)) for c in candles]
-        lows = [float(c.get("low", 0.0)) for c in candles]
-        if not highs or not lows:
-            return None
-        max_high = max(highs)
-        min_low = min(lows)
-        if max_high <= min_low:
-            max_high = min_low + 1.0
-        return min_low, max_high
-
-    def _pos_to_price(self, pos: QtCore.QPointF) -> float | None:
-        if not self._candles:
-            return None
-        start, end = self._get_visible_range()
-        visible = self._candles[start:end]
-        if not visible:
-            return None
-        chart_rect = self._chart_rect()
-        if chart_rect.width() <= 0 or chart_rect.height() <= 0:
-            return None
-        min_max = self._visible_min_max(visible)
-        if min_max is None:
-            return None
-        min_low, max_high = min_max
-        y = min(max(pos.y(), chart_rect.top()), chart_rect.bottom())
-        ratio = (chart_rect.bottom() - y) / chart_rect.height()
-        return min_low + ratio * (max_high - min_low)
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        rect = self.rect()
-        painter.fillRect(rect, QtGui.QColor("#0b0e11"))
-
-        if not self._candles:
-            if self._message:
-                painter.setPen(QtGui.QColor(self._message_color))
-                painter.drawText(
-                    rect,
-                    QtCore.Qt.AlignmentFlag.AlignCenter,
-                    self._message,
-                )
-            return
-
-        start, end = self._get_visible_range()
-        visible = self._candles[start:end]
-        if not visible:
-            return
-        min_max = self._visible_min_max(visible)
-        if min_max is None:
-            return
-        min_low, max_high = min_max
-
-        chart_rect = self._chart_rect()
-        if chart_rect.width() <= 0 or chart_rect.height() <= 0:
-            return
-
-        painter.setPen(QtGui.QColor("#1f2326"))
-        painter.drawRect(chart_rect)
-
-        count = len(visible)
-        spacing = chart_rect.width() / max(count, 1)
-        body_width = max(4.0, spacing * 0.6)
-
-        def price_to_y(price: float) -> float:
-            ratio = (price - min_low) / (max_high - min_low)
-            return chart_rect.bottom() - ratio * chart_rect.height()
-
-        for idx, candle in enumerate(visible):
-            try:
-                open_ = float(candle.get("open", 0.0))
-                close = float(candle.get("close", 0.0))
-                high = float(candle.get("high", 0.0))
-                low = float(candle.get("low", 0.0))
-            except Exception:
-                continue
-
-            x_center = chart_rect.left() + (idx + 0.5) * spacing
-            color = QtGui.QColor("#0ebb7a" if close >= open_ else "#f75467")
-            painter.setPen(QtGui.QPen(color, 1.0))
-
-            y_high = price_to_y(high)
-            y_low = price_to_y(low)
-            painter.drawLine(QtCore.QPointF(x_center, y_high), QtCore.QPointF(x_center, y_low))
-
-            body_top = price_to_y(max(open_, close))
-            body_bottom = price_to_y(min(open_, close))
-            rect_body = QtCore.QRectF(
-                x_center - body_width / 2.0,
-                body_top,
-                body_width,
-                max(1.0, body_bottom - body_top),
-            )
-            painter.fillRect(rect_body, QtGui.QBrush(color))
-
-        painter.setPen(QtGui.QColor("#3b434a"))
-        painter.drawText(
-            chart_rect.adjusted(4, 2, -4, -4),
-            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft,
-            f"High: {max_high:.4f}",
-        )
-        painter.drawText(
-            chart_rect.adjusted(4, 2, -4, -4),
-            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignRight,
-            f"Low: {min_low:.4f}",
-        )
-        if self._fib_start is not None and self._fib_end is not None:
-            self._draw_fib_levels(painter, chart_rect, price_to_y)
-        if self._show_hint:
-            painter.setPen(QtGui.QColor("#3b434a"))
-            hint = "Wheel: zoom | Drag: pan | Shift+Drag: fib | Double-click: reset"
-            painter.drawText(
-                chart_rect.adjusted(4, 4, -4, -4),
-                QtCore.Qt.AlignmentFlag.AlignBottom | QtCore.Qt.AlignmentFlag.AlignLeft,
-                hint,
-            )
-
-    def _draw_fib_levels(
-        self,
-        painter: QtGui.QPainter,
-        chart_rect: QtCore.QRect,
-        price_to_y,
-    ) -> None:
-        start_price = self._fib_start
-        end_price = self._fib_end
-        if start_price is None or end_price is None:
-            return
-        if abs(end_price - start_price) <= 0:
-            return
-        levels = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
-        line_pen = QtGui.QPen(QtGui.QColor("#3b82f6"))
-        line_pen.setStyle(QtCore.Qt.PenStyle.DashLine)
-        line_pen.setWidthF(1.0)
-        text_pen = QtGui.QPen(QtGui.QColor("#7dd3fc"))
-        span = end_price - start_price
-        for level in levels:
-            price = start_price + span * level
-            y = price_to_y(price)
-            if y < chart_rect.top() - 1 or y > chart_rect.bottom() + 1:
-                continue
-            painter.setPen(line_pen)
-            painter.drawLine(
-                QtCore.QPointF(chart_rect.left(), y),
-                QtCore.QPointF(chart_rect.right(), y),
-            )
-            label = f"{level:.3f}  {price:.4f}"
-            painter.setPen(text_pen)
-            painter.drawText(
-                QtCore.QRectF(chart_rect.left() + 4, y - 9, chart_rect.width() - 8, 18),
-                QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter,
-                label,
-            )
-
-    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # noqa: N802
-        if not self._candles:
-            return super().wheelEvent(event)
-        angle = event.angleDelta().y()
-        if angle == 0:
-            return super().wheelEvent(event)
-        steps = angle / 120.0
-        start, end = self._get_visible_range()
-        total = len(self._candles)
-        current_count = max(1, end - start)
-        min_visible = min(self._min_visible, total) if total > 0 else 1
-        scale = 1.2 ** steps
-        new_count = int(round(current_count / scale))
-        new_count = max(min_visible, min(total, new_count))
-        if new_count == current_count:
-            return super().wheelEvent(event)
-        chart_rect = self._chart_rect()
-        if chart_rect.width() <= 0:
-            return super().wheelEvent(event)
-        pos = event.position()
-        ratio = (pos.x() - chart_rect.left()) / chart_rect.width()
-        ratio = max(0.0, min(1.0, ratio))
-        center = start + ratio * current_count
-        new_start = int(round(center - ratio * new_count))
-        new_start = max(0, min(new_start, total - new_count))
-        self._view_start = new_start
-        self._view_end = new_start + new_count
-        self._manual_view = True
-        self._show_hint = False
-        self.update()
-        event.accept()
-
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            try:
-                self.setFocus(QtCore.Qt.FocusReason.MouseFocusReason)
-            except Exception:
-                pass
-            chart_rect = self._chart_rect()
-            if chart_rect.contains(event.position().toPoint()):
-                if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
-                    price = self._pos_to_price(event.position())
-                    if price is not None:
-                        self._fib_start = price
-                        self._fib_end = price
-                        self._fib_dragging = True
-                        self._show_hint = False
-                        self.update()
-                    event.accept()
-                    return
-                self._pan_active = True
-                self._pan_last_pos = event.position()
-                try:
-                    self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
-                except Exception:
-                    pass
-                self._show_hint = False
-                event.accept()
-                return
-        if event.button() == QtCore.Qt.MouseButton.RightButton:
-            if self._fib_start is not None or self._fib_end is not None:
-                self._fib_start = None
-                self._fib_end = None
-                self._fib_dragging = False
-                self._show_hint = False
-                self.update()
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if self._pan_active and self._pan_last_pos is not None:
-            start, end = self._get_visible_range()
-            count = max(1, end - start)
-            chart_rect = self._chart_rect()
-            spacing = chart_rect.width() / max(count, 1)
-            if spacing > 0:
-                delta_x = event.position().x() - self._pan_last_pos.x()
-                delta_candles = int(round(delta_x / spacing))
-                if delta_candles != 0:
-                    total = len(self._candles)
-                    new_start = start - delta_candles
-                    new_start = max(0, min(new_start, total - count))
-                    self._view_start = new_start
-                    self._view_end = new_start + count
-                    self._manual_view = True
-                    self.update()
-            self._pan_last_pos = event.position()
-            event.accept()
-            return
-        if self._fib_dragging:
-            price = self._pos_to_price(event.position())
-            if price is not None:
-                self._fib_end = price
-                self._show_hint = False
-                self.update()
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            if self._pan_active:
-                self._pan_active = False
-                self._pan_last_pos = None
-                try:
-                    self.unsetCursor()
-                except Exception:
-                    pass
-                event.accept()
-                return
-            if self._fib_dragging:
-                self._fib_dragging = False
-                event.accept()
-                return
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self._reset_view()
-            self._show_hint = False
-            self.update()
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
-        key = event.key()
-        if key in (
-            QtCore.Qt.Key.Key_Escape,
-            QtCore.Qt.Key.Key_Delete,
-            QtCore.Qt.Key.Key_Backspace,
-        ):
-            if self._fib_start is not None or self._fib_end is not None:
-                self._fib_start = None
-                self._fib_end = None
-                self._fib_dragging = False
-                self._show_hint = False
-                self.update()
-            event.accept()
-            return
-        if key == QtCore.Qt.Key.Key_R:
-            self._reset_view()
-            self._show_hint = False
-            self.update()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
-if QT_CHARTS_AVAILABLE and QChartView is not None:
-    class InteractiveChartView(QChartView):
-        """QChartView with scroll/zoom conveniences for the 'Original' chart view."""
-
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            try:
-                self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-            except Exception:
-                pass
-            try:
-                self.setRubberBand(QChartView.RubberBand.RectangleRubberBand)
-            except Exception:
-                pass
-            try:
-                self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
-            except Exception:
-                pass
-            self.setMouseTracking(True)
-            self._panning = False
-            self._pan_start: QtCore.QPoint | None = None
-
-        def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # noqa: N802
-            chart = self.chart()
-            if chart is None:
-                return super().wheelEvent(event)
-            angle = event.angleDelta().y()
-            if angle == 0:
-                return super().wheelEvent(event)
-            factor = 1.15 if angle > 0 else 1 / 1.15
-            try:
-                chart.zoom(factor)
-            except Exception:
-                pass
-            event.accept()
-
-        def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-            if event.button() == QtCore.Qt.MouseButton.MiddleButton:
-                self._panning = True
-                self._pan_start = event.position().toPoint()
-                try:
-                    self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
-                except Exception:
-                    pass
-                event.accept()
-                return
-            super().mousePressEvent(event)
-
-        def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-            if self._panning and self._pan_start is not None:
-                delta = event.position().toPoint() - self._pan_start
-                self._pan_start = event.position().toPoint()
-                chart = self.chart()
-                if chart is not None:
-                    try:
-                        chart.scroll(-delta.x(), delta.y())
-                    except Exception:
-                        pass
-                event.accept()
-                return
-            super().mouseMoveEvent(event)
-
-        def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-            if event.button() == QtCore.Qt.MouseButton.MiddleButton:
-                self._panning = False
-                self._pan_start = None
-                try:
-                    self.unsetCursor()
-                except Exception:
-                    pass
-                event.accept()
-                return
-            super().mouseReleaseEvent(event)
-
-        def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-            chart = self.chart()
-            if chart is not None:
-                try:
-                    chart.zoomReset()
-                except Exception:
-                    pass
-            super().mouseDoubleClickEvent(event)
-else:  # QT_CHARTS_AVAILABLE is False
-    class InteractiveChartView(QtWidgets.QWidget):
-        """Fallback placeholder when PyQt6-Charts is unavailable."""
-
-        def __init__(self, *args, **kwargs):
-            raise RuntimeError("PyQt6-Charts is not installed; Original chart view is unavailable.")
 
 def _format_indicator_list(keys):
     if not keys:
@@ -14190,1674 +13566,151 @@ def _init_code_language_tab(self):
         resolve_dependency_targets_for_config=_resolve_dependency_targets_for_config,
     )
 
-def _cpp_executable_names() -> set[str]:
-    base_names = {
-        CPP_EXECUTABLE_BASENAME,
-        CPP_PACKAGED_EXECUTABLE_BASENAME,
-        CPP_EXECUTABLE_LEGACY_BASENAME,
-    }
-    names = set(base_names)
-    if sys.platform == "win32":
-        names.update({f"{name}.exe" for name in base_names})
-    return names
-
-
 def _is_frozen_python_app() -> bool:
-    return bool(getattr(sys, "frozen", False) or getattr(sys, "_MEIPASS", None))
-
-
-def _normalize_release_tag_text(value) -> str | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    lower_text = text.lower()
-    for prefix in ("refs/tags/", "refs/heads/"):
-        if lower_text.startswith(prefix):
-            text = text[len(prefix):].strip()
-            lower_text = text.lower()
-            break
-    if not text:
-        return None
-    if lower_text in {"none", "null", "unknown", "n/a", "na", "-"}:
-        return None
-    if len(text) > 96:
-        text = text[:96].strip()
-    semver = _extract_semver_from_text(text)
-    if semver:
-        return semver
-    return text
-
-
-def _release_tag_from_json_file(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-
-    candidate_keys = (
-        "release_tag",
-        "tag_name",
-        "tag",
-        "python_release_tag",
-        "app_release_tag",
-        "version",
-    )
-    for key in candidate_keys:
-        tag_value = _normalize_release_tag_text(payload.get(key))
-        if tag_value:
-            return tag_value
-
-    nested_keys = ("python", "app", "release")
-    for nested_key in nested_keys:
-        nested = payload.get(nested_key)
-        if not isinstance(nested, dict):
-            continue
-        for key in candidate_keys:
-            tag_value = _normalize_release_tag_text(nested.get(key))
-            if tag_value:
-                return tag_value
-    return None
-
-
-def _release_tag_from_text_file(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    try:
-        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = str(raw_line or "").strip()
-            if not line:
-                continue
-            return _normalize_release_tag_text(line)
-    except Exception:
-        return None
-    return None
-
-
-def _dedupe_paths(paths: list[Path]) -> list[Path]:
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for path in paths:
-        try:
-            resolved = path.resolve()
-        except Exception:
-            resolved = path
-        key = os.path.normcase(os.path.normpath(str(resolved)))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(resolved)
-    return unique
-
-
-def _release_tag_from_metadata_dirs(directories: list[Path]) -> str | None:
-    metadata_names = (
-        RELEASE_INFO_JSON_NAME,
-        "tb-release.json",
-        RELEASE_TAG_TEXT_NAME,
-        "tb-release.txt",
-    )
-    for directory in _dedupe_paths(directories):
-        for name in metadata_names:
-            file_path = directory / name
-            if not file_path.is_file():
-                continue
-            if file_path.suffix.lower() == ".json":
-                tag_value = _release_tag_from_json_file(file_path)
-            else:
-                tag_value = _release_tag_from_text_file(file_path)
-            if tag_value:
-                return tag_value
-    return None
-
-
-def _python_release_metadata_dirs() -> list[Path]:
-    dirs: list[Path] = []
-    try:
-        app_dir = _THIS_FILE.parents[1]
-        dirs.extend([app_dir, app_dir.parent])
-    except Exception:
-        pass
-
-    if _is_frozen_python_app():
-        meipass_raw = str(getattr(sys, "_MEIPASS", "") or "").strip()
-        if meipass_raw:
-            meipass_dir = Path(meipass_raw)
-            dirs.extend([meipass_dir, meipass_dir / "app"])
-        try:
-            exe_dir = Path(sys.executable).resolve().parent
-            dirs.extend([exe_dir, exe_dir / "app"])
-        except Exception:
-            pass
-    return _dedupe_paths(dirs)
+    return code_language_runtime.is_frozen_python_app()
 
 
 def _python_runtime_release_tag() -> str | None:
-    env_keys = (
-        "TB_PY_RELEASE_TAG",
-        "TB_PYTHON_RELEASE_TAG",
-        "TB_APP_RELEASE_TAG",
-        "TB_RELEASE_TAG",
-        "BOT_RELEASE_TAG",
-    )
-    for key in env_keys:
-        value = _normalize_release_tag_text(os.environ.get(key))
-        if value:
-            return value
-    return _release_tag_from_metadata_dirs(_python_release_metadata_dirs())
+    return code_language_runtime.python_runtime_release_tag()
 
 
 def _cpp_runtime_release_snapshot() -> tuple[str | None, str]:
-    exe_path = _find_cpp_code_tab_executable()
-    if exe_path is None or not exe_path.is_file():
-        return None, "Not installed"
-
-    tag_from_bundle = _release_tag_from_metadata_dirs([exe_path.parent, exe_path.parent.parent])
-    if tag_from_bundle:
-        return tag_from_bundle, "Ready"
-
-    if _cpp_runtime_is_cached_path(exe_path):
-        cache_meta = _cpp_read_cache_meta(_cpp_cache_root())
-        cached_tag = _normalize_release_tag_text(cache_meta.get("release_tag"))
-        if cached_tag:
-            return cached_tag, "Ready"
-        return None, "Cached"
-
-    if _is_frozen_python_app():
-        return None, "Bundled"
-    return None, "Local build"
+    return code_language_runtime.cpp_runtime_release_snapshot()
 
 
 def _python_runtime_release_line() -> str:
-    py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    release_tag = _python_runtime_release_tag()
-    if release_tag:
-        return f"Release: {release_tag} | Python {py_version}"
-    if _is_frozen_python_app():
-        return f"Release: Unknown | Python {py_version}"
-    return f"Release: Dev | Python {py_version}"
+    return code_language_runtime.python_runtime_release_line()
 
 
 def _cpp_runtime_release_line() -> str:
-    release_tag, state_text = _cpp_runtime_release_snapshot()
-    if release_tag:
-        return f"Release: {release_tag}"
-    if _is_frozen_python_app():
-        python_release_tag = _python_runtime_release_tag()
-        if python_release_tag:
-            return f"Release: {python_release_tag}"
-    if state_text:
-        return f"Release: {state_text}"
-    return "Release: Unknown"
+    return code_language_runtime.cpp_runtime_release_line()
 
 
 def _rust_runtime_release_line(config: dict | None = None) -> str:
-    release_text = _rust_project_version()
-    rustc_version = _rust_tool_version(["rustc", "--version"], cache_key="rustc")
-    framework_title = _rust_framework_title(config)
-    framework_prefix = f"{framework_title} | " if _rust_framework_key(config) else ""
-    if release_text and rustc_version:
-        return f"{framework_prefix}Release: {release_text} | rustc {rustc_version}"
-    if release_text:
-        return f"{framework_prefix}Release: {release_text}"
-    if _rust_manifest_path().is_file() and rustc_version:
-        return f"{framework_prefix}Release: Scaffolded | rustc {rustc_version}"
-    if _rust_manifest_path().is_file():
-        return f"{framework_prefix}Release: Scaffolded"
-    return f"{framework_prefix}Release: Not initialized"
+    return code_language_status.rust_runtime_release_line(
+        config,
+        rust_project_version=_rust_project_version,
+        rust_tool_version=_rust_tool_version,
+        rust_framework_title=_rust_framework_title,
+        rust_framework_key=_rust_framework_key,
+        rust_manifest_path=_rust_manifest_path,
+    )
 
 
 def _refresh_code_language_card_release_labels(self) -> None:
-    cards = getattr(self, "_starter_language_cards", None)
-    if not isinstance(cards, dict) or not cards:
-        return
-    base_subtitles = getattr(self, "_starter_language_base_subtitles", None)
-    if not isinstance(base_subtitles, dict):
-        base_subtitles = {}
-
-    release_lines = {
-        PYTHON_CODE_LANGUAGE_KEY: _python_runtime_release_line(),
-        CPP_CODE_LANGUAGE_KEY: _cpp_runtime_release_line(),
-        RUST_CODE_LANGUAGE_KEY: _rust_runtime_release_line(getattr(self, "config", None)),
-    }
-
-    for key, card in cards.items():
-        if card is None:
-            continue
-        base_text = str(base_subtitles.get(key) or "").strip()
-        release_text = str(release_lines.get(key) or "").strip()
-        subtitle_text = base_text
-        if release_text:
-            subtitle_text = f"{base_text}\n{release_text}" if base_text else release_text
-        try:
-            card.subtitle_label.setText(subtitle_text)
-        except Exception:
-            pass
-
-
-def _cpp_cache_root() -> Path | None:
-    candidates: list[Path] = []
-    for env_key in ("LOCALAPPDATA", "APPDATA"):
-        raw_base = str(os.environ.get(env_key) or "").strip()
-        if raw_base:
-            candidates.append(Path(raw_base) / "TradingBot" / "cpp-runtime")
-    try:
-        candidates.append(Path.home() / ".trading-bot" / "cpp-runtime")
-    except Exception:
-        pass
-
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            resolved = candidate
-        try:
-            resolved.mkdir(parents=True, exist_ok=True)
-            return resolved
-        except Exception:
-            continue
-    return None
-
-
-def _path_is_within_directory(path_value: Path | None, directory: Path | None) -> bool:
-    if path_value is None or directory is None:
-        return False
-    try:
-        path_resolved = path_value.resolve()
-    except Exception:
-        path_resolved = path_value
-    try:
-        dir_resolved = directory.resolve()
-    except Exception:
-        dir_resolved = directory
-    path_norm = os.path.normcase(os.path.normpath(str(path_resolved)))
-    dir_norm = os.path.normcase(os.path.normpath(str(dir_resolved)))
-    if path_norm == dir_norm:
-        return True
-    return path_norm.startswith(dir_norm + os.sep)
+    return code_language_status.refresh_code_language_card_release_labels(
+        self,
+        rust_release_line=_rust_runtime_release_line(getattr(self, "config", None)),
+    )
 
 
 def _cpp_runtime_is_cached_path(exe_path: Path | None) -> bool:
-    cache_root = _cpp_cache_root()
-    if exe_path is None or cache_root is None:
-        return False
-    return _path_is_within_directory(exe_path, cache_root)
+    return code_language_runtime.cpp_runtime_is_cached_path(exe_path)
 
 
 def _reset_cpp_dependency_caches() -> None:
     globals()["_CPP_INSTALLED_VALUE_CACHE"] = {}
-    globals()["_CPP_PACKAGED_MANIFEST_CACHE"] = {}
     globals()["_CPP_INCLUDE_DIR_CACHE"] = ([], 0.0)
     globals()["_CPP_VCPKG_STATUS_CACHE"] = ({}, 0.0)
-
-
-def _cpp_packaged_executable_names() -> set[str]:
-    names = {CPP_PACKAGED_EXECUTABLE_BASENAME}
-    if sys.platform == "win32":
-        names.add(f"{CPP_PACKAGED_EXECUTABLE_BASENAME}.exe")
-    return names
-
-
-def _find_cpp_packaged_exe_under(root: Path | None) -> Path | None:
-    if root is None:
-        return None
-    try:
-        resolved_root = root.resolve()
-    except Exception:
-        resolved_root = root
-    if not resolved_root.exists():
-        return None
-
-    names = _cpp_packaged_executable_names()
-    found: list[Path] = []
-
-    for name in names:
-        candidate = resolved_root / name
-        if candidate.is_file():
-            found.append(candidate)
-
-    if resolved_root.is_dir() and not found:
-        try:
-            for path in resolved_root.rglob("*"):
-                if path.is_file() and path.name in names:
-                    found.append(path)
-        except Exception:
-            return None
-
-    if not found:
-        return None
-    found.sort(key=lambda item: float(item.stat().st_mtime) if item.exists() else 0.0, reverse=True)
-    return found[0]
+    code_language_runtime.reset_cpp_runtime_caches()
 
 
 def _cpp_packaged_runtime_exe() -> Path | None:
-    if not _is_frozen_python_app():
-        return None
-    exe_path = _find_cpp_code_tab_executable()
-    if exe_path is None or not exe_path.is_file():
-        return None
-    if sys.platform == "win32" and _cpp_runtime_bundle_missing(exe_path):
-        return None
-    return exe_path
-
-
-def _cpp_packaged_manifest_installed_map(exe_path: Path | None) -> dict[str, str]:
-    if exe_path is None:
-        return {}
-    cache = globals().setdefault("_CPP_PACKAGED_MANIFEST_CACHE", {})
-    cache_key = os.path.normcase(os.path.normpath(str(exe_path.parent)))
-    now = time.time()
-    entry = cache.get(cache_key)
-    if isinstance(entry, tuple) and len(entry) == 2:
-        cached_map, cached_at = entry
-        try:
-            if now - float(cached_at or 0.0) < 30 and isinstance(cached_map, dict):
-                return dict(cached_map)
-        except Exception:
-            pass
-
-    manifest_paths = [
-        exe_path.parent / "cpp-deps.json",
-        exe_path.parent / "cpp-env-versions.json",
-        exe_path.parent / "TB_CPP_ENV_VERSIONS.json",
-        exe_path.parent / "versions.json",
-    ]
-    resolved: dict[str, str] = {}
-    for manifest_path in manifest_paths:
-        if not manifest_path.is_file():
-            continue
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf-8", errors="ignore"))
-        except Exception:
-            continue
-
-        if isinstance(payload, dict):
-            deps = payload.get("dependencies")
-            if isinstance(deps, list):
-                for item in deps:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or item.get("label") or "").strip()
-                    version = str(item.get("installed") or item.get("version") or "").strip()
-                    if not name or not version:
-                        continue
-                    resolved[name.lower()] = version
-
-            rows = payload.get("rows")
-            if isinstance(rows, list):
-                for item in rows:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or item.get("label") or "").strip()
-                    version = str(item.get("installed") or item.get("version") or "").strip()
-                    if not name or not version:
-                        continue
-                    resolved[name.lower()] = version
-
-            if not resolved:
-                for key, value in payload.items():
-                    if isinstance(value, (str, int, float)):
-                        version = str(value).strip()
-                        if version:
-                            resolved[str(key).strip().lower()] = version
-        if resolved:
-            break
-
-    cache[cache_key] = (dict(resolved), now)
-    return resolved
+    return code_language_runtime.cpp_packaged_runtime_exe()
 
 
 def _cpp_packaged_installed_value(target: dict[str, str]) -> str | None:
-    exe_path = _cpp_packaged_runtime_exe()
-    if exe_path is None:
-        return None
-
-    custom = str(target.get("custom") or "").strip().lower()
-    label = str(target.get("label") or "").strip().lower()
-    manifest_map = _cpp_packaged_manifest_installed_map(exe_path)
-
-    aliases: list[str] = [label]
-    alias_by_custom = {
-        "cpp_qt": ["qt6 (c++)", "qt6"],
-        "cpp_qt_network": ["qt6 network (rest)", "qt6 network"],
-        "cpp_qt_webengine": ["qt6 webengine"],
-        "cpp_qt_websockets": ["qt6 websockets"],
-        "cpp_eigen": ["eigen"],
-        "cpp_xtensor": ["xtensor"],
-        "cpp_talib": ["ta-lib", "talib"],
-        "cpp_libcurl": ["libcurl", "curl"],
-        "cpp_cpr": ["cpr"],
-        "cpp_file_version": ["binance rest client (native)", "binance websocket client (native)"],
-    }
-    for alias in alias_by_custom.get(custom, []):
-        alias_norm = str(alias).strip().lower()
-        if alias_norm and alias_norm not in aliases:
-            aliases.append(alias_norm)
-    for key in aliases:
-        value = str(manifest_map.get(key) or "").strip()
-        if value and value.strip().lower() not in {"bundled", "bundle"}:
-            return value
-
-    if custom == "cpp_file_version":
-        release_tag = _release_tag_from_metadata_dirs([exe_path.parent, exe_path.parent.parent])
-        if release_tag:
-            return release_tag
-    return None
-
-
-def _cpp_cache_meta_path(cache_root: Path | None) -> Path | None:
-    if cache_root is None:
-        return None
-    return cache_root / CPP_CACHE_META_FILE
-
-
-def _cpp_read_cache_meta(cache_root: Path | None) -> dict:
-    meta_path = _cpp_cache_meta_path(cache_root)
-    if meta_path is None or not meta_path.is_file():
-        return {}
-    try:
-        payload = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _cpp_write_cache_meta(cache_root: Path | None, payload: dict) -> None:
-    meta_path = _cpp_cache_meta_path(cache_root)
-    if meta_path is None:
-        return
-    try:
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _cpp_latest_release_asset_info(timeout: float = 8.0) -> tuple[str | None, str | None]:
-    explicit_url = str(os.environ.get("TB_CPP_ZIP_URL") or "").strip()
-    if explicit_url:
-        return None, explicit_url
-
-    owner = str(os.environ.get("TB_RELEASE_OWNER") or CPP_RELEASE_OWNER).strip() or CPP_RELEASE_OWNER
-    repo = str(os.environ.get("TB_RELEASE_REPO") or CPP_RELEASE_REPO).strip() or CPP_RELEASE_REPO
-    asset_name = str(os.environ.get("TB_CPP_RELEASE_ASSET") or CPP_RELEASE_CPP_ASSET).strip() or CPP_RELEASE_CPP_ASSET
-
-    cache = globals().setdefault("_CPP_LATEST_RELEASE_INFO_CACHE", {})
-    cache_key = f"{owner}/{repo}/{asset_name}".lower()
-    now = time.time()
-    entry = cache.get(cache_key)
-    if isinstance(entry, tuple) and len(entry) == 3:
-        cached_tag, cached_url, cached_at = entry
-        try:
-            if now - float(cached_at or 0.0) < 300:
-                return cached_tag, cached_url
-        except Exception:
-            pass
-
-    tag_name: str | None = None
-    browser_url: str | None = None
-    payload = _http_get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest", timeout=timeout)
-    if isinstance(payload, dict):
-        tag_name = str(payload.get("tag_name") or "").strip() or None
-        assets = payload.get("assets")
-        if isinstance(assets, list):
-            for row in assets:
-                if not isinstance(row, dict):
-                    continue
-                if str(row.get("name") or "").strip() != asset_name:
-                    continue
-                candidate = str(row.get("browser_download_url") or "").strip()
-                if candidate:
-                    browser_url = candidate
-                    break
-
-    if not browser_url:
-        browser_url = f"https://github.com/{owner}/{repo}/releases/latest/download/{asset_name}"
-
-    cache[cache_key] = (tag_name, browser_url, now)
-    return tag_name, browser_url
-
-
-def _cpp_release_is_newer(latest_tag: str | None, cached_tag: str | None) -> bool:
-    latest_clean = str(latest_tag or "").strip()
-    cached_clean = str(cached_tag or "").strip()
-    if not latest_clean:
-        return False
-    if not cached_clean:
-        return True
-
-    latest_ver = _extract_semver_from_text(latest_clean)
-    cached_ver = _extract_semver_from_text(cached_clean)
-    if latest_ver and cached_ver:
-        return _version_sort_key(latest_ver) > _version_sort_key(cached_ver)
-    return latest_clean != cached_clean
-
-
-def _download_binary_file(url: str, target_path: Path, timeout: float = 45.0) -> None:
-    timeout_val = max(8.0, float(timeout or 45.0))
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout_val) as response:
-        with target_path.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-
-
-def _extract_zip_safely(zip_path: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    try:
-        destination_root = destination.resolve()
-    except Exception:
-        destination_root = destination
-    destination_root_norm = os.path.normcase(str(destination_root))
-
-    with zipfile.ZipFile(zip_path, "r") as archive:
-        for member in archive.infolist():
-            name = str(member.filename or "").replace("\\", "/")
-            if not name:
-                continue
-            if name.startswith("/") or name.startswith("../") or "/../" in name:
-                continue
-
-            target = destination / Path(name)
-            try:
-                target_resolved = target.resolve()
-            except Exception:
-                target_resolved = target
-            target_norm = os.path.normcase(str(target_resolved))
-            if not (target_norm == destination_root_norm or target_norm.startswith(destination_root_norm + os.sep)):
-                continue
-
-            if member.is_dir():
-                target_resolved.mkdir(parents=True, exist_ok=True)
-                continue
-
-            target_resolved.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member, "r") as src, target_resolved.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
-
-
-def _cpp_local_zip_candidates(cache_root: Path | None) -> list[Path]:
-    candidates: list[Path] = []
-
-    explicit_zip = str(os.environ.get("TB_CPP_ZIP_PATH") or "").strip()
-    if explicit_zip:
-        candidates.append(Path(explicit_zip).expanduser())
-
-    try:
-        exe_dir = Path(sys.executable).resolve().parent
-    except Exception:
-        exe_dir = None
-    if exe_dir is not None:
-        candidates.extend(
-            [
-                exe_dir / CPP_RELEASE_CPP_ASSET,
-                exe_dir / "release" / CPP_RELEASE_CPP_ASSET,
-            ]
-        )
-
-    try:
-        cwd = Path.cwd().resolve()
-    except Exception:
-        cwd = None
-    if cwd is not None:
-        candidates.extend(
-            [
-                cwd / CPP_RELEASE_CPP_ASSET,
-                cwd / "release" / CPP_RELEASE_CPP_ASSET,
-            ]
-        )
-
-    if cache_root is not None:
-        candidates.append(cache_root / "_download" / CPP_RELEASE_CPP_ASSET)
-
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            resolved = candidate
-        key = os.path.normcase(os.path.normpath(str(resolved)))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(resolved)
-    return unique
-
-
-def _populate_cpp_bundle_from_zip(
-    zip_path: Path,
-    *,
-    cache_root: Path,
-    bundle_dir: Path,
-) -> tuple[Path | None, str | None]:
-    if not zip_path.is_file():
-        return None, f"Zip not found: {zip_path}"
-
-    staging_dir = cache_root / "_staging"
-    try:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-    except Exception:
-        pass
-    staging_dir.mkdir(parents=True, exist_ok=True)
-
-    extracted_dir = staging_dir / "extract"
-    try:
-        _extract_zip_safely(zip_path, extracted_dir)
-    except Exception as exc:
-        return None, f"Could not extract C++ bundle '{zip_path}': {exc}"
-
-    staged_exe = _find_cpp_packaged_exe_under(extracted_dir)
-    if staged_exe is None or not staged_exe.is_file():
-        return None, f"Archive '{zip_path.name}' does not contain Trading-Bot-C++.exe."
-
-    staged_bundle_dir = staged_exe.parent
-    try:
-        shutil.rmtree(bundle_dir, ignore_errors=True)
-    except Exception:
-        pass
-    try:
-        shutil.copytree(staged_bundle_dir, bundle_dir, dirs_exist_ok=True)
-    except Exception as exc:
-        return None, f"Could not cache C++ runtime files: {exc}"
-
-    final_exe = _find_cpp_packaged_exe_under(bundle_dir)
-    if final_exe is None or not final_exe.is_file():
-        return None, "C++ cache populated but executable could not be located."
-    if sys.platform == "win32" and _cpp_runtime_bundle_missing(final_exe):
-        return None, "C++ bundle is incomplete (Qt runtime files missing)."
-    return final_exe, None
+    return code_language_runtime.cpp_packaged_installed_value(target)
 
 
 def _ensure_cached_cpp_bundle(force_download: bool = False) -> tuple[Path | None, str | None]:
-    cache_root = _cpp_cache_root()
-    if cache_root is None:
-        return None, "Could not initialize local cache directory for C++ runtime."
-
-    bundle_dir = cache_root / "Trading-Bot-C++"
-    cached_exe = _find_cpp_packaged_exe_under(bundle_dir)
-    cached_valid = (
-        cached_exe is not None
-        and cached_exe.is_file()
-        and (sys.platform != "win32" or not _cpp_runtime_bundle_missing(cached_exe))
-    )
-    cache_meta = _cpp_read_cache_meta(cache_root)
-    latest_tag: str | None = None
-    download_url: str | None = None
-    allow_local_zip = True
-
-    if cached_valid and not force_download:
-        auto_update_raw = str(os.environ.get("TB_CPP_AUTO_UPDATE", "1") or "1").strip().lower()
-        auto_update_enabled = auto_update_raw not in {"0", "false", "no", "off"}
-        if not auto_update_enabled:
-            return cached_exe, None
-
-        latest_tag, download_url = _cpp_latest_release_asset_info(timeout=8.0)
-        if not latest_tag:
-            # Keep usable cached runtime when release metadata is temporarily unreachable.
-            return cached_exe, None
-
-        cached_tag = str(cache_meta.get("release_tag") or "").strip() or None
-        if _cpp_release_is_newer(latest_tag, cached_tag):
-            # Updating to a specific newer release should come from release URL, not local stale zips.
-            allow_local_zip = False
-        else:
-            return cached_exe, None
-
-    local_zip_error = ""
-    if allow_local_zip:
-        for local_zip in _cpp_local_zip_candidates(cache_root):
-            if not local_zip.is_file():
-                continue
-            from_zip_exe, from_zip_err = _populate_cpp_bundle_from_zip(
-                local_zip,
-                cache_root=cache_root,
-                bundle_dir=bundle_dir,
-            )
-            if from_zip_exe is not None and from_zip_exe.is_file():
-                meta_payload = dict(cache_meta)
-                if latest_tag:
-                    meta_payload["release_tag"] = latest_tag
-                meta_payload["asset_name"] = CPP_RELEASE_CPP_ASSET
-                meta_payload["updated_at"] = time.time()
-                if download_url:
-                    meta_payload["download_url"] = download_url
-                _cpp_write_cache_meta(cache_root, meta_payload)
-                return from_zip_exe, None
-            if from_zip_err:
-                local_zip_error = str(from_zip_err)
-
-    if not download_url:
-        latest_tag, download_url = _cpp_latest_release_asset_info(timeout=8.0)
-    if not download_url:
-        if cached_valid:
-            return cached_exe, None
-        if local_zip_error:
-            return None, local_zip_error
-        return None, "Could not resolve C++ release asset URL."
-
-    timeout_raw = str(os.environ.get("TB_CPP_DOWNLOAD_TIMEOUT") or "").strip()
-    try:
-        timeout_val = max(8.0, float(timeout_raw)) if timeout_raw else 45.0
-    except Exception:
-        timeout_val = 45.0
-
-    download_dir = cache_root / "_download"
-    zip_target = download_dir / CPP_RELEASE_CPP_ASSET
-
-    try:
-        _download_binary_file(download_url, zip_target, timeout=timeout_val)
-    except Exception as exc:
-        if cached_valid:
-            return cached_exe, None
-        if local_zip_error:
-            return None, f"{local_zip_error}\nCould not download C++ bundle: {exc}"
-        return None, f"Could not download C++ bundle: {exc}"
-
-    downloaded_exe, downloaded_err = _populate_cpp_bundle_from_zip(
-        zip_target,
-        cache_root=cache_root,
-        bundle_dir=bundle_dir,
-    )
-    if downloaded_exe is None or not downloaded_exe.is_file():
-        if cached_valid:
-            return cached_exe, None
-        return downloaded_exe, downloaded_err
-
-    meta_payload = dict(cache_meta)
-    if latest_tag:
-        meta_payload["release_tag"] = latest_tag
-    meta_payload["asset_name"] = CPP_RELEASE_CPP_ASSET
-    meta_payload["updated_at"] = time.time()
-    meta_payload["download_url"] = download_url
-    _cpp_write_cache_meta(cache_root, meta_payload)
-    return downloaded_exe, None
-
-
-def _cpp_runtime_search_roots() -> list[Path]:
-    raw_roots: list[Path] = []
-    frozen_mode = _is_frozen_python_app()
-
-    try:
-        exe_dir = Path(sys.executable).resolve().parent
-    except Exception:
-        exe_dir = None
-    if exe_dir is not None:
-        raw_roots.extend(
-            [
-                exe_dir,
-                exe_dir / "Trading-Bot-C++",
-                exe_dir / "release",
-                exe_dir / "release" / "Trading-Bot-C++",
-            ]
-        )
-
-    try:
-        cwd = Path.cwd().resolve()
-    except Exception:
-        cwd = None
-    if cwd is not None and not frozen_mode:
-        raw_roots.extend(
-            [
-                cwd,
-                cwd / "Trading-Bot-C++",
-                cwd / "release",
-                cwd / "release" / "Trading-Bot-C++",
-            ]
-        )
-
-    env_hint = str(os.environ.get("TB_CPP_EXE_DIR") or "").strip()
-    if env_hint:
-        raw_roots.append(Path(env_hint).expanduser())
-
-    cache_root = _cpp_cache_root()
-    if cache_root is not None:
-        raw_roots.extend(
-            [
-                cache_root / "Trading-Bot-C++",
-                cache_root,
-            ]
-        )
-
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for root in raw_roots:
-        try:
-            resolved = root.resolve()
-        except Exception:
-            resolved = root
-        key = os.path.normcase(os.path.normpath(str(resolved)))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(resolved)
-    return unique
+    return code_language_runtime.ensure_cached_cpp_bundle(force_download=force_download)
 
 
 def _find_cpp_code_tab_executable() -> Path | None:
-    frozen_mode = _is_frozen_python_app()
-    if frozen_mode:
-        candidate_names = {CPP_PACKAGED_EXECUTABLE_BASENAME}
-        if sys.platform == "win32":
-            candidate_names.add(f"{CPP_PACKAGED_EXECUTABLE_BASENAME}.exe")
-    else:
-        candidate_names = _cpp_executable_names()
-    candidate_stems = {Path(name).stem.lower() for name in candidate_names}
-    packaged_stem = CPP_PACKAGED_EXECUTABLE_BASENAME.lower()
-    default_stem = CPP_EXECUTABLE_BASENAME.lower()
-    legacy_stem = CPP_EXECUTABLE_LEGACY_BASENAME.lower()
-    suffixes = {""}
-    if sys.platform == "win32":
-        suffixes.add(".exe")
-
-    roots: list[Path] = []
-    if not _is_frozen_python_app():
-        roots.extend(
-            [
-                CPP_PROJECT_PATH,
-                CPP_PROJECT_PATH / "build",
-                CPP_PROJECT_PATH / "Release",
-                CPP_PROJECT_PATH / "Debug",
-                CPP_PROJECT_PATH / "bin",
-                CPP_BUILD_ROOT,
-                CPP_BUILD_ROOT / "Release",
-                CPP_BUILD_ROOT / "Debug",
-                CPP_BUILD_ROOT / "bin",
-                CPP_BUILD_ROOT / "out",
-            ]
-        )
-
-        try:
-            build_parent = CPP_BUILD_ROOT.parent
-        except Exception:
-            build_parent = None
-        if isinstance(build_parent, Path) and build_parent.is_dir():
-            try:
-                for extra in sorted(build_parent.glob("binance_cpp*"), reverse=True):
-                    roots.extend(
-                        [
-                            extra,
-                            extra / "Release",
-                            extra / "Debug",
-                            extra / "bin",
-                            extra / "out",
-                        ]
-                    )
-            except Exception:
-                pass
-
-    roots.extend(_cpp_runtime_search_roots())
-
-    found: list[Path] = []
-    seen: set[Path] = set()
-
-    def _remember(path: Path) -> None:
-        try:
-            resolved = path.resolve()
-        except Exception:
-            resolved = path
-        if resolved in seen:
-            return
-        seen.add(resolved)
-        found.append(resolved)
-
-    for root in roots:
-        for name in candidate_names:
-            candidate = root / name
-            if candidate.is_file():
-                _remember(candidate)
-
-    if not frozen_mode:
-        for root in roots:
-            if not root.is_dir():
-                continue
-            try:
-                for path in root.rglob("*"):
-                    if not path.is_file():
-                        continue
-                    if path.suffix.lower() not in suffixes:
-                        continue
-                    if path.name in candidate_names or path.stem.lower() in candidate_stems:
-                        _remember(path)
-            except (PermissionError, OSError):
-                continue
-    if not found:
-        return None
-
-    def _mtime(path: Path) -> float:
-        try:
-            return float(path.stat().st_mtime)
-        except Exception:
-            return 0.0
-
-    def _name_priority(path: Path) -> int:
-        stem = path.stem.lower()
-        if frozen_mode:
-            if stem == packaged_stem:
-                return 2
-            if stem == default_stem:
-                return 1
-            return 0
-        if stem == default_stem:
-            return 3
-        if stem == packaged_stem:
-            return 2
-        if stem == legacy_stem:
-            return 1
-        return 0
-
-    found.sort(key=lambda path: (_name_priority(path), _mtime(path)), reverse=True)
-    return found[0]
+    return code_language_runtime.find_cpp_code_tab_executable()
 
 
 def _cpp_executable_is_stale(exe_path: Path | None) -> bool:
-    if _is_frozen_python_app():
-        return False
-    if exe_path is None or not exe_path.is_file():
-        return True
-    try:
-        exe_mtime = float(exe_path.stat().st_mtime)
-    except Exception:
-        return True
-
-    source_paths: list[Path] = [
-        CPP_PROJECT_PATH / "CMakeLists.txt",
-        CPP_PROJECT_PATH / "resources.qrc",
-    ]
-    src_dir = CPP_PROJECT_PATH / "src"
-    if src_dir.is_dir():
-        try:
-            source_paths.extend(sorted(src_dir.glob("*.cpp")))
-            source_paths.extend(sorted(src_dir.glob("*.h")))
-        except Exception:
-            pass
-
-    latest_source_mtime = 0.0
-    for path in source_paths:
-        try:
-            if not path.is_file():
-                continue
-            latest_source_mtime = max(latest_source_mtime, float(path.stat().st_mtime))
-        except Exception:
-            continue
-
-    if latest_source_mtime <= 0.0:
-        return False
-    return exe_mtime + 0.001 < latest_source_mtime
+    return code_language_runtime.cpp_executable_is_stale(exe_path)
 
 
 def _read_cmake_cache_value(cache_file: Path, key: str) -> str | None:
-    if not cache_file.is_file():
-        return None
-    needle = f"{key}:"
-    try:
-        for line in cache_file.read_text(errors="ignore").splitlines():
-            if line.startswith(needle):
-                parts = line.split("=", 1)
-                if len(parts) == 2:
-                    value = parts[1].strip()
-                    return value or None
-    except Exception:
-        return None
-    return None
-
-
-def _detect_default_cpp_qt_prefix() -> Path | None:
-    discovered: list[Path] = []
-    candidates = [
-        Path("C:/Qt"),
-        Path.home() / "Qt",
-    ]
-    for base in candidates:
-        if not base.is_dir():
-            continue
-        try:
-            version_dirs = sorted(
-                [entry for entry in base.glob("6.*") if entry.is_dir()],
-                key=lambda p: _version_sort_key(p.name),
-                reverse=True,
-            )
-            for version_dir in version_dirs:
-                for kit_dir in sorted(version_dir.iterdir(), key=lambda p: p.name.lower(), reverse=True):
-                    qt_cmake = kit_dir / "lib" / "cmake" / "Qt6"
-                    if qt_cmake.is_dir():
-                        try:
-                            discovered.append(qt_cmake.resolve())
-                        except Exception:
-                            discovered.append(qt_cmake)
-        except Exception:
-            continue
-    if not discovered:
-        return None
-    discovered.sort(key=_qt_prefix_preference_key, reverse=True)
-    return discovered[0]
-
-
-def _normalize_qt_prefix_token(token: str | None) -> str:
-    value = str(token or "").strip().strip('"').strip("'")
-    if not value:
-        return ""
-    if "=" in value:
-        # Handle malformed env values like "CMAKE_PREFIX_PATH=C:\\Qt\\6.x\\..."
-        maybe_path = value.rsplit("=", 1)[-1].strip().strip('"').strip("'")
-        if maybe_path:
-            value = maybe_path
-    return value
-
-
-def _as_qt6_cmake_dir(path_value: str | Path | None) -> Path | None:
-    if path_value is None:
-        return None
-    try:
-        candidate = Path(path_value).resolve()
-    except Exception:
-        return None
-    probes = [candidate]
-    probes.append(candidate / "lib" / "cmake" / "Qt6")
-    if candidate.name.lower() == "qt6":
-        probes.insert(0, candidate)
-    for probe in probes:
-        try:
-            if (probe / "Qt6Config.cmake").is_file():
-                return probe.resolve()
-        except Exception:
-            continue
-    return None
-
-
-def _qt_bin_dirs_from_prefix(path_value: str | Path | None) -> list[Path]:
-    qt_dir = _as_qt6_cmake_dir(path_value)
-    if qt_dir is None:
-        return []
-    bins: list[Path] = []
-    seen: set[Path] = set()
-    for base in [qt_dir, *qt_dir.parents]:
-        candidate = base / "bin"
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            resolved = candidate
-        try:
-            is_dir = resolved.is_dir()
-        except Exception:
-            is_dir = False
-        if not is_dir or resolved in seen:
-            continue
-        seen.add(resolved)
-        bins.append(resolved)
-    return bins
+    return code_language_runtime.read_cmake_cache_value(cache_file, key)
 
 
 def _qt_prefix_has_webengine(path_value: str | Path | None) -> bool:
-    qt_dir = _as_qt6_cmake_dir(path_value)
-    if qt_dir is None:
-        return False
-    probes = [
-        qt_dir.parent / "Qt6WebEngineWidgets" / "Qt6WebEngineWidgetsConfig.cmake",
-        qt_dir.parent / "Qt6WebEngineCore" / "Qt6WebEngineCoreConfig.cmake",
-    ]
-    has_config = False
-    for probe in probes:
-        try:
-            if probe.is_file():
-                has_config = True
-                break
-        except Exception:
-            continue
-    if not has_config:
-        return False
-    for bin_dir in _qt_bin_dirs_from_prefix(path_value):
-        try:
-            if (bin_dir / "QtWebEngineProcess.exe").is_file():
-                return True
-        except Exception:
-            continue
-        for dll_name in ("Qt6WebEngineCore.dll", "Qt6WebEngineWidgets.dll", "Qt6WebEngineWidgetsd.dll"):
-            try:
-                if (bin_dir / dll_name).is_file():
-                    return True
-            except Exception:
-                continue
-    return False
+    return code_language_runtime.qt_prefix_has_webengine(path_value)
 
 
 def _qt_prefix_has_websockets(path_value: str | Path | None) -> bool:
-    qt_dir = _as_qt6_cmake_dir(path_value)
-    if qt_dir is None:
-        return False
-    try:
-        config_ok = (qt_dir.parent / "Qt6WebSockets" / "Qt6WebSocketsConfig.cmake").is_file()
-    except Exception:
-        config_ok = False
-    if not config_ok:
-        return False
-    for bin_dir in _qt_bin_dirs_from_prefix(path_value):
-        for dll_name in ("Qt6WebSockets.dll", "Qt6WebSocketsd.dll"):
-            try:
-                if (bin_dir / dll_name).is_file():
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def _qt_prefix_preference_key(path_value: str | Path | None) -> tuple[int, tuple[int, ...]]:
-    has_webengine = 1 if _qt_prefix_has_webengine(path_value) else 0
-    detected = _cpp_qt_version_from_path(str(path_value or ""))
-    return has_webengine, _version_sort_key(detected or "")
-
-
-def _qt_prefix_version_key(path_value: str | Path | None) -> tuple[int, ...]:
-    if path_value is None:
-        return tuple()
-    detected = _cpp_qt_version_from_path(str(path_value))
-    return _version_sort_key(detected or "")
-
-
-def _best_qt_prefix_from_env(env_value: str | None) -> Path | None:
-    raw = str(env_value or "").strip()
-    if not raw:
-        return None
-    candidates: list[Path] = []
-    for token in raw.split(os.pathsep):
-        normalized = _normalize_qt_prefix_token(token)
-        if not normalized:
-            continue
-        qt_dir = _as_qt6_cmake_dir(normalized)
-        if qt_dir is not None:
-            candidates.append(qt_dir)
-    if not candidates:
-        return None
-    candidates.sort(key=_qt_prefix_preference_key, reverse=True)
-    return candidates[0]
+    return code_language_runtime.qt_prefix_has_websockets(path_value)
 
 
 def _resolve_cpp_qt_prefix_for_code_tab() -> str | None:
-    env_prefix_raw = os.environ.get("QT_CMAKE_PREFIX_PATH") or os.environ.get("CMAKE_PREFIX_PATH")
-    env_qt_prefix = _best_qt_prefix_from_env(env_prefix_raw)
-    detected = _detect_default_cpp_qt_prefix()
-    if env_qt_prefix is not None and detected is not None:
-        if _qt_prefix_preference_key(detected) > _qt_prefix_preference_key(env_qt_prefix):
-            return str(detected)
-        return str(env_qt_prefix)
-    if env_qt_prefix is not None:
-        return str(env_qt_prefix)
-    if detected is not None:
-        return str(detected)
-
-    cached_qt_dir = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6_DIR")
-    if cached_qt_dir:
-        cached_path = _as_qt6_cmake_dir(cached_qt_dir)
-        if cached_path is not None:
-            return str(cached_path)
-    return None
+    return code_language_runtime.resolve_cpp_qt_prefix_for_code_tab()
 
 
 def _discover_cpp_qt_bin_dirs_for_code_tab() -> list[Path]:
-    prefixes: list[Path] = []
-    resolved_prefix = _resolve_cpp_qt_prefix_for_code_tab()
-    if resolved_prefix:
-        qt_dir = _as_qt6_cmake_dir(resolved_prefix)
-        if qt_dir is not None:
-            prefixes.append(qt_dir)
-
-    detected = _detect_default_cpp_qt_prefix()
-    if detected is not None:
-        prefixes.append(detected)
-
-    cached_qt_dir = _read_cmake_cache_value(CPP_BUILD_ROOT / "CMakeCache.txt", "Qt6_DIR")
-    if cached_qt_dir:
-        prefixes.append(Path(cached_qt_dir))
-
-    bin_dirs: list[Path] = []
-    for prefix in prefixes:
-        try:
-            prefix_resolved = prefix.resolve()
-        except Exception:
-            continue
-        for base in [prefix_resolved] + list(prefix_resolved.parents):
-            candidate = base / "bin"
-            if not candidate.is_dir():
-                continue
-            if (candidate / "Qt6Core.dll").is_file() or (candidate / "Qt6Widgets.dll").is_file():
-                try:
-                    bin_dirs.append(candidate.resolve())
-                except Exception:
-                    bin_dirs.append(candidate)
-                break
-
-    build_bin = CPP_BUILD_ROOT / "bin"
-    if build_bin.is_dir():
-        bin_dirs.append(build_bin.resolve())
-
-    unique: list[Path] = []
-    seen: set[Path] = set()
-    for path in bin_dirs:
-        if path in seen:
-            continue
-        seen.add(path)
-        unique.append(path)
-    return unique
+    return code_language_runtime.discover_cpp_qt_bin_dirs_for_code_tab()
 
 
-_LANGUAGE_SWITCH_DISPLAY_NAME = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "Trading Bot").strip() or "Trading Bot"
-
-
-def _language_switch_logo_pixmap() -> QtGui.QPixmap | None:
-    try:
-        icon = load_app_icon()
-    except Exception:
-        icon = QtGui.QIcon()
-    if icon.isNull():
-        return None
-    for size in (72, 96, 128):
-        try:
-            pixmap = icon.pixmap(size, size)
-        except Exception:
-            continue
-        if pixmap is not None and not pixmap.isNull():
-            return pixmap
-    return None
-
-
-class _LanguageSwitchSplash:
-    def __init__(self, status_text: str = "Loading…") -> None:
-        self._widget: QtWidgets.QWidget | None = None
-        self._spinner_angle = 0
-        self._status_text = str(status_text or "Loading…")
-        self._logo_pixmap = _language_switch_logo_pixmap()
-        self._timer: QtCore.QTimer | None = None
-        self._created_at = time.monotonic()
-
-        try:
-            screen = QtGui.QGuiApplication.primaryScreen()
-            screen_geo = screen.geometry() if screen else QtCore.QRect(0, 0, 1920, 1080)
-
-            class _Widget(QtWidgets.QWidget):
-                def paintEvent(inner_self, event):  # noqa: N802, ANN001
-                    Q_UNUSED = event
-                    splash_ref = getattr(inner_self, "_splash_ref", None)
-                    if splash_ref is None:
-                        return
-                    painter = None
-                    try:
-                        painter = QtGui.QPainter(inner_self)
-                        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-
-                        w = inner_self.width()
-                        h = inner_self.height()
-                        panel_rect = QtCore.QRectF(0, 0, w, h)
-                        panel_path = QtGui.QPainterPath()
-                        panel_path.addRoundedRect(panel_rect, 24, 24)
-                        painter.setClipPath(panel_path)
-
-                        bg_grad = QtGui.QLinearGradient(0, 0, 0, h)
-                        bg_grad.setColorAt(0.0, QtGui.QColor(16, 22, 32, 245))
-                        bg_grad.setColorAt(1.0, QtGui.QColor(10, 14, 22, 250))
-                        painter.fillRect(inner_self.rect(), bg_grad)
-
-                        painter.setClipping(False)
-                        border_pen = QtGui.QPen(QtGui.QColor(56, 189, 248, 80))
-                        border_pen.setWidthF(1.5)
-                        painter.setPen(border_pen)
-                        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-                        painter.drawRoundedRect(QtCore.QRectF(0.75, 0.75, w - 1.5, h - 1.5), 24, 24)
-
-                        accent_rect = QtCore.QRectF(40, 0, w - 80, 3)
-                        accent_grad = QtGui.QLinearGradient(40, 0, w - 40, 0)
-                        accent_grad.setColorAt(0.0, QtGui.QColor(56, 189, 248, 0))
-                        accent_grad.setColorAt(0.3, QtGui.QColor(56, 189, 248, 180))
-                        accent_grad.setColorAt(0.5, QtGui.QColor(52, 211, 153, 200))
-                        accent_grad.setColorAt(0.7, QtGui.QColor(56, 189, 248, 180))
-                        accent_grad.setColorAt(1.0, QtGui.QColor(56, 189, 248, 0))
-                        painter.setPen(QtCore.Qt.PenStyle.NoPen)
-                        painter.setBrush(accent_grad)
-                        painter.drawRoundedRect(accent_rect, 1.5, 1.5)
-
-                        cy = 40
-                        logo = splash_ref._logo_pixmap
-                        if logo is not None and not logo.isNull():
-                            scaled = logo.scaled(
-                                72,
-                                72,
-                                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                                QtCore.Qt.TransformationMode.SmoothTransformation,
-                            )
-                            painter.drawPixmap((w - scaled.width()) // 2, cy, scaled)
-                            cy += 88
-                        else:
-                            cy += 20
-
-                        title_font = QtGui.QFont("Segoe UI", 18, QtGui.QFont.Weight.Bold)
-                        painter.setFont(title_font)
-                        painter.setPen(QtGui.QColor(230, 237, 243))
-                        painter.drawText(
-                            QtCore.QRectF(0, cy, w, 30),
-                            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop,
-                            _LANGUAGE_SWITCH_DISPLAY_NAME,
-                        )
-                        cy += 36
-
-                        painter.setFont(QtGui.QFont("Segoe UI", 11))
-                        painter.setPen(QtGui.QColor(148, 163, 184))
-                        painter.drawText(
-                            QtCore.QRectF(0, cy, w, 22),
-                            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop,
-                            splash_ref._status_text,
-                        )
-                        cy += 34
-
-                        spinner_rect = QtCore.QRectF((w - 44) // 2, cy, 44, 44)
-                        track_pen = QtGui.QPen(QtGui.QColor(148, 163, 184, 40))
-                        track_pen.setWidthF(3.0)
-                        track_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
-                        painter.setPen(track_pen)
-                        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-                        painter.drawEllipse(spinner_rect)
-
-                        arc_path = QtGui.QPainterPath()
-                        arc_path.arcMoveTo(spinner_rect, splash_ref._spinner_angle)
-                        arc_path.arcTo(spinner_rect, splash_ref._spinner_angle, 100)
-                        arc_pen = QtGui.QPen(QtGui.QColor(56, 189, 248))
-                        arc_pen.setWidthF(3.0)
-                        arc_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
-                        painter.setPen(arc_pen)
-                        painter.drawPath(arc_path)
-
-                        arc_path2 = QtGui.QPainterPath()
-                        angle2 = (splash_ref._spinner_angle + 180) % 360
-                        arc_path2.arcMoveTo(spinner_rect, angle2)
-                        arc_path2.arcTo(spinner_rect, angle2, 60)
-                        arc_pen2 = QtGui.QPen(QtGui.QColor(52, 211, 153, 180))
-                        arc_pen2.setWidthF(3.0)
-                        arc_pen2.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
-                        painter.setPen(arc_pen2)
-                        painter.drawPath(arc_path2)
-                    except Exception:
-                        pass
-                    finally:
-                        if painter is not None:
-                            try:
-                                painter.end()
-                            except Exception:
-                                pass
-
-            widget = _Widget(
-                None,
-                QtCore.Qt.WindowType.FramelessWindowHint
-                | QtCore.Qt.WindowType.WindowStaysOnTopHint
-                | QtCore.Qt.WindowType.Tool
-                | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
-                | QtCore.Qt.WindowType.NoDropShadowWindowHint,
-            )
-            widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-            widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            widget.setFixedSize(420, 320)
-            widget.move(
-                screen_geo.x() + (screen_geo.width() - 420) // 2,
-                screen_geo.y() + (screen_geo.height() - 320) // 2,
-            )
-            widget._splash_ref = self  # type: ignore[attr-defined]
-            self._widget = widget
-            widget.show()
-            widget.raise_()
-            widget.activateWindow()
-            QtWidgets.QApplication.processEvents()
-
-            timer = QtCore.QTimer()
-            timer.setInterval(40)
-            timer.timeout.connect(self._tick)
-            timer.start()
-            self._timer = timer
-        except Exception:
-            self._widget = None
-
-    def _tick(self) -> None:
-        self._spinner_angle = (self._spinner_angle + 8) % 360
-        if self._widget is not None:
-            try:
-                self._widget.update()
-            except Exception:
-                pass
-
-    def set_status(self, text: str) -> None:
-        self._status_text = str(text or "Loading…")
-        if self._widget is not None:
-            try:
-                self._widget.update()
-                QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
-
-    def raise_window(self) -> None:
-        if self._widget is None:
-            return
-        try:
-            self._widget.show()
-            self._widget.raise_()
-            self._widget.activateWindow()
-            QtWidgets.QApplication.processEvents()
-        except Exception:
-            pass
-
-    def close(self) -> None:
-        if self._timer is not None:
-            try:
-                self._timer.stop()
-            except Exception:
-                pass
-            self._timer = None
-        if self._widget is not None:
-            try:
-                self._widget.hide()
-                self._widget.deleteLater()
-            except Exception:
-                pass
-            self._widget = None
+_LanguageSwitchSplash = code_language_launch.LanguageSwitchSplash
 
 
 def _create_cpp_launch_progress_dialog(parent: QtWidgets.QWidget | None) -> _LanguageSwitchSplash | None:
-    Q_UNUSED = parent
-    try:
-        splash = _LanguageSwitchSplash("Preparing C++ bot...")
-        splash.raise_window()
-        return splash
-    except Exception:
-        return None
+    return code_language_launch.create_launch_progress_dialog("Preparing C++ bot...", parent)
 
 
 def _detach_cpp_launch_progress_dialog(dialog: _LanguageSwitchSplash | None) -> None:
-    if dialog is None:
-        return
-    try:
-        dialog.raise_window()
-    except Exception:
-        pass
+    return code_language_launch.detach_launch_progress_dialog(dialog)
 
 
 def _hide_python_window_for_cpp_launch(self, progress_dialog: _LanguageSwitchSplash | None) -> bool:
-    _detach_cpp_launch_progress_dialog(progress_dialog)
-    hidden = False
-    try:
-        self._cpp_launch_handoff_active = True
-        self.hide()
-        hidden = not bool(self.isVisible())
-    except Exception:
-        hidden = False
-    finally:
-        try:
-            self._cpp_launch_handoff_active = False
-        except Exception:
-            pass
-    try:
-        self._cpp_window_hidden_for_cpp_handoff = bool(hidden)
-    except Exception:
-        pass
-    return bool(hidden)
+    return code_language_launch.hide_window_for_handoff(
+        self,
+        progress_dialog,
+        active_attr="_cpp_launch_handoff_active",
+        hidden_attr="_cpp_window_hidden_for_cpp_handoff",
+    )
 
 
 def _restore_python_window_after_cpp_launch(self) -> None:
-    try:
-        hidden_for_handoff = bool(getattr(self, "_cpp_window_hidden_for_cpp_handoff", False))
-    except Exception:
-        hidden_for_handoff = False
-    if not hidden_for_handoff:
-        return
-    try:
-        self._cpp_window_hidden_for_cpp_handoff = False
-    except Exception:
-        pass
-    try:
-        state = self.windowState()
-    except Exception:
-        state = QtCore.Qt.WindowState.WindowNoState
-    try:
-        if state & QtCore.Qt.WindowState.WindowMaximized:
-            self.showMaximized()
-        else:
-            self.show()
-    except Exception:
-        try:
-            self.showMaximized()
-        except Exception:
-            pass
-    try:
-        self.raise_()
-        self.activateWindow()
-    except Exception:
-        pass
+    return code_language_launch.restore_window_after_handoff(
+        self,
+        hidden_attr="_cpp_window_hidden_for_cpp_handoff",
+    )
 
 
 def _shutdown_python_after_cpp_launch(self) -> None:
-    try:
-        self._cpp_window_hidden_for_cpp_handoff = False
-    except Exception:
-        pass
-    try:
-        self._force_close = True
-    except Exception:
-        pass
-    try:
-        QtWidgets.QWidget.close(self)
-        return
-    except Exception:
-        pass
-    try:
-        app = QtWidgets.QApplication.instance()
-        if app is not None:
-            setattr(app, "_exiting", True)
-            arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
-            if callable(arm_hard_exit):
-                arm_hard_exit()
-            app.quit()
-    except Exception:
-        pass
+    return code_language_launch.shutdown_python_after_handoff(
+        self,
+        hidden_attr="_cpp_window_hidden_for_cpp_handoff",
+    )
 
 
 def _update_cpp_launch_progress(dialog: _LanguageSwitchSplash | None, text: str) -> None:
-    if dialog is None:
-        return
-    try:
-        dialog.set_status(str(text or "Working..."))
-    except Exception:
-        pass
+    return code_language_launch.update_launch_progress(dialog, text)
 
 
 def _is_qt_runtime_path(path_value: str | None) -> bool:
-    value = str(path_value or "").strip().strip('"').strip("'")
-    if not value:
-        return False
-    low = value.lower().replace("/", "\\")
-    if "site-packages\\pyqt6\\qt6\\bin" in low:
-        return True
-    if "\\qt\\" in low and low.endswith("\\bin"):
-        return True
-    return False
+    return code_language_launch.is_qt_runtime_path(path_value)
 
 
 def _compose_cpp_launch_path(qt_bins: list[Path], base_path: str | None) -> str:
-    preferred: list[str] = []
-    preferred_norm: set[str] = set()
-    for path in qt_bins:
-        try:
-            resolved = str(path.resolve())
-        except Exception:
-            resolved = str(path)
-        normalized = os.path.normcase(os.path.normpath(resolved))
-        if normalized in preferred_norm:
-            continue
-        preferred_norm.add(normalized)
-        preferred.append(resolved)
-
-    merged: list[str] = list(preferred)
-    seen: set[str] = set(preferred_norm)
-    for token in str(base_path or "").split(os.pathsep):
-        part = str(token or "").strip()
-        if not part:
-            continue
-        normalized = os.path.normcase(os.path.normpath(part))
-        if normalized in seen:
-            continue
-        if _is_qt_runtime_path(part) and normalized not in preferred_norm:
-            # Avoid mixing Qt runtimes from unrelated kits/interpreters.
-            continue
-        seen.add(normalized)
-        merged.append(part)
-    return os.pathsep.join(merged)
+    return code_language_launch.compose_cpp_launch_path(qt_bins, base_path)
 
 
 def _find_windeployqt_for_cpp(qt_bins: list[Path] | None = None) -> Path | None:
-    names = ["windeployqt"]
-    if sys.platform == "win32":
-        names.insert(0, "windeployqt.exe")
-
-    for candidate in qt_bins or []:
-        for name in names:
-            path = candidate / name
-            try:
-                if path.is_file():
-                    return path.resolve()
-            except Exception:
-                continue
-
-    for name in names:
-        found = shutil.which(name)
-        if not found:
-            continue
-        try:
-            return Path(found).resolve()
-        except Exception:
-            return Path(found)
-    return None
+    return code_language_launch.find_windeployqt_for_cpp(qt_bins)
 
 
 def _cpp_runtime_stamp_path(exe_path: Path) -> Path:
-    return exe_path.parent / ".tb_cpp_runtime.stamp"
+    return code_language_launch.cpp_runtime_stamp_path(exe_path)
 
 
 def _cpp_runtime_bundle_missing(exe_path: Path) -> bool:
-    required_dlls = ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll")
-    for dll_name in required_dlls:
-        try:
-            if not (exe_path.parent / dll_name).is_file():
-                return True
-        except Exception:
-            return True
-    if sys.platform == "win32":
-        try:
-            if not (exe_path.parent / "platforms" / "qwindows.dll").is_file():
-                return True
-        except Exception:
-            return True
-    return False
+    return code_language_launch.cpp_runtime_bundle_missing(exe_path)
 
 
 def _prepare_cpp_launch_env(
@@ -15865,31 +13718,7 @@ def _prepare_cpp_launch_env(
     qt_bins: list[Path],
     base_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    env = dict(base_env or os.environ.copy())
-
-    # Prevent PyQt/PySide process-level plugin paths from leaking into the child Qt app.
-    for key in (
-        "QT_PLUGIN_PATH",
-        "QT_QPA_PLATFORM_PLUGIN_PATH",
-        "QML_IMPORT_PATH",
-        "QML2_IMPORT_PATH",
-        "QT_QPA_FONTDIR",
-        "QT_QPA_PLATFORMTHEME",
-    ):
-        env.pop(key, None)
-
-    launch_bins: list[Path] = [exe_path.parent]
-    launch_bins.extend(qt_bins or [])
-    env["PATH"] = _compose_cpp_launch_path(launch_bins, env.get("PATH", ""))
-    env["TB_CPP_LAUNCH_PATH"] = os.pathsep.join(str(path) for path in launch_bins if str(path).strip())
-
-    plugin_root = exe_path.parent
-    platform_plugins = plugin_root / "platforms"
-    if platform_plugins.is_dir():
-        env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(platform_plugins)
-    if plugin_root.is_dir():
-        env["QT_PLUGIN_PATH"] = str(plugin_root)
-    return env
+    return code_language_launch.prepare_cpp_launch_env(exe_path, qt_bins, base_env)
 
 
 def _deploy_cpp_runtime_bundle(
@@ -15898,50 +13727,11 @@ def _deploy_cpp_runtime_bundle(
     qt_bins: list[Path] | None = None,
     force: bool = False,
 ) -> tuple[bool, str]:
-    if sys.platform != "win32":
-        return True, ""
-    if exe_path is None or not exe_path.is_file():
-        return False, "C++ executable does not exist."
-
-    stamp_path = _cpp_runtime_stamp_path(exe_path)
-    if not force:
-        try:
-            stamp_fresh = stamp_path.is_file() and stamp_path.stat().st_mtime >= exe_path.stat().st_mtime
-        except Exception:
-            stamp_fresh = False
-        if stamp_fresh and not _cpp_runtime_bundle_missing(exe_path):
-            return True, "already-deployed"
-
-    windeployqt = _find_windeployqt_for_cpp(qt_bins)
-    if windeployqt is None:
-        return False, "windeployqt was not found."
-
-    deploy_env = os.environ.copy()
-    deploy_env["PATH"] = _compose_cpp_launch_path(qt_bins or [], deploy_env.get("PATH", ""))
-    deploy_cmd = [
-        str(windeployqt),
-        "--compiler-runtime",
-        "--no-translations",
-        "--force",
-        str(exe_path),
-    ]
-    ok, output = _run_command_capture_hidden(deploy_cmd, cwd=exe_path.parent, env=deploy_env)
-    if ok:
-        try:
-            stamp_path.write_text(str(time.time()), encoding="utf-8")
-        except Exception:
-            pass
-    return ok, output
+    return code_language_launch.deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=force)
 
 
 def _format_windows_exit_code(returncode: int | None) -> str:
-    try:
-        value = int(returncode or 0)
-    except Exception:
-        return str(returncode)
-    if value < 0:
-        value = (value + (1 << 32)) & 0xFFFFFFFF
-    return f"{value} (0x{value:08X})"
+    return code_language_launch.format_windows_exit_code(returncode)
 
 
 def _run_command_capture_hidden(
@@ -15950,27 +13740,7 @@ def _run_command_capture_hidden(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
-    run_kwargs: dict[str, object] = {
-        "capture_output": True,
-        "text": True,
-    }
-    if cwd is not None:
-        run_kwargs["cwd"] = str(cwd)
-    if env is not None:
-        run_kwargs["env"] = env
-    if sys.platform == "win32":
-        run_kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-    try:
-        result = subprocess.run(command, check=True, **run_kwargs)
-        output = ((result.stdout or "") + (result.stderr or "")).strip()
-        return True, output
-    except FileNotFoundError:
-        return False, f"Command not found: {command[0]}"
-    except subprocess.CalledProcessError as exc:
-        output = ((exc.stdout or "") + (exc.stderr or "")).strip()
-        return False, output
-    except Exception as exc:
-        return False, str(exc)
+    return code_language_launch.run_command_capture_hidden(command, cwd=cwd, env=env)
 
 
 def _run_callable_with_ui_pump(
@@ -15979,885 +13749,139 @@ def _run_callable_with_ui_pump(
     poll_interval_s: float = 0.05,
     **kwargs,
 ):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(fn, *args, **kwargs)
-        while not future.done():
-            try:
-                QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
-            time.sleep(max(0.01, float(poll_interval_s)))
-        return future.result()
+    return code_language_launch.run_callable_with_ui_pump(
+        fn,
+        *args,
+        poll_interval_s=poll_interval_s,
+        **kwargs,
+    )
 
 
 def _create_rust_launch_progress_dialog(parent: QtWidgets.QWidget | None) -> _LanguageSwitchSplash | None:
-    Q_UNUSED = parent
-    try:
-        splash = _LanguageSwitchSplash("Preparing Rust bot...")
-        splash.raise_window()
-        return splash
-    except Exception:
-        return None
+    return code_language_launch.create_launch_progress_dialog("Preparing Rust bot...", parent)
 
 
 def _hide_python_window_for_rust_launch(self, progress_dialog: _LanguageSwitchSplash | None) -> bool:
-    _detach_cpp_launch_progress_dialog(progress_dialog)
-    hidden = False
-    try:
-        self._rust_launch_handoff_active = True
-        self.hide()
-        hidden = not bool(self.isVisible())
-    except Exception:
-        hidden = False
-    finally:
-        try:
-            self._rust_launch_handoff_active = False
-        except Exception:
-            pass
-    try:
-        self._rust_window_hidden_for_rust_handoff = bool(hidden)
-    except Exception:
-        pass
-    return bool(hidden)
+    return code_language_launch.hide_window_for_handoff(
+        self,
+        progress_dialog,
+        active_attr="_rust_launch_handoff_active",
+        hidden_attr="_rust_window_hidden_for_rust_handoff",
+    )
 
 
 def _restore_python_window_after_rust_launch(self) -> None:
-    try:
-        hidden_for_handoff = bool(getattr(self, "_rust_window_hidden_for_rust_handoff", False))
-    except Exception:
-        hidden_for_handoff = False
-    if not hidden_for_handoff:
-        return
-    try:
-        self._rust_window_hidden_for_rust_handoff = False
-    except Exception:
-        pass
-    try:
-        state = self.windowState()
-    except Exception:
-        state = QtCore.Qt.WindowState.WindowNoState
-    try:
-        if state & QtCore.Qt.WindowState.WindowMaximized:
-            self.showMaximized()
-        else:
-            self.show()
-    except Exception:
-        try:
-            self.showMaximized()
-        except Exception:
-            pass
-    try:
-        self.raise_()
-        self.activateWindow()
-    except Exception:
-        pass
+    return code_language_launch.restore_window_after_handoff(
+        self,
+        hidden_attr="_rust_window_hidden_for_rust_handoff",
+    )
 
 
 def _shutdown_python_after_rust_launch(self) -> None:
-    try:
-        self._rust_window_hidden_for_rust_handoff = False
-    except Exception:
-        pass
-    try:
-        self._force_close = True
-    except Exception:
-        pass
-    try:
-        QtWidgets.QWidget.close(self)
-        return
-    except Exception:
-        pass
-    try:
-        app = QtWidgets.QApplication.instance()
-        if app is not None:
-            setattr(app, "_exiting", True)
-            arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
-            if callable(arm_hard_exit):
-                arm_hard_exit()
-            app.quit()
-    except Exception:
-        pass
+    return code_language_launch.shutdown_python_after_handoff(
+        self,
+        hidden_attr="_rust_window_hidden_for_rust_handoff",
+    )
 
 
 def _rust_framework_package_name(config: dict | None = None) -> str:
-    return str(RUST_FRAMEWORK_PACKAGES.get(_rust_framework_key(config)) or "").strip()
+    return code_language_build.rust_framework_package_name(
+        config,
+        rust_framework_key=_rust_framework_key,
+    )
 
 
 def _build_rust_desktop_executable_for_code_tab(config: dict | None = None) -> tuple[Path | None, str | None]:
-    config_snapshot = dict(config or {})
-    framework_title = _rust_framework_title(config_snapshot)
-    package_name = _rust_framework_package_name(config_snapshot)
-    if not framework_title or not package_name:
-        return None, "No Rust desktop framework is selected."
-    if not RUST_PROJECT_PATH.is_dir():
-        return None, f"Rust workspace directory is missing: {RUST_PROJECT_PATH}"
-
-    cargo_path = _rust_tool_path("cargo")
-    if cargo_path is None:
-        return None, "cargo is not installed."
-
-    command = [
-        str(cargo_path),
-        "build",
-        "--manifest-path",
-        str(RUST_PROJECT_PATH / "Cargo.toml"),
-        "-p",
-        package_name,
-    ]
-    ok, output = _run_command_capture_hidden(command, cwd=RUST_PROJECT_PATH, env=_rust_toolchain_env())
-    if not ok:
-        tail = _tail_text(output, max_lines=25, max_chars=5000)
-        return None, f"Cargo build failed for {framework_title}.\n{tail}".strip()
-
-    executable_name = package_name
-    if sys.platform == "win32":
-        executable_name = f"{executable_name}.exe"
-    candidates = [
-        RUST_PROJECT_PATH / "target" / "debug" / executable_name,
-        RUST_PROJECT_PATH / "target" / "release" / executable_name,
-    ]
-    for candidate in candidates:
-        try:
-            if candidate.is_file():
-                return candidate.resolve(), None
-        except Exception:
-            continue
-    return None, f"Cargo build completed but {framework_title} executable was not found."
+    return code_language_build.build_rust_desktop_executable_for_code_tab(
+        config,
+        rust_framework_key=_rust_framework_key,
+        rust_framework_title=_rust_framework_title,
+        rust_tool_path=_rust_tool_path,
+        run_command_capture_hidden=_run_command_capture_hidden,
+        rust_toolchain_env=_rust_toolchain_env,
+        tail_text=_tail_text,
+    )
 
 
 def _launch_rust_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
-    existing = getattr(self, "_rust_code_tab_process", None)
-    try:
-        if existing is not None and existing.poll() is None:
-            self.log("Rust bot is already running.")
-            QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_rust_launch(self))
-            return True
-    except Exception:
-        pass
-
-    progress_dialog = _create_rust_launch_progress_dialog(self)
-    _hide_python_window_for_rust_launch(self, progress_dialog)
-    launch_succeeded = False
-
-    def _progress(message: str) -> None:
-        _update_cpp_launch_progress(progress_dialog, message)
-
-    def _dismiss_progress_dialog() -> None:
-        nonlocal progress_dialog
-        try:
-            if progress_dialog is not None:
-                progress_dialog.close()
-        except Exception:
-            pass
-        progress_dialog = None
-
-    def _poll_early_exit(proc: subprocess.Popen, timeout_s: float = 0.6) -> int | None:
-        deadline = time.time() + max(0.15, float(timeout_s))
-        while time.time() < deadline:
-            try:
-                exit_code = proc.poll()
-            except Exception:
-                exit_code = 0
-            if exit_code is not None:
-                return exit_code
-            try:
-                QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
-            time.sleep(0.05)
-        return None
-
-    try:
-        framework_title = _rust_framework_title(self.config)
-        missing_tools = _rust_missing_tool_labels()
-        toolchain_installed = False
-        if missing_tools:
-            if not _rust_auto_install_enabled():
-                _dismiss_progress_dialog()
-                _restore_python_window_after_rust_launch(self)
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "Rust launch failed",
-                    "Rust desktop launch requires rustup/cargo/rustc, and automatic installation is disabled.",
-                )
-                return False
-
-            if getattr(self, "_rust_auto_install_inflight", False):
-                _dismiss_progress_dialog()
-                _restore_python_window_after_rust_launch(self)
-                QtWidgets.QMessageBox.information(
-                    self,
-                    "Rust installation in progress",
-                    "Rust toolchain installation is already running. Please wait for it to finish.",
-                )
-                return False
-
-            now = time.time()
-            cooldown_sec = _rust_auto_install_cooldown_seconds()
-            last_attempt = float(getattr(self, "_rust_auto_install_last_attempt_at", 0.0) or 0.0)
-            if cooldown_sec > 0.0 and now - last_attempt < cooldown_sec:
-                remaining = int(max(1.0, math.ceil(cooldown_sec - (now - last_attempt))))
-                _dismiss_progress_dialog()
-                _restore_python_window_after_rust_launch(self)
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "Rust launch failed",
-                    f"Rust toolchain installation was attempted recently. Try again in about {remaining} seconds.",
-                )
-                return False
-
-            self._rust_auto_install_inflight = True
-            self._rust_auto_install_last_attempt_at = now
-            self.log(
-                "Rust toolchain missing "
-                f"({', '.join(missing_tools)}). Starting automatic rustup installation..."
-            )
-            _progress("Installing Rust toolchain...")
-            try:
-                install_ok, install_output = _run_callable_with_ui_pump(
-                    _install_rust_toolchain,
-                    poll_interval_s=0.05,
-                )
-            finally:
-                self._rust_auto_install_inflight = False
-                self._rust_auto_install_last_completed_at = time.time()
-            toolchain_installed = bool(install_ok)
-            _reset_rust_dependency_caches()
-            QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
-            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-            if not install_ok:
-                self.log(f"Rust toolchain auto-install failed: {_tail_text(install_output, max_lines=12, max_chars=1800)}")
-                _dismiss_progress_dialog()
-                _restore_python_window_after_rust_launch(self)
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "Rust launch failed",
-                    (
-                        "Automatic Rust installation failed.\n\n"
-                        f"{_tail_text(install_output, max_lines=20, max_chars=3000) or 'rustup did not complete.'}"
-                    ),
-                )
-                return False
-            self.log("Rust toolchain auto-install completed.")
-
-        build_config = dict(self.config or {})
-        _progress(f"Building Rust {framework_title} app...")
-        exe_path, build_error = _run_callable_with_ui_pump(
-            _build_rust_desktop_executable_for_code_tab,
-            build_config,
-            poll_interval_s=0.05,
-        )
-        if exe_path is None or not exe_path.is_file():
-            _dismiss_progress_dialog()
-            _restore_python_window_after_rust_launch(self)
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Rust launch failed",
-                build_error or f"Cargo build did not produce a runnable {framework_title} executable.",
-            )
-            return False
-
-        env = _rust_toolchain_env()
-        env["TB_RUST_SELECTED_FRAMEWORK"] = _rust_framework_key(build_config)
-        env["TB_RUST_FRAMEWORK_TITLE"] = framework_title
-
-        popen_kwargs: dict[str, object] = {
-            "cwd": str(exe_path.parent),
-            "env": env,
-        }
-        if sys.platform == "win32":
-            popen_kwargs["creationflags"] = 0
-            try:
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 1
-                popen_kwargs["startupinfo"] = startupinfo
-            except Exception:
-                pass
-
-        _progress(f"Launching Rust {framework_title} bot...")
-        try:
-            process = subprocess.Popen([str(exe_path)], **popen_kwargs)
-        except Exception as exc:
-            self.log(f"Rust launch failed: {exc}")
-            _dismiss_progress_dialog()
-            _restore_python_window_after_rust_launch(self)
-            QtWidgets.QMessageBox.warning(self, "Rust launch failed", str(exc))
-            return False
-
-        early_exit = _poll_early_exit(process)
-        if early_exit is not None:
-            exit_text = _format_windows_exit_code(process.returncode)
-            _dismiss_progress_dialog()
-            _restore_python_window_after_rust_launch(self)
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Rust launch failed",
-                (
-                    f"Rust {framework_title} bot exited immediately (code {exit_text}).\n"
-                    "Check the cargo build output and desktop framework prerequisites."
-                ),
-            )
-            return False
-
-        self._rust_code_tab_process = process
-        try:
-            self._ensure_rust_process_watchdog()
-        except Exception:
-            pass
-        self.log(f"Launched Rust bot ({framework_title}, {trigger}): {exe_path}")
-        if toolchain_installed:
-            QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
-            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-        QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_rust_launch(self))
-        launch_succeeded = True
-        return True
-    finally:
-        if not launch_succeeded:
-            _restore_python_window_after_rust_launch(self)
-        try:
-            if progress_dialog is not None:
-                progress_dialog.close()
-        except Exception:
-            pass
+    return code_language_launcher.launch_rust_from_code_tab(
+        self,
+        trigger=trigger,
+        create_progress_dialog=_create_rust_launch_progress_dialog,
+        hide_window_for_launch=_hide_python_window_for_rust_launch,
+        restore_window=_restore_python_window_after_rust_launch,
+        shutdown_after_handoff=_shutdown_python_after_rust_launch,
+        update_progress=_update_cpp_launch_progress,
+        run_callable_with_ui_pump=_run_callable_with_ui_pump,
+        build_rust_desktop_executable_for_code_tab=_build_rust_desktop_executable_for_code_tab,
+        install_rust_toolchain=_install_rust_toolchain,
+        reset_rust_dependency_caches=_reset_rust_dependency_caches,
+        refresh_code_language_card_release_labels=_refresh_code_language_card_release_labels,
+        rust_toolchain_env=_rust_toolchain_env,
+        rust_framework_key=_rust_framework_key,
+        rust_framework_title=_rust_framework_title,
+        rust_missing_tool_labels=_rust_missing_tool_labels,
+        rust_auto_install_enabled=_rust_auto_install_enabled,
+        rust_auto_install_cooldown_seconds=_rust_auto_install_cooldown_seconds,
+        format_windows_exit_code=_format_windows_exit_code,
+        tail_text=_tail_text,
+    )
 
 
 def _build_cpp_executable_for_code_tab(self) -> tuple[Path | None, str | None]:
-    if _is_frozen_python_app():
-        return (
-            None,
-            "Bundled source build is unavailable in the packaged app. "
-            "Automatic C++ runtime download was attempted. If it failed, extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe.",
-        )
-    if not CPP_PROJECT_PATH.is_dir():
-        return None, f"C++ project directory is missing: {CPP_PROJECT_PATH}"
-    if shutil.which("cmake") is None:
-        return None, "CMake is not available in PATH."
-    try:
-        CPP_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        return None, f"Could not create build directory '{CPP_BUILD_ROOT}': {exc}"
-
-    prefix_env = _resolve_cpp_qt_prefix_for_code_tab()
-
-    def _parse_env_bool(name: str) -> bool | None:
-        raw = str(os.environ.get(name, "") or "").strip().lower()
-        if not raw:
-            return None
-        if raw in {"1", "true", "yes", "on"}:
-            return True
-        if raw in {"0", "false", "no", "off"}:
-            return False
-        return None
-
-    env_require_webengine = _parse_env_bool("TB_REQUIRE_QT_WEBENGINE")
-    if env_require_webengine is None:
-        detected_webengine = _qt_prefix_has_webengine(prefix_env) or _cpp_qt_webengine_available()
-        require_webengine = bool(detected_webengine)
-    else:
-        require_webengine = bool(env_require_webengine)
-
-    def _configure_cmd(require_we: bool) -> list[str]:
-        cmd = ["cmake", "-S", str(CPP_PROJECT_PATH), "-B", str(CPP_BUILD_ROOT)]
-        prefix_has_webengine = _qt_prefix_has_webengine(prefix_env)
-        prefix_has_websockets = _qt_prefix_has_websockets(prefix_env)
-        if prefix_env:
-            cmd.append(f"-DCMAKE_PREFIX_PATH={prefix_env}")
-            cmd.append(f"-DQt6_DIR={prefix_env}")
-            # Prevent CMake from pulling optional Qt modules from a different kit.
-            cmd.append(
-                f"-DCMAKE_DISABLE_FIND_PACKAGE_Qt6WebEngineWidgets={'OFF' if prefix_has_webengine else 'ON'}"
-            )
-            cmd.append(
-                f"-DCMAKE_DISABLE_FIND_PACKAGE_Qt6WebSockets={'OFF' if prefix_has_websockets else 'ON'}"
-            )
-        cmd.append(f"-DTB_REQUIRE_QT_WEBENGINE={'ON' if require_we else 'OFF'}")
-        return cmd
-
-    def _clean_configure_state() -> None:
-        try:
-            (CPP_BUILD_ROOT / "CMakeCache.txt").unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            shutil.rmtree(CPP_BUILD_ROOT / "CMakeFiles", ignore_errors=True)
-        except Exception:
-            pass
-
-    configure_cmd = _configure_cmd(require_webengine)
-    ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
-    if not ok:
-        # Retry once with a cleaned cache to recover from generator or Qt path mismatch.
-        _clean_configure_state()
-        ok, output = _run_command_capture_hidden(configure_cmd, cwd=CPP_PROJECT_PATH)
-
-    # Auto fallback when the first configure fails and WebEngine was auto-enabled.
-    # This handles stale cache values (for example mixed Qt kits) and kits without
-    # WebEngine modules.
-    if (
-        not ok
-        and require_webengine
-        and env_require_webengine is None
-    ):
-        fallback_cmd = _configure_cmd(False)
-        _clean_configure_state()
-        ok, output = _run_command_capture_hidden(fallback_cmd, cwd=CPP_PROJECT_PATH)
-        if ok:
-            try:
-                self.log("C++ configure retry succeeded with Qt WebEngine disabled.")
-            except Exception:
-                pass
-    if not ok:
-        tail = "\n".join([line for line in output.splitlines() if line][-20:])
-        return None, f"CMake configure failed.\n{tail}".strip()
-
-    build_commands: list[list[str]]
-    if sys.platform == "win32":
-        build_commands = [
-            ["cmake", "--build", str(CPP_BUILD_ROOT), "--config", "Release"],
-            ["cmake", "--build", str(CPP_BUILD_ROOT), "--config", "Debug"],
-        ]
-    else:
-        build_commands = [["cmake", "--build", str(CPP_BUILD_ROOT)]]
-
-    last_output = ""
-    for command in build_commands:
-        ok, last_output = _run_command_capture_hidden(command, cwd=CPP_PROJECT_PATH)
-        if ok:
-            break
-    if not ok:
-        tail = "\n".join([line for line in last_output.splitlines() if line][-20:])
-        return None, f"CMake build failed.\n{tail}".strip()
-
-    exe_path = _find_cpp_code_tab_executable()
-    if exe_path is None or not exe_path.is_file():
-        return None, "Build completed but Trading-Bot-C++ executable was not found."
-    return exe_path, None
+    return code_language_build.build_cpp_executable_for_code_tab(
+        self,
+        is_frozen_python_app=_is_frozen_python_app,
+        resolve_cpp_qt_prefix_for_code_tab=_resolve_cpp_qt_prefix_for_code_tab,
+        qt_prefix_has_webengine=_qt_prefix_has_webengine,
+        qt_prefix_has_websockets=_qt_prefix_has_websockets,
+        cpp_qt_webengine_available=_cpp_qt_webengine_available,
+        run_command_capture_hidden=_run_command_capture_hidden,
+        find_cpp_code_tab_executable=_find_cpp_code_tab_executable,
+    )
 
 
 def _cpp_dependency_rows_for_launch(self) -> list[dict[str, str]]:
-    try:
-        config_snapshot = dict(self.config or {})
-    except Exception:
-        config_snapshot = {}
-    config_snapshot["code_language"] = CPP_CODE_LANGUAGE_KEY
-    config_snapshot["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
-
-    try:
-        targets = _resolve_dependency_targets_for_config(config_snapshot)
-    except Exception:
-        targets = copy.deepcopy(_CPP_DEPENDENCY_VERSION_TARGETS)
-
-    # Reuse UI "latest" values when available, but always recompute "installed"
-    # values for launch payload to avoid stale "Not installed" snapshots.
-    latest_from_ui: dict[str, str] = {}
-    labels = getattr(self, "_dep_version_labels", None)
-    if isinstance(labels, dict) and labels:
-        for target in targets:
-            label = str(target.get("label") or "").strip()
-            if not label:
-                continue
-            widgets = labels.get(label)
-            if not widgets or len(widgets) < 2:
-                continue
-            latest_widget = widgets[1]
-            latest = str(latest_widget.text() or "").strip() or "Unknown"
-            if latest.lower() not in {"checking...", "not checked"}:
-                latest_from_ui[label] = latest
-
-    _reset_cpp_dependency_caches()
-
-    try:
-        resolved_versions = _collect_dependency_versions(
-            targets,
-            include_latest=False,
-            config=config_snapshot,
-        )
-    except Exception:
-        resolved_versions = _collect_dependency_versions(
-            targets,
-            include_latest=False,
-            config=config_snapshot,
-        )
-
-    rows: list[dict[str, str]] = []
-    for item in resolved_versions:
-        if not item:
-            continue
-        label = str(item[0] or "").strip()
-        if not label:
-            continue
-        installed = str(item[1] if len(item) > 1 else "Unknown").strip() or "Unknown"
-        latest = str(latest_from_ui.get(label) or (item[2] if len(item) > 2 else "Unknown")).strip() or "Unknown"
-        if latest.lower() in {"checking...", "not checked"}:
-            latest = installed if installed.lower() != "not installed" else "Unknown"
-        rows.append({"name": label, "installed": installed, "latest": latest})
-    return rows
+    return code_language_build.cpp_dependency_rows_for_launch(
+        self,
+        resolve_dependency_targets_for_config=_resolve_dependency_targets_for_config,
+        collect_dependency_versions=_collect_dependency_versions,
+        reset_cpp_dependency_caches=_reset_cpp_dependency_caches,
+    )
 
 
 def _launch_cpp_from_code_tab(self, *, trigger: str = "code-tab") -> bool:
-    if str(self.config.get("selected_exchange") or "") != CPP_SUPPORTED_EXCHANGE_KEY:
-        self.config["selected_exchange"] = CPP_SUPPORTED_EXCHANGE_KEY
-        self.log("C++ preview supports Binance only. Switched exchange to Binance.")
-        try:
-            self._refresh_code_tab_from_config()
-        except Exception:
-            pass
-
-    existing = getattr(self, "_cpp_code_tab_process", None)
-    try:
-        if existing is not None and existing.poll() is None:
-            self.log("C++ bot is already running.")
-            QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_cpp_launch(self))
-            return True
-    except Exception:
-        pass
-
-    progress_dialog = _create_cpp_launch_progress_dialog(self)
-    _hide_python_window_for_cpp_launch(self, progress_dialog)
-    launch_succeeded = False
-
-    def _progress(message: str) -> None:
-        _update_cpp_launch_progress(progress_dialog, message)
-
-    def _dismiss_progress_dialog() -> None:
-        nonlocal progress_dialog
-        try:
-            if progress_dialog is not None:
-                progress_dialog.close()
-        except Exception:
-            pass
-        progress_dialog = None
-
-    def _poll_early_exit(proc: subprocess.Popen, timeout_s: float = 0.45) -> int | None:
-        deadline = time.time() + max(0.1, float(timeout_s))
-        while time.time() < deadline:
-            code = proc.poll()
-            if code is not None:
-                return code
-            try:
-                QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
-            time.sleep(0.05)
-        return None
-
-    try:
-        if not _is_frozen_python_app() and _cpp_auto_setup_enabled():
-            _progress("Ensuring pinned C++ dependencies...")
-            prep_result = _run_callable_with_ui_pump(
-                _cpp_auto_prepare_environment_result,
-                reason=f"launch:{trigger}",
-                targets=_CPP_DEPENDENCY_VERSION_TARGETS,
-                install_when_missing=True,
-                poll_interval_s=0.05,
-            )
-            _apply_cpp_auto_prepare_result(self, prep_result, refresh_versions=False)
-            if isinstance(prep_result, dict) and not bool(prep_result.get("ready")):
-                missing_after = prep_result.get("missing_after") if isinstance(prep_result.get("missing_after"), list) else []
-                missing_text = ", ".join(str(item) for item in missing_after) if missing_after else "unknown"
-                detail = str(prep_result.get("install_output") or "").strip()
-                if detail:
-                    detail = _tail_text(detail, max_lines=10, max_chars=1200)
-                    detail = f"\n\nInstaller output tail:\n{detail}"
-                _dismiss_progress_dialog()
-                _restore_python_window_after_cpp_launch(self)
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "C++ dependency setup failed",
-                    f"Automatic C++ setup could not provision all required environment dependencies.\n\nMissing: {missing_text}{detail}",
-                )
-                return False
-
-        _progress("Resolving C++ executable...")
-        exe_path = _find_cpp_code_tab_executable()
-        auto_runtime_error = ""
-        runtime_bundle_touched = False
-        if _is_frozen_python_app() and (exe_path is None or _cpp_runtime_is_cached_path(exe_path)):
-            if exe_path is None:
-                _progress("C++ runtime not found. Downloading release bundle...")
-                log_message = "C++ runtime not found locally. Downloading Trading-Bot-C++.zip..."
-            else:
-                _progress("Checking C++ runtime updates...")
-                log_message = "Checking C++ runtime cache for newer release..."
-            try:
-                self.log(log_message)
-            except Exception:
-                pass
-            try:
-                cached_exe, cached_err = _run_callable_with_ui_pump(
-                    _ensure_cached_cpp_bundle,
-                    force_download=False,
-                    poll_interval_s=0.05,
-                )
-            except Exception as exc:
-                cached_exe, cached_err = None, str(exc)
-            if cached_exe is not None and cached_exe.is_file():
-                exe_path = cached_exe
-                runtime_bundle_touched = True
-                _reset_cpp_dependency_caches()
-                try:
-                    self.log(f"C++ runtime prepared from cache: {cached_exe.parent}")
-                except Exception:
-                    pass
-            elif cached_err:
-                auto_runtime_error = str(cached_err)
-                try:
-                    self.log(f"C++ auto-download failed: {auto_runtime_error}")
-                except Exception:
-                    pass
-        stale_fallback = exe_path if exe_path is not None and exe_path.is_file() else None
-        if exe_path is None or _cpp_executable_is_stale(exe_path):
-            if exe_path is None:
-                self.log("C++ executable not found. Attempting to build it now...")
-            else:
-                self.log("C++ executable is outdated. Rebuilding to apply latest C++ UI changes...")
-            _progress("Compiling C++ bot (this may take a while)...")
-            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
-            try:
-                exe_path, error = _build_cpp_executable_for_code_tab(self)
-            finally:
-                QtWidgets.QApplication.restoreOverrideCursor()
-            if exe_path is None:
-                detail = error or "Automatic C++ build failed."
-                if auto_runtime_error:
-                    detail = f"{detail}\nAuto-download failed: {auto_runtime_error}"
-                if stale_fallback is not None and stale_fallback.is_file():
-                    exe_path = stale_fallback
-                    self.log(f"C++ rebuild failed, launching existing executable: {detail}")
-                else:
-                    self.log(f"C++ launch failed: {detail}")
-                    install_hint = "Install Qt + CMake and try again."
-                    if _is_frozen_python_app():
-                        install_hint = (
-                            "Automatic C++ runtime download failed. "
-                            "Extract Trading-Bot-C++.zip from this release next to Trading-Bot-Python.exe."
-                        )
-                    _dismiss_progress_dialog()
-                    _restore_python_window_after_cpp_launch(self)
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "C++ launch failed",
-                        f"Could not start the C++ bot.\n\n{detail}\n\n{install_hint}",
-                    )
-                    return False
-            elif stale_fallback is not None and stale_fallback != exe_path:
-                try:
-                    self.log(f"C++ executable refreshed: {stale_fallback} -> {exe_path}")
-                except Exception:
-                    pass
-
-        _progress("Preparing Qt runtime...")
-        qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
-        env = _prepare_cpp_launch_env(exe_path, qt_bins, os.environ.copy())
-        env["TB_CPP_EXE_DIR"] = str(exe_path.parent)
-        env["TB_CPP_EXE_PATH"] = str(exe_path)
-        env["TB_PROJECT_ROOT"] = str(_BASE_PROJECT_PATH)
-        if _is_frozen_python_app():
-            env["TB_PY_FROZEN_EXE"] = str(Path(sys.executable).resolve())
-        else:
-            source_entry = (_BASE_PROJECT_PATH / "Languages" / "Python" / "main.py").resolve()
-            if source_entry.is_file():
-                env["TB_PY_SOURCE_SCRIPT"] = str(source_entry)
-                env["TB_PY_SOURCE_WORKDIR"] = str(source_entry.parent)
-            env["TB_PY_SOURCE_PYTHON"] = str(Path(sys.executable).resolve())
-
-        if not _is_frozen_python_app():
-            deploy_ok, deploy_output = _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=False)
-            if not deploy_ok:
-                try:
-                    self.log(f"C++ runtime deploy warning: {deploy_output}")
-                except Exception:
-                    pass
-        env = _prepare_cpp_launch_env(exe_path, qt_bins, env)
-        if sys.platform == "win32" and _cpp_runtime_bundle_missing(exe_path):
-            if _is_frozen_python_app():
-                _progress("C++ runtime incomplete. Fetching bundle...")
-                try:
-                    cached_exe, cached_err = _run_callable_with_ui_pump(
-                        _ensure_cached_cpp_bundle,
-                        force_download=False,
-                        poll_interval_s=0.05,
-                    )
-                except Exception as exc:
-                    cached_exe, cached_err = None, str(exc)
-                if cached_exe is not None and cached_exe.is_file():
-                    exe_path = cached_exe
-                    runtime_bundle_touched = True
-                    _reset_cpp_dependency_caches()
-                    qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
-                    env = _prepare_cpp_launch_env(exe_path, qt_bins, env)
-                else:
-                    hint = (
-                        "Could not auto-repair C++ runtime from release. "
-                        "Extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe."
-                    )
-                    extra = f"\n\nAuto-repair error: {cached_err}" if cached_err else ""
-                    _dismiss_progress_dialog()
-                    _restore_python_window_after_cpp_launch(self)
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "C++ launch failed",
-                        f"Qt runtime files for C++ are incomplete at:\n{exe_path.parent}\n\n{hint}{extra}",
-                    )
-                    return False
-            else:
-                hint = "Run windeployqt or install Qt + CMake and try again."
-                _dismiss_progress_dialog()
-                _restore_python_window_after_cpp_launch(self)
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "C++ launch failed",
-                    f"Qt runtime files for C++ are incomplete at:\n{exe_path.parent}\n\n{hint}",
-                )
-                return False
-
-        try:
-            if _is_frozen_python_app():
-                _reset_cpp_dependency_caches()
-            dep_rows = _cpp_dependency_rows_for_launch(self)
-            if dep_rows:
-                payload = json.dumps(dep_rows, ensure_ascii=False, separators=(",", ":"))
-                if len(payload) <= 16000:
-                    env["TB_CPP_ENV_VERSIONS_JSON"] = payload
-        except Exception:
-            pass
-
-        popen_kwargs: dict[str, object] = {
-            "cwd": str(exe_path.parent),
-            "env": env,
-        }
-        if sys.platform == "win32":
-            # main.py patches subprocess.Popen globally to hide windows.
-            # Override that behavior for the Qt C++ GUI executable.
-            popen_kwargs["creationflags"] = 0
-            try:
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 1  # SW_SHOWNORMAL
-                popen_kwargs["startupinfo"] = startupinfo
-            except Exception:
-                pass
-
-        def _spawn_cpp() -> subprocess.Popen:
-            return subprocess.Popen([str(exe_path)], **popen_kwargs)
-
-        _progress("Launching C++ bot...")
-        try:
-            process = _spawn_cpp()
-        except Exception as exc:
-            self.log(f"C++ launch failed: {exc}")
-            _dismiss_progress_dialog()
-            _restore_python_window_after_cpp_launch(self)
-            QtWidgets.QMessageBox.warning(self, "C++ launch failed", str(exc))
-            return False
-
-        early_exit = _poll_early_exit(process)
-        if early_exit is not None:
-            exit_code = process.returncode
-            self.log(f"C++ launch failed: process exited immediately (code {exit_code}).")
-
-            retry_succeeded = False
-            retry_reason = ""
-            if sys.platform == "win32":
-                _progress("C++ exited immediately. Repairing Qt runtime and retrying...")
-                redeploy_ok, redeploy_output = _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=True)
-                if not redeploy_ok:
-                    retry_reason = str(redeploy_output or "windeployqt failed")
-                else:
-                    try:
-                        retry_process = _spawn_cpp()
-                        retry_exit = _poll_early_exit(retry_process)
-                        if retry_exit is None:
-                            process = retry_process
-                            retry_succeeded = True
-                    except Exception as exc:
-                        retry_reason = str(exc)
-
-            # Recovery path for previously built binaries that were linked against
-            # optional Qt modules from a mismatched kit.
-            if not retry_succeeded and not _is_frozen_python_app():
-                _progress("Rebuilding C++ bot with current Qt settings and retrying...")
-                rebuild_err = ""
-                QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
-                try:
-                    rebuilt_exe, rebuild_err = _build_cpp_executable_for_code_tab(self)
-                finally:
-                    QtWidgets.QApplication.restoreOverrideCursor()
-                if rebuilt_exe is not None and rebuilt_exe.is_file():
-                    exe_path = rebuilt_exe
-                    qt_bins = _discover_cpp_qt_bin_dirs_for_code_tab()
-                    env = _prepare_cpp_launch_env(exe_path, qt_bins, env)
-                    popen_kwargs["cwd"] = str(exe_path.parent)
-                    popen_kwargs["env"] = env
-                    _deploy_cpp_runtime_bundle(exe_path, qt_bins=qt_bins, force=True)
-                    try:
-                        rebuild_process = _spawn_cpp()
-                        rebuild_exit = _poll_early_exit(rebuild_process)
-                        if rebuild_exit is None:
-                            process = rebuild_process
-                            retry_succeeded = True
-                    except Exception as exc:
-                        retry_reason = str(exc)
-                elif rebuild_err:
-                    retry_reason = str(rebuild_err)
-            elif not retry_succeeded and not retry_reason:
-                retry_reason = (
-                    "Packaged C++ app may be missing Qt runtime files after auto-repair. "
-                    "Re-extract Trading-Bot-C++.zip next to Trading-Bot-Python.exe."
-                )
-
-            if retry_succeeded:
-                self._cpp_code_tab_process = process
-                try:
-                    self._ensure_cpp_process_watchdog()
-                except Exception:
-                    pass
-                self.log(f"Launched C++ bot ({trigger}): {exe_path}")
-                if runtime_bundle_touched:
-                    QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
-                    QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-                QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_cpp_launch(self))
-                launch_succeeded = True
-                return True
-
-            exit_text = _format_windows_exit_code(exit_code)
-            extra = ""
-            if "0xC0000139" in exit_text:
-                extra = "\nWindows status 0xC0000139 usually means Qt DLL mismatch."
-            if retry_reason:
-                extra = f"{extra}\nAuto-repair attempt failed: {retry_reason}".rstrip()
-            _dismiss_progress_dialog()
-            _restore_python_window_after_cpp_launch(self)
-            QtWidgets.QMessageBox.warning(
-                self,
-                "C++ launch failed",
-                f"C++ bot exited immediately (code {exit_text}).\n"
-                "Check Qt runtime DLL availability and CMake/Qt configuration."
-                f"{extra}",
-            )
-            return False
-
-        self._cpp_code_tab_process = process
-        try:
-            self._ensure_cpp_process_watchdog()
-        except Exception:
-            pass
-        self.log(f"Launched C++ bot ({trigger}): {exe_path}")
-        if runtime_bundle_touched:
-            QtCore.QTimer.singleShot(0, lambda: _refresh_code_language_card_release_labels(self))
-            QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-        QtCore.QTimer.singleShot(0, lambda: _shutdown_python_after_cpp_launch(self))
-        launch_succeeded = True
-        return True
-    finally:
-        if not launch_succeeded:
-            _restore_python_window_after_cpp_launch(self)
-        try:
-            if progress_dialog is not None:
-                progress_dialog.close()
-        except Exception:
-            pass
+    return code_language_launcher.launch_cpp_from_code_tab(
+        self,
+        trigger=trigger,
+        cpp_supported_exchange_key=CPP_SUPPORTED_EXCHANGE_KEY,
+        cpp_dependency_version_targets=_CPP_DEPENDENCY_VERSION_TARGETS,
+        base_project_path=_BASE_PROJECT_PATH,
+        create_progress_dialog=_create_cpp_launch_progress_dialog,
+        hide_window_for_launch=_hide_python_window_for_cpp_launch,
+        restore_window=_restore_python_window_after_cpp_launch,
+        shutdown_after_handoff=_shutdown_python_after_cpp_launch,
+        update_progress=_update_cpp_launch_progress,
+        run_callable_with_ui_pump=_run_callable_with_ui_pump,
+        is_frozen_python_app=_is_frozen_python_app,
+        cpp_auto_setup_enabled=_cpp_auto_setup_enabled,
+        cpp_auto_prepare_environment_result=_cpp_auto_prepare_environment_result,
+        apply_cpp_auto_prepare_result=_apply_cpp_auto_prepare_result,
+        tail_text=_tail_text,
+        find_cpp_code_tab_executable=_find_cpp_code_tab_executable,
+        cpp_runtime_is_cached_path=_cpp_runtime_is_cached_path,
+        ensure_cached_cpp_bundle=_ensure_cached_cpp_bundle,
+        reset_cpp_dependency_caches=_reset_cpp_dependency_caches,
+        cpp_executable_is_stale=_cpp_executable_is_stale,
+        build_cpp_executable_for_code_tab=_build_cpp_executable_for_code_tab,
+        discover_cpp_qt_bin_dirs_for_code_tab=_discover_cpp_qt_bin_dirs_for_code_tab,
+        prepare_cpp_launch_env=_prepare_cpp_launch_env,
+        deploy_cpp_runtime_bundle=_deploy_cpp_runtime_bundle,
+        cpp_runtime_bundle_missing=_cpp_runtime_bundle_missing,
+        cpp_dependency_rows_for_launch=_cpp_dependency_rows_for_launch,
+        format_windows_exit_code=_format_windows_exit_code,
+        refresh_code_language_card_release_labels=_refresh_code_language_card_release_labels,
+    )
 
 
 def _code_tab_select_language(self, config_key: str) -> None:
@@ -16902,99 +13926,19 @@ def _code_tab_visible(self) -> bool:
 
 
 def _ensure_cpp_process_watchdog(self) -> None:
-    timer = getattr(self, "_cpp_process_watchdog_timer", None)
-    if timer is None:
-        try:
-            timer = QtCore.QTimer(self)
-            timer.setInterval(1000)
-            timer.timeout.connect(self._poll_cpp_process_state)
-            self._cpp_process_watchdog_timer = timer
-        except Exception:
-            return
-    try:
-        if not timer.isActive():
-            timer.start()
-    except Exception:
-        pass
+    return code_language_status.ensure_cpp_process_watchdog(self)
 
 
 def _poll_cpp_process_state(self) -> None:
-    proc = getattr(self, "_cpp_code_tab_process", None)
-    if proc is None:
-        return
-    try:
-        exit_code = proc.poll()
-    except Exception:
-        exit_code = 0
-    if exit_code is None:
-        return
-
-    self._cpp_code_tab_process = None
-    switched_to_python = False
-    try:
-        if self.config.get("code_language") == CPP_CODE_LANGUAGE_KEY:
-            self.config["code_language"] = PYTHON_CODE_LANGUAGE_KEY
-            switched_to_python = True
-    except Exception:
-        switched_to_python = False
-
-    if switched_to_python:
-        try:
-            self._refresh_code_tab_from_config()
-        except Exception:
-            pass
-        try:
-            self.log(f"C++ bot exited (code {exit_code}). Switched code language to Python.")
-        except Exception:
-            pass
+    return code_language_status.poll_cpp_process_state(self)
 
 
 def _ensure_rust_process_watchdog(self) -> None:
-    timer = getattr(self, "_rust_process_watchdog_timer", None)
-    if timer is None:
-        try:
-            timer = QtCore.QTimer(self)
-            timer.setInterval(1000)
-            timer.timeout.connect(self._poll_rust_process_state)
-            self._rust_process_watchdog_timer = timer
-        except Exception:
-            return
-    try:
-        if not timer.isActive():
-            timer.start()
-    except Exception:
-        pass
+    return code_language_status.ensure_rust_process_watchdog(self)
 
 
 def _poll_rust_process_state(self) -> None:
-    proc = getattr(self, "_rust_code_tab_process", None)
-    if proc is None:
-        return
-    try:
-        exit_code = proc.poll()
-    except Exception:
-        exit_code = 0
-    if exit_code is None:
-        return
-
-    self._rust_code_tab_process = None
-    switched_to_python = False
-    try:
-        if self.config.get("code_language") == RUST_CODE_LANGUAGE_KEY:
-            self.config["code_language"] = PYTHON_CODE_LANGUAGE_KEY
-            switched_to_python = True
-    except Exception:
-        switched_to_python = False
-
-    if switched_to_python:
-        try:
-            self._refresh_code_tab_from_config()
-        except Exception:
-            pass
-        try:
-            self.log(f"Rust bot exited (code {exit_code}). Switched code language to Python.")
-        except Exception:
-            pass
+    return code_language_status.poll_rust_process_state(self)
 
 
 def _start_dependency_usage_auto_poll(self) -> None:
