@@ -136,6 +136,16 @@ add_executable(binance_backtest_tab
     src/BinanceWsClient.cpp
     src/BinanceWsClient.h
     src/TradingBotWindow.cpp
+    src/TradingBotWindow.account.cpp
+    src/TradingBotWindow.backtest.cpp
+    src/TradingBotWindow.chart.cpp
+    src/TradingBotWindow.dashboard.cpp
+    src/TradingBotWindow.dashboard_ui.cpp
+    src/TradingBotWindow.positions.cpp
+    src/TradingBotWindow.runtime.cpp
+    src/TradingBotWindowSupport.cpp
+    src/TradingBotWindowSupport.h
+    src/TradingBotWindow.web.cpp
     src/TradingBotWindow.h
     resources.qrc
     ${APP_ICON_RC}
