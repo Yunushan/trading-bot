@@ -4,12 +4,38 @@ set -euo pipefail
 mkdir -p release
 arch="$(uname -m)"
 python_bin="Languages/Python/dist/Trading-Bot-Python"
+required_rust_asset="Trading-Bot-Rust:trading-bot-rust"
+optional_rust_assets=(
+  "Trading-Bot-Rust-egui:trading-bot-egui-desktop"
+  "Trading-Bot-Rust-iced:trading-bot-iced-desktop"
+  "Trading-Bot-Rust-slint:trading-bot-slint-desktop"
+  "Trading-Bot-Rust-tauri:trading-bot-tauri-desktop"
+  "Trading-Bot-Rust-dioxus:trading-bot-dioxus-desktop"
+)
 release_version="$(python -c 'import os,re; tag=(os.environ.get("TB_RELEASE_TAG") or "").strip(); m=re.search(r"(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)", tag); print((m.group(1).replace("_",".").replace("-",".") if m else "0.0.0"))')"
 
 if [[ ! -f "${python_bin}" ]]; then
   echo "Python binary not found at ${python_bin}" >&2
   exit 1
 fi
+
+required_rust_binary_name="${required_rust_asset#*:}"
+required_rust_bin="Languages/Rust/target/release/${required_rust_binary_name}"
+if [[ ! -f "${required_rust_bin}" ]]; then
+  echo "Required Rust binary not found at ${required_rust_bin}" >&2
+  exit 1
+fi
+
+rust_assets=("${required_rust_asset}")
+for rust_entry in "${optional_rust_assets[@]}"; do
+  rust_binary_name="${rust_entry#*:}"
+  rust_bin="Languages/Rust/target/release/${rust_binary_name}"
+  if [[ -f "${rust_bin}" ]]; then
+    rust_assets+=("${rust_entry}")
+  else
+    echo "Warning: optional Rust binary not found at ${rust_bin}; skipping release asset." >&2
+  fi
+done
 
 if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
   linux_python_asset="release/Trading-Bot-Python-linux-${arch}"
@@ -18,6 +44,16 @@ if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
   tar -C release -czf "release/Trading-Bot-Python-linux-${arch}-${release_version}.tar.gz" "Trading-Bot-Python-linux-${arch}"
   # Keep only the archive in release assets to avoid duplicate standalone + tarball uploads.
   rm -f "${linux_python_asset}"
+  for rust_entry in "${rust_assets[@]}"; do
+    rust_asset_prefix="${rust_entry%%:*}"
+    rust_binary_name="${rust_entry#*:}"
+    rust_bin="Languages/Rust/target/release/${rust_binary_name}"
+    linux_rust_asset="release/${rust_asset_prefix}-linux-${arch}"
+    cp "${rust_bin}" "${linux_rust_asset}"
+    chmod +x "${linux_rust_asset}"
+    tar -C release -czf "release/${rust_asset_prefix}-linux-${arch}-${release_version}.tar.gz" "${rust_asset_prefix}-linux-${arch}"
+    rm -f "${linux_rust_asset}"
+  done
   tar -C release -czf "release/Trading-Bot-C++-linux-${arch}-${release_version}.tar.gz" "Trading-Bot-C++"
 
   deb_arch="amd64"
@@ -108,6 +144,18 @@ else
     "${macos_python_asset}" \
     "release/Trading-Bot-Python-${macos_asset_suffix}-${release_version}.zip"
   rm -f "${macos_python_asset}"
+  for rust_entry in "${rust_assets[@]}"; do
+    rust_asset_prefix="${rust_entry%%:*}"
+    rust_binary_name="${rust_entry#*:}"
+    rust_bin="Languages/Rust/target/release/${rust_binary_name}"
+    macos_rust_asset="release/${rust_asset_prefix}-${macos_asset_suffix}-${release_version}"
+    cp "${rust_bin}" "${macos_rust_asset}"
+    chmod +x "${macos_rust_asset}"
+    ditto -c -k --sequesterRsrc --keepParent \
+      "${macos_rust_asset}" \
+      "release/${rust_asset_prefix}-${macos_asset_suffix}-${release_version}.zip"
+    rm -f "${macos_rust_asset}"
+  done
   ditto -c -k --sequesterRsrc --keepParent \
     "release/Trading-Bot-C++" \
     "release/Trading-Bot-C++-${macos_asset_suffix}-${release_version}.zip"

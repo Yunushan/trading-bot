@@ -416,10 +416,12 @@ This repo includes automated release workflows:
 
 When you push a tag that starts with `v` (for example `v1.0.0`), GitHub Actions will build and publish platform assets:
 
-- **Windows**: x64 (`Trading-Bot-Python.exe`, `Trading-Bot-C++.zip`) and ARM64 (`Trading-Bot-Python-arm64.exe`, `Trading-Bot-C++-arm64.zip`)
-- **Linux**: Python/C++ tarballs plus Linux packages (`.deb`, `.rpm`) for `x86_64` and `arm64`
-- **macOS**: Python/C++ zip bundles (built on `macos-14`, `macos-15`, and `macos-26` for both Intel `x86_64` and ARM64)
+- **Windows**: x64 and ARM64 assets for Python, C++, the Rust workspace binary, and every Rust desktop framework shell
+- **Linux**: Python/C++ tarballs, Linux packages (`.deb`, `.rpm`), plus tarballs for the Rust workspace binary and every Rust desktop framework shell on `x86_64` and `arm64`
+- **macOS**: Python/C++ zip bundles plus zip bundles for the Rust workspace binary and every Rust desktop framework shell (built on `macos-14`, `macos-15`, and `macos-26` for both Intel `x86_64` and ARM64)
 - **FreeBSD**: Python/C++ tarballs (requires an online self-hosted runner with labels `self-hosted, freebsd`)
+
+Rust framework shell assets are best-effort. If one optional framework fails to compile on a runner, the rest of the release still publishes.
 
 > FreeBSD release workflow runs automatically on `v*` tags when a matching self-hosted runner is available, or manually via workflow dispatch (`run_freebsd=true`).
 
@@ -433,11 +435,20 @@ Release steps:
    ```
 3. Open the Actions tab and wait for release workflows to finish.
 4. Check the new GitHub Release assets:
-   - `Trading-Bot-Python.exe`
-   - `Trading-Bot-C++.zip`
-   - `Trading-Bot-Python-arm64.exe`
-   - `Trading-Bot-C++-arm64.zip`
+   - `Trading-Bot-Python-*`
+   - `Trading-Bot-C++-*`
+   - `Trading-Bot-Rust-*`
+   - `Trading-Bot-Rust-egui-*`
+   - `Trading-Bot-Rust-iced-*`
+   - `Trading-Bot-Rust-slint-*`
+   - `Trading-Bot-Rust-tauri-*`
+   - `Trading-Bot-Rust-dioxus-*`
    - Linux, macOS, and FreeBSD artifacts from their respective workflows
+5. Verify the published release automatically:
+   ```bash
+   python tools/check_release_assets.py v1.0.30
+   ```
+   Add `--list-expected` to preview the expected asset matrix without contacting GitHub.
 
 ---
 

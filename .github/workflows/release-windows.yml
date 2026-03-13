@@ -93,6 +93,9 @@ jobs:
           cache: pip
           cache-dependency-path: ${{ matrix.python_requirements }}
 
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Refresh README LOC snapshot
         shell: pwsh
         run: |
@@ -330,6 +333,43 @@ jobs:
         run: |
           ./Languages/Python/tools/build_exe.ps1 -Python python -Name "Trading-Bot-Python" -SkipDependencyInstall -ReleaseTag "$env:TB_RELEASE_TAG"
 
+      - name: Build required Rust EXE
+        shell: pwsh
+        run: |
+          $rustBuildArgs = @(
+            "--manifest-path", "Languages/Rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--package", "trading-bot-rust"
+          )
+          cargo build @rustBuildArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required Rust package build failed: trading-bot-rust"
+          }
+
+      - name: Build optional Rust framework EXEs
+        shell: pwsh
+        run: |
+          $baseRustBuildArgs = @(
+            "--manifest-path", "Languages/Rust/Cargo.toml",
+            "--locked",
+            "--release"
+          )
+          $optionalRustPackages = @(
+            "trading-bot-egui-desktop",
+            "trading-bot-iced-desktop",
+            "trading-bot-slint-desktop",
+            "trading-bot-tauri-desktop",
+            "trading-bot-dioxus-desktop"
+          )
+          foreach ($package in $optionalRustPackages) {
+            $rustBuildArgs = $baseRustBuildArgs + @("--package", $package)
+            cargo build @rustBuildArgs
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "Optional Rust framework build failed and will be skipped: $package"
+            }
+          }
+
       - name: Configure C++ build
         shell: pwsh
         run: |
@@ -375,6 +415,27 @@ jobs:
 
           $pythonExeAsset = "release/Trading-Bot-Python-$assetTag-$releaseVersion.exe"
           Copy-Item $pythonExe $pythonExeAsset
+
+          $rustAssets = @(
+            @{ AssetPrefix = "Trading-Bot-Rust"; BinaryName = "trading-bot-rust"; Required = $true },
+            @{ AssetPrefix = "Trading-Bot-Rust-egui"; BinaryName = "trading-bot-egui-desktop"; Required = $false },
+            @{ AssetPrefix = "Trading-Bot-Rust-iced"; BinaryName = "trading-bot-iced-desktop"; Required = $false },
+            @{ AssetPrefix = "Trading-Bot-Rust-slint"; BinaryName = "trading-bot-slint-desktop"; Required = $false },
+            @{ AssetPrefix = "Trading-Bot-Rust-tauri"; BinaryName = "trading-bot-tauri-desktop"; Required = $false },
+            @{ AssetPrefix = "Trading-Bot-Rust-dioxus"; BinaryName = "trading-bot-dioxus-desktop"; Required = $false }
+          )
+          foreach ($rustAsset in $rustAssets) {
+            $rustExe = "Languages/Rust/target/release/$($rustAsset.BinaryName).exe"
+            if (!(Test-Path $rustExe)) {
+              if ($rustAsset.Required) {
+                throw "Rust executable not found after build: $rustExe"
+              }
+              Write-Warning "Optional Rust executable not found after build and will be skipped: $rustExe"
+              continue
+            }
+            $rustExeAsset = "release/$($rustAsset.AssetPrefix)-$assetTag-$releaseVersion.exe"
+            Copy-Item $rustExe $rustExeAsset
+          }
 
           $cppExe = "build/binance_cpp/Release/Trading-Bot-C++.exe"
           if (!(Test-Path $cppExe)) {
@@ -523,6 +584,7 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: |
             release/Trading-Bot-Python*.exe
+            release/Trading-Bot-Rust*.exe
             release/Trading-Bot-C++*.zip
           if-no-files-found: error
 
