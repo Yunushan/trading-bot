@@ -4,6 +4,59 @@ from collections.abc import Iterable
 import time
 
 
+def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
+    cw = ctx.get("cw") if isinstance(ctx, dict) else self.config
+    if not isinstance(cw, dict):
+        cw = self.config
+    account_type = str(ctx.get("account_type") or "").upper()
+    if account_type != "FUTURES" or not bool(ctx.get("is_entire_account")):
+        return False
+
+    total_unrealized = 0.0
+    try:
+        total_unrealized = float(self.binance.get_total_unrealized_pnl())
+    except Exception:
+        total_unrealized = 0.0
+
+    triggered = False
+    reason = None
+    apply_usdt_limit = bool(ctx.get("apply_usdt_limit"))
+    apply_percent_limit = bool(ctx.get("apply_percent_limit"))
+    try:
+        stop_usdt_limit = float(ctx.get("stop_usdt_limit") or 0.0)
+    except Exception:
+        stop_usdt_limit = 0.0
+    try:
+        stop_percent_limit = float(ctx.get("stop_percent_limit") or 0.0)
+    except Exception:
+        stop_percent_limit = 0.0
+
+    if apply_usdt_limit and total_unrealized <= -stop_usdt_limit:
+        triggered = True
+        reason = f"entire-account-usdt-limit ({total_unrealized:.2f})"
+    if not triggered and apply_percent_limit:
+        total_wallet = 0.0
+        try:
+            total_wallet = float(self.binance.get_total_wallet_balance())
+        except Exception:
+            total_wallet = 0.0
+        if total_wallet > 0.0 and total_unrealized < 0.0:
+            loss_pct = (abs(total_unrealized) / total_wallet) * 100.0
+            if loss_pct >= stop_percent_limit:
+                triggered = True
+                reason = f"entire-account-percent-limit ({loss_pct:.2f}%)"
+
+    if not triggered:
+        return False
+
+    try:
+        self.log(f"{cw['symbol']}@{cw.get('interval')} entire account stop-loss triggered: {reason}.")
+    except Exception:
+        pass
+    self._trigger_emergency_close(cw["symbol"], cw.get("interval"), reason or "entire_account_stop")
+    return True
+
+
 def _execute_close_with_fallback(
     self,
     symbol: str,
@@ -741,6 +794,7 @@ def _close_indicator_positions(
 
 
 def bind_strategy_position_close_runtime(strategy_cls) -> None:
+    strategy_cls._apply_entire_account_stop_loss = _apply_entire_account_stop_loss
     strategy_cls._close_indicator_positions = _close_indicator_positions
     strategy_cls._execute_close_with_fallback = _execute_close_with_fallback
     strategy_cls._close_leg_entry = _close_leg_entry

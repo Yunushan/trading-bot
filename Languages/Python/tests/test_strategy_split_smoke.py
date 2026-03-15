@@ -49,6 +49,12 @@ def _build_engine(binance_wrapper, *, config=None):
 class StrategySplitSmokeTests(unittest.TestCase):
     def test_strategy_engine_has_split_runtime_methods(self):
         expected_methods = [
+            "_build_cycle_context",
+            "_fetch_cycle_market_state",
+            "_log_cycle_signal_summary",
+            "_apply_entire_account_stop_loss",
+            "_collect_indicator_order_requests",
+            "_merge_flip_requests_into_indicator_orders",
             "_prepare_signal_orders",
             "_execute_signal_order",
             "_prepare_signal_order_guard",
@@ -70,6 +76,12 @@ class StrategySplitSmokeTests(unittest.TestCase):
         engine = _build_engine(_FakeFuturesBinance())
 
         self.assertEqual(engine._interval_to_seconds("5m"), 300)
+        self.assertTrue(callable(engine._build_cycle_context))
+        self.assertTrue(callable(engine._fetch_cycle_market_state))
+        self.assertTrue(callable(engine._log_cycle_signal_summary))
+        self.assertTrue(callable(engine._apply_entire_account_stop_loss))
+        self.assertTrue(callable(engine._collect_indicator_order_requests))
+        self.assertTrue(callable(engine._merge_flip_requests_into_indicator_orders))
         self.assertTrue(callable(engine._prepare_signal_orders))
         self.assertTrue(callable(engine._execute_signal_order))
         self.assertTrue(callable(engine._prepare_signal_order_slot_state))

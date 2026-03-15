@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+from datetime import datetime
 import threading
 import time
 import traceback
 
 try:
     from .binance_wrapper import NetworkConnectivityError
+    from .config import (
+        STOP_LOSS_MODE_ORDER,
+        STOP_LOSS_SCOPE_OPTIONS,
+        coerce_bool,
+        normalize_stop_loss_dict,
+    )
 except ImportError:  # pragma: no cover - standalone execution fallback
     from binance_wrapper import NetworkConnectivityError
+    from config import (
+        STOP_LOSS_MODE_ORDER,
+        STOP_LOSS_SCOPE_OPTIONS,
+        coerce_bool,
+        normalize_stop_loss_dict,
+    )
 
 
 def stop(self):
@@ -149,6 +162,141 @@ def _handle_network_outage(self, sym: str, interval: str, exc: Exception) -> flo
     return backoff
 
 
+def _build_cycle_context(self) -> dict[str, object] | None:
+    cw = self.config
+    if self.stopped():
+        return None
+    now_ts = time.time()
+    allow_opposite_enabled = coerce_bool(self.config.get("allow_opposite_positions"), True)
+    if allow_opposite_enabled and coerce_bool(self.config.get("hedge_preserve_opposites"), False):
+        allow_opposite_enabled = False  # keep both sides; do not auto-close opposite legs in hedge stacking
+    stop_cfg = normalize_stop_loss_dict(cw.get("stop_loss"))
+    stop_mode = str(stop_cfg.get("mode") or "usdt").lower()
+    if stop_mode not in STOP_LOSS_MODE_ORDER:
+        stop_mode = STOP_LOSS_MODE_ORDER[0]
+    stop_usdt_limit = max(0.0, float(stop_cfg.get("usdt", 0.0) or 0.0))
+    stop_percent_limit = max(0.0, float(stop_cfg.get("percent", 0.0) or 0.0))
+    scope = str(stop_cfg.get("scope") or "per_trade").lower()
+    if scope not in STOP_LOSS_SCOPE_OPTIONS:
+        scope = STOP_LOSS_SCOPE_OPTIONS[0]
+    stop_enabled = bool(stop_cfg.get("enabled", False))
+    apply_usdt_limit = stop_enabled and stop_mode in ("usdt", "both") and stop_usdt_limit > 0.0
+    apply_percent_limit = stop_enabled and stop_mode in ("percent", "both") and stop_percent_limit > 0.0
+    stop_enabled = apply_usdt_limit or apply_percent_limit
+    account_type = str((self.config.get("account_type") or self.binance.account_type)).upper()
+    is_cumulative = stop_enabled and scope == "cumulative"
+    is_entire_account = stop_enabled and scope == "entire_account"
+    return {
+        "cw": cw,
+        "now_ts": now_ts,
+        "allow_opposite_enabled": allow_opposite_enabled,
+        "hedge_overlap_allowed": bool(allow_opposite_enabled),
+        "stop_cfg": stop_cfg,
+        "stop_mode": stop_mode,
+        "stop_usdt_limit": stop_usdt_limit,
+        "stop_percent_limit": stop_percent_limit,
+        "scope": scope,
+        "stop_enabled": stop_enabled,
+        "apply_usdt_limit": apply_usdt_limit,
+        "apply_percent_limit": apply_percent_limit,
+        "account_type": account_type,
+        "is_cumulative": is_cumulative,
+        "is_entire_account": is_entire_account,
+    }
+
+
+def _fetch_cycle_market_state(self, *, ctx: dict[str, object]) -> dict[str, object] | None:
+    cw = ctx.get("cw") if isinstance(ctx, dict) else self.config
+    if not isinstance(cw, dict):
+        cw = self.config
+
+    try:
+        self._reconcile_liquidations(cw["symbol"])
+    except Exception:
+        pass
+    if self.stopped():
+        return None
+
+    df = self.binance.get_klines(cw["symbol"], cw["interval"], limit=cw.get("lookback", 200))
+    if self.stopped():
+        return None
+
+    ind = self.compute_indicators(df)
+    if self.stopped():
+        return None
+
+    signal, trigger_desc, trigger_price, trigger_sources, trigger_actions = self.generate_signal(df, ind)
+    signal_timestamp = time.time() if signal else None
+    try:
+        current_bar_marker = int(df.index[-1].value) if not df.empty else None
+    except Exception:
+        current_bar_marker = None
+
+    try:
+        rsi_series = ind.get("rsi") or ind.get("RSI") or None
+        if rsi_series is not None:
+            _, _, last_rsi = self._indicator_prev_live_signal_values(rsi_series)
+        else:
+            last_rsi = None
+    except Exception:
+        last_rsi = None
+
+    trigger_segments = [
+        segment.strip()
+        for segment in str(trigger_desc or "").split("|")
+        if str(segment).strip()
+    ]
+
+    return {
+        "df": df,
+        "ind": ind,
+        "signal": signal,
+        "signal_timestamp": signal_timestamp,
+        "trigger_desc": trigger_desc,
+        "trigger_price": trigger_price,
+        "trigger_sources": trigger_sources,
+        "trigger_actions": trigger_actions,
+        "trigger_segments": trigger_segments,
+        "current_bar_marker": current_bar_marker,
+        "last_rsi": last_rsi,
+        "last_price": None,
+    }
+
+
+def _log_cycle_signal_summary(self, *, ctx: dict[str, object], market_state: dict[str, object]) -> None:
+    cw = ctx.get("cw") if isinstance(ctx, dict) else self.config
+    if not isinstance(cw, dict):
+        cw = self.config
+    ind = market_state.get("ind") if isinstance(market_state, dict) else {}
+    if not isinstance(ind, dict):
+        ind = {}
+    last_price = market_state.get("last_price")
+    signal = market_state.get("signal")
+    trigger_price = market_state.get("trigger_price")
+    trigger_desc = str(market_state.get("trigger_desc") or "")
+
+    thresholds = []
+    try:
+        if cw["indicators"]["ma"]["enabled"] and "ma" in ind and not ind["ma"].isnull().all():
+            thresholds.append(f"MA={float(ind['ma'].iloc[-1]):.8f}")
+    except Exception:
+        pass
+
+    ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    parts = [
+        f"{ts}",
+        f"{cw['symbol']}@{cw['interval']}",
+        f"Price={last_price:.8f}" if last_price is not None else "Price=None",
+        f"Signal={signal if signal else 'None'}",
+    ]
+    if trigger_price is not None:
+        parts.append(f"TriggerPrice={trigger_price:.8f}")
+    if thresholds:
+        parts.append("Thresholds:" + ",".join(thresholds))
+    parts.append("Details:" + trigger_desc)
+    self.log(" | ".join(parts))
+
+
 def run_loop(self):
     cls = type(self)
     sym = self.config.get("symbol", "(unknown)")
@@ -237,6 +385,9 @@ def bind_strategy_runtime(strategy_cls) -> None:
     strategy_cls.join = join
     strategy_cls._trigger_emergency_close = _trigger_emergency_close
     strategy_cls._handle_network_outage = _handle_network_outage
+    strategy_cls._build_cycle_context = _build_cycle_context
+    strategy_cls._fetch_cycle_market_state = _fetch_cycle_market_state
+    strategy_cls._log_cycle_signal_summary = _log_cycle_signal_summary
     strategy_cls.run_loop = run_loop
     strategy_cls.set_guard = set_guard
     strategy_cls.start = start
