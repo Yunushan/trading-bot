@@ -140,6 +140,10 @@ add_executable(binance_backtest_tab
     src/TradingBotWindow.backtest.cpp
     src/TradingBotWindow.chart.cpp
     src/TradingBotWindow.dashboard.cpp
+    src/TradingBotWindow.dashboard_runtime.cpp
+    src/TradingBotWindow.dashboard_runtime_lifecycle.cpp
+    src/TradingBotWindow.dashboard_runtime_shared.cpp
+    src/TradingBotWindow.dashboard_runtime_shared.h
     src/TradingBotWindow.dashboard_ui.cpp
     src/TradingBotWindow.positions.cpp
     src/TradingBotWindow.runtime.cpp
