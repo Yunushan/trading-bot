@@ -23,6 +23,7 @@ class QTimer;
 class QTabWidget;
 class QWidget;
 class QTextEdit;
+class QVBoxLayout;
 class BinanceWsClient;
 
 // Main Qt window for the C++ desktop runtime.
@@ -76,6 +77,11 @@ private:
     void appendDashboardPositionLog(const QString &message);
     void appendDashboardWaitingLog(const QString &message);
     void refreshDashboardWaitingQueueTable();
+    void addSelectedDashboardOverrideRows();
+    void removeSelectedDashboardOverrideRows();
+    void clearDashboardOverrideRows();
+    void saveDashboardConfig();
+    void loadDashboardConfig();
     // Utility/UI state helpers.
     void wireSignals();
     void ensureBotTimer(bool running);
@@ -89,6 +95,17 @@ private:
     void applyPositionsViewMode(bool resizeColumns = true, bool resizeRows = true);
     void refreshPositionsSummaryLabels();
     bool openExternalUrl(const QString &url);
+    void registerDashboardRuntimeLockWidget(QWidget *widget);
+    QString dashboardEnabledIndicatorsSummary() const;
+    QString dashboardStopLossSummary() const;
+    QString dashboardStrategySummary() const;
+    bool dashboardOverridesHasPair(const QString &symbol, const QString &interval) const;
+    bool addDashboardOverrideRow(const QString &symbolRaw, const QString &intervalRaw);
+
+    void createDashboardAccountStatusSection(QWidget *page, QVBoxLayout *root);
+    void createDashboardExchangeAndMarketsSections(QWidget *page, QVBoxLayout *root);
+    void createDashboardStrategySection(QWidget *page, QVBoxLayout *root);
+    void createDashboardRuntimeSection(QWidget *page, QVBoxLayout *root);
 
     QListWidget *symbolList_;
     QListWidget *intervalList_;
@@ -143,6 +160,8 @@ private:
     QComboBox *dashboardTemplateCombo_;
     QComboBox *dashboardMarginModeCombo_;
     QComboBox *dashboardPositionModeCombo_;
+    QComboBox *dashboardSideCombo_ = nullptr;
+    QComboBox *dashboardLoopOverrideCombo_ = nullptr;
     QDoubleSpinBox *dashboardPositionPctSpin_;
     QSpinBox *dashboardLeverageSpin_;
     QListWidget *dashboardSymbolList_;
@@ -151,8 +170,13 @@ private:
     QMap<QString, QCheckBox *> dashboardIndicatorChecks_;
     QMap<QString, QPushButton *> dashboardIndicatorButtons_;
     QMap<QString, QVariantMap> dashboardIndicatorParams_;
+    QPushButton *dashboardAddSelectedOverrideBtn_ = nullptr;
+    QPushButton *dashboardRemoveSelectedOverrideBtn_ = nullptr;
+    QPushButton *dashboardClearOverridesBtn_ = nullptr;
     QPushButton *dashboardStartBtn_;
     QPushButton *dashboardStopBtn_;
+    QPushButton *dashboardSaveConfigBtn_ = nullptr;
+    QPushButton *dashboardLoadConfigBtn_ = nullptr;
     QTableWidget *dashboardOverridesTable_;
     QTextEdit *dashboardAllLogsEdit_;
     QTextEdit *dashboardPositionLogsEdit_;
@@ -172,6 +196,9 @@ private:
     QCheckBox *dashboardLeadTraderEnableCheck_;
     QComboBox *dashboardLeadTraderCombo_;
     QCheckBox *dashboardStopWithoutCloseCheck_;
+    QCheckBox *dashboardLiveIndicatorValuesCheck_ = nullptr;
+    QCheckBox *dashboardOneWayCheck_ = nullptr;
+    QCheckBox *dashboardHedgeStackCheck_ = nullptr;
     QCheckBox *dashboardStopLossEnableCheck_;
     QComboBox *dashboardStopLossModeCombo_;
     QComboBox *dashboardStopLossScopeCombo_;
