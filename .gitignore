@@ -6,6 +6,11 @@ build/
 dist/
 dist_enduser/
 .vscode/
+**/.vscode/
+**/.idea/
+**/.pytest_cache/
+**/.ruff_cache/
+.DS_Store
 aqtinstall.log
 CMakeFiles/
 .venv/

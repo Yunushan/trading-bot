@@ -650,6 +650,29 @@ double floorToOrderStep(double qty, double step, int precisionHint) {
     return (qIsFinite(normalized) && normalized > 0.0) ? normalized : 0.0;
 }
 
+double ceilToOrderStep(double qty, double step, int precisionHint) {
+    if (!qIsFinite(qty) || qty <= 0.0) {
+        return 0.0;
+    }
+
+    double normalized = qty;
+    if (qIsFinite(step) && step > 0.0) {
+        normalized = std::ceil((normalized / step) - 1e-12) * step;
+    }
+
+    const int precision = std::max(0, std::min(16, precisionHint));
+    if (precision > 0) {
+        const double scale = std::pow(10.0, precision);
+        normalized = std::ceil((normalized * scale) - 1e-9) / scale;
+    }
+
+    if (qIsFinite(step) && step > 0.0) {
+        normalized = std::ceil((normalized / step) - 1e-12) * step;
+    }
+
+    return (qIsFinite(normalized) && normalized > 0.0) ? normalized : 0.0;
+}
+
 double normalizePriceToTick(double price, double tickSize, int precisionHint, bool roundUp) {
     if (!qIsFinite(price) || price <= 0.0) {
         return 0.0;
@@ -691,6 +714,13 @@ bool isMaxQuantityExceededError(const QString &errorText) {
     return err.contains(QStringLiteral("-4005"))
         || err.contains(QStringLiteral("greater than max quantity"))
         || err.contains(QStringLiteral("max quantity"));
+}
+
+bool isMinNotionalError(const QString &errorText) {
+    const QString err = errorText.trimmed().toLower();
+    return err.contains(QStringLiteral("-4164"))
+        || err.contains(QStringLiteral("notional must be no smaller than"))
+        || err.contains(QStringLiteral("min notional"));
 }
 
 bool isReduceOnlyRejectedError(const QString &errorText) {
@@ -1019,9 +1049,7 @@ double normalizeFuturesOrderQuantity(
     }
 
     const double step = (qIsFinite(filters.stepSize) && filters.stepSize > 0.0) ? filters.stepSize : 0.0;
-    if (step > 0.0) {
-        qty = std::ceil((qty / step) - 1e-12) * step;
-    }
+    qty = ceilToOrderStep(qty, step, filters.quantityPrecision);
 
     if (maxQty > 0.0 && qty > maxQty) {
         if (step > 0.0) {
@@ -1037,9 +1065,7 @@ double normalizeFuturesOrderQuantity(
         qty = std::ceil((qty * scale) - 1e-9) / scale;
     }
 
-    if (step > 0.0) {
-        qty = std::ceil((qty / step) - 1e-12) * step;
-    }
+    qty = ceilToOrderStep(qty, step, filters.quantityPrecision);
 
     if (!qIsFinite(qty) || qty <= 0.0) {
         return 0.0;
@@ -1047,6 +1073,15 @@ double normalizeFuturesOrderQuantity(
 
     if (requiredQty > 0.0 && qty + 1e-12 < requiredQty) {
         return 0.0;
+    }
+    if (qIsFinite(filters.minNotional) && filters.minNotional > 0.0) {
+        const double minNotional = filters.minNotional;
+        if ((qty * markPrice) + 1e-9 < minNotional) {
+            qty = ceilToOrderStep(minNotional / markPrice, step, filters.quantityPrecision);
+            if (!qIsFinite(qty) || qty <= 0.0 || (maxQty > 0.0 && qty > maxQty)) {
+                return 0.0;
+            }
+        }
     }
     return qty;
 }
@@ -1094,7 +1129,38 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
         ? filters.minQty
         : (stepSize > 0.0 ? stepSize : 0.0);
     const double maxQty = (filters.ok && qIsFinite(filters.maxQty) && filters.maxQty > 0.0) ? filters.maxQty : 0.0;
+    const double minNotional = (filters.ok && qIsFinite(filters.minNotional) && filters.minNotional > 0.0)
+        ? filters.minNotional
+        : 0.0;
     const int quantityPrecision = (filters.ok && filters.quantityPrecision > 0) ? filters.quantityPrecision : 8;
+    constexpr double kMinNotionalBuffer = 1.05;
+    double minNotionalGuardPrice = 0.0;
+    const auto refreshMinNotionalGuardPrice = [&]() -> double {
+        if (minNotional <= 0.0) {
+            return 0.0;
+        }
+        const auto ticker = BinanceRestClient::fetchTickerPrice(
+            aggregated.symbol,
+            true,
+            testnet,
+            timeoutMs,
+            baseUrlOverride);
+        if (ticker.ok && qIsFinite(ticker.price) && ticker.price > 0.0) {
+            minNotionalGuardPrice = ticker.price;
+        }
+        return minNotionalGuardPrice;
+    };
+    const auto minimumLegalOpenQty = [&](double priceHint) -> double {
+        double required = minQty;
+        if (minNotional > 0.0 && qIsFinite(priceHint) && priceHint > 0.0) {
+            const double notionalQty = ceilToOrderStep(
+                (minNotional * kMinNotionalBuffer) / priceHint,
+                stepSize,
+                quantityPrecision);
+            required = std::max(required, notionalQty);
+        }
+        return (qIsFinite(required) && required > 0.0) ? required : 0.0;
+    };
     int maxAttempts = 20;
     if (maxQty > 0.0) {
         maxAttempts = std::max(
@@ -1102,7 +1168,22 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             std::min(400, static_cast<int>(std::ceil(quantity / maxQty)) + 8));
     }
 
-    double remainingQty = quantity;
+    double targetQty = quantity;
+    const double initialMinNotionalPrice = refreshMinNotionalGuardPrice();
+    const double initialMinLegalQty = minimumLegalOpenQty(initialMinNotionalPrice);
+    if (initialMinLegalQty > 0.0) {
+        if (maxQty > 0.0 && initialMinLegalQty > maxQty + kQtyEpsilon) {
+            aggregated.error = QStringLiteral(
+                "Open order blocked: MIN_NOTIONAL requires qty=%1 but MAX_QTY is %2 at price=%3.")
+                                   .arg(QString::number(initialMinLegalQty, 'f', 8),
+                                        QString::number(maxQty, 'f', 8),
+                                        QString::number(initialMinNotionalPrice, 'f', 8));
+            return aggregated;
+        }
+        targetQty = std::max(targetQty, initialMinLegalQty);
+    }
+
+    double remainingQty = targetQty;
     double chunkQty = (maxQty > 0.0) ? std::min(remainingQty, maxQty) : remainingQty;
     double weightedPriceSum = 0.0;
     double totalExecutedQty = 0.0;
@@ -1137,6 +1218,16 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             chunk = maxQty;
             if (stepSize > 0.0) {
                 chunk = floorToOrderStep(chunk, stepSize, quantityPrecision);
+            }
+        }
+        const double minLegalQty = minimumLegalOpenQty(minNotionalGuardPrice);
+        if (minLegalQty > 0.0 && chunk + kQtyEpsilon < minLegalQty) {
+            chunk = minLegalQty;
+            if (maxQty > 0.0) {
+                chunk = std::min(chunk, maxQty);
+            }
+            if (stepSize > 0.0) {
+                chunk = ceilToOrderStep(chunk, stepSize, quantityPrecision);
             }
         }
         if (chunk > remainingQty) {
@@ -1212,6 +1303,26 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
                 }
                 continue;
             }
+        } else if (isMinNotionalError(orderError)) {
+            const double refreshedPrice = refreshMinNotionalGuardPrice();
+            const double requiredQty = minimumLegalOpenQty(refreshedPrice);
+            if (requiredQty > 0.0) {
+                if (maxQty > 0.0 && requiredQty > maxQty + kQtyEpsilon) {
+                    aggregated.error = QStringLiteral(
+                        "Open order blocked: MIN_NOTIONAL requires qty=%1 but MAX_QTY is %2 at price=%3.")
+                                           .arg(QString::number(requiredQty, 'f', 8),
+                                                QString::number(maxQty, 'f', 8),
+                                                QString::number(refreshedPrice, 'f', 8));
+                    break;
+                }
+                if (requiredQty > chunkQty + kQtyEpsilon || requiredQty > remainingQty + kQtyEpsilon) {
+                    targetQty = std::max(targetQty, requiredQty);
+                    remainingQty = std::max(remainingQty, requiredQty);
+                    chunkQty = requiredQty;
+                    aggregated.error = QStringLiteral("Open fallback activated due to MIN_NOTIONAL filter.");
+                    continue;
+                }
+            }
         }
 
         aggregated.error = orderError.isEmpty() ? QStringLiteral("Open order failed") : orderError;
@@ -1237,7 +1348,7 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
         const QString partialMessage = QStringLiteral(
             "Partial open: executed=%1 requested=%2 remaining=%3 attempts=%4")
                                            .arg(QString::number(totalExecutedQty, 'f', 8),
-                                                QString::number(quantity, 'f', 8),
+                                                QString::number(targetQty, 'f', 8),
                                                 QString::number(std::max(0.0, remainingQty), 'f', 8),
                                                 QString::number(attempts));
         if (aggregated.error.isEmpty()) {

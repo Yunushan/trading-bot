@@ -27,7 +27,7 @@ def _boot_log(message: str) -> None:
 
 
 def _resolve_native_icon_path() -> Path | None:
-    from app.gui.app_icon import find_primary_icon_file
+    from app.gui.shared.app_icon import find_primary_icon_file
 
     path = find_primary_icon_file()
     if path is None:
@@ -100,7 +100,7 @@ def _resolve_taskbar_icon_path() -> Path | None:
     icon_path = _resolve_native_icon_path()
     if icon_path and icon_path.is_file():
         return icon_path
-    from app.gui.app_icon import find_primary_icon_file
+    from app.gui.shared.app_icon import find_primary_icon_file
 
     primary = find_primary_icon_file()
     if primary and primary.is_file():
@@ -576,7 +576,7 @@ def _show_native_startup_cover() -> _NativeStartupCover | None:
 
 def _apply_qt_icon(app, window) -> bool:
     from PyQt6 import QtGui
-    from app.gui.app_icon import find_primary_icon_file, load_app_icon
+    from app.gui.shared.app_icon import find_primary_icon_file, load_app_icon
 
     icon = QtGui.QIcon()
     try:

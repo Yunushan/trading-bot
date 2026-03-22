@@ -135,11 +135,11 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(0, col, "API Key:", dashboardApiKey_, 2);
 
     dashboardModeCombo_ = new QComboBox(accountBox);
-    dashboardModeCombo_->addItems({"Live", "Paper Local", "Demo"});
+    dashboardModeCombo_->addItems({"Live", "Paper Local", "Demo/Testnet"});
     dashboardModeCombo_->setToolTip(
         "Live: real Binance Futures orders.\n"
         "Paper Local: live market data with app-local paper positions.\n"
-        "Demo: Binance Futures Testnet/Demo orders and positions.");
+        "Demo/Testnet: Binance Futures Testnet orders and positions.");
     registerDashboardRuntimeLockWidget(dashboardModeCombo_);
     addPair(0, col, "Mode:", dashboardModeCombo_);
 

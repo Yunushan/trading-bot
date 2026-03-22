@@ -120,6 +120,7 @@ struct OpenSignalDecision {
 QString tableCellRaw(const QTableWidget *table, int row, int col);
 int findOpenPositionRow(const QTableWidget *table, const QString &symbol, const QString &interval, const QString &connectorKey);
 void refreshActivePositionRow(QTableWidget *table, bool cumulativeView, int row, const PositionTableActiveRowData &data);
+void setPositionIndicatorValueSummary(QTableWidget *table, bool cumulativeView, int row, const QString &indicatorValueSummary);
 bool appendOpenPositionRow(QTableWidget *table, qint64 &rowSequenceCounter, const PositionTableOpenRowData &data);
 void markPositionClosedRow(QTableWidget *table, bool cumulativeView, int row, const QString &closedAtText);
 void applyCloseToPositionRow(QTableWidget *table, bool cumulativeView, int row, const PositionTableCloseRowData &data);
@@ -131,6 +132,7 @@ QString intervalFloorToBinanceToken(qint64 seconds);
 QString normalizeBinanceKlineInterval(QString intervalText, QString *warningOut = nullptr);
 IndicatorRuntimeSettings buildIndicatorRuntimeSettings(const QMap<QString, QVariantMap> &indicatorParams);
 QString formatIndicatorValueSummary(const IndicatorRuntimeValues &values);
+QString formatIndicatorValueSummaryForSource(const IndicatorRuntimeValues &values, const QString &indicatorSource);
 OpenSignalDecision determineOpenSignal(
     const IndicatorRuntimeValues &values,
     const IndicatorRuntimeSettings &settings,

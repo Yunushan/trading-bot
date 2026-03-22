@@ -74,6 +74,13 @@ void TradingBotWindow::startDashboardRuntime() {
     const bool useWebSocketFeed = dashboardSignalFeedCombo_
         && normalizedSignalFeedKey(dashboardSignalFeedCombo_->currentText()) == QStringLiteral("websocket")
         && qtWebSocketsRuntimeAvailable();
+    const bool futures = dashboardAccountTypeCombo_
+        ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+        : true;
+    const QString defaultConnectorText = dashboardConnectorCombo_
+        ? dashboardConnectorCombo_->currentText().trimmed()
+        : TradingBotWindowSupport::connectorLabelForKey(TradingBotWindowSupport::recommendedConnectorKey(futures));
+    const ConnectorRuntimeConfig defaultConnectorCfg = TradingBotWindowSupport::resolveConnectorConfig(defaultConnectorText, futures);
     dashboardRuntimeTimer_->setInterval(dashboardRuntimePollIntervalMs(dashboardOverridesTable_, useWebSocketFeed));
     dashboardRuntimeLastEvalMs_.clear();
     dashboardRuntimeEntryRetryAfterMs_.clear();
@@ -86,7 +93,139 @@ void TradingBotWindow::startDashboardRuntime() {
     dashboardRuntimeSignalUpdateMs_.clear();
     const int staleOpenCount = dashboardRuntimeOpenPositions_.size();
     dashboardRuntimeOpenPositions_.clear();
-    if (staleOpenCount > 0) {
+    int restoredOpenCount = 0;
+    if (positionsTable_) {
+        auto rawCellText = [this](int row, int col) -> QString {
+            if (!positionsTable_) {
+                return {};
+            }
+            const QTableWidgetItem *item = positionsTable_->item(row, col);
+            if (!item) {
+                return {};
+            }
+            const QVariant raw = item->data(Qt::UserRole);
+            return raw.isValid() ? raw.toString() : item->text();
+        };
+        const QRegularExpression connectorKeyRe(QStringLiteral("\\[([^\\]]+)\\]"));
+        for (int row = 0; row < positionsTable_->rowCount(); ++row) {
+            const QString status = rawCellText(row, 16).trimmed().toUpper();
+            if (status != QStringLiteral("OPEN")) {
+                continue;
+            }
+
+            const QString symbol = rawCellText(row, 0).trimmed().toUpper();
+            const QString interval = rawCellText(row, 8).trimmed();
+            const QString side = rawCellText(row, 12).trimmed().toUpper();
+            if (symbol.isEmpty() || interval.isEmpty()) {
+                continue;
+            }
+            if (side != QStringLiteral("LONG") && side != QStringLiteral("SHORT")) {
+                continue;
+            }
+
+            bool qtyOk = false;
+            double quantity = TradingBotWindowSupport::tableCellRawNumeric(
+                positionsTable_->item(row, 6),
+                std::numeric_limits<double>::quiet_NaN());
+            if (!qIsFinite(quantity)) {
+                quantity = TradingBotWindowSupport::firstNumberInText(rawCellText(row, 6), &qtyOk);
+            } else {
+                qtyOk = true;
+            }
+            if (!qtyOk || !qIsFinite(quantity) || quantity <= 1e-10) {
+                continue;
+            }
+
+            bool priceOk = false;
+            double entryPrice = TradingBotWindowSupport::tableCellRawNumeric(
+                positionsTable_->item(row, 2),
+                std::numeric_limits<double>::quiet_NaN());
+            if (!qIsFinite(entryPrice)) {
+                entryPrice = TradingBotWindowSupport::firstNumberInText(rawCellText(row, 2), &priceOk);
+            } else {
+                priceOk = true;
+            }
+            if (!priceOk || !qIsFinite(entryPrice) || entryPrice <= 0.0) {
+                entryPrice = 0.0;
+            }
+
+            double marginUsdt = TradingBotWindowSupport::tableCellRawNumeric(
+                positionsTable_->item(row, 5),
+                std::numeric_limits<double>::quiet_NaN());
+            if (!qIsFinite(marginUsdt) || marginUsdt < 0.0) {
+                bool marginOk = false;
+                marginUsdt = TradingBotWindowSupport::firstNumberInText(rawCellText(row, 5), &marginOk);
+                if (!marginOk || !qIsFinite(marginUsdt) || marginUsdt < 0.0) {
+                    marginUsdt = 0.0;
+                }
+            }
+
+            double sizeUsdt = TradingBotWindowSupport::tableCellRawNumeric(
+                positionsTable_->item(row, 1),
+                std::numeric_limits<double>::quiet_NaN());
+            if (!qIsFinite(sizeUsdt) || sizeUsdt < 0.0) {
+                bool sizeOk = false;
+                sizeUsdt = TradingBotWindowSupport::firstNumberInText(rawCellText(row, 1), &sizeOk);
+                if (!sizeOk || !qIsFinite(sizeUsdt) || sizeUsdt < 0.0) {
+                    sizeUsdt = 0.0;
+                }
+            }
+
+            double leverage = dashboardLeverageSpin_ ? static_cast<double>(dashboardLeverageSpin_->value()) : 1.0;
+            if (marginUsdt > 1e-9 && sizeUsdt > 0.0) {
+                leverage = std::max(1.0, sizeUsdt / marginUsdt);
+            }
+
+            QString connectorKey = defaultConnectorCfg.key.trimmed();
+            const QRegularExpressionMatch connectorMatch = connectorKeyRe.match(rawCellText(row, 17));
+            if (connectorMatch.hasMatch()) {
+                const QString parsed = connectorMatch.captured(1).trimmed();
+                if (!parsed.isEmpty()) {
+                    connectorKey = parsed;
+                }
+            }
+            ConnectorRuntimeConfig rowConnectorCfg = TradingBotWindowSupport::resolveConnectorConfig(
+                TradingBotWindowSupport::connectorLabelForKey(connectorKey),
+                futures);
+            if (!rowConnectorCfg.ok()) {
+                rowConnectorCfg = defaultConnectorCfg;
+            }
+            if (!rowConnectorCfg.ok()) {
+                continue;
+            }
+
+            const QString connectorToken = QStringLiteral("%1|%2").arg(rowConnectorCfg.key, rowConnectorCfg.baseUrl);
+            const QString runtimeKey = symbol.trimmed().toUpper()
+                + QStringLiteral("|")
+                + interval.trimmed().toLower()
+                + QStringLiteral("|")
+                + connectorToken.trimmed().toLower();
+            if (dashboardRuntimeOpenPositions_.contains(runtimeKey)) {
+                continue;
+            }
+
+            dashboardRuntimeOpenPositions_.insert(
+                runtimeKey,
+                RuntimePosition{
+                    side,
+                    interval,
+                    rawCellText(row, 9).trimmed(),
+                    rowConnectorCfg.key,
+                    rowConnectorCfg.baseUrl,
+                    entryPrice,
+                    quantity,
+                    leverage,
+                    std::max(1e-9, marginUsdt),
+                    std::max(0.0, marginUsdt),
+                });
+            ++restoredOpenCount;
+        }
+    }
+    if (restoredOpenCount > 0) {
+        appendDashboardPositionLog(
+            QString("Restored %1 open position(s) from the Positions tab before start.")
+                .arg(restoredOpenCount));
+    } else if (staleOpenCount > 0) {
         appendDashboardPositionLog(QString("Reset %1 stale in-memory open position(s) before start.").arg(staleOpenCount));
     }
     dashboardWaitingActiveEntries_.clear();
@@ -98,7 +237,7 @@ void TradingBotWindow::startDashboardRuntime() {
     if (dashboardModeCombo_ && TradingBotWindowSupport::isPaperTradingModeLabel(dashboardModeCombo_->currentText())) {
         appendDashboardAllLog("Paper Local active: using live Binance market data with local paper execution.");
     } else if (dashboardModeCombo_ && TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText())) {
-        appendDashboardAllLog("Demo active: using Binance Futures Testnet market data and testnet execution.");
+        appendDashboardAllLog("Demo/Testnet active: using Binance Futures Testnet market data and testnet execution.");
     }
     appendDashboardAllLog(
         QString("Signal feed: %1")
@@ -121,6 +260,10 @@ void TradingBotWindow::stopDashboardRuntime() {
     }
     dashboardRuntimeStopping_ = true;
     dashboardRuntimeActive_ = false;
+    positionsLiveActivePnlValid_ = false;
+    positionsLiveActivePnlUpdatedMs_ = 0;
+    positionsLiveActivePnlUsdt_ = 0.0;
+    positionsLiveActivePnlContextKey_.clear();
     if (dashboardRuntimeTimer_) {
         dashboardRuntimeTimer_->stop();
     }

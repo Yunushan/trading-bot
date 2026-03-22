@@ -124,6 +124,23 @@ QString formatPositionSizeText(double sizeUsdt, double quantity, const QString &
     return QStringLiteral("%1\n%2").arg(usdtText, qtyText);
 }
 
+double sumSnapshotActivePnl(const BinanceRestClient::FuturesPositionsResult &snapshot) {
+    if (!snapshot.ok) {
+        return 0.0;
+    }
+    double activePnl = 0.0;
+    for (const auto &pos : snapshot.positions) {
+        if (!qIsFinite(pos.positionAmt) || std::fabs(pos.positionAmt) <= 1e-10) {
+            continue;
+        }
+        if (!qIsFinite(pos.unrealizedProfit)) {
+            continue;
+        }
+        activePnl += pos.unrealizedProfit;
+    }
+    return activePnl;
+}
+
 } // namespace
 
 QWidget *TradingBotWindow::createPositionsTab() {
@@ -231,6 +248,10 @@ QWidget *TradingBotWindow::createPositionsTab() {
     table->setSortingEnabled(true);
     table->setWordWrap(true);
     table->setTextElideMode(Qt::ElideNone);
+    table->setCornerButtonEnabled(false);
+    table->verticalHeader()->setVisible(true);
+    table->verticalHeader()->setDefaultAlignment(Qt::AlignCenter);
+    table->verticalHeader()->setMinimumWidth(32);
     table->verticalHeader()->setDefaultSectionSize(44);
     layout->addWidget(table, 1);
 
@@ -296,6 +317,17 @@ QWidget *TradingBotWindow::createPositionsTab() {
             updateStatusMessage(QString("Positions refresh failed: %1").arg(livePositions.error));
             return;
         }
+        positionsLiveActivePnlContextKey_ = QStringLiteral("%1|%2|%3")
+                                                .arg(apiKey.trimmed(),
+                                                     dashboardAccountTypeCombo_
+                                                         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower()
+                                                         : QStringLiteral("futures"),
+                                                     dashboardModeCombo_
+                                                         ? dashboardModeCombo_->currentText().trimmed().toLower()
+                                                         : QStringLiteral("live"));
+        positionsLiveActivePnlUsdt_ = sumSnapshotActivePnl(livePositions);
+        positionsLiveActivePnlUpdatedMs_ = QDateTime::currentMSecsSinceEpoch();
+        positionsLiveActivePnlValid_ = true;
         const auto balance = BinanceRestClient::fetchUsdtBalance(
             apiKey,
             apiSecret,
@@ -491,6 +523,20 @@ void TradingBotWindow::refreshPositionsTableSizing(bool resizeColumns, bool resi
 void TradingBotWindow::refreshPositionsSummaryLabels() {
     double activePnl = 0.0;
     double closedPnl = 0.0;
+
+    const bool futuresMode = dashboardAccountTypeCombo_
+        ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+        : true;
+    const QString modeText = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+    const bool paperTrading = TradingBotWindowSupport::isPaperTradingModeLabel(modeText);
+    const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
+    const QString liveActivePnlContextKey = QStringLiteral("%1|%2|%3")
+                                                .arg(apiKey,
+                                                     dashboardAccountTypeCombo_
+                                                         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower()
+                                                         : QStringLiteral("futures"),
+                                                     modeText.trimmed().toLower());
+
     if (positionsTable_) {
         const auto rawCellText = [](const QTableWidgetItem *item) -> QString {
             if (!item) {
@@ -526,6 +572,13 @@ void TradingBotWindow::refreshPositionsSummaryLabels() {
                 closedPnl += pnlValue;
             }
         }
+    }
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const bool liveActivePnlFresh = positionsLiveActivePnlValid_
+        && positionsLiveActivePnlContextKey_ == liveActivePnlContextKey
+        && (nowMs - positionsLiveActivePnlUpdatedMs_) <= 15000;
+    if (futuresMode && !paperTrading && !apiKey.isEmpty() && liveActivePnlFresh) {
+        activePnl = positionsLiveActivePnlUsdt_;
     }
 
     const QString activePnlText = QStringLiteral("Total PNL Active Positions: %1 USDT")

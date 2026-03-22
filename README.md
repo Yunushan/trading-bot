@@ -1,6 +1,6 @@
 # Trading Bot Workspace
 
-This repository packages a cross‑platform trading workstation that ships with a production‑ready **Binance desktop bot (PyQt6)** and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
+This repository packages a cross‑platform trading workstation that ships with a production‑ready **Trading Bot desktop app (PyQt6)** for Binance and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
 
 ---
 
@@ -55,38 +55,52 @@ Optional but recommended:
 ## Project layout
 
 ```
+assets/
+docs/
+  DEVELOPMENT.md          # contributor notes and maintenance guidance
+  PROJECT_STRUCTURE.md    # repo/source/output layout
+tools/
+  update_loc_snapshot.py
+
 Languages/
-- Python/
-  - app/                  # full PyQt6 trading application
-  - docs/
-  - tools/
-  - main.py               # Python GUI entrypoint
-  - requirements.txt
-- C++/
-  - CMakeLists.txt
-  - resources.qrc
-  - src/                  # Qt C++ prototype for the Backtest UI
-- Rust/
-  - Cargo.toml
-  - crates/               # shared contracts/core
-  - apps/                 # Tauri/Slint/egui/Iced/Dioxus desktop shells
-  - README.md
+  C/
+    README.md             # placeholder for future C implementation
+  Python/
+    app/                  # full PyQt6 trading application
+    docs/
+    tools/
+    main.py               # Python GUI entrypoint
+    requirements.txt
+  C++/
+    CMakeLists.txt
+    resources.qrc
+    src/                  # Qt C++ prototype for the Backtest UI
+  Rust/
+    Cargo.toml
+    crates/               # shared contracts/core
+    apps/                 # Tauri/Slint/egui/Iced/Dioxus desktop shells
+    README.md
 ```
 
 Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). `Languages/C++` is the native desktop preview, and `Languages/Rust` now contains a shared-core workspace with multiple Rust shells/services.
+
+Generated local artifacts such as `build/`, `dist_enduser/`, `.venv/`, and root-level `Trading-Bot-*.exe` files are not canonical source and are ignored by Git.
 
 ---
 
 ## Developer documentation, comments, and LOC tracking
 
-Use this section when you want consistent, detailed documentation across Python/C++ code and README updates.
+Contributor-facing structure and maintenance docs now live here:
+
+- `docs/PROJECT_STRUCTURE.md`
+- `docs/DEVELOPMENT.md`
 
 ### Current LOC snapshot
 
 <!-- LOC-SNAPSHOT:START -->
-- Snapshot date: `19.03.2026 GMT+3 Time 23:34:59`
-- Total tracked code/config/script lines: `73,972`
-- Non-empty tracked code/config/script lines (SLOC-style): `67,555`
+- Snapshot date: `22.03.2026 GMT+3 Time 11:51:47`
+- Total tracked code/config/script lines: `74,701`
+- Non-empty tracked code/config/script lines (SLOC-style): `68,235`
 - Counting scope: tracked files with extensions `.py`, `.cpp`, `.h`, `.js`, `.ps1`, `.sh`, `.bat`, `.yml`, `.cmake`, `.qrc`, `.in` (plus `CMakeLists.txt`)
 <!-- LOC-SNAPSHOT:END -->
 
@@ -96,69 +110,6 @@ Auto-refresh command:
 python tools/update_loc_snapshot.py
 ```
 
-### 1) Track lines of code (LOC)
-
-Recommended (`cloc`):
-
-```bash
-cloc --exclude-dir=.git,.venv,.vcpkg,build .
-```
-
-Per-language quick checks with `rg` + `wc`:
-
-```bash
-rg --files Languages/Python -g "*.py" | xargs wc -l
-rg --files Languages/C++ -g "*.cpp" -g "*.h" | xargs wc -l
-```
-
-Windows PowerShell fallback (non-empty lines):
-
-```powershell
-$py = Get-ChildItem Languages/Python -Recurse -File -Include *.py | Get-Content | Where-Object { $_.Trim() -ne "" } | Measure-Object
-$cpp = Get-ChildItem Languages/C++ -Recurse -File -Include *.cpp,*.h | Get-Content | Where-Object { $_.Trim() -ne "" } | Measure-Object
-"Python non-empty lines: $($py.Count)"
-"C++ non-empty lines: $($cpp.Count)"
-```
-
-### 2) Python comment/docstring style
-
-- Put a module-level docstring at the top of important entry files.
-- Add function docstrings for behavior, side effects, and expected environment flags.
-- Prefer comments that explain intent/tradeoffs (not restating obvious code).
-
-Template:
-
-```python
-def some_function(arg: str) -> bool:
-    """
-    Purpose: What this function is responsible for.
-    Inputs: Explain accepted values and defaults.
-    Returns: Explain success/failure semantics.
-    Side effects: Files/network/UI/environment updates.
-    """
-```
-
-### 3) C++ comment style
-
-- Add high-level comments before startup/bootstrap logic and platform-specific blocks.
-- Document Qt wiring points where state is shared between tabs/timers/runtime loops.
-- Use concise Doxygen-style comments for public API in headers.
-
-Template:
-
-```cpp
-/// Applies runtime lock state to dashboard controls while bot loop is active.
-/// Keeps UI settings immutable during live execution to avoid inconsistent state.
-void setDashboardRuntimeControlsEnabled(bool enabled);
-```
-
-### 4) README maintenance rule
-
-- When you add a major feature in Python or C++, also add:
-  - short behavior summary,
-  - where it lives (path),
-  - how to validate it quickly (command or UI steps).
-
 ---
 
 ## Quick start
@@ -167,7 +118,7 @@ void setDashboardRuntimeControlsEnabled(bool enabled);
 2. **Install Python** (3.11 or 3.12 preferred). Remember to check “Add Python to PATH” on Windows.
 3. **Install dependencies** using the instructions for your OS below.
 4. **Launch the GUI:**
-   - Windows one-click: double-click `Languages/Python/Binance-Bot-Trading.bat`, **or**
+   - Windows one-click: double-click `Languages/Python/Trading-Bot-Python.bat`, **or**
    - Any OS: activate the virtual environment and run `python main.py` from the Python folder.
 5. The dashboard opens. Fill in your Binance API key/secret, choose Demo/Testnet or Live, configure symbols and indicators, then click **Start**.
 6. Use the **Positions** tab to monitor open trades and the **Chart/Backtest** tabs for analysis.
@@ -186,7 +137,7 @@ cd Languages/Python
 
 **One-click (recommended if Python ≥ 3.10 is already installed):**
 
-1. Double-click `Binance-Bot-Trading.bat`.
+1. Double-click `Trading-Bot-Python.bat`.
 2. The script creates a virtual environment (`.venv`), installs `requirements.txt`, and starts the GUI.
 
 **Manual method:**
@@ -245,7 +196,7 @@ python3.11 main.py
 | Component | Location | Purpose | How to run |
 |-----------|----------|---------|------------|
 | **Binance GUI bot** | `Languages/Python/main.py` | Full desktop trading workstation | `python main.py` (inside virtual env) |
-| **Windows launcher** | `Languages/Python/Binance-Bot-Trading.bat` | Automates environment creation + launch | Double-click on Windows |
+| **Windows launcher** | `Languages/Python/Trading-Bot-Python.bat` | Automates environment creation + launch | Double-click on Windows |
 
 All tools are cross-platform except the `.bat` helper which is Windows-only.
 
@@ -399,7 +350,7 @@ It's a documentation hub as well-each card includes a subtitle describing the st
 
 | File | Location | Description |
 |------|----------|-------------|
-| `Binance-Bot-Trading.bat` | `Languages/Python/` | Automates environment bootstrap on Windows. |
+| `Trading-Bot-Python.bat` | `Languages/Python/` | Automates environment bootstrap on Windows. |
 | `close_all.py` | `Languages/Python/app/` | Auxiliary script to close every futures position—useful for emergency scripts or cron jobs. |
 | `position_guard.py` | `Languages/Python/app/` | Contains the guard logic used to deduplicate indicator entries and enforce stop-loss/stop-gap rules (referenced in this README for understanding behaviour). |
 | `requirements.txt` | `Languages/Python/` | Python dependency pinning for the desktop GUI. |
@@ -476,7 +427,7 @@ Release steps:
 
 ## Safety notes
 
-- **Beta software**: The Binance bot is still in BETA. Expect occasional bugs—always test on Testnet first.
+- **Beta software**: Trading Bot is still in BETA. Expect occasional bugs—always test on Testnet first.
 - **No warranty**: You bear full responsibility for trading losses. Review the source code before entrusting significant capital.
 - **API key scope**: Never enable withdrawal permissions on trading keys. Store keys in a secure password manager and rotate them periodically.
 - **Exchange settings**: Leverage mode (cross/isolated) and position mode (hedge/one-way) must be configured on Binance itself even if you change them in the GUI.

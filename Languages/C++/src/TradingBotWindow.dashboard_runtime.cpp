@@ -32,6 +32,86 @@
 using namespace TradingBotWindowDashboardRuntime;
 using namespace TradingBotWindowDashboardRuntimeDetail;
 using ConnectorRuntimeConfig = TradingBotWindowSupport::ConnectorRuntimeConfig;
+
+void TradingBotWindow::refreshDashboardOpenPositionIndicatorValuesForSignalKey(
+    const QString &signalKey,
+    const QVector<BinanceRestClient::KlineCandle> &marketCandles) {
+    if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || !positionsTable_ || marketCandles.isEmpty()) {
+        return;
+    }
+
+    const QString normalizedSignalKey = signalKey.trimmed().toLower();
+    if (normalizedSignalKey.isEmpty()) {
+        return;
+    }
+
+    const IndicatorRuntimeSettings indicatorSettings = buildIndicatorRuntimeSettings(dashboardIndicatorParams_);
+    bool positionsTableMutated = false;
+    for (auto it = dashboardRuntimeOpenPositions_.cbegin(); it != dashboardRuntimeOpenPositions_.cend(); ++it) {
+        const QString runtimeKey = it.key();
+        const RuntimePosition &openPos = it.value();
+        const QString symbol = runtimeKey.section('|', 0, 0).trimmed().toUpper();
+        if (symbol.isEmpty()) {
+            continue;
+        }
+
+        const QString connectorToken = QStringLiteral("%1|%2")
+                                           .arg(openPos.connectorKey.trimmed(),
+                                                openPos.connectorBaseUrl.trimmed());
+        const QString requestInterval = normalizeBinanceKlineInterval(openPos.interval);
+        const QString positionSignalKey = runtimeKeyFor(symbol, requestInterval, connectorToken);
+        if (positionSignalKey.trimmed().toLower() != normalizedSignalKey) {
+            continue;
+        }
+
+        const QString sourceKey = normalizedIndicatorKey(openPos.signalSource);
+        IndicatorRuntimeValues displayValues;
+        displayValues.useRsi = (sourceKey == QStringLiteral("rsi"));
+        displayValues.useStochRsi = (sourceKey == QStringLiteral("stoch_rsi"));
+        displayValues.useWillr = (sourceKey == QStringLiteral("willr"));
+        if (sourceKey == QStringLiteral("generic")) {
+            displayValues.useRsi = true;
+            displayValues.useStochRsi = true;
+            displayValues.useWillr = true;
+        }
+
+        if (displayValues.useRsi) {
+            displayValues.rsi = latestRsiValue(marketCandles, indicatorSettings.rsiLength, &displayValues.rsiOk);
+        }
+        if (displayValues.useStochRsi) {
+            displayValues.stochRsi = latestStochRsiValue(
+                marketCandles,
+                indicatorSettings.stochLength,
+                indicatorSettings.stochSmoothK,
+                indicatorSettings.stochSmoothD,
+                &displayValues.stochRsiOk);
+        }
+        if (displayValues.useWillr) {
+            displayValues.willr = latestWilliamsRValue(
+                marketCandles,
+                indicatorSettings.willrLength,
+                &displayValues.willrOk);
+        }
+
+        const int targetRow = findOpenPositionRow(positionsTable_, symbol, openPos.interval, openPos.connectorKey);
+        if (targetRow < 0) {
+            continue;
+        }
+
+        setPositionIndicatorValueSummary(
+            positionsTable_,
+            positionsCumulativeView_,
+            targetRow,
+            formatIndicatorValueSummaryForSource(displayValues, openPos.signalSource));
+        positionsTableMutated = true;
+    }
+
+    if (!positionsTableMutated || !positionsCumulativeView_) {
+        return;
+    }
+    applyPositionsViewMode(false, false);
+}
+
 void TradingBotWindow::runDashboardRuntimeCycle() {
     if (!dashboardRuntimeActive_ || dashboardRuntimeStopping_ || dashboardRuntimeCycleInProgress_) {
         return;
@@ -105,16 +185,83 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
     const bool hedgeMode = dashboardPositionModeCombo_
         ? dashboardPositionModeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("hedge"))
         : true;
+    const QString liveActivePnlContextKey = QStringLiteral("%1|%2|%3")
+                                                .arg(apiKey.trimmed(),
+                                                     dashboardAccountTypeCombo_
+                                                         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower()
+                                                         : QStringLiteral("futures"),
+                                                     modeText.trimmed().toLower());
     QMap<QString, BinanceRestClient::FuturesSymbolFilters> symbolFiltersCache;
+    QMap<QString, BinanceRestClient::TickerPriceResult> tickerPriceCache;
     QMap<QString, BinanceRestClient::FuturesPositionsResult> livePositionsCache;
+    static QMap<QString, BinanceRestClient::FuturesPositionsResult> s_stickyLivePositionsCache;
+    static QMap<QString, qint64> s_stickyLivePositionsCacheMs;
+    const auto sumSnapshotActivePnl =
+        [](const BinanceRestClient::FuturesPositionsResult &snapshot) -> double {
+        if (!snapshot.ok) {
+            return 0.0;
+        }
+        double activePnl = 0.0;
+        for (const auto &pos : snapshot.positions) {
+            if (!qIsFinite(pos.positionAmt) || std::fabs(pos.positionAmt) <= 1e-10) {
+                continue;
+            }
+            if (!qIsFinite(pos.unrealizedProfit)) {
+                continue;
+            }
+            activePnl += pos.unrealizedProfit;
+        }
+        return activePnl;
+    };
     const auto connectorCacheKeyFor = [isTestnet](const ConnectorRuntimeConfig &cfg) {
         return QStringLiteral("%1|%2|%3")
             .arg(cfg.key.trimmed().toLower(),
                  cfg.baseUrl.trimmed().toLower(),
                  isTestnet ? QStringLiteral("testnet") : QStringLiteral("live"));
     };
+    const auto tickerCacheKeyFor = [isTestnet](const QString &symbol, const ConnectorRuntimeConfig &cfg) {
+        return QStringLiteral("%1|%2|%3|%4")
+            .arg(symbol.trimmed().toUpper(),
+                 cfg.key.trimmed().toLower(),
+                 cfg.baseUrl.trimmed().toLower(),
+                 isTestnet ? QStringLiteral("testnet") : QStringLiteral("live"));
+    };
+    const auto fetchExecutionTickerPrice =
+        [isTestnet, &tickerPriceCache, &tickerCacheKeyFor](
+            const QString &symbol,
+            const ConnectorRuntimeConfig &cfg) -> const BinanceRestClient::TickerPriceResult * {
+        if (!cfg.ok()) {
+            return nullptr;
+        }
+        const QString cacheKey = tickerCacheKeyFor(symbol, cfg);
+        auto it = tickerPriceCache.find(cacheKey);
+        if (it == tickerPriceCache.end()) {
+            it = tickerPriceCache.insert(
+                cacheKey,
+                BinanceRestClient::fetchTickerPrice(
+                    symbol,
+                    true,
+                    isTestnet,
+                    5000,
+                    cfg.baseUrl));
+        }
+        return &it.value();
+    };
+    const auto hasTrackedOpenPositionsForConnector =
+        [this](const ConnectorRuntimeConfig &cfg) -> bool {
+        const QString connectorKey = cfg.key.trimmed().toLower();
+        const QString connectorBaseUrl = cfg.baseUrl.trimmed().toLower();
+        for (auto it = dashboardRuntimeOpenPositions_.cbegin(); it != dashboardRuntimeOpenPositions_.cend(); ++it) {
+            const RuntimePosition &pos = it.value();
+            if (pos.connectorKey.trimmed().toLower() == connectorKey
+                && pos.connectorBaseUrl.trimmed().toLower() == connectorBaseUrl) {
+                return true;
+            }
+        }
+        return false;
+    };
     const auto fetchLivePositionsForConnector =
-        [this, futures, hasApiCredentials, paperTrading, &apiKey, &apiSecret, isTestnet, &livePositionsCache, &connectorCacheKeyFor](
+        [this, futures, hasApiCredentials, paperTrading, &apiKey, &apiSecret, isTestnet, &livePositionsCache, &connectorCacheKeyFor, &hasTrackedOpenPositionsForConnector](
             const ConnectorRuntimeConfig &cfg) -> const BinanceRestClient::FuturesPositionsResult * {
         if (paperTrading || !futures || !hasApiCredentials || !cfg.ok()) {
             return nullptr;
@@ -138,6 +285,20 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                         QString("Live position snapshot failed (%1): %2")
                             .arg(cfg.key, result.error));
                 }
+            }
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            if (result.ok && !result.positions.isEmpty()) {
+                s_stickyLivePositionsCache.insert(cacheKey, result);
+                s_stickyLivePositionsCacheMs.insert(cacheKey, nowMs);
+            } else if (hasTrackedOpenPositionsForConnector(cfg)) {
+                const qint64 cachedMs = s_stickyLivePositionsCacheMs.value(cacheKey, 0);
+                const bool cachedFresh = cachedMs > 0 && (nowMs - cachedMs) <= 15000;
+                if (cachedFresh && s_stickyLivePositionsCache.contains(cacheKey)) {
+                    it.value() = s_stickyLivePositionsCache.value(cacheKey);
+                }
+            } else if (result.ok && result.positions.isEmpty()) {
+                s_stickyLivePositionsCache.remove(cacheKey);
+                s_stickyLivePositionsCacheMs.remove(cacheKey);
             }
         }
         return &it.value();
@@ -272,6 +433,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             }
             dashboardRuntimeSignalLastClosed_[signalKey] = isClosed;
             dashboardRuntimeSignalUpdateMs_[signalKey] = QDateTime::currentMSecsSinceEpoch();
+            refreshDashboardOpenPositionIndicatorValuesForSignalKey(signalKey, cache);
         });
         connect(client, &BinanceWsClient::errorOccurred, this, [this, signalKey, symbolKey, intervalKey](const QString &message) {
             const QString warningKey = QStringLiteral("signal-stream|%1|%2").arg(signalKey, message);
@@ -330,32 +492,65 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             positionsLastAvailableBalanceUsdt_ = paperBalance;
             availableUsdt = paperBalance;
         } else if (hasApiCredentials) {
-            const auto balance = BinanceRestClient::fetchUsdtBalance(
-                apiKey,
-                apiSecret,
-                futures,
-                isTestnet,
-                6000,
-                defaultConnectorCfg.baseUrl);
-            if (!balance.ok) {
-                appendDashboardPositionLog(
-                    QString("Balance fetch failed (%1): %2")
-                        .arg(defaultConnectorText, balance.error));
+            static QString s_balanceCacheKey;
+            static qint64 s_balanceCacheMs = 0;
+            static bool s_balanceCacheValid = false;
+            static double s_balanceCacheTotal = 0.0;
+            static double s_balanceCacheAvailable = 0.0;
+
+            const QString balanceCacheKey = QStringLiteral("%1|%2|%3|%4")
+                                                .arg(apiKey.trimmed(),
+                                                     futures ? QStringLiteral("futures") : QStringLiteral("spot"),
+                                                     isTestnet ? QStringLiteral("testnet") : QStringLiteral("live"),
+                                                     defaultConnectorCfg.baseUrl.trimmed().toLower());
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            const bool useCachedBalance = s_balanceCacheValid
+                && s_balanceCacheKey == balanceCacheKey
+                && (nowMs - s_balanceCacheMs) <= 5000;
+
+            if (useCachedBalance) {
+                if (qIsFinite(s_balanceCacheTotal) && s_balanceCacheTotal >= 0.0) {
+                    positionsLastTotalBalanceUsdt_ = s_balanceCacheTotal;
+                }
+                if (qIsFinite(s_balanceCacheAvailable) && s_balanceCacheAvailable >= 0.0) {
+                    positionsLastAvailableBalanceUsdt_ = s_balanceCacheAvailable;
+                    if (s_balanceCacheAvailable > 0.0) {
+                        availableUsdt = s_balanceCacheAvailable;
+                    }
+                }
             } else {
-                const double totalBalance = std::max(
-                    0.0,
-                    (balance.totalUsdtBalance > 0.0) ? balance.totalUsdtBalance : balance.usdtBalance);
-                const double availableBalance = std::max(
-                    0.0,
-                    (balance.availableUsdtBalance > 0.0) ? balance.availableUsdtBalance : totalBalance);
-                if (qIsFinite(totalBalance) && totalBalance >= 0.0) {
-                    positionsLastTotalBalanceUsdt_ = totalBalance;
-                }
-                if (qIsFinite(availableBalance) && availableBalance >= 0.0) {
-                    positionsLastAvailableBalanceUsdt_ = availableBalance;
-                }
-                if (qIsFinite(availableBalance) && availableBalance > 0.0) {
-                    availableUsdt = availableBalance;
+                const auto balance = BinanceRestClient::fetchUsdtBalance(
+                    apiKey,
+                    apiSecret,
+                    futures,
+                    isTestnet,
+                    6000,
+                    defaultConnectorCfg.baseUrl);
+                if (!balance.ok) {
+                    appendDashboardPositionLog(
+                        QString("Balance fetch failed (%1): %2")
+                            .arg(defaultConnectorText, balance.error));
+                } else {
+                    const double totalBalance = std::max(
+                        0.0,
+                        (balance.totalUsdtBalance > 0.0) ? balance.totalUsdtBalance : balance.usdtBalance);
+                    const double availableBalance = std::max(
+                        0.0,
+                        (balance.availableUsdtBalance > 0.0) ? balance.availableUsdtBalance : totalBalance);
+                    s_balanceCacheKey = balanceCacheKey;
+                    s_balanceCacheMs = nowMs;
+                    s_balanceCacheValid = true;
+                    s_balanceCacheTotal = totalBalance;
+                    s_balanceCacheAvailable = availableBalance;
+                    if (qIsFinite(totalBalance) && totalBalance >= 0.0) {
+                        positionsLastTotalBalanceUsdt_ = totalBalance;
+                    }
+                    if (qIsFinite(availableBalance) && availableBalance >= 0.0) {
+                        positionsLastAvailableBalanceUsdt_ = availableBalance;
+                    }
+                    if (qIsFinite(availableBalance) && availableBalance > 0.0) {
+                        availableUsdt = availableBalance;
+                    }
                 }
             }
         }
@@ -447,83 +642,24 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         }
         const qint64 lastMs = dashboardRuntimeLastEvalMs_.value(key, 0);
         auto openIt = dashboardRuntimeOpenPositions_.find(key);
-        if (loopSeconds > 0 && lastMs > 0 && (nowMs - lastMs) < (loopSeconds * 1000)) {
-            if (openIt != dashboardRuntimeOpenPositions_.end() && positionsTable_) {
-                RuntimePosition &openPos = openIt.value();
-                const auto *liveSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
-                const auto *livePos = pickLivePosition(liveSnapshot, symbol, openPos.side);
-                if ((!qIsFinite(openPos.quantity) || openPos.quantity <= 1e-10)
-                    && livePos
-                    && qIsFinite(livePos->positionAmt)
-                    && std::fabs(livePos->positionAmt) > 1e-10) {
-                    openPos.quantity = std::fabs(livePos->positionAmt);
-                    if (qIsFinite(livePos->entryPrice) && livePos->entryPrice > 0.0) {
-                        openPos.entryPrice = livePos->entryPrice;
-                    }
-                }
-
-                const double rowQty = std::max(0.0, openPos.quantity);
-                const QString exposureKey = QStringLiteral("%1|%2|%3")
-                                                .arg(symbol,
-                                                     openPos.side.trimmed().toUpper(),
-                                                     connectorToken.toLower());
-                const double groupQty = runtimeQtyByExposureKey.value(exposureKey, rowQty);
-                const double markPrice = (livePos && qIsFinite(livePos->markPrice) && livePos->markPrice > 0.0)
-                    ? livePos->markPrice
-                    : openPos.entryPrice;
-                const double fallbackPnlUsdt = (openPos.side == QStringLiteral("LONG"))
-                    ? (markPrice - openPos.entryPrice) * rowQty
-                    : (openPos.entryPrice - markPrice) * rowQty;
-                const double fallbackMarginUsdt = std::max(
-                    1e-9,
-                    (openPos.entryPrice * rowQty) / std::max(1.0, openPos.leverage));
-                const LivePositionMetricsShare liveShare = allocateLivePositionShare(
-                    livePos,
-                    rowQty,
-                    groupQty,
-                    std::max(0.0, rowQty * markPrice),
-                    std::max(fallbackMarginUsdt, openPos.displayMarginUsdt),
-                    std::max(fallbackMarginUsdt, openPos.roiBasisUsdt),
-                    fallbackPnlUsdt);
-                openPos.displayMarginUsdt = std::max(1e-9, liveShare.displayMarginUsdt);
-                openPos.roiBasisUsdt = std::max(1e-9, liveShare.roiBasisUsdt);
-                const double markPnlUsdt = liveShare.pnlUsdt;
-                const double sizeUsdt = std::max(0.0, liveShare.sizeUsdt);
-                const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
-                const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
-                const int targetRow = findOpenPositionRow(positionsTable_, symbol, interval, rowConnectorCfg.key);
-
-                if (targetRow >= 0) {
-                    refreshActivePositionRow(
-                        positionsTable_,
-                        positionsCumulativeView_,
-                        targetRow,
-                        PositionTableActiveRowData{
-                            symbol,
-                            QString(),
-                            sizeUsdt,
-                            rowQty,
-                            markPrice,
-                            marginRatio,
-                            liqPrice,
-                            openPos.displayMarginUsdt,
-                            markPnlUsdt,
-                            openPos.roiBasisUsdt,
-                        });
-                    positionsTableMutated = true;
-                }
-            }
+        const bool evaluationDue = !(loopSeconds > 0 && lastMs > 0 && (nowMs - lastMs) < (loopSeconds * 1000));
+        if (!evaluationDue && openIt == dashboardRuntimeOpenPositions_.end()) {
             touchWaitingEntry(key, nowMs);
             continue;
         }
-        dashboardRuntimeLastEvalMs_.insert(key, nowMs);
 
         const auto *indicatorItem = dashboardOverridesTable_->item(row, 2);
         const QString indicatorSummary = indicatorItem ? indicatorItem->text() : QString();
         const auto *strategyControlsItem = dashboardOverridesTable_->item(row, 6);
         const QString strategySummary = strategyControlsItem ? strategyControlsItem->text() : QString();
         const bool useLiveSignalCandles = strategyUsesLiveCandles(strategySummary);
-        const QSet<QString> indicatorKeys = parseIndicatorKeysFromSummary(indicatorSummary);
+        QSet<QString> indicatorKeys = parseIndicatorKeysFromSummary(indicatorSummary);
+        if (openIt != dashboardRuntimeOpenPositions_.end()) {
+            const QString runtimeIndicatorKey = normalizedIndicatorKey(openIt.value().signalSource);
+            if (!runtimeIndicatorKey.isEmpty() && runtimeIndicatorKey != QStringLiteral("generic")) {
+                indicatorKeys.insert(runtimeIndicatorKey);
+            }
+        }
         const bool useRsi = indicatorKeys.contains(QStringLiteral("rsi"));
         const bool useStochRsi = indicatorKeys.contains(QStringLiteral("stoch_rsi"));
         const bool useWillr = indicatorKeys.contains(QStringLiteral("willr"));
@@ -554,6 +690,15 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             }
             touchWaitingEntry(key, nowMs);
             continue;
+        }
+        if (indicatorUsesBinanceSpot && futures && !paperTrading) {
+            const QString warningKey = QStringLiteral("indicator-source|spot-vs-futures-execution");
+            if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+                dashboardRuntimeConnectorWarnings_.insert(warningKey);
+                appendDashboardAllLog(
+                    "Binance spot signal source selected: indicators use spot candles, but futures orders execute on Binance Futures "
+                    "using the current futures price.");
+            }
         }
 
         const QString signalKey = runtimeKeyFor(symbol, requestInterval, connectorToken);
@@ -608,40 +753,125 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             continue;
         }
 
-        bool rsiOk = false;
-        double rsi = 0.0;
-        if (useRsi) {
-            rsi = latestRsiValue(signalCandles, indicatorSettings.rsiLength, &rsiOk);
-        }
+        const auto buildIndicatorRuntimeValues =
+            [useRsi, useStochRsi, useWillr, &indicatorSettings](
+                const QVector<BinanceRestClient::KlineCandle> &candles) -> IndicatorRuntimeValues {
+            bool rsiOk = false;
+            double rsi = 0.0;
+            if (useRsi) {
+                rsi = latestRsiValue(candles, indicatorSettings.rsiLength, &rsiOk);
+            }
 
-        bool stochRsiOk = false;
-        double stochRsi = 0.0;
-        if (useStochRsi) {
-            stochRsi = latestStochRsiValue(
-                signalCandles,
-                indicatorSettings.stochLength,
-                indicatorSettings.stochSmoothK,
-                indicatorSettings.stochSmoothD,
-                &stochRsiOk);
-        }
+            bool stochRsiOk = false;
+            double stochRsi = 0.0;
+            if (useStochRsi) {
+                stochRsi = latestStochRsiValue(
+                    candles,
+                    indicatorSettings.stochLength,
+                    indicatorSettings.stochSmoothK,
+                    indicatorSettings.stochSmoothD,
+                    &stochRsiOk);
+            }
 
-        bool willrOk = false;
-        double willr = 0.0;
-        if (useWillr) {
-            willr = latestWilliamsRValue(signalCandles, indicatorSettings.willrLength, &willrOk);
-        }
-        const IndicatorRuntimeValues indicatorValues{
-            useRsi,
-            useStochRsi,
-            useWillr,
-            rsiOk,
-            stochRsiOk,
-            willrOk,
-            rsi,
-            stochRsi,
-            willr,
+            bool willrOk = false;
+            double willr = 0.0;
+            if (useWillr) {
+                willr = latestWilliamsRValue(candles, indicatorSettings.willrLength, &willrOk);
+            }
+
+            return IndicatorRuntimeValues{
+                useRsi,
+                useStochRsi,
+                useWillr,
+                rsiOk,
+                stochRsiOk,
+                willrOk,
+                rsi,
+                stochRsi,
+                willr,
+            };
         };
+        const IndicatorRuntimeValues indicatorValues = buildIndicatorRuntimeValues(signalCandles);
+        const IndicatorRuntimeValues displayIndicatorValues =
+            (signalCandles.size() == marketCandles.size())
+            ? indicatorValues
+            : buildIndicatorRuntimeValues(marketCandles);
         const QString indicatorValueSummary = formatIndicatorValueSummary(indicatorValues);
+        if (openIt != dashboardRuntimeOpenPositions_.end() && !evaluationDue) {
+            if (positionsTable_) {
+                RuntimePosition &openPos = openIt.value();
+                const auto *liveSnapshot = fetchLivePositionsForConnector(rowConnectorCfg);
+                const auto *livePos = pickLivePosition(liveSnapshot, symbol, openPos.side);
+                if ((!qIsFinite(openPos.quantity) || openPos.quantity <= 1e-10)
+                    && livePos
+                    && qIsFinite(livePos->positionAmt)
+                    && std::fabs(livePos->positionAmt) > 1e-10) {
+                    openPos.quantity = std::fabs(livePos->positionAmt);
+                    if (qIsFinite(livePos->entryPrice) && livePos->entryPrice > 0.0) {
+                        openPos.entryPrice = livePos->entryPrice;
+                    }
+                }
+
+                const bool exchangePositionMissing = !paperTrading && liveSnapshot && liveSnapshot->ok && !livePos;
+                const double rowQty = std::max(0.0, openPos.quantity);
+                const QString exposureKey = QStringLiteral("%1|%2|%3")
+                                                .arg(symbol,
+                                                     openPos.side.trimmed().toUpper(),
+                                                     connectorToken.toLower());
+                const double groupQty = runtimeQtyByExposureKey.value(exposureKey, rowQty);
+                const double markPrice = (livePos && qIsFinite(livePos->markPrice) && livePos->markPrice > 0.0)
+                    ? livePos->markPrice
+                    : price;
+                const double fallbackPnlUsdt = (openPos.side == QStringLiteral("LONG"))
+                    ? (markPrice - openPos.entryPrice) * rowQty
+                    : (openPos.entryPrice - markPrice) * rowQty;
+                const double fallbackMarginUsdt = std::max(
+                    1e-9,
+                    (openPos.entryPrice * rowQty) / std::max(1.0, openPos.leverage));
+                const LivePositionMetricsShare liveShare = allocateLivePositionShare(
+                    livePos,
+                    rowQty,
+                    groupQty,
+                    std::max(0.0, rowQty * markPrice),
+                    std::max(fallbackMarginUsdt, openPos.displayMarginUsdt),
+                    std::max(fallbackMarginUsdt, openPos.roiBasisUsdt),
+                    fallbackPnlUsdt);
+                openPos.displayMarginUsdt = std::max(1e-9, liveShare.displayMarginUsdt);
+                openPos.roiBasisUsdt = std::max(1e-9, liveShare.roiBasisUsdt);
+
+                const double displayQty = rowQty;
+                const double displaySizeUsdt = std::max(0.0, liveShare.sizeUsdt);
+                const double displayMarginUsdt = openPos.displayMarginUsdt;
+                const double displayPnlUsdt = liveShare.pnlUsdt;
+                const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
+                const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
+                const int targetRow = findOpenPositionRow(positionsTable_, symbol, interval, rowConnectorCfg.key);
+
+                if (targetRow >= 0) {
+                    refreshActivePositionRow(
+                        positionsTable_,
+                        positionsCumulativeView_,
+                        targetRow,
+                        PositionTableActiveRowData{
+                            symbol,
+                            formatIndicatorValueSummaryForSource(displayIndicatorValues, openPos.signalSource),
+                            displaySizeUsdt,
+                            displayQty,
+                            markPrice,
+                            marginRatio,
+                            liqPrice,
+                            displayMarginUsdt,
+                            displayPnlUsdt,
+                            openPos.roiBasisUsdt,
+                        });
+                    positionsTableMutated = true;
+                }
+            }
+            touchWaitingEntry(key, nowMs);
+            continue;
+        }
+
+        dashboardRuntimeLastEvalMs_.insert(key, nowMs);
 
         const bool allowLong = strategyAllowsLong(strategySummary);
         const bool allowShort = strategyAllowsShort(strategySummary);
@@ -657,10 +887,6 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
         }
         leverage = std::max(1.0, leverage);
 
-        const double positionPct = dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0;
-        const double targetNotionalUsdt = std::max(10.0, availableUsdt * (std::max(0.1, positionPct) / 100.0) * leverage);
-        const double requestedQty = std::max(0.000001, targetNotionalUsdt / price);
-
         if (openIt == dashboardRuntimeOpenPositions_.end()) {
             const OpenSignalDecision openSignal = determineOpenSignal(
                 indicatorValues,
@@ -670,6 +896,8 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             const QString openSide = openSignal.side;
             const QString triggerText = openSignal.triggerText;
             const QString triggerSource = openSignal.triggerSource;
+            const QString rowIndicatorValueSummary =
+                formatIndicatorValueSummaryForSource(displayIndicatorValues, triggerSource);
 
             if (!openSignal.hasSignal()) {
                 // "No trigger yet" is a normal monitoring state, not a pending queue item.
@@ -712,16 +940,48 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 continue;
             }
 
+            double orderSizingPrice = price;
+            if (!paperTrading) {
+                const auto *tickerPrice = fetchExecutionTickerPrice(symbol, rowConnectorCfg);
+                if (tickerPrice && tickerPrice->ok && qIsFinite(tickerPrice->price) && tickerPrice->price > 0.0) {
+                    orderSizingPrice = tickerPrice->price;
+                    if (std::fabs(orderSizingPrice - price) / std::max(price, 1e-12) >= 0.05) {
+                        const QString warningKey = QStringLiteral("order-sizing-price|%1|%2")
+                                                       .arg(symbol, rowConnectorCfg.key);
+                        if (!dashboardRuntimeConnectorWarnings_.contains(warningKey)) {
+                            dashboardRuntimeConnectorWarnings_.insert(warningKey);
+                            appendDashboardPositionLog(
+                                QString("%1 %2@%3 sizing uses current futures price %4 instead of signal close %5 (%6).")
+                                    .arg(openSide,
+                                         symbol,
+                                         interval,
+                                         QString::number(orderSizingPrice, 'f', 8),
+                                         QString::number(price, 'f', 8),
+                                         rowConnectorCfg.key));
+                        }
+                    }
+                }
+            }
+
+            const double positionPct = dashboardPositionPctSpin_ ? dashboardPositionPctSpin_->value() : 2.0;
+            const double targetNotionalUsdt = std::max(
+                10.0,
+                availableUsdt * (std::max(0.1, positionPct) / 100.0) * leverage);
+            const double requestedQty = std::max(0.000001, targetNotionalUsdt / orderSizingPrice);
             double cappedRequestedQty = requestedQty;
             const double storedQtyCap = dashboardRuntimeOpenQtyCaps_.value(key, 0.0);
             if (qIsFinite(storedQtyCap) && storedQtyCap > 0.0) {
                 cappedRequestedQty = std::min(cappedRequestedQty, storedQtyCap);
             }
-            const double orderQty = normalizeFuturesOrderQuantity(cappedRequestedQty, price, symbolFilters);
+            const double orderQty = normalizeFuturesOrderQuantity(cappedRequestedQty, orderSizingPrice, symbolFilters);
             if (!qIsFinite(orderQty) || orderQty <= 0.0) {
                 appendDashboardPositionLog(
-                    QString("%1 %2@%3 blocked: normalized order quantity is invalid (requested=%4).")
-                        .arg(openSide, symbol, interval, QString::number(cappedRequestedQty, 'f', 8)));
+                    QString("%1 %2@%3 blocked: normalized order quantity is invalid (requested=%4, sizingPrice=%5).")
+                        .arg(openSide,
+                             symbol,
+                             interval,
+                             QString::number(cappedRequestedQty, 'f', 8),
+                             QString::number(orderSizingPrice, 'f', 8)));
                 touchWaitingEntry(key, nowMs);
                 continue;
             }
@@ -860,7 +1120,7 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                             interval,
                             triggerSource,
                             triggerText,
-                            indicatorValueSummary,
+                            rowIndicatorValueSummary,
                             openSide,
                             QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"),
                             dashboardOverridesTable_->item(row, 7)
@@ -946,8 +1206,10 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             fallbackPnlUsdt);
         openPos.displayMarginUsdt = std::max(1e-9, liveShare.displayMarginUsdt);
         openPos.roiBasisUsdt = std::max(1e-9, liveShare.roiBasisUsdt);
-        const double markPnlUsdt = liveShare.pnlUsdt;
-        const double sizeUsdt = std::max(0.0, liveShare.sizeUsdt);
+        const double displayQty = rowQty;
+        const double displayPnlUsdt = liveShare.pnlUsdt;
+        const double displaySizeUsdt = std::max(0.0, liveShare.sizeUsdt);
+        const double displayMarginUsdt = openPos.displayMarginUsdt;
         const double liqPrice = (livePos && livePos->liquidationPrice > 0.0) ? livePos->liquidationPrice : 0.0;
         const double marginRatio = (livePos && livePos->marginRatio > 0.0) ? livePos->marginRatio : 0.0;
         const int targetRow = findOpenPositionRow(positionsTable_, symbol, interval, rowConnectorCfg.key);
@@ -959,14 +1221,14 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
                 targetRow,
                 PositionTableActiveRowData{
                     symbol,
-                    indicatorValueSummary,
-                    sizeUsdt,
-                    rowQty,
+                    formatIndicatorValueSummaryForSource(displayIndicatorValues, openPos.signalSource),
+                    displaySizeUsdt,
+                    displayQty,
                     markPrice,
                     marginRatio,
                     liqPrice,
-                    openPos.displayMarginUsdt,
-                    markPnlUsdt,
+                    displayMarginUsdt,
+                    displayPnlUsdt,
                     openPos.roiBasisUsdt,
                 });
             positionsTableMutated = true;
@@ -1169,6 +1431,35 @@ void TradingBotWindow::runDashboardRuntimeCycle() {
             dashboardWaitingHistoryEntries_.begin(),
             dashboardWaitingHistoryEntries_.begin() + extra);
     }
+
+    if (paperTrading || !futures || !hasApiCredentials) {
+        positionsLiveActivePnlValid_ = false;
+        positionsLiveActivePnlUpdatedMs_ = 0;
+        positionsLiveActivePnlUsdt_ = 0.0;
+        positionsLiveActivePnlContextKey_.clear();
+    } else {
+        bool anyLiveSnapshotOk = false;
+        double aggregatedLiveActivePnl = 0.0;
+        for (auto it = livePositionsCache.cbegin(); it != livePositionsCache.cend(); ++it) {
+            if (!it.value().ok) {
+                continue;
+            }
+            anyLiveSnapshotOk = true;
+            aggregatedLiveActivePnl += sumSnapshotActivePnl(it.value());
+        }
+        if (anyLiveSnapshotOk) {
+            positionsLiveActivePnlContextKey_ = liveActivePnlContextKey;
+            positionsLiveActivePnlUsdt_ = aggregatedLiveActivePnl;
+            positionsLiveActivePnlUpdatedMs_ = QDateTime::currentMSecsSinceEpoch();
+            positionsLiveActivePnlValid_ = true;
+        } else if (dashboardRuntimeOpenPositions_.isEmpty()) {
+            positionsLiveActivePnlContextKey_ = liveActivePnlContextKey;
+            positionsLiveActivePnlUsdt_ = 0.0;
+            positionsLiveActivePnlUpdatedMs_ = QDateTime::currentMSecsSinceEpoch();
+            positionsLiveActivePnlValid_ = true;
+        }
+    }
+
     refreshDashboardWaitingQueueTable();
 
     flushPendingPositionsView();

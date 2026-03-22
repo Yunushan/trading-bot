@@ -18,7 +18,6 @@ defaults where possible" so production launches remain stable on Windows 10/11.
 
 import os
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -637,37 +636,15 @@ def main() -> int:
             startup_overlay_raise_timer = None
 
     # --- Deferred heavy imports (after splash is visible) ---
-    # Run imports in a background thread so the Qt event loop stays alive
-    # and the splash spinner keeps animating during the ~2-3s import time.
-    _import_result: dict = {}
-    _import_done = False
-
-    def _bg_import():
-        nonlocal _import_done
-        try:
-            from app.gui.app_icon import find_primary_icon_file as _fpi, load_app_icon as _lai  # noqa: E402
-            from app.gui.main_window import MainWindow as _MW  # noqa: E402
-            _import_result["find_primary_icon_file"] = _fpi
-            _import_result["load_app_icon"] = _lai
-            _import_result["MainWindow"] = _MW
-        except Exception as exc:
-            _import_result["error"] = exc
-        _import_done = True
-
-    _import_thread = threading.Thread(target=_bg_import, daemon=True)
-    _import_thread.start()
-    while not _import_done:
-        try:
-            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
-        except Exception:
-            pass
-        _import_thread.join(0.05)
-
-    if "error" in _import_result:
-        raise _import_result["error"]
-    find_primary_icon_file = _import_result["find_primary_icon_file"]
-    load_app_icon = _import_result["load_app_icon"]
-    MainWindow = _import_result["MainWindow"]
+    # Import Qt-heavy GUI modules on the main thread. Importing MainWindow from
+    # a worker thread can deadlock/stall on Windows + PyQt startup, leaving the
+    # main thread stuck polling join() until the user interrupts the process.
+    try:
+        app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
+    except Exception:
+        pass
+    from app.gui.shared.app_icon import find_primary_icon_file, load_app_icon  # noqa: E402
+    from app.gui.main_window import MainWindow  # noqa: E402
 
     if splash is not None:
         try:

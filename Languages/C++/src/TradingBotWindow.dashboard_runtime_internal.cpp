@@ -174,7 +174,7 @@ void refreshActivePositionRow(QTableWidget *table, bool cumulativeView, int row,
         QStringLiteral("%1 (%2%)")
             .arg(QString::number(data.pnlUsdt, 'f', 2),
                  QString::number((data.pnlUsdt / std::max(1e-9, data.roiBasisUsdt)) * 100.0, 'f', 2)));
-    setOrCreatePositionCellText(table, updateVisibleText, row, 11, data.indicatorValueSummary);
+    setOrCreatePositionCellText(table, updateVisibleText, row, 11, data.indicatorValueSummary, true);
     setTableCellNumeric(table, row, 1, data.sizeUsdt);
     setTableCellNumeric(table, row, 2, data.markPrice);
     setTableCellNumeric(table, row, 3, data.marginRatio);
@@ -185,6 +185,15 @@ void refreshActivePositionRow(QTableWidget *table, bool cumulativeView, int row,
     if (QTableWidgetItem *pnlItem = table->item(row, 7)) {
         setTableCellRoiBasis(pnlItem, data.roiBasisUsdt);
     }
+}
+
+void setPositionIndicatorValueSummary(QTableWidget *table, bool cumulativeView, int row, const QString &indicatorValueSummary) {
+    if (!table || row < 0) {
+        return;
+    }
+
+    ScopedTableSortingPause sortingPause(table);
+    setOrCreatePositionCellText(table, !cumulativeView, row, 11, indicatorValueSummary, true);
 }
 
 bool appendOpenPositionRow(QTableWidget *table, qint64 &rowSequenceCounter, const PositionTableOpenRowData &data) {
@@ -554,6 +563,50 @@ QString formatIndicatorValueSummary(const IndicatorRuntimeValues &values) {
         parts << QStringLiteral("W%R %1").arg(QString::number(values.willr, 'f', 2));
     }
     return parts.isEmpty() ? QStringLiteral("-") : parts.join(QStringLiteral(" | "));
+}
+
+QString formatIndicatorValueSummaryForSource(const IndicatorRuntimeValues &values, const QString &indicatorSource) {
+    const QString sourceKey = TradingBotWindowDashboardRuntime::normalizedIndicatorKey(indicatorSource);
+    if (sourceKey == QStringLiteral("rsi")) {
+        return formatIndicatorValueSummary(IndicatorRuntimeValues{
+            true,
+            false,
+            false,
+            values.rsiOk,
+            false,
+            false,
+            values.rsi,
+            0.0,
+            0.0,
+        });
+    }
+    if (sourceKey == QStringLiteral("stoch_rsi")) {
+        return formatIndicatorValueSummary(IndicatorRuntimeValues{
+            false,
+            true,
+            false,
+            false,
+            values.stochRsiOk,
+            false,
+            0.0,
+            values.stochRsi,
+            0.0,
+        });
+    }
+    if (sourceKey == QStringLiteral("willr")) {
+        return formatIndicatorValueSummary(IndicatorRuntimeValues{
+            false,
+            false,
+            true,
+            false,
+            false,
+            values.willrOk,
+            0.0,
+            0.0,
+            values.willr,
+        });
+    }
+    return formatIndicatorValueSummary(values);
 }
 
 OpenSignalDecision determineOpenSignal(

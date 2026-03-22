@@ -73,6 +73,9 @@ private:
     void startDashboardRuntime();
     void stopDashboardRuntime();
     void runDashboardRuntimeCycle();
+    void refreshDashboardOpenPositionIndicatorValuesForSignalKey(
+        const QString &signalKey,
+        const QVector<BinanceRestClient::KlineCandle> &marketCandles);
     void appendDashboardAllLog(const QString &message);
     void appendDashboardPositionLog(const QString &message);
     void appendDashboardWaitingLog(const QString &message);
@@ -241,6 +244,10 @@ private:
     QLabel *positionsBotTimeLabel_;
     double positionsLastTotalBalanceUsdt_;
     double positionsLastAvailableBalanceUsdt_;
+    QString positionsLiveActivePnlContextKey_;
+    bool positionsLiveActivePnlValid_ = false;
+    double positionsLiveActivePnlUsdt_ = 0.0;
+    qint64 positionsLiveActivePnlUpdatedMs_ = 0;
     QComboBox *positionsViewCombo_;
     bool positionsCumulativeView_ = false;
     QTableWidget *positionsTable_;

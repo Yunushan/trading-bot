@@ -33,7 +33,7 @@ This repository provides a desktop assistant for building and exercising trading
 ### For Easy Windows Install (If Python 3.10,3.11,3.12,3.13 Installed)
 ### Windows
    ```execute
-    run (Double Click) "Binance-Bot-Trading.bat" file.
+    run (Double Click) "Trading-Bot-Python.bat" file.
    ```
 ### For Regular Windows Install (If Python 3.10,3.11,3.12,3.13 Installed)
 1. Install Python from https://python.org (check **Add Python to PATH** during setup).

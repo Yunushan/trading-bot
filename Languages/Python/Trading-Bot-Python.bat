@@ -44,7 +44,7 @@ if exist requirements.txt (
     "%RUN_PY%" -m pip install -r requirements.txt
 )
 
-echo Starting Binance Trading Bot...
+echo Starting Trading Bot...
 "%RUN_PY%" "%BASE_DIR%main.py"
 
 :END

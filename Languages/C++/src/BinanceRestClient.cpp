@@ -244,17 +244,29 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
         return false;
     };
 
-    auto applySnapshot = [&](double available, double wallet, const QString &assetCode) {
+    auto applySnapshot = [&](double available, double totalBalance, const QString &assetCode) {
+        double normalizedTotal = std::max(0.0, totalBalance);
+        double normalizedAvailable = std::max(0.0, available);
+        if (normalizedTotal <= 0.0 && normalizedAvailable > 0.0) {
+            normalizedTotal = normalizedAvailable;
+        }
+        if (normalizedTotal > 0.0 && normalizedAvailable > normalizedTotal) {
+            normalizedAvailable = normalizedTotal;
+        }
         result.ok = true;
         result.asset = assetCode.isEmpty() ? QStringLiteral("USDT") : assetCode;
-        result.availableUsdtBalance = std::max(0.0, available);
-        result.totalUsdtBalance = std::max(result.availableUsdtBalance, std::max(0.0, wallet));
+        result.availableUsdtBalance = normalizedAvailable;
+        result.totalUsdtBalance = normalizedTotal;
         result.usdtBalance = result.totalUsdtBalance;
     };
 
     if (futures) {
         QString balanceError;
         const QJsonDocument balanceDoc = signedGet(QStringLiteral("/fapi/v2/balance"), &balanceError);
+        bool hasBalanceSnapshot = false;
+        double balanceSnapshotAvailable = 0.0;
+        double balanceSnapshotWallet = 0.0;
+        QString balanceSnapshotAsset;
         if (!balanceDoc.isNull()) {
             if (balanceDoc.isObject()) {
                 const QJsonObject obj = balanceDoc.object();
@@ -267,14 +279,25 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
             QString assetCode;
             const QJsonArray entries = extractBalanceEntries(balanceDoc);
             if (parsePreferredAssetRow(entries, &available, &wallet, &assetCode)) {
-                applySnapshot(available, wallet, assetCode);
-                return result;
+                hasBalanceSnapshot = true;
+                balanceSnapshotAvailable = available;
+                balanceSnapshotWallet = wallet;
+                balanceSnapshotAsset = assetCode;
+                const bool suspiciousDemoAvailable = wallet > 0.0 && available > (wallet + 1e-6);
+                if (!suspiciousDemoAvailable) {
+                    applySnapshot(available, wallet, assetCode);
+                    return result;
+                }
             }
         }
 
         QString accountError;
         const QJsonDocument accountDoc = signedGet(QStringLiteral("/fapi/v2/account"), &accountError);
         if (accountDoc.isNull() || !accountDoc.isObject()) {
+            if (hasBalanceSnapshot) {
+                applySnapshot(balanceSnapshotAvailable, balanceSnapshotWallet, balanceSnapshotAsset);
+                return result;
+            }
             QString merged = accountError;
             if (merged.isEmpty()) {
                 merged = balanceError;
@@ -290,14 +313,14 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
         }
 
         double available = 0.0;
-        double wallet = 0.0;
+        double totalBalance = 0.0;
         bool hasAvailable = parseFirstNumber(accountObj, {"availableBalance", "maxWithdrawAmount"}, &available);
-        bool hasWallet = parseFirstNumber(
+        bool hasTotalBalance = parseFirstNumber(
             accountObj,
-            {"totalWalletBalance", "totalMarginBalance", "totalCrossWalletBalance", "totalCrossBalance"},
-            &wallet);
+            {"totalMarginBalance", "totalWalletBalance", "totalCrossWalletBalance", "totalCrossBalance"},
+            &totalBalance);
         QString assetCode = QStringLiteral("USDT");
-        if (!hasAvailable || !hasWallet) {
+        if (!hasAvailable || !hasTotalBalance) {
             const QJsonArray assets = accountObj.value(QStringLiteral("assets")).toArray();
             double rowAvailable = 0.0;
             double rowWallet = 0.0;
@@ -307,9 +330,9 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
                     available = rowAvailable;
                     hasAvailable = true;
                 }
-                if (!hasWallet) {
-                    wallet = rowWallet;
-                    hasWallet = true;
+                if (!hasTotalBalance) {
+                    totalBalance = rowWallet;
+                    hasTotalBalance = true;
                 }
                 if (!rowAsset.isEmpty()) {
                     assetCode = rowAsset;
@@ -317,8 +340,13 @@ BinanceRestClient::BalanceResult BinanceRestClient::fetchUsdtBalance(
             }
         }
 
-        if (hasAvailable || hasWallet) {
-            applySnapshot(hasAvailable ? available : 0.0, hasWallet ? wallet : 0.0, assetCode);
+        if (hasAvailable || hasTotalBalance) {
+            applySnapshot(hasAvailable ? available : 0.0, hasTotalBalance ? totalBalance : 0.0, assetCode);
+            return result;
+        }
+
+        if (hasBalanceSnapshot) {
+            applySnapshot(balanceSnapshotAvailable, balanceSnapshotWallet, balanceSnapshotAsset);
             return result;
         }
 
@@ -546,6 +574,63 @@ BinanceRestClient::KlinesResult BinanceRestClient::fetchKlines(
 
     result.ok = true;
     result.candles = parsed;
+    return result;
+}
+
+BinanceRestClient::TickerPriceResult BinanceRestClient::fetchTickerPrice(
+    const QString &symbol,
+    bool futures,
+    bool testnet,
+    int timeoutMs,
+    const QString &baseUrlOverride) {
+    TickerPriceResult result;
+    result.symbol = symbol.trimmed().toUpper();
+    if (result.symbol.isEmpty()) {
+        result.error = QStringLiteral("Symbol is required");
+        return result;
+    }
+
+    const QString defaultBase = futures
+        ? (testnet ? QStringLiteral("https://testnet.binancefuture.com")
+                   : QStringLiteral("https://fapi.binance.com"))
+        : (testnet ? QStringLiteral("https://testnet.binance.vision")
+                   : QStringLiteral("https://api.binance.com"));
+    const QString overrideBase = baseUrlOverride.trimmed();
+    const QString base = overrideBase.isEmpty() ? defaultBase : overrideBase;
+    const QString endpoint = futures ? QStringLiteral("/fapi/v1/ticker/price")
+                                     : QStringLiteral("/api/v3/ticker/price");
+    const QString url = QStringLiteral("%1%2?symbol=%3").arg(base, endpoint, result.symbol);
+
+    QString requestError;
+    const QJsonDocument document = httpGetJson(url, {}, timeoutMs, &requestError);
+    if (document.isNull() || !document.isObject()) {
+        result.error = requestError.isEmpty() ? QStringLiteral("Unexpected Binance ticker response") : requestError;
+        return result;
+    }
+
+    const QJsonObject obj = document.object();
+    if (obj.contains(QStringLiteral("msg"))) {
+        result.error = obj.value(QStringLiteral("msg")).toString(QStringLiteral("Binance API error"));
+        return result;
+    }
+    if (obj.contains(QStringLiteral("code")) && obj.contains(QStringLiteral("msg"))) {
+        result.error = obj.value(QStringLiteral("msg")).toString(QStringLiteral("Binance API error"));
+        return result;
+    }
+
+    if (!parseJsonNumber(obj.value(QStringLiteral("price")), &result.price)
+        || !qIsFinite(result.price)
+        || result.price <= 0.0) {
+        result.error = QStringLiteral("Ticker price missing for %1").arg(result.symbol);
+        result.price = 0.0;
+        return result;
+    }
+
+    const QString responseSymbol = obj.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+    if (!responseSymbol.isEmpty()) {
+        result.symbol = responseSymbol;
+    }
+    result.ok = true;
     return result;
 }
 

@@ -63,21 +63,39 @@ from app.backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
 from app.strategy import StrategyEngine
 from app.workers import StopWorker, StartWorker, CallWorker
 from app.position_guard import IntervalPositionGuard
-from app.gui.param_dialog import ParamDialog
-from app.gui import allocation_persistence
-from app.gui.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
-from app.gui.chart_widgets import InteractiveChartView, SimpleCandlestickWidget
-from app.gui import (
-    chart_embed,
-    code_language_build,
-    main_window_account_runtime,
-    main_window_backtest_runtime,
+from app.gui.shared.param_dialog import ParamDialog
+from app.gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
+from app.gui.backtest import (
+    main_window_backtest_bridge_runtime,
     main_window_backtest_execution_runtime,
     main_window_backtest_results_runtime,
+    main_window_backtest_runtime,
     main_window_backtest_state_runtime,
-    main_window_backtest_template_runtime,
     main_window_backtest_tab,
-    main_window_backtest_bridge_runtime,
+    main_window_backtest_template_runtime,
+)
+from app.gui.chart import (
+    chart_embed,
+    main_window_chart_display_runtime,
+    main_window_chart_host_runtime,
+    main_window_chart_selection_runtime,
+    main_window_chart_tab,
+    main_window_chart_view_runtime,
+)
+from app.gui.chart.chart_widgets import InteractiveChartView, SimpleCandlestickWidget
+from app.gui.code import (
+    code_language_build,
+    code_language_launch,
+    code_language_launcher,
+    code_language_runtime,
+    code_language_status,
+    code_language_ui,
+    dependency_versions_runtime,
+    dependency_versions_ui,
+    main_window_code,
+    main_window_code_runtime,
+)
+from app.gui.dashboard import (
     main_window_dashboard_actions_runtime,
     main_window_dashboard_chart_runtime,
     main_window_dashboard_header_runtime,
@@ -86,50 +104,44 @@ from app.gui import (
     main_window_dashboard_markets_runtime,
     main_window_dashboard_state_runtime,
     main_window_dashboard_strategy_runtime,
+)
+from app.gui.runtime import (
+    main_window_account_runtime,
+    main_window_balance_runtime,
     main_window_bootstrap_runtime,
+    main_window_control_runtime,
+    main_window_indicator_runtime,
     main_window_init_finalize_runtime,
-    main_window_secondary_tabs_runtime,
+    main_window_margin_runtime,
     main_window_override_runtime,
+    main_window_runtime,
+    main_window_secondary_tabs_runtime,
     main_window_session_runtime,
     main_window_status_runtime,
     main_window_stop_loss_runtime,
+    main_window_strategy_context_runtime,
     main_window_strategy_controls_runtime,
     main_window_strategy_ui_runtime,
-    main_window_ui_misc_runtime,
-    main_window_chart_display_runtime,
-    main_window_chart_host_runtime,
-    main_window_chart_tab,
-    main_window_chart_selection_runtime,
-    main_window_chart_view_runtime,
-    main_window_positions_tab,
     main_window_tab_runtime,
-    main_window_control_runtime,
-    main_window_code,
-    main_window_balance_runtime,
-    main_window_code_runtime,
-    main_window_helper_runtime,
-    main_window_indicator_runtime,
-    main_window_margin_runtime,
     main_window_theme_runtime,
-    main_window_trade_runtime,
-    main_window_ui_support,
-    main_window_strategy_context_runtime,
-    main_window_web_embed,
-    dependency_versions_runtime,
-    code_language_launch,
-    code_language_launcher,
-    code_language_runtime,
-    code_language_status,
-    code_language_ui,
-    dependency_versions_ui,
-    main_window_config,
-    main_window_positions,
-    main_window_positions_worker,
-    main_window_runtime,
+    main_window_ui_misc_runtime,
     window_runtime,
 )
-from app.gui.main_window_config import _load_app_state_file, _save_app_state_file
-from app.gui.chart_embed import (
+from app.gui.shared import (
+    allocation_persistence,
+    main_window_config,
+    main_window_helper_runtime,
+    main_window_ui_support,
+    main_window_web_embed,
+)
+from app.gui.trade import main_window_trade_runtime
+from app.gui.positions import (
+    main_window_positions,
+    main_window_positions_tab,
+    main_window_positions_worker,
+)
+from app.gui.shared.main_window_config import _load_app_state_file, _save_app_state_file
+from app.gui.chart.chart_embed import (
     _DEFAULT_WEB_UA,
     _binance_unavailable_reason,
     _chart_safe_mode_enabled,
@@ -143,7 +155,7 @@ from app.gui.chart_embed import (
     _webengine_charts_allowed,
     _webengine_embed_unavailable_reason,
 )
-from app.gui.code_language_catalog import (
+from app.gui.code.code_language_catalog import (
     BASE_PROJECT_PATH as _BASE_PROJECT_PATH,
     CPP_BUILD_ROOT,
     CPP_CACHE_META_FILE,

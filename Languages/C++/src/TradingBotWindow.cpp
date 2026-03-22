@@ -1188,13 +1188,10 @@ bool launchPythonRuntime(QString *errorOut = nullptr) {
     const QStringList packagedRelativeCandidates = {
         QStringLiteral("Trading-Bot-Python.exe"),
         QStringLiteral("Trading-Bot-Python-arm64.exe"),
-        QStringLiteral("Binance-Trading-Bot.exe"),
         QStringLiteral("dist/Trading-Bot-Python.exe"),
         QStringLiteral("dist/Trading-Bot-Python-arm64.exe"),
-        QStringLiteral("dist/Binance-Trading-Bot.exe"),
         QStringLiteral("Languages/Python/dist/Trading-Bot-Python.exe"),
         QStringLiteral("Languages/Python/dist/Trading-Bot-Python-arm64.exe"),
-        QStringLiteral("Languages/Python/dist/Binance-Trading-Bot.exe"),
     };
 #else
     const QStringList packagedRelativeCandidates = {

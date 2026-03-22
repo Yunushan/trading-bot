@@ -40,6 +40,13 @@ public:
         QString error;
     };
 
+    struct TickerPriceResult {
+        bool ok = false;
+        QString symbol;
+        double price = 0.0;
+        QString error;
+    };
+
     struct FuturesPosition {
         QString symbol;
         QString positionSide;
@@ -113,6 +120,13 @@ public:
         bool futures,
         bool testnet,
         int limit = 300,
+        int timeoutMs = 10000,
+        const QString &baseUrlOverride = {});
+
+    static TickerPriceResult fetchTickerPrice(
+        const QString &symbol,
+        bool futures,
+        bool testnet,
         int timeoutMs = 10000,
         const QString &baseUrlOverride = {});
 
