@@ -16,15 +16,19 @@ def _configure_startup_window_suppression_defaults() -> None:
         return
     if not _env_flag("BOT_FORCE_STARTUP_WINDOW_HOOKS"):
         os.environ["BOT_DISABLE_STARTUP_WINDOW_HOOKS"] = "1"
-        os.environ.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "1")
-        os.environ.setdefault("BOT_CBT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "2500")
-        os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_MS", "3500")
-        os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_INTERVAL_MS", "5")
+        # The CBT helper-cover path can itself create tiny transient windows
+        # and delay early interaction on some Windows systems, so keep it off
+        # unless the user explicitly opts back in.
+        os.environ.setdefault("BOT_ENABLE_CBT_STARTUP_WINDOW_SUPPRESS", "0")
+        os.environ.setdefault("BOT_CBT_STARTUP_WINDOW_SUPPRESS_DURATION_MS", "0")
+        os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_MS", "0")
+        os.environ.setdefault("BOT_CBT_THREAD_HOOK_SCAN_INTERVAL_MS", "80")
         os.environ.setdefault("BOT_STARTUP_MASK_ENABLED", "0")
         os.environ.setdefault("BOT_STARTUP_MASK_MODE", "snapshot")
         os.environ.setdefault("BOT_STARTUP_MASK_HIDE_MS", "1400")
         os.environ.setdefault("BOT_STARTUP_MASK_SCOPE", "primary")
         os.environ.setdefault("BOT_NATIVE_STARTUP_COVER_ENABLED", "0")
+        os.environ.setdefault("BOT_DISABLE_SPLASH", "1")
         os.environ.setdefault("BOT_STARTUP_SPLASH_TOPMOST", "0")
         os.environ.setdefault("BOT_STARTUP_REVEAL_DELAY_MS", "0")
         os.environ.setdefault("BOT_PREWARM_WEBENGINE", "0")

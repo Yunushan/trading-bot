@@ -73,8 +73,12 @@ class _StartupPresentationController:
             except Exception:
                 pass
 
-        self._mask_unmask_deadline = time.monotonic() + 4.0
-        self._startup_transition_deadline = time.monotonic() + 4.0
+        # Once the main window is visible, release startup overlays quickly so
+        # the UI becomes interactive instead of waiting several seconds for a
+        # stricter exposure check.
+        transition_timeout_s = 1.2 if not self._startup_masks else 4.0
+        self._mask_unmask_deadline = time.monotonic() + transition_timeout_s
+        self._startup_transition_deadline = time.monotonic() + transition_timeout_s
         startup_reveal_ms = self._startup_reveal_ms()
         startup_reveal_armed = bool(sys.platform == "win32" and startup_reveal_ms > 0)
 
@@ -369,6 +373,17 @@ class _StartupPresentationController:
         if handle is not None:
             try:
                 if hasattr(handle, "isExposed") and not handle.isExposed():
+                    try:
+                        if self.app.activeWindow() is win:
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        focus_window = self.QtGui.QGuiApplication.focusWindow()
+                        if focus_window is not None and focus_window is handle:
+                            return True
+                    except Exception:
+                        pass
                     return False
             except Exception:
                 pass

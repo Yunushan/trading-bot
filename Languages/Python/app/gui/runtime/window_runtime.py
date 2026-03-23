@@ -398,7 +398,9 @@ def restore_window_after_guard(self) -> None:
 
     _restore_once()
     try:
-        QtCore.QTimer.singleShot(40, _restore_once)
-        QtCore.QTimer.singleShot(140, _restore_once)
+        # WebEngine can minimize the host window a little after the initial
+        # hide/minimize event, so keep restoring for a short grace period.
+        for delay_ms in (40, 140, 320, 700, 1400, 2400):
+            QtCore.QTimer.singleShot(delay_ms, _restore_once)
     except Exception:
         pass

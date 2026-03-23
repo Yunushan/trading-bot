@@ -90,6 +90,21 @@ def _clear_hand_override_cursor() -> None:
             return
 
 
+def _refresh_host_window_protection(widget) -> None:
+    try:
+        host_window = widget.window()
+    except Exception:
+        host_window = None
+    if host_window is None:
+        return
+    try:
+        start_guard = getattr(host_window, "_start_webengine_close_guard", None)
+        if callable(start_guard):
+            start_guard()
+    except Exception:
+        pass
+
+
 def _normalize_symbol(symbol: str) -> str:
     raw = str(symbol or "").strip().upper().replace("/", "")
     if raw.endswith(".P"):
@@ -241,6 +256,7 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
         except Exception:
             pass
         if self._page_ready:
+            _refresh_host_window_protection(self)
             try:
                 self.ready.emit()
             except Exception:

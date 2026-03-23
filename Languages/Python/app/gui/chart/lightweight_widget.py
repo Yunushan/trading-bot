@@ -506,6 +506,21 @@ def _clear_hand_override_cursor() -> None:
             return
 
 
+def _refresh_host_window_protection(widget) -> None:
+    try:
+        host_window = widget.window()
+    except Exception:
+        host_window = None
+    if host_window is None:
+        return
+    try:
+        start_guard = getattr(host_window, "_start_webengine_close_guard", None)
+        if callable(start_guard):
+            start_guard()
+    except Exception:
+        pass
+
+
 class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
     """
     QWebEngine wrapper around TradingView Lightweight Charts.
@@ -653,6 +668,7 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
             pass
         if not self._page_ready:
             return
+        _refresh_host_window_protection(self)
         pending = self._pending_payload
         if pending:
             self._apply_payload(pending)
