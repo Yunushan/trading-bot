@@ -21,7 +21,7 @@ _SYMBOL_FETCH_TOP_N = 200
 _normalize_stop_loss_dict = lambda value: value  # type: ignore
 
 
-def _create_backtest_tab(self):
+def _create_backtest_tab(self, *, add_to_tabs: bool = True):
     tab3 = QtWidgets.QWidget()
     tab3_layout = QtWidgets.QVBoxLayout(tab3)
     tab3_scroll_area = QtWidgets.QScrollArea(tab3)
@@ -639,7 +639,10 @@ def _create_backtest_tab(self):
     output_group_layout.addWidget(self.backtest_results_table, 1)
     tab3_content_layout.addWidget(output_group)
 
-    self.tabs.addTab(tab3, "Backtest")
+    if add_to_tabs:
+        self.backtest_tab = tab3
+        self.tabs.addTab(tab3, "Backtest")
+    return tab3
 
 
 def bind_main_window_backtest_tab(

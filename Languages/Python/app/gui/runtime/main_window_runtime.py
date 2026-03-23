@@ -319,11 +319,7 @@ def closeEvent(self, event):
             now = 0.0
         guard_until = _active_close_protection_until(self)
         if guard_until and now < guard_until:
-            try:
-                is_spontaneous_close = bool(event is not None and event.spontaneous())
-            except Exception:
-                is_spontaneous_close = False
-            if is_spontaneous_close or _is_recent_user_close_command(self):
+            if _is_recent_user_close_command(self):
                 try:
                     self._last_user_close_command_ts = 0.0
                 except Exception:

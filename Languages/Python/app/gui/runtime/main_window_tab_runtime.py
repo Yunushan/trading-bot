@@ -8,6 +8,7 @@ from PyQt6 import QtCore
 from ..chart.chart_embed import _chart_safe_mode_enabled, _webengine_charts_allowed
 
 _CPP_CODE_LANGUAGE_KEY = ""
+_LAZY_SECONDARY_TAB_PROPERTY = "_bot_lazy_secondary_tab_key"
 
 
 def _on_tab_changed(self, index: int):
@@ -27,6 +28,19 @@ def _on_tab_changed(self, index: int):
             self._stop_dependency_usage_auto_poll()
     except Exception:
         pass
+    try:
+        lazy_secondary_key = str(widget.property(_LAZY_SECONDARY_TAB_PROPERTY) or "").strip().lower()
+    except Exception:
+        lazy_secondary_key = ""
+    if lazy_secondary_key:
+        try:
+            QtCore.QTimer.singleShot(
+                0,
+                lambda key=lazy_secondary_key, window=self: window._load_lazy_secondary_tab(key),
+            )
+        except Exception:
+            pass
+        return
     if widget is getattr(self, "chart_tab", None):
         try:
             combo_mode = self.chart_view_mode_combo.currentData()
@@ -110,9 +124,7 @@ def _on_tab_changed(self, index: int):
     elif widget is getattr(self, "liquidation_tab", None):
         pass
     elif widget is getattr(self, "code_tab", None):
-        if not getattr(self, "_dep_version_auto_refresh_done", False):
-            self._dep_version_auto_refresh_done = True
-            QtCore.QTimer.singleShot(100, self._refresh_dependency_versions)
+        pass
 
 
 def bind_main_window_tab_runtime(MainWindow, *, cpp_code_language_key):

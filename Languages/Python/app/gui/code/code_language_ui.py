@@ -19,6 +19,35 @@ from .code_language_catalog import (
 )
 
 
+def _ensure_rust_framework_cards(self) -> None:
+    if getattr(self, "_starter_rust_framework_cards", None):
+        return
+
+    starter_card_cls = getattr(self, "_code_tab_starter_card_cls", None)
+    rust_framework_row = getattr(self, "_rust_framework_cards_row", None)
+    if starter_card_cls is None or rust_framework_row is None:
+        return
+
+    self._starter_rust_framework_cards = {}
+    self._starter_rust_framework_base_subtitles = {}
+
+    for opt in RUST_FRAMEWORK_OPTIONS:
+        card = starter_card_cls(
+            opt["key"],
+            opt["title"],
+            opt["subtitle"],
+            opt["accent"],
+            opt.get("badge"),
+            disabled=opt.get("disabled", False),
+        )
+        card.clicked.connect(self._code_tab_select_rust_framework)
+        card.setMinimumWidth(170)
+        rust_framework_row.addWidget(card, 1)
+        self._starter_rust_framework_cards[opt["key"]] = card
+        self._starter_rust_framework_base_subtitles[opt["key"]] = str(opt.get("subtitle") or "").strip()
+    rust_framework_row.addStretch()
+
+
 def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets_for_config):
     tab = QtWidgets.QWidget()
     outer_layout = QtWidgets.QVBoxLayout(tab)
@@ -48,6 +77,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     self._starter_language_base_subtitles = {}
     self._starter_rust_framework_cards = {}
     self._starter_rust_framework_base_subtitles = {}
+    self._code_tab_starter_card_cls = starter_card_cls
     self._starter_market_cards = {}
     self._starter_crypto_cards = {}
     self._starter_forex_cards = {}
@@ -83,21 +113,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     rust_framework_row = QtWidgets.QHBoxLayout(rust_framework_widget)
     rust_framework_row.setContentsMargins(0, 0, 0, 0)
     rust_framework_row.setSpacing(12)
-    for opt in RUST_FRAMEWORK_OPTIONS:
-        card = starter_card_cls(
-            opt["key"],
-            opt["title"],
-            opt["subtitle"],
-            opt["accent"],
-            opt.get("badge"),
-            disabled=opt.get("disabled", False),
-        )
-        card.clicked.connect(self._code_tab_select_rust_framework)
-        card.setMinimumWidth(170)
-        rust_framework_row.addWidget(card, 1)
-        self._starter_rust_framework_cards[opt["key"]] = card
-        self._starter_rust_framework_base_subtitles[opt["key"]] = str(opt.get("subtitle") or "").strip()
-    rust_framework_row.addStretch()
+    self._rust_framework_cards_row = rust_framework_row
     layout.addWidget(rust_framework_widget)
     self._rust_framework_cards_widget = rust_framework_widget
 
@@ -123,7 +139,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     layout.addWidget(status_widget)
 
     self._dep_version_labels = {}
-    self._dep_version_targets = resolve_dependency_targets_for_config(self.config)
+    self._dep_version_targets = []
     versions_group = QtWidgets.QGroupBox("Environment Versions")
     versions_group.setSizePolicy(
         QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
@@ -158,7 +174,6 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     self._dep_versions_layout = versions_layout
     self._dep_versions_scroll = versions_scroll
     self._dep_versions_group = versions_group
-    self._rebuild_dependency_version_rows(self._dep_version_targets)
 
     versions_group_layout.addWidget(versions_scroll, 1)
     layout.addWidget(versions_group, 1)
@@ -169,8 +184,11 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     version_btn_row.addWidget(self._version_refresh_btn)
     layout.addLayout(version_btn_row)
 
-    self._sync_language_exchange_lists_from_config()
     self._update_bot_status()
+    try:
+        self._ensure_language_exchange_paths()
+    except Exception:
+        pass
     self._refresh_code_tab_from_config()
     try:
         self._ensure_cpp_process_watchdog()
@@ -301,6 +319,9 @@ def refresh_code_tab_from_config(
 
     rust_framework_cards = getattr(self, "_starter_rust_framework_cards", {})
     rust_framework_key = str(self.config.get("selected_rust_framework") or "").strip()
+    if lang_key == RUST_CODE_LANGUAGE_KEY:
+        _ensure_rust_framework_cards(self)
+        rust_framework_cards = getattr(self, "_starter_rust_framework_cards", {})
     if rust_framework_key and rust_framework_key not in rust_framework_cards:
         rust_framework_key = ""
         self.config["selected_rust_framework"] = ""

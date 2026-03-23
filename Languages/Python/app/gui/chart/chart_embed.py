@@ -34,7 +34,7 @@ _DEFAULT_WEB_UA = os.environ.get(
 def _native_chart_host_prewarm_enabled() -> bool:
     if sys.platform != "win32":
         return True
-    flag = str(os.environ.get("BOT_PRIME_NATIVE_CHART_HOST", "0")).strip().lower()
+    flag = str(os.environ.get("BOT_PRIME_NATIVE_CHART_HOST", "1")).strip().lower()
     return flag in {"1", "true", "yes", "on"}
 
 

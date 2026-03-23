@@ -84,11 +84,15 @@ def _create_chart_tab(self):
     self.chart_view_stack = QtWidgets.QStackedWidget()
     layout.addWidget(self.chart_view_stack, stretch=1)
     if _native_chart_host_prewarm_enabled():
-        try:
-            self.chart_view_stack.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
-            self.chart_view_stack.winId()
-        except Exception:
-            pass
+        for widget in (tab, self.chart_view_stack):
+            try:
+                widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+            except Exception:
+                pass
+            try:
+                widget.winId()
+            except Exception:
+                pass
     try:
         self._chart_switch_overlay = QtWidgets.QLabel(self.chart_view_stack)
         self._chart_switch_overlay.setVisible(False)
