@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
 
+from ..shared.silent_webengine_page import SilentWebEnginePage
+
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 except Exception as exc:  # pragma: no cover - environment without WebEngine
@@ -268,6 +270,11 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
         try:
             self.setMouseTracking(True)
+        except Exception:
+            pass
+        try:
+            if SilentWebEnginePage is not None:
+                self.setPage(SilentWebEnginePage(self))
         except Exception:
             pass
         # Disable scrollbars - the chart should fill the entire widget

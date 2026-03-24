@@ -92,12 +92,12 @@ def rebuild_dependency_version_rows(
         label_widget.setMinimumHeight(20)
         make_dependency_cell_copyable(label_widget)
 
-        installed_widget = QtWidgets.QLabel("Checking...")
+        installed_widget = QtWidgets.QLabel("Click Check Versions")
         installed_widget.setStyleSheet("font-size: 11px; padding: 2px;")
         installed_widget.setMinimumHeight(20)
         make_dependency_cell_copyable(installed_widget)
 
-        latest_widget = QtWidgets.QLabel("Checking...")
+        latest_widget = QtWidgets.QLabel("Click Check Versions")
         latest_widget.setStyleSheet("font-size: 11px; padding: 2px;")
         latest_widget.setMinimumHeight(20)
         make_dependency_cell_copyable(latest_widget)
@@ -105,7 +105,7 @@ def rebuild_dependency_version_rows(
         usage_widget = QtWidgets.QLabel()
         usage_widget.setMinimumHeight(20)
         make_dependency_cell_copyable(usage_widget)
-        set_dependency_usage_widget(usage_widget, "Checking...")
+        set_dependency_usage_widget(usage_widget, "On demand")
 
         usage_counter_widget = QtWidgets.QLabel()
         usage_counter_widget.setMinimumHeight(20)

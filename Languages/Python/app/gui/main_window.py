@@ -587,14 +587,21 @@ class MainWindow(QtWidgets.QWidget):
             pass
         if sys.platform == "win32":
             try:
-                delay_ms = int(os.environ.get("BOT_WINDOW_ICON_RETRY_MS") or 1200)
+                delay_raw = os.environ.get("BOT_WINDOW_ICON_RETRY_MS")
+                delay_ms = int(delay_raw) if delay_raw is not None else 0
             except Exception:
-                delay_ms = 1200
+                delay_ms = 0
             if delay_ms > 0:
                 QtCore.QTimer.singleShot(delay_ms, lambda w=self: _apply_window_icon(w))
         root_layout = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
+        try:
+            self._store_previous_main_window_event_filter()
+            self.tabs.tabBar().installEventFilter(self)
+        except Exception:
+            pass
         root_layout.addWidget(self.tabs)
 
         # ---------------- Dashboard tab ----------------

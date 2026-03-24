@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+import sys
+import threading
 import time
 from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
+
+from ..runtime import window_runtime
 
 from . import (
     code_language_build,
@@ -16,13 +21,22 @@ from . import (
 )
 from .code_language_catalog import (
     BASE_PROJECT_PATH as _BASE_PROJECT_PATH,
+    CPP_CODE_LANGUAGE_KEY,
     CPP_DEPENDENCY_VERSION_TARGETS as _CPP_DEPENDENCY_VERSION_TARGETS,
     CPP_SUPPORTED_EXCHANGE_KEY,
+    PYTHON_CODE_LANGUAGE_KEY,
+    RUST_CODE_LANGUAGE_KEY,
     _rust_framework_key,
     _rust_framework_title,
 )
 
 _LanguageSwitchSplash = code_language_launch.LanguageSwitchSplash
+
+
+def _code_tab_auto_refresh_release_labels_enabled() -> bool:
+    default_flag = "0" if sys.platform == "win32" else "1"
+    raw_value = str(os.environ.get("BOT_CODE_TAB_AUTO_REFRESH_RELEASES", default_flag) or default_flag).strip().lower()
+    return raw_value not in {"0", "false", "no", "off"}
 
 
 def _is_frozen_python_app() -> bool:
@@ -56,11 +70,75 @@ def _rust_runtime_release_line(config: dict | None = None) -> str:
     )
 
 
+def _release_lines_snapshot(config: dict | None = None) -> dict[str, str]:
+    release_lines: dict[str, str] = {}
+    for key, resolver in (
+        (PYTHON_CODE_LANGUAGE_KEY, _python_runtime_release_line),
+        (CPP_CODE_LANGUAGE_KEY, _cpp_runtime_release_line),
+        (RUST_CODE_LANGUAGE_KEY, lambda: _rust_runtime_release_line(config)),
+    ):
+        try:
+            value = str(resolver() or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            release_lines[key] = value
+    return release_lines
+
+
 def _refresh_code_language_card_release_labels(self) -> None:
-    return code_language_status.refresh_code_language_card_release_labels(
-        self,
-        rust_release_line=_rust_runtime_release_line(getattr(self, "config", None)),
-    )
+    cached_lines = getattr(self, "_code_language_release_lines_cache", None)
+    if isinstance(cached_lines, dict) and cached_lines:
+        code_language_status.apply_code_language_card_release_lines(self, release_lines=cached_lines)
+
+    if not _code_tab_auto_refresh_release_labels_enabled():
+        return
+
+    if getattr(self, "_code_language_release_refresh_inflight", False):
+        self._code_language_release_refresh_pending = True
+        return
+
+    self._code_language_release_refresh_inflight = True
+    self._code_language_release_refresh_pending = False
+    try:
+        config_snapshot = dict(getattr(self, "config", None) or {})
+    except Exception:
+        config_snapshot = {}
+
+    def _worker():
+        try:
+            release_lines = _release_lines_snapshot(config_snapshot)
+        except Exception:
+            release_lines = {}
+        try:
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_apply_code_language_card_release_lines",
+                QtCore.Qt.ConnectionType.QueuedConnection,
+                QtCore.Q_ARG(object, release_lines),
+            )
+        except Exception:
+            try:
+                self._code_language_release_refresh_inflight = False
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, name="code-language-release-refresh", daemon=True).start()
+
+
+@QtCore.pyqtSlot(object)
+def _apply_code_language_card_release_lines(self, release_lines: dict | None) -> None:
+    try:
+        resolved_lines = release_lines if isinstance(release_lines, dict) else {}
+        if resolved_lines:
+            self._code_language_release_lines_cache = dict(resolved_lines)
+            code_language_status.apply_code_language_card_release_lines(self, release_lines=resolved_lines)
+    finally:
+        self._code_language_release_refresh_inflight = False
+
+    if getattr(self, "_code_language_release_refresh_pending", False):
+        self._code_language_release_refresh_pending = False
+        QtCore.QTimer.singleShot(0, self._refresh_code_language_card_release_labels)
 
 
 def _cpp_runtime_is_cached_path(exe_path: Path | None) -> bool:
@@ -344,6 +422,14 @@ def _start_dependency_usage_auto_poll(self) -> None:
     )
 
 
+def _start_code_tab_window_suppression(self) -> None:
+    return window_runtime.start_code_tab_window_suppression(self)
+
+
+def _stop_code_tab_window_suppression(self) -> None:
+    return window_runtime.stop_code_tab_window_suppression(self)
+
+
 def _stop_dependency_usage_auto_poll(self) -> None:
     return dependency_versions_ui.stop_dependency_usage_auto_poll(self)
 
@@ -367,6 +453,10 @@ def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None 
 
 
 def _refresh_dependency_versions(self) -> None:
+    try:
+        self._refresh_code_language_card_release_labels()
+    except Exception:
+        pass
     return dependency_versions_ui.refresh_dependency_versions(
         self,
         resolve_dependency_targets_for_config=dependency_versions_runtime._resolve_dependency_targets_for_config,
@@ -407,6 +497,7 @@ def bind_main_window_code_runtime(main_window_cls) -> None:
     main_window_cls._cpp_runtime_release_line = _cpp_runtime_release_line
     main_window_cls._rust_runtime_release_line = _rust_runtime_release_line
     main_window_cls._refresh_code_language_card_release_labels = _refresh_code_language_card_release_labels
+    main_window_cls._apply_code_language_card_release_lines = _apply_code_language_card_release_lines
     main_window_cls._cpp_runtime_is_cached_path = _cpp_runtime_is_cached_path
     main_window_cls._reset_cpp_dependency_caches = _reset_cpp_dependency_caches
     main_window_cls._cpp_packaged_runtime_exe = _cpp_packaged_runtime_exe
@@ -445,6 +536,8 @@ def bind_main_window_code_runtime(main_window_cls) -> None:
     main_window_cls._build_cpp_executable_for_code_tab = _build_cpp_executable_for_code_tab
     main_window_cls._cpp_dependency_rows_for_launch = _cpp_dependency_rows_for_launch
     main_window_cls._launch_cpp_from_code_tab = _launch_cpp_from_code_tab
+    main_window_cls._start_code_tab_window_suppression = _start_code_tab_window_suppression
+    main_window_cls._stop_code_tab_window_suppression = _stop_code_tab_window_suppression
     main_window_cls._start_dependency_usage_auto_poll = _start_dependency_usage_auto_poll
     main_window_cls._stop_dependency_usage_auto_poll = _stop_dependency_usage_auto_poll
     main_window_cls._poll_dependency_usage_states = _poll_dependency_usage_states

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from .silent_webengine_page import SilentWebEnginePage
 from ..chart.chart_embed import (
     _DEFAULT_WEB_UA,
     _configure_tradingview_webengine_env,
@@ -103,6 +104,11 @@ class _LazyWebEmbed(QtWidgets.QWidget):
             return
 
         view = QWebEngineView(self)
+        try:
+            if SilentWebEnginePage is not None:
+                view.setPage(SilentWebEnginePage(view))
+        except Exception:
+            pass
         self._configure_view(view)
         self._view = view
         self._stack.insertWidget(0, view)

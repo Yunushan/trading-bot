@@ -193,6 +193,7 @@ def _initialize_chart_state(self) -> None:
     self._webengine_runtime_prewarmed = False
     self._webengine_runtime_prewarm_view = None
     self._last_user_close_command_ts = 0.0
+    self._spontaneous_close_block_until = 0.0
     self._tv_visibility_watchdog_active = False
     self._tv_visibility_watchdog_timer = None
     self._tradingview_external_last_open_ts = 0.0

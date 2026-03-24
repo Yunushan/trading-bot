@@ -908,6 +908,28 @@ def _cpp_runtime_search_roots() -> list[Path]:
     return unique
 
 
+def _allow_cpp_recursive_search(root: Path) -> bool:
+    """Skip broad roots that are already covered by direct candidate checks."""
+    try:
+        root_resolved = root.resolve()
+    except Exception:
+        root_resolved = root
+    root_key = os.path.normcase(os.path.normpath(str(root_resolved)))
+    if not root_key:
+        return False
+
+    broad_roots: set[str] = set()
+    try:
+        broad_roots.add(os.path.normcase(os.path.normpath(str(Path.cwd().resolve()))))
+    except Exception:
+        pass
+    try:
+        broad_roots.add(os.path.normcase(os.path.normpath(str(Path(sys.executable).resolve().parent))))
+    except Exception:
+        pass
+    return root_key not in broad_roots
+
+
 def find_cpp_code_tab_executable() -> Path | None:
     frozen_mode = is_frozen_python_app()
     if frozen_mode:
@@ -984,6 +1006,8 @@ def find_cpp_code_tab_executable() -> Path | None:
     if not frozen_mode:
         for root in roots:
             if not root.is_dir():
+                continue
+            if not _allow_cpp_recursive_search(root):
                 continue
             try:
                 for path in root.rglob("*"):

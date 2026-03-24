@@ -141,6 +141,69 @@ def _is_recent_user_close_command(self) -> bool:
         return False
 
 
+def _event_is_spontaneous(event) -> bool:  # noqa: ANN001
+    try:
+        return bool(event is not None and event.spontaneous())
+    except Exception:
+        return False
+
+
+def _active_spontaneous_close_block_until(self) -> float:
+    try:
+        now = time.monotonic()
+    except Exception:
+        now = 0.0
+    try:
+        until = float(getattr(self, "_spontaneous_close_block_until", 0.0) or 0.0)
+    except Exception:
+        until = 0.0
+    if until and now >= until:
+        try:
+            self._spontaneous_close_block_until = 0.0
+        except Exception:
+            pass
+        return 0.0
+    return until
+
+
+def _extend_spontaneous_close_block(self, duration_ms: int = 5000) -> float:
+    try:
+        now = time.monotonic()
+    except Exception:
+        now = 0.0
+    duration_ms = max(300, min(int(duration_ms), 15000))
+    try:
+        previous = float(getattr(self, "_spontaneous_close_block_until", 0.0) or 0.0)
+    except Exception:
+        previous = 0.0
+    until = max(previous, now + (duration_ms / 1000.0))
+    try:
+        self._spontaneous_close_block_until = until
+    except Exception:
+        pass
+    return until
+
+
+def _should_block_spontaneous_close(self, event) -> bool:  # noqa: ANN001
+    if _allow_guard_bypass(self):
+        return False
+    if _is_recent_user_close_command(self):
+        return False
+    if not _event_is_spontaneous(event):
+        return False
+    try:
+        now = time.monotonic()
+    except Exception:
+        now = 0.0
+    guard_until = _active_close_protection_until(self)
+    if guard_until and now < guard_until:
+        remaining_ms = int(max(0.0, (guard_until - now) * 1000.0))
+        _extend_spontaneous_close_block(self, max(5000, remaining_ms + 2500))
+        return True
+    block_until = _active_spontaneous_close_block_until(self)
+    return bool(block_until and now < block_until)
+
+
 def _restore_window_after_guard(self) -> None:
     return window_runtime.restore_window_after_guard(self)
 
@@ -312,6 +375,19 @@ def closeEvent(self, event):
         except Exception:
             pass
         return
+    if _should_block_spontaneous_close(self, event):
+        try:
+            logger = getattr(self, "_chart_debug_log", None)
+            if callable(logger):
+                logger("window_event closeEvent_blocked reason=spontaneous_guard")
+        except Exception:
+            pass
+        try:
+            event.ignore()
+        except Exception:
+            pass
+        _restore_window_after_guard(self)
+        return
     if not _allow_guard_bypass(self):
         try:
             now = time.monotonic()
@@ -387,6 +463,19 @@ def hideEvent(self, event):  # noqa: N802
         _log_window_event(self, "hideEvent", event=event)
     except Exception:
         pass
+    if _should_block_spontaneous_close(self, event):
+        try:
+            logger = getattr(self, "_chart_debug_log", None)
+            if callable(logger):
+                logger("window_event hideEvent_blocked reason=spontaneous_guard")
+        except Exception:
+            pass
+        try:
+            event.ignore()
+        except Exception:
+            pass
+        _restore_window_after_guard(self)
+        return
     if not _allow_guard_bypass(self):
         try:
             now = time.monotonic()
@@ -845,6 +934,10 @@ def bind_main_window_runtime(
     main_window_cls._allow_guard_bypass = _allow_guard_bypass
     main_window_cls._mark_user_close_command = _mark_user_close_command
     main_window_cls._is_recent_user_close_command = _is_recent_user_close_command
+    main_window_cls._event_is_spontaneous = _event_is_spontaneous
+    main_window_cls._active_spontaneous_close_block_until = _active_spontaneous_close_block_until
+    main_window_cls._extend_spontaneous_close_block = _extend_spontaneous_close_block
+    main_window_cls._should_block_spontaneous_close = _should_block_spontaneous_close
     main_window_cls._restore_window_after_guard = _restore_window_after_guard
     main_window_cls._active_close_protection_until = _active_close_protection_until
     main_window_cls._should_block_programmatic_hide = _should_block_programmatic_hide

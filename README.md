@@ -1,6 +1,36 @@
-# Trading Bot Workspace
+<div align="center">
+  <img src="assets/crypto_forex_logo.png" alt="Trading Bot Workspace logo" width="140" />
+  <h1>Trading Bot Workspace</h1>
+  <p><strong>Desktop-first Binance trading workstation with live execution, charting, positions, backtesting, and multi-language scaffolding.</strong></p>
+  <p>
+    <a href="https://github.com/Yunushan/trading-bot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Yunushan/trading-bot/ci.yml?branch=main&amp;label=build" alt="Main branch build" /></a>
+    <a href="https://github.com/Yunushan/trading-bot/releases"><img src="https://img.shields.io/github/v/release/Yunushan/trading-bot?display_name=tag&amp;label=release" alt="Latest release" /></a>
+    <a href="https://github.com/Yunushan/trading-bot/releases"><img src="https://img.shields.io/github/downloads/Yunushan/trading-bot/total?label=downloads" alt="Total downloads" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  </p>
+  <p>
+    <img src="https://img.shields.io/badge/python-3.10--3.13-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10 to 3.13" />
+    <img src="https://img.shields.io/badge/gui-PyQt6-41CD52?logo=qt&amp;logoColor=white" alt="PyQt6 GUI" />
+    <img src="https://img.shields.io/badge/exchange-Binance-F3BA2F?logo=binance&amp;logoColor=black" alt="Binance" />
+    <img src="https://img.shields.io/badge/status-beta-F59E0B" alt="Beta status" />
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20FreeBSD-111827" alt="Supported platforms" />
+  </p>
+  <p>
+    <a href="#quick-start">Quick Start</a>
+    &bull;
+    <a href="#launching-the-applications">Launch</a>
+    &bull;
+    <a href="#dashboard-tab--full-walkthrough">Dashboard</a>
+    &bull;
+    <a href="#chart-tab">Chart</a>
+    &bull;
+    <a href="#backtest-tab">Backtest</a>
+    &bull;
+    <a href="#license">License</a>
+  </p>
+</div>
 
-This repository packages a cross‑platform trading workstation that ships with a production‑ready **Trading Bot desktop app (PyQt6)** for Binance and scaffolding for future language/ exchange ports. The goal of this README is to serve as a complete beginner‑friendly manual: how to install the project on every OS, what each button does, how the tabs behave, and how to operate the bot safely.
+A desktop-first trading workspace centered on the **PyQt6 Binance app** in `Languages/Python`, with charting, positions, backtesting, and early C++/Rust runtime scaffolding in the same repository. This README is the operator manual: how to install the project on each supported OS, launch it safely, understand the tabs, and avoid common trading mistakes before going live.
 
 ---
 

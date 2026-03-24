@@ -109,6 +109,11 @@ class _StarterCard(QtWidgets.QFrame):
         root.addWidget(self.subtitle_label)
         root.addStretch()
 
+        for label in (self.badge_label, self.title_label, self.subtitle_label):
+            label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            label.setAutoFillBackground(False)
+            label.setStyleSheet("background-color: transparent;")
+
         self._refresh_style()
 
     def setSelected(self, selected: bool) -> None:

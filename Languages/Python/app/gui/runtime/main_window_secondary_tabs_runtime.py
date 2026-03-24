@@ -56,7 +56,19 @@ def _mount_lazy_secondary_tab_content(container: QtWidgets.QWidget, content: QtW
     layout.addWidget(content)
 
 
-def _load_lazy_secondary_tab(self, key: str):
+def _lazy_secondary_tab_load_delay_ms(key: str) -> int:
+    key_norm = str(key or "").strip().lower()
+    if key_norm != "code":
+        return 0
+    default_delay_ms = 90 if sys.platform == "win32" else 0
+    try:
+        delay_ms = int(os.environ.get("BOT_CODE_TAB_LOAD_DELAY_MS") or default_delay_ms)
+    except Exception:
+        delay_ms = default_delay_ms
+    return max(0, min(delay_ms, 1000))
+
+
+def _load_lazy_secondary_tab(self, key: str, *, only_if_current: bool = False):
     meta = (getattr(self, "_lazy_secondary_tabs", None) or {}).get(key)
     if not meta:
         return None
@@ -68,9 +80,17 @@ def _load_lazy_secondary_tab(self, key: str):
     placeholder = meta.get("placeholder")
     if placeholder is None:
         return meta.get("widget")
+    if only_if_current:
+        try:
+            tabs = getattr(self, "tabs", None)
+            if tabs is None or tabs.currentWidget() is not placeholder:
+                return None
+        except Exception:
+            return None
 
     meta["loading"] = True
     created_widget = None
+    restore_placeholder_updates = False
     try:
         if key == "backtest":
             created_widget = self._create_backtest_tab(add_to_tabs=False)
@@ -89,11 +109,33 @@ def _load_lazy_secondary_tab(self, key: str):
                     self._update_connector_labels()
                 except Exception:
                     pass
-        elif key == "code":
-            created_widget = self._init_code_language_tab()
+        elif key == "liquidation":
+            created_widget = self._init_liquidation_heatmap_tab()
             if created_widget is not None:
+                self.liquidation_tab = placeholder
+                _mount_lazy_secondary_tab_content(placeholder, created_widget)
+        elif key == "code":
+            try:
+                self._start_code_tab_window_suppression()
+            except Exception:
+                pass
+            try:
+                placeholder.setUpdatesEnabled(False)
+                restore_placeholder_updates = True
+            except Exception:
+                restore_placeholder_updates = False
+            created_widget = self._init_code_language_tab(parent=placeholder)
+            if created_widget is not None:
+                try:
+                    created_widget.setUpdatesEnabled(False)
+                except Exception:
+                    pass
                 self.code_tab = placeholder
                 _mount_lazy_secondary_tab_content(placeholder, created_widget)
+                try:
+                    created_widget.setUpdatesEnabled(True)
+                except Exception:
+                    pass
 
         if created_widget is None:
             return None
@@ -112,13 +154,21 @@ def _load_lazy_secondary_tab(self, key: str):
         )
         return placeholder
     finally:
+        if restore_placeholder_updates:
+            try:
+                placeholder.setUpdatesEnabled(True)
+                placeholder.update()
+            except Exception:
+                pass
         meta["loading"] = False
 
 
 def _lazy_secondary_tab_prewarm_enabled() -> bool:
     if sys.platform != "win32":
         return False
-    flag = str(os.environ.get("BOT_PRELOAD_LAZY_SECONDARY_TABS", "1")).strip().lower()
+    # Keep heavy secondary tabs lazy by default on Windows. Prewarming the Code
+    # tab can trigger expensive executable scans before the UI becomes responsive.
+    flag = str(os.environ.get("BOT_PRELOAD_LAZY_SECONDARY_TABS", "0")).strip().lower()
     return flag not in {"0", "false", "no", "off"}
 
 
@@ -207,11 +257,12 @@ def _initialize_secondary_tabs(self):
         "Backtest",
         "Backtest tools load the first time you open this tab.",
     )
-
-    liquidation_tab = self._init_liquidation_heatmap_tab()
-    if liquidation_tab is not None:
-        self.liquidation_tab = liquidation_tab
-        self.tabs.addTab(liquidation_tab, "Liquidation Heatmap")
+    _register_lazy_secondary_tab(
+        self,
+        "liquidation",
+        "Liquidation Heatmap",
+        "Liquidation heatmaps load the first time you open this tab.",
+    )
 
     _register_lazy_secondary_tab(
         self,
@@ -224,5 +275,6 @@ def _initialize_secondary_tabs(self):
 def bind_main_window_secondary_tabs_runtime(MainWindow):
     MainWindow._initialize_secondary_tabs = _initialize_secondary_tabs
     MainWindow._load_lazy_secondary_tab = _load_lazy_secondary_tab
+    MainWindow._lazy_secondary_tab_load_delay_ms = staticmethod(_lazy_secondary_tab_load_delay_ms)
     MainWindow._schedule_lazy_secondary_tab_prewarm = _schedule_lazy_secondary_tab_prewarm
     MainWindow._continue_lazy_secondary_tab_prewarm = _continue_lazy_secondary_tab_prewarm

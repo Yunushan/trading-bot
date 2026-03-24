@@ -180,11 +180,12 @@ def _init_liquidation_heatmap_tab(self):
     return tab
 
 
-def _init_code_language_tab(self):
+def _init_code_language_tab(self, parent: QtWidgets.QWidget | None = None):
     return code_language_ui.init_code_language_tab(
         self,
         starter_card_cls=_STARTER_CARD_CLS,
         resolve_dependency_targets_for_config=_RESOLVE_DEPENDENCY_TARGETS_FOR_CONFIG,
+        parent=parent,
     )
 
 

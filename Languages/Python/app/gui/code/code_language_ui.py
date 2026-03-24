@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
@@ -19,12 +21,19 @@ from .code_language_catalog import (
 )
 
 
+def _code_tab_auto_refresh_versions_enabled() -> bool:
+    default_flag = "0" if sys.platform == "win32" else "1"
+    raw_value = str(os.environ.get("BOT_CODE_TAB_AUTO_CHECK_VERSIONS", default_flag) or default_flag).strip().lower()
+    return raw_value not in {"0", "false", "no", "off"}
+
+
 def _ensure_rust_framework_cards(self) -> None:
     if getattr(self, "_starter_rust_framework_cards", None):
         return
 
     starter_card_cls = getattr(self, "_code_tab_starter_card_cls", None)
     rust_framework_row = getattr(self, "_rust_framework_cards_row", None)
+    rust_framework_parent = getattr(self, "_rust_framework_cards_widget", None)
     if starter_card_cls is None or rust_framework_row is None:
         return
 
@@ -39,6 +48,7 @@ def _ensure_rust_framework_cards(self) -> None:
             opt["accent"],
             opt.get("badge"),
             disabled=opt.get("disabled", False),
+            parent=rust_framework_parent,
         )
         card.clicked.connect(self._code_tab_select_rust_framework)
         card.setMinimumWidth(170)
@@ -48,19 +58,25 @@ def _ensure_rust_framework_cards(self) -> None:
     rust_framework_row.addStretch()
 
 
-def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets_for_config):
-    tab = QtWidgets.QWidget()
+def init_code_language_tab(
+    self,
+    *,
+    starter_card_cls,
+    resolve_dependency_targets_for_config,
+    parent: QtWidgets.QWidget | None = None,
+):
+    tab = QtWidgets.QWidget(parent)
     outer_layout = QtWidgets.QVBoxLayout(tab)
     outer_layout.setContentsMargins(0, 0, 0, 0)
     outer_layout.setSpacing(0)
 
-    scroll = QtWidgets.QScrollArea()
+    scroll = QtWidgets.QScrollArea(tab)
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     outer_layout.addWidget(scroll)
 
-    content = QtWidgets.QWidget()
+    content = QtWidgets.QWidget(scroll)
     layout = QtWidgets.QVBoxLayout(content)
     layout.setContentsMargins(10, 10, 10, 10)
     layout.setSpacing(12)
@@ -68,7 +84,8 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
 
     description = QtWidgets.QLabel(
         "Select your preferred code language. "
-        "Folders for each language are created automatically inside the project so you can keep related assets organized."
+        "Folders for each language are created automatically inside the project so you can keep related assets organized.",
+        content,
     )
     description.setWordWrap(True)
     layout.addWidget(description)
@@ -82,7 +99,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     self._starter_crypto_cards = {}
     self._starter_forex_cards = {}
 
-    lang_label = QtWidgets.QLabel("Choose your language")
+    lang_label = QtWidgets.QLabel("Choose your language", content)
     lang_label.setStyleSheet("font-size: 20px; font-weight: 600;")
     layout.addWidget(lang_label)
     lang_row = QtWidgets.QHBoxLayout()
@@ -95,6 +112,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
             opt["accent"],
             opt.get("badge"),
             disabled=opt.get("disabled", False),
+            parent=content,
         )
         card.clicked.connect(self._code_tab_select_language)
         card.setMinimumWidth(180)
@@ -104,12 +122,12 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     lang_row.addStretch()
     layout.addLayout(lang_row)
 
-    rust_framework_label = QtWidgets.QLabel("Choose your Rust framework")
+    rust_framework_label = QtWidgets.QLabel("Choose your Rust framework", content)
     rust_framework_label.setStyleSheet("font-size: 18px; font-weight: 600;")
     layout.addWidget(rust_framework_label)
     self._rust_framework_section_label = rust_framework_label
 
-    rust_framework_widget = QtWidgets.QWidget()
+    rust_framework_widget = QtWidgets.QWidget(content)
     rust_framework_row = QtWidgets.QHBoxLayout(rust_framework_widget)
     rust_framework_row.setContentsMargins(0, 0, 0, 0)
     rust_framework_row.setSpacing(12)
@@ -117,14 +135,14 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     layout.addWidget(rust_framework_widget)
     self._rust_framework_cards_widget = rust_framework_widget
 
-    status_widget = QtWidgets.QWidget()
+    status_widget = QtWidgets.QWidget(content)
     status_layout = QtWidgets.QHBoxLayout(status_widget)
     status_layout.setContentsMargins(0, 0, 0, 0)
     status_layout.setSpacing(12)
-    self.pnl_active_label_code_tab = QtWidgets.QLabel()
-    self.pnl_closed_label_code_tab = QtWidgets.QLabel()
-    self.bot_status_label_code_tab = QtWidgets.QLabel()
-    self.bot_time_label_code_tab = QtWidgets.QLabel("Bot Active Time: --")
+    self.pnl_active_label_code_tab = QtWidgets.QLabel(status_widget)
+    self.pnl_closed_label_code_tab = QtWidgets.QLabel(status_widget)
+    self.bot_status_label_code_tab = QtWidgets.QLabel(status_widget)
+    self.bot_time_label_code_tab = QtWidgets.QLabel("Bot Active Time: --", status_widget)
     for lbl in (self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab):
         if lbl is not None:
             lbl.setStyleSheet("font-weight: 600;")
@@ -140,7 +158,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
 
     self._dep_version_labels = {}
     self._dep_version_targets = []
-    versions_group = QtWidgets.QGroupBox("Environment Versions")
+    versions_group = QtWidgets.QGroupBox("Environment Versions", content)
     versions_group.setSizePolicy(
         QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
     )
@@ -148,7 +166,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     versions_group_layout.setContentsMargins(8, 12, 8, 8)
     versions_group_layout.setSpacing(6)
 
-    versions_container = QtWidgets.QWidget()
+    versions_container = QtWidgets.QWidget(versions_group)
     versions_layout = QtWidgets.QGridLayout(versions_container)
     versions_layout.setContentsMargins(6, 6, 6, 6)
     versions_layout.setColumnStretch(0, 0)
@@ -161,7 +179,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     versions_layout.setHorizontalSpacing(6)
     versions_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
 
-    versions_scroll = QtWidgets.QScrollArea()
+    versions_scroll = QtWidgets.QScrollArea(versions_group)
     versions_scroll.setWidgetResizable(True)
     versions_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     versions_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -179,7 +197,7 @@ def init_code_language_tab(self, *, starter_card_cls, resolve_dependency_targets
     layout.addWidget(versions_group, 1)
     version_btn_row = QtWidgets.QHBoxLayout()
     version_btn_row.addStretch()
-    self._version_refresh_btn = QtWidgets.QPushButton("Check Versions")
+    self._version_refresh_btn = QtWidgets.QPushButton("Check Versions", content)
     self._version_refresh_btn.clicked.connect(self._refresh_dependency_versions)
     version_btn_row.addWidget(self._version_refresh_btn)
     layout.addLayout(version_btn_row)
@@ -345,7 +363,7 @@ def refresh_code_tab_from_config(
         targets_changed = True
     elif not resolved_targets:
         resolved_targets = list(getattr(self, "_dep_version_targets", []) or [])
-    if targets_changed and self._code_tab_visible():
+    if targets_changed and self._code_tab_visible() and _code_tab_auto_refresh_versions_enabled():
         QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
     refresh_dependency_usage_labels(self, resolved_targets)
 

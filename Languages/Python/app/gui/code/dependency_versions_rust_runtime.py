@@ -157,13 +157,25 @@ def _rust_tool_version(command: list[str], *, cache_key: str) -> str | None:
     version_text = None
     try:
         resolved_command = [str(tool_path), *command[1:]]
+        run_kwargs: dict[str, object] = {
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": 4.0,
+            "env": _rust_toolchain_env(),
+        }
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+                startupinfo.wShowWindow = 0
+                run_kwargs["startupinfo"] = startupinfo
+            except Exception:
+                pass
         result = subprocess.run(
             resolved_command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=4.0,
-            env=_rust_toolchain_env(),
+            **run_kwargs,
         )
         output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
         version_text = _runtime()._extract_semver_from_text(output)

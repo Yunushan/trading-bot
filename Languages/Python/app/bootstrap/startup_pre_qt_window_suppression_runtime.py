@@ -65,6 +65,12 @@ class _PreQtWinEventSuppressor:
             known_ok = self._known_ok
             debug_window_events = _env_flag("BOT_DEBUG_WINDOW_EVENTS")
             debug_log_path = Path(os.getenv("TEMP") or ".").resolve() / "binance_window_events.log"
+            candidate_titles = {
+                str(Path(sys.executable).stem or "").strip().lower(),
+                str(Path(sys.argv[0]).stem or "").strip().lower() if sys.argv else "",
+                str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "").strip().lower(),
+            }
+            candidate_titles.discard("")
 
             SW_HIDE = 0
             GWL_STYLE = -16
@@ -194,6 +200,10 @@ class _PreQtWinEventSuppressor:
                         return True
                     if class_name.startswith("QEventDispatcherWin32_") or title.startswith("QEventDispatcherWin32_"):
                         return True
+                    lowered_title = title.lower()
+                    if class_name.startswith("Qt") and class_name.endswith("QWindowIcon"):
+                        if lowered_title in candidate_titles:
+                            return height <= 720 and width <= 1800
                     qt_suffixes = (
                         "PowerDummyWindow",
                         "ClipboardView",

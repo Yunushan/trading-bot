@@ -34,7 +34,7 @@ def rust_runtime_release_line(
     return f"{framework_prefix}Release: Not initialized"
 
 
-def refresh_code_language_card_release_labels(self, *, rust_release_line: str) -> None:
+def apply_code_language_card_release_lines(self, *, release_lines: dict[str, str] | None = None) -> None:
     cards = getattr(self, "_starter_language_cards", None)
     if not isinstance(cards, dict) or not cards:
         return
@@ -42,17 +42,12 @@ def refresh_code_language_card_release_labels(self, *, rust_release_line: str) -
     if not isinstance(base_subtitles, dict):
         base_subtitles = {}
 
-    release_lines = {
-        PYTHON_CODE_LANGUAGE_KEY: code_language_runtime.python_runtime_release_line(),
-        CPP_CODE_LANGUAGE_KEY: code_language_runtime.cpp_runtime_release_line(),
-        RUST_CODE_LANGUAGE_KEY: str(rust_release_line or "").strip(),
-    }
-
+    resolved_lines = release_lines if isinstance(release_lines, dict) else {}
     for key, card in cards.items():
         if card is None:
             continue
         base_text = str(base_subtitles.get(key) or "").strip()
-        release_text = str(release_lines.get(key) or "").strip()
+        release_text = str(resolved_lines.get(key) or "").strip()
         subtitle_text = base_text
         if release_text:
             subtitle_text = f"{base_text}\n{release_text}" if base_text else release_text
@@ -60,6 +55,15 @@ def refresh_code_language_card_release_labels(self, *, rust_release_line: str) -
             card.subtitle_label.setText(subtitle_text)
         except Exception:
             pass
+
+
+def refresh_code_language_card_release_labels(self, *, rust_release_line: str) -> None:
+    release_lines = {
+        PYTHON_CODE_LANGUAGE_KEY: code_language_runtime.python_runtime_release_line(),
+        CPP_CODE_LANGUAGE_KEY: code_language_runtime.cpp_runtime_release_line(),
+        RUST_CODE_LANGUAGE_KEY: str(rust_release_line or "").strip(),
+    }
+    apply_code_language_card_release_lines(self, release_lines=release_lines)
 
 
 def _ensure_process_watchdog(self, *, timer_attr: str, callback) -> None:

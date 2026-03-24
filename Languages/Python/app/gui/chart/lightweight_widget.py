@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from PyQt6 import QtCore, QtGui
 
+from ..shared.silent_webengine_page import SilentWebEnginePage
+
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWebEngineCore import QWebEnginePage
@@ -709,8 +711,11 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
             pass
 
 
-if QWebEnginePage is not None:
-    class _DebugWebEnginePage(QWebEnginePage):  # pragma: no cover - logging only
+_DebugWebEnginePageBase = SilentWebEnginePage if SilentWebEnginePage is not None else QWebEnginePage
+
+
+if _DebugWebEnginePageBase is not None:
+    class _DebugWebEnginePage(_DebugWebEnginePageBase):  # pragma: no cover - logging only
         def javaScriptConsoleMessage(self, level, message, line_number, source_id):
             try:
                 _log_chart_event(
