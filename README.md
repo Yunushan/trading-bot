@@ -88,6 +88,7 @@ Optional but recommended:
 assets/
 docs/
   DEVELOPMENT.md          # contributor notes and maintenance guidance
+  PLATFORM_EXPANSION_PLAN.md
   PROJECT_STRUCTURE.md    # repo/source/output layout
 tools/
   update_loc_snapshot.py
@@ -97,10 +98,13 @@ Languages/
     README.md             # placeholder for future C implementation
   Python/
     app/                  # full PyQt6 trading application
+    clients/
+      web/                # thin service dashboard / future web client seed
     docs/
     tools/
     main.py               # Python GUI entrypoint
     requirements.txt
+    requirements.service.txt
   C++/
     CMakeLists.txt
     resources.qrc
@@ -124,6 +128,7 @@ Contributor-facing structure and maintenance docs now live here:
 
 - `docs/PROJECT_STRUCTURE.md`
 - `docs/DEVELOPMENT.md`
+- `docs/PLATFORM_EXPANSION_PLAN.md`
 
 ### Current LOC snapshot
 

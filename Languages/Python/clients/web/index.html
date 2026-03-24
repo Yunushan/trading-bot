@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trading Bot Service Dashboard</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Service Dashboard</p>
+        <h1>Trading Bot Control Surface</h1>
+        <p class="lede">
+          Thin browser client for the new headless API. It reads the same runtime,
+          status, account, portfolio, and log endpoints the desktop bridge is already using.
+        </p>
+      </div>
+      <div class="hero-panel">
+        <div class="panel-head">
+          <span>Connection</span>
+          <span id="connection-state" class="pill">Checking</span>
+        </div>
+        <label class="field">
+          <span>Base URL</span>
+          <input id="base-url" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Bearer Token</span>
+          <input id="api-token" type="password" autocomplete="off" placeholder="Optional">
+        </label>
+        <div class="actions">
+          <button id="connect-button" type="button">Connect</button>
+          <button id="refresh-button" type="button" class="secondary">Refresh</button>
+        </div>
+        <dl class="stats compact-stats">
+          <div><dt>API Host</dt><dd id="service-api-context">-</dd></div>
+          <div><dt>Owner</dt><dd id="service-api-owner">-</dd></div>
+          <div><dt>Auth</dt><dd id="service-api-auth">-</dd></div>
+          <div><dt>Updates</dt><dd id="service-api-stream">-</dd></div>
+        </dl>
+        <p id="connection-message" class="hint">The dashboard will auto-refresh every 5 seconds after a successful connection.</p>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <div class="card-head">
+          <h2>Runtime</h2>
+          <span id="runtime-phase" class="pill muted">Unknown</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Service</dt><dd id="runtime-service">-</dd></div>
+          <div><dt>Platform</dt><dd id="runtime-platform">-</dd></div>
+          <div><dt>Python</dt><dd id="runtime-python">-</dd></div>
+          <div><dt>Desktop</dt><dd id="runtime-desktop">-</dd></div>
+        </dl>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Status</h2>
+          <span id="status-mode" class="pill muted">Idle</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Active</dt><dd id="status-active">-</dd></div>
+          <div><dt>Engines</dt><dd id="status-engines">-</dd></div>
+          <div><dt>Mode / Account</dt><dd id="status-account">-</dd></div>
+          <div><dt>Exchange</dt><dd id="status-exchange">-</dd></div>
+        </dl>
+        <p id="status-message" class="hint compact-hint">-</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Control Plane</h2>
+          <span id="control-phase" class="pill muted">Idle</span>
+        </div>
+        <div class="field-grid compact-grid">
+          <label class="field">
+            <span>Requested Jobs</span>
+            <input id="control-jobs" type="number" min="0" step="1" value="1">
+          </label>
+          <label class="field">
+            <span>Runtime Engines</span>
+            <input id="runtime-engine-count" type="number" min="0" step="1" value="1">
+          </label>
+        </div>
+        <label class="check-row">
+          <input id="control-close-positions" type="checkbox">
+          <span>Close positions when stop is requested</span>
+        </label>
+        <div class="actions">
+          <button id="request-start-button" type="button">Request Start</button>
+          <button id="mark-running-button" type="button" class="secondary">Mark Running</button>
+        </div>
+        <div id="runtime-sync-actions" class="actions">
+          <button id="request-stop-button" type="button" class="secondary">Request Stop</button>
+          <button id="mark-idle-button" type="button" class="secondary">Mark Idle</button>
+        </div>
+        <p id="control-mode-hint" class="hint compact-hint">
+          Start and stop record lifecycle intent. Running and idle mirror the runtime state explicitly in the current standalone service phase.
+        </p>
+        <p id="control-message" class="hint compact-hint">
+          No control action yet.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Config Patch</h2>
+          <span id="config-credentials" class="pill muted">No Keys</span>
+        </div>
+        <div class="field-grid">
+          <label class="field">
+            <span>Mode</span>
+            <select id="config-mode">
+              <option value="Live">Live</option>
+              <option value="Demo/Testnet">Demo/Testnet</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Account Type</span>
+            <select id="config-account-type">
+              <option value="Futures">Futures</option>
+              <option value="Spot">Spot</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Margin Mode</span>
+            <select id="config-margin-mode">
+              <option value="Isolated">Isolated</option>
+              <option value="Cross">Cross</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Position Mode</span>
+            <select id="config-position-mode">
+              <option value="Hedge">Hedge</option>
+              <option value="One-way">One-way</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Side</span>
+            <select id="config-side">
+              <option value="BOTH">BOTH</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Selected Exchange</span>
+            <input id="config-selected-exchange" type="text" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span>Connector Backend</span>
+            <input id="config-connector-backend" type="text" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span>Code Language</span>
+            <input id="config-code-language" type="text" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span>Theme</span>
+            <input id="config-theme" type="text" autocomplete="off" spellcheck="false" placeholder="Optional">
+          </label>
+          <label class="field">
+            <span>Leverage</span>
+            <input id="config-leverage" type="number" min="0" step="1">
+          </label>
+          <label class="field">
+            <span>Position %</span>
+            <input id="config-position-pct" type="number" min="0" step="0.01">
+          </label>
+          <label class="field field-span">
+            <span>Symbols</span>
+            <textarea id="config-symbols" rows="3" spellcheck="false" placeholder="BTCUSDT, ETHUSDT"></textarea>
+          </label>
+          <label class="field field-span">
+            <span>Intervals</span>
+            <textarea id="config-intervals" rows="3" spellcheck="false" placeholder="1m, 5m, 1h"></textarea>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="reload-config-button" type="button" class="secondary">Reload Config</button>
+          <button id="save-config-button" type="button">Save Patch</button>
+        </div>
+        <p id="config-message" class="hint compact-hint">
+          Only the fields shown here are patched. Other service config values remain untouched.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Account</h2>
+          <span id="account-source" class="pill muted">-</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Total Balance</dt><dd id="account-total">-</dd></div>
+          <div><dt>Available</dt><dd id="account-available">-</dd></div>
+          <div><dt>Updated</dt><dd id="account-updated">-</dd></div>
+        </dl>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Portfolio</h2>
+          <span id="portfolio-source" class="pill muted">-</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Open Positions</dt><dd id="portfolio-open">-</dd></div>
+          <div><dt>Closed Trades</dt><dd id="portfolio-closed">-</dd></div>
+          <div><dt>Active PnL</dt><dd id="portfolio-active-pnl">-</dd></div>
+          <div><dt>Closed PnL</dt><dd id="portfolio-closed-pnl">-</dd></div>
+        </dl>
+      </section>
+
+      <section class="card card-wide">
+        <div class="card-head">
+          <h2>Runtime Notes</h2>
+          <span class="pill muted">Descriptor</span>
+        </div>
+        <ul id="runtime-notes" class="note-list"></ul>
+      </section>
+
+      <section class="card card-wide">
+        <div class="card-head">
+          <h2>Recent Logs</h2>
+          <span id="logs-count" class="pill muted">0</span>
+        </div>
+        <div id="logs-empty" class="empty-state">No logs returned yet.</div>
+        <div id="logs-list" class="log-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

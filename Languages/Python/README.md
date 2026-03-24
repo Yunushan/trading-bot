@@ -91,6 +91,105 @@ python3 main.py
 - Press **Start**.
 - The **Positions** tab shows each interval separately with **Size**, **Margin Ratio**, **Margin**, **PNL (ROI%)**, **Entry TF**, **Side**, **Time**, **Status**, and **Close**.
 
+## Optional service API
+
+The repo now also includes an early headless service API layer for future web/mobile/remote desktop clients.
+
+Install the optional service dependencies:
+
+```bash
+pip install -r requirements.service.txt
+```
+
+This service-only dependency set is intentionally separate from the desktop GUI stack.
+
+Run the API locally:
+
+```bash
+python -m app.service.main --serve --host 127.0.0.1 --port 8000
+```
+
+Protect the API with an optional bearer token:
+
+```bash
+python -m app.service.main --serve --host 127.0.0.1 --port 8000 --api-token your-secret-token
+```
+
+Or via environment variable:
+
+```bash
+set BOT_SERVICE_API_TOKEN=your-secret-token
+python -m app.service.main --serve --host 127.0.0.1 --port 8000
+```
+
+The service also serves a thin same-origin dashboard at:
+
+```text
+http://127.0.0.1:8000/ui/
+```
+
+If bearer auth is enabled, enter the same token into the dashboard before refreshing protected API data.
+The dashboard can now:
+
+- read runtime, status, account, portfolio, logs, and editable config
+- send start/stop lifecycle requests
+- manually mirror running/idle runtime state in standalone service mode
+- follow the real desktop bot runtime automatically when attached to the desktop-embedded API
+- save a top-level config patch back to the service
+- follow live dashboard updates over Server-Sent Events instead of polling after the first connect
+
+Key endpoints currently exposed:
+
+- `GET /health`
+- `GET /api/dashboard`
+- `GET /api/runtime`
+- `GET /api/config`
+- `GET /api/status`
+- `GET /api/config-summary`
+- `GET /api/account`
+- `GET /api/portfolio`
+- `GET /api/logs`
+- `GET /api/stream/dashboard`
+- `PATCH /api/config`
+- `POST /api/control/start`
+- `POST /api/control/stop`
+- `PUT /api/runtime/state`
+
+When bearer auth is enabled, the REST API uses the normal `Authorization: Bearer ...` header.
+The browser dashboard uses the same token for its SSE stream connection as a query parameter because `EventSource` does not support custom auth headers.
+
+### Host the API from the desktop process
+
+If you want the browser dashboard to follow the real in-process desktop runtime state, you can opt in to a desktop-hosted service API instead of starting a separate headless service process.
+
+You can now also do this directly from the desktop GUI through the `Desktop Service API` controls on the dashboard action area. That UI lets you:
+
+- enable or disable the embedded API host
+- choose host and port
+- provide a session-only bearer token
+- open the browser dashboard directly
+
+The desktop UI persists `enabled`, `host`, and `port` in the app-state file. The token is session-only and is not written into app-state.
+
+Windows PowerShell example:
+
+```powershell
+$env:BOT_ENABLE_DESKTOP_SERVICE_API='1'
+$env:BOT_DESKTOP_SERVICE_API_HOST='127.0.0.1'
+$env:BOT_DESKTOP_SERVICE_API_PORT='8000'
+$env:BOT_SERVICE_API_TOKEN='your-secret-token'
+python main.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/ui/
+```
+
+This mode serves the API and dashboard against the same embedded service object the desktop GUI is already mirroring, so web clients can see the desktop-owned runtime/account/portfolio/log updates live.
+Start and stop requests from the thin dashboard are now also forwarded into the live desktop GUI thread, so browser clients can trigger the real desktop runtime without using the manual running/idle sync controls.
+
 ### Safe Exit
 Closing the window or pressing Alt+F4 will market-close all active positions (best effort).
 

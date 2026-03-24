@@ -46,6 +46,10 @@ def _update_bot_status(self, active=None):
             label.setText(text)
             label.setStyleSheet(f"font-weight: bold; color: {color};")
         self._update_bot_time_labels()
+        try:
+            self._sync_service_runtime_snapshot(current_active, source="desktop-status")
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -187,6 +191,16 @@ def _update_global_pnl_display(
                 continue
             active_label, closed_label = label_pair
             self._apply_pnl_snapshot_to_labels(active_label, closed_label)
+        try:
+            self._sync_service_portfolio_snapshot(
+                active_pnl=active_pnl,
+                active_margin=active_margin,
+                closed_pnl=closed_pnl,
+                closed_margin=closed_margin,
+                source="desktop-pnl",
+            )
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -212,6 +226,10 @@ def _has_active_engines(self):
 
 def _sync_runtime_state(self):
     active = self._has_active_engines()
+    try:
+        self._sync_service_config_snapshot()
+    except Exception:
+        pass
     if active:
         self._set_runtime_controls_enabled(False)
     else:

@@ -383,6 +383,17 @@ def start_strategy(self):
         self.log(
             f"Starting strategy with {len(combos)} symbol/interval loops. Connector: {connector_name}."
         )
+        try:
+            self._sync_service_config_snapshot()
+        except Exception:
+            pass
+        try:
+            self._service_request_start(
+                requested_job_count=len(combos),
+                source="desktop-start",
+            )
+        except Exception:
+            pass
 
         try:
             self.config["position_pct_units"] = "percent"
@@ -623,9 +634,23 @@ def start_strategy(self):
 
         if started == 0:
             self.log("No new engines started (already running?)")
+            try:
+                self._service_mark_start_failed(
+                    reason="No new engines started.",
+                    source="desktop-start",
+                )
+            except Exception:
+                pass
     except Exception as exc:
         try:
             self.log(f"Start error: {exc}")
+        except Exception:
+            pass
+        try:
+            self._service_mark_start_failed(
+                reason=f"Start error: {exc}",
+                source="desktop-start",
+            )
         except Exception:
             pass
     finally:
@@ -639,6 +664,13 @@ def _stop_strategy_sync(self, close_positions: bool = True, auth: dict | None = 
     """Synchronous helper to stop engines and optionally close all positions."""
     result: dict = {"ok": True}
     try:
+        try:
+            self._service_request_stop(
+                close_positions=close_positions,
+                source="desktop-stop",
+            )
+        except Exception:
+            pass
         try:
             self._is_stopping_engines = True
         except Exception:

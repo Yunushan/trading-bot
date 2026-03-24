@@ -354,6 +354,12 @@ def closeEvent(self, event):
         except Exception:
             pass
         try:
+            shutdown_service_host = getattr(self, "_shutdown_desktop_service_api_host", None)
+            if callable(shutdown_service_host):
+                shutdown_service_host()
+        except Exception:
+            pass
+        try:
             self._mark_session_inactive()
         except Exception:
             pass
@@ -436,6 +442,12 @@ def closeEvent(self, event):
     except Exception:
         pass
     try:
+        shutdown_service_host = getattr(self, "_shutdown_desktop_service_api_host", None)
+        if callable(shutdown_service_host):
+            shutdown_service_host()
+    except Exception:
+        pass
+    try:
         self._mark_session_inactive()
     except Exception:
         pass
@@ -510,6 +522,10 @@ def _gui_setup_log_buffer(self):
 def _gui_buffer_log(self, msg: str):
     try:
         self._log_buf.append(msg)
+    except Exception:
+        pass
+    try:
+        self._service_record_log_event(str(msg), source="desktop-log", level="info")
     except Exception:
         pass
 

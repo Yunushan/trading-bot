@@ -122,6 +122,7 @@ from app.gui.runtime import (
     main_window_strategy_context_runtime,
     main_window_strategy_controls_runtime,
     main_window_strategy_ui_runtime,
+    main_window_service_api_runtime,
     main_window_tab_runtime,
     main_window_theme_runtime,
     main_window_ui_misc_runtime,
@@ -134,6 +135,8 @@ from app.gui.shared import (
     main_window_ui_support,
     main_window_web_embed,
 )
+from app.desktop import create_desktop_service_client
+from app.desktop import service_bridge as desktop_service_bridge
 from app.gui.trade import main_window_trade_runtime
 from app.gui.positions import (
     main_window_positions,
@@ -826,6 +829,10 @@ main_window_strategy_ui_runtime.bind_main_window_strategy_ui_runtime(
     account_mode_options=ACCOUNT_MODE_OPTIONS,
     stop_loss_scope_options=STOP_LOSS_SCOPE_OPTIONS,
 )
+main_window_service_api_runtime.bind_main_window_service_api_runtime(
+    MainWindow,
+    save_app_state_file=_save_app_state_file,
+)
 main_window_ui_misc_runtime.bind_main_window_ui_misc_runtime(MainWindow)
 main_window_override_runtime.bind_main_window_override_runtime(
     MainWindow,
@@ -925,6 +932,10 @@ main_window_code.bind_main_window_code(
     base_project_path=_BASE_PROJECT_PATH,
 )
 main_window_theme_runtime.bind_main_window_theme_runtime(MainWindow)
+desktop_service_bridge.bind_main_window_desktop_service_bridge(
+    MainWindow,
+    desktop_service_client_factory=create_desktop_service_client,
+)
 
 
 

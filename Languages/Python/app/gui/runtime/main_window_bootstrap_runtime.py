@@ -82,10 +82,22 @@ def _initialize_main_window_state(self) -> None:
     _initialize_chart_state(self)
     _initialize_backtest_state(self)
     _initialize_runtime_state(self)
+    try:
+        self._initialize_desktop_service_bridge()
+    except Exception:
+        pass
 
     self._ensure_runtime_connector_for_account(self.config.get("account_type") or "Futures", force_default=False)
     self._override_debug_verbose = bool(self.config.get("debug_override_verbose", False))
     self.init_ui()
+    try:
+        self._maybe_start_desktop_service_api_host()
+    except Exception:
+        pass
+    try:
+        self._refresh_desktop_service_api_ui()
+    except Exception:
+        pass
 
     if self._open_code_tab_on_start:
         try:
@@ -390,6 +402,15 @@ def _initialize_runtime_state(self) -> None:
         "yes",
         "on",
     }
+    self._desktop_service_api_enabled_pref = False
+    self._desktop_service_api_host_pref = "127.0.0.1"
+    self._desktop_service_api_port_pref = 8000
+    self._desktop_service_api_token_pref = str(os.environ.get("BOT_SERVICE_API_TOKEN") or "").strip()
+    self._desktop_service_api_host_status = None
+    try:
+        self._initialize_desktop_service_api_preferences()
+    except Exception:
+        pass
 
 
 def _update_positions_balance_labels(
@@ -423,6 +444,18 @@ def _update_positions_balance_labels(
 
     _set_label(getattr(self, "positions_total_balance_label", None), "Total Balance", total_balance)
     _set_label(getattr(self, "positions_available_balance_label", None), "Available Balance", available_balance)
+    try:
+        self._sync_service_account_snapshot(
+            total_balance=total_balance,
+            available_balance=available_balance,
+            source="desktop-balance",
+        )
+    except Exception:
+        pass
+    try:
+        self._sync_service_portfolio_snapshot(source="desktop-balance")
+    except Exception:
+        pass
 
 
 def _compute_global_pnl_totals(

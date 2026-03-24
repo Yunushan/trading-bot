@@ -136,6 +136,10 @@ def load_config(self):
         else:
             self.config.setdefault("selected_forex_broker", None)
         self._sync_language_exchange_lists_from_config()
+        try:
+            self._sync_service_config_snapshot()
+        except Exception:
+            pass
         self.log(f"Loaded config from {fn}")
         try:
             self.leverage_spin.setValue(int(self.config.get("leverage", self.leverage_spin.value())))

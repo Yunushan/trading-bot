@@ -34,6 +34,18 @@ Preferred direction:
 - C++ source should trend toward `dashboard/`, `positions/`, `runtime/`, `chart/`, `backtest/`, and `net/`
 - Long-form maintenance or contributor guidance should live in `docs/`, not the root README
 
+For the Python implementation, the longer-term architecture should also separate:
+
+- `Languages/Python/app/core/` for reusable trading-domain logic
+- `Languages/Python/app/integrations/` for exchange and persistence adapters
+- `Languages/Python/app/service/` for headless backend/runtime/API work
+- `Languages/Python/app/service/runners/` for headless lifecycle/runtime coordinators
+- `Languages/Python/app/desktop/` for desktop-only bootstrap and client adapters
+- `Languages/Python/app/desktop/adapters/` for embedded or future remote desktop service clients
+- `Languages/Python/clients/web/` for the thin browser dashboard and future web-client assets
+
+That split is the foundation for optional Docker support and future web/mobile clients. See `docs/PLATFORM_EXPANSION_PLAN.md` for the step-by-step migration path.
+
 ## What should stay small at the repo root
 
 The root should remain focused on:
