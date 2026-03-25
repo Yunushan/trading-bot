@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from datetime import datetime
 
-from ...binance_wrapper import normalize_margin_ratio
+from app.integrations.exchanges.binance import normalize_margin_ratio
 from . import main_window_positions_history_update_runtime
 
 _CLOSED_HISTORY_MAX = None

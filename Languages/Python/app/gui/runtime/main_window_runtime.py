@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
-from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
 
-from . import window_runtime
+from . import main_window_window_events_runtime
 
 _STRATEGY_ENGINE_CLS = None
 _NUMERIC_ITEM_CLS = None
@@ -17,498 +15,79 @@ _WAITING_POSITION_LATE_THRESHOLD = 45.0
 
 
 def _request_strategy_shutdown() -> None:
-    strategy_engine_cls = _STRATEGY_ENGINE_CLS
-    if strategy_engine_cls is None:
-        return
-    try:
-        strategy_engine_cls.request_shutdown()
-    except Exception:
-        pass
+    return main_window_window_events_runtime.request_strategy_shutdown(_STRATEGY_ENGINE_CLS)
 
 
 def _teardown_positions_thread(self):
-    try:
-        if getattr(self, "_pos_worker", None) is not None:
-            try:
-                self.req_pos_stop.emit()
-            except Exception:
-                pass
-        if getattr(self, "_pos_thread", None) is not None:
-            try:
-                self._pos_thread.quit()
-                self._pos_thread.wait(2000)
-            except Exception:
-                pass
-        self._pos_worker = None
-        self._pos_thread = None
-    except Exception:
-        pass
+    return main_window_window_events_runtime.teardown_positions_thread(self)
 
 
 def _log_window_event(self, name: str, event=None) -> None:
-    try:
-        visible = int(bool(self.isVisible()))
-    except Exception:
-        visible = -1
-    try:
-        minimized = int(bool(self.windowState() & QtCore.Qt.WindowState.WindowMinimized))
-    except Exception:
-        minimized = -1
-    try:
-        spontaneous = int(bool(event.spontaneous())) if event is not None else -1
-    except Exception:
-        spontaneous = -1
-    try:
-        now = time.monotonic()
-    except Exception:
-        now = 0.0
-    try:
-        we_active = int(bool(getattr(self, "_webengine_close_guard_active", False)))
-    except Exception:
-        we_active = -1
-    try:
-        we_until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
-    except Exception:
-        we_until = 0.0
-    try:
-        we_rem_ms = int(max(0.0, (we_until - now) * 1000.0)) if we_until else 0
-    except Exception:
-        we_rem_ms = -1
-    msg = (
-        f"window_event {name} visible={visible} minimized={minimized} spontaneous={spontaneous} "
-        f"we_guard={we_active} we_rem_ms={we_rem_ms}"
-    )
-    try:
-        logger = getattr(self, "_chart_debug_log", None)
-        if callable(logger):
-            logger(msg)
-            return
-    except Exception:
-        pass
-    try:
-        path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
-        with open(path, "a", encoding="utf-8", errors="ignore") as fh:
-            fh.write(f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}] {msg}\n")
-    except Exception:
-        pass
+    return main_window_window_events_runtime.log_window_event(self, name, event=event)
 
 
 def _allow_guard_bypass(self) -> bool:
-    try:
-        if (
-            bool(getattr(self, "_force_close", False))
-            or bool(getattr(self, "_close_in_progress", False))
-            or bool(getattr(self, "_cpp_launch_handoff_active", False))
-            or bool(getattr(self, "_rust_launch_handoff_active", False))
-        ):
-            return True
-    except Exception:
-        pass
-    try:
-        app = QtWidgets.QApplication.instance()
-    except Exception:
-        app = None
-    try:
-        if app is not None and bool(getattr(app, "_exiting", False)):
-            return True
-    except Exception:
-        pass
-    return False
+    return main_window_window_events_runtime.allow_guard_bypass(self)
 
 
 def _mark_user_close_command(self) -> None:
-    try:
-        self._last_user_close_command_ts = time.monotonic()
-    except Exception:
-        self._last_user_close_command_ts = 0.0
+    return main_window_window_events_runtime.mark_user_close_command(self)
 
 
 def _is_recent_user_close_command(self) -> bool:
-    try:
-        last_ts = float(getattr(self, "_last_user_close_command_ts", 0.0) or 0.0)
-    except Exception:
-        last_ts = 0.0
-    if last_ts <= 0.0:
-        return False
-    try:
-        ttl_ms = int(os.environ.get("BOT_USER_CLOSE_BYPASS_MS") or 1800)
-    except Exception:
-        ttl_ms = 1800
-    ttl_ms = max(300, min(ttl_ms, 10000))
-    try:
-        return (time.monotonic() - last_ts) * 1000.0 <= ttl_ms
-    except Exception:
-        return False
+    return main_window_window_events_runtime.is_recent_user_close_command(self)
 
 
 def _event_is_spontaneous(event) -> bool:  # noqa: ANN001
-    try:
-        return bool(event is not None and event.spontaneous())
-    except Exception:
-        return False
+    return main_window_window_events_runtime.event_is_spontaneous(event)
 
 
 def _active_spontaneous_close_block_until(self) -> float:
-    try:
-        now = time.monotonic()
-    except Exception:
-        now = 0.0
-    try:
-        until = float(getattr(self, "_spontaneous_close_block_until", 0.0) or 0.0)
-    except Exception:
-        until = 0.0
-    if until and now >= until:
-        try:
-            self._spontaneous_close_block_until = 0.0
-        except Exception:
-            pass
-        return 0.0
-    return until
+    return main_window_window_events_runtime.active_spontaneous_close_block_until(self)
 
 
 def _extend_spontaneous_close_block(self, duration_ms: int = 5000) -> float:
-    try:
-        now = time.monotonic()
-    except Exception:
-        now = 0.0
-    duration_ms = max(300, min(int(duration_ms), 15000))
-    try:
-        previous = float(getattr(self, "_spontaneous_close_block_until", 0.0) or 0.0)
-    except Exception:
-        previous = 0.0
-    until = max(previous, now + (duration_ms / 1000.0))
-    try:
-        self._spontaneous_close_block_until = until
-    except Exception:
-        pass
-    return until
-
-
-def _should_block_spontaneous_close(self, event) -> bool:  # noqa: ANN001
-    if _allow_guard_bypass(self):
-        return False
-    if _is_recent_user_close_command(self):
-        return False
-    if not _event_is_spontaneous(event):
-        return False
-    try:
-        now = time.monotonic()
-    except Exception:
-        now = 0.0
-    guard_until = _active_close_protection_until(self)
-    if guard_until and now < guard_until:
-        remaining_ms = int(max(0.0, (guard_until - now) * 1000.0))
-        _extend_spontaneous_close_block(self, max(5000, remaining_ms + 2500))
-        return True
-    block_until = _active_spontaneous_close_block_until(self)
-    return bool(block_until and now < block_until)
+    return main_window_window_events_runtime.extend_spontaneous_close_block(self, duration_ms=duration_ms)
 
 
 def _restore_window_after_guard(self) -> None:
-    return window_runtime.restore_window_after_guard(self)
+    return main_window_window_events_runtime.restore_window_after_guard(self)
 
 
 def _active_close_protection_until(self) -> float:
-    try:
-        now = time.monotonic()
-    except Exception:
-        now = 0.0
+    return main_window_window_events_runtime.active_close_protection_until(self)
 
-    try:
-        tv_active = bool(getattr(self, "_tv_close_guard_active", False))
-    except Exception:
-        tv_active = False
-    try:
-        tv_until = float(getattr(self, "_tv_close_guard_until", 0.0) or 0.0)
-    except Exception:
-        tv_until = 0.0
-    if tv_active and tv_until and now >= tv_until:
-        try:
-            self._tv_close_guard_active = False
-        except Exception:
-            pass
-        tv_active = False
-        tv_until = 0.0
 
-    try:
-        we_active = bool(getattr(self, "_webengine_close_guard_active", False))
-    except Exception:
-        we_active = False
-    try:
-        we_until = float(getattr(self, "_webengine_close_guard_until", 0.0) or 0.0)
-    except Exception:
-        we_until = 0.0
-    if we_active and we_until and now >= we_until:
-        try:
-            self._webengine_close_guard_active = False
-        except Exception:
-            pass
-        we_active = False
-        we_until = 0.0
-
-    active_until = 0.0
-    if tv_active and tv_until > active_until:
-        active_until = tv_until
-    if we_active and we_until > active_until:
-        active_until = we_until
-    return active_until
+def _should_block_spontaneous_close(self, event) -> bool:  # noqa: ANN001
+    return main_window_window_events_runtime.should_block_spontaneous_close(self, event)
 
 
 def _should_block_programmatic_hide(self) -> bool:
-    if _allow_guard_bypass(self):
-        return False
-    try:
-        now = time.monotonic()
-    except Exception:
-        now = 0.0
-    guard_until = _active_close_protection_until(self)
-    return bool(guard_until and now < guard_until and not _is_recent_user_close_command(self))
+    return main_window_window_events_runtime.should_block_programmatic_hide(self)
 
 
 def setVisible(self, visible):  # noqa: N802, ANN001
-    make_visible = bool(visible)
-    if not make_visible and _should_block_programmatic_hide(self):
-        try:
-            logger = getattr(self, "_chart_debug_log", None)
-            if callable(logger):
-                logger("window_event setVisible_blocked visible=0 reason=webengine_guard")
-        except Exception:
-            pass
-        _restore_window_after_guard(self)
-        return
-    try:
-        super(type(self), self).setVisible(visible)
-    except Exception:
-        pass
+    return main_window_window_events_runtime.set_visible(self, visible)
 
 
 def hide(self):  # noqa: ANN001
-    if _should_block_programmatic_hide(self):
-        try:
-            logger = getattr(self, "_chart_debug_log", None)
-            if callable(logger):
-                logger("window_event hide_blocked reason=webengine_guard")
-        except Exception:
-            pass
-        _restore_window_after_guard(self)
-        return
-    try:
-        super(type(self), self).hide()
-    except Exception:
-        pass
+    return main_window_window_events_runtime.hide_window(self)
 
 
 def nativeEvent(self, eventType, message):  # noqa: N802, ANN001
-    if sys.platform == "win32":
-        detect_flag = str(os.environ.get("BOT_ENABLE_NATIVE_CLOSE_DETECT", "")).strip().lower()
-        if detect_flag not in {"1", "true", "yes", "on"}:
-            try:
-                return super(type(self), self).nativeEvent(eventType, message)
-            except Exception:
-                return False, 0
-        try:
-            et = ""
-            try:
-                et = bytes(eventType).decode("utf-8", "ignore").strip().lower()
-            except Exception:
-                try:
-                    et = str(eventType).strip().lower()
-                except Exception:
-                    et = ""
-            if et not in {"windows_generic_msg", "windows_dispatcher_msg"}:
-                raise RuntimeError("unsupported native event type")
-            import ctypes
-            import ctypes.wintypes as wintypes
-
-            wm_syscommand = 0x0112
-            sc_close = 0xF060
-            msg_ptr = int(message)
-            if msg_ptr and msg_ptr > 0x10000:
-                msg_obj = ctypes.cast(msg_ptr, ctypes.POINTER(wintypes.MSG)).contents
-                if int(msg_obj.message) == wm_syscommand:
-                    cmd = int(msg_obj.wParam) & 0xFFF0
-                    if cmd == sc_close:
-                        _mark_user_close_command(self)
-        except Exception:
-            pass
-    try:
-        return super(type(self), self).nativeEvent(eventType, message)
-    except Exception:
-        return False, 0
+    return main_window_window_events_runtime.native_event(self, eventType, message)
 
 
 def closeEvent(self, event):
-    try:
-        _log_window_event(self, "closeEvent", event=event)
-    except Exception:
-        pass
-    close_guard = getattr(self, "_close_in_progress", False)
-    if close_guard:
-        event.ignore()
-        return
-    if getattr(self, "_force_close", False):
-        self._force_close = False
-        _request_strategy_shutdown()
-        try:
-            _teardown_positions_thread(self)
-        except Exception:
-            pass
-        try:
-            shutdown_service_host = getattr(self, "_shutdown_desktop_service_api_host", None)
-            if callable(shutdown_service_host):
-                shutdown_service_host()
-        except Exception:
-            pass
-        try:
-            self._mark_session_inactive()
-        except Exception:
-            pass
-        try:
-            super(type(self), self).closeEvent(event)
-        except Exception:
-            try:
-                event.accept()
-            except Exception:
-                pass
-        try:
-            app = QtWidgets.QApplication.instance()
-            if app is not None:
-                setattr(app, "_exiting", True)
-                arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
-                if callable(arm_hard_exit):
-                    arm_hard_exit()
-                app.quit()
-        except Exception:
-            pass
-        return
-    if _should_block_spontaneous_close(self, event):
-        try:
-            logger = getattr(self, "_chart_debug_log", None)
-            if callable(logger):
-                logger("window_event closeEvent_blocked reason=spontaneous_guard")
-        except Exception:
-            pass
-        try:
-            event.ignore()
-        except Exception:
-            pass
-        _restore_window_after_guard(self)
-        return
-    if not _allow_guard_bypass(self):
-        try:
-            now = time.monotonic()
-        except Exception:
-            now = 0.0
-        guard_until = _active_close_protection_until(self)
-        if guard_until and now < guard_until:
-            if _is_recent_user_close_command(self):
-                try:
-                    self._last_user_close_command_ts = 0.0
-                except Exception:
-                    pass
-                try:
-                    self._webengine_close_guard_active = False
-                    self._tv_close_guard_active = False
-                except Exception:
-                    pass
-            else:
-                event.ignore()
-                _restore_window_after_guard(self)
-                return
-
-    _request_strategy_shutdown()
-    try:
-        app = QtWidgets.QApplication.instance()
-        if app is not None:
-            setattr(app, "_exiting", True)
-            arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
-            if callable(arm_hard_exit):
-                arm_hard_exit()
-    except Exception:
-        pass
-
-    close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
-    if close_on_exit_enabled:
-        event.ignore()
-        self._begin_close_on_exit_sequence()
-        return
-
-    try:
-        self.stop_strategy_async(close_positions=close_on_exit_enabled, blocking=True)
-    except Exception:
-        pass
-    try:
-        _teardown_positions_thread(self)
-    except Exception:
-        pass
-    try:
-        shutdown_service_host = getattr(self, "_shutdown_desktop_service_api_host", None)
-        if callable(shutdown_service_host):
-            shutdown_service_host()
-    except Exception:
-        pass
-    try:
-        self._mark_session_inactive()
-    except Exception:
-        pass
-    try:
-        super(type(self), self).closeEvent(event)
-    except Exception:
-        try:
-            event.accept()
-        except Exception:
-            pass
-    try:
-        if event.isAccepted():
-            app = QtWidgets.QApplication.instance()
-            if app is not None:
-                arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
-                if callable(arm_hard_exit):
-                    arm_hard_exit()
-                app.quit()
-    except Exception:
-        pass
+    return main_window_window_events_runtime.close_event(
+        self,
+        event,
+        strategy_engine_cls=_STRATEGY_ENGINE_CLS,
+    )
 
 
 def hideEvent(self, event):  # noqa: N802
-    try:
-        _log_window_event(self, "hideEvent", event=event)
-    except Exception:
-        pass
-    if _should_block_spontaneous_close(self, event):
-        try:
-            logger = getattr(self, "_chart_debug_log", None)
-            if callable(logger):
-                logger("window_event hideEvent_blocked reason=spontaneous_guard")
-        except Exception:
-            pass
-        try:
-            event.ignore()
-        except Exception:
-            pass
-        _restore_window_after_guard(self)
-        return
-    if not _allow_guard_bypass(self):
-        try:
-            now = time.monotonic()
-        except Exception:
-            now = 0.0
-        guard_until = _active_close_protection_until(self)
-        if guard_until and now < guard_until:
-            if not _is_recent_user_close_command(self):
-                try:
-                    event.ignore()
-                except Exception:
-                    pass
-                _restore_window_after_guard(self)
-                return
-    try:
-        super(type(self), self).hideEvent(event)
-    except Exception:
-        try:
-            event.accept()
-        except Exception:
-            pass
+    return main_window_window_events_runtime.hide_event(self, event)
 
 
 def _gui_setup_log_buffer(self):
@@ -971,3 +550,4 @@ def bind_main_window_runtime(
     main_window_cls._format_display_time = _mw_format_display_time
     main_window_cls._flush_log_buffer = _gui_flush_log_buffer
     main_window_cls._refresh_waiting_positions_tab = _mw_refresh_waiting_positions_tab
+

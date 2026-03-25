@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore
 
-from app.binance_wrapper import BinanceWrapper
+from app.integrations.exchanges.binance import BinanceWrapper
 
 _CONNECTOR_OPTIONS = ()
 _DEFAULT_CONNECTOR_BACKEND = ""

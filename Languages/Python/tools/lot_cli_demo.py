@@ -1,6 +1,6 @@
 
 import argparse, json, time
-from app.binance_wrapper import BinanceWrapper
+from app.integrations.exchanges.binance import BinanceWrapper
 
 def main():
     ap = argparse.ArgumentParser()

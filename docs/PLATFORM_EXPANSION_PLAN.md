@@ -39,7 +39,8 @@ Languages/Python/
       backtest/
       models/
     integrations/
-      exchange/
+      exchanges/
+        binance/
       storage/
       notifications/
     service/
@@ -98,7 +99,7 @@ Put here:
 - future Redis/Postgres adapters
 - notification hooks
 
-This is where `binance_wrapper.py` should gradually move.
+The first concrete exchange move is already in place: the Binance integration package now lives under `app/integrations/exchanges/binance/`, with the live support modules using package-local imports internally and `app/binance_wrapper.py` kept only as a compatibility shim for older imports.
 
 ### `app/service/`
 
@@ -135,11 +136,13 @@ Optional browser-based frontend.
 
 Use this only after the backend exists.
 
+The current thin dashboard should keep trending toward small browser modules, with shared state, render helpers, and API transport split out of the top-level browser bootstrap file.
+
 ### `clients/mobile/`
 
-Optional thin client for Android/iOS.
+Optional native thin client for Android/iOS.
 
-Do not move Binance secrets here. Mobile must talk to the backend only.
+Do not move exchange or broker secrets here. Mobile must talk to the backend only.
 
 ### `docker/`
 
@@ -152,19 +155,109 @@ Docker should package the backend service, not the current PyQt GUI.
 Start by treating these current files as the seeds of the new layers:
 
 - `Languages/Python/app/strategy.py`
-  Future target: `app/core/strategy/`
+  Current state: compatibility shim
+  New home: `app/core/strategy/engine.py`
+
+- `Languages/Python/app/strategy_signal_order*.py`
+  Current state: compatibility shims
+  New home: `app/core/strategy/strategy_signal_order*.py`
+
+- `Languages/Python/app/strategy_signal_orders_runtime.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_signal_orders_runtime.py`
+
+- `Languages/Python/app/strategy_runtime.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_runtime.py`
+
+- `Languages/Python/app/strategy_runtime_support.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_runtime_support.py`
+
+- `Languages/Python/app/strategy_cycle_runtime.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_cycle_runtime.py`
+
+- `Languages/Python/app/strategy_indicator_compute.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_indicator_compute.py`
+
+- `Languages/Python/app/strategy_signal_generation.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_signal_generation.py`
+
+- `Languages/Python/app/strategy_indicator_tracking.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_indicator_tracking.py`
+
+- `Languages/Python/app/strategy_indicator_guard.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_indicator_guard.py`
+
+- `Languages/Python/app/strategy_trade_book.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_trade_book.py`
+
+- `Languages/Python/app/strategy_position_state.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_position_state.py`
+
+- `Languages/Python/app/strategy_position_close_runtime.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_position_close_runtime.py`
+
+- `Languages/Python/app/strategy_position_flip_runtime.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_position_flip_runtime.py`
 
 - `Languages/Python/app/backtester.py`
-  Future target: `app/core/backtest/`
+  Current state: compatibility shim
+  New home: `app/core/backtest/engine.py`
+
+- `Languages/Python/app/indicators.py`
+  Current state: compatibility shim
+  New home: `app/core/indicators/__init__.py`
+
+- `Languages/Python/app/position_guard.py`
+  Current state: compatibility shim
+  New home: `app/core/positions/guard.py`
 
 - `Languages/Python/app/binance_wrapper.py`
-  Future target: `app/integrations/exchange/`
+  Current state: compatibility shim
+  New home: `app/integrations/exchanges/binance/wrapper.py`
 
 - `Languages/Python/app/gui/main_window.py`
   Future target: `app/desktop/gui/`
 
+- `Languages/Python/app/desktop/bootstrap/main.py`
+  Current state: moved desktop-bootstrap implementation behind the public launcher
+
+- `Languages/Python/app/gui/runtime/main_window_init_ui_runtime.py`
+  Current state: first extracted `main_window.py` UI-assembly helper
+
+- `Languages/Python/app/gui/runtime/main_window_bindings_runtime.py`
+  Current state: extracted `main_window.py` class-binding/configuration helper
+
+- `Languages/Python/app/gui/runtime/main_window_module_state_runtime.py`
+  Current state: extracted `main_window.py` constant/helper-alias helper
+
+- `Languages/Python/app/gui/runtime/window_code_tab_suppression_runtime.py`
+  Current state: first extracted `window_runtime.py` slice for code-tab suppression on Windows
+
+- `Languages/Python/app/gui/runtime/window_webengine_guard_runtime.py`
+  Current state: extracted `window_runtime.py` slice for WebEngine/TradingView prewarm and guard behavior
+
+- `Languages/Python/app/gui/runtime/main_window_window_events_runtime.py`
+  Current state: extracted `main_window_runtime.py` slice for native close detection and close/hide window-guard lifecycle behavior
+
+- `Languages/Python/app/gui/runtime/main_window_start_strategy_runtime.py`
+  Current state: extracted `main_window_control_runtime.py` slice for start-engine lifecycle and loop-building behavior
+
+- `Languages/Python/app/gui/runtime/main_window_stop_strategy_runtime.py`
+  Current state: extracted `main_window_control_runtime.py` slice for stop-engine and close-all lifecycle handling
+
 - `Languages/Python/main.py`
-  Future target: `app/desktop/bootstrap/`
+  Current state: stable public launcher shim
 
 Do not try to move everything in one large refactor. Introduce new packages and move responsibility gradually.
 
@@ -230,6 +323,11 @@ Deliverable:
 - bot can run in a headless Python process
 - desktop can call the same service methods locally
 - lifecycle and control intent are owned by the service runner instead of the Qt window
+- execution adapters can be attached so the service can report whether control is intent-only or backed by a real runtime owner
+- the standalone service process can attach its own local execution adapter before the full trading engine extraction is finished
+- execution snapshots should remain part of the service contract so later extracted runners can expose session identity and progress consistently
+- workload/progress/heartbeat fields should stay stable across future live-trading and backtest service executors
+- the first extracted service-owned workload can be backtest execution, because it already exists outside the GUI aside from its Qt worker wrapper
 
 ## Phase 3: Introduce stable schemas
 
@@ -281,8 +379,9 @@ Suggested initial endpoints:
 - `PUT /api/config`
 - `GET /api/positions`
 - `GET /api/logs`
-- `POST /api/backtests`
-- `GET /api/backtests/{id}`
+- `GET /api/backtest`
+- `POST /api/backtest/run`
+- `POST /api/backtest/stop`
 
 Suggested real-time channel:
 
@@ -294,6 +393,7 @@ Deliverable:
 - optional bearer-token auth can protect API access before full user/session auth exists
 - a thin same-origin dashboard can bootstrap the web client path before a larger SPA/frontend build
 - the thin dashboard can move from REST polling to SSE once the backend snapshot contract is stable
+- extracted service-owned workloads can publish richer snapshots before live trading is moved out of the desktop runtime
 
 ## Phase 5: Make desktop a client of the service layer
 
@@ -349,6 +449,7 @@ Deliverable:
 
 - Docker is available for deployment
 - local non-Docker usage still works normally
+- current repo baseline can ship this through `docker/backend.Dockerfile` and `docker/compose.yaml`
 
 ## Phase 7: Build the web GUI
 
@@ -376,6 +477,7 @@ Do not try to port Qt widgets directly. Rebuild the workflows around the backend
 Deliverable:
 
 - remote control panel for the bot
+- current repo baseline already includes a thin same-origin dashboard in `Languages/Python/clients/web/`
 
 ## Phase 8: Add Android/iOS only as thin clients
 
@@ -397,6 +499,7 @@ Rules:
 Deliverable:
 
 - optional mobile client built on top of the same backend
+- current repo baseline can start from the Expo native-client path in `Languages/Python/clients/mobile/`
 
 ## Suggested first folder creation
 
@@ -432,7 +535,7 @@ After that, migrate in this order:
 
 - Do not make Docker mandatory for local desktop users.
 - Do not try to port the current PyQt app directly to Android/iOS.
-- Do not let web/mobile call Binance directly with user secrets.
+- Do not let web/mobile call exchange or broker APIs directly with user secrets.
 - Do not rewrite everything in one step.
 - Do not block desktop improvements while building backend layers.
 

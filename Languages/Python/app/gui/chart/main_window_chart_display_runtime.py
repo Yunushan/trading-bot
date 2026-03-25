@@ -22,7 +22,7 @@ except Exception:
     QT_CHARTS_AVAILABLE = False
     QChart = QChartView = QCandlestickSeries = QCandlestickSet = QDateTimeAxis = QValueAxis = None
 
-from app.indicators import (
+from app.core.indicators import (
     adx as adx_indicator,
     bollinger_bands as bollinger_bands_indicator,
     dmi as dmi_indicator,

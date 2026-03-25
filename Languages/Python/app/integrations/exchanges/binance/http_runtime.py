@@ -7,7 +7,7 @@ import urllib.parse
 
 import requests
 
-from app.binance_transport_helpers import (
+from .transport_helpers import (
     _http_debug_enabled,
     _http_slow_seconds,
     _is_binance_error_payload,

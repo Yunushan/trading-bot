@@ -1,4 +1,4 @@
-## Binance Backtest Tab (Qt/C++23)
+## Trading Bot C++ Desktop Preview (Qt/C++23)
 
 This directory contains a standalone Qt Widgets application that recreates the Trading Bot's **Backtest** tab UI using modern C++23. It is intended as the starting point for the multi-language re-platform effort requested for the project.
 

@@ -22,6 +22,20 @@ class ServiceCapabilityFlags:
 
 
 @dataclass(frozen=True, slots=True)
+class ServiceControlPlaneDescriptor:
+    mode: str = "intent-only"
+    owner: str = "service-runtime"
+    start_supported: bool = False
+    stop_supported: bool = False
+    notes: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["notes"] = list(self.notes)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceRuntimeDescriptor:
     service_name: str
     phase: str
@@ -31,15 +45,20 @@ class ServiceRuntimeDescriptor:
     platform: str
     python_version: str
     capabilities: ServiceCapabilityFlags
+    control_plane: ServiceControlPlaneDescriptor
     notes: tuple[str, ...]
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
+        payload["control_plane"] = self.control_plane.to_dict()
         payload["notes"] = list(self.notes)
         return payload
 
 
-def build_runtime_descriptor() -> ServiceRuntimeDescriptor:
+def build_runtime_descriptor(
+    *,
+    control_plane: ServiceControlPlaneDescriptor | None = None,
+) -> ServiceRuntimeDescriptor:
     service_file = Path(__file__).resolve()
     repo_root = service_file.parents[5]
     return ServiceRuntimeDescriptor(
@@ -51,6 +70,7 @@ def build_runtime_descriptor() -> ServiceRuntimeDescriptor:
         platform=platform.platform(),
         python_version=sys.version.split()[0],
         capabilities=ServiceCapabilityFlags(),
+        control_plane=control_plane or ServiceControlPlaneDescriptor(),
         notes=(
             "Desktop launch remains unchanged.",
             "Docker is optional and not required for local usage.",

@@ -84,6 +84,16 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         help="Print the current portfolio snapshot.",
     )
     parser.add_argument(
+        "--execution-snapshot",
+        action="store_true",
+        help="Print the current execution snapshot.",
+    )
+    parser.add_argument(
+        "--backtest-snapshot",
+        action="store_true",
+        help="Print the current backtest snapshot.",
+    )
+    parser.add_argument(
         "--logs",
         action="store_true",
         help="Print recent service log events.",
@@ -133,11 +143,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     service = TradingBotService()
+    service.enable_local_executor()
     descriptor = service.describe_runtime()
     status = service.get_status()
     config_summary = service.get_config_summary()
     account_snapshot = service.get_account_snapshot()
     portfolio_snapshot = service.get_portfolio_snapshot()
+    execution_snapshot = service.get_execution_snapshot()
+    backtest_snapshot = service.get_backtest_snapshot()
     control_result = None
     log_event = None
     logs = []
@@ -160,8 +173,10 @@ def main(argv: list[str] | None = None) -> int:
             "account_snapshot": account_snapshot.to_dict(),
             "config_summary": config_summary.to_dict(),
             "control_result": control_result.to_dict() if control_result else None,
+            "execution_snapshot": execution_snapshot.to_dict(),
             "log_event": log_event.to_dict() if log_event else None,
             "logs": logs,
+            "backtest_snapshot": backtest_snapshot.to_dict(),
             "portfolio_snapshot": portfolio_snapshot.to_dict(),
             "runtime": descriptor.to_dict(),
             "status": status.to_dict(),
@@ -185,6 +200,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(portfolio_snapshot.to_dict(), indent=2, sort_keys=True))
         return 0
 
+    if args.execution_snapshot:
+        print(json.dumps(execution_snapshot.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    if args.backtest_snapshot:
+        print(json.dumps(backtest_snapshot.to_dict(), indent=2, sort_keys=True))
+        return 0
+
     if args.logs:
         print(json.dumps(logs, indent=2, sort_keys=True))
         return 0
@@ -202,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Python entrypoint: {descriptor.python_entrypoint}")
     print(f"Desktop entrypoint: {descriptor.desktop_entrypoint}")
     print(f"Docker optional: {descriptor.capabilities.docker_optional}")
+    print(f"Control mode: {descriptor.control_plane.mode}")
+    print(f"Control owner: {descriptor.control_plane.owner}")
     print(f"Current mode: {status.mode}")
     print(f"Account type: {status.account_type}")
     print(f"Exchange: {status.selected_exchange}")
@@ -209,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Enabled indicators: {config_summary.enabled_indicator_count}")
     print("Remote API: available via --serve")
     print("Web dashboard: /ui/ when the API server is running")
+    print("Backtest API: /api/backtest plus /api/backtest/run and /api/backtest/stop")
     return 0
 
 

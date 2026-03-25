@@ -5,7 +5,7 @@ import traceback
 
 from PyQt6 import QtCore
 
-from app.backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
+from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition
 
 _DBG_BACKTEST_RUN = False
 _SYMBOL_FETCH_TOP_N = 200

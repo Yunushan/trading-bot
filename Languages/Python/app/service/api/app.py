@@ -99,12 +99,22 @@ if FASTAPI_AVAILABLE:
         source: str = "api"
 
 
+    class BacktestRunRequest(BaseModel):
+        request: dict | None = None
+        source: str = "api"
+
+
+    class BacktestStopRequest(BaseModel):
+        source: str = "api"
+
+
 def create_service_api_app(
     service: TradingBotService | None = None,
     *,
     api_token: str | None = None,
     host_context: str = "standalone-service",
     host_owner: str = "service-process",
+    enable_local_executor: bool | None = None,
 ):
     _require_fastapi()
     resolved_api_token = resolve_service_api_token(api_token)
@@ -112,12 +122,20 @@ def create_service_api_app(
     web_ui_available = web_client_dir.is_dir()
     resolved_host_context = str(host_context or "standalone-service").strip() or "standalone-service"
     resolved_host_owner = str(host_owner or "service-process").strip() or "service-process"
+    service_instance = service or TradingBotService()
+    if enable_local_executor is None:
+        enable_local_executor = service is None and resolved_host_context == "standalone-service"
+    if enable_local_executor:
+        try:
+            service_instance.enable_local_executor()
+        except Exception:
+            pass
     app = FastAPI(
         title="Trading Bot Service API",
         version="0.1.0",
         description="Headless API surface for the Trading Bot service layer.",
     )
-    app.state.service = service or TradingBotService()
+    app.state.service = service_instance
     app.state.api_token = resolved_api_token
     app.state.web_client_dir = str(web_client_dir) if web_ui_available else ""
     app.state.web_ui_available = web_ui_available
@@ -202,6 +220,14 @@ def create_service_api_app(
     def get_status():
         return _service().get_status().to_dict()
 
+    @app.get("/api/execution", dependencies=[Depends(_require_api_auth)])
+    def get_execution_snapshot():
+        return _service().get_execution_snapshot().to_dict()
+
+    @app.get("/api/backtest", dependencies=[Depends(_require_api_auth)])
+    def get_backtest_snapshot():
+        return _service().get_backtest_snapshot().to_dict()
+
     @app.get("/api/config-summary", dependencies=[Depends(_require_api_auth)])
     def get_config_summary():
         return _service().get_config_summary().to_dict()
@@ -242,6 +268,19 @@ def create_service_api_app(
             close_positions=payload.close_positions,
             source=payload.source,
         )
+        return result.to_dict()
+
+    @app.post("/api/backtest/run", dependencies=[Depends(_require_api_auth)])
+    def run_backtest(payload: BacktestRunRequest):
+        result = _service().submit_backtest(
+            payload.request if isinstance(payload.request, dict) else None,
+            source=payload.source,
+        )
+        return result.to_dict()
+
+    @app.post("/api/backtest/stop", dependencies=[Depends(_require_api_auth)])
+    def stop_backtest(payload: BacktestStopRequest):
+        result = _service().stop_backtest(source=payload.source)
         return result.to_dict()
 
     @app.post("/api/control/start-failed", dependencies=[Depends(_require_api_auth)])
@@ -349,5 +388,6 @@ def run_service_api_server(
         api_token=api_token,
         host_context="standalone-service",
         host_owner="service-process",
+        enable_local_executor=True,
     )
     uvicorn.run(app, host=str(host or "127.0.0.1"), port=max(1, int(port)), log_level="info")

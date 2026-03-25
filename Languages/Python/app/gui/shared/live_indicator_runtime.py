@@ -7,8 +7,8 @@ from collections import deque
 import pandas as pd
 from PyQt6 import QtCore
 
-from app.binance_wrapper import BinanceWrapper
-from app.indicators import (
+from app.integrations.exchanges.binance import BinanceWrapper
+from app.core.indicators import (
     ema as ema_indicator,
     rsi as rsi_indicator,
     sma as sma_indicator,

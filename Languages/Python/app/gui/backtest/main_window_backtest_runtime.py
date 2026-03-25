@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore
 
-from app.backtester import BacktestEngine, BacktestRequest
+from app.core.backtest import BacktestEngine, BacktestRequest
 
 
 class _BacktestWorker(QtCore.QThread):

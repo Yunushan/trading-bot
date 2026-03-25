@@ -5,7 +5,7 @@ from datetime import datetime
 
 from PyQt6 import QtWidgets
 
-from ...binance_wrapper import normalize_margin_ratio
+from app.integrations.exchanges.binance import normalize_margin_ratio
 from ..shared import indicator_value_helpers
 from . import (
     main_window_positions_actions_runtime,

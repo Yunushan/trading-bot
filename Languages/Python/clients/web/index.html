@@ -55,6 +55,8 @@
           <div><dt>Platform</dt><dd id="runtime-platform">-</dd></div>
           <div><dt>Python</dt><dd id="runtime-python">-</dd></div>
           <div><dt>Desktop</dt><dd id="runtime-desktop">-</dd></div>
+          <div><dt>Control Mode</dt><dd id="runtime-control-mode">-</dd></div>
+          <div><dt>Exec Owner</dt><dd id="runtime-exec-owner">-</dd></div>
         </dl>
       </section>
 
@@ -70,6 +72,103 @@
           <div><dt>Exchange</dt><dd id="status-exchange">-</dd></div>
         </dl>
         <p id="status-message" class="hint compact-hint">-</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Execution</h2>
+          <span id="execution-state" class="pill muted">Idle</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Executor</dt><dd id="execution-kind">-</dd></div>
+          <div><dt>Workload</dt><dd id="execution-workload">-</dd></div>
+          <div><dt>Session ID</dt><dd id="execution-session">-</dd></div>
+          <div><dt>Jobs</dt><dd id="execution-jobs">-</dd></div>
+          <div><dt>Progress</dt><dd id="execution-progress">-</dd></div>
+          <div><dt>Heartbeat</dt><dd id="execution-heartbeat">-</dd></div>
+          <div><dt>Started</dt><dd id="execution-started">-</dd></div>
+        </dl>
+        <p id="execution-message" class="hint compact-hint">-</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Backtest</h2>
+          <span id="backtest-state" class="pill muted">Idle</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Session ID</dt><dd id="backtest-session">-</dd></div>
+          <div><dt>Runs / Errors</dt><dd id="backtest-counts">-</dd></div>
+          <div><dt>Scope</dt><dd id="backtest-scope">-</dd></div>
+          <div><dt>Top Run</dt><dd id="backtest-top-run">-</dd></div>
+          <div><dt>Started</dt><dd id="backtest-started">-</dd></div>
+          <div><dt>Updated</dt><dd id="backtest-updated">-</dd></div>
+        </dl>
+        <p id="backtest-message" class="hint compact-hint">No backtest submitted yet.</p>
+        <div class="field-grid">
+          <label class="field">
+            <span>Symbols</span>
+            <input id="backtest-symbols" type="text" autocomplete="off" spellcheck="false" placeholder="BTCUSDT, ETHUSDT">
+          </label>
+          <label class="field">
+            <span>Intervals</span>
+            <input id="backtest-intervals" type="text" autocomplete="off" spellcheck="false" placeholder="1h, 4h">
+          </label>
+          <label class="field">
+            <span>Capital</span>
+            <input id="backtest-capital" type="number" min="0" step="0.01" placeholder="Uses service default if empty">
+          </label>
+          <label class="field">
+            <span>Logic</span>
+            <select id="backtest-logic">
+              <option value="">Service Default</option>
+              <option value="AND">AND</option>
+              <option value="OR">OR</option>
+              <option value="SEPARATE">SEPARATE</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Symbol Source</span>
+            <select id="backtest-source">
+              <option value="">Service Default</option>
+              <option value="Futures">Futures</option>
+              <option value="Spot">Spot</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Start</span>
+            <input id="backtest-start" type="datetime-local">
+          </label>
+          <label class="field">
+            <span>End</span>
+            <input id="backtest-end" type="datetime-local">
+          </label>
+        </div>
+        <div class="actions">
+          <button id="run-backtest-button" type="button">Run Backtest</button>
+          <button id="stop-backtest-button" type="button" class="secondary">Stop Backtest</button>
+        </div>
+        <p id="backtest-control-message" class="hint compact-hint">
+          This uses the service-owned backtest runner and the current service backtest indicator config unless you override fields here.
+        </p>
+        <div class="detail-panels">
+          <section class="detail-section">
+            <div class="detail-head">
+              <h3>Top Runs</h3>
+              <span class="pill muted" id="backtest-top-runs-count">0</span>
+            </div>
+            <div id="backtest-top-runs-empty" class="empty-state compact-empty">No completed runs yet.</div>
+            <div id="backtest-top-runs-list" class="mini-list"></div>
+          </section>
+          <section class="detail-section">
+            <div class="detail-head">
+              <h3>Errors</h3>
+              <span class="pill muted" id="backtest-errors-count">0</span>
+            </div>
+            <div id="backtest-errors-empty" class="empty-state compact-empty">No backtest errors recorded.</div>
+            <div id="backtest-errors-list" class="mini-list"></div>
+          </section>
+        </div>
       </section>
 
       <section class="card">
@@ -235,6 +334,6 @@
     </main>
   </div>
 
-  <script src="./app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

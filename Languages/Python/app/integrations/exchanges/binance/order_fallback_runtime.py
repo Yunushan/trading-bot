@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from binance.client import Client
 
-from app.binance_connector_clients import _normalize_connector_choice
-from app.binance_transport_helpers import _is_binance_error_payload, _requests_timeout
+from .connector_clients import _normalize_connector_choice
+from .transport_helpers import _is_binance_error_payload, _requests_timeout
 
 
 def _is_testnet_mode(mode: str | None) -> bool:

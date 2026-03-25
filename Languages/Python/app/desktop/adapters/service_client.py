@@ -16,9 +16,9 @@ if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[3]
     if str(_PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(_PYTHON_ROOT))
-    from app.service import TradingBotService
+    from app.service.runtime import TradingBotService
 else:
-    from ...service import TradingBotService
+    from ...service.runtime import TradingBotService
 
 try:
     import requests

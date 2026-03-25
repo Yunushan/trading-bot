@@ -21,6 +21,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_PYTHON_ROOT))
     from app.config import DEFAULT_CONFIG
     from app.service.schemas.account import ServiceAccountSnapshot, build_account_snapshot
+    from app.service.schemas.backtest import ServiceBacktestSnapshot, build_backtest_snapshot
     from app.service.schemas.config import (
         ServiceConfigSummary,
         ServiceEditableConfig,
@@ -34,13 +35,16 @@ if __package__ in (None, ""):
         make_start_request,
         make_stop_request,
     )
+    from app.service.schemas.execution import ServiceExecutionSnapshot, build_execution_snapshot
     from app.service.schemas.logs import ServiceLogEvent, make_log_event
     from app.service.schemas.positions import ServicePortfolioSnapshot, build_portfolio_snapshot
     from app.service.schemas.runtime import ServiceRuntimeDescriptor, build_runtime_descriptor
+    from app.service.schemas.runtime import ServiceControlPlaneDescriptor
     from app.service.schemas.status import BotStatusSnapshot, make_initial_status
 else:
     from ...config import DEFAULT_CONFIG
     from ..schemas.account import ServiceAccountSnapshot, build_account_snapshot
+    from ..schemas.backtest import ServiceBacktestSnapshot, build_backtest_snapshot
     from ..schemas.config import (
         ServiceConfigSummary,
         ServiceEditableConfig,
@@ -54,12 +58,28 @@ else:
         make_start_request,
         make_stop_request,
     )
+    from ..schemas.execution import ServiceExecutionSnapshot, build_execution_snapshot
     from ..schemas.logs import ServiceLogEvent, make_log_event
     from ..schemas.positions import ServicePortfolioSnapshot, build_portfolio_snapshot
     from ..schemas.runtime import ServiceRuntimeDescriptor, build_runtime_descriptor
+    from ..schemas.runtime import ServiceControlPlaneDescriptor
     from ..schemas.status import BotStatusSnapshot, make_initial_status
 
 _MISSING = object()
+
+
+def _normalize_control_plane_notes(notes) -> tuple[str, ...]:  # noqa: ANN001
+    if isinstance(notes, str):
+        text = notes.strip()
+        return (text,) if text else ()
+    if not isinstance(notes, (list, tuple, set)):
+        return ()
+    normalized: list[str] = []
+    for item in notes:
+        text = str(item or "").strip()
+        if text:
+            normalized.append(text)
+    return tuple(normalized)
 
 
 def _deep_merge_mappings(base: dict, patch: dict) -> dict:
@@ -100,6 +120,53 @@ class BotRuntimeCoordinator:
         self._account_snapshot = build_account_snapshot(config=self._config, source="service-bootstrap")
         self._portfolio_snapshot = build_portfolio_snapshot(config=self._config, source="service-bootstrap")
         self._control_request_handler: Callable[[BotControlRequest], object] | None = None
+        self._control_plane_mode = "intent-only"
+        self._control_plane_owner = "service-runtime"
+        self._control_plane_start_supported = False
+        self._control_plane_stop_supported = False
+        self._control_plane_notes = (
+            "Control requests are recorded as service intent until an execution adapter is attached.",
+        )
+        self._execution_executor_kind = "unbound"
+        self._execution_owner = "service-runtime"
+        self._execution_state = "idle"
+        self._execution_workload_kind = "unbound"
+        self._execution_session_id = ""
+        self._execution_requested_job_count = 0
+        self._execution_active_engine_count = 0
+        self._execution_progress_label = ""
+        self._execution_progress_percent = None
+        self._execution_heartbeat_at = ""
+        self._execution_tick_count = 0
+        self._execution_last_action = ""
+        self._execution_last_message = "No execution adapter attached."
+        self._execution_started_at = ""
+        self._execution_source = "service-bootstrap"
+        self._execution_notes = (
+            "Execution state is idle until a service-owned or delegated executor attaches.",
+        )
+        self._execution_snapshot = build_execution_snapshot(
+            executor_kind=self._execution_executor_kind,
+            owner=self._execution_owner,
+            state=self._execution_state,
+            workload_kind=self._execution_workload_kind,
+            session_id=self._execution_session_id,
+            requested_job_count=self._execution_requested_job_count,
+            active_engine_count=self._execution_active_engine_count,
+            progress_label=self._execution_progress_label,
+            progress_percent=self._execution_progress_percent,
+            heartbeat_at=self._execution_heartbeat_at,
+            tick_count=self._execution_tick_count,
+            last_action=self._execution_last_action,
+            last_message=self._execution_last_message,
+            started_at=self._execution_started_at,
+            source=self._execution_source,
+            notes=self._execution_notes,
+        )
+        self._backtest_snapshot = build_backtest_snapshot(
+            source="service-bootstrap",
+            updated_at=self._now_iso(),
+        )
 
     @staticmethod
     def _now_iso() -> str:
@@ -292,17 +359,167 @@ class BotRuntimeCoordinator:
                 "status": self.get_status().to_dict(),
                 "config": self.get_config_payload().to_dict(),
                 "config_summary": self.get_config_summary().to_dict(),
+                "execution": self.get_execution_snapshot().to_dict(),
+                "backtest": self.get_backtest_snapshot().to_dict(),
                 "account": self.get_account_snapshot().to_dict(),
                 "portfolio": self.get_portfolio_snapshot().to_dict(),
                 "logs": [item.to_dict() for item in self.get_recent_logs(limit=log_limit)],
             }
 
+    def set_backtest_snapshot(self, snapshot: ServiceBacktestSnapshot) -> ServiceBacktestSnapshot:
+        with self._lock:
+            if not isinstance(snapshot, ServiceBacktestSnapshot):
+                snapshot = build_backtest_snapshot(source="service-runtime")
+            self._backtest_snapshot = snapshot
+            return self._backtest_snapshot
+
+    def get_backtest_snapshot(self) -> ServiceBacktestSnapshot:
+        with self._lock:
+            return self._backtest_snapshot
+
+    def set_execution_snapshot(
+        self,
+        *,
+        executor_kind=_MISSING,
+        owner=_MISSING,
+        state=_MISSING,
+        workload_kind=_MISSING,
+        session_id=_MISSING,
+        requested_job_count=_MISSING,
+        active_engine_count=_MISSING,
+        progress_label=_MISSING,
+        progress_percent=_MISSING,
+        heartbeat_at=_MISSING,
+        tick_count=_MISSING,
+        last_action=_MISSING,
+        last_message=_MISSING,
+        started_at=_MISSING,
+        source=_MISSING,
+        notes=_MISSING,
+    ) -> ServiceExecutionSnapshot:
+        with self._lock:
+            if executor_kind is not _MISSING:
+                self._execution_executor_kind = str(executor_kind or "unbound")
+            if owner is not _MISSING:
+                self._execution_owner = str(owner or "service-runtime")
+            if state is not _MISSING:
+                self._execution_state = str(state or "idle")
+            if workload_kind is not _MISSING:
+                self._execution_workload_kind = str(workload_kind or "unbound")
+            if session_id is not _MISSING:
+                self._execution_session_id = str(session_id or "")
+            if requested_job_count is not _MISSING:
+                self._execution_requested_job_count = max(0, int(requested_job_count or 0))
+            if active_engine_count is not _MISSING:
+                self._execution_active_engine_count = max(0, int(active_engine_count or 0))
+            if progress_label is not _MISSING:
+                self._execution_progress_label = str(progress_label or "")
+            if progress_percent is not _MISSING:
+                self._execution_progress_percent = None if progress_percent is None else float(progress_percent)
+            if heartbeat_at is not _MISSING:
+                self._execution_heartbeat_at = str(heartbeat_at or "")
+            if tick_count is not _MISSING:
+                self._execution_tick_count = max(0, int(tick_count or 0))
+            if last_action is not _MISSING:
+                self._execution_last_action = str(last_action or "")
+            if last_message is not _MISSING:
+                self._execution_last_message = str(last_message or "")
+            if started_at is not _MISSING:
+                self._execution_started_at = str(started_at or "")
+            if source is not _MISSING:
+                self._execution_source = str(source or "service")
+            if notes is not _MISSING:
+                self._execution_notes = _normalize_control_plane_notes(notes)
+            self._execution_snapshot = build_execution_snapshot(
+                executor_kind=self._execution_executor_kind,
+                owner=self._execution_owner,
+                state=self._execution_state,
+                workload_kind=self._execution_workload_kind,
+                session_id=self._execution_session_id,
+                requested_job_count=self._execution_requested_job_count,
+                active_engine_count=self._execution_active_engine_count,
+                progress_label=self._execution_progress_label,
+                progress_percent=self._execution_progress_percent,
+                heartbeat_at=self._execution_heartbeat_at,
+                tick_count=self._execution_tick_count,
+                last_action=self._execution_last_action,
+                last_message=self._execution_last_message,
+                started_at=self._execution_started_at,
+                source=self._execution_source,
+                notes=self._execution_notes,
+            )
+            return self._execution_snapshot
+
+    def get_execution_snapshot(self) -> ServiceExecutionSnapshot:
+        with self._lock:
+            return self._execution_snapshot
+
     def set_control_request_handler(
         self,
         handler: Callable[[BotControlRequest], object] | None = None,
+        *,
+        mode: str | None = None,
+        owner: str | None = None,
+        start_supported: bool | None = None,
+        stop_supported: bool | None = None,
+        notes=None,  # noqa: ANN001
     ) -> None:
         with self._lock:
             self._control_request_handler = handler if callable(handler) else None
+            if callable(handler):
+                self._control_plane_mode = str(mode or "delegated-dispatch").strip() or "delegated-dispatch"
+                self._control_plane_owner = str(owner or "external-control-adapter").strip() or "external-control-adapter"
+                self._control_plane_start_supported = True if start_supported is None else bool(start_supported)
+                self._control_plane_stop_supported = True if stop_supported is None else bool(stop_supported)
+                self._control_plane_notes = _normalize_control_plane_notes(notes) or (
+                    "Control requests are forwarded to an external execution adapter.",
+                )
+                self.set_execution_snapshot(
+                    executor_kind=self._control_plane_mode,
+                    owner=self._control_plane_owner,
+                    state="idle",
+                    workload_kind="delegated-runtime",
+                    session_id="",
+                    requested_job_count=0,
+                    active_engine_count=0,
+                    progress_label="Awaiting delegated runtime updates.",
+                    progress_percent=None,
+                    heartbeat_at="",
+                    tick_count=0,
+                    last_action="attach",
+                    last_message="Delegated execution adapter attached.",
+                    started_at="",
+                    source="service-control-plane",
+                    notes=(
+                        "Execution updates depend on the attached delegated runtime owner.",
+                    ),
+                )
+            else:
+                self._control_plane_mode = "intent-only"
+                self._control_plane_owner = "service-runtime"
+                self._control_plane_start_supported = False
+                self._control_plane_stop_supported = False
+                self._control_plane_notes = (
+                    "Control requests are recorded as service intent until an execution adapter is attached.",
+                )
+                self.set_execution_snapshot(
+                    executor_kind="unbound",
+                    owner="service-runtime",
+                    state="idle",
+                    workload_kind="unbound",
+                    session_id="",
+                    requested_job_count=0,
+                    active_engine_count=0,
+                    progress_label="No execution adapter attached.",
+                    progress_percent=None,
+                    heartbeat_at="",
+                    tick_count=0,
+                    last_action="detach",
+                    last_message="Execution adapter detached; service returned to intent-only mode.",
+                    started_at="",
+                    source="service-control-plane",
+                    notes=("Execution state is idle until a service-owned or delegated executor attaches.",),
+                )
 
     def _dispatch_control_request(self, control_request: BotControlRequest) -> tuple[bool | None, str]:
         with self._lock:
@@ -476,7 +693,15 @@ class BotRuntimeCoordinator:
 
     def describe_runtime(self) -> ServiceRuntimeDescriptor:
         with self._lock:
-            return build_runtime_descriptor()
+            return build_runtime_descriptor(
+                control_plane=ServiceControlPlaneDescriptor(
+                    mode=self._control_plane_mode,
+                    owner=self._control_plane_owner,
+                    start_supported=self._control_plane_start_supported,
+                    stop_supported=self._control_plane_stop_supported,
+                    notes=tuple(self._control_plane_notes),
+                )
+            )
 
     def get_status(self) -> BotStatusSnapshot:
         with self._lock:

@@ -7,8 +7,8 @@ import pandas as pd
 import requests
 from binance.exceptions import BinanceAPIException
 
-from app.binance_connector_clients import CcxtConnectorError, OfficialConnectorError
-from app.binance_transport_helpers import _coerce_interval_seconds
+from .connector_clients import CcxtConnectorError, OfficialConnectorError
+from .transport_helpers import _coerce_interval_seconds
 
 FUTURES_NATIVE_INTERVALS = {
     "1m",

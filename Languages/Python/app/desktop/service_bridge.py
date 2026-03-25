@@ -177,7 +177,17 @@ def _register_service_control_dispatcher(self) -> None:
     if not callable(setter):
         return
     try:
-        setter(lambda request, window=self: _queue_service_control_request(window, request))
+        setter(
+            lambda request, window=self: _queue_service_control_request(window, request),
+            mode="desktop-gui-dispatch",
+            owner="desktop-gui",
+            start_supported=True,
+            stop_supported=True,
+            notes=(
+                "Control requests are queued onto the live desktop GUI thread.",
+                "Desktop runtime state flows back into the service snapshot after actual start/stop transitions.",
+            ),
+        )
         self._desktop_service_control_dispatcher_registered = True
     except Exception:
         pass

@@ -4,7 +4,7 @@ import time
 
 from PyQt6 import QtCore, QtWidgets
 
-from ...binance_wrapper import normalize_margin_ratio
+from app.integrations.exchanges.binance import normalize_margin_ratio
 
 _CLOSED_RECORD_STATES: set[str] = set()
 _NUMERIC_ITEM_CLS = QtWidgets.QTableWidgetItem

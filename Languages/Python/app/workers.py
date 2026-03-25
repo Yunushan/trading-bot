@@ -114,7 +114,7 @@ class StartWorker(QThread):
 
     def _start_one(self, job):
         try:
-            from .strategy import StrategyEngine
+            from .core.strategy import StrategyEngine
             cfg = copy.deepcopy(self.cfg)
             cfg['symbol'] = job['symbol']
             cfg['interval'] = job['interval']
@@ -134,7 +134,7 @@ class StartWorker(QThread):
         ok = True
         try:
             try:
-                from .strategy import StrategyEngine as _StrategyEngine
+                from .core.strategy import StrategyEngine as _StrategyEngine
                 _StrategyEngine.resume_trading()
             except Exception:
                 pass

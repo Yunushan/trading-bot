@@ -16,11 +16,12 @@ from app.config import (
     coerce_bool,
     normalize_stop_loss_dict,
 )
-from app.position_guard import IntervalPositionGuard
+from app.core.positions import IntervalPositionGuard
 from app.gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
 from app.gui.code.code_language_catalog import EXCHANGE_PATHS, FOREX_BROKER_PATHS, LANGUAGE_PATHS
 
-_APP_STATE_PATH = Path.home() / ".binance_trading_bot_state.json"
+_APP_STATE_PATH = Path.home() / ".trading_bot_state.json"
+_LEGACY_APP_STATE_PATH = Path.home() / ".binance_trading_bot_state.json"
 _LOAD_APP_STATE_FILE = lambda path: {}
 _NORMALIZE_CONNECTOR_BACKEND = lambda value: value
 _DEFAULT_CONNECTOR_BACKEND = ""
@@ -35,6 +36,7 @@ def bind_main_window_bootstrap_runtime(
     main_window_cls,
     *,
     app_state_path,
+    legacy_app_state_path=None,
     load_app_state_file,
     normalize_connector_backend,
     default_connector_backend,
@@ -45,6 +47,7 @@ def bind_main_window_bootstrap_runtime(
     tradingview_supported,
 ) -> None:
     global _APP_STATE_PATH
+    global _LEGACY_APP_STATE_PATH
     global _LOAD_APP_STATE_FILE
     global _NORMALIZE_CONNECTOR_BACKEND
     global _DEFAULT_CONNECTOR_BACKEND
@@ -55,6 +58,7 @@ def bind_main_window_bootstrap_runtime(
     global _TRADINGVIEW_SUPPORTED
 
     _APP_STATE_PATH = app_state_path
+    _LEGACY_APP_STATE_PATH = legacy_app_state_path or _LEGACY_APP_STATE_PATH
     _LOAD_APP_STATE_FILE = load_app_state_file
     _NORMALIZE_CONNECTOR_BACKEND = normalize_connector_backend
     _DEFAULT_CONNECTOR_BACKEND = default_connector_backend
@@ -71,7 +75,8 @@ def bind_main_window_bootstrap_runtime(
 
 def _initialize_main_window_state(self) -> None:
     self._state_path = _APP_STATE_PATH
-    self._app_state = _LOAD_APP_STATE_FILE(self._state_path)
+    load_path = _resolve_app_state_load_path(self._state_path)
+    self._app_state = _LOAD_APP_STATE_FILE(load_path)
     self._previous_session_unclosed = bool(self._app_state.get("session_active", False))
     self._session_marker_active = False
     self._auto_close_on_restart_triggered = False
@@ -125,6 +130,15 @@ def _initialize_main_window_state(self) -> None:
         pass
     QtCore.QTimer.singleShot(250, self._handle_post_init_state)
     QtCore.QTimer.singleShot(50, self._update_connector_labels)
+
+
+def _resolve_app_state_load_path(preferred_path: Path) -> Path:
+    if preferred_path.is_file():
+        return preferred_path
+    legacy_path = _LEGACY_APP_STATE_PATH
+    if legacy_path and legacy_path != preferred_path and legacy_path.is_file():
+        return legacy_path
+    return preferred_path
 
 
 def _initialize_config_state(self) -> None:

@@ -6,6 +6,8 @@ build/
 dist/
 dist_enduser/
 .vscode/
+node_modules/
+.expo/
 **/.vscode/
 **/.idea/
 **/.pytest_cache/
@@ -15,6 +17,7 @@ aqtinstall.log
 CMakeFiles/
 .venv/
 .vcpkg/
+.tmp_showtests/
 Languages/C++/build-*/
 Languages/Rust/target/
 .trading_bot_allocations.json

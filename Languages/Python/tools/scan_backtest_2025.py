@@ -17,8 +17,8 @@ try:
 except Exception as exc:  # pragma: no cover - runtime guard
     raise SystemExit(f"pandas is required to run this script: {exc}") from exc
 
-from app.backtester import BacktestEngine, BacktestRequest, IndicatorDefinition
-from app.binance_wrapper import BinanceWrapper, _coerce_interval_seconds
+from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition
+from app.integrations.exchanges.binance import BinanceWrapper, _coerce_interval_seconds
 
 
 @dataclass

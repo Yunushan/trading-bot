@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
 
-from ..runtime import window_runtime
+from ..runtime import window_code_tab_suppression_runtime
 
 from . import (
     code_language_build,
@@ -423,11 +423,11 @@ def _start_dependency_usage_auto_poll(self) -> None:
 
 
 def _start_code_tab_window_suppression(self) -> None:
-    return window_runtime.start_code_tab_window_suppression(self)
+    return window_code_tab_suppression_runtime.start_code_tab_window_suppression(self)
 
 
 def _stop_code_tab_window_suppression(self) -> None:
-    return window_runtime.stop_code_tab_window_suppression(self)
+    return window_code_tab_suppression_runtime.stop_code_tab_window_suppression(self)
 
 
 def _stop_dependency_usage_auto_poll(self) -> None:

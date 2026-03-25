@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
 
-from app.binance_wrapper import _normalize_connector_choice as _normalize_connector_backend
+from app.integrations.exchanges.binance import _normalize_connector_choice as _normalize_connector_backend
 from .code_language_catalog import (
     BASE_PROJECT_PATH as _BASE_PROJECT_PATH,
     CPP_CODE_LANGUAGE_KEY,

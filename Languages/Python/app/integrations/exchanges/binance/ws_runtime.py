@@ -4,7 +4,7 @@ import time
 
 import requests
 
-from app.binance_transport_helpers import _env_flag
+from .transport_helpers import _env_flag
 
 try:
     from binance.streams import ThreadedWebsocketManager as _TWM

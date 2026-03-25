@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/crypto_forex_logo.png" alt="Trading Bot Workspace logo" width="140" />
   <h1>Trading Bot Workspace</h1>
-  <p><strong>Desktop-first Binance trading workstation with live execution, charting, positions, backtesting, and multi-language scaffolding.</strong></p>
+  <p><strong>Desktop-first multi-market trading workspace with live execution, charting, positions, backtesting, and multi-language scaffolding.</strong></p>
   <p>
     <a href="https://github.com/Yunushan/trading-bot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Yunushan/trading-bot/ci.yml?branch=main&amp;label=build" alt="Main branch build" /></a>
     <a href="https://github.com/Yunushan/trading-bot/releases"><img src="https://img.shields.io/github/v/release/Yunushan/trading-bot?display_name=tag&amp;label=release" alt="Latest release" /></a>
@@ -11,26 +11,29 @@
   <p>
     <img src="https://img.shields.io/badge/python-3.10--3.13-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10 to 3.13" />
     <img src="https://img.shields.io/badge/gui-PyQt6-41CD52?logo=qt&amp;logoColor=white" alt="PyQt6 GUI" />
-    <img src="https://img.shields.io/badge/exchange-Binance-F3BA2F?logo=binance&amp;logoColor=black" alt="Binance" />
+    <img src="https://img.shields.io/badge/markets-Exchanges%20%7C%20FX%20%7C%20Crypto-111827" alt="Markets" />
+    <img src="https://img.shields.io/badge/primary%20live%20integration-Binance-F3BA2F?logo=binance&amp;logoColor=black" alt="Primary live integration Binance" />
     <img src="https://img.shields.io/badge/status-beta-F59E0B" alt="Beta status" />
-    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20FreeBSD-111827" alt="Supported platforms" />
+    <img src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20FreeBSD-111827" alt="Desktop platforms" />
+    <img src="https://img.shields.io/badge/backend-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20BSD%20Family%20%7C%20Solaris-111827" alt="Backend platforms" />
+    <img src="https://img.shields.io/badge/mobile-Android%20%7C%20iOS-111827" alt="Mobile platforms" />
   </p>
   <p>
     <a href="#quick-start">Quick Start</a>
     &bull;
+    <a href="#system-requirements">Support</a>
+    &bull;
     <a href="#launching-the-applications">Launch</a>
     &bull;
-    <a href="#dashboard-tab--full-walkthrough">Dashboard</a>
+    <a href="#user-guide">User Guide</a>
     &bull;
-    <a href="#chart-tab">Chart</a>
-    &bull;
-    <a href="#backtest-tab">Backtest</a>
+    <a href="#release-guide">Release Guide</a>
     &bull;
     <a href="#license">License</a>
   </p>
 </div>
 
-A desktop-first trading workspace centered on the **PyQt6 Binance app** in `Languages/Python`, with charting, positions, backtesting, and early C++/Rust runtime scaffolding in the same repository. This README is the operator manual: how to install the project on each supported OS, launch it safely, understand the tabs, and avoid common trading mistakes before going live.
+A desktop-first trading workspace centered on the **PyQt6 Python app** in `Languages/Python`, with charting, positions, backtesting, and early C++/Rust runtime scaffolding in the same repository. The project is intended as a broader trading-bot workspace for exchanges, crypto venues, and FX/broker integrations, with **Binance as the current primary live connector path**. This README is now the landing page for installation, platform support, project layout, and the main documentation entry points.
 
 ---
 
@@ -38,32 +41,18 @@ A desktop-first trading workspace centered on the **PyQt6 Binance app** in `Lang
 
 1. [System requirements](#system-requirements)
 2. [Project layout](#project-layout)
-3. [Quick start](#quick-start)
-4. [Installing dependencies](#installing-dependencies)
+3. [Developer documentation, comments, and LOC tracking](#developer-documentation-comments-and-loc-tracking)
+4. [Quick start](#quick-start)
+5. [Installing dependencies](#installing-dependencies)
    - [Windows](#windows)
    - [macOS](#macos)
    - [Linux (Ubuntu / Debian / Fedora / Arch)](#linux-ubuntu--debian--fedora--arch)
    - [FreeBSD](#freebsd)
-5. [Launching the applications](#launching-the-applications)
-6. [First-run checklist](#first-run-checklist)
-7. [Dashboard tab – full walkthrough](#dashboard-tab--full-walkthrough)
-   - [Account & API section](#account--api-section)
-   - [Market / interval pickers](#market--interval-pickers)
-   - [Strategy controls](#strategy-controls)
-   - [Risk management (stop loss)](#risk-management-stop-loss)
-   - [Indicator configuration](#indicator-configuration)
-   - [Session controls & presets](#session-controls--presets)
-   - [Realtime log viewer](#realtime-log-viewer)
-8. [Chart tab](#chart-tab)
-9. [Positions tab](#positions-tab)
-10. [Backtest tab](#backtest-tab)
-11. [Code Languages & Exchanges tab](#code-languages--exchanges-tab)
-12. [Utilities and helper scripts](#utilities-and-helper-scripts)
-13. [Release checklist (GitHub Releases)](#release-checklist-github-releases)
-14. [Troubleshooting & FAQ](#troubleshooting--faq)
-15. [Safety notes](#safety-notes)
-16. [License](#license)
-17. [Developer documentation, comments, and LOC tracking](#developer-documentation-comments-and-loc-tracking)
+6. [Launching the applications](#launching-the-applications)
+7. [User guide](#user-guide)
+8. [Service API guide](#service-api-guide)
+9. [Release guide](#release-guide)
+10. [License](#license)
 
 ---
 
@@ -71,14 +60,68 @@ A desktop-first trading workspace centered on the **PyQt6 Binance app** in `Lang
 
 - **Python**: 3.10 – 3.13 (3.11+ recommended). Python 3.14 has not been fully verified.
 - **pip**: bundled with Python, used to install dependencies.
-- **Internet access**: required for Binance REST/WebSocket APIs.
-- **Operating system**: Windows 10/11, macOS (Intel & Apple Silicon), most Linux distributions, or FreeBSD.
-- **Binance account** with API key/secret. Create a Testnet account to experiment safely.
+- **Internet access**: required for supported exchange/broker REST or WebSocket APIs. Binance is the primary current live path.
+- **Operating system**:
+  Desktop GUI: Windows 10/11, macOS (Intel & Apple Silicon), most Linux distributions, and FreeBSD.
+  Backend/service API: Windows, macOS, Linux, BSD family, and Solaris/illumos on a best-effort basis.
+  Mobile: Android/iOS native thin-client path via `Languages/Python/clients/mobile/`.
+- **A supported exchange or broker account** with API credentials. Binance API keys and Testnet are the primary current live/demo path.
 
 Optional but recommended:
 
 - GPU driver updates for hardware acceleration (charts).
 - Virtual environment tool (`venv`) to isolate Python dependencies.
+
+### Support overview
+
+Status legend:
+
+- `Supported now`: documented user path with a working implementation today.
+- `Active development`: planned/scaffolded path exists, but full end-user parity is not finished.
+- `Experimental`: best-effort/manual path, not continuously release-validated.
+- `Not supported today`: not shipped as a working connector/runtime in the current repo.
+- `Not targeted`: no current packaging or support target.
+
+| Area | Target | Status | Notes |
+| --- | --- | --- | --- |
+| Desktop GUI | Windows 10/11 | Supported now | Primary desktop path |
+| Desktop GUI | macOS (Intel and Apple Silicon) | Supported now | Intel and Apple Silicon release coverage |
+| Desktop GUI | Linux (major distros) | Supported now | Docs cover Ubuntu, Debian, Fedora, and Arch |
+| Desktop GUI | FreeBSD | Supported now | Source/manual path is documented; release automation depends on a self-hosted runner |
+| Desktop GUI | BSD family (OpenBSD / NetBSD / DragonFly BSD / others) | Experimental | Better fit today for the headless backend/service path than the full PyQt GUI |
+| Desktop GUI | Solaris / illumos | Experimental | Better fit today for the headless backend/service path than the full PyQt GUI |
+| Thin web GUI | Modern browser via service API | Supported now | Current shipped web path is the built-in service dashboard |
+| Native mobile | Android | Active development | Expo-based native thin client scaffold exists; backend-connected |
+| Native mobile | iOS | Active development | Expo-based native thin client scaffold exists; backend-connected |
+
+| Architecture | Status | Notes |
+| --- | --- | --- |
+| Windows x64 | Supported now | Release workflow builds binaries |
+| Windows ARM64 | Supported now | Release workflow builds binaries |
+| Linux x64 | Supported now | Release workflow uses Ubuntu 24.04 x64 |
+| Linux ARM64 | Supported now | Release workflow uses Ubuntu 24.04 ARM |
+| macOS Intel | Supported now | Release workflow includes Intel runners |
+| macOS ARM64 | Supported now | Release workflow includes Apple Silicon runners |
+| FreeBSD runner architecture (`uname -m`) | Experimental | Release packaging follows the matching self-hosted runner architecture |
+| 32-bit x86 desktop | Not targeted | No current workflow or packaging target |
+
+| Market / connector scope | Status | Notes |
+| --- | --- | --- |
+| Crypto spot trading | Supported now | Current live path is Binance-led |
+| Crypto futures trading | Supported now | Current primary live/demo path |
+| Multi-exchange crypto expansion | Active development | UI/service/catalog support exists for more venues |
+| FX / broker integrations | Active development | Architecture and UI placeholders exist; production live connectors are not shipped yet |
+| Unlisted markets outside the current crypto/FX scope | Not supported today | Would require new connector work and testing |
+
+| Venue / integration | Status | Notes |
+| --- | --- | --- |
+| Binance | Supported now | Current primary live/demo connector |
+| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Active development | Listed in the exchange catalog; live connectors are not fully shipped yet |
+| HTX / Crypto.com Exchange / Kraken / Bitfinex | Active development | Present in the exchange catalog, but not wired as completed live paths yet |
+| OANDA / FXCM / IG | Active development | Broker placeholders exist; live integrations are not shipped yet |
+| Venues not listed in the repo | Not supported today | Requires a new connector and validation work |
+
+For the fuller breakdown, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
 
 ---
 
@@ -90,21 +133,25 @@ docs/
   DEVELOPMENT.md          # contributor notes and maintenance guidance
   PLATFORM_EXPANSION_PLAN.md
   PROJECT_STRUCTURE.md    # repo/source/output layout
+  RELEASES.md             # GitHub release workflow and asset guide
+  SERVICE_API.md          # standalone/desktop-hosted backend guide
+  SUPPORT_MATRIX.md       # support tiers by platform/market/runtime
+  USER_GUIDE.md           # operator walkthrough and safety notes
 tools/
   update_loc_snapshot.py
 
 Languages/
-  C/
-    README.md             # placeholder for future C implementation
   Python/
     app/                  # full PyQt6 trading application
-    clients/
-      web/                # thin service dashboard / future web client seed
     docs/
     tools/
     main.py               # Python GUI entrypoint
     requirements.txt
     requirements.service.txt
+    requirements.backend.txt
+    clients/
+      web/                # thin service dashboard / future web client seed
+      mobile/             # Expo-based Android/iOS thin native client
   C++/
     CMakeLists.txt
     resources.qrc
@@ -116,7 +163,7 @@ Languages/
     README.md
 ```
 
-Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). `Languages/C++` is the native desktop preview, and `Languages/Rust` now contains a shared-core workspace with multiple Rust shells/services.
+Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). `Languages/C++` is the native desktop preview, and `Languages/Rust` now contains a shared-core workspace with multiple Rust shells/services. See [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) for official vs experimental vs scaffolded platform tiers.
 
 Generated local artifacts such as `build/`, `dist_enduser/`, `.venv/`, and root-level `Trading-Bot-*.exe` files are not canonical source and are ignored by Git.
 
@@ -129,6 +176,7 @@ Contributor-facing structure and maintenance docs now live here:
 - `docs/PROJECT_STRUCTURE.md`
 - `docs/DEVELOPMENT.md`
 - `docs/PLATFORM_EXPANSION_PLAN.md`
+- `docs/SERVICE_API.md`
 
 ### Current LOC snapshot
 
@@ -155,7 +203,7 @@ python tools/update_loc_snapshot.py
 4. **Launch the GUI:**
    - Windows one-click: double-click `Languages/Python/Trading-Bot-Python.bat`, **or**
    - Any OS: activate the virtual environment and run `python main.py` from the Python folder.
-5. The dashboard opens. Fill in your Binance API key/secret, choose Demo/Testnet or Live, configure symbols and indicators, then click **Start**.
+5. The dashboard opens. Fill in your exchange or broker API credentials, choose Demo/Testnet or Live, configure symbols and indicators, then click **Start**. Today the default live/demo integration path is Binance.
 6. Use the **Positions** tab to monitor open trades and the **Chart/Backtest** tabs for analysis.
 
 ---
@@ -230,248 +278,56 @@ python3.11 main.py
 
 | Component | Location | Purpose | How to run |
 |-----------|----------|---------|------------|
-| **Binance GUI bot** | `Languages/Python/main.py` | Full desktop trading workstation | `python main.py` (inside virtual env) |
+| **Python GUI bot** | `Languages/Python/main.py` | Full desktop trading workstation | `python main.py` (inside virtual env) |
 | **Windows launcher** | `Languages/Python/Trading-Bot-Python.bat` | Automates environment creation + launch | Double-click on Windows |
 
 All tools are cross-platform except the `.bat` helper which is Windows-only.
 
 ---
 
-## First-run checklist
+## User guide
 
-1. **Create Binance API keys**: log into Binance, create API keys, enable **Futures** permissions if required, and add your IP to the whitelist if you use IP restrictions.
-2. **Select Demo/Testnet vs Live**: Beginners should select *Demo/Testnet* to avoid real trades.
-3. **Choose Account Type**: *Spot* for spot trades, *Futures* for USDⓈ-M futures. When using futures, confirm your account is set to hedge mode if you plan to run both longs and shorts simultaneously.
-4. **Verify leverage**: The dashboard leverage spinner only sets target leverage for the strategy. You still must configure leverage per symbol on Binance (the bot attempts to sync but validating manually is safer).
-5. **Configure position percentage**: This percentage represents the **margin** allocation per indicator trigger (e.g., 2% of a 3,500 USDT wallet ≈ 70 USDT margin per signal at 20× leverage → 1,400 USDT notional).
-6. **Enable stop loss**: For beginners, keep stop-loss enabled with a 1 % percent scope **per trade**.
-7. **Save a template**: Use the **Save Config** button so you can reload the same setup later.
-8. **Run in small scope**: Start with 1–2 symbols/interval combinations before scaling up.
+The operator walkthrough now has a dedicated home in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
----
+Use that guide for:
 
-## Dashboard tab – full walkthrough
+- first-run checklist
+- dashboard, chart, positions, and backtest behavior
+- code languages tab
+- helper scripts
+- troubleshooting and safety notes
 
-The dashboard is the control center. Elements are laid out from top to bottom, left to right.
+The dedicated guide is now the primary home for day-to-day usage details.
 
-### Account & API section
+## Service API guide
 
-| Control | Description |
-|---------|-------------|
-| **API Key / Secret** | Paste your Binance keys. Secrets are stored in-memory for the current session only. |
-| **Mode** | `Live` sends orders to production. `Demo/Testnet` targets Binance Testnet. |
-| **Account Type** | `Spot` or `Futures`. Determines available connectors and controls. |
-| **Account Mode** | Binance “Classic Trading” or other modes (for documentation). Does not switch your Binance account automatically—make sure the selected mode matches your Binance settings. |
-| **Connector** | Currently defaults to **Binance SDK Derivatives Trading USDⓈ Futures** (official). Switching connectors lets you plug in alternative libraries when available. |
-| **Theme** | Light/Dark UI theme switcher. |
-| **Refresh Buttons** | `Refresh Symbols` pulls the latest symbol list from Binance. |
+The headless backend, built-in web dashboard, desktop-hosted API mode, and endpoint reference now have a dedicated home in [docs/SERVICE_API.md](docs/SERVICE_API.md).
 
-### Market & interval pickers
+Use that guide for:
 
-| Control | Description |
-|---------|-------------|
-| **Symbols** | Multi-select list of trading pairs. Hold `Ctrl`/`Cmd` to pick several. |
-| **Intervals** | Standard Binance intervals (1m, 3m, 5m, …). |
-| **Custom Interval(s)** | Type comma-separated custom intervals (e.g., `45s,90m`). Click **Add Custom Interval(s)** to append them. |
-| **Loop Interval Override** | How frequently the engine refreshes data per symbol (e.g., 1 minute). |
+- standalone API startup
+- bearer-token setup
+- `/ui/` dashboard usage
+- desktop-hosted API mode
+- Docker-backed backend usage
 
-### Strategy controls
+## Release guide
 
-| Control | Description |
-|---------|-------------|
-| **Side** | `Buy (Long)`, `Sell (Short)`, or `Both`. In hedge mode the bot opens separate long and short legs. |
-| **Position % of Balance** | Margin allocation per indicator trigger (e.g., 2 % of wallet). Combined with leverage and the number of triggered indicators, this gives total notional exposure. |
-| **Leverage (Futures)** | Target leverage passed to futures orders. The bot attempts to align exchange leverage; verify on Binance. |
-| **Margin Mode** | `Cross` or `Isolated`. Applies when supported by the connector. |
-| **Position Mode** | `Hedge` (long + short simultaneously) or `One-way`. Hedge mode is required for the logic described in the user request (multiple concurrent legs). |
-| **Assets Mode** | Single-Asset vs Multi-Asset margin (Binance futures feature). |
-| **Time in Force (TIF)** | Order life (GTC, IOC, FOK, GTD). `GTD Minutes` is active when TIF=GTD. |
-| **Add-only** | When enabled, prevents the bot from increasing exposure in the opposite direction (useful in one-way mode). |
-| **Market Close All On Window Close** | Emergency guard to close positions when quitting the app. |
+GitHub release workflow details now also have a dedicated home in [docs/RELEASES.md](docs/RELEASES.md).
 
-### Risk management (stop loss)
+Use that guide for:
 
-- **Enable**: toggles stop-loss logic.
-- **Mode**: `USDT`, `Percent`, or `Both`. Percent is relative to entry margin by default.
-- **Scope**:
-  - `Per Trade`: each indicator leg is monitored independently.
-  - `Cumulative`: combines all legs within a symbol/side.
-  - `Entire Account`: aborts all when the account reaches the threshold.
-- **USDT / Percent fields**: thresholds. Example: Percent=1 with 20× leverage closes the leg when price moves 1 % against you (~20 % on margin).
+- release workflows and asset matrix
+- tagging steps
+- published asset verification
 
-### Indicator configuration
-
-Click the **Indicators** section to expand each study (RSI, Stochastic RSI, Williams %R, MA, MACD, SuperTrend, etc.). For every indicator you can:
-
-- **Enable** the signal
-- Adjust key parameters (length, smoothing, thresholds)
-- Set **buy_value / sell_value** to customize triggers
-
-When an indicator fires, the bot records the **indicator key**, **interval**, and **side**. The new sizing logic ensures only one position per `(symbol, indicator, side)` bucket is active at any time; duplicate triggers for the same slot are ignored until the existing leg closes.
-
-### Session controls & presets
-
-- **Start**: launches workers for every selected symbol/interval/side combination.
-- **Save Config / Load Config**: persists your dashboard settings to JSON for later reuse.
-- **Template** dropdown: quickly load pre-bundled setups (e.g., “Top 10 %2 per trade 5x Isolated”). Templates notch stop-loss, leverage, and indicator defaults.
-- **Lead Trader** (coming soon): hook to copy trade from a published lead profile.
-
-### Realtime log viewer
-
-Bottom pane toggles between:
-
-- **All Logs**: everything (orders, warnings, system messages).
-- **Position Trigger Logs**: concise feed of indicator triggers and decision outcomes (opened, suppressed by guard, closed by stop-loss, etc.).
-
-Double-clicking logs copies them to the clipboard for support purposes.
+The dedicated release guide is the primary home going forward.
 
 ---
-
-## Chart tab
-
-Enabled when chart dependencies are present (PyQtGraph / QtCharts). Features:
-
-- Market selection synced with the dashboard (if “Auto Follow” is enabled).
-- View modes: raw candles, indicator overlays, or TradingView embed (when configured).
-- Manual refresh/zoom tools for quick technical inspection before enabling a strategy.
-
-If charts are disabled, the tab is hidden automatically to save resources.
-
----
-
-## Positions tab
-
-Core monitoring panel. Key elements:
-
-| Control | Description |
-|---------|-------------|
-| **Refresh Positions** | Manually request an update (auto-refresh runs on a timer). |
-| **Market Close ALL Positions** | Attempts to close every open leg immediately (best effort). |
-| **Positions View** | `Cumulative View` groups positions per symbol/side, `Per Trade View` lists each indicator leg separately. |
-| **Open table columns** | Symbol, Balance/Position, Last Price, Size (USDT notional), Margin Ratio, Margin (USDT), PNL (ROI%), Interval(s), Indicator(s), Side, Open Time, Close Time, Stop-Loss status, Live status, and a **Close** button for each row. |
-| **Closed table** | Displays historical positions when you switch to the “Closed Positions” mini-tab (within the same page). |
-
-The internal guards ensure margin allocation matches your `Position %` value. If you see the same indicator listed twice for a symbol in this table, the second entry will show `Status: Pending Close` while the system cancels duplicates.
-
----
-
-## Backtest tab
-
-Use historical data to validate indicator settings before going live.
-
-1. **Symbol/Interval overrides**: choose assets and timeframes just for the backtest (independent of live runtime pairs).
-2. **Capital & leverage**: set the simulated account size, leverage, and margin/position modes identical to the dashboard options.
-3. **Indicator configuration**: mirrors live controls so you can keep parameters aligned.
-4. **Start Backtest**: fetches candles (from Binance by default) and runs the strategy.
-5. **Results table**: sortable grid with metrics such as PNL, ROI, win rate, max drawdown, trade count, and per-interval stats. Column widths auto-size; click headers to sort.
-6. **Export/clear**: copy rows to CSV via context menu or clear them to rerun from scratch.
-
-Backtests run locally; however, ensure you respect exchange rate limits by spacing out repeated runs.
-
----
-
-## Code Languages tab
-
-This tab lists the supported code languages and keeps the scaffolding paths organized. Use it to scaffold folders when you plan to port the bot or build auxiliary tools:
-
-1. **Choose your language** (Python, C++, Rust, etc.).
-2. The workspace ensures the language folder exists so you can keep related assets organized. When Rust is selected, you can also choose a Rust desktop framework scaffold such as Tauri, Slint, egui, Iced, or Dioxus Desktop.
-
-It's a documentation hub as well-each card includes a subtitle describing the stack and badge labels (Recommended, Preview, Scaffold, etc.).
-
----
-
-## Utilities and helper scripts
-
-| File | Location | Description |
-|------|----------|-------------|
-| `Trading-Bot-Python.bat` | `Languages/Python/` | Automates environment bootstrap on Windows. |
-| `close_all.py` | `Languages/Python/app/` | Auxiliary script to close every futures position—useful for emergency scripts or cron jobs. |
-| `position_guard.py` | `Languages/Python/app/` | Contains the guard logic used to deduplicate indicator entries and enforce stop-loss/stop-gap rules (referenced in this README for understanding behaviour). |
-| `requirements.txt` | `Languages/Python/` | Python dependency pinning for the desktop GUI. |
-
----
-
-## Release checklist (GitHub Releases)
-
-This repo includes automated release workflows:
-
-- `.github/workflows/release-windows.yml`
-- `.github/workflows/release-linux-macos.yml`
-- `.github/workflows/release-freebsd.yml`
-
-When you push a tag that starts with `v` (for example `v1.0.0`), GitHub Actions will build and publish platform assets:
-
-- **Windows**: x64 and ARM64 assets for Python, C++, the Rust workspace binary, and every Rust desktop framework shell
-- **Linux**: Python/C++ tarballs, Linux packages (`.deb`, `.rpm`), plus tarballs for the Rust workspace binary and every Rust desktop framework shell on `x86_64` and `arm64`
-- **macOS**: Python/C++ zip bundles plus zip bundles for the Rust workspace binary and every Rust desktop framework shell (built on `macos-14`, `macos-15`, and `macos-26` for both Intel `x86_64` and ARM64)
-- **FreeBSD**: Python/C++ tarballs (requires an online self-hosted runner with labels `self-hosted, freebsd`)
-
-Rust framework shell assets are best-effort. If one optional framework fails to compile on a runner, the rest of the release still publishes.
-
-> FreeBSD release workflow runs automatically on `v*` tags when a matching self-hosted runner is available, or manually via workflow dispatch (`run_freebsd=true`).
-
-Release steps:
-
-1. Commit and push your source changes.
-2. Create and push a version tag:
-   ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
-3. Open the Actions tab and wait for release workflows to finish.
-4. Check the new GitHub Release assets:
-   - `Trading-Bot-Python-*`
-   - `Trading-Bot-C++-*`
-   - `Trading-Bot-Rust-*`
-   - `Trading-Bot-Rust-egui-*`
-   - `Trading-Bot-Rust-iced-*`
-   - `Trading-Bot-Rust-slint-*`
-   - `Trading-Bot-Rust-tauri-*`
-   - `Trading-Bot-Rust-dioxus-*`
-   - Linux, macOS, and FreeBSD artifacts from their respective workflows
-5. Verify the published release automatically:
-   ```bash
-   python tools/check_release_assets.py v1.0.30
-   ```
-   Add `--list-expected` to preview the expected asset matrix without contacting GitHub.
-
----
-
-## Troubleshooting & FAQ
-
-**The GUI won’t start / missing Qt platform plugin**
-> Ensure the virtual environment is activated and reinstall Qt packages: `pip install PyQt6 PyQt6-Qt6 PyQt6-Charts`.
-
-**Orders are sized smaller than expected**
-> Verify `Position % of Balance` describes the **margin share**. With 2 % and 3,500 USDT wallet, each indicator produces ~70 USDT margin. If you see ~6 USDT, confirm you restarted the app after updating to the latest code, and that leverage is set correctly on Binance.
-
-**Multiple identical legs opened**
-> Duplicate protection is interval-aware. After updating, restart the bot; the guard checks all existing `(symbol, indicator, side)` legs across intervals before placing new ones.
-
-**Stop-loss did not trigger**
-> Make sure `Stop Loss` is enabled and the scope/percent values make sense. For futures hedge mode, the bot closes the specific leg that breaches the threshold; other legs remain open.
-
-**Where are logs stored?**
-> In-memory only. Copy/paste from the log viewer or run the bot from a terminal to capture stdout/ stderr.
-
-**How do I update dependencies?**
-> Reactivate the virtual environment and run `pip install -r requirements.txt --upgrade`. Re-run the `.bat` file on Windows for a fresh environment.
-
----
-
-## Safety notes
-
-- **Beta software**: Trading Bot is still in BETA. Expect occasional bugs—always test on Testnet first.
-- **No warranty**: You bear full responsibility for trading losses. Review the source code before entrusting significant capital.
-- **API key scope**: Never enable withdrawal permissions on trading keys. Store keys in a secure password manager and rotate them periodically.
-- **Exchange settings**: Leverage mode (cross/isolated) and position mode (hedge/one-way) must be configured on Binance itself even if you change them in the GUI.
-- **Backtest limitations**: Historical simulations do not guarantee future performance. Slippage, funding fees, and latency are approximations.
-
 ---
 
 ## License
 
-This project is released under the MIT License. See [LICENSE](LICENSE) for the full terms. Use the software at your own risk and comply with all exchange terms of service.
+This project is released under the MIT License. See [LICENSE](LICENSE) for the full terms. Use the software at your own risk and comply with all exchange and broker terms of service.
 
 Happy trading and safe experimenting! If you discover issues or have feature ideas, open a GitHub issue or start a discussion so we can continue improving the workspace together.

@@ -4,7 +4,7 @@ import re
 import time
 import types
 
-from app.binance_transport_helpers import _SimpleRateLimiter
+from .transport_helpers import _SimpleRateLimiter
 
 
 def _estimate_request_weight(path: str | None) -> float:

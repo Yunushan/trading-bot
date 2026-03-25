@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ...binance_wrapper import BinanceWrapper
+from app.integrations.exchanges.binance import BinanceWrapper
 from ..shared import indicator_value_helpers, live_indicator_runtime
 
 _CANONICALIZE_INDICATOR_KEY = None

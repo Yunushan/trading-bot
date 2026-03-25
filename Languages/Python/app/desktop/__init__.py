@@ -2,9 +2,9 @@
 Desktop-only package.
 
 Phase 2 note:
-This package now includes the desktop service client adapters that let the Qt
-app talk to either the embedded backend or the optional HTTP service API.
-The current app still lives under `app/gui` and `main.py`.
+This package now includes the desktop service client adapters plus the
+desktop-bootstrap implementation that sits behind the public
+`Languages/Python/main.py` launcher. The Qt UI still lives under `app/gui`.
 """
 
 from .adapters import (
