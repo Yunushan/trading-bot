@@ -39,19 +39,25 @@ Preferred direction:
 - `Languages/Python/app/gui/runtime/main_window_window_events_runtime.py` now carries the extracted native close detection and close/hide window-guard lifecycle helpers, with `main_window_runtime.py` keeping the compatibility surface
 - `Languages/Python/app/gui/runtime/main_window_start_strategy_runtime.py` now carries the extracted start-engine lifecycle and loop-build helpers, with `main_window_control_runtime.py` keeping the control-surface wrappers
 - `Languages/Python/app/gui/runtime/main_window_stop_strategy_runtime.py` now carries the extracted stop-engine and close-all lifecycle helpers, with `main_window_control_runtime.py` keeping the control-surface wrappers
+- `Languages/Python/app/gui/positions/main_window_positions_record_build_runtime.py` now carries the extracted positions record seeding/merge helpers, with `main_window_positions_build_runtime.py` keeping the GUI-facing wrapper surface
+- `Languages/Python/app/gui/positions/main_window_positions_table_render_runtime.py` now carries the extracted positions table-render implementation, with `main_window_positions_render_runtime.py` keeping the GUI-facing wrapper surface
+- `Languages/Python/app/gui/positions/main_window_positions_history_records_runtime.py` now carries the extracted per-trade history record builder, with `main_window_positions_history_runtime.py` keeping the wrapper surface and `main_window_positions_history_update_runtime.py` keeping state mutation
 - C++ source should trend toward `dashboard/`, `positions/`, `runtime/`, `chart/`, `backtest/`, and `net/`
 - Long-form maintenance or contributor guidance should live in `docs/`, not the root README
 
 For the Python implementation, the longer-term architecture should also separate:
 
 - `Languages/Python/app/core/` for reusable trading-domain logic
-- `Languages/Python/app/core/backtest/` as the first moved backtest package, with `app/backtester.py` left as a compatibility shim
+- `Languages/Python/app/core/backtest/` as the first moved backtest package, with shared models in `models.py`, shared indicator helpers in `indicator_runtime.py`, the main engine in `engine.py`, and `app/backtester.py` left as a compatibility shim
 - `Languages/Python/app/core/indicators/` as the first moved indicator-math package, with `app/indicators.py` left as a compatibility shim
 - `Languages/Python/app/core/positions/` as the first moved core package, with `app/position_guard.py` left as a compatibility shim
 - `Languages/Python/app/core/strategy/` as the moved strategy-engine package, with `app/strategy.py` left as a compatibility shim
 - `Languages/Python/app/core/strategy/` also now carries the moved signal-order runtime family, with the flat `app/strategy_signal_order*.py` modules and `app/strategy_signal_orders_runtime.py` left as compatibility shims
 - `Languages/Python/app/core/strategy/` also now carries the moved cycle/runtime helper family, with the flat `app/strategy_runtime*.py`, `app/strategy_cycle_runtime.py`, `app/strategy_indicator_compute.py`, `app/strategy_signal_generation.py`, and `app/strategy_indicator_tracking.py` files left as compatibility shims
+- `Languages/Python/app/core/strategy/strategy_cycle_risk_runtime.py` now carries the extracted futures exit/stop-loss/cache-loading risk section, with `strategy_cycle_runtime.py` keeping the cycle orchestration surface
 - `Languages/Python/app/core/strategy/` also now carries the moved guard/trade-book/position helper family, with the flat `app/strategy_indicator_guard.py`, `app/strategy_trade_book.py`, `app/strategy_position_state.py`, `app/strategy_position_close_runtime.py`, and `app/strategy_position_flip_runtime.py` files left as compatibility shims
+- `Languages/Python/app/core/strategy/strategy_close_opposite_runtime.py` now carries the extracted close-opposite/flip execution helper, with `strategy_position_flip_runtime.py` keeping the reconciliation/merge/bind surface
+- `Languages/Python/app/core/strategy/strategy_indicator_order_build_runtime.py` now carries the extracted directional/fallback/hedge indicator-order builders, and `strategy_indicator_order_context_runtime.py` now carries the extracted indicator-order context preparation helpers, with `strategy_signal_order_collect_runtime.py` keeping the collection/bind surface
 - `Languages/Python/app/integrations/` for exchange and persistence adapters
 - `Languages/Python/app/integrations/exchanges/binance/` as the first moved exchange package, now carrying the live Binance support modules internally, with `app/binance_wrapper.py` left as a compatibility shim
 - `Languages/Python/app/service/` for headless backend/runtime/API work

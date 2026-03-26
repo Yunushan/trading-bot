@@ -177,6 +177,7 @@ Start by treating these current files as the seeds of the new layers:
 - `Languages/Python/app/strategy_cycle_runtime.py`
   Current state: compatibility shim
   New home: `app/core/strategy/strategy_cycle_runtime.py`
+  Current split: futures exit/stop-loss/cache-loading risk helpers in `app/core/strategy/strategy_cycle_risk_runtime.py`
 
 - `Languages/Python/app/strategy_indicator_compute.py`
   Current state: compatibility shim
@@ -209,10 +210,29 @@ Start by treating these current files as the seeds of the new layers:
 - `Languages/Python/app/strategy_position_flip_runtime.py`
   Current state: compatibility shim
   New home: `app/core/strategy/strategy_position_flip_runtime.py`
+  Current split: close-opposite execution helper in `app/core/strategy/strategy_close_opposite_runtime.py`
+
+- `Languages/Python/app/strategy_signal_order_collect_runtime.py`
+  Current state: compatibility shim
+  New home: `app/core/strategy/strategy_signal_order_collect_runtime.py`
+  Current split: directional/fallback/hedge indicator-order builders in `app/core/strategy/strategy_indicator_order_build_runtime.py`, indicator-order context helpers in `app/core/strategy/strategy_indicator_order_context_runtime.py`
 
 - `Languages/Python/app/backtester.py`
   Current state: compatibility shim
   New home: `app/core/backtest/engine.py`
+  Current split: request/result models in `app/core/backtest/models.py`, indicator helpers in `app/core/backtest/indicator_runtime.py`
+
+- `Languages/Python/app/gui/positions/main_window_positions_build_runtime.py`
+  Current state: GUI-facing wrapper surface
+  New home for record shaping helpers: `app/gui/positions/main_window_positions_record_build_runtime.py`
+
+- `Languages/Python/app/gui/positions/main_window_positions_render_runtime.py`
+  Current state: GUI-facing wrapper surface
+  New home for table rendering: `app/gui/positions/main_window_positions_table_render_runtime.py`
+
+- `Languages/Python/app/gui/positions/main_window_positions_history_runtime.py`
+  Current state: wrapper surface for positions history
+  New home for per-trade history shaping: `app/gui/positions/main_window_positions_history_records_runtime.py`
 
 - `Languages/Python/app/indicators.py`
   Current state: compatibility shim

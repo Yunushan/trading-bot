@@ -1,16 +1,39 @@
-## Trading Bot C++ Desktop Preview (Qt/C++23)
+# Trading Bot C++ Workspace
 
-This directory contains a standalone Qt Widgets application that recreates the Trading Bot's **Backtest** tab UI using modern C++23. It is intended as the starting point for the multi-language re-platform effort requested for the project.
+This directory contains the native Qt/C++ desktop path for the trading-bot workspace.
 
-### Features
+Today it is a C++ desktop preview and re-platforming path, not the primary end-user application. The main production-facing implementation is still the Python/PyQt app in `Languages/Python`.
 
-- Mirrors the layout of the Python backtest tab: markets selector, parameter form, indicator toggles, action buttons, status widgets, and a results table placeholder.
-- Implements light interactions (custom interval parsing, pseudo status updates, mock bot active timer) so the UI feels alive even without a live backend.
-- Uses native C++ Binance REST calls (Qt Network) for dashboard balance and symbol refresh.
-- Includes a native Binance WebSocket client class (`BinanceWsClient`) for direct stream integration.
-- Written with clean, modern C++ (RAII, `std::chrono`) and Qt 6 Widgets to align with the requested C++23/Qt toolchain.
+## Current role
 
-### Building
+- Native Qt Widgets desktop shell
+- C++23 / Qt 6 build target
+- Dashboard, chart, positions, backtest, and web/runtime slices under active restructuring
+- Native exchange connectivity experiments, with Binance as the current implemented connector path inside the C++ tree
+
+## Current status
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Native desktop shell | Active development | Real source tree exists and builds locally |
+| Full feature parity with Python app | Not complete | Still a preview/re-platform path |
+| Primary exchange implementation | Binance | Current connector code in this workspace is Binance-specific |
+| Cross-platform Qt build path | Supported for local builds | Windows, macOS, and Linux toolchains are expected |
+
+## Source layout
+
+The `src/` folder is still being reorganized, but it already contains distinct slices such as:
+
+- `TradingBotWindow.dashboard*.cpp`
+- `TradingBotWindow.positions.cpp`
+- `TradingBotWindow.chart.cpp`
+- `TradingBotWindow.backtest.cpp`
+- `TradingBotWindow.web.cpp`
+- `TradingBotWindow.runtime.cpp`
+- `BinanceRestClient.*`
+- `BinanceWsClient.*`
+
+## Build
 
 Optional one-shot dependency setup:
 
@@ -25,35 +48,31 @@ chmod +x ./Languages/C++/tools/install_cpp_dependencies.sh
 ./Languages/C++/tools/install_cpp_dependencies.sh
 ```
 
-Pinned versions installed by the script:
+Pinned versions used by the helper scripts:
 
-```powershell
+```text
 QtVersion         = 6.10.2
 AqtInstallVersion = 3.3.0
 VcpkgRef          = c1f21baeaf7127c13ee141fe1bdaa49eed371c0c
 ```
 
-1. Ensure Qt `6.10.2` with Widgets/Network is installed and available in your environment.
-2. Configure and build with CMake:
+Manual build:
 
 ```bash
 cmake -S Languages/C++ -B build/binance_cpp
 cmake --build build/binance_cpp
 ```
 
-`CMakeLists.txt` requires `Qt6 6.10.2 EXACT`, so builds stay reproducible for future clones.
-If auto-detection misses your Qt install, pass `-DQt6_DIR=/absolute/path/to/lib/cmake/Qt6`.
+If Qt auto-detection fails, pass `-DQt6_DIR=/absolute/path/to/lib/cmake/Qt6`.
 
-3. Run the demo executable:
+`CMakeLists.txt` currently requires `Qt6 6.10.2 EXACT` so the toolchain stays reproducible.
+
+## Run
 
 ```bash
 build/binance_cpp/Trading-Bot-C++
 ```
 
-The resulting window mirrors the Python UI and now uses native C++ exchange connectivity for the dashboard refresh actions.
+## Recommendation
 
-### Next steps
-
-- Hook the Qt controls to full backtesting/order-routing logic.
-- Add indicator engine modules (TA-Lib, Eigen/xtensor, or custom SIMD implementations).
-- Expand WebSocket stream handling (depth, kline, user-data) and reconciliation.
+Treat this workspace as the native-desktop experimentation and migration path. For day-to-day use, packaging, and the broadest current feature coverage, use the Python app in `Languages/Python`.
