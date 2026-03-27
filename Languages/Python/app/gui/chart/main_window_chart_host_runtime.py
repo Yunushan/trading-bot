@@ -4,7 +4,7 @@ from PyQt6 import QtCore
 
 from . import chart_embed
 from . import tradingview_window_suppression_runtime
-from ..runtime import main_window_runtime, window_webengine_guard_runtime
+from ..runtime.window import main_window_runtime, window_webengine_guard_runtime
 from .chart_embed import (
     _configure_tradingview_webengine_env,
     _webengine_charts_allowed,

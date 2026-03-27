@@ -14,40 +14,44 @@ import requests
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from .account_data import bind_binance_account_data
-from .connector_clients import (
+from .account import bind_binance_account_data
+from .clients import (
     CcxtBinanceAdapter,
     CcxtConnectorError,
     OfficialConnectorAdapter,
     OfficialConnectorError,
     _normalize_connector_choice,
 )
-from .exchange_metadata import bind_binance_exchange_metadata
-from .futures_positions import bind_binance_futures_positions
-from .futures_orders import bind_binance_futures_orders
-from .futures_mode_runtime import bind_binance_futures_mode_runtime
-from .futures_settings import bind_binance_futures_settings
-from .http_runtime import bind_binance_http_runtime
-from .market_data import bind_binance_market_data
-from .order_fallback_runtime import bind_binance_order_fallback_runtime
-from .operational_runtime import bind_binance_operational_runtime
-from .order_sizing_runtime import bind_binance_order_sizing_runtime
-from .rate_limit_runtime import bind_binance_rate_limit_runtime
-from .sdk_clients import (
-    BinanceSDKCoinFuturesClient,
-    BinanceSDKSpotClient,
-    BinanceSDKUsdsFuturesClient,
+from .metadata import bind_binance_exchange_metadata
+from .positions import bind_binance_futures_positions
+from .orders import (
+    bind_binance_futures_orders,
+    bind_binance_order_fallback_runtime,
+    bind_binance_order_sizing_runtime,
 )
-from .transport_helpers import (
+from .runtime import (
+    bind_binance_futures_mode_runtime,
+    bind_binance_futures_settings,
+    bind_binance_operational_runtime,
+)
+from .transport import (
     _coerce_interval_seconds,
     _coerce_int,
     _env_flag,
     _env_float,
     _is_binance_error_payload,
     _requests_timeout,
+    bind_binance_http_runtime,
+    bind_binance_rate_limit_runtime,
+    bind_binance_ws_runtime,
     normalize_margin_ratio,
 )
-from .ws_runtime import bind_binance_ws_runtime
+from .market import bind_binance_market_data
+from .clients import (
+    BinanceSDKCoinFuturesClient,
+    BinanceSDKSpotClient,
+    BinanceSDKUsdsFuturesClient,
+)
 
 
 class NetworkConnectivityError(RuntimeError):

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
 
-from ..runtime import window_code_tab_suppression_runtime
+from ..runtime.window import window_code_tab_suppression_runtime
 
 from . import (
     code_language_build,

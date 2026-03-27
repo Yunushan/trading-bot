@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 
 from app.integrations.exchanges.binance import normalize_margin_ratio
-from ..runtime import main_window_runtime
+from ..runtime.window import main_window_runtime
 
 _RESOLVE_TRIGGER_INDICATORS = None
 

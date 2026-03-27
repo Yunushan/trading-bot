@@ -1,8 +1,9 @@
-from __future__ import annotations
+"""Compatibility shim for the moved window GUI runtime helpers."""
 
-"""Backward-compatible shim for chart/window guard helpers.
+from .window import window_runtime as _impl
 
-New code should import from ``app.gui.runtime.window_webengine_guard_runtime``.
-"""
+for _shim_name in dir(_impl):
+    if not _shim_name.startswith("__"):
+        globals()[_shim_name] = getattr(_impl, _shim_name)
 
-from .window_webengine_guard_runtime import *
+del _impl

@@ -7,7 +7,7 @@ from PyQt6 import QtCore
 
 from app.integrations.exchanges.binance import BinanceWrapper, normalize_margin_ratio
 
-from ..runtime import main_window_margin_runtime
+from ..runtime.account import main_window_margin_runtime
 from ..shared import main_window_helper_runtime
 
 
