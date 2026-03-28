@@ -1,3 +1,4 @@
+import importlib
 import os
 import sys
 import unittest
@@ -21,6 +22,10 @@ except Exception as exc:
     PYQT_UNAVAILABLE_REASON = str(exc)
 
 if PYQT_AVAILABLE:
+    from app.gui.positions import (
+        main_window_positions_build_runtime as positions_build_runtime,
+        main_window_positions_record_build_runtime as positions_record_build_runtime,
+    )
     from app.gui.runtime.account.main_window_account_runtime import (
         bind_main_window_account_runtime as new_bind_account,
     )
@@ -32,77 +37,6 @@ if PYQT_AVAILABLE:
     )
     from app.gui.runtime.account.main_window_margin_runtime import (
         _derive_margin_snapshot as new_derive_margin_snapshot,
-    )
-    from app.gui.runtime.main_window_account_runtime import (
-        bind_main_window_account_runtime as old_bind_account,
-    )
-    from app.gui.runtime.main_window_bindings_runtime import (
-        bind_main_window_class as old_bind_main_window_class,
-    )
-    from app.gui.runtime.main_window_bootstrap_runtime import (
-        _compute_global_pnl_totals as old_compute_global_pnl_totals,
-        _initialize_main_window_state as old_initialize_main_window_state,
-        bind_main_window_bootstrap_runtime as old_bind_bootstrap,
-    )
-    from app.gui.runtime.main_window_control_runtime import (
-        bind_main_window_control_runtime as old_bind_control,
-        on_leverage_changed as old_on_leverage_changed,
-    )
-    from app.gui.runtime.main_window_indicator_runtime import (
-        _normalize_trigger_actions_map as old_normalize_trigger_actions_map,
-    )
-    from app.gui.runtime.main_window_margin_runtime import (
-        _derive_margin_snapshot as old_derive_margin_snapshot,
-    )
-    from app.gui.runtime.main_window_module_state_runtime import (
-        install_main_window_module_state as old_install_main_window_module_state,
-    )
-    from app.gui.runtime.main_window_override_runtime import (
-        bind_main_window_override_runtime as old_bind_override,
-        _remove_selected_symbol_interval_pairs as old_remove_selected_symbol_interval_pairs,
-    )
-    from app.gui.runtime.main_window_service_api_runtime import (
-        bind_main_window_service_api_runtime as old_bind_service_api,
-    )
-    from app.gui.runtime.main_window_session_runtime import (
-        bind_main_window_session_runtime as old_bind_session,
-    )
-    from app.gui.runtime.main_window_status_runtime import (
-        bind_main_window_status_runtime as old_bind_status,
-    )
-    from app.gui.runtime.main_window_stop_strategy_runtime import (
-        stop_strategy_sync as old_stop_strategy_sync,
-    )
-    from app.gui.runtime.main_window_start_strategy_runtime import (
-        start_strategy as old_start_strategy,
-    )
-    from app.gui.runtime.main_window_stop_loss_runtime import (
-        bind_main_window_stop_loss_runtime as old_bind_stop_loss,
-        _runtime_stop_loss_update as old_runtime_stop_loss_update,
-    )
-    from app.gui.runtime.main_window_strategy_ui_runtime import (
-        bind_main_window_strategy_ui_runtime as old_bind_strategy_ui,
-        _normalize_loop_override as old_normalize_loop_override,
-    )
-    from app.gui.runtime.main_window_strategy_controls_runtime import (
-        bind_main_window_strategy_controls_runtime as old_bind_strategy_controls,
-        _normalize_position_pct_units as old_normalize_position_pct_units,
-    )
-    from app.gui.runtime.main_window_tab_runtime import (
-        _code_tab_visibility_auto_prepare_cpp_enabled as old_code_tab_visibility_auto_prepare_cpp_enabled,
-        bind_main_window_tab_runtime as old_bind_tab,
-    )
-    from app.gui.runtime.main_window_theme_runtime import (
-        bind_main_window_theme_runtime as old_bind_theme,
-    )
-    from app.gui.runtime.main_window_theme_styles import LIGHT_THEME as old_light_theme
-    from app.gui.runtime.main_window_runtime import (
-        _allow_guard_bypass as old_allow_guard_bypass,
-        _mw_interval_sort_key as old_interval_sort_key,
-        bind_main_window_runtime as old_bind_runtime,
-    )
-    from app.gui.runtime.window_webengine_guard_runtime import (
-        schedule_webengine_runtime_prewarm as old_schedule_webengine_runtime_prewarm,
     )
     from app.gui.runtime.service.main_window_service_api_runtime import (
         bind_main_window_service_api_runtime as new_bind_service_api,
@@ -170,46 +104,89 @@ if PYQT_AVAILABLE:
     f"PyQt6 Qt runtime is unavailable in this interpreter: {PYQT_UNAVAILABLE_REASON}",
 )
 class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
-    def test_old_and_new_import_paths_resolve_to_same_objects(self):
-        self.assertIs(old_bind_account, new_bind_account)
-        self.assertIs(old_bind_main_window_class, new_bind_main_window_class)
-        self.assertIs(old_install_main_window_module_state, new_install_main_window_module_state)
-        self.assertIs(old_bind_service_api, new_bind_service_api)
-        self.assertIs(old_bind_session, new_bind_session)
-        self.assertIs(old_bind_status, new_bind_status)
-        self.assertIs(old_bind_control, new_bind_control)
-        self.assertIs(old_bind_override, new_bind_override)
-        self.assertIs(old_bind_stop_loss, new_bind_stop_loss)
-        self.assertIs(old_bind_strategy_controls, new_bind_strategy_controls)
-        self.assertIs(old_bind_strategy_ui, new_bind_strategy_ui)
-        self.assertIs(old_bind_tab, new_bind_tab)
-        self.assertIs(old_bind_theme, new_bind_theme)
-        self.assertIs(old_bind_bootstrap, new_bind_bootstrap)
-        self.assertIs(old_bind_runtime, new_bind_runtime)
+    def test_final_gui_runtime_subpackages_expose_expected_objects(self):
+        binders = [
+            new_bind_account,
+            new_bind_main_window_class,
+            new_install_main_window_module_state,
+            new_bind_service_api,
+            new_bind_session,
+            new_bind_status,
+            new_bind_control,
+            new_bind_override,
+            new_bind_stop_loss,
+            new_bind_strategy_controls,
+            new_bind_strategy_ui,
+            new_bind_tab,
+            new_bind_theme,
+            new_bind_bootstrap,
+            new_bind_runtime,
+        ]
+        for binder in binders:
+            self.assertTrue(callable(binder))
 
-    def test_root_shims_keep_helper_exports_available(self):
-        self.assertIs(old_start_strategy, new_start_strategy)
-        self.assertIs(old_normalize_loop_override, new_normalize_loop_override)
-        self.assertIs(old_on_leverage_changed, new_on_leverage_changed)
-        self.assertIs(old_runtime_stop_loss_update, new_runtime_stop_loss_update)
-        self.assertIs(old_derive_margin_snapshot, new_derive_margin_snapshot)
-        self.assertIs(old_stop_strategy_sync, new_stop_strategy_sync)
-        self.assertIs(old_normalize_trigger_actions_map, new_normalize_trigger_actions_map)
-        self.assertIs(old_initialize_main_window_state, new_initialize_main_window_state)
-        self.assertIs(old_compute_global_pnl_totals, new_compute_global_pnl_totals)
-        self.assertIs(
-            old_remove_selected_symbol_interval_pairs,
+        helpers = [
+            new_start_strategy,
+            new_normalize_loop_override,
+            new_on_leverage_changed,
+            new_runtime_stop_loss_update,
+            new_derive_margin_snapshot,
+            new_stop_strategy_sync,
+            new_normalize_trigger_actions_map,
+            new_initialize_main_window_state,
+            new_compute_global_pnl_totals,
             new_remove_selected_symbol_interval_pairs,
-        )
-        self.assertIs(old_normalize_position_pct_units, new_normalize_position_pct_units)
-        self.assertIs(
-            old_code_tab_visibility_auto_prepare_cpp_enabled,
+            new_normalize_position_pct_units,
             new_code_tab_visibility_auto_prepare_cpp_enabled,
-        )
-        self.assertIs(old_schedule_webengine_runtime_prewarm, new_schedule_webengine_runtime_prewarm)
-        self.assertIs(old_allow_guard_bypass, new_allow_guard_bypass)
-        self.assertIs(old_interval_sort_key, new_interval_sort_key)
-        self.assertEqual(old_light_theme, new_light_theme)
+            new_schedule_webengine_runtime_prewarm,
+            new_allow_guard_bypass,
+            new_interval_sort_key,
+        ]
+        for helper in helpers:
+            self.assertTrue(callable(helper))
+
+        self.assertTrue(new_light_theme)
+
+    def test_removed_intermediate_gui_runtime_modules_raise_import_error(self):
+        removed_modules = [
+            "app.gui.runtime.main_window_account_runtime",
+            "app.gui.runtime.main_window_balance_runtime",
+            "app.gui.runtime.main_window_bindings_runtime",
+            "app.gui.runtime.main_window_bootstrap_runtime",
+            "app.gui.runtime.main_window_control_runtime",
+            "app.gui.runtime.main_window_indicator_runtime",
+            "app.gui.runtime.main_window_init_finalize_runtime",
+            "app.gui.runtime.main_window_init_ui_runtime",
+            "app.gui.runtime.main_window_margin_runtime",
+            "app.gui.runtime.main_window_module_state_runtime",
+            "app.gui.runtime.main_window_override_runtime",
+            "app.gui.runtime.main_window_runtime",
+            "app.gui.runtime.main_window_secondary_tabs_runtime",
+            "app.gui.runtime.main_window_service_api_runtime",
+            "app.gui.runtime.main_window_session_runtime",
+            "app.gui.runtime.main_window_start_strategy_runtime",
+            "app.gui.runtime.main_window_startup_runtime",
+            "app.gui.runtime.main_window_status_runtime",
+            "app.gui.runtime.main_window_stop_loss_runtime",
+            "app.gui.runtime.main_window_stop_strategy_runtime",
+            "app.gui.runtime.main_window_strategy_context_runtime",
+            "app.gui.runtime.main_window_strategy_controls_runtime",
+            "app.gui.runtime.main_window_strategy_ui_runtime",
+            "app.gui.runtime.main_window_tab_runtime",
+            "app.gui.runtime.main_window_theme_runtime",
+            "app.gui.runtime.main_window_theme_styles",
+            "app.gui.runtime.main_window_ui_misc_runtime",
+            "app.gui.runtime.main_window_window_events_runtime",
+            "app.gui.runtime.window_code_tab_suppression_runtime",
+            "app.gui.runtime.window_runtime",
+            "app.gui.runtime.window_webengine_guard_runtime",
+            "app.gui.runtime.window.window_runtime",
+        ]
+
+        for module_name in removed_modules:
+            with self.subTest(module_name=module_name):
+                with self.assertRaises(ModuleNotFoundError):
+                    importlib.import_module(module_name)
 
     def test_main_window_still_exposes_bound_helpers(self):
         from app.gui.main_window import MainWindow
@@ -236,6 +213,22 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             with self.subTest(method_name=method_name):
                 self.assertTrue(hasattr(MainWindow, method_name))
                 self.assertTrue(callable(getattr(MainWindow, method_name)))
+
+    def test_positions_build_runtime_shim_still_exposes_record_build_helpers(self):
+        helpers = [
+            positions_build_runtime._copy_allocations_for_key,
+            positions_build_runtime._seed_positions_map_from_rows,
+            positions_build_runtime._apply_interval_metadata_to_row,
+            positions_build_runtime._merge_futures_rows_into_positions_map,
+            positions_build_runtime._gui_on_positions_ready,
+            positions_record_build_runtime.copy_allocations_for_key,
+            positions_record_build_runtime.seed_positions_map_from_rows,
+            positions_record_build_runtime.apply_interval_metadata_to_row,
+            positions_record_build_runtime.merge_futures_rows_into_positions_map,
+            positions_record_build_runtime._gui_on_positions_ready,
+        ]
+        for helper in helpers:
+            self.assertTrue(callable(helper))
 
     def test_main_window_module_globals_still_expose_expected_runtime_state(self):
         import app.gui.main_window as main_window_module

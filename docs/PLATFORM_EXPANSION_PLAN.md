@@ -160,62 +160,62 @@ Start by treating these current files as the seeds of the new layers:
 
 - `Languages/Python/app/strategy_signal_order*.py`
   Current state: compatibility shims
-  New home: `app/core/strategy/strategy_signal_order*.py`
+  New home: `app/core/strategy/orders/strategy_signal_order*.py`
 
 - `Languages/Python/app/strategy_signal_orders_runtime.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_signal_orders_runtime.py`
+  New home: `app/core/strategy/orders/strategy_signal_orders_runtime.py`
 
 - `Languages/Python/app/strategy_runtime.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_runtime.py`
+  New home: `app/core/strategy/runtime/strategy_runtime.py`
 
 - `Languages/Python/app/strategy_runtime_support.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_runtime_support.py`
+  New home: `app/core/strategy/runtime/strategy_runtime_support.py`
 
 - `Languages/Python/app/strategy_cycle_runtime.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_cycle_runtime.py`
-  Current split: futures exit/stop-loss/cache-loading risk helpers in `app/core/strategy/strategy_cycle_risk_runtime.py`
+  New home: `app/core/strategy/runtime/strategy_cycle_runtime.py`
+  Current split: futures exit/stop-loss/cache-loading risk helpers in `app/core/strategy/runtime/strategy_cycle_risk_runtime.py`
 
 - `Languages/Python/app/strategy_indicator_compute.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_indicator_compute.py`
+  New home: `app/core/strategy/runtime/strategy_indicator_compute.py`
 
 - `Languages/Python/app/strategy_signal_generation.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_signal_generation.py`
+  New home: `app/core/strategy/runtime/strategy_signal_generation.py`
 
 - `Languages/Python/app/strategy_indicator_tracking.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_indicator_tracking.py`
+  New home: `app/core/strategy/runtime/strategy_indicator_tracking.py`
 
 - `Languages/Python/app/strategy_indicator_guard.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_indicator_guard.py`
+  New home: `app/core/strategy/positions/strategy_indicator_guard.py`
 
 - `Languages/Python/app/strategy_trade_book.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_trade_book.py`
+  New home: `app/core/strategy/positions/strategy_trade_book.py`
 
 - `Languages/Python/app/strategy_position_state.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_position_state.py`
+  New home: `app/core/strategy/positions/strategy_position_state.py`
 
 - `Languages/Python/app/strategy_position_close_runtime.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_position_close_runtime.py`
+  New home: `app/core/strategy/positions/strategy_position_close_runtime.py`
 
 - `Languages/Python/app/strategy_position_flip_runtime.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_position_flip_runtime.py`
-  Current split: close-opposite execution helper in `app/core/strategy/strategy_close_opposite_runtime.py`
+  New home: `app/core/strategy/positions/strategy_position_flip_runtime.py`
+  Current split: close-opposite execution helper in `app/core/strategy/positions/strategy_close_opposite_runtime.py`
 
 - `Languages/Python/app/strategy_signal_order_collect_runtime.py`
   Current state: compatibility shim
-  New home: `app/core/strategy/strategy_signal_order_collect_runtime.py`
-  Current split: directional/fallback/hedge indicator-order builders in `app/core/strategy/strategy_indicator_order_build_runtime.py`, indicator-order context helpers in `app/core/strategy/strategy_indicator_order_context_runtime.py`
+  New home: `app/core/strategy/orders/strategy_signal_order_collect_runtime.py`
+  Current split: directional/fallback/hedge indicator-order builders in `app/core/strategy/orders/strategy_indicator_order_build_runtime.py`, indicator-order context helpers in `app/core/strategy/orders/strategy_indicator_order_context_runtime.py`
 
 - `Languages/Python/app/backtester.py`
   Current state: compatibility shim
@@ -252,28 +252,28 @@ Start by treating these current files as the seeds of the new layers:
 - `Languages/Python/app/desktop/bootstrap/main.py`
   Current state: moved desktop-bootstrap implementation behind the public launcher
 
-- `Languages/Python/app/gui/runtime/main_window_init_ui_runtime.py`
+- `Languages/Python/app/gui/runtime/window/main_window_init_ui_runtime.py`
   Current state: first extracted `main_window.py` UI-assembly helper
 
-- `Languages/Python/app/gui/runtime/main_window_bindings_runtime.py`
+- `Languages/Python/app/gui/runtime/composition/main_window_bindings_runtime.py`
   Current state: extracted `main_window.py` class-binding/configuration helper
 
-- `Languages/Python/app/gui/runtime/main_window_module_state_runtime.py`
+- `Languages/Python/app/gui/runtime/composition/main_window_module_state_runtime.py`
   Current state: extracted `main_window.py` constant/helper-alias helper
 
-- `Languages/Python/app/gui/runtime/window_code_tab_suppression_runtime.py`
+- `Languages/Python/app/gui/runtime/window/window_code_tab_suppression_runtime.py`
   Current state: first extracted `window_runtime.py` slice for code-tab suppression on Windows
 
-- `Languages/Python/app/gui/runtime/window_webengine_guard_runtime.py`
+- `Languages/Python/app/gui/runtime/window/window_webengine_guard_runtime.py`
   Current state: extracted `window_runtime.py` slice for WebEngine/TradingView prewarm and guard behavior
 
-- `Languages/Python/app/gui/runtime/main_window_window_events_runtime.py`
+- `Languages/Python/app/gui/runtime/window/main_window_window_events_runtime.py`
   Current state: extracted `main_window_runtime.py` slice for native close detection and close/hide window-guard lifecycle behavior
 
-- `Languages/Python/app/gui/runtime/main_window_start_strategy_runtime.py`
+- `Languages/Python/app/gui/runtime/strategy/main_window_start_strategy_runtime.py`
   Current state: extracted `main_window_control_runtime.py` slice for start-engine lifecycle and loop-building behavior
 
-- `Languages/Python/app/gui/runtime/main_window_stop_strategy_runtime.py`
+- `Languages/Python/app/gui/runtime/strategy/main_window_stop_strategy_runtime.py`
   Current state: extracted `main_window_control_runtime.py` slice for stop-engine and close-all lifecycle handling
 
 - `Languages/Python/main.py`

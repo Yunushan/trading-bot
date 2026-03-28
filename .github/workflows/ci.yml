@@ -104,3 +104,26 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tests -p "test_*.py"
+
+  rust-smoke:
+    name: Rust Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            Languages/Rust -> target
+
+      - name: Check Rust workspace
+        shell: bash
+        working-directory: Languages/Rust
+        run: |
+          set -euo pipefail
+          cargo check --workspace

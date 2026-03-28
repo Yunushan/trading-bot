@@ -12,6 +12,14 @@ def configure_main_window_positions_build_runtime(
     )
 
 
+def _copy_allocations_for_key(alloc_map_global: dict, symbol: str, side_key: str) -> list[dict]:
+    return main_window_positions_record_build_runtime.copy_allocations_for_key(
+        alloc_map_global,
+        symbol,
+        side_key,
+    )
+
+
 def _seed_positions_map_from_rows(self, base_rows: list, alloc_map_global: dict, prev_records: dict) -> dict[tuple, dict]:
     return main_window_positions_record_build_runtime.seed_positions_map_from_rows(
         self,

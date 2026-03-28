@@ -1,3 +1,4 @@
+import importlib
 import sys
 import threading
 import unittest
@@ -15,21 +16,19 @@ from app.integrations.exchanges.binance import (
     _normalize_connector_choice,
     normalize_margin_ratio,
 )
+from app.binance_wrapper import (
+    BinanceWrapper as root_shim_binance_wrapper,
+    _coerce_interval_seconds as root_shim_coerce_interval_seconds,
+    _normalize_connector_choice as root_shim_normalize_connector_choice,
+    normalize_margin_ratio as root_shim_normalize_margin_ratio,
+)
 from app.integrations.exchanges.binance.account.account_data import bind_binance_account_data as new_bind_account
-from app.integrations.exchanges.binance.account_data import bind_binance_account_data as old_bind_account
 from app.integrations.exchanges.binance.clients.connector_clients import (
     CcxtBinanceAdapter as NewCcxtBinanceAdapter,
 )
-from app.integrations.exchanges.binance.connector_clients import (
-    CcxtBinanceAdapter as OldCcxtBinanceAdapter,
-)
 from app.integrations.exchanges.binance.market.market_data import bind_binance_market_data as new_bind_market
-from app.integrations.exchanges.binance.market_data import bind_binance_market_data as old_bind_market
 from app.integrations.exchanges.binance.metadata.exchange_metadata import (
     bind_binance_exchange_metadata as new_bind_metadata,
-)
-from app.integrations.exchanges.binance.exchange_metadata import (
-    bind_binance_exchange_metadata as old_bind_metadata,
 )
 from app.integrations.exchanges.binance.orders.futures_orders import (
     bind_binance_futures_orders as new_bind_futures_orders,
@@ -44,9 +43,6 @@ from app.integrations.exchanges.binance.positions.futures_positions import (
     close_all_futures_positions as new_close_all_futures_positions,
     bind_binance_futures_positions as new_bind_positions,
 )
-from app.integrations.exchanges.binance.futures_positions import (
-    close_all_futures_positions as old_close_all_futures_positions,
-)
 from app.integrations.exchanges.binance.runtime.futures_mode_runtime import (
     bind_binance_futures_mode_runtime as new_bind_futures_mode,
 )
@@ -56,15 +52,6 @@ from app.integrations.exchanges.binance.runtime.futures_settings import (
 from app.integrations.exchanges.binance.runtime.operational_runtime import (
     bind_binance_operational_runtime as new_bind_operational,
     trigger_emergency_close_all as runtime_trigger_emergency_close_all,
-)
-from app.integrations.exchanges.binance.futures_mode_runtime import (
-    bind_binance_futures_mode_runtime as old_bind_futures_mode,
-)
-from app.integrations.exchanges.binance.futures_settings import (
-    bind_binance_futures_settings as old_bind_futures_settings,
-)
-from app.integrations.exchanges.binance.operational_runtime import (
-    bind_binance_operational_runtime as old_bind_operational,
 )
 from app.integrations.exchanges.binance.transport.helpers import (
     _coerce_interval_seconds as new_coerce_interval_seconds,
@@ -113,6 +100,10 @@ class _DummyOperationalWrapper:
 class BinancePackageSplitSmokeTests(unittest.TestCase):
     def test_public_surface_is_unchanged(self):
         self.assertIs(binance_pkg.BinanceWrapper, BinanceWrapper)
+        self.assertIs(root_shim_binance_wrapper, BinanceWrapper)
+        self.assertIs(root_shim_coerce_interval_seconds, _coerce_interval_seconds)
+        self.assertIs(root_shim_normalize_connector_choice, _normalize_connector_choice)
+        self.assertIs(root_shim_normalize_margin_ratio, normalize_margin_ratio)
         self.assertEqual(_coerce_interval_seconds("5m"), 300.0)
         self.assertEqual(normalize_margin_ratio("0.5"), 50.0)
         self.assertEqual(
@@ -120,16 +111,41 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             "binance-sdk-spot",
         )
 
-    def test_old_and_new_import_paths_resolve_to_same_objects(self):
-        self.assertIs(old_bind_account, new_bind_account)
-        self.assertIs(old_bind_market, new_bind_market)
-        self.assertIs(old_bind_metadata, new_bind_metadata)
-        self.assertIs(old_bind_futures_mode, new_bind_futures_mode)
-        self.assertIs(old_bind_futures_settings, new_bind_futures_settings)
-        self.assertIs(old_bind_operational, new_bind_operational)
-        self.assertIs(NewCcxtBinanceAdapter, OldCcxtBinanceAdapter)
-        self.assertIs(old_close_all_futures_positions, new_close_all_futures_positions)
+    def test_final_subpackages_resolve_expected_objects(self):
+        self.assertTrue(callable(new_bind_account))
+        self.assertTrue(callable(NewCcxtBinanceAdapter))
+        self.assertTrue(callable(new_bind_market))
+        self.assertTrue(callable(new_bind_metadata))
+        self.assertTrue(callable(new_bind_futures_mode))
+        self.assertTrue(callable(new_bind_futures_settings))
+        self.assertTrue(callable(new_bind_operational))
+        self.assertTrue(callable(new_close_all_futures_positions))
         self.assertIs(new_coerce_interval_seconds, _coerce_interval_seconds)
+
+    def test_removed_intermediate_binance_modules_raise_import_error(self):
+        removed_modules = [
+            "app.integrations.exchanges.binance.account_data",
+            "app.integrations.exchanges.binance.connector_clients",
+            "app.integrations.exchanges.binance.exchange_metadata",
+            "app.integrations.exchanges.binance.futures_mode_runtime",
+            "app.integrations.exchanges.binance.futures_orders",
+            "app.integrations.exchanges.binance.futures_positions",
+            "app.integrations.exchanges.binance.futures_settings",
+            "app.integrations.exchanges.binance.http_runtime",
+            "app.integrations.exchanges.binance.market_data",
+            "app.integrations.exchanges.binance.operational_runtime",
+            "app.integrations.exchanges.binance.order_fallback_runtime",
+            "app.integrations.exchanges.binance.order_sizing_runtime",
+            "app.integrations.exchanges.binance.rate_limit_runtime",
+            "app.integrations.exchanges.binance.sdk_clients",
+            "app.integrations.exchanges.binance.transport_helpers",
+            "app.integrations.exchanges.binance.ws_runtime",
+        ]
+
+        for module_name in removed_modules:
+            with self.subTest(module_name=module_name):
+                with self.assertRaises(ModuleNotFoundError):
+                    importlib.import_module(module_name)
 
     def test_wrapper_wiring_still_exposes_bound_helpers(self):
         expected_methods = [
