@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -7,12 +8,17 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
+if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 try:
-    import PyQt6  # noqa: F401
+    from PyQt6 import QtCore as _QtCore, QtWidgets as _QtWidgets  # noqa: F401
 
     PYQT_AVAILABLE = True
-except Exception:
+    PYQT_UNAVAILABLE_REASON = ""
+except Exception as exc:
     PYQT_AVAILABLE = False
+    PYQT_UNAVAILABLE_REASON = str(exc)
 
 if PYQT_AVAILABLE:
     from app.gui.runtime.account.main_window_account_runtime import (
@@ -159,7 +165,10 @@ if PYQT_AVAILABLE:
     )
 
 
-@unittest.skipUnless(PYQT_AVAILABLE, "PyQt6 is not installed in this interpreter")
+@unittest.skipUnless(
+    PYQT_AVAILABLE,
+    f"PyQt6 Qt runtime is unavailable in this interpreter: {PYQT_UNAVAILABLE_REASON}",
+)
 class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
     def test_old_and_new_import_paths_resolve_to_same_objects(self):
         self.assertIs(old_bind_account, new_bind_account)

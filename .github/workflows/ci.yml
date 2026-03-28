@@ -45,6 +45,8 @@ jobs:
   python-smoke:
     name: Python Smoke
     runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -63,6 +65,32 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r Languages/Python/requirements.txt
+
+      - name: Install Linux Qt runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2 \
+            libdbus-1-3 \
+            libegl1 \
+            libfontconfig1 \
+            libgbm1 \
+            libglib2.0-0 \
+            libgtk-3-0 \
+            libopengl0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxkbcommon-x11-0 \
+            libxrandr2 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1
 
       - name: Compile Python sources
         shell: bash
