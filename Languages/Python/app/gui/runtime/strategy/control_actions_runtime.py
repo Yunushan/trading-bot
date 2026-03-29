@@ -36,7 +36,7 @@ def on_leverage_changed(self, value):
 
 
 def refresh_symbols(self):
-    from ....workers import CallWorker as _CallWorker
+    from app.gui.runtime.background_workers import CallWorker as _CallWorker
 
     self.refresh_symbols_btn.setEnabled(False)
     self.refresh_symbols_btn.setText("Refreshing...")
@@ -103,7 +103,7 @@ def refresh_symbols(self):
 
 
 def apply_futures_modes(self):
-    from ....workers import CallWorker as _CallWorker
+    from app.gui.runtime.background_workers import CallWorker as _CallWorker
 
     mm = self.margin_mode_combo.currentText().upper()
     pos_mode = self.position_mode_combo.currentText()

@@ -169,7 +169,7 @@ def stop_strategy_async(
         )
 
     try:
-        from ....workers import CallWorker as _CallWorker
+        from app.gui.runtime.background_workers import CallWorker as _CallWorker
     except Exception:
         return _process_stop_result(
             stop_strategy_sync_fn(close_positions=close_positions, auth=auth_snapshot)

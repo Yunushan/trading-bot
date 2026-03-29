@@ -427,7 +427,7 @@ def main() -> int:
         app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
     except Exception:
         pass
-    from app.gui.main_window import MainWindow  # noqa: E402
+    from app.gui.window_shell import MainWindow  # noqa: E402
 
     startup_presentation.set_status("Loading iconsâ€¦")
     icon, disable_app_icon = _load_application_icon(

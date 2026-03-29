@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+_STARTUP_WINDOW_HOOK = None
+_STARTUP_WINDOW_PROC = None
+_STARTUP_WINDOW_POLL_STOP = None
+_STARTUP_WINDOW_POLL_THREAD = None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 
-from ..runtime.window import main_window_runtime
+from ..runtime.window import runtime as main_window_runtime
 
 _RESOLVE_TRIGGER_INDICATORS = None
 

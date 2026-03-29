@@ -22,6 +22,91 @@ except Exception as exc:
     PYQT_UNAVAILABLE_REASON = str(exc)
 
 if PYQT_AVAILABLE:
+    from app.gui.backtest import (
+        backtest_execution_run_runtime as short_backtest_execution_run_runtime,
+        backtest_execution_scan_runtime as short_backtest_execution_scan_runtime,
+        bridge_runtime as short_backtest_bridge_runtime,
+        backtest_state_dates_runtime as short_backtest_state_dates_runtime,
+        backtest_state_init_runtime as short_backtest_state_init_runtime,
+        backtest_state_lists_runtime as short_backtest_state_lists_runtime,
+        backtest_state_symbols_runtime as short_backtest_state_symbols_runtime,
+        execution_runtime as short_backtest_execution_runtime,
+        main_window_backtest_bridge_runtime as backtest_bridge_runtime,
+        main_window_backtest_execution_runtime as backtest_execution_runtime,
+        main_window_backtest_results_runtime as backtest_results_runtime,
+        main_window_backtest_runtime as backtest_worker_runtime,
+        main_window_backtest_state_runtime as backtest_state_runtime,
+        main_window_backtest_tab as backtest_tab_runtime,
+        main_window_backtest_template_runtime as backtest_template_runtime,
+        results_runtime as short_backtest_results_runtime,
+        state_runtime as short_backtest_state_runtime,
+        tab_runtime as short_backtest_tab_runtime,
+        template_runtime as short_backtest_template_runtime,
+        worker_runtime as short_backtest_worker_runtime,
+    )
+    from app.gui.chart import (
+        display_runtime as short_chart_display_runtime,
+        host_runtime as short_chart_host_runtime,
+        main_window_chart_display_runtime as chart_display_runtime,
+        main_window_chart_host_runtime as chart_host_runtime,
+        main_window_chart_selection_runtime as chart_selection_runtime,
+        main_window_chart_tab as chart_tab_runtime,
+        main_window_chart_view_runtime as chart_view_runtime,
+        selection_runtime as short_chart_selection_runtime,
+        tab_runtime as short_chart_tab_runtime,
+        view_runtime as short_chart_view_runtime,
+    )
+    from app.gui.code import (
+        code_language_cpp_launcher_runtime as short_code_cpp_launcher_runtime,
+        code_language_launcher as code_language_launcher_runtime,
+        code_language_launcher_shared_runtime as short_code_launcher_shared_runtime,
+        code_language_rust_launcher_runtime as short_code_rust_launcher_runtime,
+        main_window_code as code_tab_runtime,
+        main_window_code_runtime as code_runtime_wrapper,
+        runtime as short_code_runtime,
+        tab_runtime as short_code_tab_runtime,
+    )
+    import app.gui.code.code_language_ui as short_code_language_ui
+    import app.gui.code.code_language_ui_build_runtime as short_code_language_ui_build_runtime
+    import app.gui.code.code_language_ui_selection_runtime as short_code_language_ui_selection_runtime
+    import app.gui.code.code_language_ui_state_runtime as short_code_language_ui_state_runtime
+    from app.gui.dashboard import (
+        actions_runtime as short_dashboard_actions_runtime,
+        chart_runtime as short_dashboard_chart_runtime,
+        header_runtime as short_dashboard_header_runtime,
+        indicator_runtime as short_dashboard_indicator_runtime,
+        log_runtime as short_dashboard_log_runtime,
+        main_window_dashboard_actions_runtime as dashboard_actions_runtime,
+        main_window_dashboard_chart_runtime as dashboard_chart_runtime,
+        main_window_dashboard_header_runtime as dashboard_header_runtime,
+        main_window_dashboard_indicator_runtime as dashboard_indicator_runtime,
+        main_window_dashboard_log_runtime as dashboard_log_runtime,
+        main_window_dashboard_markets_runtime as dashboard_markets_runtime,
+        main_window_dashboard_state_runtime as dashboard_state_runtime,
+        main_window_dashboard_strategy_runtime as dashboard_strategy_runtime,
+        markets_runtime as short_dashboard_markets_runtime,
+        state_runtime as short_dashboard_state_runtime,
+        strategy_runtime as short_dashboard_strategy_runtime,
+    )
+    from app.gui.shared import (
+        config_runtime as short_shared_config_runtime,
+        helper_runtime as short_shared_helper_runtime,
+        indicator_value_helpers as shared_indicator_value_helpers,
+        main_window_config as shared_config_runtime,
+        main_window_helper_runtime as shared_helper_runtime,
+        main_window_ui_support as shared_ui_support_runtime,
+        main_window_web_embed as shared_web_embed_runtime,
+        ui_support as short_shared_ui_support_runtime,
+        web_embed as short_shared_web_embed_runtime,
+    )
+    from app.gui.shared.indicator_value_collect_runtime import (
+        collect_indicator_value_strings as shared_collect_indicator_value_strings,
+        collect_record_indicator_keys as shared_collect_record_indicator_keys,
+    )
+    from app.gui.shared.indicator_value_core import (
+        indicator_short_label as shared_indicator_short_label,
+        normalize_trigger_actions_map as shared_normalize_trigger_actions_map,
+    )
     from app.gui.positions import (
         actions_runtime as short_positions_actions_runtime,
         build_runtime as short_positions_build_runtime,
@@ -48,8 +133,29 @@ if PYQT_AVAILABLE:
         tracking_runtime as short_positions_tracking_runtime,
         worker_runtime as short_positions_worker_runtime,
     )
+    import app.gui.positions.actions_close_runtime as short_positions_actions_close_runtime
+    import app.gui.positions.actions_history_runtime as short_positions_actions_history_runtime
+    import app.gui.positions.actions_state_runtime as short_positions_actions_state_runtime
+    from app.gui.trade import (
+        main_window_trade_runtime as trade_runtime_wrapper,
+        main_window_trade_signal_open_runtime as trade_signal_open_runtime,
+        main_window_trade_signal_runtime as trade_signal_runtime,
+        signal_close_runtime as short_trade_signal_close_runtime,
+        signal_open_runtime as short_trade_signal_open_runtime,
+        signal_runtime as short_trade_signal_runtime,
+        trade_runtime as short_trade_runtime,
+    )
+    import app.gui.trade.signal_close_allocations_runtime as short_trade_signal_close_allocations_runtime
+    import app.gui.trade.signal_close_interval_runtime as short_trade_signal_close_interval_runtime
+    import app.gui.trade.signal_close_records_runtime as short_trade_signal_close_records_runtime
+    import app.gui.main_window as main_window_wrapper_module
+    import app.gui.window_shell as short_main_window_module
     from app.gui.runtime.account.main_window_account_runtime import (
         bind_main_window_account_runtime as new_bind_account,
+    )
+    from app.gui.runtime.account.main_window_balance_runtime import (
+        bind_main_window_balance_runtime as new_bind_balance,
+        update_balance_label as new_update_balance_label,
     )
     from app.gui.runtime.composition.main_window_bindings_runtime import (
         bind_main_window_class as new_bind_main_window_class,
@@ -66,6 +172,16 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.account.main_window_margin_runtime import (
         _derive_margin_snapshot as new_derive_margin_snapshot,
     )
+    from app.gui.runtime.account.account_runtime import (
+        bind_main_window_account_runtime as short_bind_account,
+    )
+    from app.gui.runtime.account.balance_runtime import (
+        bind_main_window_balance_runtime as short_bind_balance,
+        update_balance_label as short_update_balance_label,
+    )
+    from app.gui.runtime.account.margin_runtime import (
+        _derive_margin_snapshot as short_derive_margin_snapshot,
+    )
     from app.gui.runtime.service.main_window_service_api_runtime import (
         bind_main_window_service_api_runtime as new_bind_service_api,
     )
@@ -74,6 +190,15 @@ if PYQT_AVAILABLE:
     )
     from app.gui.runtime.service.main_window_status_runtime import (
         bind_main_window_status_runtime as new_bind_status,
+    )
+    from app.gui.runtime.service.service_api_runtime import (
+        bind_main_window_service_api_runtime as short_bind_service_api,
+    )
+    from app.gui.runtime.service.session_runtime import (
+        bind_main_window_session_runtime as short_bind_session,
+    )
+    from app.gui.runtime.service.status_runtime import (
+        bind_main_window_status_runtime as short_bind_status,
     )
     from app.gui.runtime.strategy.main_window_control_runtime import (
         bind_main_window_control_runtime as new_bind_control,
@@ -139,6 +264,10 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.strategy.context_runtime import (
         bind_main_window_strategy_context_runtime as short_bind_strategy_context,
     )
+    from app.gui.runtime.ui.main_window_secondary_tabs_runtime import (
+        _initialize_secondary_tabs as new_initialize_secondary_tabs,
+        bind_main_window_secondary_tabs_runtime as new_bind_secondary_tabs,
+    )
     from app.gui.runtime.ui.main_window_tab_runtime import (
         _code_tab_visibility_auto_prepare_cpp_enabled as new_code_tab_visibility_auto_prepare_cpp_enabled,
         bind_main_window_tab_runtime as new_bind_tab,
@@ -147,6 +276,26 @@ if PYQT_AVAILABLE:
         bind_main_window_theme_runtime as new_bind_theme,
     )
     from app.gui.runtime.ui.main_window_theme_styles import LIGHT_THEME as new_light_theme
+    from app.gui.runtime.ui.main_window_ui_misc_runtime import (
+        _apply_initial_geometry as new_apply_initial_geometry,
+        bind_main_window_ui_misc_runtime as new_bind_ui_misc,
+    )
+    from app.gui.runtime.ui.secondary_tabs_runtime import (
+        _initialize_secondary_tabs as short_initialize_secondary_tabs,
+        bind_main_window_secondary_tabs_runtime as short_bind_secondary_tabs,
+    )
+    from app.gui.runtime.ui.tab_runtime import (
+        _code_tab_visibility_auto_prepare_cpp_enabled as short_code_tab_visibility_auto_prepare_cpp_enabled,
+        bind_main_window_tab_runtime as short_bind_tab,
+    )
+    from app.gui.runtime.ui.theme_runtime import (
+        bind_main_window_theme_runtime as short_bind_theme,
+    )
+    from app.gui.runtime.ui.theme_styles import LIGHT_THEME as short_light_theme
+    from app.gui.runtime.ui.ui_misc_runtime import (
+        _apply_initial_geometry as short_apply_initial_geometry,
+        bind_main_window_ui_misc_runtime as short_bind_ui_misc,
+    )
     from app.gui.runtime.window.main_window_bootstrap_runtime import (
         _compute_global_pnl_totals as new_compute_global_pnl_totals,
         _initialize_main_window_state as new_initialize_main_window_state,
@@ -193,6 +342,11 @@ if PYQT_AVAILABLE:
         _allow_guard_bypass as new_allow_guard_bypass,
         _mw_interval_sort_key as new_interval_sort_key,
         bind_main_window_runtime as new_bind_runtime,
+    )
+    from app.gui.runtime.window.runtime import (
+        _allow_guard_bypass as short_allow_guard_bypass,
+        _mw_interval_sort_key as short_interval_sort_key,
+        bind_main_window_runtime as short_bind_runtime,
     )
     from app.gui.runtime.window.main_window_window_events_runtime import (
         allow_guard_bypass as new_window_allow_guard_bypass,
@@ -267,6 +421,7 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
     def test_final_gui_runtime_subpackages_expose_expected_objects(self):
         binders = [
             new_bind_account,
+            new_bind_balance,
             new_bind_main_window_class,
             new_install_main_window_module_state,
             new_bind_service_api,
@@ -277,8 +432,10 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             new_bind_stop_loss,
             new_bind_strategy_controls,
             new_bind_strategy_ui,
+            new_bind_secondary_tabs,
             new_bind_tab,
             new_bind_theme,
+            new_bind_ui_misc,
             new_bind_bootstrap,
             new_bind_init_finalize,
             new_bind_runtime,
@@ -292,15 +449,74 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             new_on_leverage_changed,
             new_runtime_stop_loss_update,
             new_derive_margin_snapshot,
+            new_update_balance_label,
             new_stop_strategy_sync,
             new_normalize_trigger_actions_map,
             new_initialize_main_window_state,
             new_compute_global_pnl_totals,
             new_build_main_window_tabs_ui,
             new_finalize_init_ui,
+            new_initialize_secondary_tabs,
+            dashboard_actions_runtime.bind_main_window_dashboard_actions_runtime,
+            dashboard_actions_runtime._create_dashboard_action_section,
+            dashboard_chart_runtime.bind_main_window_dashboard_chart_runtime,
+            dashboard_chart_runtime._initialize_dashboard_chart_section,
+            dashboard_header_runtime.bind_main_window_dashboard_header_runtime,
+            dashboard_header_runtime._create_dashboard_header_section,
+            dashboard_indicator_runtime.bind_main_window_dashboard_indicator_runtime,
+            dashboard_indicator_runtime._create_dashboard_indicator_section,
+            dashboard_log_runtime.bind_main_window_dashboard_log_runtime,
+            dashboard_log_runtime._create_dashboard_log_section,
+            dashboard_markets_runtime.bind_main_window_dashboard_markets_runtime,
+            dashboard_markets_runtime._create_dashboard_markets_section,
+            dashboard_state_runtime.bind_main_window_dashboard_state_runtime,
+            dashboard_state_runtime._initialize_dashboard_runtime_state,
+            dashboard_strategy_runtime.bind_main_window_dashboard_strategy_runtime,
+            dashboard_strategy_runtime._create_dashboard_strategy_controls_section,
+            chart_display_runtime.bind_main_window_chart_display_runtime,
+            chart_display_runtime.load_chart,
+            chart_host_runtime.bind_main_window_chart_host_runtime,
+            chart_host_runtime._ensure_tradingview_widget,
+            chart_selection_runtime.bind_main_window_chart_selection_runtime,
+            chart_selection_runtime._set_chart_symbol,
+            chart_tab_runtime.bind_main_window_chart_tab,
+            chart_tab_runtime._create_chart_tab,
+            chart_view_runtime.bind_main_window_chart_view_runtime,
+            chart_view_runtime._apply_chart_view_mode,
+            backtest_bridge_runtime.bind_main_window_backtest_bridge_runtime,
+            backtest_bridge_runtime._backtest_add_selected_to_dashboard,
+            backtest_execution_runtime.bind_main_window_backtest_execution_runtime,
+            backtest_execution_runtime._run_backtest,
+            backtest_results_runtime.bind_main_window_backtest_results_runtime,
+            backtest_results_runtime._on_backtest_finished,
+            backtest_state_runtime.bind_main_window_backtest_state_runtime,
+            backtest_state_runtime._initialize_backtest_ui_defaults,
+            backtest_tab_runtime.bind_main_window_backtest_tab,
+            backtest_tab_runtime._create_backtest_tab,
+            backtest_template_runtime.bind_main_window_backtest_template_runtime,
+            backtest_template_runtime._apply_backtest_template,
+            backtest_worker_runtime._BacktestWorker,
+            shared_config_runtime.bind_main_window_config,
+            shared_config_runtime._load_app_state_file,
+            shared_config_runtime._save_app_state_file,
+            shared_ui_support_runtime._apply_window_icon,
+            shared_ui_support_runtime._NumericItem,
+            shared_ui_support_runtime._StarterCard,
+            shared_web_embed_runtime._LazyWebEmbed,
+            short_shared_helper_runtime.bind_main_window_helper_runtime,
+            short_shared_helper_runtime._normalize_connector_backend,
+            trade_runtime_wrapper.bind_main_window_trade_runtime,
+            trade_runtime_wrapper._mw_on_trade_signal,
+            trade_signal_runtime.handle_trade_signal,
+            trade_signal_open_runtime.handle_non_close_trade_signal,
+            code_runtime_wrapper.bind_main_window_code_runtime,
+            code_runtime_wrapper._launch_cpp_from_code_tab,
+            code_tab_runtime.bind_main_window_code,
+            code_tab_runtime._build_liquidation_web_panel,
             new_remove_selected_symbol_interval_pairs,
             new_normalize_position_pct_units,
             new_code_tab_visibility_auto_prepare_cpp_enabled,
+            new_apply_initial_geometry,
             new_schedule_webengine_runtime_prewarm,
             new_allow_guard_bypass,
             new_interval_sort_key,
@@ -337,6 +553,301 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
 
         self.assertIs(new_bind_main_window_class, short_bind_main_window_class)
         self.assertIs(new_install_main_window_module_state, short_install_main_window_module_state)
+        self.assertIs(new_bind_account, short_bind_account)
+        self.assertIs(new_bind_balance, short_bind_balance)
+        self.assertIs(new_bind_service_api, short_bind_service_api)
+        self.assertIs(new_bind_session, short_bind_session)
+        self.assertIs(new_bind_status, short_bind_status)
+        self.assertIs(
+            chart_display_runtime.bind_main_window_chart_display_runtime,
+            short_chart_display_runtime.bind_main_window_chart_display_runtime,
+        )
+        self.assertIs(
+            chart_display_runtime.load_chart,
+            short_chart_display_runtime.load_chart,
+        )
+        self.assertIs(
+            chart_host_runtime.bind_main_window_chart_host_runtime,
+            short_chart_host_runtime.bind_main_window_chart_host_runtime,
+        )
+        self.assertIs(
+            chart_host_runtime._ensure_tradingview_widget,
+            short_chart_host_runtime._ensure_tradingview_widget,
+        )
+        self.assertIs(
+            chart_selection_runtime.bind_main_window_chart_selection_runtime,
+            short_chart_selection_runtime.bind_main_window_chart_selection_runtime,
+        )
+        self.assertIs(
+            chart_selection_runtime._set_chart_symbol,
+            short_chart_selection_runtime._set_chart_symbol,
+        )
+        self.assertIs(
+            chart_tab_runtime.bind_main_window_chart_tab,
+            short_chart_tab_runtime.bind_main_window_chart_tab,
+        )
+        self.assertIs(
+            chart_tab_runtime._create_chart_tab,
+            short_chart_tab_runtime._create_chart_tab,
+        )
+        self.assertIs(
+            chart_view_runtime.bind_main_window_chart_view_runtime,
+            short_chart_view_runtime.bind_main_window_chart_view_runtime,
+        )
+        self.assertIs(
+            chart_view_runtime._apply_chart_view_mode,
+            short_chart_view_runtime._apply_chart_view_mode,
+        )
+        self.assertIs(
+            backtest_bridge_runtime.bind_main_window_backtest_bridge_runtime,
+            short_backtest_bridge_runtime.bind_main_window_backtest_bridge_runtime,
+        )
+        self.assertIs(
+            backtest_bridge_runtime._backtest_add_selected_to_dashboard,
+            short_backtest_bridge_runtime._backtest_add_selected_to_dashboard,
+        )
+        self.assertIs(
+            backtest_execution_runtime.bind_main_window_backtest_execution_runtime,
+            short_backtest_execution_runtime.bind_main_window_backtest_execution_runtime,
+        )
+        self.assertIs(
+            backtest_execution_runtime._run_backtest,
+            short_backtest_execution_runtime._run_backtest,
+        )
+        self.assertIs(
+            short_backtest_execution_runtime._run_backtest,
+            short_backtest_execution_run_runtime.run_backtest,
+        )
+        self.assertIs(
+            short_backtest_execution_runtime._run_backtest_scan,
+            short_backtest_execution_scan_runtime.run_backtest_scan,
+        )
+        self.assertIs(
+            backtest_results_runtime.bind_main_window_backtest_results_runtime,
+            short_backtest_results_runtime.bind_main_window_backtest_results_runtime,
+        )
+        self.assertIs(
+            backtest_results_runtime._on_backtest_finished,
+            short_backtest_results_runtime._on_backtest_finished,
+        )
+        self.assertIs(
+            backtest_state_runtime.bind_main_window_backtest_state_runtime,
+            short_backtest_state_runtime.bind_main_window_backtest_state_runtime,
+        )
+        self.assertIs(
+            backtest_state_runtime._initialize_backtest_ui_defaults,
+            short_backtest_state_runtime._initialize_backtest_ui_defaults,
+        )
+        self.assertIs(
+            short_backtest_state_runtime._coerce_qdatetime,
+            short_backtest_state_dates_runtime.coerce_qdatetime,
+        )
+        self.assertIs(
+            short_backtest_state_runtime._initialize_backtest_ui_defaults,
+            short_backtest_state_init_runtime.initialize_backtest_ui_defaults,
+        )
+        self.assertIs(
+            short_backtest_state_runtime._populate_backtest_lists,
+            short_backtest_state_lists_runtime.populate_backtest_lists,
+        )
+        self.assertIs(
+            short_backtest_state_runtime._refresh_backtest_symbols,
+            short_backtest_state_symbols_runtime.refresh_backtest_symbols,
+        )
+        self.assertIs(
+            backtest_tab_runtime.bind_main_window_backtest_tab,
+            short_backtest_tab_runtime.bind_main_window_backtest_tab,
+        )
+        self.assertIs(
+            backtest_tab_runtime._create_backtest_tab,
+            short_backtest_tab_runtime._create_backtest_tab,
+        )
+        self.assertIs(
+            backtest_template_runtime.bind_main_window_backtest_template_runtime,
+            short_backtest_template_runtime.bind_main_window_backtest_template_runtime,
+        )
+        self.assertIs(
+            backtest_template_runtime._apply_backtest_template,
+            short_backtest_template_runtime._apply_backtest_template,
+        )
+        self.assertIs(
+            backtest_worker_runtime._BacktestWorker,
+            short_backtest_worker_runtime._BacktestWorker,
+        )
+        self.assertIs(
+            shared_config_runtime.bind_main_window_config,
+            short_shared_config_runtime.bind_main_window_config,
+        )
+        self.assertIs(
+            shared_config_runtime._load_app_state_file,
+            short_shared_config_runtime._load_app_state_file,
+        )
+        self.assertIs(
+            shared_config_runtime._save_app_state_file,
+            short_shared_config_runtime._save_app_state_file,
+        )
+        self.assertIs(
+            shared_helper_runtime.bind_main_window_helper_runtime,
+            short_shared_helper_runtime.bind_main_window_helper_runtime,
+        )
+        self.assertIs(
+            shared_helper_runtime._normalize_connector_backend,
+            short_shared_helper_runtime._normalize_connector_backend,
+        )
+        self.assertIs(
+            shared_ui_support_runtime._apply_window_icon,
+            short_shared_ui_support_runtime._apply_window_icon,
+        )
+        self.assertIs(
+            shared_ui_support_runtime._NumericItem,
+            short_shared_ui_support_runtime._NumericItem,
+        )
+        self.assertIs(
+            shared_ui_support_runtime._StarterCard,
+            short_shared_ui_support_runtime._StarterCard,
+        )
+        self.assertIs(
+            shared_web_embed_runtime._LazyWebEmbed,
+            short_shared_web_embed_runtime._LazyWebEmbed,
+        )
+        self.assertIs(
+            trade_runtime_wrapper.bind_main_window_trade_runtime,
+            short_trade_runtime.bind_main_window_trade_runtime,
+        )
+        self.assertIs(
+            trade_runtime_wrapper._mw_on_trade_signal,
+            short_trade_runtime._mw_on_trade_signal,
+        )
+        self.assertIs(
+            trade_signal_runtime.handle_trade_signal,
+            short_trade_signal_runtime.handle_trade_signal,
+        )
+        self.assertIs(
+            short_trade_signal_runtime._consume_closed_entries,
+            short_trade_signal_close_runtime._consume_closed_entries,
+        )
+        self.assertIs(
+            short_trade_signal_close_runtime._consume_closed_entries,
+            short_trade_signal_close_allocations_runtime._consume_closed_entries,
+        )
+        self.assertIs(
+            short_trade_signal_close_runtime._record_closed_position,
+            short_trade_signal_close_records_runtime._record_closed_position,
+        )
+        self.assertIs(
+            short_trade_signal_close_runtime._handle_close_interval_event,
+            short_trade_signal_close_interval_runtime._handle_close_interval_event,
+        )
+        self.assertIs(
+            trade_signal_open_runtime.handle_non_close_trade_signal,
+            short_trade_signal_open_runtime.handle_non_close_trade_signal,
+        )
+        self.assertIs(
+            code_runtime_wrapper.bind_main_window_code_runtime,
+            short_code_runtime.bind_main_window_code_runtime,
+        )
+        self.assertIs(
+            code_runtime_wrapper._launch_cpp_from_code_tab,
+            short_code_runtime._launch_cpp_from_code_tab,
+        )
+        self.assertIs(
+            code_language_launcher_runtime.launch_cpp_from_code_tab,
+            short_code_cpp_launcher_runtime.launch_cpp_from_code_tab,
+        )
+        self.assertIs(
+            code_language_launcher_runtime.launch_rust_from_code_tab,
+            short_code_rust_launcher_runtime.launch_rust_from_code_tab,
+        )
+        self.assertIs(
+            code_language_launcher_runtime._poll_early_exit,
+            short_code_launcher_shared_runtime.poll_early_exit,
+        )
+        self.assertIs(
+            code_tab_runtime.bind_main_window_code,
+            short_code_tab_runtime.bind_main_window_code,
+        )
+        self.assertIs(
+            code_tab_runtime._build_liquidation_web_panel,
+            short_code_tab_runtime._build_liquidation_web_panel,
+        )
+        self.assertIs(
+            short_code_language_ui.init_code_language_tab,
+            short_code_language_ui_build_runtime.init_code_language_tab,
+        )
+        self.assertIs(
+            short_code_language_ui.code_tab_select_language,
+            short_code_language_ui_selection_runtime.code_tab_select_language,
+        )
+        self.assertIs(
+            short_code_language_ui.refresh_code_tab_from_config,
+            short_code_language_ui_state_runtime.refresh_code_tab_from_config,
+        )
+        self.assertIs(new_update_balance_label, short_update_balance_label)
+        self.assertIs(new_derive_margin_snapshot, short_derive_margin_snapshot)
+        self.assertIs(
+            dashboard_actions_runtime.bind_main_window_dashboard_actions_runtime,
+            short_dashboard_actions_runtime.bind_main_window_dashboard_actions_runtime,
+        )
+        self.assertIs(
+            dashboard_actions_runtime._create_dashboard_action_section,
+            short_dashboard_actions_runtime._create_dashboard_action_section,
+        )
+        self.assertIs(
+            dashboard_chart_runtime.bind_main_window_dashboard_chart_runtime,
+            short_dashboard_chart_runtime.bind_main_window_dashboard_chart_runtime,
+        )
+        self.assertIs(
+            dashboard_chart_runtime._initialize_dashboard_chart_section,
+            short_dashboard_chart_runtime._initialize_dashboard_chart_section,
+        )
+        self.assertIs(
+            dashboard_header_runtime.bind_main_window_dashboard_header_runtime,
+            short_dashboard_header_runtime.bind_main_window_dashboard_header_runtime,
+        )
+        self.assertIs(
+            dashboard_header_runtime._create_dashboard_header_section,
+            short_dashboard_header_runtime._create_dashboard_header_section,
+        )
+        self.assertIs(
+            dashboard_indicator_runtime.bind_main_window_dashboard_indicator_runtime,
+            short_dashboard_indicator_runtime.bind_main_window_dashboard_indicator_runtime,
+        )
+        self.assertIs(
+            dashboard_indicator_runtime._create_dashboard_indicator_section,
+            short_dashboard_indicator_runtime._create_dashboard_indicator_section,
+        )
+        self.assertIs(
+            dashboard_log_runtime.bind_main_window_dashboard_log_runtime,
+            short_dashboard_log_runtime.bind_main_window_dashboard_log_runtime,
+        )
+        self.assertIs(
+            dashboard_log_runtime._create_dashboard_log_section,
+            short_dashboard_log_runtime._create_dashboard_log_section,
+        )
+        self.assertIs(
+            dashboard_markets_runtime.bind_main_window_dashboard_markets_runtime,
+            short_dashboard_markets_runtime.bind_main_window_dashboard_markets_runtime,
+        )
+        self.assertIs(
+            dashboard_markets_runtime._create_dashboard_markets_section,
+            short_dashboard_markets_runtime._create_dashboard_markets_section,
+        )
+        self.assertIs(
+            dashboard_state_runtime.bind_main_window_dashboard_state_runtime,
+            short_dashboard_state_runtime.bind_main_window_dashboard_state_runtime,
+        )
+        self.assertIs(
+            dashboard_state_runtime._initialize_dashboard_runtime_state,
+            short_dashboard_state_runtime._initialize_dashboard_runtime_state,
+        )
+        self.assertIs(
+            dashboard_strategy_runtime.bind_main_window_dashboard_strategy_runtime,
+            short_dashboard_strategy_runtime.bind_main_window_dashboard_strategy_runtime,
+        )
+        self.assertIs(
+            dashboard_strategy_runtime._create_dashboard_strategy_controls_section,
+            short_dashboard_strategy_runtime._create_dashboard_strategy_controls_section,
+        )
         self.assertIs(new_bind_control, short_bind_control)
         self.assertIs(new_on_leverage_changed, short_on_leverage_changed)
         self.assertIs(new_bind_override, short_bind_override)
@@ -351,6 +862,30 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         self.assertIs(new_normalize_loop_override, short_normalize_loop_override)
         self.assertIs(new_start_strategy, short_start_strategy)
         self.assertIs(new_stop_strategy_sync, short_stop_strategy_sync)
+        self.assertIs(new_bind_secondary_tabs, short_bind_secondary_tabs)
+        self.assertIs(new_initialize_secondary_tabs, short_initialize_secondary_tabs)
+        self.assertIs(new_bind_tab, short_bind_tab)
+        self.assertIs(new_code_tab_visibility_auto_prepare_cpp_enabled, short_code_tab_visibility_auto_prepare_cpp_enabled)
+        self.assertIs(new_bind_theme, short_bind_theme)
+        self.assertEqual(new_light_theme, short_light_theme)
+        self.assertIs(new_bind_ui_misc, short_bind_ui_misc)
+        self.assertIs(new_apply_initial_geometry, short_apply_initial_geometry)
+        self.assertIs(
+            shared_indicator_value_helpers.collect_record_indicator_keys,
+            shared_collect_record_indicator_keys,
+        )
+        self.assertIs(
+            shared_indicator_value_helpers.collect_indicator_value_strings,
+            shared_collect_indicator_value_strings,
+        )
+        self.assertIs(
+            shared_indicator_value_helpers.indicator_short_label,
+            shared_indicator_short_label,
+        )
+        self.assertIs(
+            shared_indicator_value_helpers.normalize_trigger_actions_map,
+            shared_normalize_trigger_actions_map,
+        )
         self.assertIs(new_collect_strategy_intervals, short_collect_strategy_intervals)
         self.assertIs(new_reconfigure_positions_worker, short_reconfigure_positions_worker)
         self.assertIs(new_refresh_waiting_positions_tab, short_refresh_waiting_positions_tab)
@@ -384,6 +919,9 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         self.assertIs(new_restore_window_after_guard, short_restore_window_after_guard)
         self.assertIs(new_should_block_spontaneous_close, short_should_block_spontaneous_close)
         self.assertIs(new_window_allow_guard_bypass, short_window_allow_guard_bypass)
+        self.assertIs(new_bind_runtime, short_bind_runtime)
+        self.assertIs(new_allow_guard_bypass, short_allow_guard_bypass)
+        self.assertIs(new_interval_sort_key, short_interval_sort_key)
         self.assertTrue(new_light_theme)
 
     def test_removed_intermediate_gui_runtime_modules_raise_import_error(self):
@@ -429,6 +967,8 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
 
     def test_main_window_still_exposes_bound_helpers(self):
         from app.gui.main_window import MainWindow
+
+        self.assertIs(MainWindow, short_main_window_module.MainWindow)
 
         expected_methods = [
             "_initialize_main_window_state",
@@ -514,6 +1054,18 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             short_positions_actions_runtime._mw_make_close_btn,
         )
         self.assertIs(
+            short_positions_actions_runtime._mw_make_close_btn,
+            short_positions_actions_close_runtime.make_close_btn,
+        )
+        self.assertIs(
+            short_positions_actions_runtime._mw_clear_positions_selected,
+            short_positions_actions_history_runtime.clear_positions_selected,
+        )
+        self.assertIs(
+            short_positions_actions_runtime._mw_clear_local_position_state,
+            short_positions_actions_state_runtime.clear_local_position_state,
+        )
+        self.assertIs(
             positions_tracking_runtime.bind_main_window_positions_tracking_runtime,
             short_positions_tracking_runtime.bind_main_window_positions_tracking_runtime,
         )
@@ -545,6 +1097,10 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
     def test_main_window_module_globals_still_expose_expected_runtime_state(self):
         import app.gui.main_window as main_window_module
 
+        self.assertIs(main_window_module, main_window_wrapper_module)
+        self.assertIs(main_window_module.MainWindow, short_main_window_module.MainWindow)
+        self.assertEqual(main_window_module.CONNECTOR_OPTIONS, short_main_window_module.CONNECTOR_OPTIONS)
+        self.assertEqual(main_window_module._SYMBOL_FETCH_TOP_N, short_main_window_module._SYMBOL_FETCH_TOP_N)
         self.assertTrue(main_window_module.CONNECTOR_OPTIONS)
         self.assertEqual(
             main_window_module.DEFAULT_CONNECTOR_BACKEND,
@@ -907,6 +1463,16 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         self.assertEqual(indicator_state["configured_indicators"], ["macd", "rsi"])
         self.assertTrue(indicator_state["stop_loss_enabled"])
         self.assertTrue(any("Loop start for BTCUSDT:1h|macd,rsi" in msg for msg in window.logged))
+
+    def test_positions_history_update_close_runtime_uses_real_source_module(self):
+        close_runtime = importlib.import_module("app.gui.positions.history_update_close_runtime")
+
+        module_path = Path(close_runtime.__file__).resolve()
+
+        self.assertEqual(module_path.suffix, ".py")
+        self.assertTrue(module_path.is_file())
+        self.assertEqual(module_path.name, "history_update_close_runtime.py")
+        self.assertTrue(callable(close_runtime.close_confirmed_positions))
 
     def test_stop_loss_runtime_and_backtest_widgets_stay_in_sync(self):
         from PyQt6 import QtWidgets

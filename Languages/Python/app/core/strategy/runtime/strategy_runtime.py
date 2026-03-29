@@ -113,9 +113,13 @@ def _trigger_emergency_close(self, sym: str, interval: str, reason: str):
             closer(reason=f"{sym}@{interval}: {reason}", source="strategy")
         else:
             try:
-                from ....close_all import close_all_futures_positions as close_all_futures_positions
+                from app.integrations.exchanges.binance.positions.close_all_runtime import (
+                    close_all_futures_positions as close_all_futures_positions,
+                )
             except ImportError:  # pragma: no cover - standalone execution fallback
-                from close_all import close_all_futures_positions as close_all_futures_positions
+                from integrations.exchanges.binance.positions.close_all_runtime import (
+                    close_all_futures_positions as close_all_futures_positions,
+                )
 
             def _do_close():
                 try:

@@ -7,8 +7,8 @@ from PyQt6 import QtCore
 
 from app.integrations.exchanges.binance import BinanceWrapper, normalize_margin_ratio
 
-from ..runtime.account import main_window_margin_runtime
-from ..shared import main_window_helper_runtime
+from ..runtime.account import margin_runtime
+from ..shared import helper_runtime
 
 
 class _PositionsWorker(QtCore.QObject):
@@ -37,7 +37,7 @@ class _PositionsWorker(QtCore.QObject):
         self._enabled = True
         self._interval_ms = 5000
         self._spot_filter_cache: dict[str, dict] = {}
-        self._connector_backend = main_window_helper_runtime._normalize_connector_backend(
+        self._connector_backend = helper_runtime._normalize_connector_backend(
             connector_backend
         )
 
@@ -104,7 +104,7 @@ class _PositionsWorker(QtCore.QObject):
         if account_type is not None:
             self._acct = account_type
         if connector_backend is not None:
-            self._connector_backend = main_window_helper_runtime._normalize_connector_backend(
+            self._connector_backend = helper_runtime._normalize_connector_backend(
                 connector_backend
             )
         self._symbols = set(symbols) if symbols else None
@@ -185,7 +185,7 @@ class _PositionsWorker(QtCore.QObject):
                 pnl = 0.0
 
             margin, margin_balance, maint_margin, unrealized_loss = (
-                main_window_margin_runtime._derive_margin_snapshot(
+                margin_runtime._derive_margin_snapshot(
                     p,
                     qty_hint=qty_abs,
                     entry_price_hint=entry_price,

@@ -26,6 +26,15 @@ from app.integrations.exchanges.binance.account.account_data import bind_binance
 from app.integrations.exchanges.binance.clients.connector_clients import (
     CcxtBinanceAdapter as NewCcxtBinanceAdapter,
 )
+from app.integrations.exchanges.binance.clients.sdk_coin_futures_client import (
+    BinanceSDKCoinFuturesClient as new_sdk_coin_client,
+)
+from app.integrations.exchanges.binance.clients.sdk_spot_client import (
+    BinanceSDKSpotClient as new_sdk_spot_client,
+)
+from app.integrations.exchanges.binance.clients.sdk_usds_futures_client import (
+    BinanceSDKUsdsFuturesClient as new_sdk_usds_client,
+)
 from app.integrations.exchanges.binance.market.market_data import bind_binance_market_data as new_bind_market
 from app.integrations.exchanges.binance.metadata.exchange_metadata import (
     bind_binance_exchange_metadata as new_bind_metadata,
@@ -127,6 +136,9 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
     def test_final_subpackages_resolve_expected_objects(self):
         self.assertTrue(callable(new_bind_account))
         self.assertTrue(callable(NewCcxtBinanceAdapter))
+        self.assertTrue(callable(new_sdk_coin_client))
+        self.assertTrue(callable(new_sdk_spot_client))
+        self.assertTrue(callable(new_sdk_usds_client))
         self.assertTrue(callable(new_bind_market))
         self.assertTrue(callable(new_bind_metadata))
         self.assertTrue(callable(new_bind_futures_mode))
@@ -170,6 +182,9 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             "get_klines",
             "fetch_symbols",
             "list_open_futures_positions",
+            "get_balances",
+            "get_futures_balance_snapshot",
+            "get_total_wallet_balance",
             "place_futures_market_order",
             "place_spot_market_order",
             "get_last_price",

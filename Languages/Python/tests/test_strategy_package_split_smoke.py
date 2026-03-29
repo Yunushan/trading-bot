@@ -37,6 +37,15 @@ from app.core.strategy.positions.strategy_trade_book import (
 from app.core.strategy.runtime.strategy_cycle_risk_runtime import (
     _apply_cycle_risk_management as new_apply_cycle_risk_management,
 )
+from app.core.strategy.runtime.strategy_cycle_risk_stop_context_runtime import (
+    build_futures_stop_state as new_build_futures_stop_state,
+)
+from app.core.strategy.runtime.strategy_cycle_risk_stop_cumulative_runtime import (
+    apply_cumulative_futures_stop_management as new_apply_cumulative_futures_stop_management,
+)
+from app.core.strategy.runtime.strategy_cycle_risk_stop_directional_runtime import (
+    apply_directional_futures_stop_management as new_apply_directional_futures_stop_management,
+)
 from app.core.strategy.runtime.strategy_cycle_runtime import (
     run_once as new_run_once,
 )
@@ -97,6 +106,9 @@ class StrategyPackageSplitSmokeTests(unittest.TestCase):
         self.assertTrue(callable(new_build_directional_indicator_order_request))
         self.assertTrue(callable(new_close_opposite_position))
         self.assertTrue(callable(new_apply_cycle_risk_management))
+        self.assertTrue(callable(new_build_futures_stop_state))
+        self.assertTrue(callable(new_apply_cumulative_futures_stop_management))
+        self.assertTrue(callable(new_apply_directional_futures_stop_management))
 
     def test_removed_intermediate_strategy_modules_raise_import_error(self):
         removed_modules = [

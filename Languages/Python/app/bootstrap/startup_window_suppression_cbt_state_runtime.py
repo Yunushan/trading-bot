@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+_CBT_STARTUP_WINDOW_HOOKS: dict[int, int] = {}
+_CBT_STARTUP_WINDOW_PROC = None
+_CBT_STARTUP_WINDOW_SCAN_STOP = None
+_CBT_STARTUP_WINDOW_SCAN_THREAD = None
+_CBT_STARTUP_WINDOW_LOCK = None
+_CBT_STARTUP_HELPER_COVERS: dict[tuple[int, int, int, int], dict[str, object]] = {}
+_CBT_STARTUP_HELPER_COVER_LOCK = None
+_CBT_STARTUP_HELPER_COVER_STOP = None
+_CBT_STARTUP_HELPER_COVER_THREAD = None

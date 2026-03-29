@@ -298,7 +298,9 @@ def _close_all_positions_blocking(self, auth: dict | None = None, *, fast: bool 
 
 
 def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = False):
-    from ...close_all import close_all_futures_positions as _close_all_futures
+    from app.integrations.exchanges.binance.positions.close_all_runtime import (
+        close_all_futures_positions as _close_all_futures,
+    )
 
     # Rebuild wrapper each time so close-all uses latest mode/credentials even if launch-time wrapper was different.
     if auth is None:
@@ -350,7 +352,7 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
 def close_all_positions_async(self):
     """Close all open futures positions using reduce-only market orders in a worker."""
     try:
-        from ...workers import CallWorker as _CallWorker
+        from app.gui.runtime.background_workers import CallWorker as _CallWorker
 
         auth_snapshot = self._snapshot_auth_state()
         fast_close = False
@@ -495,7 +497,7 @@ def _begin_close_on_exit_sequence(self):
             pass
 
     try:
-        from ...workers import CallWorker as _CallWorker
+        from app.gui.runtime.background_workers import CallWorker as _CallWorker
 
         worker = _CallWorker(_do, parent=self)
         try:
