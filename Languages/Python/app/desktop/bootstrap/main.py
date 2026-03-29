@@ -53,11 +53,13 @@ PUBLIC_ENTRYPOINT_PATH = (PYTHON_WORKSPACE_DIR / "main.py").resolve()
 
 from app.bootstrap import (
     startup_app_runtime,
+    startup_cover_runtime,
+    startup_icon_runtime,
     startup_lifecycle_runtime,
     startup_post_window_runtime,
     startup_presentation_runtime,
     startup_pre_qt_window_suppression_runtime,
-    startup_ui,
+    startup_splash_ui,
     startup_window_suppression_runtime,
 )
 
@@ -307,20 +309,20 @@ def _uninstall_startup_window_suppression() -> None:
 
 
 
-_apply_qt_icon = startup_ui._apply_qt_icon
+_apply_qt_icon = startup_icon_runtime._apply_qt_icon
 _bind_background_process_exit = startup_lifecycle_runtime._bind_background_process_exit
 _close_native_startup_cover = startup_lifecycle_runtime._close_native_startup_cover
 _create_qt_application = startup_app_runtime._create_qt_application
-_format_shortcut_args = startup_ui._format_shortcut_args
+_format_shortcut_args = startup_icon_runtime._format_shortcut_args
 _install_background_restore_guard = startup_lifecycle_runtime._install_background_restore_guard
 _install_startup_input_unblocker = startup_lifecycle_runtime._install_startup_input_unblocker
 _load_application_icon = startup_app_runtime._load_application_icon
-_make_splash_widget_class = startup_ui._make_splash_widget_class
-_resolve_taskbar_icon_path = startup_ui._resolve_taskbar_icon_path
-_schedule_icon_enforcer = startup_ui._schedule_icon_enforcer
-_set_native_window_icon = startup_ui._set_native_window_icon
-_show_native_startup_cover = startup_ui._show_native_startup_cover
-_SplashScreen = startup_ui._SplashScreen
+_make_splash_widget_class = startup_splash_ui._make_splash_widget_class
+_resolve_taskbar_icon_path = startup_icon_runtime._resolve_taskbar_icon_path
+_schedule_icon_enforcer = startup_icon_runtime._schedule_icon_enforcer
+_set_native_window_icon = startup_icon_runtime._set_native_window_icon
+_show_native_startup_cover = startup_cover_runtime._show_native_startup_cover
+_SplashScreen = startup_splash_ui._SplashScreen
 _configure_post_window_runtime = startup_post_window_runtime._configure_post_window_runtime
 _ensure_taskbar_identity = startup_post_window_runtime._ensure_taskbar_identity
 _StartupPresentationController = startup_presentation_runtime._StartupPresentationController
@@ -348,8 +350,8 @@ def main() -> int:
         _install_startup_window_suppression()
 
     # Version banner / environment setup must run before importing PyQt modules
-    from app import preamble  # noqa: E402,F401
-    _boot_log("preamble loaded")
+    from app.bootstrap import runtime_env  # noqa: E402,F401
+    _boot_log("runtime env loaded")
 
     from PyQt6 import QtCore, QtGui  # noqa: E402
     from PyQt6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402

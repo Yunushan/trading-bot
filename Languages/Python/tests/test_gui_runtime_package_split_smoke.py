@@ -23,8 +23,30 @@ except Exception as exc:
 
 if PYQT_AVAILABLE:
     from app.gui.positions import (
+        actions_runtime as short_positions_actions_runtime,
+        build_runtime as short_positions_build_runtime,
+        history_records_runtime as short_positions_history_records_runtime,
+        history_runtime as short_positions_history_runtime,
+        history_update_runtime as short_positions_history_update_runtime,
+        main_window_positions as positions_runtime_wrapper,
+        main_window_positions_actions_runtime as positions_actions_runtime,
         main_window_positions_build_runtime as positions_build_runtime,
+        main_window_positions_history_records_runtime as positions_history_records_runtime,
+        main_window_positions_history_runtime as positions_history_runtime,
+        main_window_positions_history_update_runtime as positions_history_update_runtime,
         main_window_positions_record_build_runtime as positions_record_build_runtime,
+        main_window_positions_render_runtime as positions_render_runtime,
+        main_window_positions_tab as positions_tab_runtime,
+        main_window_positions_table_render_runtime as positions_table_render_runtime,
+        main_window_positions_tracking_runtime as positions_tracking_runtime,
+        main_window_positions_worker as positions_worker_runtime,
+        positions_runtime as short_positions_runtime,
+        record_build_runtime as short_positions_record_build_runtime,
+        render_runtime as short_positions_render_runtime,
+        tab_runtime as short_positions_tab_runtime,
+        table_render_runtime as short_positions_table_render_runtime,
+        tracking_runtime as short_positions_tracking_runtime,
+        worker_runtime as short_positions_worker_runtime,
     )
     from app.gui.runtime.account.main_window_account_runtime import (
         bind_main_window_account_runtime as new_bind_account,
@@ -34,6 +56,12 @@ if PYQT_AVAILABLE:
     )
     from app.gui.runtime.composition.main_window_module_state_runtime import (
         install_main_window_module_state as new_install_main_window_module_state,
+    )
+    from app.gui.runtime.composition.bindings_runtime import (
+        bind_main_window_class as short_bind_main_window_class,
+    )
+    from app.gui.runtime.composition.module_state_runtime import (
+        install_main_window_module_state as short_install_main_window_module_state,
     )
     from app.gui.runtime.account.main_window_margin_runtime import (
         _derive_margin_snapshot as new_derive_margin_snapshot,
@@ -51,12 +79,23 @@ if PYQT_AVAILABLE:
         bind_main_window_control_runtime as new_bind_control,
         on_leverage_changed as new_on_leverage_changed,
     )
+    from app.gui.runtime.strategy.control_runtime import (
+        bind_main_window_control_runtime as short_bind_control,
+        on_leverage_changed as short_on_leverage_changed,
+    )
     from app.gui.runtime.strategy.main_window_indicator_runtime import (
         _normalize_trigger_actions_map as new_normalize_trigger_actions_map,
+    )
+    from app.gui.runtime.strategy.indicator_runtime import (
+        _normalize_trigger_actions_map as short_normalize_trigger_actions_map,
     )
     from app.gui.runtime.strategy.main_window_override_runtime import (
         bind_main_window_override_runtime as new_bind_override,
         _remove_selected_symbol_interval_pairs as new_remove_selected_symbol_interval_pairs,
+    )
+    from app.gui.runtime.strategy.override_runtime import (
+        bind_main_window_override_runtime as short_bind_override,
+        _remove_selected_symbol_interval_pairs as short_remove_selected_symbol_interval_pairs,
     )
     from app.gui.runtime.strategy.main_window_stop_strategy_runtime import (
         stop_strategy_sync as new_stop_strategy_sync,
@@ -64,17 +103,41 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.strategy.main_window_start_strategy_runtime import (
         start_strategy as new_start_strategy,
     )
+    from app.gui.runtime.strategy.stop_runtime import (
+        stop_strategy_sync as short_stop_strategy_sync,
+    )
+    from app.gui.runtime.strategy.start_runtime import (
+        start_strategy as short_start_strategy,
+    )
     from app.gui.runtime.strategy.main_window_stop_loss_runtime import (
         bind_main_window_stop_loss_runtime as new_bind_stop_loss,
         _runtime_stop_loss_update as new_runtime_stop_loss_update,
+    )
+    from app.gui.runtime.strategy.stop_loss_runtime import (
+        bind_main_window_stop_loss_runtime as short_bind_stop_loss,
+        _runtime_stop_loss_update as short_runtime_stop_loss_update,
     )
     from app.gui.runtime.strategy.main_window_strategy_ui_runtime import (
         bind_main_window_strategy_ui_runtime as new_bind_strategy_ui,
         _normalize_loop_override as new_normalize_loop_override,
     )
+    from app.gui.runtime.strategy.ui_runtime import (
+        bind_main_window_strategy_ui_runtime as short_bind_strategy_ui,
+        _normalize_loop_override as short_normalize_loop_override,
+    )
     from app.gui.runtime.strategy.main_window_strategy_controls_runtime import (
         bind_main_window_strategy_controls_runtime as new_bind_strategy_controls,
         _normalize_position_pct_units as new_normalize_position_pct_units,
+    )
+    from app.gui.runtime.strategy.controls_runtime import (
+        bind_main_window_strategy_controls_runtime as short_bind_strategy_controls,
+        _normalize_position_pct_units as short_normalize_position_pct_units,
+    )
+    from app.gui.runtime.strategy.main_window_strategy_context_runtime import (
+        bind_main_window_strategy_context_runtime as new_bind_strategy_context,
+    )
+    from app.gui.runtime.strategy.context_runtime import (
+        bind_main_window_strategy_context_runtime as short_bind_strategy_context,
     )
     from app.gui.runtime.ui.main_window_tab_runtime import (
         _code_tab_visibility_auto_prepare_cpp_enabled as new_code_tab_visibility_auto_prepare_cpp_enabled,
@@ -89,13 +152,110 @@ if PYQT_AVAILABLE:
         _initialize_main_window_state as new_initialize_main_window_state,
         bind_main_window_bootstrap_runtime as new_bind_bootstrap,
     )
+    from app.gui.runtime.window.main_window_init_finalize_runtime import (
+        _finalize_init_ui as new_finalize_init_ui,
+        bind_main_window_init_finalize_runtime as new_bind_init_finalize,
+    )
+    from app.gui.runtime.window.main_window_init_ui_runtime import (
+        build_main_window_tabs_ui as new_build_main_window_tabs_ui,
+    )
+    from app.gui.runtime.window.main_window_log_runtime import (
+        _gui_buffer_log as new_gui_buffer_log,
+        _gui_flush_log_buffer as new_gui_flush_log_buffer,
+        _gui_setup_log_buffer as new_gui_setup_log_buffer,
+        _is_trigger_log_line as new_is_trigger_log_line,
+        _mw_format_display_time as new_format_display_time,
+        _mw_interval_sort_key as new_log_interval_sort_key,
+        _mw_parse_any_datetime as new_parse_any_datetime,
+    )
+    from app.gui.runtime.window.main_window_portfolio_runtime import (
+        _compute_global_pnl_totals as new_compute_portfolio_pnl_totals,
+        _update_positions_balance_labels as new_update_positions_balance_labels,
+    )
+    from app.gui.runtime.window.main_window_positions_runtime import (
+        _mw_collect_strategy_intervals as new_collect_strategy_intervals,
+        _mw_reconfigure_positions_worker as new_reconfigure_positions_worker,
+        _mw_refresh_waiting_positions_tab as new_refresh_waiting_positions_tab,
+        configure_main_window_positions_runtime as new_configure_positions_runtime,
+    )
+    from app.gui.runtime.window.main_window_startup_runtime import (
+        apply_standard_window_flags as new_apply_standard_window_flags,
+    )
+    from app.gui.runtime.window.main_window_state_init_runtime import (
+        _initialize_backtest_state as new_initialize_backtest_state,
+        _initialize_chart_state as new_initialize_chart_state,
+        _initialize_config_state as new_initialize_config_state,
+        _initialize_runtime_state as new_initialize_runtime_state,
+        _resolve_app_state_load_path as new_resolve_app_state_load_path,
+        configure_main_window_state_init_runtime as new_configure_state_init_runtime,
+    )
     from app.gui.runtime.window.main_window_runtime import (
         _allow_guard_bypass as new_allow_guard_bypass,
         _mw_interval_sort_key as new_interval_sort_key,
         bind_main_window_runtime as new_bind_runtime,
     )
+    from app.gui.runtime.window.main_window_window_events_runtime import (
+        allow_guard_bypass as new_window_allow_guard_bypass,
+        close_event as new_close_event,
+        hide_event as new_hide_event,
+        request_strategy_shutdown as new_request_strategy_shutdown,
+        restore_window_after_guard as new_restore_window_after_guard,
+        should_block_spontaneous_close as new_should_block_spontaneous_close,
+        teardown_positions_thread as new_teardown_positions_thread,
+    )
+    from app.gui.runtime.window.bootstrap_runtime import (
+        _compute_global_pnl_totals as short_compute_global_pnl_totals,
+        _initialize_main_window_state as short_initialize_main_window_state,
+        bind_main_window_bootstrap_runtime as short_bind_bootstrap,
+    )
+    from app.gui.runtime.window.init_finalize_runtime import (
+        _finalize_init_ui as short_finalize_init_ui,
+        bind_main_window_init_finalize_runtime as short_bind_init_finalize,
+    )
+    from app.gui.runtime.window.init_ui_runtime import (
+        build_main_window_tabs_ui as short_build_main_window_tabs_ui,
+    )
+    from app.gui.runtime.window.log_runtime import (
+        _gui_buffer_log as short_gui_buffer_log,
+        _gui_flush_log_buffer as short_gui_flush_log_buffer,
+        _gui_setup_log_buffer as short_gui_setup_log_buffer,
+        _is_trigger_log_line as short_is_trigger_log_line,
+        _mw_format_display_time as short_format_display_time,
+        _mw_interval_sort_key as short_log_interval_sort_key,
+        _mw_parse_any_datetime as short_parse_any_datetime,
+    )
+    from app.gui.runtime.window.portfolio_runtime import (
+        _compute_global_pnl_totals as short_compute_portfolio_pnl_totals,
+        _update_positions_balance_labels as short_update_positions_balance_labels,
+    )
+    from app.gui.runtime.window.positions_runtime import (
+        _mw_collect_strategy_intervals as short_collect_strategy_intervals,
+        _mw_reconfigure_positions_worker as short_reconfigure_positions_worker,
+        _mw_refresh_waiting_positions_tab as short_refresh_waiting_positions_tab,
+        configure_main_window_positions_runtime as short_configure_positions_runtime,
+    )
+    from app.gui.runtime.window.startup_runtime import (
+        apply_standard_window_flags as short_apply_standard_window_flags,
+    )
+    from app.gui.runtime.window.state_init_runtime import (
+        _initialize_backtest_state as short_initialize_backtest_state,
+        _initialize_chart_state as short_initialize_chart_state,
+        _initialize_config_state as short_initialize_config_state,
+        _initialize_runtime_state as short_initialize_runtime_state,
+        _resolve_app_state_load_path as short_resolve_app_state_load_path,
+        configure_main_window_state_init_runtime as short_configure_state_init_runtime,
+    )
     from app.gui.runtime.window.window_webengine_guard_runtime import (
         schedule_webengine_runtime_prewarm as new_schedule_webengine_runtime_prewarm,
+    )
+    from app.gui.runtime.window.window_events_runtime import (
+        allow_guard_bypass as short_window_allow_guard_bypass,
+        close_event as short_close_event,
+        hide_event as short_hide_event,
+        request_strategy_shutdown as short_request_strategy_shutdown,
+        restore_window_after_guard as short_restore_window_after_guard,
+        should_block_spontaneous_close as short_should_block_spontaneous_close,
+        teardown_positions_thread as short_teardown_positions_thread,
     )
 
 
@@ -120,6 +280,7 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             new_bind_tab,
             new_bind_theme,
             new_bind_bootstrap,
+            new_bind_init_finalize,
             new_bind_runtime,
         ]
         for binder in binders:
@@ -135,16 +296,94 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             new_normalize_trigger_actions_map,
             new_initialize_main_window_state,
             new_compute_global_pnl_totals,
+            new_build_main_window_tabs_ui,
+            new_finalize_init_ui,
             new_remove_selected_symbol_interval_pairs,
             new_normalize_position_pct_units,
             new_code_tab_visibility_auto_prepare_cpp_enabled,
             new_schedule_webengine_runtime_prewarm,
             new_allow_guard_bypass,
             new_interval_sort_key,
+            new_collect_strategy_intervals,
+            new_reconfigure_positions_worker,
+            new_refresh_waiting_positions_tab,
+            new_configure_positions_runtime,
+            new_gui_setup_log_buffer,
+            new_gui_buffer_log,
+            new_gui_flush_log_buffer,
+            new_is_trigger_log_line,
+            new_parse_any_datetime,
+            new_format_display_time,
+            new_log_interval_sort_key,
+            new_compute_portfolio_pnl_totals,
+            new_update_positions_balance_labels,
+            new_apply_standard_window_flags,
+            new_initialize_backtest_state,
+            new_initialize_chart_state,
+            new_initialize_config_state,
+            new_initialize_runtime_state,
+            new_resolve_app_state_load_path,
+            new_configure_state_init_runtime,
+            new_request_strategy_shutdown,
+            new_teardown_positions_thread,
+            new_close_event,
+            new_hide_event,
+            new_restore_window_after_guard,
+            new_should_block_spontaneous_close,
+            new_window_allow_guard_bypass,
         ]
         for helper in helpers:
             self.assertTrue(callable(helper))
 
+        self.assertIs(new_bind_main_window_class, short_bind_main_window_class)
+        self.assertIs(new_install_main_window_module_state, short_install_main_window_module_state)
+        self.assertIs(new_bind_control, short_bind_control)
+        self.assertIs(new_on_leverage_changed, short_on_leverage_changed)
+        self.assertIs(new_bind_override, short_bind_override)
+        self.assertIs(new_remove_selected_symbol_interval_pairs, short_remove_selected_symbol_interval_pairs)
+        self.assertIs(new_bind_stop_loss, short_bind_stop_loss)
+        self.assertIs(new_runtime_stop_loss_update, short_runtime_stop_loss_update)
+        self.assertIs(new_normalize_trigger_actions_map, short_normalize_trigger_actions_map)
+        self.assertIs(new_bind_strategy_controls, short_bind_strategy_controls)
+        self.assertIs(new_normalize_position_pct_units, short_normalize_position_pct_units)
+        self.assertIs(new_bind_strategy_context, short_bind_strategy_context)
+        self.assertIs(new_bind_strategy_ui, short_bind_strategy_ui)
+        self.assertIs(new_normalize_loop_override, short_normalize_loop_override)
+        self.assertIs(new_start_strategy, short_start_strategy)
+        self.assertIs(new_stop_strategy_sync, short_stop_strategy_sync)
+        self.assertIs(new_collect_strategy_intervals, short_collect_strategy_intervals)
+        self.assertIs(new_reconfigure_positions_worker, short_reconfigure_positions_worker)
+        self.assertIs(new_refresh_waiting_positions_tab, short_refresh_waiting_positions_tab)
+        self.assertIs(new_configure_positions_runtime, short_configure_positions_runtime)
+        self.assertIs(new_bind_bootstrap, short_bind_bootstrap)
+        self.assertIs(new_initialize_main_window_state, short_initialize_main_window_state)
+        self.assertIs(new_compute_global_pnl_totals, short_compute_global_pnl_totals)
+        self.assertIs(new_bind_init_finalize, short_bind_init_finalize)
+        self.assertIs(new_finalize_init_ui, short_finalize_init_ui)
+        self.assertIs(new_build_main_window_tabs_ui, short_build_main_window_tabs_ui)
+        self.assertIs(new_gui_setup_log_buffer, short_gui_setup_log_buffer)
+        self.assertIs(new_gui_buffer_log, short_gui_buffer_log)
+        self.assertIs(new_gui_flush_log_buffer, short_gui_flush_log_buffer)
+        self.assertIs(new_is_trigger_log_line, short_is_trigger_log_line)
+        self.assertIs(new_parse_any_datetime, short_parse_any_datetime)
+        self.assertIs(new_format_display_time, short_format_display_time)
+        self.assertIs(new_log_interval_sort_key, short_log_interval_sort_key)
+        self.assertIs(new_compute_portfolio_pnl_totals, short_compute_portfolio_pnl_totals)
+        self.assertIs(new_update_positions_balance_labels, short_update_positions_balance_labels)
+        self.assertIs(new_apply_standard_window_flags, short_apply_standard_window_flags)
+        self.assertIs(new_initialize_backtest_state, short_initialize_backtest_state)
+        self.assertIs(new_initialize_chart_state, short_initialize_chart_state)
+        self.assertIs(new_initialize_config_state, short_initialize_config_state)
+        self.assertIs(new_initialize_runtime_state, short_initialize_runtime_state)
+        self.assertIs(new_resolve_app_state_load_path, short_resolve_app_state_load_path)
+        self.assertIs(new_configure_state_init_runtime, short_configure_state_init_runtime)
+        self.assertIs(new_request_strategy_shutdown, short_request_strategy_shutdown)
+        self.assertIs(new_teardown_positions_thread, short_teardown_positions_thread)
+        self.assertIs(new_close_event, short_close_event)
+        self.assertIs(new_hide_event, short_hide_event)
+        self.assertIs(new_restore_window_after_guard, short_restore_window_after_guard)
+        self.assertIs(new_should_block_spontaneous_close, short_should_block_spontaneous_close)
+        self.assertIs(new_window_allow_guard_bypass, short_window_allow_guard_bypass)
         self.assertTrue(new_light_theme)
 
     def test_removed_intermediate_gui_runtime_modules_raise_import_error(self):
@@ -229,6 +468,79 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         ]
         for helper in helpers:
             self.assertTrue(callable(helper))
+
+        self.assertIs(
+            positions_build_runtime._copy_allocations_for_key,
+            short_positions_build_runtime._copy_allocations_for_key,
+        )
+        self.assertIs(
+            positions_build_runtime._seed_positions_map_from_rows,
+            short_positions_build_runtime._seed_positions_map_from_rows,
+        )
+        self.assertIs(
+            positions_record_build_runtime.copy_allocations_for_key,
+            short_positions_record_build_runtime.copy_allocations_for_key,
+        )
+        self.assertIs(
+            positions_record_build_runtime.seed_positions_map_from_rows,
+            short_positions_record_build_runtime.seed_positions_map_from_rows,
+        )
+        self.assertIs(
+            positions_render_runtime._mw_render_positions_table,
+            short_positions_render_runtime._mw_render_positions_table,
+        )
+        self.assertIs(
+            positions_table_render_runtime._mw_render_positions_table,
+            short_positions_table_render_runtime._mw_render_positions_table,
+        )
+        self.assertIs(
+            positions_history_runtime._mw_positions_records_per_trade,
+            short_positions_history_runtime._mw_positions_records_per_trade,
+        )
+        self.assertIs(
+            positions_history_records_runtime._mw_positions_records_per_trade,
+            short_positions_history_records_runtime._mw_positions_records_per_trade,
+        )
+        self.assertIs(
+            positions_history_update_runtime._mw_update_position_history,
+            short_positions_history_update_runtime._mw_update_position_history,
+        )
+        self.assertIs(
+            positions_actions_runtime.bind_main_window_positions_actions_runtime,
+            short_positions_actions_runtime.bind_main_window_positions_actions_runtime,
+        )
+        self.assertIs(
+            positions_actions_runtime._mw_make_close_btn,
+            short_positions_actions_runtime._mw_make_close_btn,
+        )
+        self.assertIs(
+            positions_tracking_runtime.bind_main_window_positions_tracking_runtime,
+            short_positions_tracking_runtime.bind_main_window_positions_tracking_runtime,
+        )
+        self.assertIs(
+            positions_tracking_runtime.close_all_positions_async,
+            short_positions_tracking_runtime.close_all_positions_async,
+        )
+        self.assertIs(
+            positions_runtime_wrapper.bind_main_window_positions,
+            short_positions_runtime.bind_main_window_positions,
+        )
+        self.assertIs(
+            positions_runtime_wrapper._mw_positions_records_cumulative,
+            short_positions_runtime._mw_positions_records_cumulative,
+        )
+        self.assertIs(
+            positions_tab_runtime.bind_main_window_positions_tab,
+            short_positions_tab_runtime.bind_main_window_positions_tab,
+        )
+        self.assertIs(
+            positions_tab_runtime._create_positions_tab,
+            short_positions_tab_runtime._create_positions_tab,
+        )
+        self.assertIs(
+            positions_worker_runtime._PositionsWorker,
+            short_positions_worker_runtime._PositionsWorker,
+        )
 
     def test_main_window_module_globals_still_expose_expected_runtime_state(self):
         import app.gui.main_window as main_window_module

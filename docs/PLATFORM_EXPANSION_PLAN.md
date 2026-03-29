@@ -224,15 +224,15 @@ Start by treating these current files as the seeds of the new layers:
 
 - `Languages/Python/app/gui/positions/main_window_positions_build_runtime.py`
   Current state: GUI-facing wrapper surface
-  New home for record shaping helpers: `app/gui/positions/main_window_positions_record_build_runtime.py`
+  New home for record shaping helpers: `app/gui/positions/record_build_runtime.py`
 
 - `Languages/Python/app/gui/positions/main_window_positions_render_runtime.py`
   Current state: GUI-facing wrapper surface
-  New home for table rendering: `app/gui/positions/main_window_positions_table_render_runtime.py`
+  New home for table rendering: `app/gui/positions/table_render_runtime.py`
 
 - `Languages/Python/app/gui/positions/main_window_positions_history_runtime.py`
   Current state: wrapper surface for positions history
-  New home for per-trade history shaping: `app/gui/positions/main_window_positions_history_records_runtime.py`
+  New home for per-trade history shaping: `app/gui/positions/history_records_runtime.py`
 
 - `Languages/Python/app/indicators.py`
   Current state: compatibility shim
@@ -255,11 +255,11 @@ Start by treating these current files as the seeds of the new layers:
 - `Languages/Python/app/gui/runtime/window/main_window_init_ui_runtime.py`
   Current state: first extracted `main_window.py` UI-assembly helper
 
-- `Languages/Python/app/gui/runtime/composition/main_window_bindings_runtime.py`
-  Current state: extracted `main_window.py` class-binding/configuration helper
+- `Languages/Python/app/gui/runtime/composition/bindings_runtime.py`
+  Current state: authoritative extracted `main_window.py` class-binding/configuration helper, with `main_window_bindings_runtime.py` left as a compatibility wrapper
 
-- `Languages/Python/app/gui/runtime/composition/main_window_module_state_runtime.py`
-  Current state: extracted `main_window.py` constant/helper-alias helper
+- `Languages/Python/app/gui/runtime/composition/module_state_runtime.py`
+  Current state: authoritative extracted `main_window.py` constant/helper-alias helper, with `main_window_module_state_runtime.py` left as a compatibility wrapper
 
 - `Languages/Python/app/gui/runtime/window/window_code_tab_suppression_runtime.py`
   Current state: first extracted `window_runtime.py` slice for code-tab suppression on Windows
@@ -267,14 +267,32 @@ Start by treating these current files as the seeds of the new layers:
 - `Languages/Python/app/gui/runtime/window/window_webengine_guard_runtime.py`
   Current state: extracted `window_runtime.py` slice for WebEngine/TradingView prewarm and guard behavior
 
+- `Languages/Python/app/gui/runtime/window/bootstrap_runtime.py`, `init_ui_runtime.py`, `init_finalize_runtime.py`, and `window_events_runtime.py`
+  Current state: extracted `main_window.py` and `main_window_runtime.py` slices for bootstrap binding, initial tab assembly, final UI setup, and close/hide window-event behavior, with the matching `main_window_*` files left as compatibility wrappers
+
+- `Languages/Python/app/gui/runtime/window/log_runtime.py`, `portfolio_runtime.py`, `positions_runtime.py`, `startup_runtime.py`, and `state_init_runtime.py`
+  Current state: extracted `main_window_runtime.py` and bootstrap-support slices for log buffering, portfolio summaries, positions helper wiring, startup flags, and state initialization, with the matching `main_window_*` files left as compatibility wrappers
+
+- `Languages/Python/app/gui/runtime/window/positions_runtime.py`
+  Current state: extracted `main_window_runtime.py` slice for positions worker reconfiguration and waiting-position table helpers, with `main_window_positions_runtime.py` left as a compatibility wrapper
+
 - `Languages/Python/app/gui/runtime/window/main_window_window_events_runtime.py`
   Current state: extracted `main_window_runtime.py` slice for native close detection and close/hide window-guard lifecycle behavior
 
-- `Languages/Python/app/gui/runtime/strategy/main_window_start_strategy_runtime.py`
-  Current state: extracted `main_window_control_runtime.py` slice for start-engine lifecycle and loop-building behavior
+- `Languages/Python/app/gui/runtime/strategy/start_runtime.py`
+  Current state: authoritative start-engine lifecycle and loop-building module, with `main_window_start_strategy_runtime.py` left as a compatibility shim
 
-- `Languages/Python/app/gui/runtime/strategy/main_window_stop_strategy_runtime.py`
-  Current state: extracted `main_window_control_runtime.py` slice for stop-engine and close-all lifecycle handling
+- `Languages/Python/app/gui/runtime/strategy/stop_runtime.py`
+  Current state: authoritative stop-engine and close-all lifecycle module, with `main_window_stop_strategy_runtime.py` left as a compatibility shim
+
+- `Languages/Python/app/gui/runtime/strategy/control_runtime.py`
+  Current state: authoritative strategy control binder, with `main_window_control_runtime.py` left as a compatibility shim
+
+- `Languages/Python/app/gui/runtime/strategy/override_runtime.py`, `controls_runtime.py`, `ui_runtime.py`, `stop_loss_runtime.py`, `indicator_runtime.py`, and `context_runtime.py`
+  Current state: authoritative strategy GUI runtime modules, with the `main_window_*` files in the same package left as compatibility shims during migration
+
+- `Languages/Python/app/gui/positions/actions_runtime.py`, `build_runtime.py`, `record_build_runtime.py`, `render_runtime.py`, `table_render_runtime.py`, `history_runtime.py`, `history_records_runtime.py`, `history_update_runtime.py`, `positions_runtime.py`, `tab_runtime.py`, `tracking_runtime.py`, and `worker_runtime.py`
+  Current state: preferred public positions helper modules, with the `main_window_positions_*` files in the same package left as compatibility shims and wrapper surfaces during migration
 
 - `Languages/Python/main.py`
   Current state: stable public launcher shim

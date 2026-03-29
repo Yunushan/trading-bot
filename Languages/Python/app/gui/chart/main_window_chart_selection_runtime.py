@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
-from app.workers import CallWorker
+from app.gui.runtime.background_workers import CallWorker
 
 _DEFAULT_CHART_SYMBOLS = ()
 _SYMBOL_FETCH_TOP_N = 0

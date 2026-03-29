@@ -41,7 +41,7 @@ from app.core.indicators import (
 )
 from app.config import INDICATOR_DISPLAY_NAMES
 from .chart_widgets import SimpleCandlestickWidget
-from app.workers import CallWorker
+from app.gui.runtime.background_workers import CallWorker
 
 
 def _show_chart_status(self, message: str, color: str = "#d1d4dc"):

@@ -15,7 +15,7 @@ from app.core.indicators import (
     stoch_rsi as stoch_rsi_indicator,
     williams_r as williams_r_indicator,
 )
-from app.workers import CallWorker
+from app.gui.runtime.background_workers import CallWorker
 
 
 def sanitize_interval_hint(interval_hint: str | None) -> str:

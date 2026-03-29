@@ -33,7 +33,7 @@ try:
         supertrend as supertrend_fallback,
         stochastic as stochastic_fallback,
     )
-    from ...preamble import PANDAS_TA_AVAILABLE, PANDAS_VERSION, PANDAS_TA_VERSION
+    from ...bootstrap.runtime_env import PANDAS_TA_AVAILABLE, PANDAS_VERSION, PANDAS_TA_VERSION
 except ImportError:  # pragma: no cover - standalone execution fallback
     from config import (
         STOP_LOSS_MODE_ORDER,
@@ -58,7 +58,7 @@ except ImportError:  # pragma: no cover - standalone execution fallback
         supertrend as supertrend_fallback,
         stochastic as stochastic_fallback,
     )
-    from preamble import PANDAS_TA_AVAILABLE, PANDAS_VERSION, PANDAS_TA_VERSION
+    from bootstrap.runtime_env import PANDAS_TA_AVAILABLE, PANDAS_VERSION, PANDAS_TA_VERSION
 
 try:
     from .orders import strategy_signal_orders_runtime

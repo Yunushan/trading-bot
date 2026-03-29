@@ -43,6 +43,19 @@ from app.integrations.exchanges.binance.positions.futures_positions import (
     close_all_futures_positions as new_close_all_futures_positions,
     bind_binance_futures_positions as new_bind_positions,
 )
+from app.integrations.exchanges.binance.positions import close_all_runtime as close_all_runtime_module
+from app.integrations.exchanges.binance.positions.futures_fill_summary_runtime import (
+    _summarize_futures_order_fills as new_summarize_futures_order_fills,
+)
+from app.integrations.exchanges.binance.positions.futures_position_close_runtime import (
+    close_futures_position as new_close_futures_position,
+)
+from app.integrations.exchanges.binance.positions.futures_position_query_runtime import (
+    list_open_futures_positions as new_list_open_futures_positions,
+)
+from app.integrations.exchanges.binance.positions.futures_positions_cache_runtime import (
+    _format_quantity_for_order as new_format_quantity_for_order,
+)
 from app.integrations.exchanges.binance.runtime.futures_mode_runtime import (
     bind_binance_futures_mode_runtime as new_bind_futures_mode,
 )
@@ -120,6 +133,10 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         self.assertTrue(callable(new_bind_futures_settings))
         self.assertTrue(callable(new_bind_operational))
         self.assertTrue(callable(new_close_all_futures_positions))
+        self.assertTrue(callable(new_summarize_futures_order_fills))
+        self.assertTrue(callable(new_format_quantity_for_order))
+        self.assertTrue(callable(new_close_futures_position))
+        self.assertTrue(callable(new_list_open_futures_positions))
         self.assertIs(new_coerce_interval_seconds, _coerce_interval_seconds)
 
     def test_removed_intermediate_binance_modules_raise_import_error(self):
@@ -187,22 +204,22 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         for binder in binders:
             self.assertTrue(callable(binder))
 
-    def test_positions_close_all_delegates_via_app_close_all(self):
+    def test_positions_close_all_delegates_via_runtime_module(self):
         sentinel = [{"ok": True, "symbol": "BTCUSDT"}]
-        original = close_all_module.close_all_futures_positions
+        original = close_all_runtime_module.close_all_futures_positions
         try:
-            close_all_module.close_all_futures_positions = lambda _wrapper: sentinel
+            close_all_runtime_module.close_all_futures_positions = lambda _wrapper: sentinel
             self.assertIs(new_close_all_futures_positions(object()), sentinel)
         finally:
-            close_all_module.close_all_futures_positions = original
+            close_all_runtime_module.close_all_futures_positions = original
 
-    def test_runtime_emergency_close_all_uses_app_close_all_path(self):
+    def test_runtime_emergency_close_all_uses_runtime_close_all_path(self):
         sentinel = [{"ok": True, "symbol": "BTCUSDT"}]
-        original_close_all = close_all_module.close_all_futures_positions
+        original_close_all = close_all_runtime_module.close_all_futures_positions
         original_thread = runtime_trigger_emergency_close_all.__globals__["threading"].Thread
         wrapper = _DummyOperationalWrapper()
         try:
-            close_all_module.close_all_futures_positions = lambda _wrapper: sentinel
+            close_all_runtime_module.close_all_futures_positions = lambda _wrapper: sentinel
             runtime_trigger_emergency_close_all.__globals__["threading"].Thread = _DummyThread
             accepted = runtime_trigger_emergency_close_all(
                 wrapper,
@@ -214,7 +231,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             self.assertTrue(accepted)
             self.assertTrue(wrapper._emergency_close_info.get("success"))
         finally:
-            close_all_module.close_all_futures_positions = original_close_all
+            close_all_runtime_module.close_all_futures_positions = original_close_all
             runtime_trigger_emergency_close_all.__globals__["threading"].Thread = original_thread
 
 

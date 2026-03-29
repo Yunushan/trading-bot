@@ -133,7 +133,7 @@ def trigger_emergency_close_all(
                 attempt += 1
                 try:
                     if account.startswith("FUT"):
-                        from app.close_all import close_all_futures_positions as _close_all_futures
+                        from ..positions.close_all_runtime import close_all_futures_positions as _close_all_futures
 
                         result = _close_all_futures(self) or []
                         ok = all((r.get("ok") or r.get("skipped")) for r in result) if result else True

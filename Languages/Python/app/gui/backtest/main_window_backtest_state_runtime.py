@@ -4,7 +4,7 @@ from datetime import datetime
 
 from PyQt6 import QtCore, QtWidgets
 
-from app.workers import CallWorker
+from app.gui.runtime.background_workers import CallWorker
 
 _BACKTEST_INTERVAL_ORDER: tuple[str, ...] = ()
 _SIDE_LABELS: dict[str, str] = {}

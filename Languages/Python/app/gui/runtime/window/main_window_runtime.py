@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 
 from . import (
-    main_window_log_runtime,
-    main_window_positions_runtime,
-    main_window_window_events_runtime,
+    log_runtime as main_window_log_runtime,
+    positions_runtime as main_window_positions_runtime,
+    window_events_runtime as main_window_window_events_runtime,
 )
 
 _STRATEGY_ENGINE_CLS = None

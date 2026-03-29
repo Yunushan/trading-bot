@@ -23,11 +23,11 @@ if __package__ in (None, ""):
     sys.path.append(str(_THIS_FILE.parents[2]))
 
 from app.gui.runtime.composition import (
-    main_window_bindings_runtime,
-    main_window_module_state_runtime,
+    bindings_runtime as main_window_bindings_runtime,
+    module_state_runtime as main_window_module_state_runtime,
 )
 from app.gui.runtime.ui import main_window_theme_styles
-from app.gui.runtime.window import main_window_init_ui_runtime, main_window_startup_runtime
+from app.gui.runtime.window import init_ui_runtime as main_window_init_ui_runtime, startup_runtime as main_window_startup_runtime
 
 
 main_window_module_state_runtime.install_main_window_module_state(
