@@ -120,7 +120,7 @@ def resolve_relaunch_executable(script_path: Path | str | None = None) -> Path |
     if sys.platform != "win32":
         return None
     raw_candidates: list[Path] = []
-    for raw_path in (getattr(sys, "_base_executable", None), sys.executable):
+    for raw_path in (sys.executable, getattr(sys, "_base_executable", None)):
         text = str(raw_path or "").strip()
         if not text:
             continue

@@ -39,37 +39,25 @@ def _maybe_launch_via_shell_shortcut() -> None:
     except Exception:
         pass
     try:
-        current_exe = Path(sys.executable).resolve()
-    except Exception:
-        return
-    try:
-        base_exe = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
-    except Exception:
-        base_exe = current_exe
-    gui_host = base_exe
-    try:
-        name = str(base_exe.name or "").strip().lower()
-    except Exception:
-        name = ""
-    if name == "python.exe":
-        gui_host = base_exe.with_name("pythonw.exe")
-    elif name == "py.exe":
-        gui_host = base_exe.with_name("pyw.exe")
-    if not gui_host.exists():
-        _boot_log(f"skip shell shortcut: gui host missing {gui_host}")
-        return
-    if current_exe == gui_host:
-        _boot_log("skip shell shortcut: already running under gui host")
-        return
-
-    try:
         from app.bootstrap.startup_icon_runtime import _resolve_taskbar_icon_path
+        from app.platform.windows_taskbar_metadata_runtime import resolve_relaunch_executable
         from app.platform.windows_taskbar import build_relaunch_command, ensure_start_menu_shortcut
     except Exception:
         _boot_log("skip shell shortcut: failed to import taskbar helpers")
         return
 
     workspace_dir = Path(__file__).resolve().parent
+    try:
+        current_exe = Path(sys.executable).resolve()
+    except Exception:
+        return
+    gui_host = resolve_relaunch_executable(workspace_dir / "main.py")
+    if gui_host is None or not gui_host.exists():
+        _boot_log(f"skip shell shortcut: gui host missing {gui_host}")
+        return
+    if current_exe == gui_host:
+        _boot_log("skip shell shortcut: already running under gui host")
+        return
     gui_args = ["-m", "app.desktop.bootstrap.main", *sys.argv[1:]]
     try:
         shortcut_path = ensure_start_menu_shortcut(

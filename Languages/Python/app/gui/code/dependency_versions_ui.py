@@ -120,6 +120,13 @@ def _resolve_python_command_prefix(self) -> list[str] | None:
         seen.add(normalized)
         candidates.append(list(normalized))
 
+    venv_root = BASE_PROJECT_PATH / ".venv"
+    if sys.platform == "win32":
+        _add([str(venv_root / "Scripts" / "python.exe")])
+    else:
+        _add([str(venv_root / "bin" / "python3")])
+        _add([str(venv_root / "bin" / "python")])
+
     if not frozen:
         try:
             current_python = Path(sys.executable).resolve()
@@ -127,13 +134,6 @@ def _resolve_python_command_prefix(self) -> list[str] | None:
             current_python = Path(sys.executable)
         if current_python.name.lower().startswith("python"):
             _add([str(current_python)])
-
-    venv_root = BASE_PROJECT_PATH / ".venv"
-    if sys.platform == "win32":
-        _add([str(venv_root / "Scripts" / "python.exe")])
-    else:
-        _add([str(venv_root / "bin" / "python3")])
-        _add([str(venv_root / "bin" / "python")])
 
     for executable in ("python", "python3"):
         found = shutil.which(executable)
