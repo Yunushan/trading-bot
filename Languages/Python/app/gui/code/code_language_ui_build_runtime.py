@@ -62,14 +62,23 @@ def init_code_language_tab(
 
     scroll = QtWidgets.QScrollArea(tab)
     scroll.setWidgetResizable(True)
+    scroll.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop)
     scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     outer_layout.addWidget(scroll)
 
     content = QtWidgets.QWidget(scroll)
+    content.setMaximumWidth(1240)
+    content.setSizePolicy(
+        QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
+    )
     layout = QtWidgets.QVBoxLayout(content)
     layout.setContentsMargins(10, 10, 10, 10)
-    layout.setSpacing(12)
+    layout.setSpacing(10)
+    layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
     scroll.setWidget(content)
 
     description = QtWidgets.QLabel(
@@ -94,6 +103,7 @@ def init_code_language_tab(
     layout.addWidget(lang_label)
     lang_row = QtWidgets.QHBoxLayout()
     lang_row.setSpacing(12)
+    lang_row.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
     for opt in STARTER_LANGUAGE_OPTIONS:
         card = starter_card_cls(
             opt["config_key"],
@@ -105,12 +115,100 @@ def init_code_language_tab(
             parent=content,
         )
         card.clicked.connect(self._code_tab_select_language)
-        card.setMinimumWidth(180)
-        lang_row.addWidget(card, 1)
+        card.setMinimumWidth(220)
+        card.setMaximumWidth(250)
+        card.setFixedHeight(108)
+        card.setSizePolicy(
+            QtWidgets.QSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Preferred,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+        )
+        lang_row.addWidget(card, 0)
         self._starter_language_cards[opt["config_key"]] = card
         self._starter_language_base_subtitles[opt["config_key"]] = str(opt.get("subtitle") or "").strip()
     lang_row.addStretch()
     layout.addLayout(lang_row)
+
+    confirmation_overlay = QtWidgets.QWidget(scroll.viewport())
+    confirmation_overlay.setObjectName("code_tab_confirmation_overlay")
+    confirmation_overlay.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
+    confirmation_overlay.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+    confirmation_overlay.setStyleSheet("background-color: rgba(2, 6, 23, 180);")
+    confirmation_overlay.hide()
+
+    confirmation_overlay_layout = QtWidgets.QVBoxLayout(confirmation_overlay)
+    confirmation_overlay_layout.setContentsMargins(24, 24, 24, 24)
+    confirmation_overlay_layout.addStretch()
+
+    confirmation_panel = QtWidgets.QFrame(confirmation_overlay)
+    confirmation_panel.setObjectName("code_tab_confirmation_popup")
+    confirmation_panel.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
+    confirmation_panel.setStyleSheet(
+        "#code_tab_confirmation_popup {"
+        "background-color: #111827;"
+        "border: 1px solid #334155;"
+        "border-radius: 14px;"
+        "}"
+        "#code_tab_confirmation_popup QLabel {"
+        "background-color: transparent;"
+        "border: none;"
+        "}"
+        "#code_tab_confirmation_popup QPushButton {"
+        "background-color: #0b1220;"
+        "color: #f8fafc;"
+        "border: 1px solid #334155;"
+        "padding: 6px 14px;"
+        "}"
+        "#code_tab_confirmation_popup QPushButton:hover {"
+        "background-color: #162033;"
+        "}"
+        "#code_tab_confirmation_popup QPushButton:pressed {"
+        "background-color: #0f172a;"
+        "}"
+    )
+    confirmation_panel.setMinimumWidth(420)
+    confirmation_panel.setMaximumWidth(520)
+    confirmation_panel_layout = QtWidgets.QVBoxLayout(confirmation_panel)
+    confirmation_panel_layout.setContentsMargins(20, 18, 20, 18)
+    confirmation_panel_layout.setSpacing(14)
+
+    confirmation_title = QtWidgets.QLabel("", confirmation_panel)
+    confirmation_title.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    confirmation_title.setAutoFillBackground(False)
+    confirmation_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #f8fafc; background-color: transparent;")
+    confirmation_panel_layout.addWidget(confirmation_title)
+
+    confirmation_body = QtWidgets.QLabel("", confirmation_panel)
+    confirmation_body.setWordWrap(True)
+    confirmation_body.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    confirmation_body.setAutoFillBackground(False)
+    confirmation_body.setStyleSheet("font-size: 12px; color: #cbd5e1; background-color: transparent;")
+    confirmation_panel_layout.addWidget(confirmation_body)
+
+    confirmation_buttons = QtWidgets.QHBoxLayout()
+    confirmation_buttons.addStretch()
+    confirmation_no_btn = QtWidgets.QPushButton("No", confirmation_panel)
+    confirmation_yes_btn = QtWidgets.QPushButton("Yes", confirmation_panel)
+    confirmation_no_btn.setMinimumWidth(56)
+    confirmation_yes_btn.setMinimumWidth(56)
+    confirmation_buttons.addWidget(confirmation_yes_btn)
+    confirmation_buttons.addWidget(confirmation_no_btn)
+    confirmation_panel_layout.addLayout(confirmation_buttons)
+    confirmation_overlay_layout.addWidget(
+        confirmation_panel,
+        alignment=QtCore.Qt.AlignmentFlag.AlignHCenter,
+    )
+    confirmation_overlay_layout.addStretch()
+
+    self._code_tab_confirmation_overlay = confirmation_overlay
+    self._code_tab_confirmation_panel = confirmation_panel
+    self._code_tab_confirmation_title_label = confirmation_title
+    self._code_tab_confirmation_body_label = confirmation_body
+    self._code_tab_confirmation_no_btn = confirmation_no_btn
+    self._code_tab_confirmation_yes_btn = confirmation_yes_btn
+    confirmation_no_btn.clicked.connect(lambda: self._finish_code_tab_confirmation(False))
+    confirmation_yes_btn.clicked.connect(lambda: self._finish_code_tab_confirmation(True))
 
     rust_framework_label = QtWidgets.QLabel("Choose your Rust framework", content)
     rust_framework_label.setStyleSheet("font-size: 18px; font-weight: 600;")
@@ -161,12 +259,18 @@ def init_code_language_tab(
     versions_layout = QtWidgets.QGridLayout(versions_container)
     versions_layout.setContentsMargins(6, 6, 6, 6)
     versions_layout.setColumnStretch(0, 0)
-    versions_layout.setColumnStretch(1, 0)
+    versions_layout.setColumnStretch(1, 1)
     versions_layout.setColumnStretch(2, 0)
     versions_layout.setColumnStretch(3, 0)
     versions_layout.setColumnStretch(4, 0)
     versions_layout.setColumnStretch(5, 0)
-    versions_layout.setColumnStretch(6, 1)
+    versions_layout.setColumnStretch(6, 0)
+    versions_layout.setColumnMinimumWidth(0, 52)
+    versions_layout.setColumnMinimumWidth(1, 340)
+    versions_layout.setColumnMinimumWidth(2, 84)
+    versions_layout.setColumnMinimumWidth(3, 84)
+    versions_layout.setColumnMinimumWidth(4, 72)
+    versions_layout.setColumnMinimumWidth(5, 150)
     versions_layout.setVerticalSpacing(8)
     versions_layout.setHorizontalSpacing(12)
     versions_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
@@ -204,6 +308,7 @@ def init_code_language_tab(
     versions_group_layout.addLayout(version_btn_row)
     versions_group_layout.addWidget(versions_scroll, 1)
     layout.addWidget(versions_group, 0)
+    layout.addStretch(1)
 
     self._update_bot_status()
     try:

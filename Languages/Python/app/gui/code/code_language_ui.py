@@ -6,6 +6,7 @@ from .code_language_ui_build_runtime import (
     init_code_language_tab,
 )
 from .code_language_ui_selection_runtime import (
+    _finish_code_tab_confirmation,
     code_tab_select_exchange,
     code_tab_select_forex,
     code_tab_select_language,
@@ -26,6 +27,7 @@ from .code_language_ui_state_runtime import (
 )
 
 __all__ = [
+    "_finish_code_tab_confirmation",
     "_code_tab_auto_refresh_versions_enabled",
     "_ensure_rust_framework_cards",
     "code_tab_select_exchange",

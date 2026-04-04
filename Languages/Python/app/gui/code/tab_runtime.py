@@ -217,6 +217,10 @@ def _code_tab_select_forex(self, broker_key: str) -> None:
     return code_language_ui.code_tab_select_forex(self, broker_key)
 
 
+def _finish_code_tab_confirmation(self, accepted: bool) -> None:
+    return code_language_ui._finish_code_tab_confirmation(self, accepted)
+
+
 def _refresh_code_tab_from_config(self) -> None:
     return code_language_ui.refresh_code_tab_from_config(
         self,
@@ -321,6 +325,7 @@ def bind_main_window_code(
     main_window_cls._code_tab_select_market = _code_tab_select_market
     main_window_cls._code_tab_select_exchange = _code_tab_select_exchange
     main_window_cls._code_tab_select_forex = _code_tab_select_forex
+    main_window_cls._finish_code_tab_confirmation = _finish_code_tab_confirmation
     main_window_cls._refresh_code_tab_from_config = _refresh_code_tab_from_config
     main_window_cls._code_tab_visible = _code_tab_visible
     main_window_cls._ensure_cpp_process_watchdog = _ensure_cpp_process_watchdog

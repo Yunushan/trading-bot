@@ -1,6 +1,6 @@
 param(
   [string]$AqtInstallVersion = "3.3.0",
-  [string]$QtVersion = "6.10.3",
+  [string]$QtVersion = "6.11.0",
   [string]$QtArch = "win64_msvc2022_64",
   [string]$QtOutputDir = "C:/Qt",
   [string]$Triplet = "x64-windows",
@@ -31,6 +31,27 @@ function Invoke-Checked {
   }
 }
 
+function Test-VersionAtLeast {
+  param(
+    [string]$Left,
+    [string]$Right
+  )
+
+  try {
+    return ([version]$Left) -ge ([version]$Right)
+  } catch {
+    return $false
+  }
+}
+
+function Test-QtOfficialAuthAvailable {
+  $qtAccountIni = Join-Path $env:APPDATA "Qt\qtaccount.ini"
+  if (Test-Path $qtAccountIni) {
+    return $true
+  }
+  return -not [string]::IsNullOrWhiteSpace($env:QT_INSTALLER_JWT_TOKEN)
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $cppRoot = Resolve-Path (Join-Path $scriptDir "..")
 $repoRoot = Resolve-Path (Join-Path $cppRoot "..\..")
@@ -50,8 +71,72 @@ $aqtInstallSpec = "aqtinstall==$AqtInstallVersion"
 Invoke-Checked -Label "Installing $aqtInstallSpec" -Command @($pythonExe, "-m", "pip", "install", "--upgrade", $aqtInstallSpec)
 
 $qtModules = @("qtwebengine", "qtwebsockets", "qtwebchannel", "qtpositioning")
-$qtInstallCommand = @($pythonExe, "-m", "aqt", "install-qt", "windows", "desktop", $QtVersion, $QtArch, "--outputdir", $QtOutputDir, "-m") + $qtModules
-Invoke-Checked -Label "Installing Qt $QtVersion ($QtArch) with modules: $($qtModules -join ', ')" -Command $qtInstallCommand
+$fallbackQtVersion = "6.10.3"
+$resolvedQtVersion = $null
+
+function Install-QtViaMirrorAqt {
+  param([string]$Version)
+  $qtInstallCommand = @($pythonExe, "-m", "aqt", "install-qt", "windows", "desktop", $Version, $QtArch, "--outputdir", $QtOutputDir, "-m") + $qtModules
+  Invoke-Checked -Label "Installing Qt $Version ($QtArch) with mirror-based aqt and modules: $($qtModules -join ', ')" -Command $qtInstallCommand
+}
+
+function Install-QtViaOfficialAqt {
+  param([string]$Version)
+  $qtInstallCommand = @(
+    $pythonExe,
+    "-m",
+    "aqt",
+    "install-qt-official",
+    "desktop",
+    $QtArch,
+    $Version,
+    "--outputdir",
+    $QtOutputDir,
+    "--modules"
+  ) + $qtModules
+  Invoke-Checked -Label "Installing Qt $Version ($QtArch) with the official Qt installer and modules: $($qtModules -join ', ')" -Command $qtInstallCommand
+}
+
+$qtInstallErrors = New-Object System.Collections.Generic.List[string]
+$qtOfficialAuthAvailable = Test-QtOfficialAuthAvailable
+
+if (Test-VersionAtLeast -Left $QtVersion -Right "6.11.0") {
+  if ($qtOfficialAuthAvailable) {
+    try {
+      Install-QtViaOfficialAqt -Version $QtVersion
+      $resolvedQtVersion = $QtVersion
+    } catch {
+      $qtInstallErrors.Add("Official Qt installer failed for $QtVersion ($QtArch): $($_.Exception.Message)")
+      Write-Warning "Official Qt installer failed for Qt $QtVersion. Falling back to mirror-based aqt and, if needed, Qt $fallbackQtVersion."
+    }
+  } else {
+    Write-Warning "Qt $QtVersion on Windows needs Qt account credentials for the official installer path. Falling back to mirror-based aqt and, if needed, Qt $fallbackQtVersion."
+  }
+}
+
+if (-not $resolvedQtVersion) {
+  try {
+    Install-QtViaMirrorAqt -Version $QtVersion
+    $resolvedQtVersion = $QtVersion
+  } catch {
+    $qtInstallErrors.Add("Mirror-based aqt install failed for $QtVersion ($QtArch): $($_.Exception.Message)")
+    Write-Warning "Mirror-based aqt install failed for Qt $QtVersion."
+  }
+}
+
+if (-not $resolvedQtVersion -and $QtVersion -ne $fallbackQtVersion) {
+  try {
+    Install-QtViaMirrorAqt -Version $fallbackQtVersion
+    $resolvedQtVersion = $fallbackQtVersion
+    Write-Warning "Installed fallback Qt $fallbackQtVersion because Qt $QtVersion was not provisionable through the current Windows setup path."
+  } catch {
+    $qtInstallErrors.Add("Mirror-based aqt install failed for fallback Qt $fallbackQtVersion ($QtArch): $($_.Exception.Message)")
+  }
+}
+
+if (-not $resolvedQtVersion) {
+  throw ("Qt installation failed. " + ($qtInstallErrors -join " "))
+}
 
 if (!(Test-Path (Join-Path $localVcpkg "vcpkg.exe"))) {
   if (!(Test-Path $localVcpkg)) {
@@ -85,5 +170,5 @@ $vcpkgInstallCommand = @($vcpkgExe, "install") + $ports
 Invoke-Checked -Label "Installing vcpkg ports: $($ports -join ', ')" -Command $vcpkgInstallCommand
 
 Write-Host "Done."
-Write-Host "Qt root: $QtOutputDir/$QtVersion"
+Write-Host "Qt root: $QtOutputDir/$resolvedQtVersion"
 Write-Host "vcpkg root: $localVcpkg"

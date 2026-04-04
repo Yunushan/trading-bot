@@ -2,7 +2,7 @@
 set -euo pipefail
 
 AQT_INSTALL_VERSION="${AQT_INSTALL_VERSION:-3.3.0}"
-QT_VERSION="${QT_VERSION:-6.10.3}"
+QT_VERSION="${QT_VERSION:-6.11.0}"
 QT_OUTPUT_DIR="${QT_OUTPUT_DIR:-$HOME/Qt}"
 QT_HOST="${QT_HOST:-}"
 QT_ARCH="${QT_ARCH:-}"
@@ -16,7 +16,7 @@ Usage: ./Languages/C++/tools/install_cpp_dependencies.sh [options]
 
 Options:
   --aqt-install-version <ver>   Pin aqtinstall version (default: 3.3.0)
-  --qt-version <ver>            Pin Qt version (default: 6.10.3)
+  --qt-version <ver>            Pin Qt version (default: 6.11.0)
   --qt-output-dir <path>        Qt install root (default: $HOME/Qt)
   --qt-host <host>              aqt host: mac|linux|linux_arm64 (auto-detected)
   --qt-arch <arch>              aqt architecture (auto-detected)

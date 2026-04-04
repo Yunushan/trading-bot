@@ -4,7 +4,7 @@ project(BinanceBacktestTabCpp LANGUAGES CXX)
 
 set(TB_EXECUTABLE_NAME "Trading-Bot-C++")
 set(TB_LEGACY_EXECUTABLE_NAME "binance_backtest_tab")
-set(TB_QT_VERSION "6.10.3" CACHE STRING "Pinned Qt version for reproducible builds")
+set(TB_QT_VERSION "6.10.3" CACHE STRING "Minimum supported Qt version for the C++ build")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,20 +21,22 @@ if ((NOT DEFINED Qt6_DIR) OR Qt6_DIR STREQUAL "" OR Qt6_DIR MATCHES "NOTFOUND")
     set(_tb_qt6_candidates "")
     if (WIN32)
         # Respect caller-provided Qt6_DIR (for example CI ARM64 jobs). Only auto-detect when absent.
+        # Search installed Qt kits and prefer the newest compatible version.
         if (CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
-            list(APPEND _tb_qt6_candidates
-                "C:/Qt/${TB_QT_VERSION}/msvc2022_arm64/lib/cmake/Qt6"
-                "C:/Qt/${TB_QT_VERSION}/msvc2022_arm64_cross_compiled/lib/cmake/Qt6")
+            file(GLOB _tb_qt6_candidates
+                "C:/Qt/*/msvc2022_arm64/lib/cmake/Qt6"
+                "C:/Qt/*/msvc2022_arm64_cross_compiled/lib/cmake/Qt6")
         else()
-            # Prefer the pinned x64 kit that includes WebEngine so the C++ chart tab can mirror Python modes.
-            list(APPEND _tb_qt6_candidates "C:/Qt/${TB_QT_VERSION}/msvc2022_64/lib/cmake/Qt6")
+            # Prefer the newest x64 kit that includes WebEngine so the C++ chart tab can mirror Python modes.
+            file(GLOB _tb_qt6_candidates "C:/Qt/*/msvc2022_64/lib/cmake/Qt6")
         endif()
+        list(SORT _tb_qt6_candidates COMPARE NATURAL ORDER DESCENDING)
     else()
-        # Search common Unix-style Qt install roots within the pinned Qt version.
+        # Search common Unix-style Qt install roots and prefer the newest compatible version.
         file(GLOB _tb_qt6_candidates
-            "$ENV{HOME}/Qt/${TB_QT_VERSION}/*/lib/cmake/Qt6"
-            "/opt/Qt/${TB_QT_VERSION}/*/lib/cmake/Qt6"
-            "/usr/local/Qt/${TB_QT_VERSION}/*/lib/cmake/Qt6")
+            "$ENV{HOME}/Qt/*/*/lib/cmake/Qt6"
+            "/opt/Qt/*/*/lib/cmake/Qt6"
+            "/usr/local/Qt/*/*/lib/cmake/Qt6")
         list(SORT _tb_qt6_candidates COMPARE NATURAL ORDER DESCENDING)
     endif()
 
@@ -102,9 +104,9 @@ if (WIN32)
     endif()
 endif()
 
-find_package(Qt6 ${TB_QT_VERSION} EXACT REQUIRED COMPONENTS Widgets Network)
-find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} EXACT QUIET)
-find_package(Qt6WebSockets ${TB_QT_VERSION} EXACT QUIET)
+find_package(Qt6 ${TB_QT_VERSION} REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} QUIET)
+find_package(Qt6WebSockets ${TB_QT_VERSION} QUIET)
 
 set(HAS_WEBENGINE 0)
 if (TARGET Qt6::WebEngineWidgets)

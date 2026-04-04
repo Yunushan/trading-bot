@@ -163,7 +163,7 @@ def _cpp_target_meets_requirement(target: dict[str, str], installed_value: str |
         installed_qt = shared._extract_semver_from_text(installed)
         if not pinned_qt or not installed_qt:
             return False
-        return installed_qt == pinned_qt
+        return shared._version_sort_key(installed_qt) >= shared._version_sort_key(pinned_qt)
     return _cpp_version_is_installed_marker(installed)
 
 

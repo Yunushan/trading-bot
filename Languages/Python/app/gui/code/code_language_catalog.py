@@ -249,10 +249,10 @@ DEFAULT_DEPENDENCY_VERSION_TARGETS = [
 ]
 
 CPP_DEPENDENCY_VERSION_TARGETS = [
-    {"label": "Qt6 (C++)", "custom": "cpp_qt", "latest": "6.10.3"},
-    {"label": "Qt6 Network (REST)", "custom": "cpp_qt_network", "latest": "6.10.3"},
-    {"label": "Qt6 WebEngine", "custom": "cpp_qt_webengine", "latest": "6.10.3"},
-    {"label": "Qt6 WebSockets", "custom": "cpp_qt_websockets", "latest": "6.10.3"},
+    {"label": "Qt6 (C++)", "custom": "cpp_qt", "latest": "6.11.0"},
+    {"label": "Qt6 Network (REST)", "custom": "cpp_qt_network", "latest": "6.11.0"},
+    {"label": "Qt6 WebEngine", "custom": "cpp_qt_webengine", "latest": "6.11.0"},
+    {"label": "Qt6 WebSockets", "custom": "cpp_qt_websockets", "latest": "6.11.0"},
     {
         "label": "Binance REST client (native)",
         "custom": "cpp_file_version",
