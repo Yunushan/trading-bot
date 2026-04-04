@@ -55,7 +55,24 @@ class MainWindow(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
+        try:
+            self.setWindowTitle("Trading Bot")
+        except Exception:
+            pass
+        try:
+            _apply_window_icon(self)
+        except Exception:
+            pass
         main_window_startup_runtime.apply_standard_window_flags(self)
+        if sys.platform == "win32":
+            try:
+                self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+            except Exception:
+                pass
+            try:
+                self.winId()
+            except Exception:
+                pass
         self._initialize_main_window_state()
 
     def init_ui(self):

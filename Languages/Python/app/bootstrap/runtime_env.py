@@ -175,25 +175,8 @@ def _resolve_pandas_version():
             return "not-installed"
 
 
-def _resolve_pandas_ta_version():
-    # Try distribution metadata first (works even if import would fail)
-    for _dist in ("pandas_ta", "pandas-ta"):
-        try:
-            return _md.version(_dist)
-        except Exception:
-            pass
-    # Fallback to module import
-    try:
-        import pandas_ta as _pta
-
-        return getattr(_pta, "__version__", "installed")
-    except Exception:
-        return "not-installed"
-
-
 # Resolve versions FIRST so the print never raises NameError
 _PANDAS_VER = _resolve_pandas_version()
-_PTA = _resolve_pandas_ta_version()
 
 
 def _resolve_module_version(primary: str, *alternates: str) -> str:
@@ -253,7 +236,7 @@ _NUMPY_VER = _resolve_module_version("numpy")
 _REQUESTS_VER = _resolve_module_version("requests")
 
 print(
-    f"pandas={_PANDAS_VER}, pandas_ta={_PTA}, {_QT_LINE}, {_WEBENGINE}, "
+    f"pandas={_PANDAS_VER}, {_QT_LINE}, {_WEBENGINE}, "
     f"python-binance={_PYBINANCE_VER}, binance-connector={_BINANCE_CONNECTOR_VER}, ccxt={_CCXT_VER}, "
     f"binance-sdk-derivatives-trading-usds-futures={_SDK_USDS_VER}, "
     f"binance-sdk-derivatives-trading-coin-futures={_SDK_COIN_VER}, "
@@ -263,5 +246,3 @@ print(
 )
 
 PANDAS_VERSION = _PANDAS_VER
-PANDAS_TA_VERSION = _PTA
-PANDAS_TA_AVAILABLE = bool(_PTA and _PTA != "not-installed")

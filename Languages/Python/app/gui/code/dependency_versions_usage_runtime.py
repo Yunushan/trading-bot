@@ -46,7 +46,6 @@ _DEPENDENCY_MODULE_ALIASES = {
     "llvmlite": ("llvmlite",),
     "numpy": ("numpy",),
     "pandas": ("pandas",),
-    "pandas-ta": ("pandas_ta",),
     "requests": ("requests",),
     "binance-sdk-derivatives-trading-usds-futures": ("binance_sdk_derivatives_trading_usds_futures",),
     "binance-sdk-derivatives-trading-coin-futures": ("binance_sdk_derivatives_trading_coin_futures",),
@@ -103,7 +102,7 @@ def _set_dependency_usage_widget(widget: QtWidgets.QLabel | None, usage: str | N
     usage_text = _normalize_dependency_usage_text(usage)
     usage_color = _dependency_usage_color(usage_text)
     widget.setText(usage_text)
-    widget.setStyleSheet(f"font-size: 11px; padding: 2px; font-weight: 600; color: {usage_color};")
+    widget.setStyleSheet(f"font-size: 11px; padding: 2px 4px 4px 4px; font-weight: 600; color: {usage_color};")
 
 
 def _set_dependency_usage_counter_widget(widget: QtWidgets.QLabel | None, count: int | str | None) -> None:
@@ -114,7 +113,7 @@ def _set_dependency_usage_counter_widget(widget: QtWidgets.QLabel | None, count:
     except Exception:
         count_value = 0
     widget.setText(str(count_value))
-    widget.setStyleSheet("font-size: 11px; padding: 2px; font-weight: 600;")
+    widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px; font-weight: 600;")
 
 
 def _make_dependency_cell_copyable(widget: QtWidgets.QLabel | None) -> None:

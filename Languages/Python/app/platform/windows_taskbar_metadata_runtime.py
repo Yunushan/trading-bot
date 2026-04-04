@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -114,11 +115,64 @@ def ensure_taskbar_visible(window) -> bool:
     return True
 
 
-def build_relaunch_command(script_path: Path | str | None = None) -> str | None:
-    """Return a relaunch command string suitable for PKEY_AppUserModel_RelaunchCommand."""
+def resolve_relaunch_executable(script_path: Path | str | None = None) -> Path | None:
+    """Return the preferred Windows GUI host executable for relaunch/shortcuts."""
     if sys.platform != "win32":
         return None
-    exe = Path(sys.executable).resolve()
+    raw_candidates: list[Path] = []
+    for raw_path in (getattr(sys, "_base_executable", None), sys.executable):
+        text = str(raw_path or "").strip()
+        if not text:
+            continue
+        try:
+            candidate = Path(text).resolve()
+        except Exception:
+            candidate = Path(text)
+        if candidate not in raw_candidates:
+            raw_candidates.append(candidate)
+    if not raw_candidates:
+        return None
+    if getattr(sys, "frozen", False):
+        for candidate in raw_candidates:
+            if candidate.exists():
+                return candidate
+        return raw_candidates[0]
+
+    preferred: list[Path] = []
+    fallback: list[Path] = []
+    for exe in raw_candidates:
+        name = str(exe.name or "").strip().lower()
+        if name in {"pythonw.exe", "pyw.exe"}:
+            preferred.append(exe)
+            continue
+        gui_candidates: list[Path] = []
+        if name == "python.exe":
+            gui_candidates.append(exe.with_name("pythonw.exe"))
+        elif name == "py.exe":
+            gui_candidates.append(exe.with_name("pyw.exe"))
+            gui_candidates.append(exe.with_name("pythonw.exe"))
+        elif name.startswith("python") and name.endswith(".exe"):
+            gui_candidates.append(exe.with_name("pythonw.exe"))
+        for candidate in gui_candidates:
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                resolved = candidate
+            if resolved not in preferred:
+                preferred.append(resolved)
+        if exe not in fallback:
+            fallback.append(exe)
+
+    for candidate in preferred + fallback:
+        if candidate.exists():
+            return candidate
+    return (preferred + fallback)[0]
+
+
+def resolve_relaunch_arguments(script_path: Path | str | None = None) -> list[str] | None:
+    """Return preferred launch arguments for source and packaged Windows relaunches."""
+    if sys.platform != "win32":
+        return None
     if script_path is None:
         try:
             script = Path(sys.argv[0]).resolve()
@@ -126,9 +180,34 @@ def build_relaunch_command(script_path: Path | str | None = None) -> str | None:
             script = None
     else:
         script = Path(script_path).resolve()
-    if not exe.exists() or script is None:
+    if script is None:
         return None
-    return f'"{exe}" "{script}"'
+    if not getattr(sys, "frozen", False):
+        try:
+            if (
+                script.name.lower() == "main.py"
+                and script.parent.name.lower() == "python"
+                and script.parent.parent.name.lower() == "languages"
+            ):
+                return ["-m", "app.desktop.bootstrap.main"]
+        except Exception:
+            pass
+    return [str(script)]
+
+
+def build_relaunch_command(script_path: Path | str | None = None) -> str | None:
+    """Return a relaunch command string suitable for PKEY_AppUserModel_RelaunchCommand."""
+    if sys.platform != "win32":
+        return None
+    exe = resolve_relaunch_executable(script_path)
+    args = resolve_relaunch_arguments(script_path)
+    if exe is None or not exe.exists() or not args:
+        return None
+    try:
+        return subprocess.list2cmdline([str(exe), *args])
+    except Exception:
+        joined_args = " ".join(f'"{arg}"' for arg in args)
+        return f'"{exe}" {joined_args}'.strip()
 
 
 __all__ = [
@@ -136,4 +215,6 @@ __all__ = [
     "build_relaunch_command",
     "ensure_app_user_model_id",
     "ensure_taskbar_visible",
+    "resolve_relaunch_arguments",
+    "resolve_relaunch_executable",
 ]

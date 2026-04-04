@@ -60,6 +60,11 @@ def refresh_code_tab_from_config(
         targets_changed = True
     elif not resolved_targets:
         resolved_targets = list(getattr(self, "_dep_version_targets", []) or [])
+    if targets_changed:
+        try:
+            self._dep_version_auto_refresh_done = False
+        except Exception:
+            pass
     if targets_changed and self._code_tab_visible() and code_tab_auto_refresh_versions_enabled():
         QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
     refresh_dependency_usage_labels(self, resolved_targets)

@@ -68,14 +68,9 @@ def _resolve_taskbar_icon_path() -> Path | None:
             ico_path = env_path.with_suffix(".ico")
             if ico_path.is_file():
                 return ico_path
-            return env_path
-    if getattr(sys, "frozen", False):
-        try:
-            exe_icon = Path(sys.executable).resolve()
-        except Exception:
-            exe_icon = None
-        if exe_icon is not None and exe_icon.is_file():
-            return exe_icon
+    source_launcher_exe = _PROJECT_ROOT / "Trading-Bot-Python.exe"
+    if not getattr(sys, "frozen", False) and source_launcher_exe.is_file():
+        return source_launcher_exe
     native_icon = _resolve_native_icon_path()
     persisted = _persist_icon_for_taskbar(native_icon)
     if persisted and persisted.is_file():
@@ -92,12 +87,29 @@ def _resolve_taskbar_icon_path() -> Path | None:
         ico_path = primary.with_suffix(".ico")
         if ico_path.is_file():
             return ico_path
-        return primary
+    if getattr(sys, "frozen", False):
+        try:
+            exe_icon = Path(sys.executable).resolve()
+        except Exception:
+            exe_icon = None
+        if exe_icon is not None and exe_icon.is_file():
+            return exe_icon
     repo_icon = _PROJECT_ROOT / "assets" / "crypto_forex_logo.ico"
     return repo_icon if repo_icon.is_file() else None
 
 
 def _format_shortcut_args(script_path: Path) -> str:
+    try:
+        from app.platform.windows_taskbar_metadata_runtime import resolve_relaunch_arguments
+
+        args = resolve_relaunch_arguments(script_path)
+    except Exception:
+        args = None
+    if args:
+        try:
+            return subprocess.list2cmdline(args)
+        except Exception:
+            return " ".join(f"\"{arg}\"" for arg in args)
     try:
         return subprocess.list2cmdline([str(script_path.resolve())])
     except Exception:

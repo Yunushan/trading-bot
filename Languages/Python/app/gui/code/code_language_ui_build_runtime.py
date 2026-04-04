@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 
 from PyQt6 import QtCore, QtWidgets
 
@@ -13,7 +12,7 @@ from .code_language_catalog import (
 
 
 def code_tab_auto_refresh_versions_enabled() -> bool:
-    default_flag = "0" if sys.platform == "win32" else "1"
+    default_flag = "1"
     raw_value = str(os.environ.get("BOT_CODE_TAB_AUTO_CHECK_VERSIONS", default_flag) or default_flag).strip().lower()
     return raw_value not in {"0", "false", "no", "off"}
 
@@ -149,9 +148,10 @@ def init_code_language_tab(
 
     self._dep_version_labels = {}
     self._dep_version_targets = []
+    self._dep_version_checkboxes = {}
     versions_group = QtWidgets.QGroupBox("Environment Versions", content)
     versions_group.setSizePolicy(
-        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
     )
     versions_group_layout = QtWidgets.QVBoxLayout(versions_group)
     versions_group_layout.setContentsMargins(8, 12, 8, 8)
@@ -165,9 +165,10 @@ def init_code_language_tab(
     versions_layout.setColumnStretch(2, 0)
     versions_layout.setColumnStretch(3, 0)
     versions_layout.setColumnStretch(4, 0)
-    versions_layout.setColumnStretch(5, 1)
+    versions_layout.setColumnStretch(5, 0)
+    versions_layout.setColumnStretch(6, 1)
     versions_layout.setVerticalSpacing(8)
-    versions_layout.setHorizontalSpacing(6)
+    versions_layout.setHorizontalSpacing(12)
     versions_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
 
     versions_scroll = QtWidgets.QScrollArea(versions_group)
@@ -176,22 +177,33 @@ def init_code_language_tab(
     versions_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     versions_scroll.setWidget(versions_container)
     versions_scroll.setSizePolicy(
-        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
     )
+    versions_scroll.setMinimumHeight(240)
+    versions_scroll.setMaximumHeight(420)
 
     self._dep_versions_container = versions_container
     self._dep_versions_layout = versions_layout
     self._dep_versions_scroll = versions_scroll
     self._dep_versions_group = versions_group
 
-    versions_group_layout.addWidget(versions_scroll, 1)
-    layout.addWidget(versions_group, 1)
     version_btn_row = QtWidgets.QHBoxLayout()
+    self._dependency_selection_status_label = QtWidgets.QLabel("0 selected", content)
+    self._dependency_selection_status_label.setStyleSheet("color: #94a3b8; font-weight: 600;")
+    version_btn_row.addWidget(self._dependency_selection_status_label)
     version_btn_row.addStretch()
+    self._version_update_selected_btn = QtWidgets.QPushButton("Update Selected", content)
+    self._version_update_selected_btn.clicked.connect(self._update_selected_dependency_versions)
+    version_btn_row.addWidget(self._version_update_selected_btn)
+    self._version_update_all_btn = QtWidgets.QPushButton("Update All", content)
+    self._version_update_all_btn.clicked.connect(self._update_all_dependency_versions)
+    version_btn_row.addWidget(self._version_update_all_btn)
     self._version_refresh_btn = QtWidgets.QPushButton("Check Versions", content)
     self._version_refresh_btn.clicked.connect(self._refresh_dependency_versions)
     version_btn_row.addWidget(self._version_refresh_btn)
-    layout.addLayout(version_btn_row)
+    versions_group_layout.addLayout(version_btn_row)
+    versions_group_layout.addWidget(versions_scroll, 1)
+    layout.addWidget(versions_group, 0)
 
     self._update_bot_status()
     try:
@@ -205,6 +217,10 @@ def init_code_language_tab(
         pass
     try:
         self._ensure_rust_process_watchdog()
+    except Exception:
+        pass
+    try:
+        self._update_dependency_action_buttons()
     except Exception:
         pass
     return tab

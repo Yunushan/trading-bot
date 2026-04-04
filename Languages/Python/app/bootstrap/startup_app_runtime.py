@@ -71,10 +71,10 @@ def _load_application_icon(*, QtGui, app, env_flag, force_app_icon: bool):
                 icon = QtGui.QIcon(str(fallback_path))
             except Exception:
                 icon = QtGui.QIcon()
-        if not icon.isNull():
-            try:
-                app.setWindowIcon(icon)
-                QtGui.QGuiApplication.setWindowIcon(icon)
-            except Exception:
-                pass
+    if not icon.isNull():
+        try:
+            app.setWindowIcon(icon)
+            QtGui.QGuiApplication.setWindowIcon(icon)
+        except Exception:
+            pass
     return icon, disable_app_icon

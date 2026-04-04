@@ -268,7 +268,7 @@ def _merge_flip_requests_into_indicator_orders(
     return indicator_order_requests
 
 
-# ---- indicator computation (uses pandas_ta when available)
+# ---- indicator computation
 
 
 def bind_strategy_position_flip_runtime(strategy_cls) -> None:

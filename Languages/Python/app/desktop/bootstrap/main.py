@@ -18,11 +18,15 @@ defaults where possible" so production launches remain stable on Windows 10/11.
 """
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 APP_DISPLAY_NAME = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "Trading Bot").strip() or "Trading Bot"
-APP_USER_MODEL_ID = str(os.environ.get("BOT_APP_USER_MODEL_ID") or "com.tradingbot.TradingBot").strip() or "com.tradingbot.TradingBot"
+_DEFAULT_APP_USER_MODEL_ID = "com.tradingbot.TradingBot"
+if sys.platform == "win32" and not getattr(sys, "frozen", False):
+    _DEFAULT_APP_USER_MODEL_ID = "com.tradingbot.TradingBot.PythonSource"
+APP_USER_MODEL_ID = str(os.environ.get("BOT_APP_USER_MODEL_ID") or _DEFAULT_APP_USER_MODEL_ID).strip() or _DEFAULT_APP_USER_MODEL_ID
 if sys.platform == "win32":
     # These Qt variables improve taskbar grouping consistency when Qt creates
     # helper processes/windows during startup.
@@ -50,6 +54,81 @@ if PYTHON_WORKSPACE_DIR_STR not in sys.path:
     sys.path.insert(0, PYTHON_WORKSPACE_DIR_STR)
 
 PUBLIC_ENTRYPOINT_PATH = (PYTHON_WORKSPACE_DIR / "main.py").resolve()
+
+from app.platform.windows_taskbar_metadata_runtime import (
+    resolve_relaunch_arguments,
+    resolve_relaunch_executable,
+)
+
+
+def _maybe_relaunch_via_pythonw() -> None:
+    if sys.platform != "win32" or getattr(sys, "frozen", False):
+        return
+    if str(os.environ.get("BOT_DISABLE_PYTHONW_RELAUNCH") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    if str(os.environ.get("BOT_PYTHONW_RELAUNCHED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    try:
+        if sys.gettrace() is not None:
+            return
+    except Exception:
+        pass
+    try:
+        current_exe = Path(sys.executable).resolve()
+    except Exception:
+        return
+    gui_host = resolve_relaunch_executable(PUBLIC_ENTRYPOINT_PATH)
+    gui_args = resolve_relaunch_arguments(PUBLIC_ENTRYPOINT_PATH)
+    if gui_host is None:
+        return
+    if not gui_args:
+        return
+    try:
+        gui_host = gui_host.resolve()
+    except Exception:
+        pass
+    if gui_host == current_exe:
+        return
+    env = os.environ.copy()
+    env["BOT_PYTHONW_RELAUNCHED"] = "1"
+    args = [str(gui_host), *gui_args, *sys.argv[1:]]
+    shortcut_path = None
+    try:
+        from app.bootstrap.startup_icon_runtime import _resolve_taskbar_icon_path
+        from app.platform.windows_taskbar import build_relaunch_command, ensure_start_menu_shortcut
+
+        shortcut_name = f"{APP_DISPLAY_NAME} Python Source"
+        shortcut_path = ensure_start_menu_shortcut(
+            app_id=APP_USER_MODEL_ID,
+            display_name=APP_DISPLAY_NAME,
+            shortcut_name=shortcut_name,
+            target_path=gui_host,
+            arguments=subprocess.list2cmdline(gui_args),
+            icon_path=_resolve_taskbar_icon_path(),
+            working_dir=PYTHON_WORKSPACE_DIR,
+            relaunch_command=build_relaunch_command(PUBLIC_ENTRYPOINT_PATH),
+        )
+    except Exception:
+        shortcut_path = None
+    if shortcut_path is not None:
+        try:
+            os.startfile(str(shortcut_path))
+            raise SystemExit(0)
+        except Exception:
+            pass
+    try:
+        subprocess.Popen(
+            args,
+            cwd=str(PYTHON_WORKSPACE_DIR),
+            env=env,
+            close_fds=True,
+        )
+    except Exception:
+        return
+    raise SystemExit(0)
+
+
+_maybe_relaunch_via_pythonw()
 
 from app.bootstrap import (
     startup_app_runtime,
@@ -450,6 +529,34 @@ def main() -> int:
             win.setWindowIcon(icon)
         except Exception:
             pass
+    if sys.platform == "win32":
+        try:
+            win.winId()
+        except Exception:
+            pass
+        if force_app_icon or not disable_app_icon or _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
+            try:
+                _apply_qt_icon(app, win)
+            except Exception:
+                pass
+        if force_app_icon or _env_flag("BOT_ENABLE_NATIVE_ICON"):
+            try:
+                _set_native_window_icon(win)
+            except Exception:
+                pass
+        if not disable_taskbar:
+            try:
+                from app.platform.windows_taskbar import apply_taskbar_metadata, build_relaunch_command
+
+                apply_taskbar_metadata(
+                    win,
+                    app_id=APP_USER_MODEL_ID,
+                    display_name=APP_DISPLAY_NAME,
+                    icon_path=_resolve_taskbar_icon_path(),
+                    relaunch_command=build_relaunch_command(PUBLIC_ENTRYPOINT_PATH),
+                )
+            except Exception:
+                pass
     startup_presentation.attach_main_window(win)
     _configure_post_window_runtime(
         app=app,

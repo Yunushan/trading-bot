@@ -11,6 +11,7 @@ def ensure_start_menu_shortcut(
     *,
     app_id: str,
     display_name: str,
+    shortcut_name: str | None = None,
     target_path: str | Path,
     arguments: str | None = None,
     icon_path: str | Path | None = None,
@@ -29,7 +30,8 @@ def ensure_start_menu_shortcut(
         start_menu.mkdir(parents=True, exist_ok=True)
     except Exception:
         return None
-    shortcut_path = start_menu / f"{name}.lnk"
+    shortcut_file_name = str(shortcut_name or name).strip() or name
+    shortcut_path = start_menu / f"{shortcut_file_name}.lnk"
     if not shared.co_initialize_once():
         return None
     relaunch_cmd = relaunch_command or None

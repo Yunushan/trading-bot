@@ -452,6 +452,18 @@ def _rebuild_dependency_version_rows(self, targets: list[dict[str, str]] | None 
     )
 
 
+def _update_dependency_action_buttons(self) -> None:
+    return dependency_versions_ui.update_dependency_action_buttons(self)
+
+
+def _update_selected_dependency_versions(self) -> None:
+    return dependency_versions_ui.update_selected_dependency_versions(self)
+
+
+def _update_all_dependency_versions(self) -> None:
+    return dependency_versions_ui.update_all_dependency_versions(self)
+
+
 def _refresh_dependency_versions(self) -> None:
     try:
         self._refresh_code_language_card_release_labels()
@@ -480,6 +492,11 @@ def _apply_dependency_version_results(self, results: list) -> None:
         results,
         apply_dependency_usage_entry=dependency_versions_runtime._apply_dependency_usage_entry,
     )
+
+
+@QtCore.pyqtSlot(object)
+def _apply_dependency_update_finished(self, result: dict | None) -> None:
+    return dependency_versions_ui.apply_dependency_update_finished(self, result)
 
 
 @QtCore.pyqtSlot(object)
@@ -542,7 +559,11 @@ def bind_main_window_code_runtime(main_window_cls) -> None:
     main_window_cls._stop_dependency_usage_auto_poll = _stop_dependency_usage_auto_poll
     main_window_cls._poll_dependency_usage_states = _poll_dependency_usage_states
     main_window_cls._rebuild_dependency_version_rows = _rebuild_dependency_version_rows
+    main_window_cls._update_dependency_action_buttons = _update_dependency_action_buttons
+    main_window_cls._update_selected_dependency_versions = _update_selected_dependency_versions
+    main_window_cls._update_all_dependency_versions = _update_all_dependency_versions
     main_window_cls._refresh_dependency_versions = _refresh_dependency_versions
     main_window_cls._apply_dependency_version_results = _apply_dependency_version_results
+    main_window_cls._apply_dependency_update_finished = _apply_dependency_update_finished
     main_window_cls._maybe_auto_prepare_cpp_environment = dependency_versions_runtime._maybe_auto_prepare_cpp_environment
     main_window_cls._on_cpp_auto_prepare_finished = _on_cpp_auto_prepare_finished

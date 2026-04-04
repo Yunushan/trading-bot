@@ -22,3 +22,5 @@ Languages/C++/build-*/
 Languages/Rust/target/
 .trading_bot_allocations.json
 /Trading-Bot-*.exe
+/.tmp_pythonw_info.txt
+/native_icon_extract.png

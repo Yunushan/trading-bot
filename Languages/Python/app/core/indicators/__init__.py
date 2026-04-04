@@ -23,20 +23,15 @@ def bollinger_bands(df, length=20, std=2):
 def rsi(series, length=14):
     """
     Wilder's RSI on CLOSE prices.
-    Matches TradingView/Binance default when computed on *closed* candles.
-    Falls back to pandas if pandas_ta is unavailable.
+    Matches TradingView/Binance default when computed on closed candles.
     """
-    try:
-        import pandas_ta as ta
-        return ta.rsi(series, length=length)
-    except Exception:
-        delta = series.diff()
-        up = delta.clip(lower=0.0)
-        down = (-delta).clip(lower=0.0)
-        roll_up = up.ewm(alpha=1/float(length), adjust=False).mean()
-        roll_down = down.ewm(alpha=1/float(length), adjust=False).mean()
-        rs = roll_up / roll_down
-        return 100 - (100 / (1 + rs))
+    delta = series.diff()
+    up = delta.clip(lower=0.0)
+    down = (-delta).clip(lower=0.0)
+    roll_up = up.ewm(alpha=1 / float(length), adjust=False).mean()
+    roll_down = down.ewm(alpha=1 / float(length), adjust=False).mean()
+    rs = roll_up / roll_down
+    return 100 - (100 / (1 + rs))
 
 def macd(series, fast=12, slow=26, signal=9):
     ema_fast = ema(series, fast)
@@ -125,11 +120,12 @@ def dmi(df, length=14):
     plus_smoothed = plus_dm.ewm(alpha=1/float(length), adjust=False).mean()
     minus_smoothed = minus_dm.ewm(alpha=1/float(length), adjust=False).mean()
 
-    atr_nonzero = atr_series.replace(0, pd.NA)
+    atr_nonzero = atr_series.where(atr_series != 0)
     plus_di = (100.0 * (plus_smoothed / atr_nonzero)).fillna(0.0)
     minus_di = (100.0 * (minus_smoothed / atr_nonzero)).fillna(0.0)
 
-    dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA)) * 100.0
+    di_sum = plus_di + minus_di
+    dx = ((plus_di - minus_di).abs() / di_sum.where(di_sum != 0)) * 100.0
     dx = dx.fillna(0.0)
     adx = dx.ewm(alpha=1/float(length), adjust=False).mean().fillna(0.0)
     return plus_di, minus_di, adx
@@ -149,14 +145,17 @@ def ultimate_oscillator(df, short=7, medium=14, long=28):
 
     bp = close - true_low
     tr = true_high - true_low
-    tr = tr.replace(0, pd.NA).fillna(0)
 
     def _rolling_sum(series, length):
         return series.rolling(length, min_periods=1).sum()
 
-    avg_short = _rolling_sum(bp, short) / _rolling_sum(tr, short).replace(0, pd.NA)
-    avg_medium = _rolling_sum(bp, medium) / _rolling_sum(tr, medium).replace(0, pd.NA)
-    avg_long = _rolling_sum(bp, long) / _rolling_sum(tr, long).replace(0, pd.NA)
+    tr_short = _rolling_sum(tr, short)
+    tr_medium = _rolling_sum(tr, medium)
+    tr_long = _rolling_sum(tr, long)
+
+    avg_short = _rolling_sum(bp, short) / tr_short.where(tr_short != 0)
+    avg_medium = _rolling_sum(bp, medium) / tr_medium.where(tr_medium != 0)
+    avg_long = _rolling_sum(bp, long) / tr_long.where(tr_long != 0)
 
     uo = 100 * ((4 * avg_short) + (2 * avg_medium) + avg_long) / 7.0
     return uo.fillna(0.0)
@@ -208,7 +207,8 @@ def stochastic(df, length=14, smooth_k=3, smooth_d=3):
         return pd.Series(dtype=float), pd.Series(dtype=float)
     highest_high = df['high'].rolling(length).max()
     lowest_low = df['low'].rolling(length).min()
-    k = 100 * (df['close'] - lowest_low) / (highest_high - lowest_low).replace(0, pd.NA)
+    price_range = highest_high - lowest_low
+    k = 100 * (df['close'] - lowest_low) / price_range.where(price_range != 0)
     k = k.rolling(smooth_k, min_periods=1).mean()
     d = k.rolling(smooth_d, min_periods=1).mean()
     return k.fillna(0.0), d.fillna(0.0)

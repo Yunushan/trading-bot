@@ -139,10 +139,18 @@ def _configure_post_window_runtime(
     uninstall_cbt_startup_window_suppression,
 ) -> None:
     force_taskbar_visibility = env_flag("BOT_FORCE_TASKBAR_VISIBILITY")
+    shortcut_name = None
+    if sys.platform == "win32" and app_user_model_id.endswith(".PythonSource"):
+        shortcut_name = f"{app_display_name} Python Source"
     icon_path = None
     relaunch_cmd = None
     apply_taskbar_metadata = None
     ensure_taskbar_visible = None
+    try:
+        if sys.platform == "win32":
+            win.winId()
+    except Exception:
+        pass
 
     if sys.platform == "win32" and not disable_taskbar:
         from app.platform.windows_taskbar import (
@@ -150,23 +158,48 @@ def _configure_post_window_runtime(
             build_relaunch_command,
             ensure_start_menu_shortcut,
             ensure_taskbar_visible as _ensure_taskbar_visible,
+            resolve_relaunch_executable,
         )
 
         apply_taskbar_metadata = _apply_taskbar_metadata
         ensure_taskbar_visible = _ensure_taskbar_visible
         icon_path = resolve_taskbar_icon_path()
         relaunch_cmd = build_relaunch_command(script_path)
+        shortcut_target = resolve_relaunch_executable(script_path) or Path(sys.executable).resolve()
         if not env_flag("BOT_DISABLE_START_MENU_SHORTCUT"):
             try:
-                ensure_start_menu_shortcut(
+                shortcut_path = ensure_start_menu_shortcut(
                     app_id=app_user_model_id,
                     display_name=app_display_name,
-                    target_path=sys.executable,
+                    shortcut_name=shortcut_name,
+                    target_path=shortcut_target,
                     arguments=format_shortcut_args(script_path),
                     icon_path=icon_path,
                     working_dir=script_path.resolve().parent,
                     relaunch_command=relaunch_cmd,
                 )
+                if env_flag("BOT_BOOT_LOG"):
+                    try:
+                        print(
+                            "[post-window] shortcut "
+                            f"name={shortcut_name!r} path={shortcut_path!s} icon={icon_path!s}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
+                if shortcut_path is not None:
+                    icon_path = shortcut_path
+                    legacy_shortcut = shortcut_path.with_name(f"{app_display_name}.lnk")
+                    if legacy_shortcut != shortcut_path and legacy_shortcut.exists():
+                        legacy_shortcut.unlink()
+                        if env_flag("BOT_BOOT_LOG"):
+                            try:
+                                print(
+                                    f"[post-window] removed legacy shortcut {legacy_shortcut}",
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
             except Exception:
                 pass
         try:
@@ -174,6 +207,17 @@ def _configure_post_window_runtime(
         except Exception:
             taskbar_delay = 0
         taskbar_delay = max(0, min(taskbar_delay, 5000))
+
+        try:
+            apply_taskbar_metadata(
+                win,
+                app_id=app_user_model_id,
+                display_name=app_display_name,
+                icon_path=icon_path,
+                relaunch_command=relaunch_cmd,
+            )
+        except Exception:
+            pass
 
         def _apply_taskbar(attempts: int = 12) -> None:
             if attempts <= 0:
@@ -201,8 +245,19 @@ def _configure_post_window_runtime(
 
     apply_native_icon_after_show = sys.platform == "win32" and (force_app_icon or env_flag("BOT_ENABLE_NATIVE_ICON"))
     if apply_native_icon_after_show:
+        try:
+            set_native_window_icon(win)
+        except Exception:
+            pass
         QtCore.QTimer.singleShot(0, lambda: set_native_window_icon(win))
-    if sys.platform == "win32" and force_app_icon:
+    apply_qt_icon_after_show = sys.platform == "win32" and (
+        force_app_icon or not disable_app_icon or env_flag("BOT_ENABLE_DELAYED_QT_ICON")
+    )
+    if apply_qt_icon_after_show:
+        try:
+            apply_qt_icon(app, win)
+        except Exception:
+            pass
         QtCore.QTimer.singleShot(0, lambda: apply_qt_icon(app, win))
     if sys.platform == "win32":
         if disable_app_icon:

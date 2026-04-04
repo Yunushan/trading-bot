@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
 
-_ICON_FILENAMES_WINDOWS = ("crypto_forex_logo.png", "crypto_forex_logo.ico")
+_ICON_FILENAMES_WINDOWS = ("crypto_forex_logo.ico", "crypto_forex_logo.png")
 _ICON_FILENAMES_UNIX = ("crypto_forex_logo.png", "crypto_forex_logo.ico")
 _COMMON_FALLBACKS = ("crypto_forex_logo.svg",)
 
@@ -96,6 +96,30 @@ def _icon_filename_candidates() -> tuple[str, ...]:
     return _ICON_FILENAMES_UNIX + _COMMON_FALLBACKS
 
 
+def _prefer_windows_icon_path(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    try:
+        candidate = path.expanduser()
+    except Exception:
+        candidate = path
+    if not sys.platform.startswith("win"):
+        return candidate
+    try:
+        suffix = candidate.suffix.lower()
+    except Exception:
+        suffix = ""
+    if suffix == ".ico" and candidate.is_file():
+        return candidate
+    try:
+        ico_path = candidate.with_suffix(".ico")
+    except Exception:
+        ico_path = None
+    if ico_path is not None and ico_path.is_file():
+        return ico_path
+    return candidate
+
+
 def _icon_from_pixmap(pixmap: QtGui.QPixmap) -> QtGui.QIcon:
     if pixmap.isNull():
         return QtGui.QIcon()
@@ -116,9 +140,20 @@ def _icon_from_data(data: bytes) -> QtGui.QIcon:
 
 
 def _icon_from_path(path: Path) -> QtGui.QIcon:
-    """Build a Qt icon without relying on QIcon.addFile(), which can stall on Windows."""
+    """Build a Qt icon while preserving native multi-size ICOs on Windows."""
     if not path.is_file():
         return QtGui.QIcon()
+    try:
+        suffix = path.suffix.lower()
+    except Exception:
+        suffix = ""
+    if suffix == ".ico":
+        try:
+            icon = QtGui.QIcon(str(path))
+            if not icon.isNull():
+                return icon
+        except Exception:
+            pass
     try:
         pixmap = QtGui.QPixmap(str(path))
         icon = _icon_from_pixmap(pixmap)
@@ -183,7 +218,7 @@ def load_app_icon() -> QtGui.QIcon:
     """Load the app icon with platform-aware fallbacks."""
     env_icon_path = os.getenv("BINANCE_BOT_ICON")
     if env_icon_path:
-        env_path = Path(env_icon_path)
+        env_path = _prefer_windows_icon_path(Path(env_icon_path))
         candidate = _icon_from_path(env_path)
         if not candidate.isNull():
             return candidate
@@ -193,7 +228,7 @@ def load_app_icon() -> QtGui.QIcon:
     for env_var in ("APPDIR", "BINANCE_BOT_APPDIR"):
         appdir = os.getenv(env_var)
         if appdir:
-            icon_path = Path(appdir) / "crypto_forex_logo.png"
+            icon_path = _prefer_windows_icon_path(Path(appdir) / "crypto_forex_logo.png")
             candidate = _icon_from_path(icon_path)
             if not candidate.isNull():
                 return candidate
@@ -229,12 +264,12 @@ def find_primary_icon_file() -> Path | None:
     """Return the first icon file discovered in the search sequence."""
     env_icon_path = os.getenv("BINANCE_BOT_ICON")
     if env_icon_path:
-        env_path = Path(env_icon_path)
+        env_path = _prefer_windows_icon_path(Path(env_icon_path))
         if env_path.exists():
             return env_path
     for directory in _candidate_directories():
         for filename in _icon_filename_candidates():
-            path = directory / filename
+            path = _prefer_windows_icon_path(directory / filename)
             if path.exists():
                 return path
     return None

@@ -12,6 +12,16 @@ def _configure_startup_window_suppression_defaults() -> None:
     """Set safe Windows startup suppression defaults unless user already configured them."""
     if sys.platform != "win32":
         return
+    os.environ.setdefault("BOT_ENABLE_NATIVE_ICON", "1")
+    os.environ.setdefault("BOT_ENABLE_DELAYED_QT_ICON", "1")
+    os.environ.setdefault("BOT_FORCE_TASKBAR_VISIBILITY", "1")
+    os.environ.setdefault("BOT_WINDOW_ICON_RETRY_MS", "350")
+    os.environ.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "150")
+    os.environ.setdefault("BOT_TASKBAR_ENSURE_MS", "7000")
+    os.environ.setdefault("BOT_TASKBAR_ENSURE_INTERVAL_MS", "300")
+    os.environ.setdefault("BOT_TASKBAR_ENSURE_START_DELAY_MS", "700")
+    os.environ.setdefault("BOT_ICON_ENFORCE_ATTEMPTS", "10")
+    os.environ.setdefault("BOT_ICON_ENFORCE_INTERVAL_MS", "400")
     if _env_flag("BOT_NO_STARTUP_WINDOW_SUPPRESS"):
         return
     if not _env_flag("BOT_FORCE_STARTUP_WINDOW_HOOKS"):
@@ -42,9 +52,6 @@ def _configure_startup_window_suppression_defaults() -> None:
     os.environ.setdefault("BOT_STARTUP_WINDOW_POLL_FAST_MS", "900")
     os.environ.setdefault("BOT_STARTUP_WINDOW_POLL_FAST_INTERVAL_MS", "8")
     os.environ.setdefault("BOT_STARTUP_WINDOW_SUPPRESS_GLOBAL_HOOK", "0")
-    os.environ.setdefault("BOT_TASKBAR_METADATA_DELAY_MS", "1200")
-    os.environ.setdefault("BOT_TASKBAR_ENSURE_MS", "0")
-    os.environ.setdefault("BOT_TASKBAR_ENSURE_START_DELAY_MS", "1200")
     os.environ.setdefault("BOT_PRIME_NATIVE_CHART_HOST", "1")
     os.environ.setdefault("BOT_STARTUP_REVEAL_DELAY_MS", "0")
     os.environ.setdefault("BOT_STARTUP_WINDOW_HOOK_AUTO_UNINSTALL_MS", "900")

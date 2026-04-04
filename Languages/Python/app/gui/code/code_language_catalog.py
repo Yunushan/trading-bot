@@ -242,7 +242,6 @@ DEFAULT_DEPENDENCY_VERSION_TARGETS = [
     {"label": "llvmlite", "package": "llvmlite"},
     {"label": "numpy", "package": "numpy"},
     {"label": "pandas", "package": "pandas"},
-    {"label": "pandas-ta", "package": "pandas-ta"},
     {"label": "requests", "package": "requests"},
     {"label": "binance-sdk-derivatives-trading-usds-futures", "package": "binance-sdk-derivatives-trading-usds-futures"},
     {"label": "binance-sdk-derivatives-trading-coin-futures", "package": "binance-sdk-derivatives-trading-coin-futures"},
