@@ -249,10 +249,10 @@ DEFAULT_DEPENDENCY_VERSION_TARGETS = [
 ]
 
 CPP_DEPENDENCY_VERSION_TARGETS = [
-    {"label": "Qt6 (C++)", "custom": "cpp_qt", "latest_key": "qt6"},
-    {"label": "Qt6 Network (REST)", "custom": "cpp_qt_network", "latest_key": "qt6"},
-    {"label": "Qt6 WebEngine", "custom": "cpp_qt_webengine", "latest_key": "qt6"},
-    {"label": "Qt6 WebSockets", "custom": "cpp_qt_websockets", "latest_key": "qt6"},
+    {"label": "Qt6 (C++)", "custom": "cpp_qt", "latest": "6.10.3"},
+    {"label": "Qt6 Network (REST)", "custom": "cpp_qt_network", "latest": "6.10.3"},
+    {"label": "Qt6 WebEngine", "custom": "cpp_qt_webengine", "latest": "6.10.3"},
+    {"label": "Qt6 WebSockets", "custom": "cpp_qt_websockets", "latest": "6.10.3"},
     {
         "label": "Binance REST client (native)",
         "custom": "cpp_file_version",
@@ -268,7 +268,7 @@ CPP_DEPENDENCY_VERSION_TARGETS = [
     {"label": "Eigen", "custom": "cpp_eigen", "latest_key": "eigen"},
     {"label": "xtensor", "custom": "cpp_xtensor", "latest_key": "xtensor"},
     {"label": "TA-Lib", "custom": "cpp_talib", "latest_key": "ta-lib"},
-    {"label": "libcurl", "custom": "cpp_libcurl", "latest_key": "libcurl"},
+    {"label": "libcurl", "custom": "cpp_libcurl", "latest": "8.19.0"},
     {"label": "cpr", "custom": "cpp_cpr", "latest_key": "cpr"},
 ]
 

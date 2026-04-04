@@ -127,7 +127,7 @@ def _cpp_pinned_qt_version() -> str:
     if cached_value:
         return cached_value
 
-    default_value = "6.10.2"
+    default_value = "6.10.3"
     cmake_path = shared.CPP_PROJECT_PATH / "CMakeLists.txt"
     try:
         text = cmake_path.read_text(encoding="utf-8", errors="ignore")

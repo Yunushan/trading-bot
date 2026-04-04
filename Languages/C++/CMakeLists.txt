@@ -4,7 +4,7 @@ project(BinanceBacktestTabCpp LANGUAGES CXX)
 
 set(TB_EXECUTABLE_NAME "Trading-Bot-C++")
 set(TB_LEGACY_EXECUTABLE_NAME "binance_backtest_tab")
-set(TB_QT_VERSION "6.10.2" CACHE STRING "Pinned Qt version for reproducible builds")
+set(TB_QT_VERSION "6.10.3" CACHE STRING "Pinned Qt version for reproducible builds")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

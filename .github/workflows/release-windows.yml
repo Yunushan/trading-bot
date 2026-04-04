@@ -16,7 +16,7 @@ name: Release Windows Binaries
       vcpkg_ref:
         description: "vcpkg git ref used when mode=pinned"
         required: false
-        default: "26283ac5e8a068561a718ce18b169bfad84c7dab"
+        default: "d0ba406f0e5352517386709dba49fbabf99a9e3c"
       build_windows_x64:
         description: "Build Windows x64 assets"
         type: boolean
@@ -75,7 +75,7 @@ jobs:
     env:
       TB_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.vcpkg_triplet }}
-      VCPKG_PINNED_REF: "26283ac5e8a068561a718ce18b169bfad84c7dab"
+      VCPKG_PINNED_REF: "d0ba406f0e5352517386709dba49fbabf99a9e3c"
       VCPKG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.vcpkg_mode || 'pinned' }}
       VCPKG_REQUESTED_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.vcpkg_ref || '' }}
       TB_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
@@ -111,7 +111,7 @@ jobs:
         if: matrix.id == 'windows-x64'
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.10.2"
+          version: "6.10.3"
           host: windows
           target: desktop
           arch: ${{ matrix.qt_arch }}
@@ -124,15 +124,15 @@ jobs:
         run: |
           python -m pip install --upgrade aqtinstall
           $qtOutputDir = "C:/Qt"
-          python -m aqt install-qt windows desktop 6.10.2 win64_msvc2022_arm64_cross_compiled --outputdir $qtOutputDir --modules qtwebsockets qtwebchannel qtpositioning --autodesktop
+          python -m aqt install-qt windows desktop 6.10.3 win64_msvc2022_arm64_cross_compiled --outputdir $qtOutputDir --modules qtwebsockets qtwebchannel qtpositioning --autodesktop
 
-          $hostQmake = "C:/Qt/6.10.2/msvc2022_64/bin/qmake.exe"
+          $hostQmake = "C:/Qt/6.10.3/msvc2022_64/bin/qmake.exe"
           if (!(Test-Path $hostQmake)) {
-            python -m aqt install-qt windows desktop 6.10.2 win64_msvc2022_64 --outputdir $qtOutputDir --archives qtbase qttools
+            python -m aqt install-qt windows desktop 6.10.3 win64_msvc2022_64 --outputdir $qtOutputDir --archives qtbase qttools
           }
 
-          $qtArm64Bin = "C:/Qt/6.10.2/msvc2022_arm64/bin"
-          $qtHostBin = "C:/Qt/6.10.2/msvc2022_64/bin"
+          $qtArm64Bin = "C:/Qt/6.10.3/msvc2022_arm64/bin"
+          $qtHostBin = "C:/Qt/6.10.3/msvc2022_64/bin"
 
           if (Test-Path $qtArm64Bin) {
             $qtArm64Bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -145,12 +145,12 @@ jobs:
         shell: pwsh
         run: |
           if ("${{ matrix.id }}" -eq "windows-arm64") {
-            $qtPrefix = "C:/Qt/6.10.2/msvc2022_arm64"
+            $qtPrefix = "C:/Qt/6.10.3/msvc2022_arm64"
             $qtConfig = Join-Path $qtPrefix "lib/cmake/Qt6/Qt6Config.cmake"
             if (!(Test-Path $qtConfig)) {
               throw "Qt6Config.cmake not found for ARM64 kit at $qtConfig"
             }
-            $qtHostPath = "C:/Qt/6.10.2/msvc2022_64"
+            $qtHostPath = "C:/Qt/6.10.3/msvc2022_64"
             if (Test-Path (Join-Path $qtHostPath "bin/qmake.exe")) {
               "QT_HOST_PATH=$qtHostPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             }
@@ -457,8 +457,8 @@ jobs:
 
           $windeployqtCandidates = @()
           if ("${{ matrix.id }}" -eq "windows-arm64") {
-            $windeployqtCandidates += "C:/Qt/6.10.2/msvc2022_arm64/bin/windeployqt.exe"
-            $windeployqtCandidates += "C:/Qt/6.10.2/msvc2022_64/bin/windeployqt.exe"
+            $windeployqtCandidates += "C:/Qt/6.10.3/msvc2022_arm64/bin/windeployqt.exe"
+            $windeployqtCandidates += "C:/Qt/6.10.3/msvc2022_64/bin/windeployqt.exe"
           }
           $windeployqt = Get-Command windeployqt -ErrorAction SilentlyContinue
           if ($windeployqt) {
@@ -538,7 +538,7 @@ jobs:
             $qtVersion = ""
           }
           if ([string]::IsNullOrWhiteSpace($qtVersion)) {
-            $qtVersion = "6.10.2"
+            $qtVersion = "6.10.3"
           }
 
           $nativeClientVersion = if ([string]::IsNullOrWhiteSpace($releaseTag)) { "Unknown" } else { $releaseTag }

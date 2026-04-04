@@ -2,12 +2,12 @@
 set -euo pipefail
 
 AQT_INSTALL_VERSION="${AQT_INSTALL_VERSION:-3.3.0}"
-QT_VERSION="${QT_VERSION:-6.10.2}"
+QT_VERSION="${QT_VERSION:-6.10.3}"
 QT_OUTPUT_DIR="${QT_OUTPUT_DIR:-$HOME/Qt}"
 QT_HOST="${QT_HOST:-}"
 QT_ARCH="${QT_ARCH:-}"
 TRIPLET="${TRIPLET:-}"
-VCPKG_REF="${VCPKG_REF:-c1f21baeaf7127c13ee141fe1bdaa49eed371c0c}"
+VCPKG_REF="${VCPKG_REF:-d0ba406f0e5352517386709dba49fbabf99a9e3c}"
 DRY_RUN=0
 
 usage() {
@@ -16,7 +16,7 @@ Usage: ./Languages/C++/tools/install_cpp_dependencies.sh [options]
 
 Options:
   --aqt-install-version <ver>   Pin aqtinstall version (default: 3.3.0)
-  --qt-version <ver>            Pin Qt version (default: 6.10.2)
+  --qt-version <ver>            Pin Qt version (default: 6.10.3)
   --qt-output-dir <path>        Qt install root (default: $HOME/Qt)
   --qt-host <host>              aqt host: mac|linux|linux_arm64 (auto-detected)
   --qt-arch <arch>              aqt architecture (auto-detected)

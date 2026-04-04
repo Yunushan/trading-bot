@@ -51,9 +51,9 @@ chmod +x ./Languages/C++/tools/install_cpp_dependencies.sh
 Pinned versions used by the helper scripts:
 
 ```text
-QtVersion         = 6.10.2
+QtVersion         = 6.10.3
 AqtInstallVersion = 3.3.0
-VcpkgRef          = c1f21baeaf7127c13ee141fe1bdaa49eed371c0c
+VcpkgRef          = d0ba406f0e5352517386709dba49fbabf99a9e3c
 ```
 
 Manual build:
@@ -65,7 +65,7 @@ cmake --build build/binance_cpp
 
 If Qt auto-detection fails, pass `-DQt6_DIR=/absolute/path/to/lib/cmake/Qt6`.
 
-`CMakeLists.txt` currently requires `Qt6 6.10.2 EXACT` so the toolchain stays reproducible.
+`CMakeLists.txt` currently requires `Qt6 6.10.3 EXACT` so the toolchain stays reproducible.
 
 ## Run
 
