@@ -19,9 +19,11 @@ defaults where possible" so production launches remain stable on Windows 10/11.
 """
 
 import os
+import importlib
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 APP_DISPLAY_NAME = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "Trading Bot").strip() or "Trading Bot"
 _DEFAULT_APP_USER_MODEL_ID = "com.tradingbot.TradingBot"
@@ -57,10 +59,16 @@ if PYTHON_WORKSPACE_DIR_STR not in sys.path:
 PUBLIC_ENTRYPOINT_PATH = (PYTHON_WORKSPACE_DIR / "main.py").resolve()
 _SplashWidget = None
 
-from app.platform.windows_taskbar_metadata_runtime import (
-    resolve_relaunch_arguments,
-    resolve_relaunch_executable,
+
+def _load_internal_module(name: str):
+    return importlib.import_module(name)
+
+
+_windows_taskbar_metadata_runtime = _load_internal_module(
+    "app.platform.windows_taskbar_metadata_runtime"
 )
+resolve_relaunch_arguments = _windows_taskbar_metadata_runtime.resolve_relaunch_arguments
+resolve_relaunch_executable = _windows_taskbar_metadata_runtime.resolve_relaunch_executable
 
 
 def _maybe_relaunch_via_pythonw() -> None:
@@ -132,17 +140,37 @@ def _maybe_relaunch_via_pythonw() -> None:
 
 _maybe_relaunch_via_pythonw()
 
-from app.bootstrap import (
-    startup_app_runtime,
-    startup_cover_runtime,
-    startup_icon_runtime,
-    startup_lifecycle_runtime,
-    startup_post_window_runtime,
-    startup_presentation_runtime,
-    startup_pre_qt_window_suppression_runtime,
-    startup_splash_ui,
-    startup_window_suppression_runtime,
+
+def _load_startup_runtime_modules() -> SimpleNamespace:
+    return SimpleNamespace(
+        startup_app_runtime=_load_internal_module("app.bootstrap.startup_app_runtime"),
+        startup_cover_runtime=_load_internal_module("app.bootstrap.startup_cover_runtime"),
+        startup_icon_runtime=_load_internal_module("app.bootstrap.startup_icon_runtime"),
+        startup_lifecycle_runtime=_load_internal_module("app.bootstrap.startup_lifecycle_runtime"),
+        startup_post_window_runtime=_load_internal_module("app.bootstrap.startup_post_window_runtime"),
+        startup_presentation_runtime=_load_internal_module("app.bootstrap.startup_presentation_runtime"),
+        startup_pre_qt_window_suppression_runtime=_load_internal_module(
+            "app.bootstrap.startup_pre_qt_window_suppression_runtime"
+        ),
+        startup_splash_ui=_load_internal_module("app.bootstrap.startup_splash_ui"),
+        startup_window_suppression_runtime=_load_internal_module(
+            "app.bootstrap.startup_window_suppression_runtime"
+        ),
+    )
+
+
+_startup_modules = _load_startup_runtime_modules()
+startup_app_runtime = _startup_modules.startup_app_runtime
+startup_cover_runtime = _startup_modules.startup_cover_runtime
+startup_icon_runtime = _startup_modules.startup_icon_runtime
+startup_lifecycle_runtime = _startup_modules.startup_lifecycle_runtime
+startup_post_window_runtime = _startup_modules.startup_post_window_runtime
+startup_presentation_runtime = _startup_modules.startup_presentation_runtime
+startup_pre_qt_window_suppression_runtime = (
+    _startup_modules.startup_pre_qt_window_suppression_runtime
 )
+startup_splash_ui = _startup_modules.startup_splash_ui
+startup_window_suppression_runtime = _startup_modules.startup_window_suppression_runtime
 
 _configure_startup_window_suppression_defaults = (
     startup_window_suppression_runtime._configure_startup_window_suppression_defaults
