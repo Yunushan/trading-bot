@@ -1,10 +1,59 @@
 from __future__ import annotations
 
 import copy
+from typing import cast
 
 from .history_records_allocations_runtime import _collect_allocations
 from .history_records_meta_runtime import _normalize_interval
 from .history_records_trade_data_runtime import _compute_trade_data
+from ..runtime.window import runtime as main_window_runtime
+
+
+def _interval_sort_key(label: str) -> tuple[object, ...]:
+    return cast(tuple[object, ...], main_window_runtime._mw_interval_sort_key(label))
+
+
+def _canonical_entry_tf_parts(self, value: object) -> list[str]:
+    if not isinstance(value, str) or not value.strip():
+        return []
+    labels: list[str] = []
+    for part in value.split(","):
+        cleaned = str(part).strip()
+        if not cleaned:
+            continue
+        normalized = _normalize_interval(self, cleaned) or cleaned
+        labels.append(str(normalized).strip())
+    ordered = [label for label in dict.fromkeys(label for label in labels if label)]
+    return sorted(ordered, key=_interval_sort_key)
+
+
+def _allocation_aggregate_key(allocation: dict | None, base_rec: dict) -> str | None:
+    if not isinstance(allocation, dict):
+        return None
+
+    fills_meta = allocation.get("fills_meta")
+    fills_order_id = fills_meta.get("order_id") if isinstance(fills_meta, dict) else None
+    close_event_id = str(
+        allocation.get("close_event_id")
+        or base_rec.get("close_event_id")
+        or ""
+    ).strip()
+    identity_tokens = [
+        str(allocation.get("trade_id") or "").strip(),
+        str(allocation.get("client_order_id") or "").strip(),
+        str(allocation.get("order_id") or fills_order_id or "").strip(),
+        str(allocation.get("slot_id") or "").strip(),
+        str(allocation.get("context_key") or "").strip(),
+        str(allocation.get("open_time") or "").strip(),
+    ]
+    identity_values = [token for token in identity_tokens if token]
+    if close_event_id and identity_values:
+        return f"{close_event_id}|{'|'.join(identity_values)}"
+    if close_event_id:
+        return close_event_id
+    if identity_values:
+        return "|".join(identity_values)
+    return None
 
 
 def _emit_entries(
@@ -96,15 +145,21 @@ def _emit_entries(
 
         aggregate_key = None
         if isinstance(allocation, dict):
-            aggregate_key = (
-                allocation.get("trade_id")
-                or allocation.get("client_order_id")
-                or allocation.get("order_id")
-                or allocation.get("ledger_id")
-            )
+            aggregate_key = _allocation_aggregate_key(allocation, base_rec)
+            if not aggregate_key:
+                aggregate_key = (
+                    allocation.get("event_id")
+                    or allocation.get("trade_id")
+                    or allocation.get("client_order_id")
+                    or allocation.get("order_id")
+                    or allocation.get("ledger_id")
+                )
         if not aggregate_key:
             aggregate_key = (
-                entry.get("trade_id")
+                entry.get("close_event_id")
+                or base_rec.get("close_event_id")
+                or entry.get("event_id")
+                or entry.get("trade_id")
                 or entry.get("client_order_id")
                 or entry.get("order_id")
                 or entry.get("ledger_id")
@@ -170,12 +225,7 @@ def _emit_entries(
                 fallback_intervals.append(_interval_from_meta(meta))
         if not fallback_intervals:
             entry_tf = base_rec.get("entry_tf")
-            if isinstance(entry_tf, str) and entry_tf.strip():
-                fallback_intervals = [
-                    part.strip()
-                    for part in entry_tf.split(",")
-                    if part.strip()
-                ]
+            fallback_intervals = _canonical_entry_tf_parts(self, entry_tf)
         if not fallback_intervals:
             fallback_intervals = ["-"]
         for idx, interval_label in enumerate(fallback_intervals):
@@ -196,14 +246,16 @@ def build_raw_history_records(
 ) -> list[dict]:
     raw_records: list[dict] = []
     for (sym, side_key), rec in open_records.items():
-        meta_items = meta_map.get((sym, side_key)) or [None]
+        meta_items_open: list[dict | None] = list(meta_map.get((sym, side_key)) or [])
+        if not meta_items_open:
+            meta_items_open = [None]
         _emit_entries(
             self,
             raw_records,
             rec,
             sym,
             side_key,
-            meta_items,
+            meta_items_open,
             normalize_indicator_values=normalize_indicator_values,
             derive_margin_snapshot=derive_margin_snapshot,
         )
@@ -212,20 +264,19 @@ def build_raw_history_records(
         sym = str(rec.get("symbol") or "").strip().upper()
         side_key = str(rec.get("side_key") or "").strip().upper()
         entry_tf = rec.get("entry_tf")
-        meta_items: list[dict | None] = []
-        if isinstance(entry_tf, str) and entry_tf.strip():
-            parts = [part.strip() for part in entry_tf.split(",") if part.strip()]
-            if parts:
-                meta_items = [{"interval": part} for part in parts]
-        if not meta_items:
-            meta_items = [None]
+        meta_items_closed: list[dict | None] = []
+        parts = _canonical_entry_tf_parts(self, entry_tf)
+        if parts:
+            meta_items_closed = [{"interval": part} for part in parts]
+        if not meta_items_closed:
+            meta_items_closed = [None]
         _emit_entries(
             self,
             raw_records,
             rec,
             sym,
             side_key,
-            meta_items,
+            meta_items_closed,
             normalize_indicator_values=normalize_indicator_values,
             derive_margin_snapshot=derive_margin_snapshot,
         )

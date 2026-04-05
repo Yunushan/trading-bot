@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6 import QtWidgets
 
+from .backtest_state_context_runtime import normalize_backtest_interval_value
+
 
 def build_backtest_market_group(self):
     market_group = QtWidgets.QGroupBox("Markets")
@@ -68,12 +70,13 @@ def build_backtest_market_group(self):
             self.backtest_custom_interval_edit.clear()
             return
         existing = {
-            self.backtest_interval_list.item(i).text()
+            normalize_backtest_interval_value(self.backtest_interval_list.item(i).text())
             for i in range(self.backtest_interval_list.count())
+            if self.backtest_interval_list.item(i) is not None
         }
         new_items = []
         for part in parts:
-            norm = part.strip()
+            norm = normalize_backtest_interval_value(part)
             if not norm or norm in existing:
                 continue
             item = QtWidgets.QListWidgetItem(norm)

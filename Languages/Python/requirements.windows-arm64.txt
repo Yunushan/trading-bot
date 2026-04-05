@@ -1,9 +1,1 @@
-python-binance==1.0.36
-binance-connector==3.12.0
-PyQt6==6.11.0
-PyQt6-Qt6==6.11.0
-PyQt6-WebEngine==6.11.0
-numpy==2.4.4
-pandas==3.0.2
-requests==2.33.1
-aiohttp==0.13.1
+.[windows-arm64]

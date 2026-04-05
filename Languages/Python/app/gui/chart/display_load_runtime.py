@@ -86,6 +86,10 @@ def load_chart(self, auto: bool = False):
         if not auto:
             self.log("Chart: unable to read current selection.")
         return
+    try:
+        interval_text = self._canonicalize_chart_interval(interval_text) or interval_text
+    except Exception:
+        pass
     if not symbol_text:
         if not auto:
             self.log("Chart: please choose a symbol.")
@@ -186,7 +190,7 @@ def load_chart(self, auto: bool = False):
 
     def _do():
         thread = QtCore.QThread.currentThread()
-        if thread.isInterruptionRequested():
+        if thread is not None and thread.isInterruptionRequested():
             return None
         wrapper = self._create_binance_wrapper(
             api_key=api_key,
@@ -206,7 +210,7 @@ def load_chart(self, auto: bool = False):
         times = []
         index_used = []
         for ts, row in df.iterrows():
-            if thread.isInterruptionRequested():
+            if thread is not None and thread.isInterruptionRequested():
                 return None
             try:
                 dt = ts.to_pydatetime()
@@ -233,7 +237,7 @@ def load_chart(self, auto: bool = False):
                 index_used.append(ts)
             except Exception:
                 continue
-        if thread.isInterruptionRequested():
+        if thread is not None and thread.isInterruptionRequested():
             return None
         if not candles:
             raise RuntimeError("no_valid_candles")

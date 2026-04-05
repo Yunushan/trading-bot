@@ -88,25 +88,25 @@ def _build_core_globals(context: dict[str, object]) -> dict[str, object]:
 
 
 def _build_runtime_helper_globals(context: dict[str, object]) -> dict[str, object]:
-    main_window_runtime = context["main_window_runtime"]
-    main_window_positions = context["main_window_positions"]
-    main_window_ui_support = context["main_window_ui_support"]
-    main_window_backtest_runtime = context["main_window_backtest_runtime"]
-    main_window_web_embed = context["main_window_web_embed"]
-    main_window_positions_worker = context["main_window_positions_worker"]
+    window_runtime = context["window_runtime"]
+    positions_runtime = context["positions_runtime"]
+    shared_ui_support = context["shared_ui_support"]
+    backtest_worker_runtime = context["backtest_worker_runtime"]
+    shared_web_embed = context["shared_web_embed"]
+    positions_worker_runtime = context["positions_worker_runtime"]
 
     return {
-        "_allow_guard_bypass": main_window_runtime._allow_guard_bypass,
-        "_restore_window_after_guard": main_window_runtime._restore_window_after_guard,
-        "_mw_interval_sort_key": main_window_runtime._mw_interval_sort_key,
-        "_is_trigger_log_line": main_window_runtime._is_trigger_log_line,
-        "_mw_positions_records_cumulative": main_window_positions._mw_positions_records_cumulative,
-        "_apply_window_icon": main_window_ui_support._apply_window_icon,
-        "_NumericItem": main_window_ui_support._NumericItem,
-        "_StarterCard": main_window_ui_support._StarterCard,
-        "_BacktestWorker": main_window_backtest_runtime._BacktestWorker,
-        "_LazyWebEmbed": main_window_web_embed._LazyWebEmbed,
-        "_PositionsWorker": main_window_positions_worker._PositionsWorker,
+        "_allow_guard_bypass": window_runtime._allow_guard_bypass,
+        "_restore_window_after_guard": window_runtime._restore_window_after_guard,
+        "_mw_interval_sort_key": window_runtime._mw_interval_sort_key,
+        "_is_trigger_log_line": window_runtime._is_trigger_log_line,
+        "_mw_positions_records_cumulative": positions_runtime._mw_positions_records_cumulative,
+        "_apply_window_icon": shared_ui_support._apply_window_icon,
+        "_NumericItem": shared_ui_support._NumericItem,
+        "_StarterCard": shared_ui_support._StarterCard,
+        "_BacktestWorker": backtest_worker_runtime._BacktestWorker,
+        "_LazyWebEmbed": shared_web_embed._LazyWebEmbed,
+        "_PositionsWorker": positions_worker_runtime._PositionsWorker,
         "_load_app_state_file": context["_load_app_state_file"],
         "_save_app_state_file": context["_save_app_state_file"],
         "_DEFAULT_WEB_UA": context["_DEFAULT_WEB_UA"],
@@ -186,7 +186,7 @@ def _build_connector_dependency_and_option_globals(
     load_position_allocations,
     collect_dependency_versions,
 ) -> dict[str, object]:
-    main_window_helper_runtime = context["main_window_helper_runtime"]
+    shared_helper_runtime = context["shared_helper_runtime"]
     dependency_versions_runtime = context["dependency_versions_runtime"]
 
     return {
@@ -207,18 +207,18 @@ def _build_connector_dependency_and_option_globals(
         "DEFAULT_CONNECTOR_BACKEND": default_connector_backend,
         "FUTURES_CONNECTOR_KEYS": FUTURES_CONNECTOR_KEYS,
         "SPOT_CONNECTOR_KEYS": SPOT_CONNECTOR_KEYS,
-        "_normalize_connector_backend": main_window_helper_runtime._normalize_connector_backend,
-        "_recommended_connector_for_key": main_window_helper_runtime._recommended_connector_for_key,
-        "_format_indicator_list": main_window_helper_runtime._format_indicator_list,
-        "_safe_float": main_window_helper_runtime._safe_float,
-        "_safe_int": main_window_helper_runtime._safe_int,
-        "_normalize_indicator_token": main_window_helper_runtime._normalize_indicator_token,
-        "_canonicalize_indicator_key": main_window_helper_runtime._canonicalize_indicator_key,
-        "_normalize_indicator_values": main_window_helper_runtime._normalize_indicator_values,
-        "_infer_indicators_from_desc": main_window_helper_runtime._infer_indicators_from_desc,
-        "_resolve_trigger_indicators": main_window_helper_runtime._resolve_trigger_indicators,
-        "_normalize_datetime_pair": main_window_helper_runtime._normalize_datetime_pair,
-        "_make_engine_key": main_window_helper_runtime._make_engine_key,
+        "_normalize_connector_backend": shared_helper_runtime._normalize_connector_backend,
+        "_recommended_connector_for_key": shared_helper_runtime._recommended_connector_for_key,
+        "_format_indicator_list": shared_helper_runtime._format_indicator_list,
+        "_safe_float": shared_helper_runtime._safe_float,
+        "_safe_int": shared_helper_runtime._safe_int,
+        "_normalize_indicator_token": shared_helper_runtime._normalize_indicator_token,
+        "_canonicalize_indicator_key": shared_helper_runtime._canonicalize_indicator_key,
+        "_normalize_indicator_values": shared_helper_runtime._normalize_indicator_values,
+        "_infer_indicators_from_desc": shared_helper_runtime._infer_indicators_from_desc,
+        "_resolve_trigger_indicators": shared_helper_runtime._resolve_trigger_indicators,
+        "_normalize_datetime_pair": shared_helper_runtime._normalize_datetime_pair,
+        "_make_engine_key": shared_helper_runtime._make_engine_key,
         "_DISABLE_CHARTS": _env_flag_enabled("BOT_DISABLE_CHARTS"),
         "_DISABLE_TRADINGVIEW": _env_flag_enabled("BOT_DISABLE_TRADINGVIEW"),
         "_SYMBOL_FETCH_TOP_N": symbol_fetch_top_n,

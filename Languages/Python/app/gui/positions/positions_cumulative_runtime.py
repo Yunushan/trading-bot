@@ -3,6 +3,116 @@ from __future__ import annotations
 import copy
 from datetime import datetime
 
+from ..runtime.window import runtime as main_window_runtime
+from .record_build_helpers import _allocation_sort_key
+
+
+def _clean_interval_label(value: object) -> str:
+    try:
+        text = str(value or "").strip()
+    except Exception:
+        return ""
+    return text if text and text not in {"-"} else ""
+
+
+def _record_primary_metric(entry: dict) -> float:
+    data = entry.get("data") or {}
+    try:
+        return float(data.get("qty") or data.get("margin_usdt") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _record_open_time_sort_key(self, entry: dict) -> tuple[float, str]:
+    data = entry.get("data") or {}
+    raw_value = entry.get("open_time") or data.get("open_time") or ""
+    try:
+        dt_obj = self._parse_any_datetime(raw_value)
+    except Exception:
+        dt_obj = None
+    if dt_obj is None:
+        return (float("inf"), str(raw_value or ""))
+    try:
+        return (float(dt_obj.timestamp()), str(raw_value or ""))
+    except Exception:
+        return (float("inf"), str(raw_value or ""))
+
+
+def _record_identity_key(entry: dict) -> tuple[str, ...]:
+    data = entry.get("data") or {}
+    tokens: list[str] = []
+    for candidate in (
+        entry.get("_aggregate_key"),
+        data.get("_aggregate_key"),
+        entry.get("trade_id"),
+        data.get("trade_id"),
+        entry.get("client_order_id"),
+        data.get("client_order_id"),
+        entry.get("order_id"),
+        data.get("order_id"),
+        entry.get("event_uid"),
+        data.get("event_uid"),
+        entry.get("context_key"),
+        data.get("context_key"),
+        entry.get("slot_id"),
+        data.get("slot_id"),
+        entry.get("ledger_id"),
+        data.get("ledger_id"),
+        entry.get("open_time"),
+        data.get("open_time"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            tokens.append(text)
+    allocations = entry.get("allocations") or []
+    if isinstance(allocations, dict):
+        allocations = list(allocations.values())
+    if isinstance(allocations, list):
+        for alloc in sorted(
+            (payload for payload in allocations if isinstance(payload, dict)),
+            key=_allocation_sort_key,
+        ):
+            tokens.append("|".join(_allocation_sort_key(alloc)))
+    return tuple(tokens)
+
+
+def _record_stable_sort_key(self, entry: dict) -> tuple[object, ...]:
+    data = entry.get("data") or {}
+    interval_label = _clean_interval_label(entry.get("entry_tf"))
+    if not interval_label:
+        interval_label = _clean_interval_label(data.get("interval_display")) or _clean_interval_label(
+            data.get("interval")
+        )
+    return (
+        main_window_runtime._mw_interval_sort_key(interval_label),
+        _record_open_time_sort_key(self, entry),
+        _record_identity_key(entry),
+    )
+
+
+def _canonical_interval_labels(labels: list[str]) -> list[str]:
+    ordered = [
+        label
+        for label in dict.fromkeys(label for label in labels if label)
+    ]
+    return sorted(ordered, key=main_window_runtime._mw_interval_sort_key)
+
+
+def _summary_row_sort_key(self, item: dict) -> tuple[object, ...]:
+    interval_label = _clean_interval_label(item.get("entry_tf"))
+    if interval_label and "," in interval_label:
+        interval_label = interval_label.split(",")[0].strip()
+    if not interval_label:
+        interval_label = _clean_interval_label((item.get("data") or {}).get("interval_display"))
+    return (
+        str(item.get("symbol") or "").strip().upper(),
+        str(item.get("side_key") or "").strip().upper(),
+        main_window_runtime._mw_interval_sort_key(interval_label),
+        str(item.get("status") or ""),
+        _record_open_time_sort_key(self, item),
+        _record_identity_key(item),
+    )
+
 
 def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: list[dict] | None = None) -> list[dict]:
     grouped: dict[tuple[str, str], list[dict]] = {}
@@ -20,19 +130,21 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
     for (_sym, _side_key), bucket in grouped.items():
         if not bucket:
             continue
-        primary = max(
-            bucket,
-            key=lambda r: float((r.get("data") or {}).get("qty") or (r.get("data") or {}).get("margin_usdt") or 0.0),
-        )
+        bucket_sorted = sorted(bucket, key=lambda entry: _record_stable_sort_key(self, entry))
+        primary = max(bucket_sorted, key=_record_primary_metric)
         clone = copy.deepcopy(primary)
+        clone_allocations = clone.get("allocations") or []
+        if isinstance(clone_allocations, dict):
+            clone_allocations = list(clone_allocations.values())
+        if isinstance(clone_allocations, list):
+            clone["allocations"] = [
+                copy.deepcopy(entry)
+                for entry in sorted(
+                    (payload for payload in clone_allocations if isinstance(payload, dict)),
+                    key=_allocation_sort_key,
+                )
+            ]
         open_time_candidates: list[datetime] = []
-
-        def _clean_interval_label(value: object) -> str:
-            try:
-                text = str(value or "").strip()
-            except Exception:
-                return ""
-            return text if text and text not in {"-"} else ""
 
         intervals: list[str] = []
         total_qty = 0.0
@@ -44,13 +156,15 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
             try:
                 if value is None or value == "":
                     return
+                if not isinstance(value, (int, float, str, bytes, bytearray)):
+                    return
                 lev_val = int(float(value))
                 if lev_val > 0:
                     leverage_values.add(lev_val)
             except Exception:
                 return
 
-        for entry in bucket:
+        for entry in bucket_sorted:
             label = _clean_interval_label(entry.get("entry_tf")) or _clean_interval_label(
                 (entry.get("data") or {}).get("interval_display")
             )
@@ -88,9 +202,9 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
                 total_pnl += float(data.get("pnl_value") or 0.0)
             except Exception:
                 pass
+        intervals = _canonical_interval_labels(intervals)
         if intervals:
             clone["entry_tf"] = ", ".join(intervals)
-            clone.setdefault("data", {}).setdefault("interval_display", intervals[0])
         else:
             allocations = clone.get("allocations") or []
             if isinstance(allocations, list):
@@ -102,10 +216,13 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
                     )
                     if label and label not in intervals:
                         intervals.append(label)
+                intervals = _canonical_interval_labels(intervals)
                 if intervals:
                     clone["entry_tf"] = ", ".join(intervals)
-                    clone.setdefault("data", {}).setdefault("interval_display", intervals[0])
         agg_data = dict(clone.get("data") or {})
+        if intervals:
+            agg_data["interval_display"] = intervals[0]
+            agg_data["interval"] = intervals[0]
         if total_qty > 0.0:
             agg_data["qty"] = total_qty
         if total_margin > 0.0:
@@ -140,11 +257,11 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
                     else earliest.isoformat()
                 )
                 clone["open_time"] = open_fmt
-                agg_data.setdefault("open_time", open_fmt)
+                agg_data["open_time"] = open_fmt
             except Exception:
                 pass
         clone["data"] = agg_data
-        clone["_aggregated_entries"] = bucket
+        clone["_aggregated_entries"] = bucket_sorted
         aggregated.append(clone)
     closed_entries = list(closed_entries or [])
 
@@ -157,9 +274,7 @@ def _mw_positions_records_cumulative(self, entries: list[dict], closed_entries: 
 
     closed_entries.sort(key=lambda e: (_close_dt(e) or datetime.min), reverse=True)
     aggregated.extend(closed_entries)
-    aggregated.sort(
-        key=lambda item: (item.get("symbol"), item.get("side_key"), item.get("entry_tf") or "", item.get("status") or "")
-    )
+    aggregated.sort(key=lambda item: _summary_row_sort_key(self, item))
     return aggregated
 
 

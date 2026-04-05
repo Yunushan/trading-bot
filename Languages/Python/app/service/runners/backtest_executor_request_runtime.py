@@ -3,8 +3,14 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timedelta, timezone
 
-from ...config import normalize_stop_loss_dict
-from ...core.backtest import BacktestRequest, IndicatorDefinition, PairOverride
+from ...config import coerce_bool, normalize_stop_loss_dict
+from ...core.backtest import (
+    BacktestRequest,
+    IndicatorDefinition,
+    PairOverride,
+    normalize_backtest_interval,
+    normalize_backtest_intervals,
+)
 
 
 def utc_now_iso() -> str:
@@ -25,6 +31,10 @@ def string_list(value) -> list[str]:  # noqa: ANN001
         if text:
             items.append(text)
     return items
+
+
+def interval_list(value) -> list[str]:  # noqa: ANN001
+    return normalize_backtest_intervals(value)
 
 
 def deep_merge(base: dict, patch: dict) -> dict:
@@ -65,6 +75,8 @@ def coerce_datetime(value) -> datetime | None:  # noqa: ANN001
                     continue
         if parsed is None:
             return None
+    if parsed is None:
+        return None
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
     return parsed
@@ -74,7 +86,7 @@ def build_indicator_definitions(indicators_payload) -> list[IndicatorDefinition]
     indicators: list[IndicatorDefinition] = []
     if isinstance(indicators_payload, dict):
         for key, params in indicators_payload.items():
-            if not isinstance(params, dict) or not bool(params.get("enabled")):
+            if not isinstance(params, dict) or not coerce_bool(params.get("enabled"), False):
                 continue
             clean_params = copy.deepcopy(params)
             clean_params.pop("enabled", None)
@@ -101,7 +113,7 @@ def build_pair_overrides(overrides_payload) -> list[PairOverride] | None:  # noq
         if not isinstance(item, dict):
             continue
         symbol = clean_text(item.get("symbol")).upper()
-        interval = clean_text(item.get("interval"))
+        interval = normalize_backtest_interval(item.get("interval"))
         if not symbol or not interval:
             continue
         key = (symbol, interval)
@@ -163,7 +175,7 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         backtest_cfg = deep_merge(backtest_cfg, patch.pop("backtest"))
 
     symbols = string_list(patch.get("symbols", backtest_cfg.get("symbols", config.get("symbols"))))
-    intervals = string_list(patch.get("intervals", backtest_cfg.get("intervals", config.get("intervals"))))
+    intervals = interval_list(patch.get("intervals", backtest_cfg.get("intervals", config.get("intervals"))))
     indicators = build_indicator_definitions(
         patch.get("indicators", backtest_cfg.get("indicators", config.get("indicators")))
     )
@@ -244,7 +256,7 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         assets_mode=assets_mode,
         account_mode=account_mode,
         mdd_logic=mdd_logic,
-        stop_loss_enabled=bool(stop_loss_cfg.get("enabled")),
+        stop_loss_enabled=coerce_bool(stop_loss_cfg.get("enabled"), False),
         stop_loss_mode=clean_text(stop_loss_cfg.get("mode"), "usdt"),
         stop_loss_usdt=coerce_number(stop_loss_cfg.get("usdt"), 0.0),
         stop_loss_percent=coerce_number(stop_loss_cfg.get("percent"), 0.0),

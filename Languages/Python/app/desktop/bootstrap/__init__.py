@@ -1,7 +1,8 @@
 """
 Desktop bootstrap package.
 
-The public launcher remains ``Languages/Python/main.py``. This package holds
+The canonical launcher now lives at ``apps/desktop-pyqt/main.py``. The
+compatibility launcher remains ``Languages/Python/main.py``. This package holds
 the internal desktop startup implementation so desktop-only bootstrap logic can
 move behind the ``app.desktop`` boundary without breaking existing entrypoints.
 """

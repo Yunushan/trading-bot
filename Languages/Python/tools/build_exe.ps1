@@ -13,10 +13,15 @@ param(
 $ErrorActionPreference = "Stop"
 $pythonRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $pythonRoot "..\\..")).Path
+$desktopEntryScript = Join-Path $repoRoot "apps\\desktop-pyqt\\main.py"
 $releaseInfoPath = ""
 Push-Location $pythonRoot
 
 try {
+  if (!(Test-Path $desktopEntryScript)) {
+    throw "Desktop entry script not found at $desktopEntryScript"
+  }
+
   if (-not $SkipDependencyInstall) {
     if (Test-Path "requirements.txt") {
       & $Python -m pip install --upgrade pip | Out-Null
@@ -101,12 +106,13 @@ else:
 
   $pyInstallerArgs = @(
     "-m", "PyInstaller",
-    "main.py",
     "--name", $Name,
     "--onefile",
     "--clean",
     "--noconfirm",
     "--specpath", "build",
+    "--paths", $repoRoot,
+    "--paths", $pythonRoot,
     "--hidden-import", "binance.client",
     "--hidden-import", "binance.spot"
   )
@@ -161,6 +167,7 @@ else:
     # Embed release metadata so the running EXE can show its release tag in the UI.
     $pyInstallerArgs += @("--add-data", "$releaseInfoPath;app")
   }
+  $pyInstallerArgs += $desktopEntryScript
 
   & $Python @pyInstallerArgs
 

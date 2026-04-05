@@ -222,7 +222,6 @@ def _close_indicator_positions(
                 total_qty_closed += closed_qty
                 if limit_remaining is not None:
                     limit_remaining = max(0.0, limit_remaining - closed_qty)
-                self._mark_guard_closed(symbol, leg_key[1], close_side)
         except Exception:
             continue
         if limit_remaining is not None and limit_remaining <= limit_tol:

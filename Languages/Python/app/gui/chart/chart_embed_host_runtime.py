@@ -169,6 +169,10 @@ def prime_tradingview_chart(self, widget) -> None:
         interval_text = (self.chart_interval_combo.currentText() or "").strip()
     except Exception:
         return
+    try:
+        interval_text = self._canonicalize_chart_interval(interval_text) or interval_text
+    except Exception:
+        pass
     if not symbol_text or not interval_text:
         return
     interval_code = self._map_chart_interval(interval_text)
@@ -200,6 +204,10 @@ def open_tradingview_external(self) -> bool:
         interval_text = (self.chart_interval_combo.currentText() or "").strip()
     except Exception:
         return False
+    try:
+        interval_text = self._canonicalize_chart_interval(interval_text) or interval_text
+    except Exception:
+        pass
     if not symbol_text or not interval_text:
         return False
     interval_code = self._map_chart_interval(interval_text)

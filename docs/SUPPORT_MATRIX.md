@@ -66,4 +66,4 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 
 - FreeBSD is the only BSD target with a dedicated GitHub workflow today, and it still depends on a matching self-hosted runner.
 - Other BSD variants and Solaris/illumos are currently `manual / best-effort` targets.
-- Android and iOS currently start from the Expo app in `Languages/Python/clients/mobile/`.
+- Android and iOS currently start from the Expo app in `apps/mobile-client/`.

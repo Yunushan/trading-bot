@@ -15,8 +15,8 @@ from .chart_embed import (
     _tradingview_unavailable_reason,
 )
 
-_CHART_INTERVAL_OPTIONS = ()
-_CHART_MARKET_OPTIONS = ()
+_CHART_INTERVAL_OPTIONS: tuple[str, ...] = ()
+_CHART_MARKET_OPTIONS: tuple[str, ...] = ()
 
 
 def _on_tradingview_ready(self):
@@ -368,9 +368,14 @@ def _restore_chart_controls_from_config(self):
     self.chart_config["auto_follow"] = self.chart_auto_follow
     symbol_cfg = str(self.chart_config.get("symbol") or "").strip().upper()
     interval_cfg = str(self.chart_config.get("interval") or "").strip()
+    try:
+        interval_cfg = self._canonicalize_chart_interval(interval_cfg) or interval_cfg
+    except Exception:
+        pass
     if symbol_cfg:
         self._set_chart_symbol(symbol_cfg, ensure_option=True)
     if interval_cfg:
+        self.chart_config["interval"] = interval_cfg
         self._set_chart_interval(interval_cfg)
     elif _CHART_INTERVAL_OPTIONS:
         self._set_chart_interval(_CHART_INTERVAL_OPTIONS[0])
@@ -386,10 +391,9 @@ def _update_chart_symbol_options(self, symbols=None):
         return
     combo = self.chart_symbol_combo
     current = combo.currentText().strip().upper()
+    market_combo = getattr(self, "chart_market_combo", None)
     market = self._normalize_chart_market(
-        getattr(self, "chart_market_combo", None).currentText()
-        if hasattr(self, "chart_market_combo")
-        else None
+        market_combo.currentText() if market_combo is not None else None
     )
     if symbols is None:
         symbols = list(self.chart_symbol_cache.get(market) or [])

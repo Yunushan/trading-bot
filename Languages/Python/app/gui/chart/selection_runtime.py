@@ -3,11 +3,61 @@ from __future__ import annotations
 from PyQt6 import QtCore, QtWidgets
 
 from app.gui.runtime.background_workers import CallWorker
+from app.gui.shared.indicator_value_core import normalize_interval_token
 
-_DEFAULT_CHART_SYMBOLS = ()
+_DEFAULT_CHART_SYMBOLS: tuple[str, ...] = ()
 _SYMBOL_FETCH_TOP_N = 0
 _TRADINGVIEW_SYMBOL_PREFIX = "BINANCE:"
-_TRADINGVIEW_INTERVAL_MAP = {}
+_TRADINGVIEW_INTERVAL_MAP: dict[str, str] = {}
+
+
+def _normalize_chart_interval_key(interval: str | None) -> str:
+    raw = str(interval or "").strip()
+    if not raw:
+        return ""
+    normalized = normalize_interval_token(raw)
+    if normalized:
+        return str(normalized)
+    return raw.lower()
+
+
+def _canonicalize_chart_interval(interval: str | None) -> str:
+    normalized = _normalize_chart_interval_key(interval)
+    if not normalized:
+        return ""
+    if normalized == "1mo":
+        return "1M"
+    return normalized
+
+
+def _find_chart_interval_index(combo, interval_label: str) -> int:
+    try:
+        idx = combo.findText(interval_label, QtCore.Qt.MatchFlag.MatchFixedString)
+    except Exception:
+        idx = -1
+    if idx >= 0:
+        return int(idx)
+    normalized = _normalize_chart_interval_key(interval_label)
+    if not normalized:
+        return -1
+    try:
+        count = combo.count()
+    except Exception:
+        return -1
+    for idx in range(count):
+        try:
+            item_text = combo.itemText(idx)
+        except Exception:
+            continue
+        if _normalize_chart_interval_key(item_text) != normalized:
+            continue
+        try:
+            if item_text != interval_label:
+                combo.setItemText(idx, interval_label)
+        except Exception:
+            pass
+        return int(idx)
+    return -1
 
 
 def _futures_display_symbol(self, symbol: str) -> str:
@@ -31,12 +81,12 @@ def _resolve_chart_symbol_for_api(self, symbol: str, market: str | None = None) 
             cfg_market = None
     market_norm = self._normalize_chart_market(cfg_market)
     if market_norm == "Futures":
-        alias_map = {}
+        alias_map: dict[str, str] = {}
         mapping = getattr(self, "_chart_symbol_alias_map", {})
         if isinstance(mapping, dict):
             alias_map = mapping.get(market_norm, {}) or {}
         if sym in alias_map:
-            return alias_map[sym]
+            return str(alias_map[sym])
         if sym.endswith(".P"):
             return sym[:-2]
     return sym
@@ -64,9 +114,10 @@ def _on_chart_controls_changed(self, *_args):
         return
     try:
         symbol = (self.chart_symbol_combo.currentText() or "").strip().upper()
-        interval = (self.chart_interval_combo.currentText() or "").strip()
+        interval_raw = (self.chart_interval_combo.currentText() or "").strip()
     except Exception:
         return
+    interval = _canonicalize_chart_interval(interval_raw)
     changed = False
     symbol_changed = False
     if symbol:
@@ -75,6 +126,11 @@ def _on_chart_controls_changed(self, *_args):
             symbol_changed = True
         self.chart_config["symbol"] = symbol
     if interval:
+        if interval != interval_raw and not self._chart_updating:
+            try:
+                self._set_chart_interval(interval)
+            except Exception:
+                pass
         if self.chart_config.get("interval") != interval:
             changed = True
         self.chart_config["interval"] = interval
@@ -182,10 +238,9 @@ def _load_chart_symbols_async(self, market: str):
                 symbols = list(_DEFAULT_CHART_SYMBOLS)
             self.chart_symbol_cache[market_key] = symbols
             self._chart_needs_render = True
+            market_combo = getattr(self, "chart_market_combo", None)
             current_market = self._normalize_chart_market(
-                getattr(self, "chart_market_combo", None).currentText()
-                if hasattr(self, "chart_market_combo")
-                else None
+                market_combo.currentText() if market_combo is not None else None
             )
             if current_market == market_key:
                 self._update_chart_symbol_options(symbols)
@@ -247,10 +302,9 @@ def _apply_dashboard_selection_to_chart(self, load: bool = False):
         if load and should_render:
             self.load_chart(auto=True)
         return
+    market_combo = getattr(self, "chart_market_combo", None)
     current_market = self._normalize_chart_market(
-        getattr(self, "chart_market_combo", None).currentText()
-        if hasattr(self, "chart_market_combo")
-        else None
+        market_combo.currentText() if market_combo is not None else None
     )
     if current_market != "Futures":
         if load and should_render:
@@ -304,7 +358,7 @@ def _selected_dashboard_interval(self):
             if item and item.isSelected():
                 iv = item.text().strip()
                 if iv:
-                    selected.append(iv)
+                    selected.append(_canonicalize_chart_interval(iv) or iv)
     except Exception:
         return ""
     if selected:
@@ -312,8 +366,8 @@ def _selected_dashboard_interval(self):
     if self.interval_list.count():
         first_item = self.interval_list.item(0)
         if first_item:
-            return first_item.text().strip()
-    return self.chart_config.get("interval", "")
+            return _canonicalize_chart_interval(first_item.text().strip()) or first_item.text().strip()
+    return _canonicalize_chart_interval(self.chart_config.get("interval", "")) or self.chart_config.get("interval", "")
 
 
 def _set_chart_symbol(self, symbol: str, ensure_option: bool = False, from_follow: bool = False) -> bool:
@@ -360,7 +414,7 @@ def _set_chart_symbol(self, symbol: str, ensure_option: bool = False, from_follo
         self._chart_manual_override = False
         self.chart_auto_follow = True
         self.chart_config["auto_follow"] = True
-    return changed
+    return bool(changed)
 
 
 def _set_chart_interval(self, interval: str) -> bool:
@@ -369,29 +423,29 @@ def _set_chart_interval(self, interval: str) -> bool:
     if not hasattr(self, "chart_interval_combo"):
         return False
     combo = self.chart_interval_combo
-    normalized = str(interval or "").strip()
+    normalized = _canonicalize_chart_interval(interval)
     if not normalized:
         return False
-    before = combo.currentText().strip()
+    before = _canonicalize_chart_interval(combo.currentText().strip()) or combo.currentText().strip()
     self._chart_updating = True
     changed = False
     try:
         try:
             with QtCore.QSignalBlocker(combo):
-                idx = combo.findText(normalized, QtCore.Qt.MatchFlag.MatchFixedString)
+                idx = _find_chart_interval_index(combo, normalized)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
                 else:
                     combo.addItem(normalized)
                     combo.setCurrentIndex(combo.count() - 1)
         except Exception:
-            idx = combo.findText(normalized, QtCore.Qt.MatchFlag.MatchFixedString)
+            idx = _find_chart_interval_index(combo, normalized)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
             else:
                 combo.addItem(normalized)
                 combo.setCurrentIndex(combo.count() - 1)
-        after = combo.currentText().strip()
+        after = _canonicalize_chart_interval(combo.currentText().strip()) or combo.currentText().strip()
         changed = before != after
         if after:
             self.chart_config["interval"] = after
@@ -403,12 +457,12 @@ def _set_chart_interval(self, interval: str) -> bool:
 
 
 def _map_chart_interval(self, interval: str) -> str | None:
-    key = str(interval or "").strip().lower()
+    key = _normalize_chart_interval_key(interval)
     if not key:
         return None
     mapped = _TRADINGVIEW_INTERVAL_MAP.get(key)
     if mapped:
-        return mapped
+        return str(mapped)
     if key.endswith("m"):
         try:
             minutes = int(float(key[:-1]))
@@ -507,4 +561,5 @@ def bind_main_window_chart_selection_runtime(
     MainWindow._set_chart_symbol = _set_chart_symbol
     MainWindow._set_chart_interval = _set_chart_interval
     MainWindow._map_chart_interval = _map_chart_interval
+    MainWindow._canonicalize_chart_interval = staticmethod(_canonicalize_chart_interval)
     MainWindow._format_chart_symbol = _format_chart_symbol

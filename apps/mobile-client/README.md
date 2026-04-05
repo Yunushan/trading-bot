@@ -46,7 +46,7 @@ If you run this on a physical phone, do not use `127.0.0.1` unless the backend i
 Point the app at the LAN IP of the machine running:
 
 ```bash
-python -m app.service.main --serve --host 0.0.0.0 --port 8000
+python ../service-api/main.py --serve --host 0.0.0.0 --port 8000
 ```
 
 Example:

@@ -1,4 +1,4 @@
-# Trading Bot Rust Workspace
+# Trading Bot Rust Shell Experiments
 
 This directory is a Rust workspace for shared contracts/core logic plus multiple desktop-shell experiments.
 
@@ -30,7 +30,7 @@ The `Tauri` recommendation is an engineering recommendation based on the current
 
 ## Build examples
 
-From `Languages/Rust`:
+From `experiments/rust-shells`:
 
 ```bash
 cargo run -p trading-bot-rust

@@ -25,9 +25,19 @@ def _resolve_signal_order_account_state(self, *, cw, last_price) -> dict[str, ob
             usdt_bal = 0.0
     else:
         usdt_bal = self.binance.get_total_usdt_value()
-    pct_raw = float(cw.get("position_pct", 100.0))
+    pct_source = cw.get("position_pct", self.config.get("position_pct", 100.0))
+    if pct_source in (None, ""):
+        pct_source = self.config.get("position_pct", 100.0)
+    try:
+        pct_raw = float(pct_source)
+    except Exception:
+        try:
+            pct_raw = float(self.config.get("position_pct", 100.0) or 100.0)
+        except Exception:
+            pct_raw = 100.0
     pct_units_raw = str(
         cw.get("position_pct_units")
+        or self.config.get("position_pct_units")
         or cw.get("_position_pct_units")
         or ""
     ).strip().lower()

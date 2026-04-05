@@ -25,6 +25,8 @@
     &bull;
     <a href="#launching-the-applications">Launch</a>
     &bull;
+    <a href="#contributing-and-security">Contributing</a>
+    &bull;
     <a href="#user-guide">User Guide</a>
     &bull;
     <a href="#release-guide">Release Guide</a>
@@ -33,7 +35,7 @@
   </p>
 </div>
 
-A desktop-first trading workspace centered on the **PyQt6 Python app** in `Languages/Python`, with charting, positions, backtesting, and early C++/Rust runtime scaffolding in the same repository. The project is intended as a broader trading-bot workspace for exchanges, crypto venues, and FX/broker integrations, with **Binance as the current primary live connector path**. This README is now the landing page for installation, platform support, project layout, and the main documentation entry points.
+A desktop-first trading workspace centered on the **PyQt6 Python app** in `Languages/Python`, with charting, positions, backtesting, top-level thin clients under `apps/`, and native C++/Rust experimentation under `experiments/`. The project is intended as a broader trading-bot workspace for exchanges, crypto venues, and FX/broker integrations, with **Binance as the current primary live connector path**. This README is now the landing page for installation, platform support, project layout, and the main documentation entry points.
 
 ---
 
@@ -42,17 +44,18 @@ A desktop-first trading workspace centered on the **PyQt6 Python app** in `Langu
 1. [System requirements](#system-requirements)
 2. [Project layout](#project-layout)
 3. [Developer documentation, comments, and LOC tracking](#developer-documentation-comments-and-loc-tracking)
-4. [Quick start](#quick-start)
-5. [Installing dependencies](#installing-dependencies)
+4. [Contributing and security](#contributing-and-security)
+5. [Quick start](#quick-start)
+6. [Installing dependencies](#installing-dependencies)
    - [Windows](#windows)
    - [macOS](#macos)
    - [Linux (Ubuntu / Debian / Fedora / Arch)](#linux-ubuntu--debian--fedora--arch)
    - [FreeBSD](#freebsd)
-6. [Launching the applications](#launching-the-applications)
-7. [User guide](#user-guide)
-8. [Service API guide](#service-api-guide)
-9. [Release guide](#release-guide)
-10. [License](#license)
+7. [Launching the applications](#launching-the-applications)
+8. [User guide](#user-guide)
+9. [Service API guide](#service-api-guide)
+10. [Release guide](#release-guide)
+11. [License](#license)
 
 ---
 
@@ -64,7 +67,7 @@ A desktop-first trading workspace centered on the **PyQt6 Python app** in `Langu
 - **Operating system**:
   Desktop GUI: Windows 10/11, macOS (Intel & Apple Silicon), most Linux distributions, and FreeBSD.
   Backend/service API: Windows, macOS, Linux, BSD family, and Solaris/illumos on a best-effort basis.
-  Mobile: Android/iOS native thin-client path via `Languages/Python/clients/mobile/`.
+  Mobile: Android/iOS native thin-client path via `apps/mobile-client/`.
 - **A supported exchange or broker account** with API credentials. Binance API keys and Testnet are the primary current live/demo path.
 
 Optional but recommended:
@@ -140,30 +143,31 @@ docs/
 tools/
   update_loc_snapshot.py
 
+apps/
+  desktop-pyqt/          # canonical PyQt desktop launcher
+  service-api/           # canonical headless service/API launcher
+  mobile-client/         # Expo-based Android/iOS thin native client
+  web-dashboard/         # thin service dashboard / future web client seed
+
+experiments/
+  native-cpp/            # Qt/C++ desktop preview and native re-platform path
+  rust-shells/           # Rust shared-core workspace and desktop shell experiments
+
 Languages/
   Python/
     app/                  # full PyQt6 trading application
+    trading_core/         # reusable Python trading-domain package boundary
     docs/
     tools/
-    main.py               # Python GUI entrypoint
+    main.py               # deprecated desktop compatibility launcher
     requirements.txt
     requirements.service.txt
     requirements.backend.txt
-    clients/
-      web/                # thin service dashboard / future web client seed
-      mobile/             # Expo-based Android/iOS thin native client
-  C++/
-    CMakeLists.txt
-    resources.qrc
-    src/                  # Qt C++ prototype for the Backtest UI
-  Rust/
-    Cargo.toml
-    crates/               # shared contracts/core
-    apps/                 # Tauri/Slint/egui/Iced/Dioxus desktop shells
-    README.md
 ```
 
-Everything users interact with today lives under `Languages/Python` (referred to as "the Python app"). `Languages/C++` is the native desktop preview, and `Languages/Rust` now contains a shared-core workspace with multiple Rust shells/services. See [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) for official vs experimental vs scaffolded platform tiers.
+The desktop GUI and Python service/backend still live under `Languages/Python`, but their canonical product launch surfaces now live under `apps/desktop-pyqt/` and `apps/service-api/`. The thin browser and mobile clients live under `apps/` as product-facing frontends. The native C++ and Rust workspaces now live under `experiments/` so their preview/scaffold status is explicit in the repo layout. See [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) for official vs experimental vs scaffolded platform tiers.
+
+Reusable trading-domain imports are now exposed through the Python package `trading_core` inside `Languages/Python/`, while `app.core` remains the in-repo compatibility namespace for the current monolith runtime.
 
 Generated local artifacts such as `build/`, `dist_enduser/`, `.venv/`, and root-level `Trading-Bot-*.exe` files are not canonical source and are ignored by Git.
 
@@ -177,6 +181,11 @@ Contributor-facing structure and maintenance docs now live here:
 - `docs/DEVELOPMENT.md`
 - `docs/PLATFORM_EXPANSION_PLAN.md`
 - `docs/SERVICE_API.md`
+
+## Contributing and security
+
+- Contribution workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security reporting policy: [SECURITY.md](SECURITY.md)
 
 ### Current LOC snapshot
 
@@ -201,8 +210,8 @@ python tools/update_loc_snapshot.py
 2. **Install Python** (3.11 or 3.12 preferred). Remember to check “Add Python to PATH” on Windows.
 3. **Install dependencies** using the instructions for your OS below.
 4. **Launch the GUI:**
-   - Windows one-click: double-click `Languages/Python/Trading-Bot-Python.bat`, **or**
-   - Any OS: activate the virtual environment and run `python main.py` from the Python folder.
+   - Canonical product path: run `python apps/desktop-pyqt/main.py` from the repository root, **or**
+   - Deprecated compatibility path: double-click `Languages/Python/Trading-Bot-Python.bat` on Windows, or run `python main.py` from `Languages/Python/`.
 5. The dashboard opens. Fill in your exchange or broker API credentials, choose Demo/Testnet or Live, configure symbols and indicators, then click **Start**. Today the default live/demo integration path is Binance.
 6. Use the **Positions** tab to monitor open trades and the **Chart/Backtest** tabs for analysis.
 
@@ -230,7 +239,7 @@ python -m pip install --upgrade pip
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python main.py
+python ../../apps/desktop-pyqt/main.py
 ```
 
 > **PowerShell policy tip:** If you encounter a script execution warning, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then retry activation.
@@ -242,7 +251,7 @@ python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 main.py
+python3 ../../apps/desktop-pyqt/main.py
 ```
 
 > **PyQt note:** If the GUI fails to launch after dependency installation, run `pip install PyQt6 PyQt6-Qt6` to pull the Qt runtime explicitly.
@@ -254,7 +263,7 @@ python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 main.py
+python3 ../../apps/desktop-pyqt/main.py
 ```
 
 - Ubuntu/Debian: `sudo apt install python3 python3-venv python3-pip`
@@ -269,7 +278,7 @@ python3.11 -m pip install --upgrade pip
 python3.11 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-python3.11 main.py
+python3.11 ../../apps/desktop-pyqt/main.py
 ```
 
 ---
@@ -278,7 +287,8 @@ python3.11 main.py
 
 | Component | Location | Purpose | How to run |
 |-----------|----------|---------|------------|
-| **Python GUI bot** | `Languages/Python/main.py` | Full desktop trading workstation | `python main.py` (inside virtual env) |
+| **Desktop PyQt app** | `apps/desktop-pyqt/main.py` | Full desktop trading workstation | `python apps/desktop-pyqt/main.py` |
+| **Service API** | `apps/service-api/main.py` | Headless backend + `/ui/` dashboard host | `python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000` |
 | **Windows launcher** | `Languages/Python/Trading-Bot-Python.bat` | Automates environment creation + launch | Double-click on Windows |
 
 All tools are cross-platform except the `.bat` helper which is Windows-only.

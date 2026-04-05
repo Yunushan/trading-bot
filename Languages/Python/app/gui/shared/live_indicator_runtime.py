@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections import deque
 
@@ -8,6 +9,7 @@ import pandas as pd
 from PyQt6 import QtCore
 
 from app.integrations.exchanges.binance import BinanceWrapper
+from app.integrations.exchanges.binance.transport.helpers import _coerce_interval_seconds
 from app.core.indicators import (
     ema as ema_indicator,
     rsi as rsi_indicator,
@@ -18,14 +20,126 @@ from app.core.indicators import (
 from app.gui.runtime.background_workers import CallWorker
 
 
-def sanitize_interval_hint(interval_hint: str | None) -> str:
-    if not interval_hint:
-        return ""
+_INTERVAL_TOKEN_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)?\s*$")
+_CANONICAL_INTERVAL_BY_SECONDS = {
+    60.0: "1m",
+    180.0: "3m",
+    300.0: "5m",
+    900.0: "15m",
+    1800.0: "30m",
+    3600.0: "1h",
+    7200.0: "2h",
+    14400.0: "4h",
+    21600.0: "6h",
+    28800.0: "8h",
+    43200.0: "12h",
+    86400.0: "1d",
+    259200.0: "3d",
+    604800.0: "1w",
+}
+_INTERVAL_UNIT_ALIASES = {
+    "": "m",
+    "s": "s",
+    "sec": "s",
+    "secs": "s",
+    "second": "s",
+    "seconds": "s",
+    "m": "m",
+    "min": "m",
+    "mins": "m",
+    "minute": "m",
+    "minutes": "m",
+    "h": "h",
+    "hr": "h",
+    "hrs": "h",
+    "hour": "h",
+    "hours": "h",
+    "d": "d",
+    "day": "d",
+    "days": "d",
+    "w": "w",
+    "wk": "w",
+    "wks": "w",
+    "week": "w",
+    "weeks": "w",
+}
+
+
+def _format_interval_amount(raw_amount: str) -> str:
     try:
-        primary = str(interval_hint).split(",")[0].strip()
+        value = float(str(raw_amount or "").strip())
     except Exception:
-        primary = str(interval_hint or "").strip()
-    return primary
+        return str(raw_amount or "").strip()
+    if value.is_integer():
+        return str(int(value))
+    return str(value).rstrip("0").rstrip(".")
+
+
+def _interval_sort_key(interval_label: str) -> tuple[float, str]:
+    if interval_label == "1M":
+        return (float("inf"), interval_label)
+    return (_coerce_interval_seconds(interval_label), str(interval_label or "").lower())
+
+
+def _canonicalize_interval_label(interval_label: str | None) -> str:
+    raw = str(interval_label or "").strip()
+    if not raw:
+        return ""
+    if raw == "1M":
+        return "1M"
+    match = _INTERVAL_TOKEN_RE.match(raw)
+    if not match:
+        return raw.lower()
+    amount_token, unit_token = match.groups()
+    unit_raw = str(unit_token or "").strip()
+    unit_lower = unit_raw.lower()
+    if unit_raw == "M" or unit_lower in {"mo", "mon", "month", "months"}:
+        return f"{_format_interval_amount(amount_token)}M"
+    unit_norm = _INTERVAL_UNIT_ALIASES.get(unit_lower, unit_lower or "m")
+    normalized = f"{_format_interval_amount(amount_token)}{unit_norm}"
+    canonical = _CANONICAL_INTERVAL_BY_SECONDS.get(_coerce_interval_seconds(normalized))
+    return canonical or normalized
+
+
+def _canonicalize_interval_values(values, *, fallback: str | None = None) -> list[str]:
+    labels: list[str] = []
+    iterable: list[str | None] = []
+    if isinstance(values, str):
+        iterable.extend(values.split(","))
+    elif isinstance(values, (list, tuple, set)):
+        iterable.extend(str(value) if value is not None else None for value in values)
+    elif fallback:
+        iterable.append(fallback)
+    for value in iterable:
+        normalized = _canonicalize_interval_label(value)
+        if normalized:
+            labels.append(normalized)
+    if not labels and fallback:
+        normalized_fallback = _canonicalize_interval_label(fallback)
+        if normalized_fallback:
+            labels.append(normalized_fallback)
+    ordered = list(dict.fromkeys(labels))
+    return sorted(ordered, key=_interval_sort_key)
+
+
+def _normalize_live_indicator_identity(
+    symbol: str | None,
+    interval: str | None,
+    cache_key=None,
+) -> tuple[tuple[str, str], str, str]:
+    symbol_norm = str(symbol or "").strip().upper()
+    interval_norm = sanitize_interval_hint(interval)
+    if not symbol_norm and isinstance(cache_key, tuple) and cache_key:
+        symbol_norm = str(cache_key[0] or "").strip().upper()
+    if not interval_norm and isinstance(cache_key, tuple) and len(cache_key) > 1:
+        interval_norm = sanitize_interval_hint(cache_key[1])
+    normalized_key = (symbol_norm, interval_norm)
+    return normalized_key, symbol_norm, interval_norm
+
+
+def sanitize_interval_hint(interval_hint: str | None) -> str:
+    normalized = _canonicalize_interval_values(interval_hint)
+    return normalized[0] if normalized else ""
 
 
 def calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict, *, use_live_values: bool = True) -> float | None:
@@ -206,9 +320,11 @@ def start_live_indicator_refresh_worker(
     calc_indicator_value_from_df,
     process_live_indicator_refresh_queue,
 ) -> None:
-    cache_key = entry.get("cache_key")
-    symbol = entry.get("symbol")
-    interval = entry.get("interval")
+    cache_key, symbol, interval = _normalize_live_indicator_identity(
+        entry.get("symbol"),
+        entry.get("interval"),
+        entry.get("cache_key"),
+    )
     indicator_keys = sorted({str(k).strip().lower() for k in (entry.get("indicator_keys") or []) if str(k).strip()})
     if not cache_key or not symbol or not interval or not indicator_keys:
         return
@@ -359,6 +475,7 @@ def queue_live_indicator_refresh(
     snapshot_live_indicator_context,
     process_live_indicator_refresh_queue,
 ) -> None:
+    cache_key, symbol, interval = _normalize_live_indicator_identity(symbol, interval, cache_key)
     if not cache_key or not symbol or not interval or not indicator_keys:
         return
     inflight = getattr(window, "_live_indicator_refresh_inflight", None)
@@ -457,17 +574,7 @@ def collect_current_indicator_live_strings(
         intervals: list[str] = []
         if isinstance(interval_map, dict):
             intervals = interval_map.get(key) or interval_map.get(key.lower()) or []
-        if not intervals:
-            intervals = [default_interval]
-        normalized_intervals: list[str] = []
-        seen_intervals: set[str] = set()
-        for interval_label in intervals:
-            interval_clean = (str(interval_label or "").strip() or default_interval).lower()
-            interval_key = normalize_indicator_token(interval_clean) or interval_clean
-            if interval_key in seen_intervals:
-                continue
-            seen_intervals.add(interval_key)
-            normalized_intervals.append(interval_clean)
+        normalized_intervals = _canonicalize_interval_values(intervals, fallback=default_interval)
         if not normalized_intervals:
             normalized_intervals = [default_interval]
         for interval_clean in normalized_intervals:

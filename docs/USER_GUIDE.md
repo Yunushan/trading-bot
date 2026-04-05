@@ -128,7 +128,7 @@ This tab lists the supported code languages and keeps the scaffolding paths orga
 |------|----------|-------------|
 | `Trading-Bot-Python.bat` | `Languages/Python/` | Automates environment bootstrap on Windows. |
 | `close_all.py` | `Languages/Python/app/` | Auxiliary script to close every futures position. |
-| `position_guard.py` | `Languages/Python/app/` | Contains the guard logic used to deduplicate indicator entries and enforce stop-loss/stop-gap rules. |
+| `trading_core/positions.py` | `Languages/Python/` | Public reusable positions surface exposing the guard logic used to deduplicate indicator entries and enforce stop-loss/stop-gap rules. |
 | `requirements.txt` | `Languages/Python/` | Python dependency pinning for the desktop GUI. |
 
 ## Troubleshooting & FAQ

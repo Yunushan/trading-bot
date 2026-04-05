@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 
 def _signal_order_has_opposite_open(
@@ -50,11 +51,27 @@ def _submit_futures_signal_order(
     abort_guard,
 ) -> tuple[object, bool, bool]:
     allow_hedge_open = self._strategy_coerce_bool(self.config.get("allow_opposite_positions"), True)
+    guard_obj = getattr(self, "guard", None)
+    guard_side = side
+    can_open_claimed = False
+
+    def _release_can_open_claim() -> None:
+        nonlocal can_open_claimed
+        if not can_open_claimed:
+            return
+        can_open_claimed = False
+        if guard_obj and hasattr(guard_obj, "end_open"):
+            try:
+                guard_obj.end_open(cw["symbol"], cw.get("interval"), guard_side, False, context=context_key)
+            except Exception:
+                pass
+
     if callable(self.can_open_cb) and not allow_hedge_open:
         if not self.can_open_cb(cw["symbol"], cw.get("interval"), side, context_key):
             self.log(f"{cw['symbol']}@{cw.get('interval')} Duplicate guard: {side} already open - skipping.")
             abort_guard()
             return {}, False, True
+        can_open_claimed = True
 
     try:
         backend_key = str(getattr(self.binance, "_connector_backend", "") or "").lower()
@@ -111,6 +128,7 @@ def _submit_futures_signal_order(
             if side == "BUY":
                 if amt_existing < -tol and (not dual_mode or pos_side in {"BOTH", ""}):
                     self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short still open on exchange; skipping long entry.")
+                    _release_can_open_claim()
                     abort_guard()
                     return {}, False, True
                 if guard_duplicates:
@@ -127,11 +145,13 @@ def _submit_futures_signal_order(
                         sig_sorted = signature if signature else ()
                         if any(tuple(sorted(entry.get("trigger_signature") or [])) == sig_sorted for entry in entries_dup):
                             self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long already active on exchange; skipping duplicate long entry.")
+                            _release_can_open_claim()
                             abort_guard()
                             return {}, False, True
             elif side == "SELL":
                 if amt_existing > tol and (not dual_mode or pos_side in {"BOTH", ""}):
                     self.log(f"{cw['symbol']}@{cw.get('interval')} guard: long still open on exchange; skipping short entry.")
+                    _release_can_open_claim()
                     abort_guard()
                     return {}, False, True
                 if guard_duplicates:
@@ -148,23 +168,25 @@ def _submit_futures_signal_order(
                         sig_sorted = signature if signature else ()
                         if any(tuple(sorted(entry.get("trigger_signature") or [])) == sig_sorted for entry in entries_dup):
                             self.log(f"{cw['symbol']}@{cw.get('interval')} guard: short already active on exchange; skipping duplicate short entry.")
+                            _release_can_open_claim()
                             abort_guard()
                             return {}, False, True
     except Exception as ex_chk:
         self.log(f"{cw['symbol']}@{cw.get('interval')} guard check warning: {ex_chk}")
+        _release_can_open_claim()
         abort_guard()
         return {}, False, True
 
-    order_res = {}
-    guard_side = side
+    order_res: dict[str, Any] = {}
     order_success = False
-    guard_obj = getattr(self, "guard", None)
     if guard_obj and hasattr(guard_obj, "begin_open"):
         try:
             if not guard_obj.begin_open(cw["symbol"], cw.get("interval"), guard_side, context=context_key):
+                _release_can_open_claim()
                 self.log(f"{cw['symbol']}@{cw.get('interval')} guard blocked {guard_side} entry (pending or opposite side active).")
                 abort_guard()
                 return order_res, order_success, True
+            can_open_claimed = False
         except Exception:
             pass
     if self.stopped():

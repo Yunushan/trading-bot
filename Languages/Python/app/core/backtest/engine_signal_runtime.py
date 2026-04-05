@@ -80,7 +80,7 @@ def collect_indicator_signals(
         if series_full is None:
             series_full = compute_indicator_series_fn(df, indicator)
             if series_full is not None:
-                series_full = series_full.astype(float, copy=False)
+                series_full = series_full.astype(float)
                 if indicator_cache is not None:
                     indicator_cache[cache_key] = series_full
         if series_full is None:

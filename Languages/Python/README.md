@@ -4,7 +4,11 @@
 
 # Trading Bot Python Workspace
 
-This folder contains the main end-user implementation of the project: the PyQt6 desktop app, the service/backend API, the thin web dashboard, and the Android/iOS thin-client scaffold.
+This folder contains the main Python implementation of the project: the PyQt6 desktop app and the service/backend API.
+
+The canonical top-level product launchers now live at the repository root in `../../apps/desktop-pyqt/` and `../../apps/service-api/`. The thin browser and Android/iOS clients live in `../../apps/web-dashboard/` and `../../apps/mobile-client/`.
+
+Reusable trading-domain code is now exposed through the `trading_core` Python package in this workspace. Keep `app.core` for the existing desktop/service runtime internals; use `trading_core` for new shared-domain imports.
 
 The workspace is broader than a Binance-only bot. It is intended for exchange, crypto, and future FX/broker integrations, with Binance currently serving as the primary live/demo connector path.
 
@@ -12,7 +16,7 @@ The workspace is broader than a Binance-only bot. It is intended for exchange, c
 
 - Desktop GUI: Windows, macOS, Linux, and FreeBSD
 - Backend/service API: Windows, macOS, Linux, BSD family, and Solaris/illumos on a best-effort basis
-- Native mobile thin client: Android and iOS via `clients/mobile/`
+- Native mobile thin client: Android and iOS via `../../apps/mobile-client/`
 
 ## Related docs
 
@@ -53,7 +57,7 @@ python -m pip install --upgrade pip
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python main.py
+python ../../apps/desktop-pyqt/main.py
 ```
 
 If PowerShell blocks activation, run this once and retry:
@@ -69,7 +73,7 @@ python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 main.py
+python3 ../../apps/desktop-pyqt/main.py
 ```
 
 ### macOS
@@ -79,7 +83,7 @@ python3 -m pip install --upgrade pip
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 main.py
+python3 ../../apps/desktop-pyqt/main.py
 ```
 
 If PyQt fails to launch cleanly on macOS, install the Qt runtime explicitly:
@@ -96,7 +100,7 @@ python3 -m pip install --upgrade pip
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-python3 main.py
+python3 ../../apps/desktop-pyqt/main.py
 ```
 
 ### BSD family / Solaris / illumos
@@ -105,7 +109,7 @@ For non-FreeBSD BSD systems and Solaris/illumos, the current best-effort path is
 
 ```bash
 pip install -r requirements.backend.txt
-python -m app.service.main --serve --host 0.0.0.0 --port 8000
+python ../../apps/service-api/main.py --serve --host 0.0.0.0 --port 8000
 ```
 
 Exact OS package names for Python, `pip`, `venv`, and Qt vary by platform, so those system-level install commands are intentionally left platform-specific.
@@ -128,7 +132,7 @@ Quick start:
 
 ```bash
 pip install -r requirements.service.txt
-python -m app.service.main --serve --host 127.0.0.1 --port 8000
+python ../../apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 ```
 
 Use that guide for:
@@ -154,7 +158,7 @@ This packages the headless service API and thin web dashboard only. It does not 
 
 ## Android/iOS thin client
 
-There is an Expo-based native thin client in `clients/mobile/` for Android and iOS.
+There is an Expo-based native thin client in `../../apps/mobile-client/` for Android and iOS.
 
 From that folder:
 
@@ -163,7 +167,7 @@ npm install
 npm run start
 ```
 
-For native build profiles, see `clients/mobile/eas.json`.
+For native build profiles, see `../../apps/mobile-client/eas.json`.
 
 When connecting from a physical phone to a backend running on your machine, use the machine's LAN IP instead of `127.0.0.1`.
 

@@ -21,12 +21,20 @@ def _apply_entire_account_stop_loss(self, *, ctx: dict[str, object]) -> bool:
     reason = None
     apply_usdt_limit = bool(ctx.get("apply_usdt_limit"))
     apply_percent_limit = bool(ctx.get("apply_percent_limit"))
+    stop_usdt_limit_value = ctx.get("stop_usdt_limit")
+    stop_percent_limit_value = ctx.get("stop_percent_limit")
     try:
-        stop_usdt_limit = float(ctx.get("stop_usdt_limit") or 0.0)
+        if isinstance(stop_usdt_limit_value, (int, float, str)):
+            stop_usdt_limit = float(stop_usdt_limit_value or 0.0)
+        else:
+            stop_usdt_limit = 0.0
     except Exception:
         stop_usdt_limit = 0.0
     try:
-        stop_percent_limit = float(ctx.get("stop_percent_limit") or 0.0)
+        if isinstance(stop_percent_limit_value, (int, float, str)):
+            stop_percent_limit = float(stop_percent_limit_value or 0.0)
+        else:
+            stop_percent_limit = 0.0
     except Exception:
         stop_percent_limit = 0.0
 
@@ -195,13 +203,21 @@ def _close_leg_entry(
         res,
         leg_info_override=entry,
     )
-    if isinstance(reason, str) and reason.strip():
-        payload["reason"] = reason.strip()
+    reason_text = (
+        str(reason).strip()
+        if isinstance(reason, str) and str(reason).strip()
+        else "per_trade_stop_loss"
+    )
+    payload["reason"] = reason_text
+    side_norm = "BUY" if str(side_label).upper() in ("BUY", "LONG", "L") else "SELL"
     remaining_qty = qty_recorded - closed_qty
     eps_remaining = max(1e-9, qty_recorded * 1e-6)
     fully_closed = remaining_qty <= eps_remaining or not entry.get("ledger_id")
+    payload["remaining_qty"] = max(0.0, remaining_qty)
+    payload["fully_closed"] = fully_closed
     if fully_closed:
         self._remove_leg_entry(leg_key, entry.get("ledger_id"))
+        self._mark_guard_closed(symbol, interval, side_norm, entry=entry)
     else:
         self._decrement_leg_entry_qty(
             leg_key,
@@ -209,8 +225,6 @@ def _close_leg_entry(
             qty_recorded,
             remaining_qty,
         )
-    side_norm = "BUY" if str(side_label).upper() in ("BUY", "LONG", "L") else "SELL"
-    self._mark_guard_closed(symbol, interval, side_norm)
     if fully_closed:
         self._mark_indicator_reentry_signal_block(symbol, interval, entry, side_label)
         try:
@@ -225,7 +239,6 @@ def _close_leg_entry(
         **payload,
         latency_seconds=latency_s,
         latency_ms=latency_s * 1000.0,
-        reason=(str(reason).strip() if isinstance(reason, str) and str(reason).strip() else "per_trade_stop_loss"),
     )
     if queue_flip and fully_closed:
         try:

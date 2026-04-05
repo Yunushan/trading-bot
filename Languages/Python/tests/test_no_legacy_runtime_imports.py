@@ -1,38 +1,41 @@
 from __future__ import annotations
 
 import ast
+import importlib
+import sys
 from pathlib import Path
 import unittest
 
 
-APP_ROOT = Path("Languages/Python/app")
+PYTHON_ROOT = Path("Languages/Python")
 
-_BANNED_EXACT_IMPORTS = {
-    "app.preamble",
-    "app.workers",
-    "app.close_all",
-    "app.gui.main_window",
-}
 
-_BANNED_PREFIXES = (
-    "app.gui.shared.main_window_",
-    "app.gui.trade.main_window_",
-    "app.gui.code.main_window_",
-    "app.gui.backtest.main_window_backtest_",
-    "app.gui.chart.main_window_chart_",
-    "app.gui.dashboard.main_window_dashboard_",
-    "app.gui.positions.main_window_positions",
-    "app.gui.runtime.account.main_window_",
-    "app.gui.runtime.service.main_window_",
-    "app.gui.runtime.ui.main_window_",
-    "app.gui.runtime.window.main_window_",
-    "app.gui.runtime.composition.main_window_",
-    "app.gui.runtime.strategy.main_window_",
-)
+def _load_import_policy():
+    if str(PYTHON_ROOT) not in sys.path:
+        sys.path.insert(0, str(PYTHON_ROOT))
+    from tools import import_policy
+
+    return import_policy
+
+
+_IMPORT_POLICY = _load_import_policy()
+POLICY_SCAN_ROOTS = _IMPORT_POLICY.POLICY_SCAN_ROOTS
+is_deprecated_import = _IMPORT_POLICY.is_deprecated_import
+replacement_for_legacy_import = _IMPORT_POLICY.replacement_for_legacy_import
+
+
+APP_ROOT = PYTHON_ROOT / "app"
+
+
+def _iter_python_files(root: Path):
+    if root.is_file():
+        yield root
+        return
+    yield from sorted(root.rglob("*.py"))
 
 
 def _module_name_for(path: Path) -> str:
-    rel_parts = path.relative_to(APP_ROOT.parent).with_suffix("").parts
+    rel_parts = path.relative_to(PYTHON_ROOT).with_suffix("").parts
     return ".".join(rel_parts)
 
 
@@ -64,23 +67,43 @@ def _iter_import_targets(path: Path) -> list[tuple[int, str]]:
     return targets
 
 
-def _is_banned_import(target: str) -> bool:
-    if target in _BANNED_EXACT_IMPORTS:
-        return True
-    if any(target.startswith(f"{name}.") for name in _BANNED_EXACT_IMPORTS):
-        return True
-    return any(target.startswith(prefix) for prefix in _BANNED_PREFIXES)
-
-
 class LegacyRuntimeImportTests(unittest.TestCase):
-    def test_python_app_avoids_legacy_runtime_imports(self):
+    def test_python_workspace_avoids_legacy_runtime_imports(self):
         violations: list[str] = []
-        for path in sorted(APP_ROOT.rglob("*.py")):
-            for lineno, target in _iter_import_targets(path):
-                if _is_banned_import(target):
-                    violations.append(f"{path}:{lineno}: {target}")
+        for root in POLICY_SCAN_ROOTS:
+            for path in _iter_python_files(PYTHON_ROOT / root):
+                for lineno, target in _iter_import_targets(path):
+                    replacement = replacement_for_legacy_import(target)
+                    if replacement:
+                        violations.append(f"{path}:{lineno}: {target} -> use {replacement}")
         self.assertEqual(
             [],
             violations,
-            "Legacy compatibility imports remain in app code:\n" + "\n".join(violations),
+            "Legacy compatibility imports remain in the Python workspace:\n" + "\n".join(violations),
         )
+
+    def test_deprecated_import_registry_covers_backward_compatible_shims(self):
+        uncovered: list[str] = []
+        for path in sorted(APP_ROOT.rglob("*.py")):
+            text = path.read_text(encoding="utf-8-sig")
+            if "Backward-compatible import shim" not in text:
+                continue
+            module_name = _module_name_for(path)
+            if not is_deprecated_import(module_name):
+                uncovered.append(module_name)
+        self.assertEqual(
+            [],
+            uncovered,
+            "Backward-compatible shim modules are missing from tools.import_policy:\n" + "\n".join(uncovered),
+        )
+
+    def test_removed_flat_bootstrap_and_worker_shims_raise_import_error(self):
+        removed_modules = [
+            "app.preamble",
+            "app.workers",
+        ]
+
+        for module_name in removed_modules:
+            with self.subTest(module_name=module_name):
+                with self.assertRaises(ModuleNotFoundError):
+                    importlib.import_module(module_name)

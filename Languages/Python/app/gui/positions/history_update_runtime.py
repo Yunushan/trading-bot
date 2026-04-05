@@ -44,12 +44,22 @@ def _mw_update_position_history(self, positions_map: dict):
                 if key in prev_records:
                     positions_map.setdefault(key, prev_records[key])
                 missing_counts[key] = 0
+                try:
+                    if isinstance(pending_close_map, dict):
+                        pending_close_map.pop(key, None)
+                except Exception:
+                    pass
             else:
                 if allow_missing_autoclose:
                     confirmed_closed.append(key)
                 else:
                     prev_records.pop(key, None)
                     missing_counts.pop(key, None)
+                    try:
+                        if isinstance(pending_close_map, dict):
+                            pending_close_map.pop(key, None)
+                    except Exception:
+                        pass
 
         if confirmed_closed:
             close_confirmed_positions(

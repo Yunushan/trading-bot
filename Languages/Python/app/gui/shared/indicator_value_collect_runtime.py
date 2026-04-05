@@ -4,6 +4,7 @@ from .indicator_value_core import (
     CLOSED_ALLOCATION_STATES,
     CLOSED_RECORD_STATES,
     dedupe_indicator_entries,
+    format_interval_display_token,
     indicator_entry_signature,
     indicator_short_label,
     normalize_interval_token,
@@ -146,9 +147,13 @@ def collect_indicator_value_strings(
     include_inactive_allocs = record_status in CLOSED_RECORD_STATES
     primary_interval = ""
     if interval_hint:
-        primary_interval = str(interval_hint).split(",")[0].strip()
+        primary_interval = format_interval_display_token(
+            str(interval_hint).split(",")[0].strip()
+        )
     elif isinstance(data.get("interval_display"), str):
-        primary_interval = str(data.get("interval_display")).split(",")[0].strip()
+        primary_interval = format_interval_display_token(
+            str(data.get("interval_display")).split(",")[0].strip()
+        )
 
     indicator_keys = collect_record_indicator_keys(
         rec,
@@ -196,9 +201,10 @@ def collect_indicator_value_strings(
         if not interval_tokens:
             interval_tokens.append(((interval_value or "").strip() or None, normalize_interval_token(interval_value)))
         for display_token, norm_token in interval_tokens:
+            interval_display = format_interval_display_token(display_token or interval_value)
             sources.append(
                 {
-                    "interval": display_token or interval_value,
+                    "interval": interval_display or display_token or interval_value,
                     "norm_interval": norm_token,
                     "segments": segments,
                     "indicator_keys": source_indicator_keys,
@@ -347,11 +353,11 @@ def collect_indicator_value_strings(
             if action is None and (value is None or not allow_value_without_action):
                 continue
             interval_label = source.get("interval") or primary_interval
-            interval_display = (interval_label or "").strip()
+            interval_display = format_interval_display_token(interval_label)
             if not interval_display and primary_interval:
                 interval_display = primary_interval
             label = indicator_short_label(key)
-            interval_part = f"@{interval_display.upper()}" if interval_display else ""
+            interval_part = f"@{interval_display}" if interval_display else ""
             if value is not None:
                 try:
                     value_display = f"{float(value):.2f}"
@@ -361,14 +367,14 @@ def collect_indicator_value_strings(
                 value_display = "--"
             action_part = f" -{action}" if action else ""
             entry = f"{label}{interval_part} {value_display}{action_part}".strip()
-            interval_reg_key = (interval_display or "").strip().lower() or None
+            interval_reg_key = normalize_interval_token(interval_display) or None
             if interval_reg_key in interval_entry_map:
                 interval_entry_map[interval_reg_key] = entry
             else:
                 interval_entry_map[interval_reg_key] = entry
                 interval_entry_order.append(interval_reg_key)
             if interval_display:
-                interval_clean = interval_display.strip().upper()
+                interval_clean = format_interval_display_token(interval_display)
                 slots = interval_map.setdefault(key.lower(), [])
                 if interval_clean not in slots:
                     slots.append(interval_clean)
@@ -392,13 +398,13 @@ def collect_indicator_value_strings(
                     break
             if not action_val:
                 continue
-            interval_display = (primary_interval or "").strip()
+            interval_display = format_interval_display_token(primary_interval)
             label = indicator_short_label(key)
-            interval_part = f"@{interval_display.upper()}" if interval_display else ""
+            interval_part = f"@{interval_display}" if interval_display else ""
             entry = f"{label}{interval_part} -- -{action_val}".strip()
             deduped_results.append(entry)
             if interval_display:
-                interval_clean = interval_display.strip().upper()
+                interval_clean = format_interval_display_token(interval_display)
                 slots = interval_map.setdefault(key.lower(), [])
                 if interval_clean not in slots:
                     slots.append(interval_clean)
@@ -479,11 +485,11 @@ def collect_indicator_value_strings(
             label_part, interval_part = indicator_entry_signature(entry)
             if not interval_part:
                 continue
-            key = label_map.get(label_part)
-            if not key:
+            indicator_key = label_map.get(label_part)
+            if not indicator_key:
                 continue
-            interval_slots = interval_map.setdefault(key.lower(), [])
-            interval_clean = interval_part.strip().upper()
+            interval_slots = interval_map.setdefault(indicator_key.lower(), [])
+            interval_clean = format_interval_display_token(interval_part)
             if interval_clean and interval_clean not in interval_slots:
                 interval_slots.append(interval_clean)
     return deduped_results, interval_map

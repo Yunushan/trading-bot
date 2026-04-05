@@ -8,99 +8,67 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app import strategy
-from app.core.strategy import StrategyEngine
-from app.core.strategy.orders.strategy_indicator_order_build_runtime import (
+from trading_core.strategy import StrategyEngine as PublicStrategyEngine  # noqa: E402
+from app.core.strategy import StrategyEngine  # noqa: E402
+from app.core.strategy.orders.strategy_indicator_order_build_runtime import (  # noqa: E402
     _build_directional_indicator_order_request as new_build_directional_indicator_order_request,
 )
-from app.core.strategy.orders.strategy_signal_orders_runtime import (
+from app.core.strategy.orders.strategy_signal_orders_runtime import (  # noqa: E402
     bind_strategy_signal_orders_runtime as new_bind_signal_orders,
 )
-from app.core.strategy.positions.strategy_close_opposite_runtime import (
+from app.core.strategy.positions.strategy_close_opposite_runtime import (  # noqa: E402
     _close_opposite_position as new_close_opposite_position,
 )
-from app.core.strategy.positions.strategy_indicator_guard import (
+from app.core.strategy.positions.strategy_indicator_guard import (  # noqa: E402
     bind_strategy_indicator_guard as new_bind_indicator_guard,
 )
-from app.core.strategy.positions.strategy_position_close_runtime import (
+from app.core.strategy.positions.strategy_position_close_runtime import (  # noqa: E402
     bind_strategy_position_close_runtime as new_bind_position_close,
 )
-from app.core.strategy.positions.strategy_position_flip_runtime import (
+from app.core.strategy.positions.strategy_position_flip_runtime import (  # noqa: E402
     bind_strategy_position_flip_runtime as new_bind_position_flip,
 )
-from app.core.strategy.positions.strategy_position_state import (
+from app.core.strategy.positions.strategy_position_state import (  # noqa: E402
     bind_strategy_position_state as new_bind_position_state,
 )
-from app.core.strategy.positions.strategy_trade_book import (
+from app.core.strategy.positions.strategy_trade_book import (  # noqa: E402
     bind_strategy_trade_book as new_bind_trade_book,
 )
-from app.core.strategy.runtime.strategy_cycle_risk_runtime import (
+from app.core.strategy.runtime.strategy_cycle_risk_runtime import (  # noqa: E402
     _apply_cycle_risk_management as new_apply_cycle_risk_management,
 )
-from app.core.strategy.runtime.strategy_cycle_risk_stop_context_runtime import (
+from app.core.strategy.runtime.strategy_cycle_risk_stop_context_runtime import (  # noqa: E402
     build_futures_stop_state as new_build_futures_stop_state,
 )
-from app.core.strategy.runtime.strategy_cycle_risk_stop_cumulative_runtime import (
+from app.core.strategy.runtime.strategy_cycle_risk_stop_cumulative_runtime import (  # noqa: E402
     apply_cumulative_futures_stop_management as new_apply_cumulative_futures_stop_management,
 )
-from app.core.strategy.runtime.strategy_cycle_risk_stop_directional_runtime import (
+from app.core.strategy.runtime.strategy_cycle_risk_stop_directional_runtime import (  # noqa: E402
     apply_directional_futures_stop_management as new_apply_directional_futures_stop_management,
 )
-from app.core.strategy.runtime.strategy_cycle_runtime import (
+from app.core.strategy.runtime.strategy_cycle_runtime import (  # noqa: E402
     run_once as new_run_once,
 )
-from app.core.strategy.runtime.strategy_indicator_compute import (
+from app.core.strategy.runtime.strategy_indicator_compute import (  # noqa: E402
     bind_strategy_indicator_compute as new_bind_indicator_compute,
 )
-from app.core.strategy.runtime.strategy_indicator_tracking import (
+from app.core.strategy.runtime.strategy_indicator_tracking import (  # noqa: E402
     bind_strategy_indicator_tracking as new_bind_indicator_tracking,
 )
-from app.core.strategy.runtime.strategy_runtime import (
+from app.core.strategy.runtime.strategy_runtime import (  # noqa: E402
     bind_strategy_runtime as new_bind_runtime,
 )
-from app.core.strategy.runtime.strategy_runtime_support import (
+from app.core.strategy.runtime.strategy_runtime_support import (  # noqa: E402
     bind_strategy_runtime_support as new_bind_runtime_support,
 )
-from app.core.strategy.runtime.strategy_signal_generation import (
+from app.core.strategy.runtime.strategy_signal_generation import (  # noqa: E402
     bind_strategy_signal_generation as new_bind_signal_generation,
 )
-from app.strategy_cycle_runtime import run_once as root_run_once
-from app.strategy_indicator_compute import bind_strategy_indicator_compute as root_bind_indicator_compute
-from app.strategy_indicator_guard import bind_strategy_indicator_guard as root_bind_indicator_guard
-from app.strategy_indicator_tracking import bind_strategy_indicator_tracking as root_bind_indicator_tracking
-from app.strategy_position_close_runtime import (
-    bind_strategy_position_close_runtime as root_bind_position_close,
-)
-from app.strategy_position_flip_runtime import (
-    bind_strategy_position_flip_runtime as root_bind_position_flip,
-)
-from app.strategy_position_state import bind_strategy_position_state as root_bind_position_state
-from app.strategy_runtime import bind_strategy_runtime as root_bind_runtime
-from app.strategy_runtime_support import (
-    bind_strategy_runtime_support as root_bind_runtime_support,
-)
-from app.strategy_signal_generation import bind_strategy_signal_generation as root_bind_signal_generation
-from app.strategy_signal_orders_runtime import (
-    bind_strategy_signal_orders_runtime as root_bind_signal_orders,
-)
-from app.strategy_trade_book import bind_strategy_trade_book as root_bind_trade_book
 
 
 class StrategyPackageSplitSmokeTests(unittest.TestCase):
-    def test_root_shims_resolve_to_same_objects(self):
-        self.assertIs(strategy.StrategyEngine, StrategyEngine)
-        self.assertIs(root_bind_signal_orders, new_bind_signal_orders)
-        self.assertIs(root_bind_trade_book, new_bind_trade_book)
-        self.assertIs(root_bind_indicator_guard, new_bind_indicator_guard)
-        self.assertIs(root_bind_position_state, new_bind_position_state)
-        self.assertIs(root_bind_position_close, new_bind_position_close)
-        self.assertIs(root_bind_position_flip, new_bind_position_flip)
-        self.assertIs(root_bind_runtime, new_bind_runtime)
-        self.assertIs(root_bind_runtime_support, new_bind_runtime_support)
-        self.assertIs(root_bind_indicator_compute, new_bind_indicator_compute)
-        self.assertIs(root_bind_signal_generation, new_bind_signal_generation)
-        self.assertIs(root_bind_indicator_tracking, new_bind_indicator_tracking)
-        self.assertIs(root_run_once, new_run_once)
+    def test_canonical_strategy_engine_surface_resolves_to_same_object(self):
+        self.assertIs(PublicStrategyEngine, StrategyEngine)
 
     def test_final_strategy_subpackages_keep_private_helpers_available(self):
         self.assertTrue(callable(new_build_directional_indicator_order_request))
@@ -144,6 +112,52 @@ class StrategyPackageSplitSmokeTests(unittest.TestCase):
             with self.subTest(module_name=module_name):
                 with self.assertRaises(ModuleNotFoundError):
                     importlib.import_module(module_name)
+
+    def test_removed_flat_strategy_root_shims_raise_import_error(self):
+        removed_modules = [
+            "app.strategy",
+            "app.strategy_cycle_runtime",
+            "app.strategy_indicator_compute",
+            "app.strategy_indicator_guard",
+            "app.strategy_indicator_tracking",
+            "app.strategy_position_close_runtime",
+            "app.strategy_position_flip_runtime",
+            "app.strategy_position_state",
+            "app.strategy_runtime",
+            "app.strategy_runtime_support",
+            "app.strategy_signal_generation",
+            "app.strategy_signal_order_collect_runtime",
+            "app.strategy_signal_order_execute_runtime",
+            "app.strategy_signal_order_guard_runtime",
+            "app.strategy_signal_order_margin_runtime",
+            "app.strategy_signal_order_position_gate_runtime",
+            "app.strategy_signal_order_prepare_runtime",
+            "app.strategy_signal_order_result_runtime",
+            "app.strategy_signal_order_sizing_runtime",
+            "app.strategy_signal_order_slot_runtime",
+            "app.strategy_signal_order_submit_runtime",
+            "app.strategy_signal_orders_runtime",
+            "app.strategy_trade_book",
+        ]
+
+        for module_name in removed_modules:
+            with self.subTest(module_name=module_name):
+                with self.assertRaises(ModuleNotFoundError):
+                    importlib.import_module(module_name)
+
+    def test_canonical_strategy_runtime_bindings_stay_available(self):
+        self.assertTrue(callable(new_bind_signal_orders))
+        self.assertTrue(callable(new_bind_trade_book))
+        self.assertTrue(callable(new_bind_indicator_guard))
+        self.assertTrue(callable(new_bind_position_state))
+        self.assertTrue(callable(new_bind_position_close))
+        self.assertTrue(callable(new_bind_position_flip))
+        self.assertTrue(callable(new_bind_runtime))
+        self.assertTrue(callable(new_bind_runtime_support))
+        self.assertTrue(callable(new_bind_indicator_compute))
+        self.assertTrue(callable(new_bind_signal_generation))
+        self.assertTrue(callable(new_bind_indicator_tracking))
+        self.assertTrue(callable(new_run_once))
 
     def test_strategy_engine_still_exposes_runtime_order_and_position_helpers(self):
         expected_methods = [

@@ -11,6 +11,11 @@ import {
 } from "react-native";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_PATH = "/api/v1";
+
+function apiPath(path) {
+  return `${API_BASE_PATH}/${String(path || "").replace(/^\/+/, "")}`;
+}
 
 function normalizeBaseUrl(value) {
   const raw = String(value || "").trim();
@@ -103,7 +108,7 @@ export default function App() {
     try {
       const nextHealth = await requestJson("/health");
       setHealth(nextHealth);
-      const nextDashboard = await requestJson("/api/dashboard?log_limit=10");
+      const nextDashboard = await requestJson(`${apiPath("dashboard")}?log_limit=10`);
       setDashboard(nextDashboard);
       setMessage(`Connected to ${normalizeBaseUrl(baseUrl)}.`);
     } catch (error) {
@@ -116,7 +121,7 @@ export default function App() {
   const sendLifecycle = async (action) => {
     setLoading(true);
     try {
-      const path = action === "start" ? "/api/control/start" : "/api/control/stop";
+      const path = action === "start" ? apiPath("control/start") : apiPath("control/stop");
       const body =
         action === "start"
           ? { requested_job_count: 1, source: "mobile-client" }
@@ -133,7 +138,7 @@ export default function App() {
   const runBacktest = async () => {
     setLoading(true);
     try {
-      const result = await requestJson("/api/backtest/run", {
+      const result = await requestJson(apiPath("backtest/run"), {
         method: "POST",
         body: { request: {}, source: "mobile-client" },
       });

@@ -16,12 +16,14 @@ The current repo can stay desktop-first while growing a headless backend and add
 
 Today the main Python implementation is centered around these files:
 
+- `apps/desktop-pyqt/main.py`: canonical desktop launcher delegating into the Python workspace
+- `apps/service-api/main.py`: canonical service/API launcher delegating into the Python workspace
 - `Languages/Python/main.py`: desktop bootstrap and platform-specific startup behavior
 - `Languages/Python/app/gui/window_shell.py`: current PyQt desktop application shell
 - `Languages/Python/app/gui/main_window.py`: compatibility wrapper for the desktop window shell
-- `Languages/Python/app/strategy.py`: core trading/runtime behavior candidate
-- `Languages/Python/app/binance_wrapper.py`: exchange integration candidate
-- `Languages/Python/app/backtester.py`: backtesting candidate
+- `Languages/Python/trading_core/strategy.py`: canonical reusable strategy surface
+- `Languages/Python/app/integrations/exchanges/binance/__init__.py`: canonical exchange integration surface
+- `Languages/Python/trading_core/backtest.py`: canonical reusable backtest surface
 
 This means the project already has the raw pieces needed for expansion, but they are still too close to the desktop process.
 
@@ -30,6 +32,11 @@ This means the project already has the raw pieces needed for expansion, but they
 The recommended direction is to split the Python implementation into these layers:
 
 ```text
+apps/
+  desktop-pyqt/
+  service-api/
+  web-dashboard/
+  mobile-client/
 Languages/Python/
   app/
     core/
@@ -59,12 +66,9 @@ Languages/Python/
       config/
       logging/
       utils/
-  clients/
-    web/                 # optional future web frontend
-    mobile/              # optional future thin mobile client
-  docker/
-    backend.Dockerfile
-    compose.yaml
+docker/
+  backend.Dockerfile
+  compose.yaml
 ```
 
 ## What each layer should own
@@ -100,7 +104,7 @@ Put here:
 - future Redis/Postgres adapters
 - notification hooks
 
-The first concrete exchange move is already in place: the Binance integration package now lives under `app/integrations/exchanges/binance/`, with the live support modules using package-local imports internally and `app/binance_wrapper.py` kept only as a compatibility shim for older imports.
+The first concrete exchange move is already in place: the Binance integration package now lives under `app/integrations/exchanges/binance/`, with the live support modules using package-local imports internally and the flat `app/binance_wrapper.py` shim now removed.
 
 ### `app/service/`
 
@@ -131,7 +135,7 @@ Put here:
 
 This is where the current desktop bootstrap and GUI should gradually move.
 
-### `clients/web/`
+### `apps/web-dashboard/`
 
 Optional browser-based frontend.
 
@@ -139,7 +143,7 @@ Use this only after the backend exists.
 
 The current thin dashboard should keep trending toward small browser modules, with shared state, render helpers, and API transport split out of the top-level browser bootstrap file.
 
-### `clients/mobile/`
+### `apps/mobile-client/`
 
 Optional native thin client for Android/iOS.
 
@@ -153,80 +157,81 @@ Docker should package the backend service, not the current PyQt GUI.
 
 ## Recommended migration mapping from current files
 
-Start by treating these current files as the seeds of the new layers:
+Start by treating these current or recently removed file families as the seeds of the new layers:
 
 - `Languages/Python/app/strategy.py`
-  Current state: compatibility shim
-  New home: `app/core/strategy/engine.py`
+  Current state: removed flat compatibility shim
+  Canonical surface: `Languages/Python/trading_core/strategy.py`
+  Implementation home: `app/core/strategy/`
 
 - `Languages/Python/app/strategy_signal_order*.py`
-  Current state: compatibility shims
+  Current state: removed compatibility wrappers
   New home: `app/core/strategy/orders/strategy_signal_order*.py`
 
 - `Languages/Python/app/strategy_signal_orders_runtime.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/orders/strategy_signal_orders_runtime.py`
 
 - `Languages/Python/app/strategy_runtime.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/runtime/strategy_runtime.py`
 
 - `Languages/Python/app/strategy_runtime_support.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/runtime/strategy_runtime_support.py`
 
 - `Languages/Python/app/strategy_cycle_runtime.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/runtime/strategy_cycle_runtime.py`
   Current split: cycle-risk orchestration in `app/core/strategy/runtime/strategy_cycle_risk_runtime.py`, RSI exits in `strategy_cycle_risk_rsi_runtime.py`, and futures stop-loss orchestration in `strategy_cycle_risk_stop_runtime.py`, with price/cache state in `strategy_cycle_risk_stop_context_runtime.py`, cumulative stop-loss closes in `strategy_cycle_risk_stop_cumulative_runtime.py`, and per-leg stop-loss closes in `strategy_cycle_risk_stop_directional_runtime.py`
 
 - `Languages/Python/app/strategy_indicator_compute.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/runtime/strategy_indicator_compute.py`
 
 - `Languages/Python/app/strategy_signal_generation.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/runtime/strategy_signal_generation.py`
 
 - `Languages/Python/app/strategy_indicator_tracking.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/runtime/strategy_indicator_tracking.py`
 
 - `Languages/Python/app/strategy_indicator_guard.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/positions/strategy_indicator_guard.py`
 
 - `Languages/Python/app/strategy_trade_book.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/positions/strategy_trade_book.py`
 
 - `Languages/Python/app/strategy_position_state.py`
-    Current state: compatibility shim
+    Current state: removed compatibility wrapper
     New home: `app/core/strategy/positions/strategy_position_state.py`
     Current split: bind surface in `strategy_position_state.py`, leg-ledger mutation in `strategy_position_ledger_runtime.py`, indicator conflict handling in `strategy_position_conflict_runtime.py`, and futures margin/purge helpers in `strategy_position_futures_runtime.py`
 
 - `Languages/Python/app/strategy_position_close_runtime.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/positions/strategy_position_close_runtime.py`
 
 - `Languages/Python/app/strategy_position_flip_runtime.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/positions/strategy_position_flip_runtime.py`
   Current split: close-opposite execution helper in `app/core/strategy/positions/strategy_close_opposite_runtime.py`
 
 - `Languages/Python/app/strategy_signal_order_collect_runtime.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/orders/strategy_signal_order_collect_runtime.py`
   Current split: indicator-order build facade in `app/core/strategy/orders/strategy_indicator_order_build_runtime.py`, with shared exchange/cleanup helpers in `strategy_indicator_order_common_runtime.py`, directional/fallback/hedge builders in `strategy_indicator_order_directional_runtime.py`, `strategy_indicator_order_fallback_runtime.py`, and `strategy_indicator_order_hedge_runtime.py`, plus indicator-order context helpers in `app/core/strategy/orders/strategy_indicator_order_context_runtime.py`
 
 - `Languages/Python/app/strategy_position_flip_runtime.py`
-  Current state: compatibility shim
+  Current state: removed compatibility wrapper
   New home: `app/core/strategy/positions/strategy_position_flip_runtime.py`
   Current split: close-opposite orchestration in `app/core/strategy/positions/strategy_close_opposite_runtime.py`, with internal helpers in `strategy_close_opposite_common_runtime.py`, `strategy_close_opposite_ledger_runtime.py`, `strategy_close_opposite_indicator_runtime.py`, and `strategy_close_opposite_exchange_runtime.py`
 
-- `Languages/Python/app/backtester.py`
-  Current state: compatibility shim
-  New home: `app/core/backtest/engine.py`
+- `Languages/Python/trading_core/backtest.py`
+  Current state: canonical reusable surface
+  Implementation home: `app/core/backtest/engine.py`
   Current split: request/result models in `app/core/backtest/models.py`, indicator helpers in `app/core/backtest/indicator_runtime.py`, and internal engine helpers in `app/core/backtest/engine_run_runtime.py`, `app/core/backtest/engine_data_runtime.py`, `app/core/backtest/engine_signal_runtime.py`, and `app/core/backtest/engine_simulation_runtime.py`
 
 - `Languages/Python/app/gui/positions/main_window_positions_build_runtime.py`
@@ -244,17 +249,18 @@ Start by treating these current files as the seeds of the new layers:
   Current split: configuration state in `app/gui/positions/history_records_context_runtime.py`, entry-building in `app/gui/positions/history_records_entries_runtime.py`, grouping/deduping in `app/gui/positions/history_records_group_runtime.py`, and entry-building internals in `history_records_meta_runtime.py`, `history_records_allocations_runtime.py`, `history_records_trade_data_runtime.py`, and `history_records_emit_runtime.py`
   Related mutation split: `app/gui/positions/history_update_runtime.py` now keeps the update facade, with configuration state in `history_update_context_runtime.py`, exchange/live-position lookups in `history_update_lookup_runtime.py`, close-path orchestration in `history_update_close_runtime.py`, and close helpers in `history_update_snapshot_runtime.py`, `history_update_allocation_runtime.py`, and `history_update_registry_runtime.py`
 
-- `Languages/Python/app/indicators.py`
-  Current state: compatibility shim
-  New home: `app/core/indicators/__init__.py`
+- `Languages/Python/trading_core/indicators.py`
+  Current state: canonical reusable surface
+  Implementation home: `app/core/indicators/__init__.py`
 
-- `Languages/Python/app/position_guard.py`
-  Current state: compatibility shim
-  New home: `app/core/positions/guard.py`
+- `Languages/Python/trading_core/positions.py`
+  Current state: canonical reusable surface
+  Implementation home: `app/core/positions/guard.py`
 
 - `Languages/Python/app/binance_wrapper.py`
-  Current state: compatibility shim
-  New home: `app/integrations/exchanges/binance/wrapper.py`
+  Current state: removed flat compatibility shim
+  Canonical surface: `app/integrations/exchanges/binance/__init__.py`
+  Implementation home: `app/integrations/exchanges/binance/wrapper.py`
   Current split: account binding surface in `app/integrations/exchanges/binance/account/account_data.py`, with internal account helpers in `account_cache_runtime.py`, `account_balance_runtime.py`, and `account_futures_runtime.py`
 
 - `Languages/Python/app/integrations/exchanges/binance/clients/sdk_clients.py`
@@ -291,10 +297,10 @@ Start by treating these current files as the seeds of the new layers:
   Current state: first extracted `main_window.py` UI-assembly helper
 
 - `Languages/Python/app/gui/runtime/composition/bindings_runtime.py`
-  Current state: thin authoritative extracted `main_window.py` class-binding/configuration entrypoint, with `binding_modules.py` and `binding_sections.py` carrying the internal composition loader/binder split and `main_window_bindings_runtime.py` left as a compatibility wrapper
+  Current state: authoritative extracted `main_window.py` class-binding/configuration entrypoint, with `binding_modules.py` and `binding_sections.py` carrying the internal composition loader/binder split
 
 - `Languages/Python/app/gui/runtime/composition/module_state_runtime.py`
-  Current state: thin authoritative extracted `main_window.py` constant/helper-alias entrypoint, with `module_state_constants.py` and `module_state_payload.py` carrying the internal constant catalog/payload-builder split and `main_window_module_state_runtime.py` left as a compatibility wrapper
+  Current state: authoritative extracted `main_window.py` constant/helper-alias entrypoint, with `module_state_constants.py` and `module_state_payload.py` carrying the internal constant catalog/payload-builder split
 
 - `Languages/Python/app/gui/runtime/window/window_code_tab_suppression_runtime.py`
   Current state: first extracted `window_runtime.py` slice for code-tab suppression on Windows
@@ -341,7 +347,7 @@ Start by treating these current files as the seeds of the new layers:
   Current state: preferred desktop service/session GUI runtime modules, with the `main_window_*` files in the same package left as compatibility wrappers during migration
 
 - `Languages/Python/app/gui/shared/config_runtime.py`, `helper_runtime.py`, `ui_support.py`, and `web_embed.py`
-  Current state: preferred shared GUI helper modules, with the `main_window_*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred shared GUI helper modules; the first `main_window_*` shared wrapper batch has been removed
 
 - `Languages/Python/app/gui/trade/trade_runtime.py`, `signal_runtime.py`, and `signal_open_runtime.py`
   Current state: preferred trade-signal helper modules, with the `main_window_trade*` files in the same package left as compatibility wrappers during migration
@@ -434,6 +440,7 @@ Do not try to move everything in one large refactor. Introduce new packages and 
 
 Goal:
 
+- keep `apps/desktop-pyqt/main.py` working
 - keep `Languages/Python/main.py` working
 - stop adding more business logic to the GUI layer
 
@@ -451,7 +458,7 @@ Steps:
 
 4. Start extracting small reusable pieces from:
    - `strategy.py`
-   - `backtester.py`
+   - `trading_core/backtest.py`
    - `binance_wrapper.py`
    - `gui/main_window.py`
 
@@ -539,16 +546,16 @@ Recommended stack:
 Suggested initial endpoints:
 
 - `GET /health`
-- `GET /api/status`
-- `POST /api/bot/start`
-- `POST /api/bot/stop`
-- `GET /api/config`
-- `PUT /api/config`
-- `GET /api/positions`
-- `GET /api/logs`
-- `GET /api/backtest`
-- `POST /api/backtest/run`
-- `POST /api/backtest/stop`
+- `GET /api/v1/status`
+- `POST /api/v1/bot/start`
+- `POST /api/v1/bot/stop`
+- `GET /api/v1/config`
+- `PUT /api/v1/config`
+- `GET /api/v1/positions`
+- `GET /api/v1/logs`
+- `GET /api/v1/backtest`
+- `POST /api/v1/backtest/run`
+- `POST /api/v1/backtest/stop`
 
 Suggested real-time channel:
 
@@ -644,7 +651,7 @@ Do not try to port Qt widgets directly. Rebuild the workflows around the backend
 Deliverable:
 
 - remote control panel for the bot
-- current repo baseline already includes a thin same-origin dashboard in `Languages/Python/clients/web/`
+- current repo baseline already includes a thin same-origin dashboard in `apps/web-dashboard/`
 
 ## Phase 8: Add Android/iOS only as thin clients
 
@@ -666,7 +673,7 @@ Rules:
 Deliverable:
 
 - optional mobile client built on top of the same backend
-- current repo baseline can start from the Expo native-client path in `Languages/Python/clients/mobile/`
+- current repo baseline can start from the Expo native-client path in `apps/mobile-client/`
 
 ## Suggested first folder creation
 

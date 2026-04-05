@@ -20,7 +20,7 @@ if [[ ! -f "${python_bin}" ]]; then
 fi
 
 required_rust_binary_name="${required_rust_asset#*:}"
-required_rust_bin="Languages/Rust/target/release/${required_rust_binary_name}"
+required_rust_bin="experiments/rust-shells/target/release/${required_rust_binary_name}"
 if [[ ! -f "${required_rust_bin}" ]]; then
   echo "Required Rust binary not found at ${required_rust_bin}" >&2
   exit 1
@@ -29,7 +29,7 @@ fi
 rust_assets=("${required_rust_asset}")
 for rust_entry in "${optional_rust_assets[@]}"; do
   rust_binary_name="${rust_entry#*:}"
-  rust_bin="Languages/Rust/target/release/${rust_binary_name}"
+  rust_bin="experiments/rust-shells/target/release/${rust_binary_name}"
   if [[ -f "${rust_bin}" ]]; then
     rust_assets+=("${rust_entry}")
   else
@@ -47,7 +47,7 @@ if [[ "${TB_PLATFORM:-}" == "linux" ]]; then
   for rust_entry in "${rust_assets[@]}"; do
     rust_asset_prefix="${rust_entry%%:*}"
     rust_binary_name="${rust_entry#*:}"
-    rust_bin="Languages/Rust/target/release/${rust_binary_name}"
+    rust_bin="experiments/rust-shells/target/release/${rust_binary_name}"
     linux_rust_asset="release/${rust_asset_prefix}-linux-${arch}"
     cp "${rust_bin}" "${linux_rust_asset}"
     chmod +x "${linux_rust_asset}"
@@ -147,7 +147,7 @@ else
   for rust_entry in "${rust_assets[@]}"; do
     rust_asset_prefix="${rust_entry%%:*}"
     rust_binary_name="${rust_entry#*:}"
-    rust_bin="Languages/Rust/target/release/${rust_binary_name}"
+    rust_bin="experiments/rust-shells/target/release/${rust_binary_name}"
     macos_rust_asset="release/${rust_asset_prefix}-${macos_asset_suffix}-${release_version}"
     cp "${rust_bin}" "${macos_rust_asset}"
     chmod +x "${macos_rust_asset}"

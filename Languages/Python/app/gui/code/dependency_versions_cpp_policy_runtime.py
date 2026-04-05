@@ -227,8 +227,8 @@ def _cpp_run_dependency_installer() -> tuple[bool, str]:
     command, cwd = _cpp_dependency_installer_command()
     if not command or cwd is None:
         if sys.platform == "win32":
-            return False, "Missing installer command or script: Languages/C++/tools/install_cpp_dependencies.ps1"
-        return False, "Missing installer command or script: Languages/C++/tools/install_cpp_dependencies.sh"
+            return False, "Missing installer command or script: experiments/native-cpp/tools/install_cpp_dependencies.ps1"
+        return False, "Missing installer command or script: experiments/native-cpp/tools/install_cpp_dependencies.sh"
     with shared._CPP_AUTO_SETUP_LOCK:
         return code_language_launch.run_command_capture_hidden(command, cwd=cwd)
 

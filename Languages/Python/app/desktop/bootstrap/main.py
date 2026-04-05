@@ -2,8 +2,9 @@
 Trading Bot desktop bootstrap implementation.
 
 This module holds the real desktop startup flow. The public launcher remains
-``Languages/Python/main.py`` so end-user commands, IDE run configurations,
-shortcuts, and relaunch metadata stay stable.
+``apps/desktop-pyqt/main.py`` while ``Languages/Python/main.py`` remains as the
+compatibility launcher so end-user commands, IDE run configurations, shortcuts,
+and relaunch metadata stay stable.
 
 Startup responsibilities, in order:
 1. Establish Windows taskbar identity (AppUserModelID + display name).
@@ -54,6 +55,7 @@ if PYTHON_WORKSPACE_DIR_STR not in sys.path:
     sys.path.insert(0, PYTHON_WORKSPACE_DIR_STR)
 
 PUBLIC_ENTRYPOINT_PATH = (PYTHON_WORKSPACE_DIR / "main.py").resolve()
+_SplashWidget = None
 
 from app.platform.windows_taskbar_metadata_runtime import (
     resolve_relaunch_arguments,
@@ -270,7 +272,7 @@ def _suppress_subprocess_console_windows() -> None:
                         kwargs["startupinfo"] = si
                     super().__init__(*args, **kwargs)
 
-            subprocess.Popen = _NoConsolePopen  # type: ignore[assignment]
+            setattr(subprocess, "Popen", _NoConsolePopen)
         else:
             def _patched_popen(*args, **kwargs):
                 if "creationflags" not in kwargs:
@@ -282,7 +284,7 @@ def _suppress_subprocess_console_windows() -> None:
                     kwargs["startupinfo"] = si
                 return original_popen(*args, **kwargs)
 
-            subprocess.Popen = _patched_popen  # type: ignore[assignment]
+            setattr(subprocess, "Popen", _patched_popen)
 
         def _patched_run(*args, **kwargs):
             if "creationflags" not in kwargs:
@@ -377,11 +379,11 @@ def _run_entrypoint(argv: list[str] | None = None) -> int:
 
 
 def _install_startup_window_suppression() -> None:
-    return startup_window_suppression_runtime._install_startup_window_suppression()
+    startup_window_suppression_runtime._install_startup_window_suppression()
 
 
 def _uninstall_startup_window_suppression() -> None:
-    return startup_window_suppression_runtime._uninstall_startup_window_suppression()
+    startup_window_suppression_runtime._uninstall_startup_window_suppression()
 
 
 

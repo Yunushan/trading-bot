@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ...core.backtest import normalize_backtest_interval, normalize_backtest_intervals
+
 
 def _clean_text(value, default: str = "") -> str:  # noqa: ANN001
     text = str(value or "").strip()
@@ -42,6 +44,14 @@ def _normalize_string_tuple(value) -> tuple[str, ...]:  # noqa: ANN001
         if text:
             items.append(text)
     return tuple(items)
+
+
+def _normalize_interval_text(value) -> str:  # noqa: ANN001
+    return normalize_backtest_interval(_clean_text(value))
+
+
+def _normalize_interval_tuple(value) -> tuple[str, ...]:  # noqa: ANN001
+    return tuple(normalize_backtest_intervals(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +176,7 @@ def build_backtest_run_record(run) -> ServiceBacktestRunRecord:  # noqa: ANN001
     indicator_keys = getattr(run, "indicator_keys", ())
     return ServiceBacktestRunRecord(
         symbol=_clean_text(getattr(run, "symbol", "")),
-        interval=_clean_text(getattr(run, "interval", "")),
+        interval=_normalize_interval_text(getattr(run, "interval", "")),
         indicator_keys=_normalize_string_tuple(indicator_keys),
         trades=max(0, _coerce_int(getattr(run, "trades", 0), 0)),
         roi_value=_coerce_float(getattr(run, "roi_value", 0.0), 0.0),
@@ -186,7 +196,7 @@ def build_backtest_error_record(error) -> ServiceBacktestErrorRecord:  # noqa: A
     payload = error if isinstance(error, dict) else {}
     return ServiceBacktestErrorRecord(
         symbol=_clean_text(payload.get("symbol")),
-        interval=_clean_text(payload.get("interval")),
+        interval=_normalize_interval_text(payload.get("interval")),
         error=_clean_text(payload.get("error"), "Unknown backtest error."),
     )
 
@@ -202,13 +212,13 @@ def build_backtest_snapshot(
     indicator_keys=None,  # noqa: ANN001
     logic: str = "",
     symbol_source: str = "",
-    capital: float = 0.0,
-    run_count: int = 0,
-    error_count: int = 0,
-    cancelled: bool = False,
-    started_at: str = "",
-    completed_at: str = "",
-    updated_at: str = "",
+    capital=0.0,  # noqa: ANN001
+    run_count=0,  # noqa: ANN001
+    error_count=0,  # noqa: ANN001
+    cancelled=False,  # noqa: ANN001
+    started_at="",  # noqa: ANN001
+    completed_at="",  # noqa: ANN001
+    updated_at="",  # noqa: ANN001
     source: str = "service",
     top_run: ServiceBacktestRunRecord | None = None,
     top_runs=None,  # noqa: ANN001
@@ -238,7 +248,7 @@ def build_backtest_snapshot(
         workload_kind=_clean_text(workload_kind, "backtest-run"),
         status_message=_clean_text(status_message, "No backtest submitted yet."),
         symbols=_normalize_string_tuple(symbols),
-        intervals=_normalize_string_tuple(intervals),
+        intervals=_normalize_interval_tuple(intervals),
         indicator_keys=_normalize_string_tuple(indicator_keys),
         logic=_clean_text(logic),
         symbol_source=_clean_text(symbol_source),
@@ -258,7 +268,7 @@ def build_backtest_snapshot(
 
 def make_backtest_command_result(
     *,
-    accepted: bool,
+    accepted,  # noqa: ANN001
     action: str,
     session_id: str = "",
     state: str = "idle",

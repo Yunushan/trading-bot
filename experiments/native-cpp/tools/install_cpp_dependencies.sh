@@ -12,7 +12,7 @@ DRY_RUN=0
 
 usage() {
   cat <<'EOF'
-Usage: ./Languages/C++/tools/install_cpp_dependencies.sh [options]
+Usage: ./experiments/native-cpp/tools/install_cpp_dependencies.sh [options]
 
 Options:
   --aqt-install-version <ver>   Pin aqtinstall version (default: 3.3.0)

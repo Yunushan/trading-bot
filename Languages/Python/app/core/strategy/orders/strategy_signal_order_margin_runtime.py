@@ -222,7 +222,7 @@ def _prepare_signal_order_margin_state(
 
     qty_est = adj_qty
     reduce_only = False
-    if bool(self.config.get("add_only", False)):
+    if self._strategy_coerce_bool(self.config.get("add_only"), False):
         dual = self.binance.get_futures_dual_side()
         if not dual:
             try:

@@ -13,14 +13,34 @@ if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[3]
     if str(_PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(_PYTHON_ROOT))
+    from app.service.api_contract import (
+        SERVICE_API_BASE_PATH,
+        SERVICE_API_DESCRIPTION,
+        SERVICE_API_HEALTH_PATH,
+        SERVICE_API_LEGACY_BASE_PATH,
+        SERVICE_API_STREAM_DASHBOARD_PATH,
+        SERVICE_API_TITLE,
+        SERVICE_API_UI_PATH,
+        SERVICE_API_VERSION,
+    )
     from app.service.auth import auth_required, resolve_service_api_token, validate_bearer_token
     from app.service.runtime import TradingBotService
 else:
+    from ..api_contract import (
+        SERVICE_API_BASE_PATH,
+        SERVICE_API_DESCRIPTION,
+        SERVICE_API_HEALTH_PATH,
+        SERVICE_API_LEGACY_BASE_PATH,
+        SERVICE_API_STREAM_DASHBOARD_PATH,
+        SERVICE_API_TITLE,
+        SERVICE_API_UI_PATH,
+        SERVICE_API_VERSION,
+    )
     from ..auth import auth_required, resolve_service_api_token, validate_bearer_token
     from ..runtime import TradingBotService
 
 try:
-    from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+    from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, status
     from fastapi.responses import RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
@@ -44,7 +64,15 @@ def _require_fastapi() -> None:
 
 
 def _resolve_web_client_dir() -> Path:
-    return Path(__file__).resolve().parents[3] / "clients" / "web"
+    repo_root = Path(__file__).resolve().parents[5]
+    candidates = (
+        repo_root / "apps" / "web-dashboard",
+        Path(__file__).resolve().parents[3] / "clients" / "web",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
 
 
 if FASTAPI_AVAILABLE:
@@ -131,9 +159,9 @@ def create_service_api_app(
         except Exception:
             pass
     app = FastAPI(
-        title="Trading Bot Service API",
-        version="0.1.0",
-        description="Headless API surface for the Trading Bot service layer.",
+        title=SERVICE_API_TITLE,
+        version=SERVICE_API_VERSION,
+        description=SERVICE_API_DESCRIPTION,
     )
     app.state.service = service_instance
     app.state.api_token = resolved_api_token
@@ -142,12 +170,20 @@ def create_service_api_app(
     app.state.service_api_host_context = resolved_host_context
     app.state.service_api_host_owner = resolved_host_owner
     app.state.service_api_streaming = True
+    app.state.service_api_version = SERVICE_API_VERSION
+    app.state.service_api_base_path = SERVICE_API_BASE_PATH
+    app.state.service_api_legacy_base_path = SERVICE_API_LEGACY_BASE_PATH
+    app.state.service_api_stream_path = SERVICE_API_STREAM_DASHBOARD_PATH
 
     def _service() -> TradingBotService:
         return app.state.service
 
     def _service_api_meta() -> dict[str, object]:
         return {
+            "version": app.state.service_api_version,
+            "api_base_path": app.state.service_api_base_path,
+            "legacy_api_base_path": app.state.service_api_legacy_base_path,
+            "dashboard_stream_path": app.state.service_api_stream_path,
             "host_context": app.state.service_api_host_context,
             "host_owner": app.state.service_api_host_owner,
             "auth_required": auth_required(app.state.api_token),
@@ -196,56 +232,59 @@ def create_service_api_app(
         )
 
     if web_ui_available:
-        app.mount("/ui", StaticFiles(directory=str(web_client_dir), html=True), name="web-ui")
+        app.mount(SERVICE_API_UI_PATH, StaticFiles(directory=str(web_client_dir), html=True), name="web-ui")
+
+    api_router = APIRouter(dependencies=[Depends(_require_api_auth)])
+    stream_router = APIRouter()
 
     @app.get("/")
     def root():
         if app.state.web_ui_available:
-            return RedirectResponse(url="/ui/")
+            return RedirectResponse(url=f"{SERVICE_API_UI_PATH.rstrip('/')}/")
         return {"status": "ok", "service_name": _service().describe_runtime().service_name}
 
-    @app.get("/health")
+    @app.get(SERVICE_API_HEALTH_PATH)
     def health():
         return _health_payload()
 
-    @app.get("/api/runtime", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/runtime")
     def get_runtime():
         return _service().describe_runtime().to_dict()
 
-    @app.get("/api/dashboard", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/dashboard")
     def get_dashboard(log_limit: int = 30):
         return _build_dashboard_payload(log_limit=log_limit)
 
-    @app.get("/api/status", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/status")
     def get_status():
         return _service().get_status().to_dict()
 
-    @app.get("/api/execution", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/execution")
     def get_execution_snapshot():
         return _service().get_execution_snapshot().to_dict()
 
-    @app.get("/api/backtest", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/backtest")
     def get_backtest_snapshot():
         return _service().get_backtest_snapshot().to_dict()
 
-    @app.get("/api/config-summary", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/config-summary")
     def get_config_summary():
         return _service().get_config_summary().to_dict()
 
-    @app.get("/api/config", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/config")
     def get_config():
         return _service().get_config_payload().to_dict()
 
-    @app.put("/api/config", dependencies=[Depends(_require_api_auth)])
+    @api_router.put("/config")
     def replace_config(payload: ConfigReplaceRequest):
         _service().replace_config(payload.config)
         return _service().get_config_payload().to_dict()
 
-    @app.patch("/api/config", dependencies=[Depends(_require_api_auth)])
+    @api_router.patch("/config")
     def update_config(payload: ConfigReplaceRequest):
         return _service().update_config(payload.config).to_dict()
 
-    @app.put("/api/runtime/state", dependencies=[Depends(_require_api_auth)])
+    @api_router.put("/runtime/state")
     def set_runtime_state(payload: RuntimeStateRequest):
         result = _service().set_runtime_state(
             active=payload.active,
@@ -254,7 +293,7 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @app.post("/api/control/start", dependencies=[Depends(_require_api_auth)])
+    @api_router.post("/control/start")
     def request_start(payload: StartControlRequest):
         result = _service().request_start(
             requested_job_count=payload.requested_job_count,
@@ -262,7 +301,7 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @app.post("/api/control/stop", dependencies=[Depends(_require_api_auth)])
+    @api_router.post("/control/stop")
     def request_stop(payload: StopControlRequest):
         result = _service().request_stop(
             close_positions=payload.close_positions,
@@ -270,7 +309,7 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @app.post("/api/backtest/run", dependencies=[Depends(_require_api_auth)])
+    @api_router.post("/backtest/run")
     def run_backtest(payload: BacktestRunRequest):
         result = _service().submit_backtest(
             payload.request if isinstance(payload.request, dict) else None,
@@ -278,12 +317,12 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @app.post("/api/backtest/stop", dependencies=[Depends(_require_api_auth)])
+    @api_router.post("/backtest/stop")
     def stop_backtest(payload: BacktestStopRequest):
         result = _service().stop_backtest(source=payload.source)
         return result.to_dict()
 
-    @app.post("/api/control/start-failed", dependencies=[Depends(_require_api_auth)])
+    @api_router.post("/control/start-failed")
     def mark_start_failed(payload: StartFailureRequest):
         result = _service().mark_start_failed(
             reason=payload.reason,
@@ -291,11 +330,11 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @app.get("/api/account", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/account")
     def get_account_snapshot():
         return _service().get_account_snapshot().to_dict()
 
-    @app.put("/api/account", dependencies=[Depends(_require_api_auth)])
+    @api_router.put("/account")
     def set_account_snapshot(payload: AccountSnapshotRequest):
         snapshot = _service().set_account_snapshot(
             total_balance=payload.total_balance,
@@ -304,11 +343,11 @@ def create_service_api_app(
         )
         return snapshot.to_dict()
 
-    @app.get("/api/portfolio", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/portfolio")
     def get_portfolio_snapshot():
         return _service().get_portfolio_snapshot().to_dict()
 
-    @app.put("/api/portfolio", dependencies=[Depends(_require_api_auth)])
+    @api_router.put("/portfolio")
     def set_portfolio_snapshot(payload: PortfolioSnapshotRequest):
         snapshot = _service().set_portfolio_snapshot(
             open_position_records=payload.open_position_records,
@@ -324,11 +363,11 @@ def create_service_api_app(
         )
         return snapshot.to_dict()
 
-    @app.get("/api/logs", dependencies=[Depends(_require_api_auth)])
+    @api_router.get("/logs")
     def get_recent_logs(limit: int = 100):
         return [item.to_dict() for item in _service().get_recent_logs(limit=limit)]
 
-    @app.post("/api/logs", dependencies=[Depends(_require_api_auth)])
+    @api_router.post("/logs")
     def record_log_event(payload: LogEventRequest):
         event = _service().record_log_event(
             payload.message,
@@ -337,7 +376,7 @@ def create_service_api_app(
         )
         return event.to_dict()
 
-    @app.get("/api/stream/dashboard")
+    @stream_router.get("/stream/dashboard")
     async def stream_dashboard(
         request: Request,
         token: str | None = Query(default=None),
@@ -363,6 +402,12 @@ def create_service_api_app(
                 "Connection": "keep-alive",
             },
         )
+
+    app.include_router(api_router, prefix=SERVICE_API_BASE_PATH)
+    app.include_router(stream_router, prefix=SERVICE_API_BASE_PATH)
+    if SERVICE_API_LEGACY_BASE_PATH != SERVICE_API_BASE_PATH:
+        app.include_router(api_router, prefix=SERVICE_API_LEGACY_BASE_PATH, include_in_schema=False)
+        app.include_router(stream_router, prefix=SERVICE_API_LEGACY_BASE_PATH, include_in_schema=False)
 
     return app
 

@@ -196,16 +196,18 @@ def _compute_trade_data(
         }
     )
     trigger_inds = []
-    if allocation and isinstance(allocation.get("trigger_indicators"), (list, tuple, set)):
+    allocation_trigger_indicators = allocation.get("trigger_indicators") if allocation else None
+    base_trigger_indicators = base_data.get("trigger_indicators")
+    if isinstance(allocation_trigger_indicators, (list, tuple, set)):
         trigger_inds = [
             str(ind).strip()
-            for ind in allocation.get("trigger_indicators")
+            for ind in allocation_trigger_indicators
             if str(ind).strip()
         ]
-    elif isinstance(base_data.get("trigger_indicators"), (list, tuple, set)):
+    elif isinstance(base_trigger_indicators, (list, tuple, set)):
         trigger_inds = [
             str(ind).strip()
-            for ind in base_data.get("trigger_indicators")
+            for ind in base_trigger_indicators
             if str(ind).strip()
         ]
     if trigger_inds:
@@ -221,4 +223,21 @@ def _compute_trade_data(
         data["trigger_desc"] = allocation.get("trigger_desc")
     elif base_data.get("trigger_desc") and not data.get("trigger_desc"):
         data["trigger_desc"] = base_data.get("trigger_desc")
+    if allocation and isinstance(allocation, dict):
+        for field_name in (
+            "entry_fee_usdt",
+            "close_fee_usdt",
+            "realized_pnl_usdt",
+            "net_realized_usdt",
+        ):
+            value = allocation.get(field_name)
+            if value is None or value == "":
+                continue
+            try:
+                data[field_name] = float(value)
+            except Exception:
+                data[field_name] = value
+        fills_meta = allocation.get("fills_meta")
+        if isinstance(fills_meta, dict) and fills_meta:
+            data["fills_meta"] = dict(fills_meta)
     return data

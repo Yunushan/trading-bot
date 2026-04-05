@@ -57,6 +57,55 @@ def _cleanup_live_value_cache(self, live_value_cache: dict) -> None:
     self._live_indicator_cache_last_cleanup = now_ts
 
 
+def _record_identity_digest(rec: dict) -> tuple[str, ...]:
+    data = rec.get("data") or {}
+    allocations = rec.get("allocations") or []
+    if isinstance(allocations, dict):
+        allocations = list(allocations.values())
+
+    values: list[str] = []
+    for candidate in (
+        rec.get("_aggregate_key"),
+        data.get("_aggregate_key"),
+        rec.get("close_event_id"),
+        data.get("close_event_id"),
+        rec.get("trade_id"),
+        data.get("trade_id"),
+        rec.get("client_order_id"),
+        data.get("client_order_id"),
+        rec.get("order_id"),
+        data.get("order_id"),
+        rec.get("ledger_id"),
+        data.get("ledger_id"),
+        rec.get("open_time"),
+        data.get("open_time"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            values.append(text)
+
+    if isinstance(allocations, list):
+        for entry in allocations:
+            if not isinstance(entry, dict):
+                continue
+            alloc_identity = []
+            for field_name in (
+                "trade_id",
+                "client_order_id",
+                "order_id",
+                "event_uid",
+                "context_key",
+                "slot_id",
+                "open_time",
+            ):
+                text = str(entry.get(field_name) or "").strip()
+                if text:
+                    alloc_identity.append(text)
+            if alloc_identity:
+                values.append("|".join(alloc_identity))
+    return tuple(values)
+
+
 def _prepare_record_snapshot(
     self,
     rec: dict,
@@ -68,10 +117,12 @@ def _prepare_record_snapshot(
     status_flag = str(rec.get("status") or data.get("status") or "").strip().lower()
     record_is_closed = status_flag in table_render_state_runtime._CLOSED_RECORD_STATES
     indicators_list = tuple(
-        table_render_state_runtime._collect_record_indicator_keys(
-            rec,
-            include_inactive_allocs=record_is_closed,
-            include_allocation_scope=view_mode != "per_trade",
+        table_render_state_runtime._canonicalize_indicator_keys(
+            table_render_state_runtime._collect_record_indicator_keys(
+                rec,
+                include_inactive_allocs=record_is_closed,
+                include_allocation_scope=view_mode != "per_trade",
+            )
         )
     )
     interval_hint = rec.get("entry_tf") or data.get("interval_display") or data.get("interval") or "-"
@@ -79,6 +130,21 @@ def _prepare_record_snapshot(
         rec,
         interval_hint,
     )
+    indicator_value_entries = table_render_state_runtime._canonicalize_indicator_entries(
+        indicator_value_entries
+    )
+    interval_map = table_render_state_runtime._canonicalize_indicator_interval_map(interval_map)
+    if interval_map:
+        interval_indicator_order = list(interval_map.keys())
+        indicator_lookup = {str(key).strip().lower() for key in indicators_list if str(key).strip()}
+        ordered_indicators = [
+            key for key in interval_indicator_order if key.lower() in indicator_lookup
+        ]
+        ordered_lookup = {str(key).strip().lower() for key in ordered_indicators if str(key).strip()}
+        ordered_indicators.extend(
+            key for key in indicators_list if str(key).strip().lower() not in ordered_lookup
+        )
+        indicators_list = tuple(ordered_indicators)
     rec["_indicator_value_entries"] = indicator_value_entries
     rec["_indicator_interval_map"] = interval_map
     sym_digest = str(rec.get("symbol") or data.get("symbol") or "").strip().upper()
@@ -113,11 +179,15 @@ def _prepare_record_snapshot(
         current_live_entries = table_render_state_runtime._dedupe_indicator_entries_normalized(
             current_live_entries
         )
+        current_live_entries = table_render_state_runtime._canonicalize_indicator_entries(
+            current_live_entries
+        )
     rec["_current_indicator_values"] = current_live_entries
     return (
         str(rec.get("symbol") or "").upper(),
         str(rec.get("side_key") or "").upper(),
         str(rec.get("entry_tf") or ""),
+        _record_identity_digest(rec),
         indicators_list,
         tuple(indicator_value_entries or []),
         tuple((key, tuple(values)) for key, values in (interval_map or {}).items()),

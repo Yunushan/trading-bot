@@ -39,13 +39,13 @@ Optional one-shot dependency setup:
 
 ```powershell
 # Windows
-./Languages/C++/tools/install_cpp_dependencies.ps1
+./experiments/native-cpp/tools/install_cpp_dependencies.ps1
 ```
 
 ```bash
 # macOS / Linux
-chmod +x ./Languages/C++/tools/install_cpp_dependencies.sh
-./Languages/C++/tools/install_cpp_dependencies.sh
+chmod +x ./experiments/native-cpp/tools/install_cpp_dependencies.sh
+./experiments/native-cpp/tools/install_cpp_dependencies.sh
 ```
 
 Pinned versions used by the helper scripts:
@@ -59,7 +59,7 @@ VcpkgRef          = d0ba406f0e5352517386709dba49fbabf99a9e3c
 Manual build:
 
 ```bash
-cmake -S Languages/C++ -B build/binance_cpp
+cmake -S experiments/native-cpp -B build/binance_cpp
 cmake --build build/binance_cpp
 ```
 

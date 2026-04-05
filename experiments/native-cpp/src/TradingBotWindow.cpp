@@ -2165,7 +2165,7 @@ QWidget *TradingBotWindow::createCodeTab() {
                 }),
                 makeCard("Rust", "Desktop Cargo workspace", "#fb923c", "Scaffold", "#7c2d12", false, [this]() {
                     QString workspaceError;
-                    const QString rustWorkspace = ensureWorkspaceDirectory(QStringLiteral("Languages/Rust"), &workspaceError);
+                    const QString rustWorkspace = ensureWorkspaceDirectory(QStringLiteral("experiments/rust-shells"), &workspaceError);
                     if (rustWorkspace.isEmpty()) {
                         QMessageBox::warning(this, "Rust workspace", workspaceError);
                         return;

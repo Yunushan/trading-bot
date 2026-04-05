@@ -19,10 +19,18 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from app.desktop import EmbeddedDesktopServiceClient, RemoteDesktopServiceClient, create_desktop_service_client
-from app.service.auth import auth_required, validate_bearer_token
-from app.service.api import FASTAPI_AVAILABLE, ServiceApiBackgroundHost, create_service_api_app
-from app.service.runtime import TradingBotService
+from app.desktop import EmbeddedDesktopServiceClient, RemoteDesktopServiceClient, create_desktop_service_client  # noqa: E402
+from app.service.auth import auth_required, validate_bearer_token  # noqa: E402
+from app.service.api_contract import (  # noqa: E402
+    SERVICE_API_BASE_PATH,
+    SERVICE_API_LEGACY_BASE_PATH,
+    SERVICE_API_ROUTE_PATHS,
+    SERVICE_API_LEGACY_ROUTE_PATHS,
+    SERVICE_API_STREAM_DASHBOARD_PATH,
+    SERVICE_API_VERSION,
+)
+from app.service.api import FASTAPI_AVAILABLE, ServiceApiBackgroundHost, create_service_api_app  # noqa: E402
+from app.service.runtime import TradingBotService  # noqa: E402
 
 
 class _FakeBacktestWrapper:
@@ -66,21 +74,42 @@ class ServiceApiSmokeTests(unittest.TestCase):
     def test_service_api_app_exposes_expected_routes(self):
         app = create_service_api_app()
         paths = {route.path for route in app.router.routes}
+        schema_paths = set(app.openapi()["paths"])
         self.assertIn("/", paths)
         self.assertIn("/health", paths)
         self.assertIn("/ui", paths)
-        self.assertIn("/api/dashboard", paths)
-        self.assertIn("/api/stream/dashboard", paths)
-        self.assertIn("/api/config", paths)
-        self.assertIn("/api/execution", paths)
-        self.assertIn("/api/backtest", paths)
-        self.assertIn("/api/backtest/run", paths)
-        self.assertIn("/api/backtest/stop", paths)
-        self.assertIn("/api/status", paths)
-        self.assertIn("/api/config-summary", paths)
-        self.assertIn("/api/account", paths)
-        self.assertIn("/api/portfolio", paths)
-        self.assertIn("/api/logs", paths)
+        self.assertEqual(SERVICE_API_BASE_PATH, "/api/v1")
+        self.assertEqual(SERVICE_API_LEGACY_BASE_PATH, "/api")
+        self.assertEqual(SERVICE_API_VERSION, "1.0.0")
+        self.assertEqual(SERVICE_API_STREAM_DASHBOARD_PATH, "/api/v1/stream/dashboard")
+        for route_name in (
+            "dashboard",
+            "runtime",
+            "status",
+            "config",
+            "config_summary",
+            "account",
+            "portfolio",
+            "logs",
+            "execution",
+            "backtest",
+            "runtime_state",
+            "control_start",
+            "control_stop",
+            "control_start_failed",
+            "backtest_run",
+            "backtest_stop",
+            "stream_dashboard",
+        ):
+            self.assertIn(SERVICE_API_ROUTE_PATHS[route_name], paths)
+            self.assertIn(SERVICE_API_ROUTE_PATHS[route_name], schema_paths)
+            self.assertIn(SERVICE_API_LEGACY_ROUTE_PATHS[route_name], paths)
+            self.assertNotIn(SERVICE_API_LEGACY_ROUTE_PATHS[route_name], schema_paths)
+        self.assertEqual(app.version, SERVICE_API_VERSION)
+        self.assertEqual(app.state.service_api_base_path, SERVICE_API_BASE_PATH)
+        self.assertEqual(app.state.service_api_legacy_base_path, SERVICE_API_LEGACY_BASE_PATH)
+        self.assertEqual(app.state.service_api_stream_path, SERVICE_API_STREAM_DASHBOARD_PATH)
+        self.assertEqual(Path(app.state.web_client_dir).name, "web-dashboard")
         self.assertEqual(app.state.service_api_host_context, "standalone-service")
         self.assertEqual(app.state.service_api_host_owner, "service-process")
         self.assertEqual(
@@ -321,7 +350,7 @@ class ServiceApiSmokeTests(unittest.TestCase):
         try:
             self.assertTrue(host.start(timeout_seconds=5.0))
             request = Request(
-                f"http://127.0.0.1:{port}/api/dashboard",
+                f"http://127.0.0.1:{port}{SERVICE_API_ROUTE_PATHS['dashboard']}",
                 headers={"Authorization": "Bearer token-123"},
             )
             with urlopen(request, timeout=3) as response:
@@ -329,8 +358,11 @@ class ServiceApiSmokeTests(unittest.TestCase):
             self.assertEqual(payload["status"]["mode"], "Demo/Testnet")
             self.assertEqual(payload["service_api"]["host_context"], "desktop-embedded")
             self.assertEqual(payload["service_api"]["host_owner"], "desktop-gui")
+            self.assertEqual(payload["service_api"]["version"], SERVICE_API_VERSION)
+            self.assertEqual(payload["service_api"]["api_base_path"], SERVICE_API_BASE_PATH)
             self.assertTrue(host.describe()["running"])
             self.assertEqual(host.describe()["host_context"], "desktop-embedded")
+            self.assertEqual(host.describe()["api_base_path"], SERVICE_API_BASE_PATH)
         finally:
             self.assertTrue(host.stop(timeout_seconds=5.0))
 
@@ -378,7 +410,7 @@ class ServiceApiSmokeTests(unittest.TestCase):
                 }
             ).encode("utf-8")
             request = Request(
-                f"http://127.0.0.1:{port}/api/backtest/run",
+                f"http://127.0.0.1:{port}{SERVICE_API_ROUTE_PATHS['backtest_run']}",
                 data=payload,
                 headers={
                     "Authorization": "Bearer token-123",
@@ -395,7 +427,7 @@ class ServiceApiSmokeTests(unittest.TestCase):
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 request = Request(
-                    f"http://127.0.0.1:{port}/api/backtest",
+                    f"http://127.0.0.1:{port}{SERVICE_API_ROUTE_PATHS['backtest']}",
                     headers={"Authorization": "Bearer token-123"},
                 )
                 with urlopen(request, timeout=3) as response:

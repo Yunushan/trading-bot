@@ -24,14 +24,14 @@ Per-language quick checks:
 
 ```bash
 rg --files Languages/Python -g "*.py" | xargs wc -l
-rg --files Languages/C++ -g "*.cpp" -g "*.h" | xargs wc -l
+rg --files experiments/native-cpp -g "*.cpp" -g "*.h" | xargs wc -l
 ```
 
 Windows PowerShell fallback:
 
 ```powershell
 $py = Get-ChildItem Languages/Python -Recurse -File -Include *.py | Get-Content | Where-Object { $_.Trim() -ne "" } | Measure-Object
-$cpp = Get-ChildItem Languages/C++ -Recurse -File -Include *.cpp,*.h | Get-Content | Where-Object { $_.Trim() -ne "" } | Measure-Object
+$cpp = Get-ChildItem experiments/native-cpp -Recurse -File -Include *.cpp,*.h | Get-Content | Where-Object { $_.Trim() -ne "" } | Measure-Object
 "Python non-empty lines: $($py.Count)"
 "C++ non-empty lines: $($cpp.Count)"
 ```

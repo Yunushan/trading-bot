@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
-from .backtest_state_context_runtime import get_backtest_interval_order
+from .backtest_state_context_runtime import (
+    get_backtest_interval_order,
+    normalize_backtest_interval_value,
+    normalize_backtest_interval_values,
+)
 
 
 def populate_backtest_lists(self):
@@ -38,8 +42,7 @@ def populate_backtest_lists(self):
     interval_candidates: list[str] = []
 
     def _extend_interval(seq):
-        for iv in seq or []:
-            iv_norm = str(iv).strip()
+        for iv_norm in normalize_backtest_interval_values(seq):
             if not iv_norm:
                 continue
             if iv_norm not in interval_candidates:
@@ -63,19 +66,15 @@ def populate_backtest_lists(self):
     extras = [iv for iv in interval_candidates if iv not in interval_order]
     full_order = ordered_intervals + extras
 
-    selected_intervals = [
-        iv
-        for iv in (self.backtest_config.get("intervals") or [])
-        if iv in full_order
-    ]
+    selected_intervals = [iv for iv in normalize_backtest_interval_values(self.backtest_config.get("intervals")) if iv in full_order]
     if not selected_intervals and full_order:
         selected_intervals = [full_order[0]]
     with QtCore.QSignalBlocker(self.backtest_interval_list):
         self.backtest_interval_list.clear()
         for iv in full_order:
             item = QtWidgets.QListWidgetItem(iv)
-            item.setSelected(iv in selected_intervals)
             self.backtest_interval_list.addItem(item)
+            item.setSelected(iv in selected_intervals)
     self.backtest_config["intervals"] = list(selected_intervals)
     cfg = self.config.setdefault("backtest", {})
     cfg["intervals"] = list(selected_intervals)
@@ -124,7 +123,7 @@ def apply_backtest_symbol_selection_rule(self, rule: dict | None) -> bool:
 
 
 def set_backtest_interval_selection(self, intervals):
-    intervals_norm = {str(iv) for iv in (intervals or []) if iv}
+    intervals_norm = set(normalize_backtest_interval_values(intervals))
     with QtCore.QSignalBlocker(self.backtest_interval_list):
         for i in range(self.backtest_interval_list.count()):
             item = self.backtest_interval_list.item(i)
@@ -210,7 +209,9 @@ def backtest_store_intervals(self):
         for i in range(self.backtest_interval_list.count()):
             item = self.backtest_interval_list.item(i)
             if item and item.isSelected():
-                intervals.append(item.text())
+                interval_text = normalize_backtest_interval_value(item.text())
+                if interval_text and interval_text not in intervals:
+                    intervals.append(interval_text)
         self.backtest_config["intervals"] = intervals
         cfg = self.config.setdefault("backtest", {})
         cfg["intervals"] = list(intervals)
@@ -220,16 +221,16 @@ def backtest_store_intervals(self):
 
 def apply_backtest_intervals_to_dashboard(self):
     try:
-        intervals = [
-            str(iv).strip()
-            for iv in (self.backtest_config.get("intervals") or [])
-            if str(iv).strip()
-        ]
+        intervals = normalize_backtest_interval_values(self.backtest_config.get("intervals"))
     except Exception:
         intervals = []
     if not intervals:
         intervals = list(get_backtest_interval_order())
-    existing = {self.interval_list.item(i).text() for i in range(self.interval_list.count())}
+    existing = {
+        normalize_backtest_interval_value(self.interval_list.item(i).text())
+        for i in range(self.interval_list.count())
+        if self.interval_list.item(i) is not None
+    }
     for iv in intervals:
         if iv not in existing:
             self.interval_list.addItem(QtWidgets.QListWidgetItem(iv))
@@ -247,4 +248,3 @@ def apply_backtest_intervals_to_dashboard(self):
         self._reconfigure_positions_worker()
     except Exception:
         pass
-

@@ -6,6 +6,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from ...core.backtest import normalize_backtest_intervals
+from ...config import coerce_bool
+
 
 @dataclass(frozen=True, slots=True)
 class ServiceEditableConfig:
@@ -61,6 +64,10 @@ def _string_list(value) -> tuple[str, ...]:
     return tuple(items)
 
 
+def _interval_tuple(value) -> tuple[str, ...]:
+    return tuple(normalize_backtest_intervals(value))
+
+
 def _number(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -86,34 +93,44 @@ def build_editable_config(config: dict | None) -> ServiceEditableConfig:
         code_language=str(cfg.get("code_language") or ""),
         theme=str(cfg.get("theme") or ""),
         symbols=_string_list(cfg.get("symbols")),
-        intervals=_string_list(cfg.get("intervals")),
+        intervals=_interval_tuple(cfg.get("intervals")),
         api_credentials_present=bool(api_key and api_secret),
     )
 
 
 def build_config_summary(config: dict | None) -> ServiceConfigSummary:
     cfg = config if isinstance(config, dict) else {}
-    indicators = cfg.get("indicators") if isinstance(cfg.get("indicators"), dict) else {}
+    indicators: dict[str, dict[str, object]] = {}
+    raw_indicators = cfg.get("indicators")
+    if isinstance(raw_indicators, dict):
+        indicators = {
+            str(key): value
+            for key, value in raw_indicators.items()
+            if isinstance(value, dict)
+        }
     enabled_indicator_count = 0
     try:
         enabled_indicator_count = sum(
-            1 for params in indicators.values() if isinstance(params, dict) and bool(params.get("enabled"))
+            True
+            for params in indicators.values()
+            if coerce_bool(params.get("enabled"), False)
         )
     except Exception:
         enabled_indicator_count = 0
 
-    symbols = cfg.get("symbols") if isinstance(cfg.get("symbols"), list) else []
-    intervals = cfg.get("intervals") if isinstance(cfg.get("intervals"), list) else []
-    runtime_pairs = (
-        cfg.get("runtime_symbol_interval_pairs")
-        if isinstance(cfg.get("runtime_symbol_interval_pairs"), list)
-        else []
-    )
-    backtest_pairs = (
-        cfg.get("backtest_symbol_interval_pairs")
-        if isinstance(cfg.get("backtest_symbol_interval_pairs"), list)
-        else []
-    )
+    symbols: list[object] = []
+    raw_symbols = cfg.get("symbols")
+    if isinstance(raw_symbols, list):
+        symbols = raw_symbols
+    intervals = normalize_backtest_intervals(cfg.get("intervals"))
+    runtime_pairs: list[object] = []
+    raw_runtime_pairs = cfg.get("runtime_symbol_interval_pairs")
+    if isinstance(raw_runtime_pairs, list):
+        runtime_pairs = raw_runtime_pairs
+    backtest_pairs: list[object] = []
+    raw_backtest_pairs = cfg.get("backtest_symbol_interval_pairs")
+    if isinstance(raw_backtest_pairs, list):
+        backtest_pairs = raw_backtest_pairs
 
     api_key = str(cfg.get("api_key") or "").strip()
     api_secret = str(cfg.get("api_secret") or "").strip()

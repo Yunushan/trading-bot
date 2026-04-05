@@ -1,0 +1,136 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-bot-python"
+version = "0.1.0"
+description = "Desktop-first Python workspace for the Trading Bot project."
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "MIT" }
+keywords = ["trading", "desktop", "pyqt", "fastapi", "binance", "backtesting"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "python-binance==1.0.36",
+    "binance-connector==3.12.0",
+    "ccxt==4.5.46",
+    "numpy==2.4.4",
+    "pandas==3.0.2",
+    "requests==2.33.1",
+    "binance-sdk-derivatives-trading-usds-futures==9.1.0",
+    "binance-sdk-derivatives-trading-coin-futures==5.2.0",
+    "binance-sdk-spot==8.1.0",
+]
+
+[project.optional-dependencies]
+desktop = [
+    "PyQt6==6.11.0",
+    "PyQt6-Qt6==6.11.0",
+    "PyQt6-WebEngine==6.11.0",
+    "numba==0.65.0",
+    "llvmlite==0.47.0",
+]
+service = [
+    "fastapi==0.135.2",
+    "uvicorn==0.42.0",
+]
+windows-arm64 = [
+    "PyQt6==6.11.0",
+    "PyQt6-Qt6==6.11.0",
+    "PyQt6-WebEngine==6.11.0",
+    "aiohttp==0.13.1",
+]
+dev = [
+    "mypy>=1.10,<2",
+    "pre-commit>=4,<5",
+    "pytest>=8,<9",
+    "pytest-cov>=5,<7",
+    "ruff>=0.11,<1",
+    "types-requests>=2.32,<3",
+]
+
+[project.scripts]
+trading-bot-desktop = "app.desktop.product_main:main"
+trading-bot-service = "app.service.product_main:main"
+
+[project.urls]
+Repository = "https://github.com/Yunushan/trading-bot"
+Documentation = "https://github.com/Yunushan/trading-bot/tree/main/docs"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["app*", "trading_core*"]
+
+[tool.setuptools.package-data]
+app = ["assets/*.js"]
+trading_core = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+    "--cov=app",
+    "--cov=trading_core",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=xml",
+]
+filterwarnings = [
+    # Temporary quarantine for third-party websocket deprecations until the connector stack is upgraded.
+    "ignore:websockets\\.WebSocketClientProtocol is deprecated:DeprecationWarning:binance\\.ws\\.websocket_api",
+    "ignore:websockets\\.legacy is deprecated.*:DeprecationWarning:websockets\\.legacy",
+    "ignore:websockets\\.server\\.WebSocketServerProtocol is deprecated:DeprecationWarning:uvicorn\\.protocols\\.websockets\\.websockets_impl",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["app", "trading_core", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/desktop/bootstrap/main.py" = ["E402"]
+"app/**/__init__.py" = ["F401"]
+"tests/*.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.10"
+files = [
+    "app/entrypoint_contract.py",
+    "main.py",
+    "app/desktop/product_main.py",
+    "app/desktop/bootstrap/main.py",
+    "app/service/main.py",
+    "app/service/product_main.py",
+    "app/service/api/app.py",
+    "trading_core/__init__.py",
+    "trading_core/backtest.py",
+    "trading_core/indicators.py",
+    "trading_core/positions.py",
+    "trading_core/strategy.py",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true

@@ -266,21 +266,47 @@ def _reentry_block_remaining(
         return 0.0
     if now_ts is None:
         now_ts = time.time()
-    remaining = block_until - now_ts
+    remaining = float(block_until) - float(now_ts)
     if remaining <= 0.0:
         self._reentry_blocks.pop(key, None)
         return 0.0
     return remaining
 
 
-def _mark_guard_closed(self, symbol: str, interval: str | None, side: str) -> None:
+def _guard_context_from_entry(self, interval: str | None, side: str, entry: dict | None) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    guard_obj = getattr(self, "guard", None)
+    resolver = getattr(guard_obj, "context_key_from_entry", None)
+    if callable(resolver):
+        try:
+            context_key = resolver(interval, side, entry)
+        except Exception:
+            context_key = None
+        if context_key:
+            return str(context_key).strip() or None
+    explicit = str(entry.get("context_key") or "").strip()
+    return explicit or None
+
+
+def _mark_guard_closed(
+    self,
+    symbol: str,
+    interval: str | None,
+    side: str,
+    entry: dict | None = None,
+) -> None:
     side_norm = _side_token(side)
     self._record_reentry_block(symbol, interval, side_norm)
     guard_obj = getattr(self, "guard", None)
     if not guard_obj or not hasattr(guard_obj, "mark_closed"):
         return
+    context_key = _guard_context_from_entry(self, interval, side_norm, entry)
     try:
-        guard_obj.mark_closed(symbol, interval, side_norm)
+        if context_key:
+            guard_obj.mark_closed(symbol, interval, side_norm, context=context_key)
+        else:
+            guard_obj.mark_closed(symbol, interval, side_norm)
     except Exception:
         pass
 

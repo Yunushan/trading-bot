@@ -5,6 +5,101 @@ from collections import deque
 from datetime import datetime
 
 
+def _identity_token(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _signature_tokens(payload: dict | None) -> tuple[str, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    raw = payload.get("trigger_signature")
+    if not isinstance(raw, (list, tuple, set)):
+        raw = payload.get("trigger_indicators")
+    if not isinstance(raw, (list, tuple, set)):
+        return ()
+    tokens = [
+        str(token).strip().lower()
+        for token in raw
+        if str(token).strip()
+    ]
+    return tuple(sorted(dict.fromkeys(tokens)))
+
+
+def _has_open_identity(payload: dict | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return any(
+        _identity_token(payload.get(field_name))
+        for field_name in (
+            "client_order_id",
+            "order_id",
+            "trade_id",
+            "event_uid",
+            "context_key",
+            "slot_id",
+        )
+    )
+
+
+def _matches_existing_open_entry(
+    entry: dict,
+    *,
+    client_order_token: str,
+    order_id_token: str,
+    order_identifier: str,
+    event_uid_token: str,
+    context_key: str,
+    slot_id: str,
+    signature_tokens: tuple[str, ...],
+    trigger_desc_token: str,
+    norm_iv: str,
+    open_time_fmt: str | None,
+) -> bool:
+    entry_client_order = _identity_token(entry.get("client_order_id"))
+    entry_order_id = _identity_token(entry.get("order_id"))
+    entry_trade_id = _identity_token(entry.get("trade_id"))
+    entry_event_uid = _identity_token(entry.get("event_uid"))
+    entry_context = _identity_token(entry.get("context_key"))
+    entry_slot = _identity_token(entry.get("slot_id"))
+
+    if client_order_token and entry_client_order == client_order_token:
+        return True
+    if order_id_token and entry_order_id == order_id_token:
+        return True
+    if order_identifier and entry_trade_id == order_identifier:
+        return True
+    if event_uid_token and entry_event_uid == event_uid_token:
+        return True
+    if slot_id and entry_slot == slot_id:
+        if context_key and entry_context and entry_context != context_key:
+            return False
+        return True
+    if context_key and entry_context == context_key:
+        if slot_id and entry_slot and entry_slot != slot_id:
+            return False
+        return True
+
+    if _has_open_identity(entry) or any(
+        (client_order_token, order_id_token, order_identifier, event_uid_token, context_key, slot_id)
+    ):
+        return False
+
+    entry_interval = _identity_token(entry.get("interval"))
+    entry_open_time = _identity_token(entry.get("open_time"))
+    entry_trigger_desc = _identity_token(entry.get("trigger_desc")).lower()
+    if entry_interval != _identity_token(norm_iv):
+        return False
+    if entry_open_time != _identity_token(open_time_fmt):
+        return False
+    if signature_tokens and _signature_tokens(entry) != signature_tokens:
+        return False
+    if trigger_desc_token and entry_trigger_desc and entry_trigger_desc != trigger_desc_token:
+        return False
+    return True
+
+
 def _has_order_identity(order_info: dict) -> bool:
     fills_meta = order_info.get("fills_meta") or {}
     return bool(
@@ -53,6 +148,9 @@ def _is_duplicate_open_event(self, order_info: dict, ctx: dict, *, normalize_int
         client_order_token = ""
     else:
         client_order_token = str(client_order_token)
+    context_token = _identity_token(order_info.get("context_key"))
+    slot_token = _identity_token(order_info.get("slot_id"))
+    signature_token = "|".join(_signature_tokens(order_info))
 
     event_uid_token = (
         order_info.get("event_uid") or order_info.get("event_id") or order_info.get("ledger_id") or ""
@@ -69,12 +167,16 @@ def _is_duplicate_open_event(self, order_info: dict, ctx: dict, *, normalize_int
         ctx["sym_upper"],
         ctx["side_key"],
         interval_token,
+        str(client_order_token),
         str(order_id_token),
         event_uid_token,
+        context_token,
+        slot_token,
+        signature_token,
         qty_token,
         status_token,
     ]
-    if not order_id_token and not event_uid_token:
+    if not order_id_token and not client_order_token and not event_uid_token and not context_token and not slot_token:
         unique_parts.append(time_token)
         trigger_sig_token = str(order_info.get("trigger_desc") or "").strip()
         if trigger_sig_token:
@@ -192,6 +294,18 @@ def handle_non_close_trade_signal(
                 order_info.get("trigger_desc"),
             )
             trigger_actions = normalize_trigger_actions_map(order_info.get("trigger_actions"))
+            trigger_signature = order_info.get("trigger_signature")
+            if isinstance(trigger_signature, (list, tuple)):
+                trigger_signature = [
+                    str(token).strip() for token in trigger_signature if str(token).strip()
+                ]
+            else:
+                trigger_signature = []
+            context_key = str(order_info.get("context_key") or "").strip()
+            slot_id = str(order_info.get("slot_id") or "").strip()
+            event_uid_token = _identity_token(order_info.get("event_uid") or order_info.get("event_id"))
+            trigger_signature_tokens = _signature_tokens(order_info)
+            trigger_desc_token = str(order_info.get("trigger_desc") or "").strip().lower()
 
             trade_entry = {
                 "interval": norm_iv,
@@ -208,16 +322,27 @@ def handle_non_close_trade_signal(
                 "status": "Active",
                 "pnl_value": None,
                 "trigger_indicators": list(trigger_inds) if trigger_inds else [],
+                "trigger_signature": trigger_signature,
                 "trigger_desc": order_info.get("trigger_desc"),
                 "trigger_actions": trigger_actions,
             }
+            if context_key:
+                trade_entry["context_key"] = context_key
+            if slot_id:
+                trade_entry["slot_id"] = slot_id
+            if event_uid_token:
+                trade_entry["event_uid"] = event_uid_token
 
             fills_meta = order_info.get("fills_meta") or {}
             order_id_token = fills_meta.get("order_id") or order_info.get("order_id") or ""
-            if order_id_token is not None:
+            if order_id_token is None:
+                order_id_token = ""
+            else:
                 order_id_token = str(order_id_token)
             client_order_token = order_info.get("client_order_id") or order_info.get("clientOrderId") or ""
-            if client_order_token is not None:
+            if client_order_token is None:
+                client_order_token = ""
+            else:
                 client_order_token = str(client_order_token)
 
             if order_id_token:
@@ -225,7 +350,7 @@ def handle_non_close_trade_signal(
             if client_order_token:
                 trade_entry["client_order_id"] = client_order_token
 
-            order_identifier = client_order_token or order_id_token
+            order_identifier = client_order_token or order_id_token or event_uid_token
             alloc_list = alloc_map.get((ctx["sym_upper"], side_key_local))
             if isinstance(alloc_list, dict):
                 alloc_list = list(alloc_list.values())
@@ -237,21 +362,18 @@ def handle_non_close_trade_signal(
                 for entry in alloc_list:
                     if not isinstance(entry, dict):
                         continue
-                    if client_order_token and entry.get("client_order_id") == client_order_token:
-                        existing_entry = entry
-                        break
-                    if order_id_token and str(entry.get("order_id") or "") == order_id_token:
-                        existing_entry = entry
-                        break
-                    if order_identifier and entry.get("trade_id") == order_identifier:
-                        existing_entry = entry
-                        break
-                    if (
-                        not order_identifier
-                        and entry.get("interval") == norm_iv
-                        and list(entry.get("trigger_indicators") or [])
-                        == list(trade_entry.get("trigger_indicators") or [])
-                        and entry.get("open_time") == open_time_fmt
+                    if _matches_existing_open_entry(
+                        entry,
+                        client_order_token=client_order_token,
+                        order_id_token=order_id_token,
+                        order_identifier=order_identifier,
+                        event_uid_token=event_uid_token,
+                        context_key=context_key,
+                        slot_id=slot_id,
+                        signature_tokens=trigger_signature_tokens,
+                        trigger_desc_token=trigger_desc_token,
+                        norm_iv=norm_iv,
+                        open_time_fmt=open_time_fmt,
                     ):
                         existing_entry = entry
                         break

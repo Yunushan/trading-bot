@@ -25,22 +25,22 @@ CPP_RELEASE_CPP_ASSET = "Trading-Bot-C++.zip"
 CPP_CACHE_META_FILE = "cpp-runtime-meta.json"
 RELEASE_INFO_JSON_NAME = "release-info.json"
 RELEASE_TAG_TEXT_NAME = "release-tag.txt"
-CPP_PROJECT_PATH = (BASE_PROJECT_PATH / "Languages" / "C++").resolve()
-RUST_PROJECT_PATH = (BASE_PROJECT_PATH / "Languages" / "Rust").resolve()
+CPP_PROJECT_PATH = (BASE_PROJECT_PATH / "experiments" / "native-cpp").resolve()
+RUST_PROJECT_PATH = (BASE_PROJECT_PATH / "experiments" / "rust-shells").resolve()
 CPP_BUILD_ROOT = (BASE_PROJECT_PATH / "build" / "binance_cpp").resolve()
 
 LANGUAGE_PATHS = {
     PYTHON_CODE_LANGUAGE_KEY: "Languages/Python",
-    CPP_CODE_LANGUAGE_KEY: "Languages/C++",
-    RUST_CODE_LANGUAGE_KEY: "Languages/Rust",
+    CPP_CODE_LANGUAGE_KEY: "experiments/native-cpp",
+    RUST_CODE_LANGUAGE_KEY: "experiments/rust-shells",
 }
 
 RUST_FRAMEWORK_PATHS = {
-    "Tauri": "Languages/Rust/apps/tauri-desktop",
-    "Slint": "Languages/Rust/apps/slint-desktop",
-    "egui": "Languages/Rust/apps/egui-desktop",
-    "Iced": "Languages/Rust/apps/iced-desktop",
-    "Dioxus Desktop": "Languages/Rust/apps/dioxus-desktop",
+    "Tauri": "experiments/rust-shells/apps/tauri-desktop",
+    "Slint": "experiments/rust-shells/apps/slint-desktop",
+    "egui": "experiments/rust-shells/apps/egui-desktop",
+    "Iced": "experiments/rust-shells/apps/iced-desktop",
+    "Dioxus Desktop": "experiments/rust-shells/apps/dioxus-desktop",
 }
 
 RUST_FRAMEWORK_PACKAGES = {
@@ -52,8 +52,8 @@ RUST_FRAMEWORK_PACKAGES = {
 }
 
 RUST_SHARED_PATHS = [
-    "Languages/Rust/crates/contracts",
-    "Languages/Rust/crates/core",
+    "experiments/rust-shells/crates/contracts",
+    "experiments/rust-shells/crates/core",
 ]
 
 EXCHANGE_PATHS = {
@@ -84,16 +84,16 @@ STARTER_LANGUAGE_OPTIONS = [
     {
         "config_key": CPP_CODE_LANGUAGE_KEY,
         "title": "C++",
-        "subtitle": "Qt native desktop (preview)",
+        "subtitle": "Qt native desktop experiment",
         "accent": "#38bdf8",
-        "badge": "Preview",
+        "badge": "Experiment",
     },
     {
         "config_key": RUST_CODE_LANGUAGE_KEY,
         "title": "Rust",
-        "subtitle": "Shared core with desktop framework shells",
+        "subtitle": "Shared core with desktop shell experiments",
         "accent": "#fb923c",
-        "badge": "Scaffold",
+        "badge": "Experiment",
     },
 ]
 
@@ -256,13 +256,13 @@ CPP_DEPENDENCY_VERSION_TARGETS = [
     {
         "label": "Binance REST client (native)",
         "custom": "cpp_file_version",
-        "path": "Languages/C++/src/BinanceRestClient.cpp",
+        "path": "experiments/native-cpp/src/BinanceRestClient.cpp",
         "usage": "Active",
     },
     {
         "label": "Binance WebSocket client (native)",
         "custom": "cpp_file_version",
-        "path": "Languages/C++/src/BinanceWsClient.cpp",
+        "path": "experiments/native-cpp/src/BinanceWsClient.cpp",
         "usage": "Active",
     },
     {"label": "Eigen", "custom": "cpp_eigen", "latest_key": "eigen"},
@@ -278,19 +278,19 @@ RUST_BASE_DEPENDENCY_VERSION_TARGETS = [
     {
         "label": "Trading Bot Rust workspace",
         "custom": "rust_file_version",
-        "path": "Languages/Rust/Cargo.toml",
+        "path": "experiments/rust-shells/Cargo.toml",
         "usage": "Active",
     },
     {
         "label": "trading-bot-core",
         "custom": "rust_file_version",
-        "path": "Languages/Rust/crates/core/Cargo.toml",
+        "path": "experiments/rust-shells/crates/core/Cargo.toml",
         "usage": "Active",
     },
     {
         "label": "trading-bot-contracts",
         "custom": "rust_file_version",
-        "path": "Languages/Rust/crates/contracts/Cargo.toml",
+        "path": "experiments/rust-shells/crates/contracts/Cargo.toml",
         "usage": "Active",
     },
 ]

@@ -92,10 +92,6 @@ if PYQT_AVAILABLE:
         config_runtime as short_shared_config_runtime,
         helper_runtime as short_shared_helper_runtime,
         indicator_value_helpers as shared_indicator_value_helpers,
-        main_window_config as shared_config_runtime,
-        main_window_helper_runtime as shared_helper_runtime,
-        main_window_ui_support as shared_ui_support_runtime,
-        main_window_web_embed as shared_web_embed_runtime,
         ui_support as short_shared_ui_support_runtime,
         web_embed as short_shared_web_embed_runtime,
     )
@@ -156,12 +152,6 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.account.main_window_balance_runtime import (
         bind_main_window_balance_runtime as new_bind_balance,
         update_balance_label as new_update_balance_label,
-    )
-    from app.gui.runtime.composition.main_window_bindings_runtime import (
-        bind_main_window_class as new_bind_main_window_class,
-    )
-    from app.gui.runtime.composition.main_window_module_state_runtime import (
-        install_main_window_module_state as new_install_main_window_module_state,
     )
     from app.gui.runtime.composition.bindings_runtime import (
         bind_main_window_class as short_bind_main_window_class,
@@ -422,8 +412,8 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         binders = [
             new_bind_account,
             new_bind_balance,
-            new_bind_main_window_class,
-            new_install_main_window_module_state,
+            short_bind_main_window_class,
+            short_install_main_window_module_state,
             new_bind_service_api,
             new_bind_session,
             new_bind_status,
@@ -496,13 +486,13 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             backtest_template_runtime.bind_main_window_backtest_template_runtime,
             backtest_template_runtime._apply_backtest_template,
             backtest_worker_runtime._BacktestWorker,
-            shared_config_runtime.bind_main_window_config,
-            shared_config_runtime._load_app_state_file,
-            shared_config_runtime._save_app_state_file,
-            shared_ui_support_runtime._apply_window_icon,
-            shared_ui_support_runtime._NumericItem,
-            shared_ui_support_runtime._StarterCard,
-            shared_web_embed_runtime._LazyWebEmbed,
+            short_shared_config_runtime.bind_main_window_config,
+            short_shared_config_runtime._load_app_state_file,
+            short_shared_config_runtime._save_app_state_file,
+            short_shared_ui_support_runtime._apply_window_icon,
+            short_shared_ui_support_runtime._NumericItem,
+            short_shared_ui_support_runtime._StarterCard,
+            short_shared_web_embed_runtime._LazyWebEmbed,
             short_shared_helper_runtime.bind_main_window_helper_runtime,
             short_shared_helper_runtime._normalize_connector_backend,
             trade_runtime_wrapper.bind_main_window_trade_runtime,
@@ -551,8 +541,6 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         for helper in helpers:
             self.assertTrue(callable(helper))
 
-        self.assertIs(new_bind_main_window_class, short_bind_main_window_class)
-        self.assertIs(new_install_main_window_module_state, short_install_main_window_module_state)
         self.assertIs(new_bind_account, short_bind_account)
         self.assertIs(new_bind_balance, short_bind_balance)
         self.assertIs(new_bind_service_api, short_bind_service_api)
@@ -673,42 +661,6 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         self.assertIs(
             backtest_worker_runtime._BacktestWorker,
             short_backtest_worker_runtime._BacktestWorker,
-        )
-        self.assertIs(
-            shared_config_runtime.bind_main_window_config,
-            short_shared_config_runtime.bind_main_window_config,
-        )
-        self.assertIs(
-            shared_config_runtime._load_app_state_file,
-            short_shared_config_runtime._load_app_state_file,
-        )
-        self.assertIs(
-            shared_config_runtime._save_app_state_file,
-            short_shared_config_runtime._save_app_state_file,
-        )
-        self.assertIs(
-            shared_helper_runtime.bind_main_window_helper_runtime,
-            short_shared_helper_runtime.bind_main_window_helper_runtime,
-        )
-        self.assertIs(
-            shared_helper_runtime._normalize_connector_backend,
-            short_shared_helper_runtime._normalize_connector_backend,
-        )
-        self.assertIs(
-            shared_ui_support_runtime._apply_window_icon,
-            short_shared_ui_support_runtime._apply_window_icon,
-        )
-        self.assertIs(
-            shared_ui_support_runtime._NumericItem,
-            short_shared_ui_support_runtime._NumericItem,
-        )
-        self.assertIs(
-            shared_ui_support_runtime._StarterCard,
-            short_shared_ui_support_runtime._StarterCard,
-        )
-        self.assertIs(
-            shared_web_embed_runtime._LazyWebEmbed,
-            short_shared_web_embed_runtime._LazyWebEmbed,
         )
         self.assertIs(
             trade_runtime_wrapper.bind_main_window_trade_runtime,
@@ -954,6 +906,12 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             "app.gui.runtime.main_window_theme_styles",
             "app.gui.runtime.main_window_ui_misc_runtime",
             "app.gui.runtime.main_window_window_events_runtime",
+            "app.gui.runtime.composition.main_window_bindings_runtime",
+            "app.gui.runtime.composition.main_window_module_state_runtime",
+            "app.gui.shared.main_window_config",
+            "app.gui.shared.main_window_helper_runtime",
+            "app.gui.shared.main_window_ui_support",
+            "app.gui.shared.main_window_web_embed",
             "app.gui.runtime.window_code_tab_suppression_runtime",
             "app.gui.runtime.window_runtime",
             "app.gui.runtime.window_webengine_guard_runtime",

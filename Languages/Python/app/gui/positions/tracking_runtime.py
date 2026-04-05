@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 from datetime import datetime
+from typing import Any
 
 _RESOLVE_TRIGGER_INDICATORS = None
 _CLOSED_HISTORY_MAX = None
@@ -267,6 +268,13 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
         alloc_map.pop(key, None)
         open_records.pop(key, None)
         try:
+            guard_obj = getattr(self, "guard", None)
+            if guard_obj and hasattr(guard_obj, "clear_symbol_side"):
+                guard_side = "BUY" if side_key == "L" else "SELL"
+                guard_obj.clear_symbol_side(sym_key, guard_side)
+        except Exception:
+            pass
+        try:
             getattr(self, "_entry_times", {}).pop(key, None)
         except Exception:
             pass
@@ -451,10 +459,12 @@ def _begin_close_on_exit_sequence(self):
                 return []
             return []
 
+        qtwidgets: Any = None
         try:
-            from PyQt6 import QtWidgets
+            from PyQt6 import QtWidgets as imported_qtwidgets
+            qtwidgets = imported_qtwidgets
         except Exception:
-            QtWidgets = None
+            qtwidgets = None
 
         if err:
             try:
@@ -462,8 +472,8 @@ def _begin_close_on_exit_sequence(self):
             except Exception:
                 pass
             remaining = _positions_remaining()
-            if remaining and QtWidgets is not None:
-                QtWidgets.QMessageBox.warning(
+            if remaining and qtwidgets is not None:
+                qtwidgets.QMessageBox.warning(
                     self,
                     "Close-all failed",
                     "Some positions are still open. Please try closing them manually.",
@@ -480,16 +490,16 @@ def _begin_close_on_exit_sequence(self):
                 symbols_left = ", ".join(sorted({str(p.get("symbol") or "").upper() for p in remaining}))
             except Exception:
                 symbols_left = "some positions"
-            if QtWidgets is not None:
-                QtWidgets.QMessageBox.warning(
+            if qtwidgets is not None:
+                qtwidgets.QMessageBox.warning(
                     self,
                     "Positions still open",
                     f"Could not close all positions automatically. Remaining: {symbols_left}. Please close manually.",
                 )
             return
         self._force_close = True
-        if QtWidgets is not None:
-            QtWidgets.QWidget.close(self)
+        if qtwidgets is not None:
+            qtwidgets.QWidget.close(self)
             return
         try:
             self.close()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from PyQt6 import QtWidgets
 
 _CLOSED_RECORD_STATES: set[str] = set()
@@ -20,6 +22,7 @@ POS_CURRENT_VALUE_COLUMN = 11
 POS_STOP_LOSS_COLUMN = 15
 POS_STATUS_COLUMN = 16
 POS_CLOSE_COLUMN = 17
+_INTERVAL_RE = re.compile(r"(\d+(?:\.\d+)?)([smhdw]?)", re.IGNORECASE)
 
 
 def configure_main_window_positions_render_runtime(
@@ -233,6 +236,72 @@ def _normalize_indicator_values(raw) -> list[str]:
         return []
 
 
+def _interval_sort_key(value: str | None) -> tuple[float, str]:
+    label = str(value or "").strip().lower()
+    if not label:
+        return (float("inf"), "")
+    match = _INTERVAL_RE.match(label)
+    if not match:
+        return (float("inf"), label)
+    amount = float(match.group(1))
+    unit = (match.group(2) or "m").lower()
+    factor = {
+        "s": 1.0,
+        "m": 60.0,
+        "h": 3600.0,
+        "d": 86400.0,
+        "w": 604800.0,
+    }.get(unit, 60.0)
+    return (amount * factor, label)
+
+
+def _indicator_key_sort_key(key) -> tuple[str, str]:
+    text = str(key or "").strip()
+    label = _indicator_short_label(text).strip().lower()
+    return (label or text.lower(), text.lower())
+
+
+def _indicator_entry_sort_key(entry: str) -> tuple[tuple[float, str], str, str]:
+    label_part, interval_part = _indicator_entry_signature(entry)
+    text = str(entry or "").strip().lower()
+    return (_interval_sort_key(interval_part), label_part, text)
+
+
+def _canonicalize_indicator_keys(keys) -> list[str]:
+    if not keys:
+        return []
+    ordered = list(dict.fromkeys(str(key).strip() for key in keys if str(key).strip()))
+    return sorted(ordered, key=_indicator_key_sort_key)
+
+
+def _canonicalize_indicator_entries(entries: list[str] | None) -> list[str]:
+    if not entries:
+        return []
+    ordered = list(dict.fromkeys(str(entry).strip() for entry in entries if str(entry).strip()))
+    return sorted(ordered, key=_indicator_entry_sort_key)
+
+
+def _canonicalize_indicator_interval_map(interval_map: dict[str, list[str]] | None) -> dict[str, list[str]]:
+    if not isinstance(interval_map, dict):
+        return {}
+    normalized_slots: dict[str, list[str]] = {}
+    for key, slots in interval_map.items():
+        unique_slots = list(
+            dict.fromkeys(str(slot).strip() for slot in (slots or []) if str(slot).strip())
+        )
+        normalized_slots[str(key)] = sorted(unique_slots, key=_interval_sort_key)
+
+    def _map_key_sort(key: str) -> tuple[tuple[float, str], tuple[str, str]]:
+        slots = normalized_slots.get(key) or []
+        primary_slot = slots[0] if slots else None
+        return (_interval_sort_key(primary_slot), _indicator_key_sort_key(key))
+
+    canonical: dict[str, list[str]] = {}
+    for key in sorted(normalized_slots, key=_map_key_sort):
+        canonical[key] = normalized_slots[key]
+    return canonical
+
+
 def _positions_records_cumulative(self, entries: list[dict], closed_entries: list[dict] | None = None) -> list[dict]:
     func = _POSITIONS_RECORDS_CUMULATIVE
     if not callable(func):
@@ -259,7 +328,13 @@ __all__ = [
     "_filter_indicator_entries",
     "_format_indicator_list",
     "_indicator_entry_signature",
+    "_indicator_entry_sort_key",
+    "_indicator_key_sort_key",
     "_indicator_short_label",
+    "_interval_sort_key",
+    "_canonicalize_indicator_entries",
+    "_canonicalize_indicator_interval_map",
+    "_canonicalize_indicator_keys",
     "_normalize_indicator_values",
     "_positions_records_cumulative",
     "configure_main_window_positions_render_runtime",

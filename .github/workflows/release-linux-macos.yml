@@ -175,7 +175,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --manifest-path Languages/Rust/Cargo.toml --locked --release \
+          cargo build --manifest-path experiments/rust-shells/Cargo.toml --locked --release \
             --package trading-bot-rust
 
       - name: Build optional Rust framework binaries
@@ -190,7 +190,7 @@ jobs:
             trading-bot-dioxus-desktop
           )
           for package in "${optional_rust_packages[@]}"; do
-            if cargo build --manifest-path Languages/Rust/Cargo.toml --locked --release --package "${package}"; then
+            if cargo build --manifest-path experiments/rust-shells/Cargo.toml --locked --release --package "${package}"; then
               echo "Built optional Rust framework: ${package}"
             else
               echo "::warning::Optional Rust framework build failed and will be skipped: ${package}"
@@ -201,7 +201,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S "Languages/C++" \
+          cmake -S "experiments/native-cpp" \
                 -B "build/binance_cpp" \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DQt6_DIR="${QT_CMAKE_DIR}" \

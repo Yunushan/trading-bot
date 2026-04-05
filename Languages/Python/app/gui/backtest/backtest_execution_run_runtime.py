@@ -6,6 +6,7 @@ import traceback
 from PyQt6 import QtCore
 
 from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition
+from app.core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
 
 from .backtest_execution_context_runtime import (
     backtest_debug_enabled,
@@ -74,20 +75,23 @@ def run_backtest(self):
             seen_keys = set()
             for entry in pair_overrides_from_ui:
                 sym = str(entry.get("symbol") or "").strip().upper()
-                iv = str(entry.get("interval") or "").strip()
+                iv = normalize_backtest_interval(entry.get("interval"))
                 if not (sym and iv):
                     continue
                 key = (sym, iv)
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
-                pairs_override_for_request.append(entry)
+                normalized_entry = dict(entry)
+                normalized_entry["symbol"] = sym
+                normalized_entry["interval"] = iv
+                pairs_override_for_request.append(normalized_entry)
             dbg(
                 f"Prepared {len(pairs_override_for_request)} unique overrides for the backtest request."
             )
 
-        symbols = [s for s in (self.backtest_config.get("symbols") or []) if s]
-        intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv]
+        symbols = [str(s).strip().upper() for s in (self.backtest_config.get("symbols") or []) if str(s).strip()]
+        intervals = normalize_backtest_intervals(self.backtest_config.get("intervals"))
         if pairs_override_for_request:
             symbol_order: list[str] = []
             interval_order: list[str] = []

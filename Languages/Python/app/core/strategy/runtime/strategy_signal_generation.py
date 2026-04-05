@@ -22,9 +22,13 @@ def generate_signal(self, df, ind):
     trigger_desc = []
     trigger_sources: list[str] = []
     trigger_actions: dict[str, str] = {}
+    coerce_enabled = getattr(self, "_strategy_coerce_bool", None)
+    if not callable(coerce_enabled):
+        def coerce_enabled(value, default=False):
+            return bool(default if value is None else value)
 
     rsi_cfg = cfg["indicators"].get("rsi", {})
-    rsi_enabled = bool(rsi_cfg.get("enabled", False))
+    rsi_enabled = coerce_enabled(rsi_cfg.get("enabled"), False)
     if rsi_enabled and "rsi" in ind and not ind["rsi"].dropna().empty:
         try:
             _, _, r = self._indicator_prev_live_signal_values(ind["rsi"])
@@ -52,7 +56,7 @@ def generate_signal(self, df, ind):
             trigger_desc.append(f"RSI error:{e!r}")
 
     stoch_rsi_cfg = cfg["indicators"].get("stoch_rsi", {})
-    stoch_rsi_enabled = bool(stoch_rsi_cfg.get("enabled", False))
+    stoch_rsi_enabled = coerce_enabled(stoch_rsi_cfg.get("enabled"), False)
     if stoch_rsi_enabled and "stoch_rsi_k" in ind and ind["stoch_rsi_k"] is not None:
         try:
             prev_srsi, live_srsi, srsi_val = self._indicator_prev_live_signal_values(ind["stoch_rsi_k"])
@@ -79,7 +83,7 @@ def generate_signal(self, df, ind):
             trigger_desc.append(f"StochRSI error:{e!r}")
 
     willr_cfg = cfg["indicators"].get("willr", {})
-    willr_enabled = bool(willr_cfg.get("enabled", False))
+    willr_enabled = coerce_enabled(willr_cfg.get("enabled"), False)
     if willr_enabled and "willr" in ind:
         try:
             prev_wr, live_wr, wr_signal = self._indicator_prev_live_signal_values(ind["willr"])
@@ -110,7 +114,7 @@ def generate_signal(self, df, ind):
             trigger_desc.append(f"Williams %R error:{e!r}")
 
     ma_cfg = cfg["indicators"].get("ma", {})
-    ma_enabled = bool(ma_cfg.get("enabled", False))
+    ma_enabled = coerce_enabled(ma_cfg.get("enabled"), False)
     if ma_enabled and "ma" in ind:
         ma = ind["ma"]
         ma_valid = len(ma.dropna()) >= 2
@@ -133,7 +137,11 @@ def generate_signal(self, df, ind):
                 if signal is None:
                     signal = "SELL"
 
-    if cfg["indicators"].get("bb", {}).get("enabled", False) and "bb_upper" in ind and not ind["bb_upper"].isnull().all():
+    if (
+        coerce_enabled(cfg["indicators"].get("bb", {}).get("enabled"), False)
+        and "bb_upper" in ind
+        and not ind["bb_upper"].isnull().all()
+    ):
         try:
             bu = float(ind["bb_upper"].iloc[sig_idx])
             bm = float(ind["bb_mid"].iloc[sig_idx])

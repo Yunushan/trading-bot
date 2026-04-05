@@ -5,6 +5,149 @@ from datetime import datetime
 
 from . import signal_common_runtime
 
+_CLOSE_SUMMARY_FIELDS = (
+    "entry_fee_usdt",
+    "close_fee_usdt",
+    "realized_pnl_usdt",
+    "net_realized_usdt",
+    "pnl_value",
+)
+
+
+def _copy_fills_meta(order_info: dict) -> dict | None:
+    fills_meta_raw = order_info.get("fills_meta")
+    if isinstance(fills_meta_raw, dict):
+        fills_meta = copy.deepcopy(fills_meta_raw)
+    else:
+        fills_meta = {}
+
+    order_id = fills_meta.get("order_id") or order_info.get("order_id")
+    if order_id not in (None, ""):
+        fills_meta["order_id"] = str(order_id)
+
+    trade_count = fills_meta.get("trade_count")
+    if trade_count not in (None, ""):
+        try:
+            fills_meta["trade_count"] = int(float(str(trade_count)))
+        except Exception:
+            fills_meta["trade_count"] = trade_count
+
+    return fills_meta or None
+
+
+def _reconcile_close_summary(order_info: dict) -> dict:
+    entry_fee = signal_common_runtime._safe_float(
+        order_info.get("entry_fee_usdt") or order_info.get("fees_usdt")
+    )
+    close_fee = signal_common_runtime._safe_float(
+        order_info.get("close_fee_usdt") or order_info.get("commission_usdt")
+    )
+    realized_pnl = signal_common_runtime._safe_float(order_info.get("realized_pnl_usdt"))
+    net_realized = signal_common_runtime._safe_float(order_info.get("net_realized_usdt"))
+    pnl_value = signal_common_runtime._safe_float(order_info.get("pnl_value"))
+
+    if close_fee is None and realized_pnl is not None and net_realized is not None:
+        close_fee = realized_pnl - net_realized
+    if realized_pnl is None and net_realized is not None and close_fee is not None:
+        realized_pnl = net_realized + close_fee
+    if net_realized is None and realized_pnl is not None and close_fee is not None:
+        net_realized = realized_pnl - close_fee
+    if entry_fee is None and net_realized is not None and pnl_value is not None:
+        entry_fee = net_realized - pnl_value
+    if net_realized is None and pnl_value is not None and entry_fee is not None:
+        net_realized = pnl_value + entry_fee
+    if realized_pnl is None and net_realized is not None and close_fee is not None:
+        realized_pnl = net_realized + close_fee
+
+    summary: dict[str, object] = {}
+    for field_name, value in (
+        ("entry_fee_usdt", entry_fee),
+        ("close_fee_usdt", close_fee),
+        ("realized_pnl_usdt", realized_pnl),
+        ("net_realized_usdt", net_realized),
+        ("pnl_value", pnl_value),
+    ):
+        if value is not None:
+            summary[field_name] = float(value)
+
+    fills_meta = _copy_fills_meta(order_info)
+    if fills_meta:
+        summary["fills_meta"] = fills_meta
+    return summary
+
+
+def _allocation_weights(entries: list[dict]) -> list[float]:
+    qty_values: list[float] = []
+    qty_total = 0.0
+    for entry in entries:
+        qty_val = signal_common_runtime._safe_float(entry.get("qty"))
+        qty_abs = abs(qty_val) if qty_val is not None else 0.0
+        qty_values.append(qty_abs)
+        qty_total += qty_abs
+
+    if qty_total > 0.0:
+        return [qty_val / qty_total for qty_val in qty_values]
+    if not entries:
+        return []
+    equal_weight = 1.0 / float(len(entries))
+    return [equal_weight for _ in entries]
+
+
+def _reconcile_allocated_total(
+    entries: list[dict],
+    *,
+    field_name: str,
+    total_value: float | None,
+    weights: list[float],
+) -> None:
+    if total_value is None or not entries:
+        return
+
+    present_values: list[float] = []
+    missing_value = False
+    for entry in entries:
+        value = signal_common_runtime._safe_float(entry.get(field_name))
+        if value is None:
+            missing_value = True
+            continue
+        present_values.append(float(value))
+
+    if (not missing_value) and len(present_values) == len(entries):
+        present_total = sum(present_values)
+        if abs(present_total - total_value) <= 1e-9:
+            return
+
+    distributed = 0.0
+    last_index = len(entries) - 1
+    for idx, entry in enumerate(entries):
+        if idx == last_index:
+            value = float(total_value - distributed)
+        else:
+            weight = weights[idx] if idx < len(weights) else 0.0
+            value = float(total_value * weight)
+            distributed += value
+        entry[field_name] = value
+
+
+def _apply_close_summary(entries: list[dict], summary: dict) -> None:
+    if not entries:
+        return
+
+    weights = _allocation_weights(entries)
+    for field_name in _CLOSE_SUMMARY_FIELDS:
+        total_value = signal_common_runtime._safe_float(summary.get(field_name))
+        _reconcile_allocated_total(
+            entries,
+            field_name=field_name,
+            total_value=total_value,
+            weights=weights,
+        )
+
+    fills_meta = summary.get("fills_meta")
+    if isinstance(fills_meta, dict) and fills_meta:
+        for entry in entries:
+            entry["fills_meta"] = copy.deepcopy(fills_meta)
+
 
 def _record_closed_position(
     self,
@@ -40,6 +183,7 @@ def _record_closed_position(
     pnl_reported = signal_common_runtime._safe_float(order_info.get("pnl_value"))
     margin_reported = signal_common_runtime._safe_float(order_info.get("margin_usdt"))
     roi_reported = signal_common_runtime._safe_float(order_info.get("roi_percent"))
+    close_summary = _reconcile_close_summary(order_info)
 
     leverage_reported = None
     leverage_value = signal_common_runtime._safe_float(order_info.get("leverage"))
@@ -82,9 +226,11 @@ def _record_closed_position(
         base_record["close_time"] = close_time_fmt
     if ledger_id:
         base_record["ledger_id"] = ledger_id
+    base_record["close_event_id"] = unique_key
 
     base_data_snap = dict(base_record.get("data") or {})
     if alloc_entries_snapshot:
+        _apply_close_summary(alloc_entries_snapshot, close_summary)
         qty_total = 0.0
         margin_total = 0.0
         pnl_total = 0.0
@@ -223,23 +369,25 @@ def _record_closed_position(
         base_data_snap.setdefault("entry_price", entry_price_reported)
     if leverage_reported:
         base_data_snap["leverage"] = leverage_reported
+    base_data_snap["close_event_id"] = unique_key
+    for field_name in _CLOSE_SUMMARY_FIELDS:
+        value = close_summary.get(field_name)
+        if value is not None:
+            base_data_snap[field_name] = value
+    fills_meta = close_summary.get("fills_meta")
+    if isinstance(fills_meta, dict) and fills_meta:
+        base_data_snap["fills_meta"] = copy.deepcopy(fills_meta)
 
     base_record["data"] = base_data_snap
+    base_record["_aggregate_key"] = unique_key
+    for entry_snap in alloc_entries_snapshot:
+        if isinstance(entry_snap, dict):
+            entry_snap.setdefault("close_event_id", unique_key)
     base_record["allocations"] = alloc_entries_snapshot
 
     try:
         closed_records = getattr(self, "_closed_position_records", [])
-        if ledger_id:
-            replaced = False
-            for idx, rec in enumerate(closed_records):
-                if isinstance(rec, dict) and rec.get("ledger_id") == ledger_id:
-                    closed_records[idx] = base_record
-                    replaced = True
-                    break
-            if not replaced:
-                closed_records.insert(0, base_record)
-        else:
-            closed_records.insert(0, base_record)
+        closed_records.insert(0, base_record)
         self._closed_position_records = closed_records
     except Exception:
         pass
@@ -249,12 +397,16 @@ def _record_closed_position(
         if registry is None:
             registry = {}
             self._closed_trade_registry = registry
-        registry_key = ledger_id or unique_key
+        registry_key = unique_key
         if registry_key:
             registry[registry_key] = {
                 "pnl_value": signal_common_runtime._safe_float(base_data_snap.get("pnl_value")),
                 "margin_usdt": signal_common_runtime._safe_float(base_data_snap.get("margin_usdt")),
                 "roi_percent": signal_common_runtime._safe_float(base_data_snap.get("roi_percent")),
+                "entry_fee_usdt": signal_common_runtime._safe_float(base_data_snap.get("entry_fee_usdt")),
+                "close_fee_usdt": signal_common_runtime._safe_float(base_data_snap.get("close_fee_usdt")),
+                "realized_pnl_usdt": signal_common_runtime._safe_float(base_data_snap.get("realized_pnl_usdt")),
+                "net_realized_usdt": signal_common_runtime._safe_float(base_data_snap.get("net_realized_usdt")),
             }
             if len(registry) > max_closed_history:
                 excess = len(registry) - max_closed_history

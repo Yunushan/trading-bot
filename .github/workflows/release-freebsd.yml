@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake_args=(
-            -S Languages/C++
+            -S experiments/native-cpp
             -B build/binance_cpp
             -DCMAKE_BUILD_TYPE=Release
             -DTB_REQUIRE_QT_WEBENGINE=OFF

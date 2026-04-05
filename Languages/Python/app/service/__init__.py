@@ -3,6 +3,7 @@ Headless service package.
 
 Keep the package root intentionally small. Import detailed schemas, auth, and
 runner types from their own submodules so the backend boundary stays explicit.
+The canonical importable service entrypoint now lives in `app.service.product_main`.
 """
 
 from .api import (

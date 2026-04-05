@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import copy
 
+from app.gui.positions.actions_state_runtime import (
+    sync_local_position_tracking_from_allocations,
+)
+
 from . import signal_common_runtime
 from .signal_close_allocations_runtime import _consume_closed_entries, _restore_survivor_snapshot
 from .signal_close_records_runtime import _record_closed_position
@@ -150,12 +154,60 @@ def _handle_close_interval_event(
                 getattr(self, "_position_missing_counts", {}).pop((ctx["sym_upper"], ctx["side_key"]), None)
             except Exception:
                 pass
+            try:
+                sync_local_position_tracking_from_allocations(
+                    self,
+                    ctx["sym_upper"],
+                    ctx["side_key"],
+                    [],
+                )
+            except Exception:
+                pass
 
     try:
         guard_obj = getattr(self, "guard", None)
         if guard_obj and hasattr(guard_obj, "mark_closed") and ctx["sym_upper"]:
             side_norm = "BUY" if ctx["side_key"] == "L" else "SELL"
-            guard_obj.mark_closed(ctx["sym_upper"], ctx["interval"], side_norm)
+            resolver = getattr(guard_obj, "context_key_from_entry", None)
+
+            def _context_key_for(payload: dict | None) -> str | None:
+                if not isinstance(payload, dict):
+                    return None
+                if callable(resolver):
+                    try:
+                        context_value = resolver(ctx["interval"], side_norm, payload)
+                    except Exception:
+                        context_value = None
+                    if context_value:
+                        return str(context_value).strip() or None
+                context_value = str(payload.get("context_key") or "").strip()
+                return context_value or None
+
+            survivor_contexts = {
+                context_key
+                for entry in survivors
+                if (context_key := _context_key_for(entry))
+            }
+            closed_contexts = {
+                context_key
+                for entry in closed_snapshots
+                if (context_key := _context_key_for(entry))
+            }
+            if not closed_contexts and not survivors:
+                event_context = _context_key_for(order_info)
+                if event_context:
+                    closed_contexts.add(event_context)
+            contexts_to_clear = sorted(closed_contexts - survivor_contexts)
+            if contexts_to_clear:
+                for context_key in contexts_to_clear:
+                    guard_obj.mark_closed(
+                        ctx["sym_upper"],
+                        ctx["interval"],
+                        side_norm,
+                        context=context_key,
+                    )
+            elif not survivors:
+                guard_obj.mark_closed(ctx["sym_upper"], ctx["interval"], side_norm)
     except Exception:
         pass
 

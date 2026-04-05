@@ -9,6 +9,7 @@ import threading
 import time
 
 from .app import create_service_api_app
+from ..api_contract import SERVICE_API_BASE_PATH, SERVICE_API_LEGACY_BASE_PATH
 from ..auth import resolve_service_api_token
 from ..runtime import TradingBotService
 
@@ -55,6 +56,8 @@ class ServiceApiBackgroundHost:
             "host": self._host,
             "port": self._port,
             "url": f"http://{self._host}:{self._port}",
+            "api_base_path": SERVICE_API_BASE_PATH,
+            "legacy_api_base_path": SERVICE_API_LEGACY_BASE_PATH,
             "running": self.is_running(),
             "auth_enabled": bool(self._api_token),
             "host_context": "desktop-embedded",

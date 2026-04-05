@@ -62,6 +62,13 @@ def close_confirmed_positions(
                     alloc_map.pop(key, None)
             except Exception:
                 pass
+            try:
+                guard_obj = getattr(self, "guard", None)
+                if guard_obj and hasattr(guard_obj, "clear_symbol_side"):
+                    guard_side = "BUY" if key[1] == "L" else "SELL"
+                    guard_obj.clear_symbol_side(str(key[0] or ""), guard_side)
+            except Exception:
+                pass
         except Exception:
             continue
 

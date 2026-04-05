@@ -1,7 +1,9 @@
 
 from __future__ import annotations
-import time, threading
-from typing import Dict, Tuple, Optional, Any, List
+
+import threading
+import time
+from typing import Dict, List, Optional, Tuple
 
 class IntervalPositionGuard:
     """Prevents duplicate opens for (symbol, interval, side).
@@ -13,7 +15,10 @@ class IntervalPositionGuard:
       blocking exact duplicates and enforcing opposite-side mutual exclusion.
     """
     def __init__(self, stale_ttl_sec: Optional[int]=180, *, strict_symbol_side: bool = False) -> None:
-        self.stale_ttl_sec: int = 0 if stale_ttl_sec in (None, 0) else int(stale_ttl_sec)
+        if stale_ttl_sec in (None, 0):
+            self.stale_ttl_sec = 0
+        else:
+            self.stale_ttl_sec = int(stale_ttl_sec if isinstance(stale_ttl_sec, int) else 0)
         self.ledger: Dict[Tuple[str, str, str], Dict[str, float]] = {}
         self.pending_attempts: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
         self.active: Dict[Tuple[str, str], Dict[str, int]] = {}
@@ -167,6 +172,49 @@ class IntervalPositionGuard:
         if state.get('BUY', 0) <= 0 and state.get('SELL', 0) <= 0:
             self.active.pop((sym, iv), None)
 
+    @staticmethod
+    def _normalize_side_token(side: str | None) -> str:
+        raw_side = str(side or '').upper()
+        if raw_side in ('L', 'LONG'):
+            return 'BUY'
+        if raw_side in ('S', 'SHORT'):
+            return 'SELL'
+        return raw_side or 'BUY'
+
+    @classmethod
+    def context_key_from_entry(
+        cls,
+        interval: str | None,
+        side: str | None,
+        entry: dict | None,
+    ) -> str | None:
+        if not isinstance(entry, dict):
+            return None
+        explicit = str(entry.get("context_key") or "").strip()
+        if explicit:
+            return explicit
+        raw_signature = entry.get("trigger_signature")
+        if not isinstance(raw_signature, (list, tuple)):
+            raw_signature = entry.get("trigger_indicators")
+        signature_parts: list[str] = []
+        if isinstance(raw_signature, (list, tuple)):
+            for token in raw_signature:
+                text = str(token or "").strip()
+                if text:
+                    signature_parts.append(text)
+        if not signature_parts:
+            return None
+        interval_key = str(
+            entry.get("interval_display")
+            or entry.get("interval")
+            or interval
+            or ""
+        ).strip() or "default"
+        side_key = cls._normalize_side_token(
+            entry.get("position_side") or entry.get("side") or entry.get("side_key") or side
+        )
+        return f"{interval_key}:{side_key}:{'|'.join(signature_parts)}"
+
     def mark_opened(self, symbol: str, interval: str, side: str) -> None:
         sym = (symbol or '').upper()
         iv = interval or ''
@@ -284,17 +332,80 @@ class IntervalPositionGuard:
                 )
             return snapshot
 
-    def mark_closed(self, symbol: str, interval: str, side: str) -> None:
+    def clear_symbol_side(
+        self,
+        symbol: str,
+        side: str,
+        intervals: Optional[List[str]] = None,
+    ) -> None:
+        sym = (symbol or "").upper()
+        sd = self._normalize_side_token(side)
+        interval_filter = None
+        if intervals:
+            normalized_intervals = {
+                str(interval or "").strip()
+                for interval in intervals
+                if str(interval or "").strip()
+            }
+            if normalized_intervals:
+                interval_filter = normalized_intervals
+        with self._lock:
+            for pending_key, meta in list(self.pending_attempts.items()):
+                pending_sym, pending_side, _pending_context = pending_key
+                if pending_sym != sym or self._normalize_side_token(pending_side) != sd:
+                    continue
+                pending_interval = ""
+                try:
+                    _pending_ts, pending_interval = meta
+                except Exception:
+                    pending_interval = ""
+                if interval_filter is not None and str(pending_interval or "").strip() not in interval_filter:
+                    continue
+                self.pending_attempts.pop(pending_key, None)
+            for ledger_key, entry in list(self.ledger.items()):
+                bucket_sym, bucket_interval, bucket_side = ledger_key
+                if bucket_sym != sym or bucket_side != sd:
+                    continue
+                if interval_filter is not None and bucket_interval not in interval_filter:
+                    continue
+                self.ledger.pop(ledger_key, None)
+                if isinstance(entry, dict):
+                    removal_count = len(entry)
+                else:
+                    removal_count = 1 if entry is not None else 0
+                state = self.active.get((sym, bucket_interval))
+                if state:
+                    state[sd] = max(0, state.get(sd, 0) - removal_count)
+                    if state.get("BUY", 0) <= 0 and state.get("SELL", 0) <= 0:
+                        self.active.pop((sym, bucket_interval), None)
+
+    def mark_closed(
+        self,
+        symbol: str,
+        interval: str | None,
+        side: str,
+        context: str | None = None,
+    ) -> None:
         sym = (symbol or '').upper()
         iv = interval or ''
-        raw_side = str(side or '').upper()
-        if raw_side in ('L', 'LONG'):
-            sd = 'BUY'
-        elif raw_side in ('S', 'SHORT'):
-            sd = 'SELL'
-        else:
-            sd = raw_side or 'BUY'
+        sd = self._normalize_side_token(side)
+        context_key = str(context or "").strip()
         with self._lock:
+            if context_key:
+                entry = self.ledger.get((sym, iv, sd))
+                if isinstance(entry, dict):
+                    if context_key not in entry:
+                        return
+                    entry.pop(context_key, None)
+                    self._record_active(sym, iv, sd, delta=-1)
+                    if not entry:
+                        self.ledger.pop((sym, iv, sd), None)
+                    return
+                if entry is None:
+                    return
+                self.ledger.pop((sym, iv, sd), None)
+                self._record_active(sym, iv, sd, delta=-1)
+                return
             entry = self.ledger.pop((sym, iv, sd), None)
             if isinstance(entry, dict):
                 removal_count = len(entry)

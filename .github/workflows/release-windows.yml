@@ -337,7 +337,7 @@ jobs:
         shell: pwsh
         run: |
           $rustBuildArgs = @(
-            "--manifest-path", "Languages/Rust/Cargo.toml",
+            "--manifest-path", "experiments/rust-shells/Cargo.toml",
             "--locked",
             "--release",
             "--package", "trading-bot-rust"
@@ -351,7 +351,7 @@ jobs:
         shell: pwsh
         run: |
           $baseRustBuildArgs = @(
-            "--manifest-path", "Languages/Rust/Cargo.toml",
+            "--manifest-path", "experiments/rust-shells/Cargo.toml",
             "--locked",
             "--release"
           )
@@ -374,7 +374,7 @@ jobs:
         shell: pwsh
         run: |
           $cmakeArgs = @(
-            "-S", "Languages/C++",
+            "-S", "experiments/native-cpp",
             "-B", "build/binance_cpp",
             "-A", "${{ matrix.cmake_arch }}",
             "-DQt6_DIR=$env:QT_CMAKE_DIR",
@@ -425,7 +425,7 @@ jobs:
             @{ AssetPrefix = "Trading-Bot-Rust-dioxus"; BinaryName = "trading-bot-dioxus-desktop"; Required = $false }
           )
           foreach ($rustAsset in $rustAssets) {
-            $rustExe = "Languages/Rust/target/release/$($rustAsset.BinaryName).exe"
+            $rustExe = "experiments/rust-shells/target/release/$($rustAsset.BinaryName).exe"
             if (!(Test-Path $rustExe)) {
               if ($rustAsset.Required) {
                 throw "Rust executable not found after build: $rustExe"

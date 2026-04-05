@@ -67,15 +67,23 @@ def _add_selected_symbol_interval_pairs(self, kind: str = "runtime"):
                 payload={"count": len(interval_items)},
             )
         intervals = []
+        invalid_intervals = []
         for item in interval_items:
             try:
                 text = item.text()
             except Exception:
                 text = ""
-            text_norm = str(text or "").strip()
+            text_norm = shared._canonicalize_override_interval(self, text, kind)
             if text_norm:
                 intervals.append(text_norm)
+            elif str(text or "").strip():
+                invalid_intervals.append(str(text).strip())
         self._log_override_debug(kind, "Normalized intervals.", payload={"intervals": intervals})
+        for invalid_interval in invalid_intervals:
+            try:
+                self.log(f"Skipping unsupported interval '{invalid_interval}' while adding overrides.")
+            except Exception:
+                pass
 
         if symbols:
             symbols = list(dict.fromkeys(symbols))
@@ -96,7 +104,7 @@ def _add_selected_symbol_interval_pairs(self, kind: str = "runtime"):
         existing_keys = {}
         for entry in pairs_cfg:
             sym_existing = str(entry.get("symbol") or "").strip().upper()
-            iv_existing = str(entry.get("interval") or "").strip()
+            iv_existing = shared._canonicalize_override_interval(self, entry.get("interval"), kind)
             if not (sym_existing and iv_existing):
                 self._log_override_debug(kind, "Skipping existing entry missing symbol/interval.", payload={"entry": entry})
                 continue
@@ -142,7 +150,7 @@ def _add_selected_symbol_interval_pairs(self, kind: str = "runtime"):
                         payload={"symbol": sym, "interval": iv, "indicators": indicators_value},
                     )
                     continue
-                new_entry = {"symbol": sym, "interval": iv}
+                new_entry: dict[str, object] = {"symbol": sym, "interval": iv}
                 if indicators_value:
                     new_entry["indicators"] = list(indicators_value)
                 if controls_snapshot:
@@ -200,12 +208,13 @@ def _remove_selected_symbol_interval_pairs(self, kind: str = "runtime"):
             return
         pairs_cfg = self._override_config_list(kind)
         updated = []
-        remove_set = set()
+        remove_set: set[tuple[str, str, tuple[str, ...] | None]] = set()
         for row in rows:
             sym_item = table.item(row, symbol_col)
             iv_item = table.item(row, interval_col)
             sym = sym_item.text().strip().upper() if sym_item else ""
-            iv = iv_item.text().strip() if iv_item else ""
+            iv_raw = iv_item.text().strip() if iv_item else ""
+            iv = shared._canonicalize_override_interval(self, iv_raw, kind) or iv_raw
             if not (sym and iv):
                 continue
             indicators_raw = None

@@ -29,10 +29,10 @@ def generate_signals(series: pd.Series, buy_value, sell_value) -> tuple[Optional
         if not pd.api.types.is_bool_dtype(ser):
             ser = ser.where(ser.notna(), False)
             try:
-                ser = ser.infer_objects(copy=False)
+                ser = ser.infer_objects()
             except AttributeError:
                 pass
-        return ser.astype(bool, copy=False)
+        return ser.astype(bool)
 
     buy_events = None
     sell_events = None

@@ -304,7 +304,10 @@ class StrategyEngine:
             )
         except Exception:
             self._flat_purge_miss_threshold = 2
-        self._indicator_use_live_values = bool(self.config.get("indicator_use_live_values", False))
+        self._indicator_use_live_values = coerce_bool(
+            self.config.get("indicator_use_live_values"),
+            False,
+        )
         try:
             self._indicator_min_hold_seconds = max(
                 0.0, float(self.config.get("indicator_min_position_hold_seconds") or 0.0)
@@ -341,8 +344,9 @@ class StrategyEngine:
             )
         except Exception:
             self._indicator_reentry_cooldown_bars = 1
-        self._indicator_reentry_requires_reset = bool(
-            self.config.get("indicator_reentry_requires_signal_reset", True)
+        self._indicator_reentry_requires_reset = coerce_bool(
+            self.config.get("indicator_reentry_requires_signal_reset"),
+            True,
         )
         try:
             self._indicator_flip_confirm_bars = max(

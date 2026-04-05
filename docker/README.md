@@ -2,7 +2,7 @@
 
 Optional container packaging for the Trading Bot service API.
 
-This Docker path packages the headless backend only. It does **not** try to run the PyQt desktop GUI.
+This Docker path packages the headless backend only. It does **not** try to run the PyQt desktop GUI. The container now boots the canonical product wrapper at `apps/service-api/main.py` and includes the thin dashboard assets from `apps/web-dashboard/`.
 
 ## Build and run
 

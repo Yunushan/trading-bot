@@ -1,10 +1,9 @@
 """
-Core trading-domain package.
+Internal trading-domain implementation namespace.
 
-Phase 1 note:
-This package is the future home for strategy, backtest, risk, indicator, and
-position logic that should be reusable by desktop, headless service, tests,
-and future web/mobile clients.
+The canonical reusable package boundary now lives at ``trading_core``.
+Keep ``app.core`` for the existing monolith/runtime wiring while external
+consumers and new shared code migrate to the public package surface.
 """
 
 __all__ = ["backtest", "indicators", "positions", "strategy"]

@@ -65,6 +65,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PYTHON_ROOT}/../.." && pwd)"
+DESKTOP_ENTRY_SCRIPT="${REPO_ROOT}/apps/desktop-pyqt/main.py"
 
 release_info_path=""
 
@@ -77,6 +78,11 @@ cleanup() {
 trap cleanup EXIT
 
 pushd "${PYTHON_ROOT}" >/dev/null
+
+if [[ ! -f "${DESKTOP_ENTRY_SCRIPT}" ]]; then
+  echo "Desktop entry script not found at ${DESKTOP_ENTRY_SCRIPT}" >&2
+  exit 1
+fi
 
 if [[ "${SKIP_DEPENDENCY_INSTALL}" -eq 0 ]]; then
   if [[ ! -f "requirements.txt" ]]; then
@@ -150,12 +156,13 @@ esac
 
 pyinstaller_args=(
   -m PyInstaller
-  main.py
   --name "${NAME}"
   --onefile
   --clean
   --noconfirm
   --specpath build
+  --paths "${REPO_ROOT}"
+  --paths "${PYTHON_ROOT}"
   --hidden-import binance.client
   --hidden-import binance.spot
 )
@@ -184,6 +191,8 @@ fi
 if [[ -n "${release_info_path}" && -f "${release_info_path}" ]]; then
   pyinstaller_args+=(--add-data "${release_info_path}${data_sep}app")
 fi
+
+pyinstaller_args+=("${DESKTOP_ENTRY_SCRIPT}")
 
 module_is_available() {
   local module_name="$1"

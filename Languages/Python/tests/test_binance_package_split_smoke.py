@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 import importlib
 import sys
 import threading
@@ -15,12 +17,6 @@ from app.integrations.exchanges.binance import (
     _coerce_interval_seconds,
     _normalize_connector_choice,
     normalize_margin_ratio,
-)
-from app.binance_wrapper import (
-    BinanceWrapper as root_shim_binance_wrapper,
-    _coerce_interval_seconds as root_shim_coerce_interval_seconds,
-    _normalize_connector_choice as root_shim_normalize_connector_choice,
-    normalize_margin_ratio as root_shim_normalize_margin_ratio,
 )
 from app.integrations.exchanges.binance.account.account_data import bind_binance_account_data as new_bind_account
 from app.integrations.exchanges.binance.clients.connector_clients import (
@@ -83,7 +79,6 @@ from app.integrations.exchanges.binance.transport.rate_limit_runtime import (
     bind_binance_rate_limit_runtime as new_bind_rate_limit,
 )
 from app.integrations.exchanges.binance.transport.ws_runtime import bind_binance_ws_runtime as new_bind_ws
-import app.close_all as close_all_module
 
 
 class _DummyThread:
@@ -122,10 +117,9 @@ class _DummyOperationalWrapper:
 class BinancePackageSplitSmokeTests(unittest.TestCase):
     def test_public_surface_is_unchanged(self):
         self.assertIs(binance_pkg.BinanceWrapper, BinanceWrapper)
-        self.assertIs(root_shim_binance_wrapper, BinanceWrapper)
-        self.assertIs(root_shim_coerce_interval_seconds, _coerce_interval_seconds)
-        self.assertIs(root_shim_normalize_connector_choice, _normalize_connector_choice)
-        self.assertIs(root_shim_normalize_margin_ratio, normalize_margin_ratio)
+        self.assertIs(binance_pkg._coerce_interval_seconds, _coerce_interval_seconds)
+        self.assertIs(binance_pkg._normalize_connector_choice, _normalize_connector_choice)
+        self.assertIs(binance_pkg.normalize_margin_ratio, normalize_margin_ratio)
         self.assertEqual(_coerce_interval_seconds("5m"), 300.0)
         self.assertEqual(normalize_margin_ratio("0.5"), 50.0)
         self.assertEqual(
@@ -153,6 +147,8 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
     def test_removed_intermediate_binance_modules_raise_import_error(self):
         removed_modules = [
+            "app.binance_wrapper",
+            "app.close_all",
             "app.integrations.exchanges.binance.account_data",
             "app.integrations.exchanges.binance.connector_clients",
             "app.integrations.exchanges.binance.exchange_metadata",

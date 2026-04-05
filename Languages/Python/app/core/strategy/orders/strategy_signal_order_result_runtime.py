@@ -41,6 +41,7 @@ def _handle_futures_signal_order_result(
     signature_guard_key,
     guard_window: float,
     signature,
+    context_key: str,
     slot_key_tuple,
     price: float,
     qty_est: float,
@@ -99,12 +100,19 @@ def _handle_futures_signal_order_result(
                 "avg_price": avg_price_quick if avg_price_quick > 0.0 else cw.get("price"),
                 "leverage": leverage_quick,
                 "trigger_indicators": list(trigger_labels or []),
+                "trigger_signature": list(signature or ()),
                 "trigger_desc": str(trigger_desc_for_order or ""),
+                "context_key": context_key,
                 "event_uid": order_event_uid,
                 "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "placed",
                 "ok": bool(order_res.get("ok", True)),
             }
+            if slot_key_tuple:
+                try:
+                    event_payload["slot_id"] = "|".join(slot_key_tuple)
+                except Exception:
+                    pass
             if trigger_actions_for_order:
                 event_payload["trigger_actions"] = dict(trigger_actions_for_order)
             if order_id_quick is not None:
@@ -281,6 +289,7 @@ def _handle_futures_signal_order_result(
                     "trigger_signature": signature_list,
                     "trigger_indicators": list(trigger_labels),
                     "trigger_desc": trigger_desc_for_order,
+                    "context_key": context_key,
                     "event_uid": order_event_uid,
                 }
                 if trigger_actions_for_order:
@@ -303,10 +312,10 @@ def _handle_futures_signal_order_result(
                     entry_payload["entry_realized_usdt"] = float(entry_net_realized)
                 self._append_leg_entry(key, entry_payload)
                 try:
-                    qty_logged = float(entry_payload.get("qty") or 0.0)
-                    price_logged = float(entry_payload.get("entry_price") or price or 0.0)
+                    qty_logged = _float_or(entry_payload.get("qty"))
+                    price_logged = _float_or(entry_payload.get("entry_price") or price)
                     size_logged = qty_logged * price_logged if price_logged > 0.0 else 0.0
-                    margin_logged = float(entry_payload.get("margin_usdt") or margin_est or 0.0)
+                    margin_logged = _float_or(entry_payload.get("margin_usdt") or margin_est)
                     indicator_label = (
                         trigger_desc_for_order.upper()
                         if isinstance(trigger_desc_for_order, str) and trigger_desc_for_order.strip()
@@ -335,9 +344,12 @@ def _emit_signal_order_info(
     qty_display,
     trigger_labels,
     trigger_desc_for_order: str | None,
+    trigger_signature,
+    context_key: str | None,
     order_event_uid: str,
     trigger_actions_for_order,
     origin_timestamp: float | None,
+    slot_key_tuple=None,
     leverage_used=None,
 ) -> None:
     try:
@@ -389,12 +401,20 @@ def _emit_signal_order_info(
         "avg_price": avg_price if avg_price > 0 else price,
         "leverage": leverage_normalized,
         "trigger_indicators": trigger_labels,
+        "trigger_signature": list(trigger_signature or ()),
         "trigger_desc": trigger_desc_for_order,
         "event_uid": order_event_uid,
         "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "placed",
         "ok": bool(order_res.get("ok", True)),
     }
+    if context_key:
+        order_info["context_key"] = context_key
+    if slot_key_tuple:
+        try:
+            order_info["slot_id"] = "|".join(slot_key_tuple)
+        except Exception:
+            pass
     if trigger_actions_for_order:
         order_info["trigger_actions"] = dict(trigger_actions_for_order)
     info_meta = order_res.get("info") or {}

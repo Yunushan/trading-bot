@@ -1,44 +1,8 @@
 from __future__ import annotations
 
-from .module_state_constants import (
-    ACCOUNT_MODE_OPTIONS,
-    APP_STATE_PATH,
-    BACKTEST_INTERVAL_ORDER,
-    BINANCE_INTERVAL_LOWER,
-    BINANCE_SUPPORTED_INTERVALS,
-    CHART_INTERVAL_OPTIONS,
-    CHART_MARKET_OPTIONS,
-    DASHBOARD_LOOP_CHOICES,
-    DBG_BACKTEST_DASHBOARD,
-    DBG_BACKTEST_RUN,
-    DEFAULT_CHART_SYMBOLS,
-    FUTURES_CONNECTOR_KEYS,
-    LEAD_TRADER_OPTIONS,
-    LEGACY_APP_STATE_PATH,
-    MAX_CLOSED_HISTORY,
-    MDD_LOGIC_LABELS,
-    POS_CLOSE_COLUMN,
-    POS_CURRENT_VALUE_COLUMN,
-    POS_STATUS_COLUMN,
-    POS_STOP_LOSS_COLUMN,
-    POS_TRIGGERED_VALUE_COLUMN,
-    SIDE_LABELS,
-    SPOT_CONNECTOR_KEYS,
-    STOP_LOSS_MODE_LABELS,
-    STOP_LOSS_SCOPE_LABELS,
-    TRADINGVIEW_SYMBOL_PREFIX,
-    TRADINGVIEW_INTERVAL_MAP,
-    WAITING_POSITION_LATE_THRESHOLD,
-    _connector_options,
-    _env_flag_enabled,
-    _resolve_symbol_fetch_top_n,
-)
+from .module_state_constants import _connector_options, _resolve_symbol_fetch_top_n
 from .module_state_payload import (
-    _build_connector_dependency_and_option_globals,
-    _build_core_globals,
-    _build_language_and_indicator_globals,
     _build_main_window_module_state_payload,
-    _build_runtime_helper_globals,
     _build_side_label_lookup,
 )
 
@@ -79,7 +43,7 @@ def install_main_window_module_state(
     )
     from app.core.positions import IntervalPositionGuard
     from app.core.strategy import StrategyEngine
-    from app.gui.backtest import worker_runtime as main_window_backtest_runtime
+    from app.gui.backtest import worker_runtime as backtest_worker_runtime
     from app.gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
     from app.gui.chart.chart_embed import (
         _DEFAULT_WEB_UA,
@@ -130,24 +94,24 @@ def install_main_window_module_state(
         _rust_framework_path,
         _rust_framework_title,
     )
-    from app.gui.positions import positions_runtime as main_window_positions, worker_runtime as main_window_positions_worker
-    from app.gui.runtime.window import runtime as main_window_runtime
+    from app.gui.positions import positions_runtime, worker_runtime as positions_worker_runtime
+    from app.gui.runtime.background_workers import CallWorker
+    from app.gui.runtime.strategy_workers import StartWorker, StopWorker
+    from app.gui.runtime.window import runtime as window_runtime
     from app.gui.shared import (
         allocation_persistence,
-        helper_runtime as main_window_helper_runtime,
-        ui_support as main_window_ui_support,
-        web_embed as main_window_web_embed,
+        helper_runtime as shared_helper_runtime,
+        ui_support as shared_ui_support,
+        web_embed as shared_web_embed,
     )
     from app.gui.shared.config_runtime import _load_app_state_file, _save_app_state_file
     from app.gui.shared.param_dialog import ParamDialog
     from app.integrations.exchanges.binance import BinanceWrapper, normalize_margin_ratio
-    from app.gui.runtime.background_workers import CallWorker
-    from app.gui.runtime.strategy_workers import StartWorker, StopWorker
 
     connector_options = _connector_options()
     default_connector_backend = connector_options[0][1]
 
-    main_window_helper_runtime.bind_main_window_helper_runtime(
+    shared_helper_runtime.bind_main_window_helper_runtime(
         default_connector_backend=default_connector_backend,
     )
 
@@ -182,7 +146,98 @@ def install_main_window_module_state(
         )
 
     symbol_fetch_top_n = _resolve_symbol_fetch_top_n()
-    context = dict(locals())
+    context = {
+        "DEFAULT_CONFIG": DEFAULT_CONFIG,
+        "INDICATOR_DISPLAY_NAMES": INDICATOR_DISPLAY_NAMES,
+        "MDD_LOGIC_DEFAULT": MDD_LOGIC_DEFAULT,
+        "MDD_LOGIC_OPTIONS": MDD_LOGIC_OPTIONS,
+        "STOP_LOSS_MODE_ORDER": STOP_LOSS_MODE_ORDER,
+        "STOP_LOSS_SCOPE_OPTIONS": STOP_LOSS_SCOPE_OPTIONS,
+        "BACKTEST_TEMPLATE_DEFAULT": BACKTEST_TEMPLATE_DEFAULT,
+        "normalize_stop_loss_dict": normalize_stop_loss_dict,
+        "coerce_bool": coerce_bool,
+        "BinanceWrapper": BinanceWrapper,
+        "normalize_margin_ratio": normalize_margin_ratio,
+        "BacktestEngine": BacktestEngine,
+        "BacktestRequest": BacktestRequest,
+        "IndicatorDefinition": IndicatorDefinition,
+        "StrategyEngine": StrategyEngine,
+        "StopWorker": StopWorker,
+        "StartWorker": StartWorker,
+        "CallWorker": CallWorker,
+        "IntervalPositionGuard": IntervalPositionGuard,
+        "ParamDialog": ParamDialog,
+        "BACKTEST_TEMPLATE_DEFINITIONS": BACKTEST_TEMPLATE_DEFINITIONS,
+        "window_runtime": window_runtime,
+        "positions_runtime": positions_runtime,
+        "shared_ui_support": shared_ui_support,
+        "backtest_worker_runtime": backtest_worker_runtime,
+        "shared_web_embed": shared_web_embed,
+        "positions_worker_runtime": positions_worker_runtime,
+        "_load_app_state_file": _load_app_state_file,
+        "_save_app_state_file": _save_app_state_file,
+        "_DEFAULT_WEB_UA": _DEFAULT_WEB_UA,
+        "_binance_unavailable_reason": _binance_unavailable_reason,
+        "_chart_safe_mode_enabled": _chart_safe_mode_enabled,
+        "_configure_tradingview_webengine_env": _configure_tradingview_webengine_env,
+        "_lightweight_unavailable_reason": _lightweight_unavailable_reason,
+        "_load_tradingview_widget": _load_tradingview_widget,
+        "_native_chart_host_prewarm_enabled": _native_chart_host_prewarm_enabled,
+        "_tradingview_external_preferred": _tradingview_external_preferred,
+        "_tradingview_supported": _tradingview_supported,
+        "_tradingview_unavailable_reason": _tradingview_unavailable_reason,
+        "_webengine_charts_allowed": _webengine_charts_allowed,
+        "_webengine_embed_unavailable_reason": _webengine_embed_unavailable_reason,
+        "_BASE_PROJECT_PATH": _BASE_PROJECT_PATH,
+        "CPP_BUILD_ROOT": CPP_BUILD_ROOT,
+        "CPP_CACHE_META_FILE": CPP_CACHE_META_FILE,
+        "CPP_CODE_LANGUAGE_KEY": CPP_CODE_LANGUAGE_KEY,
+        "_CPP_DEPENDENCY_VERSION_TARGETS": _CPP_DEPENDENCY_VERSION_TARGETS,
+        "CPP_EXECUTABLE_BASENAME": CPP_EXECUTABLE_BASENAME,
+        "CPP_EXECUTABLE_LEGACY_BASENAME": CPP_EXECUTABLE_LEGACY_BASENAME,
+        "CPP_PACKAGED_EXECUTABLE_BASENAME": CPP_PACKAGED_EXECUTABLE_BASENAME,
+        "CPP_PROJECT_PATH": CPP_PROJECT_PATH,
+        "CPP_RELEASE_CPP_ASSET": CPP_RELEASE_CPP_ASSET,
+        "CPP_RELEASE_OWNER": CPP_RELEASE_OWNER,
+        "CPP_RELEASE_REPO": CPP_RELEASE_REPO,
+        "CPP_SUPPORTED_EXCHANGE_KEY": CPP_SUPPORTED_EXCHANGE_KEY,
+        "_DEFAULT_DEPENDENCY_VERSION_TARGETS": _DEFAULT_DEPENDENCY_VERSION_TARGETS,
+        "EXCHANGE_PATHS": EXCHANGE_PATHS,
+        "FOREX_BROKER_PATHS": FOREX_BROKER_PATHS,
+        "LANGUAGE_PATHS": LANGUAGE_PATHS,
+        "PYTHON_CODE_LANGUAGE_KEY": PYTHON_CODE_LANGUAGE_KEY,
+        "RELEASE_INFO_JSON_NAME": RELEASE_INFO_JSON_NAME,
+        "RELEASE_TAG_TEXT_NAME": RELEASE_TAG_TEXT_NAME,
+        "_REQUIREMENTS_PATHS": _REQUIREMENTS_PATHS,
+        "RUST_CODE_LANGUAGE_KEY": RUST_CODE_LANGUAGE_KEY,
+        "RUST_FRAMEWORK_PACKAGES": RUST_FRAMEWORK_PACKAGES,
+        "RUST_PROJECT_PATH": RUST_PROJECT_PATH,
+        "STARTER_CRYPTO_EXCHANGES": STARTER_CRYPTO_EXCHANGES,
+        "STARTER_FOREX_BROKERS": STARTER_FOREX_BROKERS,
+        "STARTER_MARKET_OPTIONS": STARTER_MARKET_OPTIONS,
+        "_rust_dependency_targets_for_config": _rust_dependency_targets_for_config,
+        "_rust_framework_key": _rust_framework_key,
+        "_rust_framework_option": _rust_framework_option,
+        "_rust_framework_path": _rust_framework_path,
+        "_rust_framework_title": _rust_framework_title,
+        "rsi_indicator": rsi_indicator,
+        "stoch_rsi_indicator": stoch_rsi_indicator,
+        "williams_r_indicator": williams_r_indicator,
+        "sma_indicator": sma_indicator,
+        "ema_indicator": ema_indicator,
+        "donchian_high_indicator": donchian_high_indicator,
+        "donchian_low_indicator": donchian_low_indicator,
+        "bollinger_bands_indicator": bollinger_bands_indicator,
+        "psar_indicator": psar_indicator,
+        "macd_indicator": macd_indicator,
+        "uo_indicator": uo_indicator,
+        "adx_indicator": adx_indicator,
+        "dmi_indicator": dmi_indicator,
+        "supertrend_indicator": supertrend_indicator,
+        "stochastic_indicator": stochastic_indicator,
+        "shared_helper_runtime": shared_helper_runtime,
+        "dependency_versions_runtime": dependency_versions_runtime,
+    }
     module_globals.update(
         _build_main_window_module_state_payload(
             context,
@@ -194,6 +249,4 @@ def install_main_window_module_state(
             collect_dependency_versions=_collect_dependency_versions,
         )
     )
-    module_globals["SIDE_LABEL_LOOKUP"] = _build_side_label_lookup(
-        module_globals["SIDE_LABELS"]
-    )
+    module_globals["SIDE_LABEL_LOOKUP"] = _build_side_label_lookup(module_globals["SIDE_LABELS"])

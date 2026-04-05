@@ -8,10 +8,10 @@ try:
     from . import strategy_signal_order_sizing_runtime
     from . import strategy_signal_order_submit_runtime
 except ImportError:  # pragma: no cover - standalone execution fallback
-    import strategy_signal_order_guard_runtime
-    import strategy_signal_order_result_runtime
-    import strategy_signal_order_sizing_runtime
-    import strategy_signal_order_submit_runtime
+    import strategy_signal_order_guard_runtime  # type: ignore[no-redef]
+    import strategy_signal_order_result_runtime  # type: ignore[no-redef]
+    import strategy_signal_order_sizing_runtime  # type: ignore[no-redef]
+    import strategy_signal_order_submit_runtime  # type: ignore[no-redef]
 
 
 def _execute_signal_order(
@@ -326,6 +326,7 @@ def _execute_signal_order(
                     signature_guard_key=signature_guard_key,
                     guard_window=guard_window,
                     signature=signature,
+                    context_key=context_key,
                     slot_key_tuple=slot_key_tuple,
                     price=price,
                     qty_est=qty_est,
@@ -378,9 +379,12 @@ def _execute_signal_order(
                 qty_display=qty_display,
                 trigger_labels=trigger_labels,
                 trigger_desc_for_order=trigger_desc_for_order,
+                trigger_signature=signature,
+                context_key=context_key,
                 order_event_uid=order_event_uid,
                 trigger_actions_for_order=trigger_actions_for_order,
                 origin_timestamp=origin_timestamp,
+                slot_key_tuple=slot_key_tuple,
                 leverage_used=leverage_used,
             )
         except Exception as e:

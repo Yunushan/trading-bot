@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.gui.shared.indicator_value_core import normalize_interval_token
+
 _SIDE_LABEL_LOOKUP: dict[str, str] = {}
 _BINANCE_INTERVAL_LOWER: set[str] = set()
 
@@ -22,17 +24,32 @@ def _canonicalize_interval(interval: str) -> str:
     raw = str(interval or "").strip()
     if not raw:
         return ""
-    lower = raw.lower()
-    if lower in _BINANCE_INTERVAL_LOWER:
-        return lower
-    if raw.upper() == "1M" or lower in {"1month", "1mo"}:
+    normalized = normalize_interval_token(raw)
+    if normalized == "1mo":
         return "1M"
+    if normalized and normalized in _BINANCE_INTERVAL_LOWER:
+        return str(normalized)
     return ""
+
+
+def _interval_identity_key(interval: str | None) -> str:
+    raw = str(interval or "").strip()
+    if not raw:
+        return ""
+    canonical = _canonicalize_interval(raw)
+    if canonical:
+        return canonical
+    normalized = normalize_interval_token(raw)
+    if normalized == "1mo":
+        return "1M"
+    if normalized:
+        return str(normalized)
+    return raw.lower()
 
 
 def _resolve_dashboard_side(self) -> str:
     sel = self.side_combo.currentText() if hasattr(self, "side_combo") else ""
-    return self._canonical_side_from_text(sel)
+    return str(self._canonical_side_from_text(sel) or "BOTH")
 
 
 def _collect_strategy_indicators(
@@ -46,25 +63,19 @@ def _collect_strategy_indicators(
     side_key = (side_key or "").upper()
     normalized_intervals: set[str] | None = None
     if intervals:
-        normalized_intervals = {
-            self._canonicalize_interval(iv) or str(iv).strip().lower()
-            for iv in intervals
-            if iv
-        }
+        normalized_intervals = set()
+        for iv in intervals:
+            key = _interval_identity_key(iv)
+            if key:
+                normalized_intervals.add(key)
     for meta in metadata.values():
         if not isinstance(meta, dict):
             continue
         if meta.get("symbol") != symbol:
             continue
-        meta_interval = self._canonicalize_interval(meta.get("interval"))
+        meta_interval = _interval_identity_key(meta.get("interval"))
         if normalized_intervals is not None:
-            if meta_interval and meta_interval in normalized_intervals:
-                pass
-            elif meta_interval and meta_interval.replace(".", "") in normalized_intervals:
-                pass
-            elif meta.get("interval") and str(meta.get("interval")).strip().lower() in normalized_intervals:
-                pass
-            else:
+            if meta_interval not in normalized_intervals:
                 continue
         side_cfg = (meta.get("side") or "BOTH").upper()
         if side_key in ("", "SPOT") or side_cfg == "BOTH":

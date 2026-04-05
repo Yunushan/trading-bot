@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from PyQt6 import QtWidgets
 
 from app.integrations.exchanges.binance import normalize_margin_ratio
@@ -96,8 +98,13 @@ def _resolve_liquidation_price(data: dict, rec: dict, raw_position: dict | None)
     return 0.0
 
 
+def _make_numeric_item(text: str, value: float):
+    item_cls = cast(Any, table_render_state_runtime._NUMERIC_ITEM_CLS)
+    return item_cls(text, value)
+
+
 def _resolve_aggregate_key_entry(rec: dict):
-    aggregate_key = str(rec.get("_aggregate_key") or rec.get("ledger_id") or "")
+    aggregate_key = str(rec.get("_aggregate_key") or rec.get("close_event_id") or rec.get("ledger_id") or "")
     if not aggregate_key:
         return None
     indicator_signature = tuple(
@@ -107,6 +114,41 @@ def _resolve_aggregate_key_entry(rec: dict):
     if indicator_signature:
         return (aggregate_key, interval_signature, indicator_signature)
     return (aggregate_key, interval_signature)
+
+
+def _resolve_close_target_identity(rec: dict) -> dict[str, str] | None:
+    sources: list[dict] = []
+    allocations = rec.get("allocations") or []
+    if isinstance(allocations, dict):
+        allocations = list(allocations.values())
+    if isinstance(allocations, list):
+        for entry in allocations:
+            if isinstance(entry, dict):
+                sources.append(entry)
+                break
+    data = rec.get("data")
+    if isinstance(data, dict):
+        sources.append(data)
+    sources.append(rec)
+
+    target_identity: dict[str, str] = {}
+    for field_name in (
+        "_aggregate_key",
+        "aggregate_key",
+        "trade_id",
+        "client_order_id",
+        "order_id",
+        "event_uid",
+        "context_key",
+        "slot_id",
+        "open_time",
+    ):
+        for source in sources:
+            value = str(source.get(field_name) or "").strip()
+            if value:
+                target_identity[field_name] = value
+                break
+    return target_identity or None
 
 
 def _merge_indicator_sources(
@@ -151,13 +193,23 @@ def _merge_indicator_sources(
             for slot in slots:
                 if slot not in bucket:
                     bucket.append(slot)
+    indicators_list = table_render_state_runtime._canonicalize_indicator_keys(indicators_list)
+    indicator_values_entries = table_render_state_runtime._canonicalize_indicator_entries(
+        indicator_values_entries
+    )
+    interval_map = table_render_state_runtime._canonicalize_indicator_interval_map(interval_map)
     rec["_indicator_value_entries"] = indicator_values_entries
     rec["_indicator_interval_map"] = interval_map
     active_indicator_keys_ordered = list((interval_map or {}).keys())
     display_list = list(indicators_list or [])
     if active_indicator_keys_ordered:
-        filtered = [ind for ind in display_list if ind.lower() in active_indicator_keys_ordered]
-        display_list = filtered if filtered else active_indicator_keys_ordered
+        display_lookup = {str(entry).strip().lower() for entry in display_list if str(entry).strip()}
+        filtered = [
+            indicator_key
+            for indicator_key in active_indicator_keys_ordered
+            if indicator_key.lower() in display_lookup
+        ]
+        display_list = filtered if filtered else list(active_indicator_keys_ordered)
     return display_list, indicator_values_entries, interval_map
 
 
@@ -225,6 +277,9 @@ def _resolve_live_values_entries(
             rec["_current_indicator_values"] = live_values_entries
     if live_values_entries:
         live_values_entries = table_render_state_runtime._dedupe_indicator_entries_normalized(
+            live_values_entries
+        )
+        live_values_entries = table_render_state_runtime._canonicalize_indicator_entries(
             live_values_entries
         )
         rec["_current_indicator_values"] = live_values_entries
@@ -303,12 +358,12 @@ def populate_positions_table(
             self.pos_table.setItem(
                 row,
                 1,
-                table_render_state_runtime._NUMERIC_ITEM_CLS(f"{size_usdt:.8f}", size_usdt),
+                _make_numeric_item(f"{size_usdt:.8f}", size_usdt),
             )
             self.pos_table.setItem(
                 row,
                 2,
-                table_render_state_runtime._NUMERIC_ITEM_CLS(
+                _make_numeric_item(
                     f"{mark:.8f}" if mark else "-",
                     mark,
                 ),
@@ -316,7 +371,7 @@ def populate_positions_table(
             self.pos_table.setItem(
                 row,
                 3,
-                table_render_state_runtime._NUMERIC_ITEM_CLS(
+                _make_numeric_item(
                     f"{mr:.2f}%" if mr > 0 else "-",
                     mr,
                 ),
@@ -326,7 +381,7 @@ def populate_positions_table(
             self.pos_table.setItem(
                 row,
                 4,
-                table_render_state_runtime._NUMERIC_ITEM_CLS(
+                _make_numeric_item(
                     f"{liq_price:.6f}" if liq_price > 0 else "-",
                     liq_price,
                 ),
@@ -334,7 +389,7 @@ def populate_positions_table(
             self.pos_table.setItem(
                 row,
                 5,
-                table_render_state_runtime._NUMERIC_ITEM_CLS(
+                _make_numeric_item(
                     f"{margin_usdt:.2f} USDT" if margin_usdt else "-",
                     margin_usdt,
                 ),
@@ -344,12 +399,12 @@ def populate_positions_table(
             self.pos_table.setItem(
                 row,
                 6,
-                table_render_state_runtime._NUMERIC_ITEM_CLS(f"{qty_show:.6f}", qty_show),
+                _make_numeric_item(f"{qty_show:.6f}", qty_show),
             )
             self.pos_table.setItem(
                 row,
                 7,
-                table_render_state_runtime._NUMERIC_ITEM_CLS(str(pnl_roi or "-"), pnl_value),
+                _make_numeric_item(str(pnl_roi or "-"), pnl_value),
             )
 
             added_to_total = False
@@ -388,6 +443,9 @@ def populate_positions_table(
             )
             if filtered_indicator_values:
                 filtered_indicator_values = list(dict.fromkeys(filtered_indicator_values))
+                filtered_indicator_values = table_render_state_runtime._canonicalize_indicator_entries(
+                    filtered_indicator_values
+                )
             self.pos_table.setItem(
                 row,
                 table_render_state_runtime.POS_TRIGGERED_VALUE_COLUMN,
@@ -429,7 +487,13 @@ def populate_positions_table(
                 QtWidgets.QTableWidgetItem(status_txt),
             )
             btn_interval = interval if interval != "-" else None
-            btn = self._make_close_btn(sym, side_key, btn_interval, qty_show)
+            btn = self._make_close_btn(
+                sym,
+                side_key,
+                btn_interval,
+                qty_show,
+                _resolve_close_target_identity(rec),
+            )
             if status_lower != "active":
                 btn.setEnabled(False)
             self.pos_table.setCellWidget(

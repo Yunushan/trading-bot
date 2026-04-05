@@ -12,6 +12,12 @@ import {
 } from "./modules/state.js";
 import { readInteger, readNumber, splitList } from "./modules/utils.js";
 
+const API_BASE_PATH = "/api/v1";
+
+function apiPath(path) {
+  return `${API_BASE_PATH}/${String(path || "").replace(/^\/+/, "")}`;
+}
+
 function setConnectionState(label, tone = "muted") {
   elements.connectionState.textContent = label;
   elements.connectionState.className = `pill ${tone}`;
@@ -93,7 +99,7 @@ async function refreshDashboard() {
     setConnectionMessage("The API requires a bearer token. Enter it above and connect again.");
     return;
   }
-  const snapshot = await fetchJson("/api/dashboard?log_limit=30");
+  const snapshot = await fetchJson(`${apiPath("dashboard")}?log_limit=30`);
   renderDashboardSnapshot(snapshot);
   setConnectionState("Connected", "ok");
   setConnectionMessage(
@@ -121,7 +127,7 @@ function openDashboardStream() {
   if (state.token) {
     params.set("token", state.token);
   }
-  const streamUrl = `${state.baseUrl}/api/stream/dashboard?${params.toString()}`;
+  const streamUrl = `${state.baseUrl}${apiPath("stream/dashboard")}?${params.toString()}`;
   const source = new EventSource(streamUrl);
   state.eventSource = source;
   let opened = false;
@@ -169,7 +175,7 @@ async function connectAndRefresh() {
     renderServiceApi(health.service_api || health);
     state.authRequired = Boolean(health.auth_required);
     if (state.authRequired) {
-      const probe = await fetchJson("/api/status", { allowUnauthorized: true });
+      const probe = await fetchJson(apiPath("status"), { allowUnauthorized: true });
       if (probe && probe.unauthorized) {
         setConnectionState("Unauthorized", "error");
         setConnectionMessage("Bearer token missing or invalid. Update the token and try again.");
@@ -190,7 +196,7 @@ async function requestStart() {
       requested_job_count: readInteger(elements.controlJobs, 0),
       source: "web-ui",
     };
-    const result = await sendJson("POST", "/api/control/start", payload);
+    const result = await sendJson("POST", apiPath("control/start"), payload);
     setControlMessage(result.status_message || "Start request recorded.");
     await refreshDashboard();
   } catch (error) {
@@ -204,7 +210,7 @@ async function requestStop() {
       close_positions: Boolean(elements.controlClosePositions.checked),
       source: "web-ui",
     };
-    const result = await sendJson("POST", "/api/control/stop", payload);
+    const result = await sendJson("POST", apiPath("control/stop"), payload);
     setControlMessage(result.status_message || "Stop request recorded.");
     await refreshDashboard();
   } catch (error) {
@@ -219,7 +225,7 @@ async function syncRunning() {
       active_engine_count: readInteger(elements.runtimeEngineCount, 0),
       source: "web-ui",
     };
-    const result = await sendJson("PUT", "/api/runtime/state", payload);
+    const result = await sendJson("PUT", apiPath("runtime/state"), payload);
     setControlMessage(result.status_message || "Runtime marked active.");
     await refreshDashboard();
   } catch (error) {
@@ -234,7 +240,7 @@ async function syncIdle() {
       active_engine_count: 0,
       source: "web-ui",
     };
-    const result = await sendJson("PUT", "/api/runtime/state", payload);
+    const result = await sendJson("PUT", apiPath("runtime/state"), payload);
     setControlMessage(result.status_message || "Runtime marked idle.");
     await refreshDashboard();
   } catch (error) {
@@ -244,7 +250,7 @@ async function syncIdle() {
 
 async function reloadConfig() {
   try {
-    const config = await fetchJson("/api/config");
+    const config = await fetchJson(apiPath("config"));
     renderConfig(config);
     setConfigMessage("Config reloaded from the service.");
   } catch (error) {
@@ -254,7 +260,7 @@ async function reloadConfig() {
 
 async function saveConfigPatch() {
   try {
-    const config = await sendJson("PATCH", "/api/config", {
+    const config = await sendJson("PATCH", apiPath("config"), {
       config: collectConfigPatch(),
     });
     renderConfig(config);
@@ -271,7 +277,7 @@ async function runBacktest() {
       request: collectBacktestRequest(),
       source: "web-ui",
     };
-    const result = await sendJson("POST", "/api/backtest/run", payload);
+    const result = await sendJson("POST", apiPath("backtest/run"), payload);
     elements.backtestControlMessage.textContent = result.status_message || "Backtest request submitted.";
     await refreshDashboard();
   } catch (error) {
@@ -281,7 +287,7 @@ async function runBacktest() {
 
 async function stopBacktest() {
   try {
-    const result = await sendJson("POST", "/api/backtest/stop", {
+    const result = await sendJson("POST", apiPath("backtest/stop"), {
       source: "web-ui",
     });
     elements.backtestControlMessage.textContent = result.status_message || "Backtest stop requested.";

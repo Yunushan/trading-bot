@@ -5,7 +5,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
-from app.core.strategy import StrategyEngine
+from trading_core.strategy import StrategyEngine  # noqa: E402
 
 
 class DummyBinance:

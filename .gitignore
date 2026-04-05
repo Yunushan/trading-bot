@@ -12,6 +12,8 @@ node_modules/
 **/.idea/
 **/.pytest_cache/
 **/.ruff_cache/
+**/.mypy_cache/
+*.egg-info/
 .DS_Store
 aqtinstall.log
 CMakeFiles/
@@ -24,3 +26,6 @@ Languages/Rust/target/
 /Trading-Bot-*.exe
 /.tmp_pythonw_info.txt
 /native_icon_extract.png
+.coverage
+.coverage.*
+coverage.xml

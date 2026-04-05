@@ -2,6 +2,27 @@ from __future__ import annotations
 
 import copy
 
+from .record_build_helpers import _allocation_sort_key
+
+
+def _allocation_identity(entry: dict) -> tuple[str, ...] | None:
+    identity_fields = (
+        "trade_id",
+        "client_order_id",
+        "order_id",
+        "slot_id",
+        "context_key",
+        "open_time",
+        "close_time",
+    )
+    tokens = tuple(
+        str(entry.get(field_name) or "").strip()
+        for field_name in identity_fields
+    )
+    if any(tokens):
+        return tokens
+    return None
+
 
 def _collect_allocations(rec: dict) -> list[dict]:
     allocs = rec.get("allocations") or []
@@ -42,6 +63,7 @@ def _collect_allocations(rec: dict) -> list[dict]:
             str(entry.get("ledger_id") or ""),
             str(entry.get("interval") or "").strip().lower(),
             indicators_tuple,
+            _allocation_identity(entry),
         )
         existing = seen.get(key)
         if existing:
@@ -65,4 +87,5 @@ def _collect_allocations(rec: dict) -> list[dict]:
             entry["trigger_indicators"] = list(indicators_tuple)
         seen[key] = entry
         unique.append(entry)
+    unique.sort(key=_allocation_sort_key)
     return unique

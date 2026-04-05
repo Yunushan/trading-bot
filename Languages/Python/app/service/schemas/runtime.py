@@ -9,6 +9,8 @@ from pathlib import Path
 import platform
 import sys
 
+from ...entrypoint_contract import DESKTOP_ENTRYPOINT_CONTRACT, SERVICE_ENTRYPOINT_CONTRACT
+
 
 @dataclass(frozen=True, slots=True)
 class ServiceCapabilityFlags:
@@ -59,24 +61,31 @@ def build_runtime_descriptor(
     *,
     control_plane: ServiceControlPlaneDescriptor | None = None,
 ) -> ServiceRuntimeDescriptor:
+    from ..api_contract import SERVICE_API_STREAM_DASHBOARD_PATH
+
     service_file = Path(__file__).resolve()
     repo_root = service_file.parents[5]
     return ServiceRuntimeDescriptor(
         service_name="trading-bot-service",
         phase="phase-2-service-api",
-        python_entrypoint="app.service.main",
-        desktop_entrypoint="Languages/Python/main.py",
+        python_entrypoint=SERVICE_ENTRYPOINT_CONTRACT.canonical_repo_path,
+        desktop_entrypoint=DESKTOP_ENTRYPOINT_CONTRACT.canonical_repo_path,
         repo_root=str(repo_root),
         platform=platform.platform(),
         python_version=sys.version.split()[0],
         capabilities=ServiceCapabilityFlags(),
         control_plane=control_plane or ServiceControlPlaneDescriptor(),
         notes=(
-            "Desktop launch remains unchanged.",
+            "Canonical product launchers now live under apps/.",
+            DESKTOP_ENTRYPOINT_CONTRACT.compatibility_notice(),
             "Docker is optional and not required for local usage.",
-            "HTTP API is available through 'python -m app.service.main --serve'.",
+            (
+                f"HTTP API is available through 'python {SERVICE_ENTRYPOINT_CONTRACT.canonical_repo_path} --serve' "
+                f"or the installed command '{SERVICE_ENTRYPOINT_CONTRACT.installed_command}'."
+            ),
+            SERVICE_ENTRYPOINT_CONTRACT.compatibility_notice(),
             "Optional bearer-token auth can protect the HTTP API via BOT_SERVICE_API_TOKEN or --api-token.",
             "A thin same-origin web dashboard is available at '/ui/' when the service API is running.",
-            "The dashboard can follow live service updates over the SSE stream at '/api/stream/dashboard'.",
+            f"The dashboard can follow live service updates over the SSE stream at '{SERVICE_API_STREAM_DASHBOARD_PATH}'.",
         ),
     )

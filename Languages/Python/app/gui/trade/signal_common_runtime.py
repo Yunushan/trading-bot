@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import copy
 
+from app.gui.positions.actions_state_runtime import (
+    sync_local_position_tracking_from_allocations,
+)
+
 
 def _connector_name(self) -> str:
     try:
-        return self._connector_label_text(self._runtime_connector_backend(suppress_refresh=True))
+        return str(self._connector_label_text(self._runtime_connector_backend(suppress_refresh=True)))
     except Exception:
         return "Unknown"
 
@@ -118,6 +122,12 @@ def _sync_open_position_snapshot(
     if open_time_fmt:
         record["open_time"] = open_time_fmt
     record["allocations"] = copy.deepcopy(alloc_entries or [])
+    sync_local_position_tracking_from_allocations(
+        self,
+        symbol_key,
+        side_key_local,
+        list(alloc_entries or []),
+    )
 
     base_data = dict(record.get("data") or {})
     base_data.setdefault("symbol", symbol_key)
@@ -156,6 +166,7 @@ def _sync_open_position_snapshot(
             value = trade_snapshot.get(src_key)
             if value is None or value == "":
                 continue
+            value_num: object
             if isinstance(value, str):
                 try:
                     value_num = float(value)
@@ -165,7 +176,8 @@ def _sync_open_position_snapshot(
                 value_num = value
             if dest_key == "leverage":
                 try:
-                    value_num = int(value_num)
+                    if isinstance(value_num, (int, float, str, bytes, bytearray)):
+                        value_num = int(float(value_num))
                 except Exception:
                     pass
             if dest_key not in base_data or base_data.get(dest_key) in (None, "", 0):

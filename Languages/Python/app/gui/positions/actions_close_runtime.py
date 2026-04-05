@@ -9,6 +9,7 @@ def make_close_btn(
     side_key: str | None = None,
     interval: str | None = None,
     qty: float | None = None,
+    target_identity: dict | None = None,
 ):
     label = "Close"
     if side_key == "L":
@@ -28,15 +29,49 @@ def make_close_btn(
             tooltip_bits.append(f"Qty ~= {qty:.6f}")
         except Exception:
             pass
+    if isinstance(target_identity, dict):
+        for field_name, label in (
+            ("trade_id", "Trade"),
+            ("client_order_id", "Client"),
+            ("order_id", "Order"),
+            ("context_key", "Context"),
+            ("slot_id", "Slot"),
+        ):
+            value = str(target_identity.get(field_name) or "").strip()
+            if value:
+                tooltip_bits.append(f"{label} {value}")
+                break
     if tooltip_bits:
         btn.setToolTip(" | ".join(tooltip_bits))
     btn.setEnabled(side_key in ("L", "S"))
     interval_key = interval if interval not in ("-", "SPOT") else None
-    btn.clicked.connect(lambda _, s=symbol, sk=side_key, iv=interval_key, q=qty: self._close_position_single(s, sk, iv, q))
+    if isinstance(target_identity, dict) and target_identity:
+        btn.setProperty("close_target_identity", dict(target_identity))
+    btn.clicked.connect(
+        lambda _,
+        s=symbol,
+        sk=side_key,
+        iv=interval_key,
+        q=qty,
+        ti=(dict(target_identity) if isinstance(target_identity, dict) else None): self._close_position_single(
+            s,
+            sk,
+            iv,
+            q,
+            ti,
+        )
+    )
     return btn
 
 
-def close_position_single(self, symbol: str, side_key: str | None, interval: str | None, qty: float | None):
+def close_position_single(
+    self,
+    symbol: str,
+    side_key: str | None,
+    interval: str | None,
+    qty: float | None,
+    target_identity: dict | None = None,
+):
     if not symbol:
         return
     try:
@@ -162,12 +197,13 @@ def close_position_single(self, symbol: str, side_key: str | None, interval: str
 
     def _done(res, err):
         succeeded = False
+        cleared_stale_state = False
         try:
             if err:
                 self.log(f"Close {symbol} error: {err}")
             else:
                 self.log(f"Close {symbol} result: {res}")
-                succeeded = isinstance(res, dict) and res.get("ok")
+                succeeded = bool(isinstance(res, dict) and res.get("ok"))
                 if (
                     not succeeded
                     and isinstance(res, dict)
@@ -176,7 +212,7 @@ def close_position_single(self, symbol: str, side_key: str | None, interval: str
                 ):
                     try:
                         if hasattr(self, "_clear_local_position_state"):
-                            cleared = bool(
+                            cleared_stale_state = bool(
                                 self._clear_local_position_state(
                                     symbol,
                                     side_key,
@@ -185,12 +221,23 @@ def close_position_single(self, symbol: str, side_key: str | None, interval: str
                                 )
                             )
                     except Exception:
-                        cleared = False
-                    if cleared:
+                        cleared_stale_state = False
+                    if cleared_stale_state:
                         succeeded = True
-            if succeeded and interval and side_key in ("L", "S"):
+            if succeeded and not cleared_stale_state and side_key in ("L", "S"):
                 try:
-                    if hasattr(self, "_track_interval_close"):
+                    local_reconciled = False
+                    if hasattr(self, "_reduce_local_position_allocation_state") and qty_val > 0.0:
+                        local_reconciled = bool(
+                            self._reduce_local_position_allocation_state(
+                                symbol,
+                                side_key,
+                                interval=interval,
+                                qty=qty_val,
+                                target_identity=target_identity,
+                            )
+                        )
+                    if not local_reconciled and interval and hasattr(self, "_track_interval_close"):
                         self._track_interval_close(symbol, side_key, interval)
                 except Exception:
                     pass

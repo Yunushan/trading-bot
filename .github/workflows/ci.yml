@@ -58,14 +58,14 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
-            Languages/Python/requirements.txt
+            Languages/Python/pyproject.toml
 
       - name: Install Python dependencies
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install -r Languages/Python/requirements.txt
+          python -m pip install -e "./Languages/Python[desktop,service,dev]"
 
       - name: Install Linux Qt runtime dependencies
         shell: bash
@@ -97,14 +97,54 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m compileall Languages/Python/app Languages/Python/main.py tools
+          python -m compileall apps/desktop-pyqt/main.py apps/service-api/main.py Languages/Python/app Languages/Python/trading_core Languages/Python/main.py tools
 
-      - name: Run strategy smoke tests
+      - name: Lint product entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m ruff check --config Languages/Python/pyproject.toml \
+            apps/desktop-pyqt/main.py \
+            apps/service-api/main.py \
+            Languages/Python/main.py \
+            Languages/Python/app/service/main.py \
+            Languages/Python/app/service/api/app.py \
+            Languages/Python/app/desktop/bootstrap/main.py \
+            Languages/Python/trading_core \
+            Languages/Python/tests/test_product_app_entrypoints.py \
+            Languages/Python/tests/test_product_packaging_contract.py \
+            Languages/Python/tests/test_trading_core_contract.py
+
+      - name: Type-check product entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m mypy --config-file Languages/Python/pyproject.toml \
+            Languages/Python/main.py \
+            Languages/Python/app/entrypoint_contract.py \
+            Languages/Python/app/desktop/product_main.py \
+            Languages/Python/app/desktop/bootstrap/main.py \
+            Languages/Python/app/service/main.py \
+            Languages/Python/app/service/product_main.py \
+            Languages/Python/app/service/api/app.py \
+            Languages/Python/trading_core/__init__.py \
+            Languages/Python/trading_core/backtest.py \
+            Languages/Python/trading_core/indicators.py \
+            Languages/Python/trading_core/positions.py \
+            Languages/Python/trading_core/strategy.py
+
+      - name: Smoke-check canonical service launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/service-api/main.py --healthcheck
+
+      - name: Run Python smoke tests
         shell: bash
         working-directory: Languages/Python
         run: |
           set -euo pipefail
-          python -m unittest discover -s tests -p "test_*.py"
+          python -m pytest
 
   rust-smoke:
     name: Rust Smoke
@@ -138,11 +178,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            Languages/Rust -> target
+            experiments/rust-shells -> target
 
       - name: Check Rust workspace
         shell: bash
-        working-directory: Languages/Rust
+        working-directory: experiments/rust-shells
         run: |
           set -euo pipefail
           cargo check --workspace

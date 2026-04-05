@@ -16,8 +16,10 @@ if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[3]
     if str(_PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(_PYTHON_ROOT))
+    from app.service.api_contract import service_api_route
     from app.service.runtime import TradingBotService
 else:
+    from ...service.api_contract import service_api_route
     from ...service.runtime import TradingBotService
 
 try:
@@ -245,7 +247,7 @@ class RemoteDesktopServiceClient:
         }
 
     def replace_config(self, config: dict | None) -> dict | None:
-        return self._request("PUT", "/api/config", payload={"config": config})
+        return self._request("PUT", service_api_route("config"), payload={"config": config})
 
     def set_runtime_state(
         self,
@@ -256,7 +258,7 @@ class RemoteDesktopServiceClient:
     ) -> dict | None:
         return self._request(
             "PUT",
-            "/api/runtime/state",
+            service_api_route("runtime_state"),
             payload={
                 "active": bool(active),
                 "active_engine_count": max(0, int(active_engine_count)),
@@ -267,7 +269,7 @@ class RemoteDesktopServiceClient:
     def request_start(self, *, requested_job_count: int = 0, source: str = "desktop-start") -> dict | None:
         return self._request(
             "POST",
-            "/api/control/start",
+            service_api_route("control_start"),
             payload={
                 "requested_job_count": max(0, int(requested_job_count)),
                 "source": source,
@@ -277,7 +279,7 @@ class RemoteDesktopServiceClient:
     def request_stop(self, *, close_positions: bool = False, source: str = "desktop-stop") -> dict | None:
         return self._request(
             "POST",
-            "/api/control/stop",
+            service_api_route("control_stop"),
             payload={
                 "close_positions": bool(close_positions),
                 "source": source,
@@ -287,7 +289,7 @@ class RemoteDesktopServiceClient:
     def mark_start_failed(self, *, reason: str = "", source: str = "desktop-start") -> dict | None:
         return self._request(
             "POST",
-            "/api/control/start-failed",
+            service_api_route("control_start_failed"),
             payload={
                 "reason": str(reason or ""),
                 "source": source,
@@ -295,22 +297,22 @@ class RemoteDesktopServiceClient:
         )
 
     def get_status_snapshot(self) -> dict | None:
-        return self._request("GET", "/api/status")
+        return self._request("GET", service_api_route("status"))
 
     def get_config_summary(self) -> dict | None:
-        return self._request("GET", "/api/config-summary")
+        return self._request("GET", service_api_route("config_summary"))
 
     def set_account_snapshot(self, **kwargs) -> dict | None:
-        return self._request("PUT", "/api/account", payload=dict(kwargs))
+        return self._request("PUT", service_api_route("account"), payload=dict(kwargs))
 
     def get_account_snapshot(self) -> dict | None:
-        return self._request("GET", "/api/account")
+        return self._request("GET", service_api_route("account"))
 
     def set_portfolio_snapshot(self, **kwargs) -> dict | None:
-        return self._request("PUT", "/api/portfolio", payload=dict(kwargs))
+        return self._request("PUT", service_api_route("portfolio"), payload=dict(kwargs))
 
     def get_portfolio_snapshot(self) -> dict | None:
-        return self._request("GET", "/api/portfolio")
+        return self._request("GET", service_api_route("portfolio"))
 
     def record_log_event(
         self,
@@ -321,7 +323,7 @@ class RemoteDesktopServiceClient:
     ) -> dict | None:
         return self._request(
             "POST",
-            "/api/logs",
+            service_api_route("logs"),
             payload={
                 "message": str(message or ""),
                 "source": source,
@@ -330,7 +332,7 @@ class RemoteDesktopServiceClient:
         )
 
     def get_recent_logs(self, *, limit: int = 100) -> list[dict]:
-        payload = self._request("GET", f"/api/logs?limit={max(1, int(limit))}")
+        payload = self._request("GET", f"{service_api_route('logs')}?limit={max(1, int(limit))}")
         return payload if isinstance(payload, list) else []
 
 

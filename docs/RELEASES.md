@@ -12,11 +12,13 @@ This repo includes automated release workflows:
 
 When you push a tag that starts with `v` such as `v1.0.0`, GitHub Actions will build and publish platform assets:
 
-- **Windows**: x64 and ARM64 assets for Python, C++, the Rust workspace binary, and every Rust desktop framework shell
-- **Linux**: Python/C++ tarballs, Linux packages (`.deb`, `.rpm`), plus tarballs for the Rust workspace binary and every Rust desktop framework shell on `x86_64` and `arm64`
-- **macOS**: Python/C++ zip bundles plus zip bundles for the Rust workspace binary and every Rust desktop framework shell on Intel and ARM64 runners
+- **Windows**: x64 and ARM64 assets for Python, the native C++ preview, the Rust workspace binary, and every Rust desktop framework shell
+- **Linux**: Python/native-C++ tarballs, Linux packages (`.deb`, `.rpm`), plus tarballs for the Rust workspace binary and every Rust desktop framework shell on `x86_64` and `arm64`
+- **macOS**: Python/native-C++ zip bundles plus zip bundles for the Rust workspace binary and every Rust desktop framework shell on Intel and ARM64 runners
 - **FreeBSD**: Python/C++ tarballs when a matching self-hosted runner is available
 - **Other BSD variants / Solaris / illumos**: backend/service API support is currently manual and best-effort
+
+The Python desktop release asset is built from the canonical product wrapper at `apps/desktop-pyqt/main.py`, while `Languages/Python/main.py` remains the compatibility launcher for source-based workflows.
 
 Rust framework shell assets are best-effort. If one optional framework fails to compile on a runner, the rest of the release can still publish.
 

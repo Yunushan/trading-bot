@@ -3,16 +3,17 @@ from __future__ import annotations
 import copy
 import os
 import sys
-import time
 from pathlib import Path
+from typing import Callable
 
 from PyQt6 import QtCore, QtWidgets
 
 from app.config import (
     BACKTEST_TEMPLATE_DEFAULT,
-    DEFAULT_CONFIG,
     MDD_LOGIC_DEFAULT,
     MDD_LOGIC_OPTIONS,
+    build_default_backtest_config,
+    build_default_config,
     coerce_bool,
     normalize_stop_loss_dict,
 )
@@ -22,14 +23,29 @@ from app.gui.code.code_language_catalog import EXCHANGE_PATHS, FOREX_BROKER_PATH
 
 _APP_STATE_PATH = Path.home() / ".trading_bot_state.json"
 _LEGACY_APP_STATE_PATH = Path.home() / ".binance_trading_bot_state.json"
-_LOAD_APP_STATE_FILE = lambda path: {}
-_NORMALIZE_CONNECTOR_BACKEND = lambda value: value
+
+
+def _default_load_app_state_file(path: Path) -> dict:
+    del path
+    return {}
+
+
+def _default_normalize_connector_backend(value):
+    return value
+
+
+def _default_tradingview_supported() -> bool:
+    return False
+
+
+_LOAD_APP_STATE_FILE: Callable[[Path], dict] = _default_load_app_state_file
+_NORMALIZE_CONNECTOR_BACKEND = _default_normalize_connector_backend
 _DEFAULT_CONNECTOR_BACKEND = ""
 _CHART_MARKET_OPTIONS = ["Futures", "Spot"]
 _DISABLE_TRADINGVIEW = False
 _DISABLE_CHARTS = False
 _ENABLE_CHART_TAB = True
-_TRADINGVIEW_SUPPORTED = lambda: False
+_TRADINGVIEW_SUPPORTED = _default_tradingview_supported
 
 
 def configure_main_window_state_init_runtime(
@@ -137,7 +153,8 @@ def _resolve_app_state_load_path(preferred_path: Path) -> Path:
 
 
 def _initialize_config_state(self) -> None:
-    self.config = copy.deepcopy(DEFAULT_CONFIG)
+    default_config = build_default_config()
+    self.config = default_config
     self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
     self.config.setdefault("theme", "Dark")
     self.config["close_on_exit"] = False
@@ -147,7 +164,7 @@ def _initialize_config_state(self) -> None:
         True,
     )
     self.config.setdefault("account_mode", "Classic Trading")
-    self.config.setdefault("auto_bump_percent_multiplier", DEFAULT_CONFIG.get("auto_bump_percent_multiplier", 10.0))
+    self.config.setdefault("auto_bump_percent_multiplier", default_config.get("auto_bump_percent_multiplier", 10.0))
     self.config["connector_backend"] = _NORMALIZE_CONNECTOR_BACKEND(self.config.get("connector_backend"))
     self.config.setdefault("positions_auto_resize_rows", True)
     self.config.setdefault("positions_auto_resize_columns", True)
@@ -263,6 +280,8 @@ def _initialize_chart_state(self) -> None:
 
 
 def _initialize_backtest_state(self) -> None:
+    default_config = build_default_config()
+    default_backtest = build_default_backtest_config()
     self._indicator_runtime_controls = []
     self._runtime_lock_widgets = []
     self._runtime_active_exemptions = set()
@@ -281,13 +300,12 @@ def _initialize_backtest_state(self) -> None:
     self._backtest_pending_symbol_selection: dict | None = None
     self.backtest_config = copy.deepcopy(self.config.get("backtest", {}))
     if not self.backtest_config:
-        self.backtest_config = copy.deepcopy(DEFAULT_CONFIG.get("backtest", {}))
+        self.backtest_config = default_backtest
     else:
         self.backtest_config = copy.deepcopy(self.backtest_config)
     if not self.backtest_config.get("indicators"):
-        self.backtest_config["indicators"] = copy.deepcopy(DEFAULT_CONFIG["backtest"]["indicators"])
+        self.backtest_config["indicators"] = copy.deepcopy(default_backtest["indicators"])
 
-    default_backtest = DEFAULT_CONFIG.get("backtest", {}) or {}
     self.backtest_config.setdefault("symbol_source", default_backtest.get("symbol_source", "Futures"))
     self.backtest_config.setdefault("capital", float(default_backtest.get("capital", 1000.0)))
     self.backtest_config.setdefault("logic", default_backtest.get("logic", "AND"))
@@ -303,7 +321,7 @@ def _initialize_backtest_state(self) -> None:
     self.backtest_config.setdefault("account_mode", default_backtest.get("account_mode", "Classic Trading"))
     self.backtest_config.setdefault(
         "connector_backend",
-        DEFAULT_CONFIG.get("backtest", {}).get("connector_backend", _DEFAULT_CONNECTOR_BACKEND),
+        default_config.get("backtest", {}).get("connector_backend", _DEFAULT_CONNECTOR_BACKEND),
     )
     self.backtest_config["connector_backend"] = _NORMALIZE_CONNECTOR_BACKEND(
         self.backtest_config.get("connector_backend")

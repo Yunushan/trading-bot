@@ -1,6 +1,6 @@
 # Trading Bot Service API Guide
 
-This document is the main operator/developer reference for the headless service layer in `Languages/Python/app/service/`.
+This document is the main operator/developer reference for the headless service layer in `Languages/Python/app/service/` and its canonical product launcher in `apps/service-api/`.
 
 Use this guide for:
 
@@ -44,7 +44,13 @@ pip install -r requirements.backend.txt
 
 ## Run the standalone API
 
-Basic local run:
+Basic local run from the repository root:
+
+```bash
+python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
+```
+
+Deprecated compatibility launch from `Languages/Python/`:
 
 ```bash
 python -m app.service.main --serve --host 127.0.0.1 --port 8000
@@ -53,7 +59,7 @@ python -m app.service.main --serve --host 127.0.0.1 --port 8000
 Expose it to the local network:
 
 ```bash
-python -m app.service.main --serve --host 0.0.0.0 --port 8000
+python apps/service-api/main.py --serve --host 0.0.0.0 --port 8000
 ```
 
 ## Optional bearer token
@@ -61,20 +67,20 @@ python -m app.service.main --serve --host 0.0.0.0 --port 8000
 CLI form:
 
 ```bash
-python -m app.service.main --serve --host 127.0.0.1 --port 8000 --api-token your-secret-token
+python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000 --api-token your-secret-token
 ```
 
 Environment-variable form:
 
 ```bash
-BOT_SERVICE_API_TOKEN=your-secret-token python -m app.service.main --serve --host 127.0.0.1 --port 8000
+BOT_SERVICE_API_TOKEN=your-secret-token python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 ```
 
 PowerShell:
 
 ```powershell
 $env:BOT_SERVICE_API_TOKEN='your-secret-token'
-python -m app.service.main --serve --host 127.0.0.1 --port 8000
+python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 ```
 
 When bearer auth is enabled:
@@ -108,7 +114,7 @@ If you want browser clients to follow the real desktop-owned runtime instead of 
 You can enable this either:
 
 - from the desktop GUI via the `Desktop Service API` controls
-- or through environment variables before launching `main.py`
+- or through environment variables before launching the desktop app wrapper
 
 PowerShell example:
 
@@ -117,7 +123,7 @@ $env:BOT_ENABLE_DESKTOP_SERVICE_API='1'
 $env:BOT_DESKTOP_SERVICE_API_HOST='127.0.0.1'
 $env:BOT_DESKTOP_SERVICE_API_PORT='8000'
 $env:BOT_SERVICE_API_TOKEN='your-secret-token'
-python main.py
+python apps/desktop-pyqt/main.py
 ```
 
 Then open:
@@ -130,32 +136,36 @@ This mode serves the API against the same embedded service object the desktop GU
 
 ## Current endpoint coverage
 
+Canonical routes now live under `/api/v1/*`.
+The older `/api/*` paths remain available as compatibility aliases during migration,
+but they are hidden from the OpenAPI schema and should not be used for new clients.
+
 Core routes:
 
 - `GET /health`
-- `GET /api/dashboard`
-- `GET /api/runtime`
-- `GET /api/status`
-- `GET /api/config`
-- `GET /api/config-summary`
-- `GET /api/account`
-- `GET /api/portfolio`
-- `GET /api/logs`
-- `GET /api/execution`
-- `GET /api/backtest`
+- `GET /api/v1/dashboard`
+- `GET /api/v1/runtime`
+- `GET /api/v1/status`
+- `GET /api/v1/config`
+- `GET /api/v1/config-summary`
+- `GET /api/v1/account`
+- `GET /api/v1/portfolio`
+- `GET /api/v1/logs`
+- `GET /api/v1/execution`
+- `GET /api/v1/backtest`
 
 Streaming:
 
-- `GET /api/stream/dashboard`
+- `GET /api/v1/stream/dashboard`
 
 Write/control routes:
 
-- `POST /api/control/start`
-- `POST /api/control/stop`
-- `PATCH /api/config`
-- `PUT /api/runtime/state`
-- `POST /api/backtest/run`
-- `POST /api/backtest/stop`
+- `POST /api/v1/control/start`
+- `POST /api/v1/control/stop`
+- `PATCH /api/v1/config`
+- `PUT /api/v1/runtime/state`
+- `POST /api/v1/backtest/run`
+- `POST /api/v1/backtest/stop`
 
 ## Docker path
 
@@ -179,7 +189,7 @@ It does not package the PyQt desktop GUI.
 
 Current client directions:
 
-- thin browser dashboard in `Languages/Python/clients/web/`
-- Expo-based Android/iOS thin client scaffold in `Languages/Python/clients/mobile/`
+- thin browser dashboard in `apps/web-dashboard/`
+- Expo-based Android/iOS thin client scaffold in `apps/mobile-client/`
 
 These clients are intended to talk to the backend API only. Exchange or broker secrets should stay on the backend.

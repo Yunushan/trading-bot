@@ -103,7 +103,9 @@ def resolve_live_keys(self, candidates: list[tuple[str, str]]) -> set[tuple[str,
         need_spot = acct_is_spot and any(side in ("L", "S", "SPOT") for _, side in candidates)
         if need_futures:
             try:
-                for pos in bw.list_open_futures_positions() or []:
+                # Reconciliation should verify a missing position against a fresh
+                # exchange snapshot, not the short-lived positions cache.
+                for pos in bw.list_open_futures_positions(max_age=0.0, force_refresh=True) or []:
                     sym = str(pos.get("symbol") or "").strip().upper()
                     if not sym:
                         continue
@@ -174,7 +176,7 @@ def lookup_force_liquidation(
                 if val in (None, "", 0, 0.0):
                     continue
                 try:
-                    qty_val = abs(float(val))
+                    qty_val = abs(float(str(val)))
                 except Exception:
                     qty_val = 0.0
                 if qty_val > 0:
@@ -187,7 +189,7 @@ def lookup_force_liquidation(
                 if val in (None, "", 0, 0.0):
                     continue
                 try:
-                    price_val = float(val)
+                    price_val = float(str(val))
                 except Exception:
                     price_val = 0.0
                 if price_val > 0.0:

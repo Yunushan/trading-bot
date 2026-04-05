@@ -1,0 +1,29 @@
+# Default ownership
+* @Yunushan
+
+# Repository governance
+/.github/ @Yunushan
+/CONTRIBUTING.md @Yunushan
+/SECURITY.md @Yunushan
+/README.md @Yunushan
+/docs/ @Yunushan
+/docker/ @Yunushan
+/tools/ @Yunushan
+/assets/ @Yunushan
+/apps/ @Yunushan
+
+# Python product area
+/Languages/Python/main.py @Yunushan
+/Languages/Python/pyproject.toml @Yunushan
+/Languages/Python/app/bootstrap/ @Yunushan
+/Languages/Python/app/core/ @Yunushan
+/Languages/Python/app/desktop/ @Yunushan
+/Languages/Python/app/gui/ @Yunushan
+/Languages/Python/app/integrations/ @Yunushan
+/Languages/Python/app/platform/ @Yunushan
+/Languages/Python/app/service/ @Yunushan
+/Languages/Python/tests/ @Yunushan
+/Languages/Python/tools/ @Yunushan
+
+# Native and experimental workspaces
+/experiments/ @Yunushan

@@ -3,6 +3,7 @@ from __future__ import annotations
 from .indicator_value_core import (
     _ACTION_RE,
     _FLOAT_RE,
+    format_interval_display_token,
     indicator_short_label,
 )
 
@@ -104,7 +105,7 @@ def _fallback_trigger_entries_from_desc(
 ) -> list[str]:
     if not desc:
         return []
-    interval_label = str(interval_hint or "").strip().upper()
+    interval_label = format_interval_display_token(interval_hint)
     interval_part = f"@{interval_label}" if interval_label else ""
     results: list[str] = []
 

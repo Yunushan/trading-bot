@@ -73,7 +73,7 @@ def _queue_flip_on_close(
 ) -> None:
     if not self._strategy_coerce_bool(self.config.get("auto_flip_on_close"), False):
         return
-    if not bool(self.config.get("trade_on_signal", True)):
+    if not self._strategy_coerce_bool(self.config.get("trade_on_signal"), True):
         return
     if self.stopped():
         return
@@ -107,7 +107,7 @@ def _queue_flip_on_close(
     with self._flip_on_close_lock:
         for indicator_key in indicator_keys:
             indicator_cfg = (self.config.get("indicators") or {}).get(indicator_key, {})
-            if indicator_cfg and not bool(indicator_cfg.get("enabled", True)):
+            if indicator_cfg and not self._strategy_coerce_bool(indicator_cfg.get("enabled"), True):
                 continue
             key = (interval_key, indicator_key, open_side)
             existing = self._flip_on_close_requests.get(key)
@@ -272,7 +272,7 @@ def _build_close_event_payload(
     if pnl_value is not None and margin_usdt > 0.0:
         roi_percent = (pnl_value / margin_usdt) * 100.0
 
-    payload: dict[str, float] = {}
+    payload: dict[str, object] = {}
     if qty_val > 0.0:
         payload["qty"] = abs(qty_val)
     if price_val > 0.0:
@@ -290,6 +290,29 @@ def _build_close_event_payload(
     ledger_id = leg_info.get("ledger_id") if isinstance(leg_info, dict) else None
     if ledger_id:
         payload["ledger_id"] = ledger_id
+    if isinstance(leg_info, dict):
+        trigger_signature = leg_info.get("trigger_signature")
+        if isinstance(trigger_signature, (list, tuple)) and trigger_signature:
+            payload["trigger_signature"] = [
+                str(token).strip() for token in trigger_signature if str(token).strip()
+            ]
+        trigger_indicators = leg_info.get("trigger_indicators")
+        if isinstance(trigger_indicators, (list, tuple)) and trigger_indicators:
+            payload["trigger_indicators"] = [
+                str(token).strip() for token in trigger_indicators if str(token).strip()
+            ]
+        trigger_desc = str(leg_info.get("trigger_desc") or "").strip()
+        if trigger_desc:
+            payload["trigger_desc"] = trigger_desc
+        trigger_actions = leg_info.get("trigger_actions")
+        if isinstance(trigger_actions, dict) and trigger_actions:
+            payload["trigger_actions"] = dict(trigger_actions)
+        context_key = str(leg_info.get("context_key") or "").strip()
+        if context_key:
+            payload["context_key"] = context_key
+        slot_id = str(leg_info.get("slot_id") or "").strip()
+        if slot_id:
+            payload["slot_id"] = slot_id
 
     fills_info = order_res.get("fills") if isinstance(order_res, dict) else None
     entry_fee_value = None
@@ -309,18 +332,23 @@ def _build_close_event_payload(
     if net_realized_value is not None:
         pnl_adj = net_realized_value - (entry_fee_value or 0.0)
         payload["pnl_value"] = pnl_adj
-    elif "pnl_value" in payload:
+    else:
+        pnl_payload = _maybe_float(payload.get("pnl_value"))
         total_fee = (entry_fee_value or 0.0) + (close_fee_value or 0.0)
-        if total_fee:
-            pnl_adj = float(payload["pnl_value"]) - total_fee
+        if total_fee and pnl_payload is not None:
+            pnl_adj = pnl_payload - total_fee
             payload["pnl_value"] = pnl_adj
 
-    if "pnl_value" in payload and margin_usdt > 0.0:
-        payload["roi_percent"] = (float(payload["pnl_value"]) / margin_usdt) * 100.0
+    pnl_payload = _maybe_float(payload.get("pnl_value"))
+    if pnl_payload is not None and margin_usdt > 0.0:
+        payload["roi_percent"] = (pnl_payload / margin_usdt) * 100.0
 
     if isinstance(fills_info, dict) and fills_info:
-        payload.setdefault("fills_meta", {})
-        payload["fills_meta"].update(
+        fills_meta = payload.get("fills_meta")
+        if not isinstance(fills_meta, dict):
+            fills_meta = {}
+            payload["fills_meta"] = fills_meta
+        fills_meta.update(
             {
                 "trade_count": fills_info.get("trade_count"),
                 "order_id": fills_info.get("order_id"),

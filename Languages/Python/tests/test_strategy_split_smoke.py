@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app import strategy
+from trading_core.strategy import StrategyEngine  # noqa: E402
 
 
 class _FakeFuturesBinance:
@@ -39,7 +39,7 @@ def _build_engine(binance_wrapper, *, config=None):
     }
     if config:
         base_config.update(config)
-    return strategy.StrategyEngine(
+    return StrategyEngine(
         binance_wrapper,
         base_config,
         log_callback=lambda *args, **kwargs: None,
@@ -69,8 +69,8 @@ class StrategySplitSmokeTests(unittest.TestCase):
 
         for method_name in expected_methods:
             with self.subTest(method_name=method_name):
-                self.assertTrue(hasattr(strategy.StrategyEngine, method_name))
-                self.assertTrue(callable(getattr(strategy.StrategyEngine, method_name)))
+                self.assertTrue(hasattr(StrategyEngine, method_name))
+                self.assertTrue(callable(getattr(StrategyEngine, method_name)))
 
     def test_strategy_engine_instance_exposes_bound_runtime_helpers(self):
         engine = _build_engine(_FakeFuturesBinance())

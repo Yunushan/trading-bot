@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ....core.backtest.intervals import normalize_backtest_interval
+
 _FORMAT_INDICATOR_LIST = None
 _NORMALIZE_CONNECTOR_BACKEND = None
 _NORMALIZE_INDICATOR_VALUES = None
@@ -57,7 +59,7 @@ def _format_indicator_list_text(values) -> str:
     func = _FORMAT_INDICATOR_LIST
     if callable(func):
         try:
-            return func(values)
+            return str(func(values) or "")
         except Exception:
             pass
     return ", ".join(str(value) for value in values if str(value).strip())
@@ -73,8 +75,28 @@ def _normalize_connector_backend_value(value):
     return value
 
 
-def _override_ctx(self, kind: str) -> dict:
-    return getattr(self, "override_contexts", {}).get(kind, {})
+def _override_ctx(self, kind: str) -> dict[str, object]:
+    contexts = getattr(self, "override_contexts", {})
+    if isinstance(contexts, dict):
+        value = contexts.get(kind)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _canonicalize_override_interval(self, value, kind: str = "runtime") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if kind == "backtest":
+        return str(normalize_backtest_interval(text) or "")
+    canonicalize = getattr(self, "_canonicalize_interval", None)
+    if callable(canonicalize):
+        try:
+            return str(canonicalize(text) or "").strip()
+        except Exception:
+            return ""
+    return text
 
 
 def _override_config_list(self, kind: str) -> list:
@@ -124,7 +146,7 @@ def _get_selected_indicator_keys(self, kind: str) -> list[str]:
 
 def _build_clean_override_entry(self, kind: str, entry) -> tuple[dict | None, list[str], int | None, dict]:
     sym = str((entry or {}).get("symbol") or "").strip().upper()
-    iv = str((entry or {}).get("interval") or "").strip()
+    iv = _canonicalize_override_interval(self, (entry or {}).get("interval"), kind)
     if not sym or not iv:
         return None, [], None, {}
 
@@ -148,7 +170,7 @@ def _build_clean_override_entry(self, kind: str, entry) -> tuple[dict | None, li
             except Exception:
                 leverage_val = None
 
-    entry_clean = {"symbol": sym, "interval": iv}
+    entry_clean: dict[str, object] = {"symbol": sym, "interval": iv}
     if indicator_values:
         entry_clean["indicators"] = list(indicator_values)
 

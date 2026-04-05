@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 
+from .history_records_meta_runtime import build_meta_map
+from ..shared.indicator_value_core import normalize_interval_token
 from ..runtime.window import runtime as main_window_runtime
 
 _RESOLVE_TRIGGER_INDICATORS = None
@@ -26,6 +28,88 @@ def _resolve_trigger_indicators_safe(raw, desc: str | None = None) -> list[str]:
         return []
 
 
+def _identity_token(value) -> str:
+    return str(value or "").strip()
+
+
+def _canonicalize_interval_label(self, value) -> str:
+    text = _identity_token(value)
+    if not text:
+        return ""
+    try:
+        canon = self._canonicalize_interval(text)
+    except Exception:
+        canon = None
+    normalized = normalize_interval_token(str(canon or text).strip())
+    if normalized:
+        return normalized
+    return str(canon or text).strip()
+
+
+def _canonical_entry_tf_parts(self, value) -> list[str]:
+    if not isinstance(value, str) or not value.strip():
+        return []
+    labels = [
+        _canonicalize_interval_label(self, part)
+        for part in value.split(",")
+    ]
+    ordered = [label for label in dict.fromkeys(label for label in labels if label)]
+    return sorted(ordered, key=main_window_runtime._mw_interval_sort_key)
+
+
+def _clean_indicator_tokens(raw) -> list[str]:
+    if isinstance(raw, str):
+        cleaned = [raw.strip()] if raw.strip() else []
+    elif isinstance(raw, (list, tuple, set)):
+        cleaned = [str(value).strip() for value in raw if str(value).strip()]
+    else:
+        cleaned = []
+    return sorted(dict.fromkeys(cleaned))
+
+
+def _metadata_items_for_side(metadata: dict, sym: str, side_key: str) -> list[dict]:
+    try:
+        meta_map = build_meta_map(metadata if isinstance(metadata, dict) else {})
+    except Exception:
+        return []
+    items = meta_map.get((sym, side_key)) or []
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _allocation_sort_key(entry: dict) -> tuple[str, ...]:
+    raw_interval = _identity_token(entry.get("interval_display") or entry.get("interval"))
+    interval_value = normalize_interval_token(raw_interval) or raw_interval.lower()
+    open_time_value = _identity_token(entry.get("open_time"))
+    close_time_value = _identity_token(entry.get("close_time"))
+    trigger_tokens = tuple(
+        sorted(
+            str(value).strip().lower()
+            for value in (entry.get("trigger_indicators") or [])
+            if str(value).strip()
+        )
+    )
+    trigger_signature = "|".join(trigger_tokens)
+    return (
+        interval_value,
+        open_time_value,
+        _identity_token(entry.get("trade_id")),
+        _identity_token(entry.get("client_order_id")),
+        _identity_token(entry.get("order_id")),
+        _identity_token(entry.get("event_uid")),
+        _identity_token(entry.get("slot_id")),
+        _identity_token(entry.get("context_key")),
+        close_time_value,
+        trigger_signature,
+        _identity_token(entry.get("ledger_id")),
+    )
+
+
+def _canonicalize_allocation_entries(entries: list[dict]) -> list[dict]:
+    canonical_entries = [copy.deepcopy(entry) for entry in entries if isinstance(entry, dict)]
+    canonical_entries.sort(key=_allocation_sort_key)
+    return canonical_entries
+
+
 def _copy_allocations_for_key(alloc_map_global: dict, symbol: str, side_key: str) -> list[dict]:
     try:
         entries = alloc_map_global.get((symbol, side_key), [])
@@ -33,7 +117,7 @@ def _copy_allocations_for_key(alloc_map_global: dict, symbol: str, side_key: str
             entries = list(entries.values())
         if not isinstance(entries, list):
             return []
-        return [copy.deepcopy(entry) for entry in entries if isinstance(entry, dict)]
+        return _canonicalize_allocation_entries(entries)
     except Exception:
         return []
 
@@ -104,14 +188,7 @@ def _seed_positions_map_from_rows(self, base_rows: list, alloc_map_global: dict,
                     interval_normalized = ""
                     interval_key = None
                     if interval_val:
-                        try:
-                            canon_iv = self._canonicalize_interval(interval_val)
-                        except Exception:
-                            canon_iv = None
-                        if canon_iv:
-                            interval_normalized = canon_iv.strip()
-                        else:
-                            interval_normalized = str(interval_val).strip()
+                        interval_normalized = _canonicalize_interval_label(self, interval_val)
                         if interval_normalized:
                             interval_key = interval_normalized.lower()
                             if is_active_allocation:
@@ -133,6 +210,40 @@ def _seed_positions_map_from_rows(self, base_rows: list, alloc_map_global: dict,
                     data_entry["trigger_indicators"] = sorted(dict.fromkeys(trigger_union))
             elif normalized_entry_triggers:
                 data_entry["trigger_indicators"] = normalized_entry_triggers
+            if not data_entry.get("trigger_indicators"):
+                metadata_items = _metadata_items_for_side(
+                    getattr(self, "_engine_indicator_map", {}) or {},
+                    sym,
+                    side_key,
+                )
+                if metadata_items:
+                    desired_intervals = set(_canonical_entry_tf_parts(self, row.get("entry_tf")))
+                    metadata_trigger_union: set[str] = set()
+                    metadata_interval_trigger_map: dict[str, set[str]] = {}
+                    primary_interval_key = None
+                    for meta in metadata_items:
+                        interval_norm = _canonicalize_interval_label(self, meta.get("interval"))
+                        if desired_intervals and interval_norm and interval_norm not in desired_intervals:
+                            continue
+                        key_iv = interval_norm.lower() if interval_norm else "-"
+                        if primary_interval_key is None:
+                            primary_interval_key = key_iv
+                        normalized_meta_triggers = _clean_indicator_tokens(meta.get("indicators"))
+                        if normalized_meta_triggers:
+                            metadata_trigger_union.update(normalized_meta_triggers)
+                            metadata_interval_trigger_map.setdefault(key_iv, set()).update(
+                                normalized_meta_triggers
+                            )
+                    selected_metadata_triggers: list[str] = []
+                    if primary_interval_key:
+                        selected_metadata_triggers = sorted(
+                            dict.fromkeys(metadata_interval_trigger_map.get(primary_interval_key, []))
+                        )
+                    if not selected_metadata_triggers:
+                        selected_metadata_triggers = sorted(dict.fromkeys(metadata_trigger_union))
+                    if selected_metadata_triggers:
+                        data_entry["trigger_indicators"] = selected_metadata_triggers
+                        positions_map[(sym, side_key)]["indicators"] = selected_metadata_triggers
             try:
                 getattr(self, "_pending_close_times", {}).pop((sym, side_key), None)
             except Exception:
@@ -188,7 +299,7 @@ def _seed_positions_map_from_rows(self, base_rows: list, alloc_map_global: dict,
                 prev_rec["status"] = "Active"
                 prev_rec["close_time"] = "-"
                 try:
-                    prev_rec["allocations"] = copy.deepcopy(
+                    prev_rec["allocations"] = _canonicalize_allocation_entries(
                         [entry for entry in allocations if isinstance(entry, dict)]
                     )
                 except Exception:
@@ -235,11 +346,7 @@ def _apply_interval_metadata_to_row(
             iv_text = str(iv_key).strip()
             if not iv_text:
                 continue
-            try:
-                canon_iv = self._canonicalize_interval(iv_text)
-            except Exception:
-                canon_iv = None
-            interval_norm = canon_iv or iv_text
+            interval_norm = _canonicalize_interval_label(self, iv_text)
             if intervals_from_alloc and interval_norm not in intervals_from_alloc:
                 continue
             key_iv = interval_norm.strip().lower()
@@ -259,11 +366,7 @@ def _apply_interval_metadata_to_row(
             iv_text = str(iv).strip()
             if not iv_text:
                 continue
-            try:
-                canon_iv = self._canonicalize_interval(iv_text)
-            except Exception:
-                canon_iv = None
-            interval_norm = canon_iv or iv_text
+            interval_norm = _canonicalize_interval_label(self, iv_text)
             if intervals_from_alloc and interval_norm not in intervals_from_alloc:
                 continue
             key_iv = interval_norm.strip().lower()
@@ -272,30 +375,25 @@ def _apply_interval_metadata_to_row(
                 interval_lookup.setdefault(key_iv, iv_text)
                 intervals_tracked.add(interval_norm)
     metadata = getattr(self, "_engine_indicator_map", {}) or {}
-    for meta in metadata.values():
-        if not isinstance(meta, dict):
-            continue
-        if str(meta.get("symbol") or "").strip().upper() != sym:
-            continue
-        allowed_side = str(meta.get("side") or "BOTH").upper()
-        if side_key == "L" and allowed_side == "SELL":
-            continue
-        if side_key == "S" and allowed_side == "BUY":
-            continue
-        iv_text = str(meta.get("interval") or "").strip()
-        if not iv_text:
-            continue
-        try:
-            canon_iv = self._canonicalize_interval(iv_text)
-        except Exception:
-            canon_iv = None
-        interval_norm = canon_iv or iv_text
+    metadata_items = _metadata_items_for_side(metadata, sym, side_key)
+    metadata_trigger_fallback_allowed = not (
+        trigger_union or data.get("trigger_indicators") or rec.get("indicators")
+    )
+    for meta in metadata_items:
+        iv_text = str(meta.get("interval") or meta.get("interval_display") or "").strip()
+        interval_norm = _canonicalize_interval_label(self, iv_text)
         if intervals_from_alloc and interval_norm not in intervals_from_alloc:
             continue
         key_iv = interval_norm.strip().lower()
         if key_iv:
             interval_display.setdefault(key_iv, interval_norm)
             interval_lookup.setdefault(key_iv, iv_text)
+        if metadata_trigger_fallback_allowed:
+            normalized_meta_triggers = _clean_indicator_tokens(meta.get("indicators"))
+            if normalized_meta_triggers:
+                target_key = key_iv or "-"
+                interval_trigger_map.setdefault(target_key, set()).update(normalized_meta_triggers)
+                trigger_union.update(normalized_meta_triggers)
     if not interval_display and intervals_from_alloc:
         for iv_norm in intervals_from_alloc:
             if not iv_norm:
@@ -303,10 +401,7 @@ def _apply_interval_metadata_to_row(
             key_iv = str(iv_norm).strip().lower()
             if not key_iv:
                 continue
-            try:
-                canon_iv = self._canonicalize_interval(iv_norm)
-            except Exception:
-                canon_iv = None
+            canon_iv = _canonicalize_interval_label(self, iv_norm)
             interval_display.setdefault(key_iv, canon_iv or str(iv_norm))
             interval_lookup.setdefault(key_iv, str(iv_norm))
     ordered_keys: list[str] = []
@@ -328,7 +423,7 @@ def _apply_interval_metadata_to_row(
     if (not rec.get("entry_tf") or rec["entry_tf"] == "-") and intervals_tracked:
         try:
             intervals_active = sorted(
-                {self._canonicalize_interval(iv) or str(iv).strip() for iv in intervals_tracked if str(iv).strip()},
+                {_canonicalize_interval_label(self, iv) for iv in intervals_tracked if str(iv).strip()},
                 key=main_window_runtime._mw_interval_sort_key,
             )
             if intervals_active:
