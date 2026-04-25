@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import shutil
 import threading
 import time
@@ -101,6 +102,104 @@ def _set_dependency_update_state(
     update_dependency_action_buttons(self)
 
 
+def _safe_progress_int(value, default: int = 0) -> int:
+    try:
+        return max(0, int(value if value is not None else default))
+    except Exception:
+        return default
+
+
+def _format_dependency_progress_text(progress: dict) -> tuple[str, str, int]:
+    total = _safe_progress_int(progress.get("total"))
+    completed = min(_safe_progress_int(progress.get("completed")), total) if total else _safe_progress_int(progress.get("completed"))
+    installed = _safe_progress_int(progress.get("installed"))
+    failed = _safe_progress_int(progress.get("failed"))
+    current = str(progress.get("current") or "").strip()
+    phase = str(progress.get("phase") or "").strip()
+    percent = 0
+    if total:
+        percent = min(100, max(0, round((completed / total) * 100)))
+
+    headline = f"{completed}/{total} complete ({percent}%)" if total else f"{completed} complete"
+    counts = f"{installed} installed, {failed} failed"
+    if current and phase:
+        detail = f"{headline} - {counts} - {phase}: {current}"
+    elif phase:
+        detail = f"{headline} - {counts} - {phase}"
+    else:
+        detail = f"{headline} - {counts}"
+    return headline, detail, percent
+
+
+def _emit_dependency_update_progress(self, progress: dict) -> None:
+    try:
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_apply_dependency_update_progress",
+            QtCore.Qt.ConnectionType.QueuedConnection,
+            QtCore.Q_ARG(object, dict(progress or {})),
+        )
+    except Exception:
+        pass
+
+
+def apply_dependency_update_progress(self, progress: dict | None) -> None:
+    payload = progress if isinstance(progress, dict) else {}
+    headline, detail, percent = _format_dependency_progress_text(payload)
+    failed = _safe_progress_int(payload.get("failed"))
+    state = str(payload.get("state") or "").strip().lower()
+    label = str(payload.get("label") or payload.get("current") or "").strip()
+    installed_version = str(payload.get("installed_version") or "").strip()
+
+    progress_bar = getattr(self, "_dependency_update_progress_bar", None)
+    if progress_bar is not None:
+        try:
+            progress_bar.show()
+            if state == "running":
+                progress_bar.setRange(0, 0)
+                progress_bar.setFormat("Working...")
+            else:
+                progress_bar.setRange(0, 100)
+                progress_bar.setValue(percent)
+                progress_bar.setFormat(f"{percent}%")
+        except Exception:
+            pass
+
+    detail_label = getattr(self, "_dependency_update_progress_detail_label", None)
+    if detail_label is not None:
+        try:
+            detail_label.show()
+            color = "#ef4444" if failed and state == "finished" else "#22c55e" if state == "finished" else "#f59e0b"
+            detail_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+            detail_label.setText(detail)
+        except Exception:
+            pass
+
+    if state in {"running", "success", "failed"} and label:
+        labels = getattr(self, "_dep_version_labels", None)
+        widgets = labels.get(label) if isinstance(labels, dict) else None
+        if widgets:
+            installed_widget = widgets[0]
+            try:
+                if state == "running":
+                    installed_widget.setText("Updating...")
+                    installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px; color: #f59e0b;")
+                elif state == "success":
+                    installed_widget.setText(installed_version or "Installed")
+                    installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px; color: #22c55e;")
+                elif state == "failed":
+                    installed_widget.setText("Failed")
+                    installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px; color: #ef4444;")
+            except Exception:
+                pass
+
+    if state == "running" and label:
+        self._dep_version_update_status_text = f"{payload.get('phase') or 'Updating'} {label}..."
+    else:
+        self._dep_version_update_status_text = headline
+    update_dependency_action_buttons(self)
+
+
 def _resolve_python_command_prefix(self) -> list[str] | None:
     frozen = False
     try:
@@ -120,13 +219,6 @@ def _resolve_python_command_prefix(self) -> list[str] | None:
         seen.add(normalized)
         candidates.append(list(normalized))
 
-    venv_root = BASE_PROJECT_PATH / ".venv"
-    if sys.platform == "win32":
-        _add([str(venv_root / "Scripts" / "python.exe")])
-    else:
-        _add([str(venv_root / "bin" / "python3")])
-        _add([str(venv_root / "bin" / "python")])
-
     if not frozen:
         try:
             current_python = Path(sys.executable).resolve()
@@ -134,6 +226,13 @@ def _resolve_python_command_prefix(self) -> list[str] | None:
             current_python = Path(sys.executable)
         if current_python.name.lower().startswith("python"):
             _add([str(current_python)])
+
+    venv_root = BASE_PROJECT_PATH / ".venv"
+    if sys.platform == "win32":
+        _add([str(venv_root / "Scripts" / "python.exe")])
+    else:
+        _add([str(venv_root / "bin" / "python3")])
+        _add([str(venv_root / "bin" / "python")])
 
     for executable in ("python", "python3"):
         found = shutil.which(executable)
@@ -157,6 +256,16 @@ def _resolve_python_command_prefix(self) -> list[str] | None:
         if Path(first).exists() or shutil.which(first):
             return command
     return None
+
+
+def _dependency_update_timeout_seconds() -> float:
+    raw = str(os.environ.get("BOT_DEPENDENCY_UPDATE_TIMEOUT_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(15.0, float(raw))
+        except Exception:
+            pass
+    return 180.0
 
 
 def _trim_update_output(runtime, output: str) -> str:
@@ -192,8 +301,32 @@ def _run_dependency_update_worker(
                 "message": "C++ dependency installer is not available on this system.",
                 "refresh_versions": True,
             }
+        _emit_dependency_update_progress(
+            self,
+            {
+                "state": "running",
+                "phase": "Running installer",
+                "current": "C++ toolchain",
+                "total": 1,
+                "completed": 0,
+                "installed": 0,
+                "failed": 0,
+            },
+        )
         ok, output = self._run_command_capture_hidden(command, cwd=cwd)
         runtime._reset_cpp_dependency_caches()
+        _emit_dependency_update_progress(
+            self,
+            {
+                "state": "finished",
+                "phase": "Finished",
+                "current": "C++ toolchain",
+                "total": 1,
+                "completed": 1,
+                "installed": 1 if ok else 0,
+                "failed": 0 if ok else 1,
+            },
+        )
         detail = _trim_update_output(runtime, output)
         summary_lines = []
         if selected_only and len(targets) < full_target_count:
@@ -229,6 +362,9 @@ def _run_dependency_update_worker(
 
         step_messages: list[str] = []
         env = runtime._rust_toolchain_env()
+        total_steps = (1 if needs_toolchain else 0) + (1 if needs_workspace else 0)
+        completed_steps = 0
+        failed_steps = 0
 
         if needs_toolchain:
             rustup_path = runtime._rust_tool_path("rustup")
@@ -239,13 +375,54 @@ def _run_dependency_update_worker(
                     "message": "rustup was not found. Install rustup before updating the Rust toolchain.",
                     "refresh_versions": True,
                 }
+            _emit_dependency_update_progress(
+                self,
+                {
+                    "state": "running",
+                    "phase": "Updating",
+                    "current": "Rust toolchain",
+                    "label": "rustc",
+                    "total": total_steps,
+                    "completed": completed_steps,
+                    "installed": completed_steps,
+                    "failed": failed_steps,
+                },
+            )
             ok, output = self._run_command_capture_hidden([str(rustup_path), "update"], cwd=BASE_PROJECT_PATH, env=env)
             detail = _trim_update_output(runtime, output)
+            completed_steps += 1
+            if not ok:
+                failed_steps += 1
+            _emit_dependency_update_progress(
+                self,
+                {
+                    "state": "success" if ok else "failed",
+                    "phase": "Updated" if ok else "Failed",
+                    "current": "Rust toolchain",
+                    "label": "rustc",
+                    "total": total_steps,
+                    "completed": completed_steps,
+                    "installed": completed_steps - failed_steps,
+                    "failed": failed_steps,
+                },
+            )
             step_messages.append("Rust toolchain refreshed." if ok else "Rust toolchain refresh failed.")
             if detail:
                 step_messages.append(detail)
             if not ok:
                 runtime._reset_rust_dependency_caches()
+                _emit_dependency_update_progress(
+                    self,
+                    {
+                        "state": "finished",
+                        "phase": "Finished",
+                        "current": "Rust dependencies",
+                        "total": total_steps,
+                        "completed": completed_steps,
+                        "installed": completed_steps - failed_steps,
+                        "failed": failed_steps,
+                    },
+                )
                 return {
                     "ok": False,
                     "title": "Rust dependency update failed",
@@ -264,8 +441,37 @@ def _run_dependency_update_worker(
                     "refresh_versions": True,
                 }
             command = [str(cargo_path), "update", "--manifest-path", str(RUST_PROJECT_PATH / "Cargo.toml")]
+            _emit_dependency_update_progress(
+                self,
+                {
+                    "state": "running",
+                    "phase": "Updating",
+                    "current": "Rust workspace",
+                    "label": "Trading Bot Rust workspace",
+                    "total": total_steps,
+                    "completed": completed_steps,
+                    "installed": completed_steps - failed_steps,
+                    "failed": failed_steps,
+                },
+            )
             ok, output = self._run_command_capture_hidden(command, cwd=RUST_PROJECT_PATH, env=env)
             detail = _trim_update_output(runtime, output)
+            completed_steps += 1
+            if not ok:
+                failed_steps += 1
+            _emit_dependency_update_progress(
+                self,
+                {
+                    "state": "success" if ok else "failed",
+                    "phase": "Updated" if ok else "Failed",
+                    "current": "Rust workspace",
+                    "label": "Trading Bot Rust workspace",
+                    "total": total_steps,
+                    "completed": completed_steps,
+                    "installed": completed_steps - failed_steps,
+                    "failed": failed_steps,
+                },
+            )
             step_messages.append("Rust workspace lockfile refreshed." if ok else "Rust workspace lockfile refresh failed.")
             if detail:
                 step_messages.append(detail)
@@ -275,6 +481,18 @@ def _run_dependency_update_worker(
                 )
             else:
                 runtime._reset_rust_dependency_caches()
+                _emit_dependency_update_progress(
+                    self,
+                    {
+                        "state": "finished",
+                        "phase": "Finished",
+                        "current": "Rust dependencies",
+                        "total": total_steps,
+                        "completed": completed_steps,
+                        "installed": completed_steps - failed_steps,
+                        "failed": failed_steps,
+                    },
+                )
                 return {
                     "ok": False,
                     "title": "Rust dependency update failed",
@@ -284,6 +502,18 @@ def _run_dependency_update_worker(
                 }
 
         runtime._reset_rust_dependency_caches()
+        _emit_dependency_update_progress(
+            self,
+            {
+                "state": "finished",
+                "phase": "Finished",
+                "current": "Rust dependencies",
+                "total": total_steps,
+                "completed": total_steps,
+                "installed": total_steps - failed_steps,
+                "failed": failed_steps,
+            },
+        )
         return {
             "ok": True,
             "title": "Rust dependency update finished",
@@ -299,7 +529,8 @@ def _run_dependency_update_worker(
             ),
         }
 
-    packages: list[str] = []
+    package_targets: list[tuple[str, str, dict[str, str]]]
+    package_targets = []
     seen_packages: set[str] = set()
     for target in targets:
         custom = str(target.get("custom") or "").strip().lower()
@@ -309,9 +540,9 @@ def _run_dependency_update_worker(
         if not package_name or package_name in seen_packages:
             continue
         seen_packages.add(package_name)
-        packages.append(package_name)
+        package_targets.append((_dependency_target_label(target) or package_name, package_name, target))
 
-    if not packages:
+    if not package_targets:
         return {
             "ok": False,
             "title": "Python dependency update failed",
@@ -328,23 +559,123 @@ def _run_dependency_update_worker(
             "refresh_versions": True,
         }
 
-    command = [*command_prefix, "-m", "pip", "install", "--upgrade", *packages]
-    ok, output = self._run_command_capture_hidden(command, cwd=BASE_PROJECT_PATH)
-    detail = _trim_update_output(runtime, output)
+    total_packages = len(package_targets)
+    completed_packages = 0
+    installed_packages = 0
+    failed_packages = 0
+    failed_names: list[str] = []
+    detail_lines: list[str] = []
+    timeout_seconds = _dependency_update_timeout_seconds()
+
+    _emit_dependency_update_progress(
+        self,
+        {
+            "state": "starting",
+            "phase": "Preparing",
+            "current": "Python packages",
+            "total": total_packages,
+            "completed": 0,
+            "installed": 0,
+            "failed": 0,
+        },
+    )
+
+    for label, package_name, target in package_targets:
+        _emit_dependency_update_progress(
+            self,
+            {
+                "state": "running",
+                "phase": "Installing",
+                "current": package_name,
+                "label": label,
+                "total": total_packages,
+                "completed": completed_packages,
+                "installed": installed_packages,
+                "failed": failed_packages,
+            },
+        )
+        command = [
+            *command_prefix,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+            "--progress-bar",
+            "off",
+            "--timeout",
+            "30",
+            "--retries",
+            "2",
+            "--upgrade",
+            package_name,
+        ]
+        ok, output = self._run_command_capture_hidden(command, cwd=BASE_PROJECT_PATH, timeout=timeout_seconds)
+        completed_packages += 1
+        installed_version = ""
+        if ok:
+            installed_packages += 1
+            try:
+                resolved_version = runtime._installed_version_for_dependency_target(target)
+                installed_version = runtime._normalize_installed_version_text(resolved_version) or str(resolved_version or "")
+            except Exception:
+                installed_version = ""
+        else:
+            failed_packages += 1
+            failed_names.append(package_name)
+            detail = _trim_update_output(runtime, output)
+            if detail:
+                detail_lines.append(f"{package_name}:\n{detail}")
+
+        _emit_dependency_update_progress(
+            self,
+            {
+                "state": "success" if ok else "failed",
+                "phase": "Installed" if ok else "Failed",
+                "current": package_name,
+                "label": label,
+                "installed_version": installed_version,
+                "total": total_packages,
+                "completed": completed_packages,
+                "installed": installed_packages,
+                "failed": failed_packages,
+            },
+        )
+
+    overall_ok = failed_packages == 0
+    _emit_dependency_update_progress(
+        self,
+        {
+            "state": "finished",
+            "phase": "Finished",
+            "current": "Python packages",
+            "total": total_packages,
+            "completed": completed_packages,
+            "installed": installed_packages,
+            "failed": failed_packages,
+        },
+    )
+
     summary_lines = [
-        f"Updated {len(packages)} Python package(s)." if ok else "Python package update failed.",
+        (
+            f"Updated {installed_packages} of {total_packages} Python package(s)."
+            if overall_ok
+            else f"Updated {installed_packages} of {total_packages} Python package(s); {failed_packages} failed."
+        ),
     ]
-    if detail:
-        summary_lines.append(detail)
+    if failed_names:
+        summary_lines.append("Failed: " + ", ".join(failed_names))
+    if detail_lines:
+        summary_lines.append("\n\n".join(detail_lines[:5]))
     return {
-        "ok": ok,
-        "title": "Python dependency update finished" if ok else "Python dependency update failed",
+        "ok": overall_ok,
+        "title": "Python dependency update finished" if overall_ok else "Python dependency update failed",
         "message": "\n\n".join(summary_lines),
         "refresh_versions": True,
         "log_message": "; ".join(
             line
             for line in (
-                "Python dependency update succeeded" if ok else "Python dependency update failed",
+                "Python dependency update succeeded" if overall_ok else "Python dependency update failed",
                 ", ".join(target_labels) if target_labels else "",
             )
             if line
@@ -809,10 +1140,12 @@ def apply_dependency_version_results(
                 try:
                     if label in installed_map:
                         installed_widget.setText(installed_map[label])
+                        installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px;")
                 except Exception:
                     pass
                 try:
                     latest_widget.setText(latest_map.get(label, "Unknown"))
+                    latest_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px;")
                 except Exception:
                     pass
                 apply_dependency_usage_entry(

@@ -270,8 +270,9 @@ def _run_command_capture_hidden(
     *,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> tuple[bool, str]:
-    return code_language_launch.run_command_capture_hidden(command, cwd=cwd, env=env)
+    return code_language_launch.run_command_capture_hidden(command, cwd=cwd, env=env, timeout=timeout)
 
 
 def _run_callable_with_ui_pump(
@@ -500,6 +501,11 @@ def _apply_dependency_update_finished(self, result: dict | None) -> None:
 
 
 @QtCore.pyqtSlot(object)
+def _apply_dependency_update_progress(self, progress: dict | None) -> None:
+    return dependency_versions_ui.apply_dependency_update_progress(self, progress)
+
+
+@QtCore.pyqtSlot(object)
 def _on_cpp_auto_prepare_finished(self, result: dict | None) -> None:
     self._cpp_auto_setup_inflight = False
     self._cpp_auto_setup_last_completed_at = time.time()
@@ -564,6 +570,7 @@ def bind_main_window_code_runtime(main_window_cls) -> None:
     main_window_cls._update_all_dependency_versions = _update_all_dependency_versions
     main_window_cls._refresh_dependency_versions = _refresh_dependency_versions
     main_window_cls._apply_dependency_version_results = _apply_dependency_version_results
+    main_window_cls._apply_dependency_update_progress = _apply_dependency_update_progress
     main_window_cls._apply_dependency_update_finished = _apply_dependency_update_finished
     main_window_cls._maybe_auto_prepare_cpp_environment = dependency_versions_runtime._maybe_auto_prepare_cpp_environment
     main_window_cls._on_cpp_auto_prepare_finished = _on_cpp_auto_prepare_finished

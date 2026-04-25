@@ -306,6 +306,33 @@ def init_code_language_tab(
     self._version_refresh_btn.clicked.connect(self._refresh_dependency_versions)
     version_btn_row.addWidget(self._version_refresh_btn)
     versions_group_layout.addLayout(version_btn_row)
+
+    self._dependency_update_progress_bar = QtWidgets.QProgressBar(content)
+    self._dependency_update_progress_bar.setRange(0, 100)
+    self._dependency_update_progress_bar.setValue(0)
+    self._dependency_update_progress_bar.setTextVisible(True)
+    self._dependency_update_progress_bar.setFormat("0%")
+    self._dependency_update_progress_bar.setStyleSheet(
+        "QProgressBar {"
+        "border: 1px solid #334155;"
+        "background-color: #020617;"
+        "color: #e5e7eb;"
+        "height: 12px;"
+        "text-align: center;"
+        "}"
+        "QProgressBar::chunk {"
+        "background-color: #22c55e;"
+        "}"
+    )
+    self._dependency_update_progress_bar.hide()
+    versions_group_layout.addWidget(self._dependency_update_progress_bar)
+
+    self._dependency_update_progress_detail_label = QtWidgets.QLabel("", content)
+    self._dependency_update_progress_detail_label.setWordWrap(True)
+    self._dependency_update_progress_detail_label.setStyleSheet("color: #94a3b8; font-weight: 600;")
+    self._dependency_update_progress_detail_label.hide()
+    versions_group_layout.addWidget(self._dependency_update_progress_detail_label)
+
     versions_group_layout.addWidget(versions_scroll, 1)
     layout.addWidget(versions_group, 0)
     layout.addStretch(1)

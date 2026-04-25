@@ -516,6 +516,7 @@ def run_command_capture_hidden(
     *,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> tuple[bool, str]:
     run_kwargs: dict[str, object] = {
         "capture_output": True,
@@ -527,12 +528,18 @@ def run_command_capture_hidden(
         run_kwargs["env"] = env
     if sys.platform == "win32":
         run_kwargs["creationflags"] = 0x08000000
+    if timeout is not None:
+        run_kwargs["timeout"] = max(1.0, float(timeout))
     try:
         result = subprocess.run(command, check=True, **run_kwargs)
         output = ((result.stdout or "") + (result.stderr or "")).strip()
         return True, output
     except FileNotFoundError:
         return False, f"Command not found: {command[0]}"
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or "") + (exc.stderr or "")).strip()
+        message = f"Command timed out after {timeout} seconds."
+        return False, f"{message}\n{output}".strip()
     except subprocess.CalledProcessError as exc:
         output = ((exc.stdout or "") + (exc.stderr or "")).strip()
         return False, output
