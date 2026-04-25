@@ -276,6 +276,8 @@ def _extract_requirement_name(line: str) -> str | None:
             break
     if "[" in name_part:
         name_part = name_part.split("[", 1)[0].strip()
+    if not re.match(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$", name_part):
+        return None
     return name_part or None
 
 
