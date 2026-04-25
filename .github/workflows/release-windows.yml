@@ -33,6 +33,9 @@ concurrency:
   group: release-windows-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -117,6 +120,7 @@ jobs:
           arch: ${{ matrix.qt_arch }}
           modules: ${{ matrix.qt_modules }}
           dir: C:/
+          setup-python: false
 
       - name: Install Qt 6 (arm64)
         if: matrix.id == 'windows-arm64'
@@ -326,7 +330,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
-          python -m pip install --prefer-binary -r "${{ matrix.python_requirements }}"
+          Push-Location Languages/Python
+          $requirementsFile = Split-Path -Leaf "${{ matrix.python_requirements }}"
+          python -m pip install --prefer-binary -r $requirementsFile
+          Pop-Location
 
       - name: Build Python EXE
         shell: pwsh

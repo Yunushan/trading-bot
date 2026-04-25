@@ -44,11 +44,12 @@ jobs:
 
       - name: Install Python dependencies
         shell: bash
+        working-directory: Languages/Python
         run: |
           set -euo pipefail
           python3 -m pip install --upgrade pip
           python3 -m pip install pyinstaller
-          python3 -m pip install -r Languages/Python/requirements.txt
+          python3 -m pip install -r requirements.txt
 
       - name: Build Python binary
         shell: bash

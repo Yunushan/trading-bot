@@ -22,6 +22,9 @@ concurrency:
   group: release-linux-macos-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -144,6 +147,7 @@ jobs:
           target: desktop
           arch: ${{ matrix.qt_arch }}
           modules: qtwebengine qtwebsockets qtwebchannel qtpositioning
+          setup-python: false
 
       - name: Resolve Qt CMake path
         shell: bash
@@ -154,11 +158,12 @@ jobs:
 
       - name: Install Python dependencies
         shell: bash
+        working-directory: Languages/Python
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
-          python -m pip install -r Languages/Python/requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Build Python binary
         shell: bash
