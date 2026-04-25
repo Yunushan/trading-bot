@@ -94,7 +94,9 @@ jobs:
           python-version: "3.12"
           architecture: ${{ matrix.python_arch }}
           cache: pip
-          cache-dependency-path: ${{ matrix.python_requirements }}
+          cache-dependency-path: |
+            ${{ matrix.python_requirements }}
+            Languages/Python/pyproject.toml
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -332,6 +334,13 @@ jobs:
           python -m pip install pyinstaller
           Push-Location Languages/Python
           $requirementsFile = Split-Path -Leaf "${{ matrix.python_requirements }}"
+          if ("${{ matrix.id }}" -eq "windows-arm64") {
+            $env:AIOHTTP_NO_EXTENSIONS = "1"
+            $env:MULTIDICT_NO_EXTENSIONS = "1"
+            $env:YARL_NO_EXTENSIONS = "1"
+            $env:FROZENLIST_NO_EXTENSIONS = "1"
+            $env:PROPCACHE_NO_EXTENSIONS = "1"
+          }
           python -m pip install --prefer-binary -r $requirementsFile
           Pop-Location
 

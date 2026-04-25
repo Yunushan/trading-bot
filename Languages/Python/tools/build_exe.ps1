@@ -169,7 +169,30 @@ else:
   }
   $pyInstallerArgs += $desktopEntryScript
 
-  & $Python @pyInstallerArgs
+  $previousDisablePythonwRelaunch = $env:BOT_DISABLE_PYTHONW_RELAUNCH
+  $previousDisablePublicShellShortcutLaunch = $env:BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH
+  $env:BOT_DISABLE_PYTHONW_RELAUNCH = "1"
+  $env:BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH = "1"
+  try {
+    & $Python @pyInstallerArgs
+    if ($LASTEXITCODE -ne 0) {
+      throw "PyInstaller failed with exit code $LASTEXITCODE."
+    }
+  }
+  finally {
+    if ([string]::IsNullOrEmpty($previousDisablePythonwRelaunch)) {
+      Remove-Item Env:\BOT_DISABLE_PYTHONW_RELAUNCH -ErrorAction SilentlyContinue
+    }
+    else {
+      $env:BOT_DISABLE_PYTHONW_RELAUNCH = $previousDisablePythonwRelaunch
+    }
+    if ([string]::IsNullOrEmpty($previousDisablePublicShellShortcutLaunch)) {
+      Remove-Item Env:\BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH -ErrorAction SilentlyContinue
+    }
+    else {
+      $env:BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH = $previousDisablePublicShellShortcutLaunch
+    }
+  }
 
   Write-Host "Done. EXE at: dist\$Name.exe"
 }

@@ -249,7 +249,7 @@ for distribution_name in "${optional_metadata_distributions[@]}"; do
   fi
 done
 
-"${PYTHON_BIN}" "${pyinstaller_args[@]}"
+BOT_DISABLE_PYTHONW_RELAUNCH=1 BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH=1 "${PYTHON_BIN}" "${pyinstaller_args[@]}"
 
 binary_path="dist/${NAME}"
 case "${UNAME_S}" in
