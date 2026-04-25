@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import copy
 import os
+import queue
+import re
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -17,6 +20,23 @@ def _dependency_target_label(target: dict[str, str] | None) -> str:
     if not isinstance(target, dict):
         return ""
     return str(target.get("label") or "").strip()
+
+
+def _dependency_target_with_ui_versions(self, target: dict[str, str]) -> dict[str, str]:
+    enriched = dict(target or {})
+    label = _dependency_target_label(enriched)
+    labels = getattr(self, "_dep_version_labels", None)
+    widgets = labels.get(label) if isinstance(labels, dict) and label else None
+    if widgets:
+        try:
+            enriched["_installed_version"] = str(widgets[0].text() or "").strip()
+        except Exception:
+            pass
+        try:
+            enriched["_latest_version"] = str(widgets[1].text() or "").strip()
+        except Exception:
+            pass
+    return enriched
 
 
 def _selected_dependency_targets(self) -> list[dict[str, str]]:
@@ -36,7 +56,7 @@ def _selected_dependency_targets(self) -> list[dict[str, str]]:
         except Exception:
             is_checked = False
         if is_checked and label in target_map:
-            selected.append(target_map[label])
+            selected.append(_dependency_target_with_ui_versions(self, target_map[label]))
     return selected
 
 
@@ -128,6 +148,9 @@ def _format_dependency_progress_text(progress: dict) -> tuple[str, str, int]:
         detail = f"{headline} - {counts} - {phase}"
     else:
         detail = f"{headline} - {counts}"
+    output_line = str(progress.get("detail") or "").strip()
+    if output_line:
+        detail = f"{detail}\n{output_line[:320]}"
     return headline, detail, percent
 
 
@@ -266,6 +289,114 @@ def _dependency_update_timeout_seconds() -> float:
         except Exception:
             pass
     return 180.0
+
+
+def _version_text_is_installable(version_text: str | None) -> bool:
+    value = str(version_text or "").strip()
+    if not value:
+        return False
+    if value.lower() in {"unknown", "not checked", "checking...", "not installed", "installed"}:
+        return False
+    return bool(re.match(r"^\d+(?:[A-Za-z0-9.+_!-]*\d)?$", value))
+
+
+def _python_install_spec_for_target(package_name: str, target: dict[str, str]) -> str:
+    latest_version = str(target.get("_latest_version") or target.get("latest") or "").strip()
+    if _version_text_is_installable(latest_version):
+        return f"{package_name}=={latest_version}"
+    return package_name
+
+
+def _run_python_package_install(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: float,
+    on_output=None,
+) -> tuple[bool, str]:
+    run_env = os.environ.copy()
+    run_env.setdefault("PIP_NO_INPUT", "1")
+    run_env.setdefault("PYTHONUNBUFFERED", "1")
+    popen_kwargs: dict[str, object] = {
+        "cwd": str(cwd),
+        "env": run_env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "bufsize": 1,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+    try:
+        proc = subprocess.Popen(command, **popen_kwargs)
+    except FileNotFoundError:
+        return False, f"Command not found: {command[0]}"
+    except Exception as exc:
+        return False, str(exc)
+
+    output_lines: list[str] = []
+    line_queue: queue.Queue[str | None] = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            stream = proc.stdout
+            if stream is not None:
+                for line in stream:
+                    line_queue.put(str(line or ""))
+        except Exception as exc:
+            line_queue.put(str(exc))
+        finally:
+            line_queue.put(None)
+
+    reader = threading.Thread(target=_reader, name="dependency-pip-output", daemon=True)
+    reader.start()
+
+    deadline = time.monotonic() + max(1.0, float(timeout or 1.0))
+    reader_done = False
+    timed_out = False
+    while True:
+        try:
+            line = line_queue.get(timeout=0.1)
+        except queue.Empty:
+            line = ""
+        if line is None:
+            reader_done = True
+        elif line:
+            clean_line = str(line).strip()
+            if clean_line:
+                output_lines.append(clean_line)
+                if callable(on_output):
+                    try:
+                        on_output(clean_line)
+                    except Exception:
+                        pass
+
+        if proc.poll() is not None and reader_done:
+            break
+
+        if time.monotonic() >= deadline:
+            timed_out = True
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            break
+
+    if timed_out:
+        try:
+            proc.wait(timeout=5.0)
+        except Exception:
+            pass
+        return False, "\n".join([f"Command timed out after {timeout:.0f} seconds.", *output_lines]).strip()
+
+    return_code = proc.poll()
+    if return_code is None:
+        try:
+            return_code = proc.wait(timeout=1.0)
+        except Exception:
+            return_code = 1
+    return return_code == 0, "\n".join(output_lines).strip()
 
 
 def _trim_update_output(runtime, output: str) -> str:
@@ -581,6 +712,28 @@ def _run_dependency_update_worker(
     )
 
     for label, package_name, target in package_targets:
+        latest_version = str(target.get("_latest_version") or target.get("latest") or "").strip()
+        installed_before = str(target.get("_installed_version") or "").strip()
+        if _version_text_is_installable(latest_version) and installed_before == latest_version:
+            completed_packages += 1
+            installed_packages += 1
+            _emit_dependency_update_progress(
+                self,
+                {
+                    "state": "success",
+                    "phase": "Already current",
+                    "current": package_name,
+                    "label": label,
+                    "installed_version": latest_version,
+                    "total": total_packages,
+                    "completed": completed_packages,
+                    "installed": installed_packages,
+                    "failed": failed_packages,
+                },
+            )
+            continue
+
+        install_spec = _python_install_spec_for_target(package_name, target)
         _emit_dependency_update_progress(
             self,
             {
@@ -608,19 +761,52 @@ def _run_dependency_update_worker(
             "--retries",
             "2",
             "--upgrade",
-            package_name,
+            install_spec,
         ]
-        ok, output = self._run_command_capture_hidden(command, cwd=BASE_PROJECT_PATH, timeout=timeout_seconds)
+
+        def _on_output(line: str, *, package_label=label, package_current=package_name) -> None:
+            _emit_dependency_update_progress(
+                self,
+                {
+                    "state": "running",
+                    "phase": "Installing",
+                    "current": package_current,
+                    "label": package_label,
+                    "total": total_packages,
+                    "completed": completed_packages,
+                    "installed": installed_packages,
+                    "failed": failed_packages,
+                    "detail": line,
+                },
+            )
+
+        ok, output = _run_python_package_install(
+            command,
+            cwd=BASE_PROJECT_PATH,
+            timeout=timeout_seconds,
+            on_output=_on_output,
+        )
         completed_packages += 1
         installed_version = ""
         if ok:
-            installed_packages += 1
             try:
                 resolved_version = runtime._installed_version_for_dependency_target(target)
                 installed_version = runtime._normalize_installed_version_text(resolved_version) or str(resolved_version or "")
             except Exception:
                 installed_version = ""
-        else:
+            if _version_text_is_installable(latest_version) and installed_version != latest_version:
+                ok = False
+                output = "\n".join(
+                    line
+                    for line in (
+                        output,
+                        f"Verification failed: expected {latest_version}, found {installed_version or 'not installed'}.",
+                    )
+                    if line
+                )
+            else:
+                installed_packages += 1
+        if not ok:
             failed_packages += 1
             failed_names.append(package_name)
             detail = _trim_update_output(runtime, output)
@@ -687,7 +873,13 @@ def _start_dependency_update(self, *, selected_only: bool) -> None:
     if getattr(self, "_dep_version_update_inflight", False):
         return
 
-    targets = _selected_dependency_targets(self) if selected_only else list(getattr(self, "_dep_version_targets", []) or [])
+    if selected_only:
+        targets = _selected_dependency_targets(self)
+    else:
+        targets = [
+            _dependency_target_with_ui_versions(self, target)
+            for target in list(getattr(self, "_dep_version_targets", []) or [])
+        ]
     if not targets:
         try:
             QtWidgets.QMessageBox.information(

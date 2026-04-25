@@ -50,21 +50,33 @@ def find_cpp_packaged_exe_under(root: Path | None) -> Path | None:
     return found[0]
 
 
+def _cpp_runtime_file_set_present(base_dir: Path, file_names: tuple[str, ...]) -> bool:
+    for file_name in file_names:
+        try:
+            if not (base_dir / file_name).is_file():
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _cpp_runtime_platform_plugin_present(base_dir: Path, plugin_name: str) -> bool:
+    try:
+        return (base_dir / "platforms" / plugin_name).is_file()
+    except Exception:
+        return False
+
+
 def cpp_runtime_bundle_missing(exe_path: Path) -> bool:
-    required_dlls = ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll")
-    for dll_name in required_dlls:
-        try:
-            if not (exe_path.parent / dll_name).is_file():
-                return True
-        except Exception:
-            return True
+    release_dlls = ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll")
+    debug_dlls = ("Qt6Cored.dll", "Qt6Guid.dll", "Qt6Widgetsd.dll", "Qt6Networkd.dll")
+    base_dir = exe_path.parent
+    release_complete = _cpp_runtime_file_set_present(base_dir, release_dlls)
+    debug_complete = _cpp_runtime_file_set_present(base_dir, debug_dlls)
     if sys.platform == "win32":
-        try:
-            if not (exe_path.parent / "platforms" / "qwindows.dll").is_file():
-                return True
-        except Exception:
-            return True
-    return False
+        release_complete = release_complete and _cpp_runtime_platform_plugin_present(base_dir, "qwindows.dll")
+        debug_complete = debug_complete and _cpp_runtime_platform_plugin_present(base_dir, "qwindowsd.dll")
+    return not (release_complete or debug_complete)
 
 
 def cpp_packaged_runtime_exe(find_cpp_code_tab_executable) -> Path | None:

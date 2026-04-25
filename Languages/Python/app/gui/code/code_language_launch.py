@@ -412,21 +412,40 @@ def cpp_runtime_stamp_path(exe_path: Path) -> Path:
     return exe_path.parent / ".tb_cpp_runtime.stamp"
 
 
+def _cpp_runtime_file_set_present(base_dir: Path, file_names: tuple[str, ...]) -> bool:
+    for file_name in file_names:
+        try:
+            if not (base_dir / file_name).is_file():
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _cpp_runtime_platform_plugin_present(base_dir: Path, plugin_name: str) -> bool:
+    try:
+        return (base_dir / "platforms" / plugin_name).is_file()
+    except Exception:
+        return False
+
+
+def _cpp_runtime_is_debug_output(exe_path: Path) -> bool:
+    try:
+        return any(part.lower() == "debug" for part in exe_path.resolve().parts)
+    except Exception:
+        return exe_path.parent.name.lower() == "debug"
+
+
 def cpp_runtime_bundle_missing(exe_path: Path) -> bool:
-    required_dlls = ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll")
-    for dll_name in required_dlls:
-        try:
-            if not (exe_path.parent / dll_name).is_file():
-                return True
-        except Exception:
-            return True
+    release_dlls = ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll")
+    debug_dlls = ("Qt6Cored.dll", "Qt6Guid.dll", "Qt6Widgetsd.dll", "Qt6Networkd.dll")
+    base_dir = exe_path.parent
+    release_complete = _cpp_runtime_file_set_present(base_dir, release_dlls)
+    debug_complete = _cpp_runtime_file_set_present(base_dir, debug_dlls)
     if sys.platform == "win32":
-        try:
-            if not (exe_path.parent / "platforms" / "qwindows.dll").is_file():
-                return True
-        except Exception:
-            return True
-    return False
+        release_complete = release_complete and _cpp_runtime_platform_plugin_present(base_dir, "qwindows.dll")
+        debug_complete = debug_complete and _cpp_runtime_platform_plugin_present(base_dir, "qwindowsd.dll")
+    return not (release_complete or debug_complete)
 
 
 def prepare_cpp_launch_env(
@@ -485,8 +504,10 @@ def deploy_cpp_runtime_bundle(
 
     deploy_env = os.environ.copy()
     deploy_env["PATH"] = compose_cpp_launch_path(qt_bins or [], deploy_env.get("PATH", ""))
+    deploy_mode = "--debug" if _cpp_runtime_is_debug_output(exe_path) else "--release"
     deploy_cmd = [
         str(windeployqt),
+        deploy_mode,
         "--compiler-runtime",
         "--no-translations",
         "--force",

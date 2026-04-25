@@ -72,9 +72,29 @@ class DependencyUpdateProgressTests(unittest.TestCase):
         window = _FakeWindow()
         progress_events = []
         targets = [
-            {"label": "ok-package", "package": "ok-package"},
-            {"label": "broken-package", "package": "broken-package"},
+            {"label": "ok-package", "package": "ok-package", "_latest_version": "1.2.3", "_installed_version": "1.0.0"},
+            {
+                "label": "broken-package",
+                "package": "broken-package",
+                "_latest_version": "9.9.9",
+                "_installed_version": "1.0.0",
+            },
         ]
+
+        def fake_install(command, *, cwd, timeout, on_output=None):
+            window.commands.append(list(command))
+            window.timeouts.append(timeout)
+            if callable(on_output):
+                on_output(f"Collecting {command[-1]}")
+            package_name = str(command[-1]).split("==", 1)[0]
+            if package_name == "broken-package":
+                return False, "ERROR: could not install broken-package"
+            return True, f"Successfully installed {command[-1]}"
+
+        def fake_installed_version(target):
+            if target["package"] == "broken-package":
+                return "1.0.0"
+            return target.get("_latest_version")
 
         with (
             mock.patch.object(dependency_versions_ui, "_resolve_python_command_prefix", return_value=["python"]),
@@ -84,9 +104,14 @@ class DependencyUpdateProgressTests(unittest.TestCase):
                 side_effect=lambda _window, progress: progress_events.append(dict(progress)),
             ),
             mock.patch.object(
+                dependency_versions_ui,
+                "_run_python_package_install",
+                side_effect=fake_install,
+            ),
+            mock.patch.object(
                 dependency_versions_runtime,
                 "_installed_version_for_dependency_target",
-                return_value="1.2.3",
+                side_effect=fake_installed_version,
             ),
         ):
             result = dependency_versions_ui._run_dependency_update_worker(
@@ -97,7 +122,7 @@ class DependencyUpdateProgressTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("1 failed", result["message"])
-        self.assertEqual([command[-1] for command in window.commands], ["ok-package", "broken-package"])
+        self.assertEqual([command[-1] for command in window.commands], ["ok-package==1.2.3", "broken-package==9.9.9"])
         self.assertTrue(all("--no-input" in command for command in window.commands))
         self.assertTrue(all(timeout is not None and timeout > 0 for timeout in window.timeouts))
         self.assertEqual(progress_events[-1]["state"], "finished")

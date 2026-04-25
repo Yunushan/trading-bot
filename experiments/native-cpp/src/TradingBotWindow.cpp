@@ -5,6 +5,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QAbstractItemView>
+#include <QBrush>
+#include <QColor>
 #include <QComboBox>
 #include <QDate>
 #include <QDateTime>
@@ -28,6 +30,7 @@
 #include <QMap>
 #include <QPushButton>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -962,6 +965,15 @@ void appendUniquePath(QStringList &paths, const QString &pathValue, bool mustExi
     }
 }
 
+int &dependencyVersionCacheGeneration() {
+    static int generation = 0;
+    return generation;
+}
+
+void resetDependencyVersionCaches() {
+    ++dependencyVersionCacheGeneration();
+}
+
 QStringList dependencyProjectRoots() {
     QStringList roots;
     auto addAncestors = [&roots](const QString &startPath) {
@@ -1268,10 +1280,14 @@ QStringList dependencyVcpkgRoots() {
 QStringList dependencyIncludeRoots() {
     static QStringList cache;
     static bool ready = false;
-    if (ready) {
+    static int cacheGeneration = -1;
+    const int generation = dependencyVersionCacheGeneration();
+    if (ready && cacheGeneration == generation) {
         return cache;
     }
     ready = true;
+    cacheGeneration = generation;
+    cache.clear();
 
     auto addInstalledIncludeDirs = [&](const QString &installedRoot) {
         QDir installedDir(installedRoot);
@@ -1349,10 +1365,14 @@ void collectInstalledVersionsFromArray(const QJsonArray &array, QMap<QString, QS
 QMap<QString, QString> loadPackagedInstalledVersions() {
     static QMap<QString, QString> cache;
     static bool ready = false;
-    if (ready) {
+    static int cacheGeneration = -1;
+    const int generation = dependencyVersionCacheGeneration();
+    if (ready && cacheGeneration == generation) {
         return cache;
     }
     ready = true;
+    cacheGeneration = generation;
+    cache.clear();
 
     QStringList manifestPaths;
     auto addManifestPath = [&manifestPaths](const QString &path) {
@@ -1532,10 +1552,14 @@ QString releaseTagFromMetadataDirs() {
 QMap<QString, QString> loadVcpkgInstalledVersions() {
     static QMap<QString, QString> cache;
     static bool ready = false;
-    if (ready) {
+    static int cacheGeneration = -1;
+    const int generation = dependencyVersionCacheGeneration();
+    if (ready && cacheGeneration == generation) {
         return cache;
     }
     ready = true;
+    cacheGeneration = generation;
+    cache.clear();
 
     QStringList statusFiles;
     auto addStatusFile = [&statusFiles](const QString &path) {
@@ -1805,6 +1829,140 @@ QString installedOrMissing(const QString &value) {
         return normalized;
     }
     return QStringLiteral("Not installed");
+}
+
+bool resolveCppDependencyInstaller(QString *programOut, QStringList *argumentsOut, QString *cwdOut, QString *errorOut) {
+    const QString projectRoot = workspaceProjectRoot();
+    const QDir rootDir(projectRoot);
+
+#ifdef Q_OS_WIN
+    const QString scriptPath = existingFilePath(rootDir.filePath(QStringLiteral("experiments/native-cpp/tools/install_cpp_dependencies.ps1")));
+    QString shellPath = QStandardPaths::findExecutable(QStringLiteral("pwsh.exe"));
+    if (shellPath.isEmpty()) {
+        shellPath = QStandardPaths::findExecutable(QStringLiteral("pwsh"));
+    }
+    if (shellPath.isEmpty()) {
+        shellPath = QStandardPaths::findExecutable(QStringLiteral("powershell.exe"));
+    }
+    if (shellPath.isEmpty()) {
+        shellPath = QStandardPaths::findExecutable(QStringLiteral("powershell"));
+    }
+    if (scriptPath.isEmpty() || shellPath.isEmpty()) {
+        if (errorOut != nullptr) {
+            *errorOut = QStringLiteral("Missing C++ dependency installer or PowerShell runtime. Expected experiments/native-cpp/tools/install_cpp_dependencies.ps1.");
+        }
+        return false;
+    }
+    if (programOut != nullptr) {
+        *programOut = shellPath;
+    }
+    if (argumentsOut != nullptr) {
+        *argumentsOut = {
+            QStringLiteral("-NoProfile"),
+            QStringLiteral("-NonInteractive"),
+            QStringLiteral("-ExecutionPolicy"),
+            QStringLiteral("Bypass"),
+            QStringLiteral("-File"),
+            scriptPath,
+        };
+    }
+#else
+    const QString scriptPath = existingFilePath(rootDir.filePath(QStringLiteral("experiments/native-cpp/tools/install_cpp_dependencies.sh")));
+    const QString bashPath = QStandardPaths::findExecutable(QStringLiteral("bash"));
+    if (scriptPath.isEmpty() || bashPath.isEmpty()) {
+        if (errorOut != nullptr) {
+            *errorOut = QStringLiteral("Missing C++ dependency installer or bash runtime. Expected experiments/native-cpp/tools/install_cpp_dependencies.sh.");
+        }
+        return false;
+    }
+    if (programOut != nullptr) {
+        *programOut = bashPath;
+    }
+    if (argumentsOut != nullptr) {
+        *argumentsOut = {scriptPath};
+    }
+#endif
+
+    if (cwdOut != nullptr) {
+        *cwdOut = projectRoot;
+    }
+    return true;
+}
+
+QString tailLines(const QStringList &lines, int maxLines = 6, int maxChars = 900) {
+    QStringList tail;
+    const int lineCount = static_cast<int>(lines.size());
+    for (int i = std::max(0, lineCount - maxLines); i < lineCount; ++i) {
+        const QString line = lines.at(i).trimmed();
+        if (!line.isEmpty()) {
+            tail.push_back(line);
+        }
+    }
+    QString rendered = tail.join(QStringLiteral("\n"));
+    if (rendered.size() > maxChars) {
+        rendered = QStringLiteral("...") + rendered.right(maxChars);
+    }
+    return rendered;
+}
+
+int cppInstallerStageForLine(const QString &line, QString *stageOut = nullptr) {
+    const QString normalized = line.trimmed().toLower();
+    auto matched = [&](int stage, const QString &label) {
+        if (stageOut != nullptr) {
+            *stageOut = label;
+        }
+        return stage;
+    };
+    if (normalized.contains(QStringLiteral("installing aqtinstall"))) {
+        return matched(1, QStringLiteral("Installing aqtinstall"));
+    }
+    if (normalized.contains(QStringLiteral("-m pip install"))
+        || normalized.contains(QStringLiteral("pip install --upgrade"))) {
+        return matched(1, QStringLiteral("Installing aqtinstall"));
+    }
+    if (normalized.contains(QStringLiteral("installing qt"))) {
+        return matched(2, QStringLiteral("Installing Qt modules"));
+    }
+    if (normalized.contains(QStringLiteral("-m aqt install-qt"))) {
+        return matched(2, QStringLiteral("Installing Qt modules"));
+    }
+    if (normalized.contains(QStringLiteral("cloning vcpkg"))) {
+        return matched(3, QStringLiteral("Cloning vcpkg"));
+    }
+    if (normalized.contains(QStringLiteral("git clone")) && normalized.contains(QStringLiteral("vcpkg"))) {
+        return matched(3, QStringLiteral("Cloning vcpkg"));
+    }
+    if (normalized.contains(QStringLiteral("fetching vcpkg"))) {
+        return matched(4, QStringLiteral("Fetching vcpkg metadata"));
+    }
+    if (normalized.contains(QStringLiteral("git -c")) && normalized.contains(QStringLiteral("fetch"))
+        && normalized.contains(QStringLiteral("vcpkg"))) {
+        return matched(4, QStringLiteral("Fetching vcpkg metadata"));
+    }
+    if (normalized.contains(QStringLiteral("checking out pinned vcpkg"))
+        || normalized.contains(QStringLiteral("using pinned vcpkg"))) {
+        return matched(5, QStringLiteral("Selecting pinned vcpkg"));
+    }
+    if (normalized.contains(QStringLiteral("git -c")) && normalized.contains(QStringLiteral("checkout"))
+        && normalized.contains(QStringLiteral("vcpkg"))) {
+        return matched(5, QStringLiteral("Selecting pinned vcpkg"));
+    }
+    if (normalized.contains(QStringLiteral("bootstrapping vcpkg"))) {
+        return matched(6, QStringLiteral("Bootstrapping vcpkg"));
+    }
+    if (normalized.contains(QStringLiteral("bootstrap-vcpkg"))) {
+        return matched(6, QStringLiteral("Bootstrapping vcpkg"));
+    }
+    if (normalized.contains(QStringLiteral("installing vcpkg ports"))) {
+        return matched(7, QStringLiteral("Installing vcpkg ports"));
+    }
+    if (normalized.contains(QStringLiteral("vcpkg")) && normalized.contains(QStringLiteral(" install "))) {
+        return matched(7, QStringLiteral("Installing vcpkg ports"));
+    }
+    if (normalized == QStringLiteral("done.") || normalized.contains(QStringLiteral("qt root:"))) {
+        return matched(8, QStringLiteral("Finishing"));
+    }
+    return 0;
 }
 
 } // namespace
@@ -2186,6 +2344,19 @@ QWidget *TradingBotWindow::createCodeTab() {
 
     auto *envActions = new QHBoxLayout();
     envActions->setContentsMargins(0, 0, 0, 0);
+    auto *envSelectionLabel = new QLabel("0 selected", container);
+    envSelectionLabel->setStyleSheet("color: #94a3b8; font-weight: 600;");
+    envActions->addWidget(envSelectionLabel);
+    envActions->addStretch();
+    auto *updateSelectedBtn = new QPushButton("Update Selected", container);
+    updateSelectedBtn->setCursor(Qt::PointingHandCursor);
+    updateSelectedBtn->setToolTip("Run the C++ dependency installer for selected rows.");
+    updateSelectedBtn->setEnabled(false);
+    envActions->addWidget(updateSelectedBtn);
+    auto *updateAllBtn = new QPushButton("Update All", container);
+    updateAllBtn->setCursor(Qt::PointingHandCursor);
+    updateAllBtn->setToolTip("Run the full C++ dependency installer.");
+    envActions->addWidget(updateAllBtn);
     envActions->addStretch();
     auto *refreshEnvBtn = new QPushButton("Refresh Env Versions", container);
     refreshEnvBtn->setCursor(Qt::PointingHandCursor);
@@ -2193,10 +2364,31 @@ QWidget *TradingBotWindow::createCodeTab() {
     envActions->addWidget(refreshEnvBtn);
     layout->addLayout(envActions);
 
+    auto *envProgressHeadline = new QLabel("Ready", container);
+    envProgressHeadline->setStyleSheet("color: #94a3b8; font-weight: 600;");
+    layout->addWidget(envProgressHeadline);
+
+    auto *envProgressBar = new QProgressBar(container);
+    envProgressBar->setRange(0, 100);
+    envProgressBar->setValue(0);
+    envProgressBar->setFormat("%p%");
+    envProgressBar->hide();
+    layout->addWidget(envProgressBar);
+
+    auto *envProgressDetail = new QLabel(container);
+    envProgressDetail->setWordWrap(true);
+    envProgressDetail->setStyleSheet("color: #94a3b8;");
+    envProgressDetail->hide();
+    layout->addWidget(envProgressDetail);
+
     auto *table = new QTableWidget(container);
-    table->setColumnCount(3);
-    table->setHorizontalHeaderLabels({"Dependency", "Installed", "Latest"});
-    table->horizontalHeader()->setStretchLastSection(true);
+    table->setColumnCount(5);
+    table->setHorizontalHeaderLabels({"Select", "Dependency", "Installed", "Latest", "Status"});
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionMode(QAbstractItemView::NoSelection);
     table->verticalHeader()->setVisible(false);
@@ -2206,6 +2398,7 @@ QWidget *TradingBotWindow::createCodeTab() {
         QString name;
         QString installed;
         QString latest;
+        QString status;
     };
 
     const auto loadRows = []() -> QVector<Row> {
@@ -2256,6 +2449,22 @@ QWidget *TradingBotWindow::createCodeTab() {
                 return installedOrMissing(detectCprVersion());
             }
             return QString();
+        };
+        const auto statusFor = [](const QString &installed, const QString &latest) {
+            const QString installedValue = installed.trimmed();
+            const QString latestValue = latest.trimmed();
+            if (installedValue.compare(QStringLiteral("Not installed"), Qt::CaseInsensitive) == 0) {
+                return QStringLiteral("Missing");
+            }
+            if (installedValue.compare(QStringLiteral("Unknown"), Qt::CaseInsensitive) == 0
+                || latestValue.compare(QStringLiteral("Unknown"), Qt::CaseInsensitive) == 0) {
+                return QStringLiteral("Unknown");
+            }
+            if (!installedValue.isEmpty() && !latestValue.isEmpty()
+                && installedValue.compare(latestValue, Qt::CaseInsensitive) != 0) {
+                return QStringLiteral("Update available");
+            }
+            return QStringLiteral("Current");
         };
 
         const QByteArray envRows = qgetenv("TB_CPP_ENV_VERSIONS_JSON");
@@ -2321,7 +2530,7 @@ QWidget *TradingBotWindow::createCodeTab() {
                     if (latest.isEmpty()) {
                         latest = QStringLiteral("Unknown");
                     }
-                    rows.push_back({name, installed, latest});
+                    rows.push_back({name, installed, latest, statusFor(installed, latest)});
                 }
             }
         }
@@ -2362,44 +2571,378 @@ QWidget *TradingBotWindow::createCodeTab() {
         };
 
         rows = {
-            {QStringLiteral("Qt6 (C++)"), qtInstalled, latestOrUnknown(qtInstalled)},
-            {QStringLiteral("Qt6 Network (REST)"), qtNetworkInstalled, latestOrUnknown(qtNetworkInstalled)},
+            {QStringLiteral("Qt6 (C++)"), qtInstalled, latestOrUnknown(qtInstalled), statusFor(qtInstalled, latestOrUnknown(qtInstalled))},
+            {QStringLiteral("Qt6 Network (REST)"), qtNetworkInstalled, latestOrUnknown(qtNetworkInstalled), statusFor(qtNetworkInstalled, latestOrUnknown(qtNetworkInstalled))},
             {QStringLiteral("Qt6 WebSockets"),
              qtWsInstalled,
-             wsReady ? qtRuntimeVersion : QStringLiteral("Install Qt WebSockets")},
+             wsReady ? qtRuntimeVersion : QStringLiteral("Install Qt WebSockets"),
+             statusFor(qtWsInstalled, wsReady ? qtRuntimeVersion : QStringLiteral("Install Qt WebSockets"))},
             {QStringLiteral("Binance REST client (native)"),
              nativeClientVersion,
-             nativeClientVersion},
+             nativeClientVersion,
+             statusFor(nativeClientVersion, nativeClientVersion)},
             {QStringLiteral("Binance WebSocket client (native)"),
              nativeClientVersion,
-             nativeClientVersion},
-            {QStringLiteral("Eigen"), eigenInstalled, latestOrUnknown(eigenInstalled)},
-            {QStringLiteral("xtensor"), xtensorInstalled, latestOrUnknown(xtensorInstalled)},
-            {QStringLiteral("TA-Lib"), talibInstalled, latestOrUnknown(talibInstalled)},
-            {QStringLiteral("libcurl"), libcurlInstalled, latestOrUnknown(libcurlInstalled)},
-            {QStringLiteral("cpr"), cprInstalled, latestOrUnknown(cprInstalled)}};
+             nativeClientVersion,
+             statusFor(nativeClientVersion, nativeClientVersion)},
+            {QStringLiteral("Eigen"), eigenInstalled, latestOrUnknown(eigenInstalled), statusFor(eigenInstalled, latestOrUnknown(eigenInstalled))},
+            {QStringLiteral("xtensor"), xtensorInstalled, latestOrUnknown(xtensorInstalled), statusFor(xtensorInstalled, latestOrUnknown(xtensorInstalled))},
+            {QStringLiteral("TA-Lib"), talibInstalled, latestOrUnknown(talibInstalled), statusFor(talibInstalled, latestOrUnknown(talibInstalled))},
+            {QStringLiteral("libcurl"), libcurlInstalled, latestOrUnknown(libcurlInstalled), statusFor(libcurlInstalled, latestOrUnknown(libcurlInstalled))},
+            {QStringLiteral("cpr"), cprInstalled, latestOrUnknown(cprInstalled), statusFor(cprInstalled, latestOrUnknown(cprInstalled))}};
         return rows;
     };
 
-    const auto applyRows = [table](const QVector<Row> &rows) {
+    const auto selectedDependencyNames = [table]() {
+        QStringList names;
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const QTableWidgetItem *selectItem = table->item(row, 0);
+            const QTableWidgetItem *nameItem = table->item(row, 1);
+            if (!selectItem || !nameItem || selectItem->checkState() != Qt::Checked) {
+                continue;
+            }
+            const QString name = nameItem->text().trimmed();
+            if (!name.isEmpty()) {
+                names.push_back(name);
+            }
+        }
+        return names;
+    };
+
+    const auto setItemText = [table](int row, int column, const QString &text, const QColor &color = QColor()) {
+        QTableWidgetItem *item = table->item(row, column);
+        if (!item) {
+            item = new QTableWidgetItem();
+            table->setItem(row, column, item);
+        }
+        item->setText(text);
+        item->setData(Qt::UserRole, text);
+        if (color.isValid()) {
+            item->setForeground(QBrush(color));
+        } else {
+            item->setForeground(QBrush());
+        }
+    };
+
+    const auto statusColor = [](const QString &status) {
+        const QString key = status.trimmed().toLower();
+        if (key == QStringLiteral("current") || key == QStringLiteral("installed")) {
+            return QColor(QStringLiteral("#22c55e"));
+        }
+        if (key == QStringLiteral("missing") || key == QStringLiteral("failed")) {
+            return QColor(QStringLiteral("#ef4444"));
+        }
+        if (key == QStringLiteral("update available")
+            || key == QStringLiteral("updating...")
+            || key == QStringLiteral("queued")) {
+            return QColor(QStringLiteral("#f59e0b"));
+        }
+        return QColor(QStringLiteral("#cbd5e1"));
+    };
+
+    const auto updateActions = [table,
+                                envSelectionLabel,
+                                updateSelectedBtn,
+                                updateAllBtn,
+                                refreshEnvBtn,
+                                selectedDependencyNames](bool busy = false) {
+        const int selectedCount = selectedDependencyNames().size();
+        const int targetCount = table->rowCount();
+        envSelectionLabel->setText(busy
+            ? QStringLiteral("Updating C++ dependencies...")
+            : QStringLiteral("%1 selected").arg(selectedCount));
+        envSelectionLabel->setStyleSheet(busy
+            ? QStringLiteral("color: #f59e0b; font-weight: 600;")
+            : QStringLiteral("color: #94a3b8; font-weight: 600;"));
+        updateSelectedBtn->setText(busy ? QStringLiteral("Updating...") : QStringLiteral("Update Selected"));
+        updateAllBtn->setText(busy ? QStringLiteral("Updating...") : QStringLiteral("Update All"));
+        refreshEnvBtn->setText(busy ? QStringLiteral("Updating...") : QStringLiteral("Refresh Env Versions"));
+        updateSelectedBtn->setEnabled(!busy && selectedCount > 0);
+        updateAllBtn->setEnabled(!busy && targetCount > 0);
+        refreshEnvBtn->setEnabled(!busy);
+        QSignalBlocker blocker(table);
+        for (int row = 0; row < table->rowCount(); ++row) {
+            QTableWidgetItem *selectItem = table->item(row, 0);
+            if (!selectItem) {
+                continue;
+            }
+            const Qt::ItemFlags originalFlags = selectItem->flags();
+            Qt::ItemFlags flags = selectItem->flags();
+            if (busy) {
+                flags &= ~Qt::ItemIsEnabled;
+            } else {
+                flags |= Qt::ItemIsEnabled;
+            }
+            if (flags != originalFlags) {
+                selectItem->setFlags(flags);
+            }
+        }
+    };
+
+    const auto setProgress = [envProgressHeadline, envProgressBar, envProgressDetail](
+                                 int percent,
+                                 const QString &headline,
+                                 const QString &detail,
+                                 const QString &color) {
+        const int boundedPercent = std::clamp(percent, 0, 100);
+        envProgressHeadline->setText(headline);
+        envProgressHeadline->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;").arg(color));
+        envProgressBar->show();
+        envProgressBar->setRange(0, 100);
+        envProgressBar->setValue(boundedPercent);
+        envProgressBar->setFormat(QStringLiteral("%1%").arg(boundedPercent));
+        envProgressDetail->show();
+        envProgressDetail->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;").arg(color));
+        envProgressDetail->setText(detail);
+    };
+
+    const auto setRowsUpdating = [table, setItemText, statusColor](const QStringList &names) {
+        QSet<QString> affected;
+        for (const QString &name : names) {
+            affected.insert(name);
+        }
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const QTableWidgetItem *nameItem = table->item(row, 1);
+            if (!nameItem || !affected.contains(nameItem->text().trimmed())) {
+                continue;
+            }
+            setItemText(row, 2, QStringLiteral("Updating..."), statusColor(QStringLiteral("Updating...")));
+            setItemText(row, 4, QStringLiteral("Updating..."), statusColor(QStringLiteral("Updating...")));
+        }
+    };
+
+    const auto setRowsFinished = [table, setItemText, statusColor](const QStringList &names, bool ok) {
+        QSet<QString> affected;
+        for (const QString &name : names) {
+            affected.insert(name);
+        }
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const QTableWidgetItem *nameItem = table->item(row, 1);
+            if (!nameItem || !affected.contains(nameItem->text().trimmed())) {
+                continue;
+            }
+            const QString status = ok ? QStringLiteral("Installed") : QStringLiteral("Failed");
+            setItemText(row, 4, status, statusColor(status));
+            if (!ok) {
+                setItemText(row, 2, QStringLiteral("Failed"), statusColor(status));
+            }
+        }
+    };
+
+    const auto applyRows = [table, selectedDependencyNames, setItemText, statusColor, updateActions](const QVector<Row> &rows) {
+        QSet<QString> checkedNames;
+        const QStringList selectedNames = selectedDependencyNames();
+        for (const QString &name : selectedNames) {
+            checkedNames.insert(name);
+        }
+        QSignalBlocker blocker(table);
+        table->clearContents();
         table->setRowCount(rows.size());
         for (int i = 0; i < rows.size(); ++i) {
-            table->setItem(i, 0, new QTableWidgetItem(rows[i].name));
-            table->setItem(i, 1, new QTableWidgetItem(rows[i].installed));
-            table->setItem(i, 2, new QTableWidgetItem(rows[i].latest));
+            auto *selectItem = new QTableWidgetItem();
+            selectItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+            selectItem->setCheckState(checkedNames.contains(rows[i].name) ? Qt::Checked : Qt::Unchecked);
+            selectItem->setTextAlignment(Qt::AlignCenter);
+            table->setItem(i, 0, selectItem);
+            setItemText(i, 1, rows[i].name);
+            setItemText(i, 2, rows[i].installed);
+            setItemText(i, 3, rows[i].latest);
+            setItemText(i, 4, rows[i].status, statusColor(rows[i].status));
+            table->setRowHeight(i, 30);
         }
+        updateActions(false);
     };
 
     applyRows(loadRows());
 
-    connect(refreshEnvBtn, &QPushButton::clicked, this, [this, refreshEnvBtn, loadRows, applyRows]() mutable {
+    connect(table, &QTableWidget::itemChanged, this, [updateActions](QTableWidgetItem *item) {
+        if (item && item->column() == 0) {
+            updateActions(false);
+        }
+    });
+
+    connect(refreshEnvBtn, &QPushButton::clicked, this, [this, refreshEnvBtn, loadRows, applyRows, setProgress]() mutable {
         refreshEnvBtn->setEnabled(false);
         refreshEnvBtn->setText(QStringLiteral("Refreshing..."));
         QCoreApplication::processEvents();
+        resetDependencyVersionCaches();
         applyRows(loadRows());
+        setProgress(
+            100,
+            QStringLiteral("Environment versions refreshed."),
+            QStringLiteral("Installed and latest C++ dependency versions were re-evaluated."),
+            QStringLiteral("#22c55e"));
         refreshEnvBtn->setText(QStringLiteral("Refresh Env Versions"));
         refreshEnvBtn->setEnabled(true);
         updateStatusMessage(QStringLiteral("Environment versions refreshed."));
+    });
+
+    const auto runCppDependencyUpdate = [this,
+                                         table,
+                                         loadRows,
+                                         applyRows,
+                                         selectedDependencyNames,
+                                         updateActions,
+                                         setProgress,
+                                         setRowsUpdating,
+                                         setRowsFinished](bool selectedOnly) {
+        const QStringList selectedNames = selectedDependencyNames();
+        QStringList affectedNames = selectedOnly ? selectedNames : QStringList();
+        if (!selectedOnly) {
+            for (int row = 0; row < table->rowCount(); ++row) {
+                const QTableWidgetItem *nameItem = table->item(row, 1);
+                if (nameItem && !nameItem->text().trimmed().isEmpty()) {
+                    affectedNames.push_back(nameItem->text().trimmed());
+                }
+            }
+        }
+        if (affectedNames.isEmpty()) {
+            QMessageBox::information(
+                this,
+                selectedOnly ? QStringLiteral("No dependencies selected") : QStringLiteral("No dependencies available"),
+                selectedOnly
+                    ? QStringLiteral("Select at least one dependency before using Update Selected.")
+                    : QStringLiteral("There are no C++ dependencies available to update."));
+            return;
+        }
+
+        QString program;
+        QStringList arguments;
+        QString workingDirectory;
+        QString resolveError;
+        if (!resolveCppDependencyInstaller(&program, &arguments, &workingDirectory, &resolveError)) {
+            QMessageBox::warning(this, QStringLiteral("C++ dependency update failed"), resolveError);
+            setProgress(
+                100,
+                QStringLiteral("0/1 complete (100%)"),
+                QStringLiteral("0 installed, 1 failed - %1").arg(resolveError),
+                QStringLiteral("#ef4444"));
+            return;
+        }
+
+        updateActions(true);
+        setRowsUpdating(affectedNames);
+        const QString scopeText = selectedOnly
+            ? QStringLiteral("Selected rows run the shared full C++ installer.")
+            : QStringLiteral("Running the full C++ dependency installer.");
+        setProgress(
+            0,
+            QStringLiteral("0/1 complete (0%)"),
+            QStringLiteral("0 installed, 0 failed - Starting C++ dependency installer.\n%1").arg(scopeText),
+            QStringLiteral("#f59e0b"));
+        updateStatusMessage(QStringLiteral("Updating C++ dependencies..."));
+
+        auto *process = new QProcess(this);
+        process->setProgram(program);
+        process->setArguments(arguments);
+        process->setWorkingDirectory(workingDirectory);
+        QProcessEnvironment installEnv = QProcessEnvironment::systemEnvironment();
+        installEnv.insert(QStringLiteral("PIP_NO_INPUT"), QStringLiteral("1"));
+        installEnv.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+        process->setProcessEnvironment(installEnv);
+        process->setProcessChannelMode(QProcess::MergedChannels);
+
+        auto outputLines = std::make_shared<QStringList>();
+        auto currentStage = std::make_shared<int>(0);
+        auto currentStageLabel = std::make_shared<QString>(QStringLiteral("Starting installer"));
+        auto finished = std::make_shared<bool>(false);
+
+        const auto consumeOutput = [process, outputLines, currentStage, currentStageLabel, setProgress, scopeText]() {
+            const QString chunk = QString::fromLocal8Bit(process->readAllStandardOutput());
+            const QStringList lines = chunk.split(QRegularExpression(QStringLiteral("\\r?\\n")), Qt::SkipEmptyParts);
+            for (const QString &rawLine : lines) {
+                const QString line = rawLine.trimmed();
+                if (line.isEmpty()) {
+                    continue;
+                }
+                outputLines->push_back(line);
+                QString stageLabel;
+                const int parsedStage = cppInstallerStageForLine(line, &stageLabel);
+                if (parsedStage > *currentStage) {
+                    *currentStage = parsedStage;
+                    *currentStageLabel = stageLabel;
+                }
+            }
+            const int percent = std::clamp(static_cast<int>((static_cast<double>(*currentStage) / 8.0) * 100.0), 0, 99);
+            const QString tail = tailLines(*outputLines);
+            setProgress(
+                percent,
+                QStringLiteral("0/1 complete (%1%)").arg(percent),
+                QStringLiteral("0 installed, 0 failed - %1.\n%2%3")
+                    .arg(*currentStageLabel,
+                         scopeText,
+                         tail.isEmpty() ? QString() : QStringLiteral("\n%1").arg(tail)),
+                QStringLiteral("#f59e0b"));
+        };
+
+        const auto finishUpdate = [this,
+                                   process,
+                                   outputLines,
+                                   finished,
+                                   affectedNames,
+                                   loadRows,
+                                   applyRows,
+                                   updateActions,
+                                   setProgress,
+                                   setRowsFinished,
+                                   consumeOutput](bool ok, const QString &failureDetail = QString()) {
+            if (*finished) {
+                return;
+            }
+            *finished = true;
+            consumeOutput();
+            resetDependencyVersionCaches();
+            const QString tail = tailLines(*outputLines, 10, 1600);
+            const QString detail = ok
+                ? QStringLiteral("1 installed, 0 failed - C++ dependency installer finished.%1")
+                      .arg(tail.isEmpty() ? QString() : QStringLiteral("\n%1").arg(tail))
+                : QStringLiteral("0 installed, 1 failed - %1%2")
+                      .arg(failureDetail.trimmed().isEmpty() ? QStringLiteral("C++ dependency installer failed.") : failureDetail.trimmed(),
+                           tail.isEmpty() ? QString() : QStringLiteral("\n%1").arg(tail));
+            setProgress(
+                100,
+                QStringLiteral("1/1 complete (100%)"),
+                detail,
+                ok ? QStringLiteral("#22c55e") : QStringLiteral("#ef4444"));
+            if (ok) {
+                applyRows(loadRows());
+            } else {
+                setRowsFinished(affectedNames, false);
+            }
+            updateActions(false);
+            updateStatusMessage(ok
+                ? QStringLiteral("C++ dependencies updated.")
+                : QStringLiteral("C++ dependency update failed."));
+            if (ok) {
+                QMessageBox::information(this, QStringLiteral("C++ dependency update finished"), detail);
+            } else {
+                QMessageBox::warning(this, QStringLiteral("C++ dependency update failed"), detail);
+            }
+            process->deleteLater();
+        };
+
+        connect(process, &QProcess::readyReadStandardOutput, this, consumeOutput);
+        connect(process, &QProcess::errorOccurred, this, [finishUpdate](QProcess::ProcessError error) {
+            finishUpdate(false, QStringLiteral("Process error %1 while starting or running the C++ dependency installer.").arg(static_cast<int>(error)));
+        });
+        connect(process,
+                qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                this,
+                [finishUpdate](int exitCode, QProcess::ExitStatus exitStatus) {
+                    const bool ok = exitStatus == QProcess::NormalExit && exitCode == 0;
+                    finishUpdate(ok, ok
+                        ? QString()
+                        : QStringLiteral("Installer exited with code %1.").arg(exitCode));
+                });
+
+        process->start();
+    };
+
+    connect(updateSelectedBtn, &QPushButton::clicked, this, [runCppDependencyUpdate]() {
+        runCppDependencyUpdate(true);
+    });
+    connect(updateAllBtn, &QPushButton::clicked, this, [runCppDependencyUpdate]() {
+        runCppDependencyUpdate(false);
     });
     layout->addWidget(table);
 
