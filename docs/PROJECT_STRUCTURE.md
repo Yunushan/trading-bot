@@ -31,8 +31,8 @@ Preferred direction:
 
 - Python GUI already has feature subpackages at `Languages/Python/app/gui/positions/`, `Languages/Python/app/gui/backtest/`, `Languages/Python/app/gui/chart/`, `Languages/Python/app/gui/code/`, `Languages/Python/app/gui/dashboard/`, `Languages/Python/app/gui/trade/`, `Languages/Python/app/gui/shared/`, and `Languages/Python/app/gui/runtime/`
 - Python GUI code should trend toward feature folders such as `dashboard/`, `chart/`, `positions/`, `backtest/`, `code/`, `trade/`, `shared/`, and `runtime/`
-- `Languages/Python/app/gui/window_shell.py` is now the authoritative desktop window shell, with `main_window.py` kept as a compatibility wrapper
-- `Languages/Python/app/gui/runtime/window/main_window_init_ui_runtime.py` is now the first extracted `main_window.py` UI-assembly slice
+- `Languages/Python/app/gui/window_shell.py` is now the authoritative desktop window shell; the `main_window.py` compatibility wrapper has been removed
+- `Languages/Python/app/gui/runtime/window/init_ui_runtime.py` now carries the extracted window UI-assembly slice
 - `Languages/Python/app/gui/runtime/composition/bindings_runtime.py` is now the authoritative `main_window.py` class-binding/configuration entrypoint, with `binding_modules.py` and `binding_sections.py` carrying the internal composition loader and binding groups
 - `Languages/Python/app/gui/runtime/composition/binding_modules.py` now keeps a canonical feature-oriented registry (`backtest.bridge`, `positions.runtime`, `shared.config`, `runtime.window.runtime`, etc.) so the desktop composition layer stops carrying `main_window_*` naming internally
 - `Languages/Python/app/gui/runtime/composition/module_state_runtime.py` is now the authoritative `main_window.py` constant/helper-alias module-state entrypoint, with `module_state_constants.py` and `module_state_payload.py` carrying the extracted constant catalog and payload-build helpers
@@ -44,35 +44,35 @@ Preferred direction:
 - `Languages/Python/app/integrations/exchanges/binance/positions/close_all_runtime.py` is now the authoritative Binance futures close-all helper, and the flat `app/close_all.py` compatibility shim has been removed
 - `Languages/Python/app/gui/runtime/window/window_code_tab_suppression_runtime.py` is now the first extracted `window_runtime.py` slice for Windows code-tab suppression helpers
 - `Languages/Python/app/gui/runtime/window/window_webengine_guard_runtime.py` now carries the extracted WebEngine/TradingView prewarm and window-guard helpers
-- `Languages/Python/app/gui/runtime/window/bootstrap_runtime.py`, `init_ui_runtime.py`, `init_finalize_runtime.py`, and `window_events_runtime.py` now carry the extracted window bootstrap/UI/finalize/event helpers, with the corresponding `main_window_*` files kept as compatibility wrappers
-- `Languages/Python/app/gui/runtime/window/log_runtime.py`, `portfolio_runtime.py`, `positions_runtime.py`, `startup_runtime.py`, and `state_init_runtime.py` now carry the extracted window-support helpers, with the corresponding `main_window_*` files kept as compatibility wrappers
-- `Languages/Python/app/gui/runtime/window/runtime.py` now carries the main window-orchestration surface, with `main_window_runtime.py` kept as a compatibility wrapper
-- `Languages/Python/app/gui/runtime/window/positions_runtime.py` now carries the extracted window-side positions worker/filter/waiting-table helpers, with `main_window_positions_runtime.py` kept as a compatibility wrapper
-- `Languages/Python/app/gui/runtime/window/main_window_window_events_runtime.py` now carries the extracted native close detection and close/hide window-guard lifecycle helpers, with `window/main_window_runtime.py` keeping the window-runtime orchestration surface
+- `Languages/Python/app/gui/runtime/window/bootstrap_runtime.py`, `init_ui_runtime.py`, `init_finalize_runtime.py`, and `window_events_runtime.py` now carry the extracted window bootstrap/UI/finalize/event helpers
+- `Languages/Python/app/gui/runtime/window/log_runtime.py`, `portfolio_runtime.py`, `positions_runtime.py`, `startup_runtime.py`, and `state_init_runtime.py` now carry the extracted window-support helpers
+- `Languages/Python/app/gui/runtime/window/runtime.py` now carries the main window-orchestration surface
+- `Languages/Python/app/gui/runtime/window/positions_runtime.py` now carries the extracted window-side positions worker/filter/waiting-table helpers
+- The legacy `Languages/Python/app/gui/runtime/window/main_window_*` compatibility wrappers have been removed; use the short window helper modules directly
 - `Languages/Python/app/gui/chart/` now exposes short preferred module names such as `display_runtime.py`, `host_runtime.py`, `selection_runtime.py`, `tab_runtime.py`, and `view_runtime.py`
-- The legacy `Languages/Python/app/gui/chart/main_window_chart_*` modules remain as compatibility wrappers while callers are migrated
+- The legacy `Languages/Python/app/gui/chart/main_window_chart_*` compatibility wrappers have been removed; use the short chart helper modules directly
 - `Languages/Python/app/gui/backtest/` now exposes short preferred module names such as `bridge_runtime.py`, `execution_runtime.py`, `results_runtime.py`, `state_runtime.py`, `tab_runtime.py`, `template_runtime.py`, and `worker_runtime.py`
-- The legacy `Languages/Python/app/gui/backtest/main_window_backtest_*` modules remain as compatibility wrappers while callers are migrated
+- The legacy `Languages/Python/app/gui/backtest/main_window_backtest_*` compatibility wrappers have been removed; use the short backtest helper modules directly
   - `Languages/Python/app/gui/backtest/execution_runtime.py` now keeps the backtest execution facade, with runtime config in `backtest_execution_context_runtime.py`, normal backtest flow in `backtest_execution_run_runtime.py`, and scan flow in `backtest_execution_scan_runtime.py`
   - `Languages/Python/app/gui/backtest/tab_runtime.py` now keeps the backtest-tab orchestration surface, with shared tab config in `backtest_tab_context_runtime.py`, market controls in `backtest_tab_market_runtime.py`, parameter controls in `backtest_tab_params_runtime.py`, indicator controls in `backtest_tab_indicator_runtime.py`, and output/results UI in `backtest_tab_output_runtime.py`
   - `Languages/Python/app/gui/backtest/state_runtime.py` now keeps the backtest state/binding surface, with runtime constants in `backtest_state_context_runtime.py`, date coercion in `backtest_state_dates_runtime.py`, initial UI sync in `backtest_state_init_runtime.py`, symbol/interval list helpers in `backtest_state_lists_runtime.py`, and symbol refresh worker flow in `backtest_state_symbols_runtime.py`
 - `Languages/Python/app/gui/runtime/ui/` now exposes short preferred module names such as `secondary_tabs_runtime.py`, `tab_runtime.py`, `theme_runtime.py`, `theme_styles.py`, and `ui_misc_runtime.py`
-- The legacy `Languages/Python/app/gui/runtime/ui/main_window_*` modules remain as compatibility wrappers while callers are migrated
+- The legacy `Languages/Python/app/gui/runtime/ui/main_window_*` compatibility wrappers have been removed; use the short UI helper modules directly
 - `Languages/Python/app/gui/runtime/account/` now exposes short preferred module names `account_runtime.py`, `balance_runtime.py`, and `margin_runtime.py`
 - `Languages/Python/app/gui/runtime/service/` now exposes short preferred module names `service_api_runtime.py`, `session_runtime.py`, and `status_runtime.py`
-- The legacy `Languages/Python/app/gui/runtime/account/main_window_*` and `service/main_window_*` modules remain as compatibility wrappers while callers are migrated
+- The legacy `Languages/Python/app/gui/runtime/account/main_window_*` and `service/main_window_*` compatibility wrappers have been removed; use the short account and service helper modules directly
 - `Languages/Python/app/gui/shared/` now exposes short preferred module names such as `config_runtime.py`, `helper_runtime.py`, `ui_support.py`, and `web_embed.py`, and the first `main_window_*` shared wrapper batch has been removed
 - `Languages/Python/app/gui/trade/` now exposes short preferred module names such as `trade_runtime.py`, `signal_runtime.py`, and `signal_open_runtime.py`
 - `Languages/Python/app/gui/trade/signal_close_runtime.py` is now a thin facade over `signal_close_allocations_runtime.py`, `signal_close_records_runtime.py`, and `signal_close_interval_runtime.py`
-- The legacy `Languages/Python/app/gui/trade/main_window_trade*` modules remain as compatibility wrappers while callers are migrated
+- The legacy `Languages/Python/app/gui/trade/main_window_trade*` compatibility wrappers have been removed; use the short trade helper modules directly
 - `Languages/Python/app/gui/code/` now exposes short preferred module names `runtime.py` and `tab_runtime.py` for the main code-tab surfaces
-- The legacy `Languages/Python/app/gui/code/main_window_code*.py` modules remain as compatibility wrappers while callers are migrated
+- The legacy `Languages/Python/app/gui/code/main_window_code*.py` compatibility wrappers have been removed; use `runtime.py` and `tab_runtime.py` directly
 - `Languages/Python/app/gui/code/code_language_ui.py` is now a thin facade over `code_language_ui_build_runtime.py`, `code_language_ui_selection_runtime.py`, and `code_language_ui_state_runtime.py`
 - `Languages/Python/app/gui/code/code_language_launcher.py` is now a thin facade over `code_language_cpp_launcher_runtime.py`, `code_language_rust_launcher_runtime.py`, and `code_language_launcher_shared_runtime.py`
 - `Languages/Python/app/gui/code/code_language_cpp_bundle_runtime.py` is now a thin facade over `code_language_cpp_bundle_cache_runtime.py`, `code_language_cpp_bundle_packaged_runtime.py`, `code_language_cpp_bundle_release_runtime.py`, and `code_language_cpp_bundle_install_runtime.py`
 - `Languages/Python/app/gui/code/dependency_versions_cpp_runtime.py` is now a thin facade over `dependency_versions_cpp_shared_runtime.py`, `dependency_versions_cpp_probe_runtime.py`, `dependency_versions_cpp_latest_runtime.py`, and `dependency_versions_cpp_policy_runtime.py`
 - `Languages/Python/app/gui/dashboard/` now exposes short preferred module names such as `actions_runtime.py`, `chart_runtime.py`, `header_runtime.py`, `indicator_runtime.py`, `log_runtime.py`, `markets_runtime.py`, `state_runtime.py`, and `strategy_runtime.py`
-- The legacy `Languages/Python/app/gui/dashboard/main_window_dashboard_*` modules remain as compatibility wrappers while callers are migrated
+- The legacy `Languages/Python/app/gui/dashboard/main_window_dashboard_*` compatibility wrappers have been removed; use the short dashboard helper modules directly
 - `Languages/Python/app/gui/chart/lightweight_widget.py` is now a thin facade over `lightweight_widget_assets.py` and `lightweight_widget_runtime.py`
 - `Languages/Python/app/gui/chart/tradingview_widget.py` is now a thin facade over `tradingview_widget_assets.py` and `tradingview_widget_runtime.py`
 - `Languages/Python/app/gui/chart/binance_web_widget.py` is now a thin facade over `binance_web_widget_helpers.py` and `binance_web_widget_runtime.py`
@@ -80,18 +80,18 @@ Preferred direction:
 - `Languages/Python/app/gui/chart/display_runtime.py` is now a thin facade over `display_render_runtime.py`, `display_payload_runtime.py`, and `display_load_runtime.py`
 - `Languages/Python/app/gui/chart/chart_widgets.py` is now a thin facade over `simple_candlestick_widget.py` and `interactive_chart_view.py`
 - `Languages/Python/app/gui/runtime/strategy/` now uses short authoritative modules such as `control_runtime.py`, `start_runtime.py`, `stop_runtime.py`, `override_runtime.py`, `controls_runtime.py`, `ui_runtime.py`, `stop_loss_runtime.py`, `indicator_runtime.py`, and `context_runtime.py`
-- The legacy `Languages/Python/app/gui/runtime/strategy/main_window_*` modules remain as compatibility shims only and should not be used by new code
+- The legacy `Languages/Python/app/gui/runtime/strategy/main_window_*` compatibility wrappers have been removed; use the short strategy helper modules directly
 - `Languages/Python/app/gui/positions/` now exposes short preferred module names such as `actions_runtime.py`, `build_runtime.py`, `record_build_runtime.py`, `render_runtime.py`, `table_render_runtime.py`, `history_runtime.py`, `history_records_runtime.py`, `history_update_runtime.py`, `positions_runtime.py`, `tab_runtime.py`, `tracking_runtime.py`, and `worker_runtime.py`
-- The legacy `Languages/Python/app/gui/positions/main_window_positions_*` helper modules still remain as compatibility shims and wrapper surfaces during migration
-- `Languages/Python/app/gui/positions/positions_runtime.py` now carries the main positions binder/orchestration surface, with `main_window_positions.py` kept as a compatibility wrapper
+- The legacy `Languages/Python/app/gui/positions/main_window_positions_*` helper modules have been removed; use the short positions helper modules directly
+- `Languages/Python/app/gui/positions/positions_runtime.py` now carries the main positions binder/orchestration surface
   - Internal split: shared positions config/helper state now lives in `positions_context_runtime.py`, cumulative record aggregation in `positions_cumulative_runtime.py`, and manual refresh helpers in `positions_refresh_runtime.py`
 - `Languages/Python/app/gui/positions/actions_runtime.py` is now a thin facade over `actions_context_runtime.py`, `actions_history_runtime.py`, `actions_state_runtime.py`, and `actions_close_runtime.py`
-- `Languages/Python/app/gui/positions/record_build_runtime.py` now carries the extracted positions record seeding/merge helpers, with `main_window_positions_record_build_runtime.py` and `main_window_positions_build_runtime.py` kept as compatibility wrapper surfaces
-- `Languages/Python/app/gui/positions/table_render_runtime.py` is now a thin authoritative entrypoint over `table_render_state_runtime.py`, `table_render_prepare_runtime.py`, and `table_render_rows_runtime.py`, with `main_window_positions_table_render_runtime.py` and `main_window_positions_render_runtime.py` kept as compatibility wrapper surfaces
+- `Languages/Python/app/gui/positions/record_build_runtime.py` now carries the extracted positions record seeding/merge helpers, with `build_runtime.py` kept as the short GUI-facing build facade
+- `Languages/Python/app/gui/positions/table_render_runtime.py` is now a thin authoritative entrypoint over `table_render_state_runtime.py`, `table_render_prepare_runtime.py`, and `table_render_rows_runtime.py`; `render_runtime.py` remains the short GUI-facing render facade
 - `Languages/Python/app/gui/positions/history_records_runtime.py` now keeps the per-trade history facade, with configuration state in `history_records_context_runtime.py`, entry-building in `history_records_entries_runtime.py`, grouping/deduping in `history_records_group_runtime.py`, and the entry-building internals split across `history_records_meta_runtime.py`, `history_records_allocations_runtime.py`, `history_records_trade_data_runtime.py`, and `history_records_emit_runtime.py`
-- `Languages/Python/app/gui/positions/history_update_runtime.py` now keeps the history-mutation facade, with configuration state in `history_update_context_runtime.py`, exchange/live-position lookups in `history_update_lookup_runtime.py`, close-path orchestration in `history_update_close_runtime.py`, and the close helpers split into `history_update_snapshot_runtime.py`, `history_update_allocation_runtime.py`, and `history_update_registry_runtime.py`; the legacy `main_window_positions_history*.py` files remain compatibility wrappers
-- `Languages/Python/app/gui/positions/tab_runtime.py` now carries the extracted positions-tab binder surface, with `main_window_positions_tab.py` kept as a compatibility wrapper
-- `Languages/Python/app/gui/positions/worker_runtime.py` now carries the extracted positions polling worker, with `main_window_positions_worker.py` kept as a compatibility wrapper
+- `Languages/Python/app/gui/positions/history_update_runtime.py` now keeps the history-mutation facade, with configuration state in `history_update_context_runtime.py`, exchange/live-position lookups in `history_update_lookup_runtime.py`, close-path orchestration in `history_update_close_runtime.py`, and the close helpers split into `history_update_snapshot_runtime.py`, `history_update_allocation_runtime.py`, and `history_update_registry_runtime.py`
+- `Languages/Python/app/gui/positions/tab_runtime.py` now carries the extracted positions-tab binder surface
+- `Languages/Python/app/gui/positions/worker_runtime.py` now carries the extracted positions polling worker
 - C++ source should trend toward `dashboard/`, `positions/`, `runtime/`, `chart/`, `backtest/`, and `net/`
 - Long-form maintenance or contributor guidance should live in `docs/`, not the root README
 
@@ -145,6 +145,9 @@ The executable import-policy registry lives in `Languages/Python/tools/import_po
 - Import Binance futures close-all helpers from `app.integrations.exchanges.binance.positions.close_all_runtime`, not `app.close_all`
 - Import reusable domain helpers from `trading_core.*` in new shared/external code, and from `app.core.*` only when working inside the existing monolith runtime; do not import flat compatibility modules such as `app.backtester`, `app.indicators`, `app.position_guard`, `app.strategy`, or the flat `app.strategy_*` wrapper files
 - Import Binance helpers from `app.integrations.exchanges.binance`, not `app.binance_wrapper`
+- Import the desktop GUI shell from `app.gui.window_shell`, not `app.gui.main_window`
+- Import account, service, and UI GUI runtime helpers from the short `app.gui.runtime.account.*`, `app.gui.runtime.service.*`, and `app.gui.runtime.ui.*` module names, not the `main_window_*` compatibility wrappers
+- Import window GUI runtime helpers from the short `app.gui.runtime.window.*` module names, not the `main_window_*` compatibility wrappers
 - Import strategy GUI runtime helpers from the short `app.gui.runtime.strategy.*` module names, not the `main_window_*` compatibility wrappers
 - Import positions GUI helpers from the short `app.gui.positions.*_runtime` module names and `app.gui.positions.tab_runtime`, not the `main_window_positions_*` compatibility wrappers
 - Prefer typed builders from `app.settings` for new configuration work; keep `app.config` only for compatibility surfaces that still require the legacy dict contract

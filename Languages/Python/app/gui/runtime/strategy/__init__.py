@@ -4,9 +4,6 @@ New code should import the short module names in this package:
 `control_runtime`, `start_runtime`, `stop_runtime`, `override_runtime`,
 `controls_runtime`, `ui_runtime`, `stop_loss_runtime`, `indicator_runtime`,
 and `context_runtime`.
-
-The legacy `main_window_*` modules remain as compatibility shims while older
-imports are migrated off the wrapper surface.
 """
 
 __all__ = [

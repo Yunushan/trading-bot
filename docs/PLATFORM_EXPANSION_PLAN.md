@@ -20,7 +20,6 @@ Today the main Python implementation is centered around these files:
 - `apps/service-api/main.py`: canonical service/API launcher delegating into the Python workspace
 - `Languages/Python/main.py`: desktop bootstrap and platform-specific startup behavior
 - `Languages/Python/app/gui/window_shell.py`: current PyQt desktop application shell
-- `Languages/Python/app/gui/main_window.py`: compatibility wrapper for the desktop window shell
 - `Languages/Python/trading_core/strategy.py`: canonical reusable strategy surface
 - `Languages/Python/app/integrations/exchanges/binance/__init__.py`: canonical exchange integration surface
 - `Languages/Python/trading_core/backtest.py`: canonical reusable backtest surface
@@ -234,18 +233,17 @@ Start by treating these current or recently removed file families as the seeds o
   Implementation home: `app/core/backtest/engine.py`
   Current split: request/result models in `app/core/backtest/models.py`, indicator helpers in `app/core/backtest/indicator_runtime.py`, and internal engine helpers in `app/core/backtest/engine_run_runtime.py`, `app/core/backtest/engine_data_runtime.py`, `app/core/backtest/engine_signal_runtime.py`, and `app/core/backtest/engine_simulation_runtime.py`
 
-- `Languages/Python/app/gui/positions/main_window_positions_build_runtime.py`
-  Current state: GUI-facing wrapper surface
-  New home for record shaping helpers: `app/gui/positions/record_build_runtime.py`
+- `Languages/Python/app/gui/positions/record_build_runtime.py`
+  Current state: authoritative GUI-facing record shaping surface; legacy build/record-build wrappers removed
+  Related facade: `app/gui/positions/build_runtime.py`
 
-- `Languages/Python/app/gui/positions/main_window_positions_render_runtime.py`
-  Current state: GUI-facing wrapper surface
-  New home for table rendering: `app/gui/positions/table_render_runtime.py`
+- `Languages/Python/app/gui/positions/table_render_runtime.py`
+  Current state: authoritative GUI-facing table-rendering surface; legacy render/table-render wrappers removed
+  Related facade: `app/gui/positions/render_runtime.py`
   Internal split: `app/gui/positions/table_render_state_runtime.py`, `app/gui/positions/table_render_prepare_runtime.py`, and `app/gui/positions/table_render_rows_runtime.py`
 
-- `Languages/Python/app/gui/positions/main_window_positions_history_runtime.py`
-  Current state: wrapper surface for positions history
-  New home for per-trade history shaping: `app/gui/positions/history_records_runtime.py`
+- `Languages/Python/app/gui/positions/history_records_runtime.py`
+  Current state: authoritative surface for per-trade positions history shaping; legacy positions history wrappers removed
   Current split: configuration state in `app/gui/positions/history_records_context_runtime.py`, entry-building in `app/gui/positions/history_records_entries_runtime.py`, grouping/deduping in `app/gui/positions/history_records_group_runtime.py`, and entry-building internals in `history_records_meta_runtime.py`, `history_records_allocations_runtime.py`, `history_records_trade_data_runtime.py`, and `history_records_emit_runtime.py`
   Related mutation split: `app/gui/positions/history_update_runtime.py` now keeps the update facade, with configuration state in `history_update_context_runtime.py`, exchange/live-position lookups in `history_update_lookup_runtime.py`, close-path orchestration in `history_update_close_runtime.py`, and close helpers in `history_update_snapshot_runtime.py`, `history_update_allocation_runtime.py`, and `history_update_registry_runtime.py`
 
@@ -279,9 +277,6 @@ Start by treating these current or recently removed file families as the seeds o
 - `Languages/Python/app/gui/window_shell.py`
   Future target: `app/desktop/gui/`
 
-- `Languages/Python/app/gui/main_window.py`
-  Current state: compatibility wrapper for `app/gui/window_shell.py`
-
 - `Languages/Python/app/desktop/bootstrap/main.py`
   Current state: moved desktop-bootstrap implementation behind the public launcher
 
@@ -293,8 +288,8 @@ Start by treating these current or recently removed file families as the seeds o
   Current state: WinEvent startup-suppression orchestration surface used by desktop bootstrap
   Current split: shared state in `startup_window_suppression_winevent_state_runtime.py`, tracked-process helpers in `startup_window_suppression_winevent_pid_runtime.py`, window classification/hide helpers in `startup_window_suppression_winevent_window_runtime.py`, and polling helpers in `startup_window_suppression_winevent_poll_runtime.py`
 
-- `Languages/Python/app/gui/runtime/window/main_window_init_ui_runtime.py`
-  Current state: first extracted `main_window.py` UI-assembly helper
+- `Languages/Python/app/gui/runtime/window/init_ui_runtime.py`
+  Current state: extracted window UI-assembly helper; legacy `main_window_init_ui_runtime.py` wrapper removed
 
 - `Languages/Python/app/gui/runtime/composition/bindings_runtime.py`
   Current state: authoritative extracted `main_window.py` class-binding/configuration entrypoint, with `binding_modules.py` and `binding_sections.py` carrying the internal composition loader/binder split
@@ -309,25 +304,25 @@ Start by treating these current or recently removed file families as the seeds o
   Current state: extracted `window_runtime.py` slice for WebEngine/TradingView prewarm and guard behavior
 
 - `Languages/Python/app/gui/runtime/window/bootstrap_runtime.py`, `init_ui_runtime.py`, `init_finalize_runtime.py`, and `window_events_runtime.py`
-  Current state: extracted `main_window.py` and `main_window_runtime.py` slices for bootstrap binding, initial tab assembly, final UI setup, and close/hide window-event behavior, with the matching `main_window_*` files left as compatibility wrappers
+  Current state: extracted `main_window.py` and `main_window_runtime.py` slices for bootstrap binding, initial tab assembly, final UI setup, and close/hide window-event behavior; matching `main_window_*` wrappers removed
 
 - `Languages/Python/app/gui/runtime/window/log_runtime.py`, `portfolio_runtime.py`, `positions_runtime.py`, `startup_runtime.py`, and `state_init_runtime.py`
-  Current state: extracted `main_window_runtime.py` and bootstrap-support slices for log buffering, portfolio summaries, positions helper wiring, startup flags, and state initialization, with the matching `main_window_*` files left as compatibility wrappers
+  Current state: extracted `main_window_runtime.py` and bootstrap-support slices for log buffering, portfolio summaries, positions helper wiring, startup flags, and state initialization; matching `main_window_*` wrappers removed
 
 - `Languages/Python/app/gui/runtime/window/runtime.py`
-  Current state: preferred main window-orchestration module, with `main_window_runtime.py` left as a compatibility wrapper
+  Current state: preferred main window-orchestration module; `main_window_runtime.py` wrapper removed
 
 - `Languages/Python/app/gui/runtime/window/positions_runtime.py`
-  Current state: extracted `main_window_runtime.py` slice for positions worker reconfiguration and waiting-position table helpers, with `main_window_positions_runtime.py` left as a compatibility wrapper
+  Current state: extracted `main_window_runtime.py` slice for positions worker reconfiguration and waiting-position table helpers; `main_window_positions_runtime.py` wrapper removed
 
 - `Languages/Python/app/gui/dashboard/actions_runtime.py`, `chart_runtime.py`, `header_runtime.py`, `indicator_runtime.py`, `log_runtime.py`, `markets_runtime.py`, `state_runtime.py`, and `strategy_runtime.py`
-  Current state: preferred dashboard helper modules, with the `main_window_dashboard_*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred dashboard helper modules, with the `main_window_dashboard_*` compatibility wrappers removed
 
 - `Languages/Python/app/gui/chart/display_runtime.py`, `host_runtime.py`, `selection_runtime.py`, `tab_runtime.py`, and `view_runtime.py`
-  Current state: preferred chart helper modules, with the `main_window_chart_*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred chart helper modules, with the `main_window_chart_*` compatibility wrappers removed
 
 - `Languages/Python/app/gui/backtest/bridge_runtime.py`, `execution_runtime.py`, `results_runtime.py`, `state_runtime.py`, `tab_runtime.py`, `template_runtime.py`, and `worker_runtime.py`
-  Current state: preferred backtest helper modules, with the `main_window_backtest_*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred backtest helper modules, with the `main_window_backtest_*` compatibility wrappers removed
 
   - `Languages/Python/app/gui/backtest/execution_runtime.py`
     Current state: backtest execution facade
@@ -338,26 +333,26 @@ Start by treating these current or recently removed file families as the seeds o
     Internal split: `backtest_state_context_runtime.py`, `backtest_state_dates_runtime.py`, `backtest_state_init_runtime.py`, `backtest_state_lists_runtime.py`, and `backtest_state_symbols_runtime.py`
 
 - `Languages/Python/app/gui/runtime/ui/secondary_tabs_runtime.py`, `tab_runtime.py`, `theme_runtime.py`, `theme_styles.py`, and `ui_misc_runtime.py`
-  Current state: preferred UI-composition helper modules, with the `main_window_*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred UI-composition helper modules; the `main_window_*` files in the same package have been removed
 
 - `Languages/Python/app/gui/runtime/account/account_runtime.py`, `balance_runtime.py`, and `margin_runtime.py`
-  Current state: preferred account-oriented GUI runtime modules, with the `main_window_*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred account-oriented GUI runtime modules; the `main_window_*` files in the same package have been removed
 
 - `Languages/Python/app/gui/runtime/service/service_api_runtime.py`, `session_runtime.py`, and `status_runtime.py`
-  Current state: preferred desktop service/session GUI runtime modules, with the `main_window_*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred desktop service/session GUI runtime modules; the `main_window_*` files in the same package have been removed
 
 - `Languages/Python/app/gui/shared/config_runtime.py`, `helper_runtime.py`, `ui_support.py`, and `web_embed.py`
   Current state: preferred shared GUI helper modules; the first `main_window_*` shared wrapper batch has been removed
 
 - `Languages/Python/app/gui/trade/trade_runtime.py`, `signal_runtime.py`, and `signal_open_runtime.py`
-  Current state: preferred trade-signal helper modules, with the `main_window_trade*` files in the same package left as compatibility wrappers during migration
+  Current state: preferred trade-signal helper modules, with the `main_window_trade*` compatibility wrappers removed
 
 - `Languages/Python/app/gui/trade/signal_close_runtime.py`
   Current state: thin close-signal facade
   Internal split: `signal_close_allocations_runtime.py`, `signal_close_records_runtime.py`, and `signal_close_interval_runtime.py`
 
 - `Languages/Python/app/gui/code/runtime.py` and `tab_runtime.py`
-  Current state: preferred code-tab helper modules, with `main_window_code_runtime.py` and `main_window_code.py` left as compatibility wrappers during migration
+  Current state: preferred code-tab helper modules, with `main_window_code_runtime.py` and `main_window_code.py` compatibility wrappers removed
 
 - `Languages/Python/app/gui/code/code_language_ui.py`
   Current state: thin code-tab language UI facade
@@ -403,23 +398,23 @@ Start by treating these current or recently removed file families as the seeds o
   Current state: thin chart-widget facade
   Internal split: `simple_candlestick_widget.py` and `interactive_chart_view.py`
 
-- `Languages/Python/app/gui/runtime/window/main_window_window_events_runtime.py`
-  Current state: extracted `main_window_runtime.py` slice for native close detection and close/hide window-guard lifecycle behavior
+- `Languages/Python/app/gui/runtime/window/window_events_runtime.py`
+  Current state: extracted `main_window_runtime.py` slice for native close detection and close/hide window-guard lifecycle behavior; legacy `main_window_window_events_runtime.py` wrapper removed
 
 - `Languages/Python/app/gui/runtime/strategy/start_runtime.py`
-  Current state: authoritative start-engine lifecycle and loop-building module, with `main_window_start_strategy_runtime.py` left as a compatibility shim
+  Current state: authoritative start-engine lifecycle and loop-building module; `main_window_start_strategy_*` compatibility wrappers removed
 
 - `Languages/Python/app/gui/runtime/strategy/stop_runtime.py`
-  Current state: authoritative stop-engine and close-all lifecycle module, with `main_window_stop_strategy_runtime.py` left as a compatibility shim
+  Current state: authoritative stop-engine and close-all lifecycle module; `main_window_stop_strategy_runtime.py` compatibility wrapper removed
 
 - `Languages/Python/app/gui/runtime/strategy/control_runtime.py`
-  Current state: authoritative strategy control binder, with `main_window_control_runtime.py` left as a compatibility shim
+  Current state: authoritative strategy control binder; `main_window_control_*` compatibility wrappers removed
 
 - `Languages/Python/app/gui/runtime/strategy/override_runtime.py`, `controls_runtime.py`, `ui_runtime.py`, `stop_loss_runtime.py`, `indicator_runtime.py`, and `context_runtime.py`
-  Current state: authoritative strategy GUI runtime modules, with the `main_window_*` files in the same package left as compatibility shims during migration
+  Current state: authoritative strategy GUI runtime modules; all `main_window_*` wrappers in this package have been removed
 
 - `Languages/Python/app/gui/positions/actions_runtime.py`, `build_runtime.py`, `record_build_runtime.py`, `render_runtime.py`, `table_render_runtime.py`, `history_runtime.py`, `history_records_runtime.py`, `history_update_runtime.py`, `positions_runtime.py`, `tab_runtime.py`, `tracking_runtime.py`, and `worker_runtime.py`
-    Current state: preferred public positions helper modules, with the `main_window_positions_*` files in the same package left as compatibility shims and wrapper surfaces during migration
+    Current state: preferred public positions helper modules; the `main_window_positions_*` files in the same package have been removed
     Internal split note: `positions_runtime.py` now keeps the bind/orchestration surface, with shared positions config/helper state in `positions_context_runtime.py`, cumulative record aggregation in `positions_cumulative_runtime.py`, and manual refresh helpers in `positions_refresh_runtime.py`
   - `Languages/Python/app/gui/positions/actions_runtime.py`
     Current state: thin positions-action facade
@@ -460,7 +455,7 @@ Steps:
    - `strategy.py`
    - `trading_core/backtest.py`
    - `binance_wrapper.py`
-   - `gui/main_window.py`
+   - `gui/window_shell.py`
 
 Deliverable:
 

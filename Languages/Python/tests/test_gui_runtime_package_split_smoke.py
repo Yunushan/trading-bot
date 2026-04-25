@@ -31,13 +31,6 @@ if PYQT_AVAILABLE:
         backtest_state_lists_runtime as short_backtest_state_lists_runtime,
         backtest_state_symbols_runtime as short_backtest_state_symbols_runtime,
         execution_runtime as short_backtest_execution_runtime,
-        main_window_backtest_bridge_runtime as backtest_bridge_runtime,
-        main_window_backtest_execution_runtime as backtest_execution_runtime,
-        main_window_backtest_results_runtime as backtest_results_runtime,
-        main_window_backtest_runtime as backtest_worker_runtime,
-        main_window_backtest_state_runtime as backtest_state_runtime,
-        main_window_backtest_tab as backtest_tab_runtime,
-        main_window_backtest_template_runtime as backtest_template_runtime,
         results_runtime as short_backtest_results_runtime,
         state_runtime as short_backtest_state_runtime,
         tab_runtime as short_backtest_tab_runtime,
@@ -47,11 +40,6 @@ if PYQT_AVAILABLE:
     from app.gui.chart import (
         display_runtime as short_chart_display_runtime,
         host_runtime as short_chart_host_runtime,
-        main_window_chart_display_runtime as chart_display_runtime,
-        main_window_chart_host_runtime as chart_host_runtime,
-        main_window_chart_selection_runtime as chart_selection_runtime,
-        main_window_chart_tab as chart_tab_runtime,
-        main_window_chart_view_runtime as chart_view_runtime,
         selection_runtime as short_chart_selection_runtime,
         tab_runtime as short_chart_tab_runtime,
         view_runtime as short_chart_view_runtime,
@@ -61,8 +49,6 @@ if PYQT_AVAILABLE:
         code_language_launcher as code_language_launcher_runtime,
         code_language_launcher_shared_runtime as short_code_launcher_shared_runtime,
         code_language_rust_launcher_runtime as short_code_rust_launcher_runtime,
-        main_window_code as code_tab_runtime,
-        main_window_code_runtime as code_runtime_wrapper,
         runtime as short_code_runtime,
         tab_runtime as short_code_tab_runtime,
     )
@@ -76,14 +62,6 @@ if PYQT_AVAILABLE:
         header_runtime as short_dashboard_header_runtime,
         indicator_runtime as short_dashboard_indicator_runtime,
         log_runtime as short_dashboard_log_runtime,
-        main_window_dashboard_actions_runtime as dashboard_actions_runtime,
-        main_window_dashboard_chart_runtime as dashboard_chart_runtime,
-        main_window_dashboard_header_runtime as dashboard_header_runtime,
-        main_window_dashboard_indicator_runtime as dashboard_indicator_runtime,
-        main_window_dashboard_log_runtime as dashboard_log_runtime,
-        main_window_dashboard_markets_runtime as dashboard_markets_runtime,
-        main_window_dashboard_state_runtime as dashboard_state_runtime,
-        main_window_dashboard_strategy_runtime as dashboard_strategy_runtime,
         markets_runtime as short_dashboard_markets_runtime,
         state_runtime as short_dashboard_state_runtime,
         strategy_runtime as short_dashboard_strategy_runtime,
@@ -109,18 +87,6 @@ if PYQT_AVAILABLE:
         history_records_runtime as short_positions_history_records_runtime,
         history_runtime as short_positions_history_runtime,
         history_update_runtime as short_positions_history_update_runtime,
-        main_window_positions as positions_runtime_wrapper,
-        main_window_positions_actions_runtime as positions_actions_runtime,
-        main_window_positions_build_runtime as positions_build_runtime,
-        main_window_positions_history_records_runtime as positions_history_records_runtime,
-        main_window_positions_history_runtime as positions_history_runtime,
-        main_window_positions_history_update_runtime as positions_history_update_runtime,
-        main_window_positions_record_build_runtime as positions_record_build_runtime,
-        main_window_positions_render_runtime as positions_render_runtime,
-        main_window_positions_tab as positions_tab_runtime,
-        main_window_positions_table_render_runtime as positions_table_render_runtime,
-        main_window_positions_tracking_runtime as positions_tracking_runtime,
-        main_window_positions_worker as positions_worker_runtime,
         positions_runtime as short_positions_runtime,
         record_build_runtime as short_positions_record_build_runtime,
         render_runtime as short_positions_render_runtime,
@@ -133,9 +99,6 @@ if PYQT_AVAILABLE:
     import app.gui.positions.actions_history_runtime as short_positions_actions_history_runtime
     import app.gui.positions.actions_state_runtime as short_positions_actions_state_runtime
     from app.gui.trade import (
-        main_window_trade_runtime as trade_runtime_wrapper,
-        main_window_trade_signal_open_runtime as trade_signal_open_runtime,
-        main_window_trade_signal_runtime as trade_signal_runtime,
         signal_close_runtime as short_trade_signal_close_runtime,
         signal_open_runtime as short_trade_signal_open_runtime,
         signal_runtime as short_trade_signal_runtime,
@@ -144,12 +107,11 @@ if PYQT_AVAILABLE:
     import app.gui.trade.signal_close_allocations_runtime as short_trade_signal_close_allocations_runtime
     import app.gui.trade.signal_close_interval_runtime as short_trade_signal_close_interval_runtime
     import app.gui.trade.signal_close_records_runtime as short_trade_signal_close_records_runtime
-    import app.gui.main_window as main_window_wrapper_module
     import app.gui.window_shell as short_main_window_module
-    from app.gui.runtime.account.main_window_account_runtime import (
+    from app.gui.runtime.account.account_runtime import (
         bind_main_window_account_runtime as new_bind_account,
     )
-    from app.gui.runtime.account.main_window_balance_runtime import (
+    from app.gui.runtime.account.balance_runtime import (
         bind_main_window_balance_runtime as new_bind_balance,
         update_balance_label as new_update_balance_label,
     )
@@ -159,7 +121,7 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.composition.module_state_runtime import (
         install_main_window_module_state as short_install_main_window_module_state,
     )
-    from app.gui.runtime.account.main_window_margin_runtime import (
+    from app.gui.runtime.account.margin_runtime import (
         _derive_margin_snapshot as new_derive_margin_snapshot,
     )
     from app.gui.runtime.account.account_runtime import (
@@ -172,13 +134,13 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.account.margin_runtime import (
         _derive_margin_snapshot as short_derive_margin_snapshot,
     )
-    from app.gui.runtime.service.main_window_service_api_runtime import (
+    from app.gui.runtime.service.service_api_runtime import (
         bind_main_window_service_api_runtime as new_bind_service_api,
     )
-    from app.gui.runtime.service.main_window_session_runtime import (
+    from app.gui.runtime.service.session_runtime import (
         bind_main_window_session_runtime as new_bind_session,
     )
-    from app.gui.runtime.service.main_window_status_runtime import (
+    from app.gui.runtime.service.status_runtime import (
         bind_main_window_status_runtime as new_bind_status,
     )
     from app.gui.runtime.service.service_api_runtime import (
@@ -190,7 +152,7 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.service.status_runtime import (
         bind_main_window_status_runtime as short_bind_status,
     )
-    from app.gui.runtime.strategy.main_window_control_runtime import (
+    from app.gui.runtime.strategy.control_runtime import (
         bind_main_window_control_runtime as new_bind_control,
         on_leverage_changed as new_on_leverage_changed,
     )
@@ -198,13 +160,13 @@ if PYQT_AVAILABLE:
         bind_main_window_control_runtime as short_bind_control,
         on_leverage_changed as short_on_leverage_changed,
     )
-    from app.gui.runtime.strategy.main_window_indicator_runtime import (
+    from app.gui.runtime.strategy.indicator_runtime import (
         _normalize_trigger_actions_map as new_normalize_trigger_actions_map,
     )
     from app.gui.runtime.strategy.indicator_runtime import (
         _normalize_trigger_actions_map as short_normalize_trigger_actions_map,
     )
-    from app.gui.runtime.strategy.main_window_override_runtime import (
+    from app.gui.runtime.strategy.override_runtime import (
         bind_main_window_override_runtime as new_bind_override,
         _remove_selected_symbol_interval_pairs as new_remove_selected_symbol_interval_pairs,
     )
@@ -212,10 +174,10 @@ if PYQT_AVAILABLE:
         bind_main_window_override_runtime as short_bind_override,
         _remove_selected_symbol_interval_pairs as short_remove_selected_symbol_interval_pairs,
     )
-    from app.gui.runtime.strategy.main_window_stop_strategy_runtime import (
+    from app.gui.runtime.strategy.stop_runtime import (
         stop_strategy_sync as new_stop_strategy_sync,
     )
-    from app.gui.runtime.strategy.main_window_start_strategy_runtime import (
+    from app.gui.runtime.strategy.start_runtime import (
         start_strategy as new_start_strategy,
     )
     from app.gui.runtime.strategy.stop_runtime import (
@@ -224,7 +186,7 @@ if PYQT_AVAILABLE:
     from app.gui.runtime.strategy.start_runtime import (
         start_strategy as short_start_strategy,
     )
-    from app.gui.runtime.strategy.main_window_stop_loss_runtime import (
+    from app.gui.runtime.strategy.stop_loss_runtime import (
         bind_main_window_stop_loss_runtime as new_bind_stop_loss,
         _runtime_stop_loss_update as new_runtime_stop_loss_update,
     )
@@ -232,7 +194,7 @@ if PYQT_AVAILABLE:
         bind_main_window_stop_loss_runtime as short_bind_stop_loss,
         _runtime_stop_loss_update as short_runtime_stop_loss_update,
     )
-    from app.gui.runtime.strategy.main_window_strategy_ui_runtime import (
+    from app.gui.runtime.strategy.ui_runtime import (
         bind_main_window_strategy_ui_runtime as new_bind_strategy_ui,
         _normalize_loop_override as new_normalize_loop_override,
     )
@@ -240,7 +202,7 @@ if PYQT_AVAILABLE:
         bind_main_window_strategy_ui_runtime as short_bind_strategy_ui,
         _normalize_loop_override as short_normalize_loop_override,
     )
-    from app.gui.runtime.strategy.main_window_strategy_controls_runtime import (
+    from app.gui.runtime.strategy.controls_runtime import (
         bind_main_window_strategy_controls_runtime as new_bind_strategy_controls,
         _normalize_position_pct_units as new_normalize_position_pct_units,
     )
@@ -248,25 +210,25 @@ if PYQT_AVAILABLE:
         bind_main_window_strategy_controls_runtime as short_bind_strategy_controls,
         _normalize_position_pct_units as short_normalize_position_pct_units,
     )
-    from app.gui.runtime.strategy.main_window_strategy_context_runtime import (
+    from app.gui.runtime.strategy.context_runtime import (
         bind_main_window_strategy_context_runtime as new_bind_strategy_context,
     )
     from app.gui.runtime.strategy.context_runtime import (
         bind_main_window_strategy_context_runtime as short_bind_strategy_context,
     )
-    from app.gui.runtime.ui.main_window_secondary_tabs_runtime import (
+    from app.gui.runtime.ui.secondary_tabs_runtime import (
         _initialize_secondary_tabs as new_initialize_secondary_tabs,
         bind_main_window_secondary_tabs_runtime as new_bind_secondary_tabs,
     )
-    from app.gui.runtime.ui.main_window_tab_runtime import (
+    from app.gui.runtime.ui.tab_runtime import (
         _code_tab_visibility_auto_prepare_cpp_enabled as new_code_tab_visibility_auto_prepare_cpp_enabled,
         bind_main_window_tab_runtime as new_bind_tab,
     )
-    from app.gui.runtime.ui.main_window_theme_runtime import (
+    from app.gui.runtime.ui.theme_runtime import (
         bind_main_window_theme_runtime as new_bind_theme,
     )
-    from app.gui.runtime.ui.main_window_theme_styles import LIGHT_THEME as new_light_theme
-    from app.gui.runtime.ui.main_window_ui_misc_runtime import (
+    from app.gui.runtime.ui.theme_styles import LIGHT_THEME as new_light_theme
+    from app.gui.runtime.ui.ui_misc_runtime import (
         _apply_initial_geometry as new_apply_initial_geometry,
         bind_main_window_ui_misc_runtime as new_bind_ui_misc,
     )
@@ -286,19 +248,19 @@ if PYQT_AVAILABLE:
         _apply_initial_geometry as short_apply_initial_geometry,
         bind_main_window_ui_misc_runtime as short_bind_ui_misc,
     )
-    from app.gui.runtime.window.main_window_bootstrap_runtime import (
+    from app.gui.runtime.window.bootstrap_runtime import (
         _compute_global_pnl_totals as new_compute_global_pnl_totals,
         _initialize_main_window_state as new_initialize_main_window_state,
         bind_main_window_bootstrap_runtime as new_bind_bootstrap,
     )
-    from app.gui.runtime.window.main_window_init_finalize_runtime import (
+    from app.gui.runtime.window.init_finalize_runtime import (
         _finalize_init_ui as new_finalize_init_ui,
         bind_main_window_init_finalize_runtime as new_bind_init_finalize,
     )
-    from app.gui.runtime.window.main_window_init_ui_runtime import (
+    from app.gui.runtime.window.init_ui_runtime import (
         build_main_window_tabs_ui as new_build_main_window_tabs_ui,
     )
-    from app.gui.runtime.window.main_window_log_runtime import (
+    from app.gui.runtime.window.log_runtime import (
         _gui_buffer_log as new_gui_buffer_log,
         _gui_flush_log_buffer as new_gui_flush_log_buffer,
         _gui_setup_log_buffer as new_gui_setup_log_buffer,
@@ -307,20 +269,20 @@ if PYQT_AVAILABLE:
         _mw_interval_sort_key as new_log_interval_sort_key,
         _mw_parse_any_datetime as new_parse_any_datetime,
     )
-    from app.gui.runtime.window.main_window_portfolio_runtime import (
+    from app.gui.runtime.window.portfolio_runtime import (
         _compute_global_pnl_totals as new_compute_portfolio_pnl_totals,
         _update_positions_balance_labels as new_update_positions_balance_labels,
     )
-    from app.gui.runtime.window.main_window_positions_runtime import (
+    from app.gui.runtime.window.positions_runtime import (
         _mw_collect_strategy_intervals as new_collect_strategy_intervals,
         _mw_reconfigure_positions_worker as new_reconfigure_positions_worker,
         _mw_refresh_waiting_positions_tab as new_refresh_waiting_positions_tab,
         configure_main_window_positions_runtime as new_configure_positions_runtime,
     )
-    from app.gui.runtime.window.main_window_startup_runtime import (
+    from app.gui.runtime.window.startup_runtime import (
         apply_standard_window_flags as new_apply_standard_window_flags,
     )
-    from app.gui.runtime.window.main_window_state_init_runtime import (
+    from app.gui.runtime.window.state_init_runtime import (
         _initialize_backtest_state as new_initialize_backtest_state,
         _initialize_chart_state as new_initialize_chart_state,
         _initialize_config_state as new_initialize_config_state,
@@ -328,7 +290,7 @@ if PYQT_AVAILABLE:
         _resolve_app_state_load_path as new_resolve_app_state_load_path,
         configure_main_window_state_init_runtime as new_configure_state_init_runtime,
     )
-    from app.gui.runtime.window.main_window_runtime import (
+    from app.gui.runtime.window.runtime import (
         _allow_guard_bypass as new_allow_guard_bypass,
         _mw_interval_sort_key as new_interval_sort_key,
         bind_main_window_runtime as new_bind_runtime,
@@ -338,7 +300,7 @@ if PYQT_AVAILABLE:
         _mw_interval_sort_key as short_interval_sort_key,
         bind_main_window_runtime as short_bind_runtime,
     )
-    from app.gui.runtime.window.main_window_window_events_runtime import (
+    from app.gui.runtime.window.window_events_runtime import (
         allow_guard_bypass as new_window_allow_guard_bypass,
         close_event as new_close_event,
         hide_event as new_hide_event,
@@ -401,6 +363,43 @@ if PYQT_AVAILABLE:
         should_block_spontaneous_close as short_should_block_spontaneous_close,
         teardown_positions_thread as short_teardown_positions_thread,
     )
+    backtest_bridge_runtime = short_backtest_bridge_runtime
+    backtest_execution_runtime = short_backtest_execution_runtime
+    backtest_results_runtime = short_backtest_results_runtime
+    backtest_state_runtime = short_backtest_state_runtime
+    backtest_tab_runtime = short_backtest_tab_runtime
+    backtest_template_runtime = short_backtest_template_runtime
+    backtest_worker_runtime = short_backtest_worker_runtime
+    chart_display_runtime = short_chart_display_runtime
+    chart_host_runtime = short_chart_host_runtime
+    chart_selection_runtime = short_chart_selection_runtime
+    chart_tab_runtime = short_chart_tab_runtime
+    chart_view_runtime = short_chart_view_runtime
+    dashboard_actions_runtime = short_dashboard_actions_runtime
+    dashboard_chart_runtime = short_dashboard_chart_runtime
+    dashboard_header_runtime = short_dashboard_header_runtime
+    dashboard_indicator_runtime = short_dashboard_indicator_runtime
+    dashboard_log_runtime = short_dashboard_log_runtime
+    dashboard_markets_runtime = short_dashboard_markets_runtime
+    dashboard_state_runtime = short_dashboard_state_runtime
+    dashboard_strategy_runtime = short_dashboard_strategy_runtime
+    trade_runtime_wrapper = short_trade_runtime
+    trade_signal_open_runtime = short_trade_signal_open_runtime
+    trade_signal_runtime = short_trade_signal_runtime
+    code_runtime_wrapper = short_code_runtime
+    code_tab_runtime = short_code_tab_runtime
+    positions_runtime_wrapper = short_positions_runtime
+    positions_actions_runtime = short_positions_actions_runtime
+    positions_build_runtime = short_positions_build_runtime
+    positions_history_records_runtime = short_positions_history_records_runtime
+    positions_history_runtime = short_positions_history_runtime
+    positions_history_update_runtime = short_positions_history_update_runtime
+    positions_record_build_runtime = short_positions_record_build_runtime
+    positions_render_runtime = short_positions_render_runtime
+    positions_tab_runtime = short_positions_tab_runtime
+    positions_table_render_runtime = short_positions_table_render_runtime
+    positions_tracking_runtime = short_positions_tracking_runtime
+    positions_worker_runtime = short_positions_worker_runtime
 
 
 @unittest.skipUnless(
@@ -916,6 +915,93 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             "app.gui.runtime.window_runtime",
             "app.gui.runtime.window_webengine_guard_runtime",
             "app.gui.runtime.window.window_runtime",
+            "app.gui.backtest.main_window_backtest_bridge_runtime",
+            "app.gui.backtest.main_window_backtest_execution_runtime",
+            "app.gui.backtest.main_window_backtest_results_runtime",
+            "app.gui.backtest.main_window_backtest_runtime",
+            "app.gui.backtest.main_window_backtest_state_runtime",
+            "app.gui.backtest.main_window_backtest_tab",
+            "app.gui.backtest.main_window_backtest_template_runtime",
+            "app.gui.chart.main_window_chart_display_runtime",
+            "app.gui.chart.main_window_chart_host_runtime",
+            "app.gui.chart.main_window_chart_selection_runtime",
+            "app.gui.chart.main_window_chart_tab",
+            "app.gui.chart.main_window_chart_view_runtime",
+            "app.gui.dashboard.main_window_dashboard_actions_runtime",
+            "app.gui.dashboard.main_window_dashboard_chart_runtime",
+            "app.gui.dashboard.main_window_dashboard_header_runtime",
+            "app.gui.dashboard.main_window_dashboard_indicator_runtime",
+            "app.gui.dashboard.main_window_dashboard_log_runtime",
+            "app.gui.dashboard.main_window_dashboard_markets_runtime",
+            "app.gui.dashboard.main_window_dashboard_state_runtime",
+            "app.gui.dashboard.main_window_dashboard_strategy_runtime",
+            "app.gui.trade.main_window_trade_runtime",
+            "app.gui.trade.main_window_trade_signal_open_runtime",
+            "app.gui.trade.main_window_trade_signal_runtime",
+            "app.gui.code.main_window_code",
+            "app.gui.code.main_window_code_runtime",
+            "app.gui.positions.main_window_positions",
+            "app.gui.positions.main_window_positions_actions_runtime",
+            "app.gui.positions.main_window_positions_build_runtime",
+            "app.gui.positions.main_window_positions_history_records_runtime",
+            "app.gui.positions.main_window_positions_history_runtime",
+            "app.gui.positions.main_window_positions_history_update_runtime",
+            "app.gui.positions.main_window_positions_record_build_runtime",
+            "app.gui.positions.main_window_positions_render_runtime",
+            "app.gui.positions.main_window_positions_tab",
+            "app.gui.positions.main_window_positions_table_render_runtime",
+            "app.gui.positions.main_window_positions_tracking_runtime",
+            "app.gui.positions.main_window_positions_worker",
+            "app.gui.runtime.account.main_window_account_runtime",
+            "app.gui.runtime.account.main_window_balance_runtime",
+            "app.gui.runtime.account.main_window_margin_runtime",
+            "app.gui.runtime.service.main_window_service_api_runtime",
+            "app.gui.runtime.service.main_window_session_runtime",
+            "app.gui.runtime.service.main_window_status_runtime",
+            "app.gui.runtime.ui.main_window_secondary_tabs_runtime",
+            "app.gui.runtime.ui.main_window_tab_runtime",
+            "app.gui.runtime.ui.main_window_theme_runtime",
+            "app.gui.runtime.ui.main_window_theme_styles",
+            "app.gui.runtime.ui.main_window_ui_misc_runtime",
+            "app.gui.runtime.window.main_window_bootstrap_runtime",
+            "app.gui.runtime.window.main_window_init_finalize_runtime",
+            "app.gui.runtime.window.main_window_init_ui_runtime",
+            "app.gui.runtime.window.main_window_log_runtime",
+            "app.gui.runtime.window.main_window_portfolio_runtime",
+            "app.gui.runtime.window.main_window_positions_runtime",
+            "app.gui.runtime.window.main_window_runtime",
+            "app.gui.runtime.window.main_window_startup_runtime",
+            "app.gui.runtime.window.main_window_state_init_runtime",
+            "app.gui.runtime.window.main_window_window_events_runtime",
+            "app.gui.runtime.strategy.main_window_control_actions_runtime",
+            "app.gui.runtime.strategy.main_window_control_lifecycle_runtime",
+            "app.gui.runtime.strategy.main_window_control_runtime",
+            "app.gui.runtime.strategy.main_window_control_shared_runtime",
+            "app.gui.runtime.strategy.main_window_indicator_runtime",
+            "app.gui.runtime.strategy.main_window_override_actions_runtime",
+            "app.gui.runtime.strategy.main_window_override_runtime",
+            "app.gui.runtime.strategy.main_window_override_shared_runtime",
+            "app.gui.runtime.strategy.main_window_override_table_runtime",
+            "app.gui.runtime.strategy.main_window_override_ui_runtime",
+            "app.gui.runtime.strategy.main_window_start_strategy_collect_runtime",
+            "app.gui.runtime.strategy.main_window_start_strategy_engine_runtime",
+            "app.gui.runtime.strategy.main_window_start_strategy_runtime",
+            "app.gui.runtime.strategy.main_window_start_strategy_shared_runtime",
+            "app.gui.runtime.strategy.main_window_stop_loss_backtest_context_runtime",
+            "app.gui.runtime.strategy.main_window_stop_loss_runtime_context_runtime",
+            "app.gui.runtime.strategy.main_window_stop_loss_runtime",
+            "app.gui.runtime.strategy.main_window_stop_loss_shared_runtime",
+            "app.gui.runtime.strategy.main_window_stop_strategy_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_context_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_controls_collect_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_controls_format_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_controls_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_controls_shared_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_ui_controls_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_ui_dashboard_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_ui_runtime",
+            "app.gui.runtime.strategy.main_window_strategy_ui_shared_runtime",
+            "app.gui.main_window",
         ]
 
         for module_name in removed_modules:
@@ -924,7 +1010,7 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
                     importlib.import_module(module_name)
 
     def test_main_window_still_exposes_bound_helpers(self):
-        from app.gui.main_window import MainWindow
+        from app.gui.window_shell import MainWindow
 
         self.assertIs(MainWindow, short_main_window_module.MainWindow)
 
@@ -951,7 +1037,7 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
                 self.assertTrue(hasattr(MainWindow, method_name))
                 self.assertTrue(callable(getattr(MainWindow, method_name)))
 
-    def test_positions_build_runtime_shim_still_exposes_record_build_helpers(self):
+    def test_positions_runtime_surfaces_expose_record_build_helpers(self):
         helpers = [
             positions_build_runtime._copy_allocations_for_key,
             positions_build_runtime._seed_positions_map_from_rows,
@@ -1052,10 +1138,10 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             short_positions_worker_runtime._PositionsWorker,
         )
 
-    def test_main_window_module_globals_still_expose_expected_runtime_state(self):
-        import app.gui.main_window as main_window_module
+    def test_window_shell_module_globals_still_expose_expected_runtime_state(self):
+        import app.gui.window_shell as main_window_module
 
-        self.assertIs(main_window_module, main_window_wrapper_module)
+        self.assertIs(main_window_module, short_main_window_module)
         self.assertIs(main_window_module.MainWindow, short_main_window_module.MainWindow)
         self.assertEqual(main_window_module.CONNECTOR_OPTIONS, short_main_window_module.CONNECTOR_OPTIONS)
         self.assertEqual(main_window_module._SYMBOL_FETCH_TOP_N, short_main_window_module._SYMBOL_FETCH_TOP_N)
