@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .ai import AISettings
 from .auth import AuthSettings, DEFAULT_API_KEY_ENV, DEFAULT_API_SECRET_ENV
 from .backtest import (
     BACKTEST_TEMPLATE_DEFAULT,
@@ -45,6 +46,7 @@ from .ui import DEFAULT_CODE_LANGUAGE, DEFAULT_SELECTED_EXCHANGE, UserInterfaceS
 __all__ = [
     "AppSettings",
     "AuthSettings",
+    "AISettings",
     "AVAILABLE_INDICATORS",
     "BACKTEST_TEMPLATE_DEFAULT",
     "BacktestSettings",

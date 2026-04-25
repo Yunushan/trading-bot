@@ -69,3 +69,26 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("YARL_NO_EXTENSIONS", workflow)
         self.assertIn("FROZENLIST_NO_EXTENSIONS", workflow)
         self.assertIn("PROPCACHE_NO_EXTENSIONS", workflow)
+
+    def test_release_workflows_use_node24_action_versions(self):
+        workflows = {
+            name: (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            for name in (
+                "release-windows.yml",
+                "release-linux-macos.yml",
+                "release-freebsd.yml",
+            )
+        }
+        combined = "\n".join(workflows.values())
+
+        self.assertNotIn("ilammy/msvc-dev-cmd@v1", combined)
+        self.assertNotIn("actions/download-artifact@v6", combined)
+        self.assertNotIn("actions/upload-artifact@v6", combined)
+        self.assertNotIn("softprops/action-gh-release@v2", combined)
+
+        self.assertIn("TheMrMilchmann/setup-msvc-dev@v4", workflows["release-windows.yml"])
+        self.assertIn("actions/download-artifact@v7", workflows["release-windows.yml"])
+        self.assertIn("actions/download-artifact@v7", workflows["release-linux-macos.yml"])
+        for workflow in workflows.values():
+            self.assertIn("actions/upload-artifact@v7", workflow)
+            self.assertIn("softprops/action-gh-release@v3", workflow)

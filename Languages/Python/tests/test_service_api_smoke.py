@@ -91,6 +91,10 @@ class ServiceApiSmokeTests(unittest.TestCase):
             "account",
             "portfolio",
             "logs",
+            "terminal_run",
+            "llm_providers",
+            "llm_config",
+            "llm_prompt",
             "execution",
             "backtest",
             "runtime_state",
@@ -162,6 +166,8 @@ class ServiceApiSmokeTests(unittest.TestCase):
         summary = service.get_config_summary().to_dict()
         self.assertEqual(summary["symbol_count"], 2)
         self.assertEqual(summary["interval_count"], 2)
+        self.assertEqual(summary["llm_provider"], "openai")
+        self.assertFalse(summary["llm_enabled"])
 
     def test_service_dashboard_snapshot_contains_expected_sections(self):
         service = TradingBotService()
@@ -182,6 +188,30 @@ class ServiceApiSmokeTests(unittest.TestCase):
         self.assertEqual(snapshot["execution"]["workload_kind"], "unbound")
         self.assertEqual(snapshot["backtest"]["state"], "idle")
         self.assertEqual(snapshot["backtest"]["run_count"], 0)
+        self.assertIn("llm", snapshot["config"])
+        self.assertEqual(snapshot["config"]["llm"]["provider"], "openai")
+
+    def test_service_terminal_and_llm_config_commands(self):
+        service = TradingBotService()
+
+        status_result = service.run_terminal_command("status", source="test-terminal").to_dict()
+        self.assertTrue(status_result["accepted"])
+        self.assertEqual(status_result["exit_code"], 0)
+        self.assertIn("lifecycle_phase", status_result["output"])
+
+        llm_result = service.run_terminal_command(
+            "llm set llm_provider=deepseek llm_model=deepseek-chat llm_enabled=true",
+            source="test-terminal",
+        ).to_dict()
+        self.assertTrue(llm_result["accepted"])
+        llm_config = service.get_llm_config_payload()
+        self.assertTrue(llm_config["enabled"])
+        self.assertEqual(llm_config["provider"], "deepseek")
+        self.assertEqual(llm_config["model"], "deepseek-chat")
+
+        prompt_result = service.run_terminal_command("llm prompt Explain BTC risk", source="test-terminal").to_dict()
+        self.assertTrue(prompt_result["accepted"])
+        self.assertIn('"dry_run": true', prompt_result["output"])
 
     def test_local_service_executor_start_stop_updates_runtime(self):
         service = TradingBotService()

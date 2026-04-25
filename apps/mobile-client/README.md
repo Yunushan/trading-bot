@@ -10,8 +10,10 @@ This client is intentionally small:
 - inspect runtime, status, backtest state, and recent logs
 - request bot start/stop
 - trigger the extracted service-owned backtest runner
+- run controlled service terminal commands such as `status`, `start 1`, `stop`, `config get`, and `llm providers`
 
 It does **not** run trading logic locally, and it should never store exchange or broker credentials on the phone.
+The terminal panel does not execute operating-system shell commands on the backend.
 
 ## Install
 

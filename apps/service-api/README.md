@@ -20,3 +20,20 @@ Deprecated compatibility launchers still work:
 cd Languages/Python
 python -m app.service.main --serve --host 127.0.0.1 --port 8000
 ```
+
+Run controlled CLI/terminal commands locally:
+
+```bash
+python apps/service-api/main.py --terminal "status"
+python apps/service-api/main.py --terminal "config set mode=Demo/Testnet theme=Blue"
+python apps/service-api/main.py --terminal "llm providers"
+```
+
+Control an already running service or desktop API host:
+
+```bash
+python apps/service-api/main.py --base-url http://127.0.0.1:8000 --terminal "status"
+```
+
+The terminal command surface is intentionally allowlisted and does not execute
+raw operating-system shell commands.

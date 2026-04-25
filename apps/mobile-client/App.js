@@ -83,6 +83,8 @@ export default function App() {
   const [message, setMessage] = useState("Connect to a running service API.");
   const [health, setHealth] = useState(null);
   const [dashboard, setDashboard] = useState(null);
+  const [terminalCommand, setTerminalCommand] = useState("status");
+  const [terminalHistory, setTerminalHistory] = useState([]);
 
   const requestJson = async (path, { method = "GET", body = null } = {}) => {
     const headers = { Accept: "application/json" };
@@ -143,6 +145,27 @@ export default function App() {
         body: { request: {}, source: "mobile-client" },
       });
       setMessage(result.status_message || "Backtest request sent.");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      setLoading(false);
+    }
+  };
+
+  const runTerminalCommand = async (commandText = terminalCommand) => {
+    const command = String(commandText || "").trim();
+    if (!command) {
+      setMessage("Enter a terminal command first.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await requestJson(apiPath("terminal/run"), {
+        method: "POST",
+        body: { command, source: "mobile-terminal" },
+      });
+      setTerminalHistory((items) => [result, ...items].slice(0, 8));
+      setMessage(result.accepted ? "Terminal command completed." : "Terminal command failed.");
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -235,6 +258,42 @@ export default function App() {
               <Text style={styles.buttonText}>Request Stop</Text>
             </Pressable>
           </View>
+        </Card>
+
+        <Card title="Terminal">
+          <Text style={styles.message}>
+            Controlled service commands only. This does not run operating-system shell commands on the backend.
+          </Text>
+          <Text style={styles.fieldLabel}>Command</Text>
+          <TextInput
+            value={terminalCommand}
+            onChangeText={setTerminalCommand}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+            placeholder="status, start 1, stop, config get, llm providers"
+            placeholderTextColor="#7d93aa"
+          />
+          <View style={styles.buttonRow}>
+            <Pressable style={styles.button} onPress={() => runTerminalCommand()}>
+              <Text style={styles.buttonText}>Run Command</Text>
+            </Pressable>
+            <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => runTerminalCommand("help")}>
+              <Text style={styles.buttonText}>Help</Text>
+            </Pressable>
+          </View>
+          {terminalHistory.length ? (
+            terminalHistory.map((entry, index) => (
+              <View key={`${entry.created_at || index}-${entry.command || "command"}`} style={styles.terminalRow}>
+                <Text style={styles.logMeta}>
+                  {entry.accepted ? "OK" : "FAILED"} · {entry.command || ""}
+                </Text>
+                <Text style={styles.terminalOutput}>{entry.output || ""}</Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.message}>No terminal commands run yet.</Text>
+          )}
         </Card>
 
         <Card title="Backtest" tone={backtestTone}>
@@ -423,5 +482,18 @@ const styles = StyleSheet.create({
     color: "#f2f5f9",
     fontSize: 13,
     lineHeight: 19,
+  },
+  terminalRow: {
+    backgroundColor: "rgba(2, 10, 19, 0.58)",
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.06)",
+  },
+  terminalOutput: {
+    color: "#d7f7ff",
+    fontFamily: "monospace",
+    fontSize: 12,
+    lineHeight: 17,
   },
 });

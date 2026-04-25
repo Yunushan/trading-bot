@@ -22,6 +22,7 @@ CMakeFiles/
 .tmp_showtests/
 Languages/C++/build-*/
 Languages/Rust/target/
+experiments/rust-shells/target/
 .trading_bot_allocations.json
 /Trading-Bot-*.exe
 /.tmp_pythonw_info.txt

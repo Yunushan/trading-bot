@@ -36,6 +36,10 @@ SERVICE_API_ROUTE_SUFFIXES: dict[str, str] = {
     "account": "/account",
     "portfolio": "/portfolio",
     "logs": "/logs",
+    "terminal_run": "/terminal/run",
+    "llm_providers": "/llm/providers",
+    "llm_config": "/llm/config",
+    "llm_prompt": "/llm/prompt",
     "stream_dashboard": "/stream/dashboard",
 }
 

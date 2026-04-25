@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 
 from ...core.backtest import normalize_backtest_intervals
 from ...config import coerce_bool
+from ...integrations.llm import build_llm_config_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,7 @@ class ServiceEditableConfig:
     symbols: tuple[str, ...]
     intervals: tuple[str, ...]
     api_credentials_present: bool
+    llm: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -48,6 +50,10 @@ class ServiceConfigSummary:
     enabled_indicator_count: int
     runtime_pair_count: int
     backtest_pair_count: int
+    llm_enabled: bool
+    llm_provider: str
+    llm_mode: str
+    llm_api_key_present: bool
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -95,6 +101,7 @@ def build_editable_config(config: dict | None) -> ServiceEditableConfig:
         symbols=_string_list(cfg.get("symbols")),
         intervals=_interval_tuple(cfg.get("intervals")),
         api_credentials_present=bool(api_key and api_secret),
+        llm=build_llm_config_payload(cfg),
     )
 
 
@@ -134,6 +141,7 @@ def build_config_summary(config: dict | None) -> ServiceConfigSummary:
 
     api_key = str(cfg.get("api_key") or "").strip()
     api_secret = str(cfg.get("api_secret") or "").strip()
+    llm = build_llm_config_payload(cfg)
 
     return ServiceConfigSummary(
         mode=str(cfg.get("mode") or "Unknown"),
@@ -148,4 +156,8 @@ def build_config_summary(config: dict | None) -> ServiceConfigSummary:
         enabled_indicator_count=int(enabled_indicator_count),
         runtime_pair_count=len(runtime_pairs),
         backtest_pair_count=len(backtest_pairs),
+        llm_enabled=bool(llm["enabled"]),
+        llm_provider=str(llm["provider"]),
+        llm_mode=str(llm["mode"]),
+        llm_api_key_present=bool(llm["api_key_present"]),
     )

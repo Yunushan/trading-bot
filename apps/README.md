@@ -7,6 +7,8 @@ desktop workspace.
 - `service-api/`: canonical headless FastAPI launcher boundary
 - `web-dashboard/`: thin browser dashboard served by the service API at `/ui/`
 - `mobile-client/`: Expo-based Android/iOS thin client
+- Mobile and web clients can use the service terminal API for controlled
+  commands, but raw OS shell access should stay disabled for remote users.
 
 The desktop and service wrappers currently delegate into `Languages/Python/`
 while the repo finishes its product-first migration. The thin web and mobile

@@ -8,6 +8,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +42,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1", help="Host binding for --serve. Default: 127.0.0.1")
     parser.add_argument("--port", type=int, default=8000, help="Port for --serve. Default: 8000")
     parser.add_argument("--api-token", default="", help="Optional bearer token for protecting the HTTP API.")
+    parser.add_argument(
+        "--base-url",
+        default="",
+        help="Remote service API base URL for CLI control of an already running desktop/service host.",
+    )
     parser.add_argument("--status", action="store_true", help="Print the current service status snapshot.")
     parser.add_argument(
         "--config-summary",
@@ -64,6 +71,13 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--logs", action="store_true", help="Print recent service log events.")
     parser.add_argument("--record-log", help="Record a single service log message before printing output.")
+    parser.add_argument(
+        "--terminal",
+        help="Run one controlled service terminal command, for example: --terminal \"status\".",
+    )
+    parser.add_argument("--config-patch", help="Patch local service config with a JSON object before printing output.")
+    parser.add_argument("--llm-providers", action="store_true", help="Print supported cloud/local LLM providers.")
+    parser.add_argument("--llm-config", action="store_true", help="Print sanitized LLM configuration.")
     control_group.add_argument(
         "--request-start",
         action="store_true",
@@ -83,6 +97,24 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _remote_json_request(base_url: str, path: str, *, api_token: str = "", payload: dict | None = None):
+    url = f"{str(base_url or '').rstrip('/')}{path}"
+    data = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if api_token:
+        headers["Authorization"] = f"Bearer {api_token}"
+    request = Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+    try:
+        with urlopen(request, timeout=10) as response:
+            raw = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"{exc.code} {exc.reason}: {detail}") from exc
+    return json.loads(raw) if raw else None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_argument_parser()
     args = parser.parse_args(argv)
@@ -95,8 +127,35 @@ def main(argv: list[str] | None = None) -> int:
         run_service_api_server(host=args.host, port=args.port, api_token=args.api_token)
         return 0
 
+    if args.base_url and args.terminal:
+        try:
+            remote_result = _remote_json_request(
+                args.base_url,
+                service_api_route("terminal_run"),
+                api_token=args.api_token,
+                payload={"command": args.terminal, "source": "service-cli-remote"},
+            )
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(remote_result, indent=2, sort_keys=True))
+        else:
+            print(str((remote_result or {}).get("output") or ""))
+        return int((remote_result or {}).get("exit_code") or 0)
+
     service = TradingBotService()
     service.enable_local_executor()
+    if args.config_patch:
+        try:
+            config_patch = json.loads(args.config_patch)
+        except Exception as exc:
+            print(f"Invalid --config-patch JSON: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(config_patch, dict):
+            print("--config-patch expects a JSON object.", file=sys.stderr)
+            return 2
+        service.update_config(config_patch)
     descriptor = service.describe_runtime()
     status = service.get_status()
     config_summary = service.get_config_summary()
@@ -121,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
         status = service.get_status()
     if args.logs:
         logs = [item.to_dict() for item in service.get_recent_logs(limit=50)]
+    terminal_result = None
+    if args.terminal:
+        terminal_result = service.run_terminal_command(args.terminal, source="service-cli-terminal")
     if args.json:
         payload = {
             "account_snapshot": account_snapshot.to_dict(),
@@ -133,8 +195,19 @@ def main(argv: list[str] | None = None) -> int:
             "portfolio_snapshot": portfolio_snapshot.to_dict(),
             "runtime": descriptor.to_dict(),
             "status": status.to_dict(),
+            "terminal_result": terminal_result.to_dict() if terminal_result else None,
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if terminal_result is not None:
+        print(terminal_result.output)
+        return int(terminal_result.exit_code)
+    if args.llm_providers:
+        print(json.dumps(service.get_llm_provider_catalog(), indent=2, sort_keys=True))
+        return 0
+    if args.llm_config:
+        print(json.dumps(service.get_llm_config_payload(), indent=2, sort_keys=True))
         return 0
 
     if args.status:

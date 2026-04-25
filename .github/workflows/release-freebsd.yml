@@ -124,7 +124,7 @@ jobs:
           tar -C release -czf "release/Trading-Bot-C++-freebsd-${arch}-${release_version}.tar.gz" "Trading-Bot-C++"
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: freebsd-release-assets
           path: release/*
@@ -132,7 +132,7 @@ jobs:
 
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             release/Trading-Bot-Python-freebsd-*.tar.gz

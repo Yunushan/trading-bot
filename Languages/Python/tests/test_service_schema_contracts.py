@@ -158,6 +158,10 @@ class ServiceSchemaContractTests(unittest.TestCase):
                 {"symbol": "BTCUSDT", "interval": "1m"},
                 {"symbol": "ETHUSDT", "interval": "5m"},
             ],
+            "llm_enabled": True,
+            "llm_provider": "qwen",
+            "llm_model": "qwen-turbo",
+            "llm_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         }
 
         editable = build_editable_config(config).to_dict()
@@ -166,8 +170,13 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertEqual(["BTCUSDT", "ETHUSDT"], editable["symbols"])
         self.assertEqual(["1h"], editable["intervals"])
         self.assertFalse(editable["api_credentials_present"])
+        self.assertTrue(editable["llm"]["enabled"])
+        self.assertEqual("qwen", editable["llm"]["provider"])
         self.assertEqual(2, summary["symbol_count"])
         self.assertEqual(1, summary["interval_count"])
         self.assertEqual(2, summary["enabled_indicator_count"])
         self.assertEqual(1, summary["runtime_pair_count"])
         self.assertEqual(2, summary["backtest_pair_count"])
+        self.assertTrue(summary["llm_enabled"])
+        self.assertEqual("qwen", summary["llm_provider"])
+        self.assertEqual("cloud", summary["llm_mode"])

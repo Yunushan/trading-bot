@@ -26,6 +26,13 @@ if __package__ in (None, ""):
     from app.service.schemas.positions import ServicePortfolioSnapshot
     from app.service.schemas.runtime import ServiceRuntimeDescriptor
     from app.service.schemas.status import BotStatusSnapshot
+    from app.service.terminal import ServiceTerminalCommandResult, run_service_terminal_command
+    from app.integrations.llm import (
+        build_llm_config_payload,
+        call_llm,
+        list_llm_provider_specs,
+        update_llm_config,
+    )
 else:
     from .runners.bot_runtime import BotRuntimeCoordinator
     from .runners.local_executor import LocalServiceExecutionAdapter
@@ -38,6 +45,13 @@ else:
     from .schemas.positions import ServicePortfolioSnapshot
     from .schemas.runtime import ServiceRuntimeDescriptor
     from .schemas.status import BotStatusSnapshot
+    from .terminal import ServiceTerminalCommandResult, run_service_terminal_command
+    from ..integrations.llm import (
+        build_llm_config_payload,
+        call_llm,
+        list_llm_provider_specs,
+        update_llm_config,
+    )
 
 
 class TradingBotService:
@@ -69,6 +83,48 @@ class TradingBotService:
 
     def update_config(self, config_patch: dict | None) -> ServiceEditableConfig:
         return self._runtime.update_config(config_patch)
+
+    def get_llm_provider_catalog(self) -> list[dict[str, object]]:
+        return list_llm_provider_specs()
+
+    def get_llm_config_payload(self) -> dict[str, object]:
+        return build_llm_config_payload(self.config)
+
+    def update_llm_config(self, config_patch: dict | None) -> dict[str, object]:
+        updated_config = update_llm_config(self.config, config_patch)
+        self.replace_config(updated_config)
+        return self.get_llm_config_payload()
+
+    def call_llm(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str = "",
+        dry_run: bool = True,
+        source: str = "service",
+    ) -> dict[str, object]:
+        result = call_llm(
+            self.config,
+            prompt=prompt,
+            system_prompt=system_prompt
+            or "You are an advisory trading assistant. Do not place orders or claim that orders were executed.",
+            context=self.get_dashboard_snapshot(log_limit=10),
+            dry_run=dry_run,
+        )
+        self.record_log_event(
+            f"LLM prompt {'prepared' if dry_run else 'sent'} via {self.get_llm_config_payload()['provider']}.",
+            source=source,
+            level="info" if result.get("ok") else "warning",
+        )
+        return result
+
+    def run_terminal_command(
+        self,
+        command: str,
+        *,
+        source: str = "service-terminal",
+    ) -> ServiceTerminalCommandResult:
+        return run_service_terminal_command(self, command, source=source)
 
     def set_account_snapshot(self, **kwargs) -> ServiceAccountSnapshot:
         return self._runtime.set_account_snapshot(**kwargs)

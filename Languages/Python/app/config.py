@@ -9,6 +9,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_APP_DIR))
     from settings import (  # type: ignore[no-redef]
         AVAILABLE_INDICATORS,
+        AISettings,
         BACKTEST_TEMPLATE_DEFAULT,
         DEFAULT_CONFIG,
         DEFAULT_SETTINGS,
@@ -38,6 +39,7 @@ if __package__ in (None, ""):
 else:
     from .settings import (
         AVAILABLE_INDICATORS,
+        AISettings,
         BACKTEST_TEMPLATE_DEFAULT,
         DEFAULT_CONFIG,
         DEFAULT_SETTINGS,
@@ -68,6 +70,7 @@ else:
 __all__ = [
     "AppSettings",
     "AuthSettings",
+    "AISettings",
     "AVAILABLE_INDICATORS",
     "BACKTEST_TEMPLATE_DEFAULT",
     "BacktestSettings",

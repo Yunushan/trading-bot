@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 
+from .ai import AISettings
 from .auth import AuthSettings
 from .backtest import BacktestSettings
 from .connectors import ConnectorSettings
@@ -19,6 +20,7 @@ class AppSettings:
     connectors: ConnectorSettings = field(default_factory=ConnectorSettings)
     ui: UserInterfaceSettings = field(default_factory=UserInterfaceSettings)
     risk: RiskManagementSettings = field(default_factory=RiskManagementSettings)
+    ai: AISettings = field(default_factory=AISettings)
     indicators: dict[str, dict[str, object]] = field(default_factory=build_runtime_indicator_defaults)
     backtest: BacktestSettings = field(default_factory=BacktestSettings)
 
@@ -29,6 +31,7 @@ class AppSettings:
         payload.update(self.connectors.to_config_dict())
         payload.update(self.ui.to_config_dict())
         payload.update(self.risk.to_config_dict())
+        payload.update(self.ai.to_config_dict())
         payload["indicators"] = copy.deepcopy(self.indicators)
         payload["backtest"] = self.backtest.to_config_dict()
         return payload

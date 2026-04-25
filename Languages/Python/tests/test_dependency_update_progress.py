@@ -14,13 +14,17 @@ if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
 
 try:
     from app.gui.code import dependency_versions_runtime, dependency_versions_ui  # noqa: E402
-    from app.gui.code.code_language_catalog import PYTHON_CODE_LANGUAGE_KEY  # noqa: E402
+    from app.gui.code.code_language_catalog import (  # noqa: E402
+        PYTHON_CODE_LANGUAGE_KEY,
+        RUST_CODE_LANGUAGE_KEY,
+    )
 
     DEPENDENCY_UPDATE_IMPORT_ERROR = ""
 except Exception as exc:  # pragma: no cover - depends on optional desktop imports
     dependency_versions_runtime = None
     dependency_versions_ui = None
     PYTHON_CODE_LANGUAGE_KEY = ""
+    RUST_CODE_LANGUAGE_KEY = ""
     DEPENDENCY_UPDATE_IMPORT_ERROR = str(exc)
 
 
@@ -130,6 +134,44 @@ class DependencyUpdateProgressTests(unittest.TestCase):
         self.assertEqual(progress_events[-1]["failed"], 1)
         self.assertTrue(any(event.get("state") == "running" and event.get("current") == "ok-package" for event in progress_events))
         self.assertTrue(any(event.get("state") == "failed" and event.get("current") == "broken-package" for event in progress_events))
+
+    def test_rust_update_installs_toolchain_when_rustup_is_missing(self):
+        window = _FakeWindow()
+        window.config = {"code_language": RUST_CODE_LANGUAGE_KEY}
+        progress_events = []
+        targets = [
+            {"label": "rustc", "custom": "rust_rustc"},
+            {"label": "cargo", "custom": "rust_cargo"},
+        ]
+
+        with (
+            mock.patch.object(dependency_versions_runtime, "_rust_tool_path", return_value=None),
+            mock.patch.object(dependency_versions_runtime, "_rust_toolchain_env", return_value={}),
+            mock.patch.object(
+                dependency_versions_runtime,
+                "_install_rust_toolchain",
+                return_value=(True, "Rust installed"),
+            ),
+            mock.patch.object(dependency_versions_runtime, "_reset_rust_dependency_caches"),
+            mock.patch.object(
+                dependency_versions_ui,
+                "_emit_dependency_update_progress",
+                side_effect=lambda _window, progress: progress_events.append(dict(progress)),
+            ),
+        ):
+            result = dependency_versions_ui._run_dependency_update_worker(
+                window,
+                targets=targets,
+                selected_only=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("Rust toolchain installed.", result["message"])
+        self.assertEqual(window.commands, [])
+        self.assertTrue(any(event.get("phase") == "Installing" for event in progress_events))
+        self.assertEqual(progress_events[-1]["state"], "finished")
+        self.assertEqual(progress_events[-1]["installed"], 1)
+        self.assertEqual(progress_events[-1]["failed"], 0)
 
 
 if __name__ == "__main__":

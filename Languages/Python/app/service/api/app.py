@@ -107,6 +107,19 @@ if FASTAPI_AVAILABLE:
         source: str = "api"
         level: str = "info"
 
+    class TerminalCommandRequest(BaseModel):
+        command: str
+        source: str = "api-terminal"
+
+    class LLMConfigPatchRequest(BaseModel):
+        config: dict | None = None
+
+    class LLMPromptRequest(BaseModel):
+        prompt: str
+        system_prompt: str = ""
+        dry_run: bool = True
+        source: str = "api-llm"
+
 
     class AccountSnapshotRequest(BaseModel):
         total_balance: float | None = None
@@ -375,6 +388,32 @@ def create_service_api_app(
             level=payload.level,
         )
         return event.to_dict()
+
+    @api_router.post("/terminal/run")
+    def run_terminal_command(payload: TerminalCommandRequest):
+        result = _service().run_terminal_command(payload.command, source=payload.source)
+        return result.to_dict()
+
+    @api_router.get("/llm/providers")
+    def get_llm_providers():
+        return _service().get_llm_provider_catalog()
+
+    @api_router.get("/llm/config")
+    def get_llm_config():
+        return _service().get_llm_config_payload()
+
+    @api_router.patch("/llm/config")
+    def update_llm_config(payload: LLMConfigPatchRequest):
+        return _service().update_llm_config(payload.config)
+
+    @api_router.post("/llm/prompt")
+    def run_llm_prompt(payload: LLMPromptRequest):
+        return _service().call_llm(
+            prompt=payload.prompt,
+            system_prompt=payload.system_prompt,
+            dry_run=payload.dry_run,
+            source=payload.source,
+        )
 
     @stream_router.get("/stream/dashboard")
     async def stream_dashboard(

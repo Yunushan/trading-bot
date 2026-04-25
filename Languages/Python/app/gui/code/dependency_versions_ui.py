@@ -500,27 +500,46 @@ def _run_dependency_update_worker(
         if needs_toolchain:
             rustup_path = runtime._rust_tool_path("rustup")
             if rustup_path is None:
-                return {
-                    "ok": False,
-                    "title": "Rust dependency update failed",
-                    "message": "rustup was not found. Install rustup before updating the Rust toolchain.",
-                    "refresh_versions": True,
-                }
-            _emit_dependency_update_progress(
-                self,
-                {
-                    "state": "running",
-                    "phase": "Updating",
-                    "current": "Rust toolchain",
-                    "label": "rustc",
-                    "total": total_steps,
-                    "completed": completed_steps,
-                    "installed": completed_steps,
-                    "failed": failed_steps,
-                },
-            )
-            ok, output = self._run_command_capture_hidden([str(rustup_path), "update"], cwd=BASE_PROJECT_PATH, env=env)
-            detail = _trim_update_output(runtime, output)
+                _emit_dependency_update_progress(
+                    self,
+                    {
+                        "state": "running",
+                        "phase": "Installing",
+                        "current": "Rust toolchain",
+                        "label": "rustc",
+                        "total": total_steps,
+                        "completed": completed_steps,
+                        "installed": completed_steps,
+                        "failed": failed_steps,
+                    },
+                )
+                ok, output = runtime._install_rust_toolchain()
+                runtime._reset_rust_dependency_caches()
+                env = runtime._rust_toolchain_env()
+                rustup_path = runtime._rust_tool_path("rustup")
+                detail = _trim_update_output(runtime, output)
+                success_message = "Rust toolchain installed."
+                failure_log = "Rust dependency update failed during rustup installation"
+                failure_message = "Rust toolchain installation failed."
+            else:
+                _emit_dependency_update_progress(
+                    self,
+                    {
+                        "state": "running",
+                        "phase": "Updating",
+                        "current": "Rust toolchain",
+                        "label": "rustc",
+                        "total": total_steps,
+                        "completed": completed_steps,
+                        "installed": completed_steps,
+                        "failed": failed_steps,
+                    },
+                )
+                ok, output = self._run_command_capture_hidden([str(rustup_path), "update"], cwd=BASE_PROJECT_PATH, env=env)
+                detail = _trim_update_output(runtime, output)
+                success_message = "Rust toolchain refreshed."
+                failure_log = "Rust dependency update failed during rustup update"
+                failure_message = "Rust toolchain refresh failed."
             completed_steps += 1
             if not ok:
                 failed_steps += 1
@@ -537,7 +556,7 @@ def _run_dependency_update_worker(
                     "failed": failed_steps,
                 },
             )
-            step_messages.append("Rust toolchain refreshed." if ok else "Rust toolchain refresh failed.")
+            step_messages.append(success_message if ok else failure_message)
             if detail:
                 step_messages.append(detail)
             if not ok:
@@ -559,7 +578,7 @@ def _run_dependency_update_worker(
                     "title": "Rust dependency update failed",
                     "message": "\n\n".join(step_messages),
                     "refresh_versions": True,
-                    "log_message": "Rust dependency update failed during rustup update",
+                    "log_message": failure_log,
                 }
 
         if needs_workspace:

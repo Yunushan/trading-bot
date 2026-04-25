@@ -60,6 +60,7 @@ dev = [
 ]
 
 [project.scripts]
+trading-bot-cli = "app.service.product_main:main"
 trading-bot-desktop = "app.desktop.product_main:main"
 trading-bot-service = "app.service.product_main:main"
 
