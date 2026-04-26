@@ -160,7 +160,8 @@ class ServiceSchemaContractTests(unittest.TestCase):
             ],
             "llm_enabled": True,
             "llm_provider": "qwen",
-            "llm_model": "qwen-turbo",
+            "llm_model": "qwen3.5-plus",
+            "llm_reasoning_effort": "high",
             "llm_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         }
 
@@ -172,6 +173,9 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertFalse(editable["api_credentials_present"])
         self.assertTrue(editable["llm"]["enabled"])
         self.assertEqual("qwen", editable["llm"]["provider"])
+        self.assertIn("qwen3-max", editable["llm"]["model_suggestions"])
+        self.assertEqual("high", editable["llm"]["reasoning_effort"])
+        self.assertIn("medium", editable["llm"]["reasoning_efforts"])
         self.assertEqual(2, summary["symbol_count"])
         self.assertEqual(1, summary["interval_count"])
         self.assertEqual(2, summary["enabled_indicator_count"])

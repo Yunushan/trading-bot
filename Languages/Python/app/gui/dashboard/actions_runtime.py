@@ -69,6 +69,13 @@ def _create_dashboard_action_section(self, scroll_layout):
     except Exception:
         pass
 
+    llm_runtime_lock_widgets = []
+    for panel in list(getattr(self, "_llm_settings_panels", []) or []):
+        try:
+            llm_runtime_lock_widgets.extend(panel.runtime_lock_widgets())
+        except Exception:
+            pass
+
     self._runtime_lock_widgets = [
         self.api_key_edit,
         self.api_secret_edit,
@@ -108,7 +115,7 @@ def _create_dashboard_action_section(self, scroll_layout):
         self.start_btn,
         self.save_btn,
         self.load_btn,
-    ] + list(self._indicator_runtime_controls)
+    ] + llm_runtime_lock_widgets + list(self._indicator_runtime_controls)
     self._set_runtime_controls_enabled(True)
 
 

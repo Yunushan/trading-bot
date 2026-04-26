@@ -14,6 +14,11 @@ It is not a single finished application. The Rust side is currently a scaffold a
 - `apps/iced-desktop`: Iced desktop shell
 - `apps/dioxus-desktop`: Dioxus Desktop shell
 
+The shared Rust core exposes the same LLM provider catalog used by the Python
+service API. The egui and Tauri shells include starter controls for OpenAI,
+Claude, Gemini, DeepSeek, Grok, Qwen, and local/private OpenAI-compatible
+endpoints with model, base URL/IP, API env var, token, and use-mode fields.
+
 ## Status overview
 
 | Component | Status | Notes |

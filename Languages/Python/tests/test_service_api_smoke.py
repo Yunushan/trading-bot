@@ -194,20 +194,34 @@ class ServiceApiSmokeTests(unittest.TestCase):
     def test_service_terminal_and_llm_config_commands(self):
         service = TradingBotService()
 
+        providers = service.get_llm_provider_catalog()
+        provider_by_key = {str(item["key"]): item for item in providers}
+        self.assertIn("openai", provider_by_key)
+        self.assertIn("anthropic", provider_by_key)
+        self.assertIn("gemini", provider_by_key)
+        self.assertIn("local", provider_by_key)
+        self.assertIn("gpt-5.4-mini", provider_by_key["openai"]["model_suggestions"])
+        self.assertIn("gpt-5.3-codex", provider_by_key["openai"]["model_suggestions"])
+        self.assertIn("high", provider_by_key["openai"]["reasoning_efforts"])
+        self.assertIn("deepseek-v4-flash", provider_by_key["deepseek"]["model_suggestions"])
+        self.assertIn("max", provider_by_key["deepseek"]["reasoning_efforts"])
+        self.assertEqual("http://127.0.0.1:11434/v1", provider_by_key["local"]["default_base_url"])
+
         status_result = service.run_terminal_command("status", source="test-terminal").to_dict()
         self.assertTrue(status_result["accepted"])
         self.assertEqual(status_result["exit_code"], 0)
         self.assertIn("lifecycle_phase", status_result["output"])
 
         llm_result = service.run_terminal_command(
-            "llm set llm_provider=deepseek llm_model=deepseek-chat llm_enabled=true",
+            "llm set llm_provider=deepseek llm_model=deepseek-v4-flash llm_enabled=true llm_reasoning_effort=max",
             source="test-terminal",
         ).to_dict()
         self.assertTrue(llm_result["accepted"])
         llm_config = service.get_llm_config_payload()
         self.assertTrue(llm_config["enabled"])
         self.assertEqual(llm_config["provider"], "deepseek")
-        self.assertEqual(llm_config["model"], "deepseek-chat")
+        self.assertEqual(llm_config["model"], "deepseek-v4-flash")
+        self.assertEqual(llm_config["reasoning_effort"], "max")
 
         prompt_result = service.run_terminal_command("llm prompt Explain BTC risk", source="test-terminal").to_dict()
         self.assertTrue(prompt_result["accepted"])

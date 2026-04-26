@@ -9,6 +9,7 @@
 #include <QDoubleSpinBox>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QGraphicsOpacityEffect>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -21,6 +22,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStandardItemModel>
+#include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTabWidget>
@@ -312,6 +314,317 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     }
     accountGrid->setColumnStretch(13, 2);
     syncDashboardPaperBalanceUi();
+}
+
+void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *root) {
+    auto *llmBox = new QGroupBox("AI / LLM Settings (C++ GUI)", page);
+    auto *llmGrid = new QGridLayout(llmBox);
+    llmGrid->setHorizontalSpacing(10);
+    llmGrid->setVerticalSpacing(8);
+    llmGrid->setContentsMargins(12, 12, 12, 12);
+    root->addWidget(llmBox);
+
+    auto *enabledCheck = new QCheckBox("Enable LLM assistance", llmBox);
+    dashboardLlmEnableCheck_ = enabledCheck;
+    registerDashboardRuntimeLockWidget(enabledCheck);
+    llmGrid->addWidget(enabledCheck, 0, 0, 1, 2);
+
+    auto *allowPublicCheck = new QCheckBox("Allow public network endpoint", llmBox);
+    allowPublicCheck->setToolTip(
+        "Keep unchecked for local/private IP endpoints. Enable for cloud LLM providers.");
+    dashboardLlmAllowPublicNetworkCheck_ = allowPublicCheck;
+    registerDashboardRuntimeLockWidget(allowPublicCheck);
+    llmGrid->addWidget(allowPublicCheck, 0, 2, 1, 2);
+
+    auto *providerCombo = new QComboBox(llmBox);
+    auto addProvider = [providerCombo](
+                           const QString &key,
+                           const QString &label,
+                           const QString &mode,
+                           const QString &baseUrl,
+                           const QString &apiKeyEnv,
+                           const QStringList &models,
+                           const QStringList &reasoningEfforts) {
+        QVariantMap spec;
+        spec.insert(QStringLiteral("key"), key);
+        spec.insert(QStringLiteral("mode"), mode);
+        spec.insert(QStringLiteral("base_url"), baseUrl);
+        spec.insert(QStringLiteral("api_key_env"), apiKeyEnv);
+        spec.insert(QStringLiteral("models"), models);
+        spec.insert(QStringLiteral("reasoning_efforts"), reasoningEfforts);
+        providerCombo->addItem(label, spec);
+    };
+    addProvider(
+        QStringLiteral("openai"),
+        QStringLiteral("OpenAI / ChatGPT"),
+        QStringLiteral("cloud"),
+        QStringLiteral("https://api.openai.com/v1"),
+        QStringLiteral("OPENAI_API_KEY"),
+        {"gpt-5.5",
+         "gpt-5.4",
+         "gpt-5.4-mini",
+         "gpt-5.4-nano",
+         "gpt-5.3-chat-latest",
+         "gpt-5.3-codex",
+         "gpt-5.2",
+         "gpt-5.2-codex",
+         "gpt-5.2-chat-latest",
+         "gpt-5.2-pro",
+         "gpt-5.1",
+         "gpt-5-codex",
+         "gpt-5-mini",
+         "gpt-5-nano"},
+        {"default", "none", "minimal", "low", "medium", "high", "xhigh"});
+    addProvider(
+        QStringLiteral("anthropic"),
+        QStringLiteral("Anthropic Claude"),
+        QStringLiteral("cloud"),
+        QStringLiteral("https://api.anthropic.com"),
+        QStringLiteral("ANTHROPIC_API_KEY"),
+        {"claude-sonnet-4-5-20250929",
+         "claude-haiku-4-5-20251001",
+         "claude-opus-4-1-20250805",
+         "claude-opus-4-20250514",
+         "claude-sonnet-4-20250514",
+         "claude-sonnet-4-5",
+         "claude-haiku-4-5",
+         "claude-opus-4-1",
+         "claude-opus-4-0",
+         "claude-sonnet-4-0"},
+        {"default", "disabled", "enabled", "low", "medium", "high"});
+    addProvider(
+        QStringLiteral("gemini"),
+        QStringLiteral("Google Gemini"),
+        QStringLiteral("cloud"),
+        QStringLiteral("https://generativelanguage.googleapis.com/v1beta"),
+        QStringLiteral("GEMINI_API_KEY"),
+        {"gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
+        {"default", "minimal", "low", "medium", "high"});
+    addProvider(
+        QStringLiteral("deepseek"),
+        QStringLiteral("DeepSeek"),
+        QStringLiteral("cloud"),
+        QStringLiteral("https://api.deepseek.com"),
+        QStringLiteral("DEEPSEEK_API_KEY"),
+        {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"},
+        {"default", "disabled", "enabled", "high", "max"});
+    addProvider(
+        QStringLiteral("grok"),
+        QStringLiteral("xAI Grok"),
+        QStringLiteral("cloud"),
+        QStringLiteral("https://api.x.ai/v1"),
+        QStringLiteral("XAI_API_KEY"),
+        {"grok-4.20", "grok-4.20-reasoning", "grok-4.20-non-reasoning", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"},
+        {"default", "low", "medium", "high"});
+    addProvider(
+        QStringLiteral("qwen"),
+        QStringLiteral("Alibaba Qwen / DashScope"),
+        QStringLiteral("cloud"),
+        QStringLiteral("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+        QStringLiteral("DASHSCOPE_API_KEY"),
+        {"qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-flash"},
+        {"default", "low", "medium", "high"});
+    addProvider(
+        QStringLiteral("local"),
+        QStringLiteral("Local / Custom OpenAI-Compatible"),
+        QStringLiteral("local"),
+        QStringLiteral("http://127.0.0.1:11434/v1"),
+        QStringLiteral("LOCAL_LLM_API_KEY"),
+        {"llama3.3", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"},
+        {"default", "none", "low", "medium", "high", "xhigh"});
+    dashboardLlmProviderCombo_ = providerCombo;
+    registerDashboardRuntimeLockWidget(providerCombo);
+    llmGrid->addWidget(new QLabel("Provider:", llmBox), 1, 0);
+    llmGrid->addWidget(providerCombo, 1, 1);
+
+    auto *modelCombo = new QComboBox(llmBox);
+    modelCombo->setEditable(false);
+    dashboardLlmModelCombo_ = modelCombo;
+    registerDashboardRuntimeLockWidget(modelCombo);
+    llmGrid->addWidget(new QLabel("Model:", llmBox), 1, 2);
+    llmGrid->addWidget(modelCombo, 1, 3);
+
+    auto *baseUrlEdit = new QLineEdit(llmBox);
+    baseUrlEdit->setPlaceholderText("https://api.openai.com/v1 or http://192.168.1.20:11434/v1");
+    dashboardLlmBaseUrlEdit_ = baseUrlEdit;
+    registerDashboardRuntimeLockWidget(baseUrlEdit);
+    llmGrid->addWidget(new QLabel("Base URL / IP:", llmBox), 2, 0);
+    llmGrid->addWidget(baseUrlEdit, 2, 1, 1, 3);
+
+    auto *apiKeyEnvEdit = new QLineEdit(llmBox);
+    apiKeyEnvEdit->setPlaceholderText("OPENAI_API_KEY");
+    dashboardLlmApiKeyEnvEdit_ = apiKeyEnvEdit;
+    registerDashboardRuntimeLockWidget(apiKeyEnvEdit);
+    llmGrid->addWidget(new QLabel("API key env:", llmBox), 3, 0);
+    llmGrid->addWidget(apiKeyEnvEdit, 3, 1);
+
+    auto *apiKeyEdit = new QLineEdit(llmBox);
+    apiKeyEdit->setEchoMode(QLineEdit::Password);
+    apiKeyEdit->setPlaceholderText("Optional token; env var is preferred");
+    dashboardLlmApiKeyEdit_ = apiKeyEdit;
+    registerDashboardRuntimeLockWidget(apiKeyEdit);
+    llmGrid->addWidget(new QLabel("API token:", llmBox), 3, 2);
+    llmGrid->addWidget(apiKeyEdit, 3, 3);
+
+    auto *useForCombo = new QComboBox(llmBox);
+    useForCombo->addItem("Advisory", "advisory");
+    useForCombo->addItem("Signal confirmation", "signal_confirmation");
+    useForCombo->addItem("Risk review", "risk_review");
+    useForCombo->addItem("Backtest explanation", "backtest_explanation");
+    dashboardLlmUseForCombo_ = useForCombo;
+    registerDashboardRuntimeLockWidget(useForCombo);
+    llmGrid->addWidget(new QLabel("Use for:", llmBox), 4, 0);
+    llmGrid->addWidget(useForCombo, 4, 1);
+
+    auto *reasoningCombo = new QComboBox(llmBox);
+    reasoningCombo->setEditable(false);
+    dashboardLlmReasoningCombo_ = reasoningCombo;
+    registerDashboardRuntimeLockWidget(reasoningCombo);
+    llmGrid->addWidget(new QLabel("Reasoning / Thinking:", llmBox), 4, 2);
+    llmGrid->addWidget(reasoningCombo, 4, 3);
+
+    auto *statusLabel = new QLabel("LLM settings are saved with dashboard config.", llmBox);
+    statusLabel->setStyleSheet("color: #94a3b8; font-weight: 600;");
+    dashboardLlmStatusLabel_ = statusLabel;
+    llmGrid->addWidget(statusLabel, 5, 0, 1, 4);
+
+    auto applyProviderDefaults = [this](bool forceText) {
+        if (!dashboardLlmProviderCombo_) {
+            return;
+        }
+        const QVariantMap spec = dashboardLlmProviderCombo_->currentData().toMap();
+        const QStringList models = spec.value(QStringLiteral("models")).toStringList();
+        const QString currentModel = dashboardLlmModelCombo_
+            ? dashboardLlmModelCombo_->currentText().trimmed()
+            : QString();
+        if (dashboardLlmModelCombo_) {
+            QSignalBlocker blocker(dashboardLlmModelCombo_);
+            dashboardLlmModelCombo_->clear();
+            dashboardLlmModelCombo_->addItems(models);
+            dashboardLlmModelCombo_->setCurrentText(
+                !forceText && !currentModel.isEmpty()
+                    ? currentModel
+                    : (models.isEmpty() ? QString() : models.first()));
+        }
+        const QStringList reasoningEfforts = spec.value(QStringLiteral("reasoning_efforts")).toStringList();
+        const QString currentReasoning = dashboardLlmReasoningCombo_
+            ? dashboardLlmReasoningCombo_->currentText().trimmed()
+            : QString();
+        if (dashboardLlmReasoningCombo_) {
+            QSignalBlocker blocker(dashboardLlmReasoningCombo_);
+            dashboardLlmReasoningCombo_->clear();
+            dashboardLlmReasoningCombo_->addItems(reasoningEfforts);
+            dashboardLlmReasoningCombo_->setCurrentText(
+                !forceText && !currentReasoning.isEmpty()
+                    ? currentReasoning
+                    : (reasoningEfforts.isEmpty() ? QStringLiteral("default") : reasoningEfforts.first()));
+        }
+        if (dashboardLlmBaseUrlEdit_ && (forceText || dashboardLlmBaseUrlEdit_->text().trimmed().isEmpty())) {
+            dashboardLlmBaseUrlEdit_->setText(spec.value(QStringLiteral("base_url")).toString());
+        }
+        if (dashboardLlmApiKeyEnvEdit_ && (forceText || dashboardLlmApiKeyEnvEdit_->text().trimmed().isEmpty())) {
+            dashboardLlmApiKeyEnvEdit_->setText(spec.value(QStringLiteral("api_key_env")).toString());
+        }
+        if (dashboardLlmAllowPublicNetworkCheck_) {
+            dashboardLlmAllowPublicNetworkCheck_->setChecked(spec.value(QStringLiteral("mode")).toString() == QStringLiteral("cloud"));
+        }
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(
+                QStringLiteral("%1 selected (%2, reasoning: %3).")
+                    .arg(dashboardLlmProviderCombo_->currentText().trimmed())
+                    .arg(spec.value(QStringLiteral("mode")).toString())
+                    .arg(dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default")));
+        }
+    };
+    auto syncProviderNetworkAccess = [this]() {
+        if (!dashboardLlmProviderCombo_) {
+            return;
+        }
+        const bool allowPublicNetwork = dashboardLlmAllowPublicNetworkCheck_
+            && dashboardLlmAllowPublicNetworkCheck_->isChecked();
+        int fallbackIndex = -1;
+        if (auto *model = qobject_cast<QStandardItemModel *>(dashboardLlmProviderCombo_->model())) {
+            for (int row = 0; row < dashboardLlmProviderCombo_->count(); ++row) {
+                const QVariantMap spec = dashboardLlmProviderCombo_->itemData(row).toMap();
+                const bool isCloud = spec.value(QStringLiteral("mode")).toString() == QStringLiteral("cloud");
+                const bool allowed = allowPublicNetwork || !isCloud;
+                if (!isCloud && fallbackIndex < 0) {
+                    fallbackIndex = row;
+                }
+                if (QStandardItem *item = model->item(row)) {
+                    item->setEnabled(allowed);
+                    item->setForeground(QColor(allowed ? "#f8fafc" : "#64748b"));
+                }
+            }
+        }
+        const QVariantMap currentSpec = dashboardLlmProviderCombo_->currentData().toMap();
+        const bool currentIsCloud = currentSpec.value(QStringLiteral("mode")).toString() == QStringLiteral("cloud");
+        if (!allowPublicNetwork && currentIsCloud && fallbackIndex >= 0) {
+            dashboardLlmProviderCombo_->setCurrentIndex(fallbackIndex);
+        }
+    };
+    auto updateLlmEnabledState = [this]() {
+        const bool enabled = dashboardLlmEnableCheck_ && dashboardLlmEnableCheck_->isChecked();
+        const QVector<QWidget *> widgets = {
+            dashboardLlmAllowPublicNetworkCheck_,
+            dashboardLlmProviderCombo_,
+            dashboardLlmModelCombo_,
+            dashboardLlmReasoningCombo_,
+            dashboardLlmBaseUrlEdit_,
+            dashboardLlmApiKeyEnvEdit_,
+            dashboardLlmApiKeyEdit_,
+            dashboardLlmUseForCombo_,
+        };
+        for (QWidget *widget : widgets) {
+            if (!widget) {
+                continue;
+            }
+            widget->setEnabled(enabled);
+            if (enabled) {
+                widget->setGraphicsEffect(nullptr);
+            } else {
+                auto *effect = new QGraphicsOpacityEffect(widget);
+                effect->setOpacity(0.42);
+                widget->setGraphicsEffect(effect);
+            }
+        }
+        if (!dashboardLlmStatusLabel_) {
+            return;
+        }
+        if (!enabled) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("LLM assistance disabled - enable it to edit provider and model settings."));
+            return;
+        }
+        if (dashboardLlmProviderCombo_) {
+            const QVariantMap spec = dashboardLlmProviderCombo_->currentData().toMap();
+            dashboardLlmStatusLabel_->setText(
+                QStringLiteral("%1 selected (%2, reasoning: %3).")
+                    .arg(dashboardLlmProviderCombo_->currentText().trimmed())
+                    .arg(spec.value(QStringLiteral("mode")).toString())
+                    .arg(dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default")));
+        }
+    };
+    connect(enabledCheck, &QCheckBox::toggled, this, [updateLlmEnabledState](bool) {
+        updateLlmEnabledState();
+    });
+    connect(allowPublicCheck, &QCheckBox::toggled, this, [syncProviderNetworkAccess, updateLlmEnabledState](bool) {
+        syncProviderNetworkAccess();
+        updateLlmEnabledState();
+    });
+    connect(providerCombo, &QComboBox::currentIndexChanged, this, [applyProviderDefaults, syncProviderNetworkAccess, updateLlmEnabledState](int) {
+        applyProviderDefaults(true);
+        syncProviderNetworkAccess();
+        updateLlmEnabledState();
+    });
+    connect(reasoningCombo, &QComboBox::currentIndexChanged, this, [updateLlmEnabledState](int) {
+        updateLlmEnabledState();
+    });
+    applyProviderDefaults(true);
+    syncProviderNetworkAccess();
+    updateLlmEnabledState();
+
+    llmGrid->setColumnStretch(1, 1);
+    llmGrid->setColumnStretch(3, 2);
 }
 
 void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, QVBoxLayout *root) {
@@ -858,6 +1171,16 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardTemplateCombo_ = nullptr;
     dashboardMarginModeCombo_ = nullptr;
     dashboardPositionModeCombo_ = nullptr;
+    dashboardLlmEnableCheck_ = nullptr;
+    dashboardLlmProviderCombo_ = nullptr;
+    dashboardLlmModelCombo_ = nullptr;
+    dashboardLlmReasoningCombo_ = nullptr;
+    dashboardLlmBaseUrlEdit_ = nullptr;
+    dashboardLlmApiKeyEnvEdit_ = nullptr;
+    dashboardLlmApiKeyEdit_ = nullptr;
+    dashboardLlmUseForCombo_ = nullptr;
+    dashboardLlmAllowPublicNetworkCheck_ = nullptr;
+    dashboardLlmStatusLabel_ = nullptr;
     dashboardSideCombo_ = nullptr;
     dashboardLoopOverrideCombo_ = nullptr;
     dashboardPaperBalanceTitleLabel_ = nullptr;
@@ -928,6 +1251,7 @@ QWidget *TradingBotWindow::createDashboardTab() {
     root->setSpacing(12);
 
     createDashboardAccountStatusSection(page, root);
+    createDashboardLlmSection(page, root);
     createDashboardExchangeAndMarketsSections(page, root);
     createDashboardStrategySection(page, root);
     createDashboardRuntimeSection(page, root);

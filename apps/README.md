@@ -9,6 +9,8 @@ desktop workspace.
 - `mobile-client/`: Expo-based Android/iOS thin client
 - Mobile and web clients can use the service terminal API for controlled
   commands, but raw OS shell access should stay disabled for remote users.
+- Mobile clients expose the shared LLM config surface for cloud providers
+  and local/private OpenAI-compatible endpoints; execution stays backend-side.
 
 The desktop and service wrappers currently delegate into `Languages/Python/`
 while the repo finishes its product-first migration. The thin web and mobile

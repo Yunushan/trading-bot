@@ -12,6 +12,12 @@ import {
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
 const API_BASE_PATH = "/api/v1";
+const LLM_USE_FOR_OPTIONS = [
+  { label: "Advisory", value: "advisory" },
+  { label: "Signals", value: "signal_confirmation" },
+  { label: "Risk", value: "risk_review" },
+  { label: "Backtest", value: "backtest_explanation" },
+];
 
 function apiPath(path) {
   return `${API_BASE_PATH}/${String(path || "").replace(/^\/+/, "")}`;
@@ -47,6 +53,26 @@ function formatNumber(value) {
   return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
+function hydrateLlmPatch(config) {
+  const payload = config || {};
+  return {
+    llm_enabled: Boolean(payload.enabled),
+    llm_provider: payload.provider || "openai",
+    llm_model: payload.model || "",
+    llm_base_url: payload.base_url || "",
+    llm_api_key_env: payload.api_key_env || "",
+    llm_api_key: "",
+    llm_use_for: payload.use_for || "advisory",
+    llm_allow_public_network: Boolean(payload.allow_public_network),
+    llm_reasoning_effort: payload.reasoning_effort || "default",
+  };
+}
+
+function providerByKey(providers, key) {
+  const providerKey = String(key || "openai");
+  return providers.find((item) => item.key === providerKey) || providers[0] || null;
+}
+
 function StatusChip({ label, tone = "muted" }) {
   return (
     <View style={[styles.pill, styles[`pill_${tone}`] || styles.pill_muted]}>
@@ -76,6 +102,17 @@ function StatRow({ label, value }) {
   );
 }
 
+function ToggleRow({ label, active, onPress }) {
+  return (
+    <Pressable style={styles.toggleRow} onPress={onPress}>
+      <Text style={styles.statLabel}>{label}</Text>
+      <View style={[styles.switchTrack, active ? styles.switchTrackOn : null]}>
+        <View style={[styles.switchKnob, active ? styles.switchKnobOn : null]} />
+      </View>
+    </Pressable>
+  );
+}
+
 export default function App() {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const [token, setToken] = useState("");
@@ -85,6 +122,11 @@ export default function App() {
   const [dashboard, setDashboard] = useState(null);
   const [terminalCommand, setTerminalCommand] = useState("status");
   const [terminalHistory, setTerminalHistory] = useState([]);
+  const [llmProviders, setLlmProviders] = useState([]);
+  const [llmConfig, setLlmConfig] = useState(null);
+  const [llmPatch, setLlmPatch] = useState(hydrateLlmPatch(null));
+  const [llmPrompt, setLlmPrompt] = useState("Summarize the current trading bot risk.");
+  const [llmResult, setLlmResult] = useState(null);
 
   const requestJson = async (path, { method = "GET", body = null } = {}) => {
     const headers = { Accept: "application/json" };
@@ -112,6 +154,11 @@ export default function App() {
       setHealth(nextHealth);
       const nextDashboard = await requestJson(`${apiPath("dashboard")}?log_limit=10`);
       setDashboard(nextDashboard);
+      const nextProviders = await requestJson(apiPath("llm/providers"));
+      setLlmProviders(Array.isArray(nextProviders) ? nextProviders : []);
+      const nextLlmConfig = await requestJson(apiPath("llm/config"));
+      setLlmConfig(nextLlmConfig);
+      setLlmPatch(hydrateLlmPatch(nextLlmConfig));
       setMessage(`Connected to ${normalizeBaseUrl(baseUrl)}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -173,6 +220,103 @@ export default function App() {
     }
   };
 
+  const updateLlmPatch = (patch) => {
+    setLlmPatch((current) => ({ ...current, ...patch }));
+  };
+
+  const llmProviderDefaultsPatch = (provider) => {
+    const suggestions = Array.isArray(provider?.model_suggestions) ? provider.model_suggestions : [];
+    return {
+      llm_provider: provider?.key || "local",
+      llm_model: suggestions[0] || provider?.default_model || "",
+      llm_reasoning_effort: provider?.default_reasoning_effort || provider?.reasoning_efforts?.[0] || "default",
+      llm_base_url: provider?.default_base_url || "",
+      llm_api_key_env: provider?.api_key_env || "",
+      llm_allow_public_network: provider?.mode === "cloud",
+    };
+  };
+
+  const localLlmProvider = () =>
+    llmProviders.find((provider) => provider.key === "local" || provider.mode === "local") || {
+      key: "local",
+      default_model: "llama3.3",
+      default_base_url: "http://127.0.0.1:11434/v1",
+      api_key_env: "LOCAL_LLM_API_KEY",
+      model_suggestions: ["llama3.3"],
+      reasoning_efforts: ["default", "none", "low", "medium", "high", "xhigh"],
+      mode: "local",
+    };
+
+  const setLlmAllowPublicNetwork = () => {
+    const nextAllow = !llmPatch.llm_allow_public_network;
+    const selectedProvider = providerByKey(llmProviders, llmPatch.llm_provider);
+    if (!nextAllow && selectedProvider?.mode === "cloud") {
+      updateLlmPatch({
+        ...llmProviderDefaultsPatch(localLlmProvider()),
+        llm_allow_public_network: false,
+      });
+      return;
+    }
+    updateLlmPatch({ llm_allow_public_network: nextAllow });
+  };
+
+  const selectLlmProvider = (providerKey) => {
+    const provider = providerByKey(llmProviders, providerKey);
+    if (!provider) {
+      return;
+    }
+    if (provider.mode === "cloud" && !llmPatch.llm_allow_public_network) {
+      return;
+    }
+    updateLlmPatch(llmProviderDefaultsPatch(provider));
+  };
+
+  const saveLlmSettings = async () => {
+    setLoading(true);
+    try {
+      const payload = { ...llmPatch };
+      if (!String(payload.llm_api_key || "").trim()) {
+        delete payload.llm_api_key;
+      }
+      const result = await requestJson(apiPath("llm/config"), {
+        method: "PATCH",
+        body: { config: payload },
+      });
+      setLlmConfig(result);
+      setLlmPatch(hydrateLlmPatch(result));
+      setMessage("LLM settings saved.");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      setLoading(false);
+    }
+  };
+
+  const runLlmDryRun = async () => {
+    const prompt = String(llmPrompt || "").trim();
+    if (!prompt) {
+      setMessage("Enter an LLM test prompt first.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await requestJson(apiPath("llm/prompt"), {
+        method: "POST",
+        body: {
+          prompt,
+          dry_run: true,
+          source: "mobile-llm-settings",
+        },
+      });
+      setLlmResult(result);
+      setMessage(result.ok ? "LLM request prepared." : "LLM request check failed.");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     refresh().catch(() => {});
     // Base URL and token are user-controlled and do not auto-refresh.
@@ -197,6 +341,17 @@ export default function App() {
       : String(backtest.state || "").toLowerCase() === "failed"
         ? { label: "Failed", tone: "error" }
         : { label: backtest.state || "Idle", tone: "muted" };
+  const selectedLlmProvider = providerByKey(llmProviders, llmPatch.llm_provider);
+  const selectedModelSuggestions = Array.isArray(selectedLlmProvider?.model_suggestions)
+    ? selectedLlmProvider.model_suggestions.map((model) => String(model))
+    : [];
+  const selectedReasoningEfforts = Array.isArray(selectedLlmProvider?.reasoning_efforts)
+    ? selectedLlmProvider.reasoning_efforts.map((effort) => String(effort))
+    : ["default"];
+  const llmTone = llmPatch.llm_enabled
+    ? { label: "Enabled", tone: "ok" }
+    : { label: "Disabled", tone: "muted" };
+  const llmSettingsEnabled = Boolean(llmPatch.llm_enabled);
 
   return (
     <SafeAreaView style={styles.root}>
@@ -258,6 +413,173 @@ export default function App() {
               <Text style={styles.buttonText}>Request Stop</Text>
             </Pressable>
           </View>
+        </Card>
+
+        <Card title="AI / LLM Settings" tone={llmTone}>
+          <ToggleRow
+            label="Enable LLM assistance"
+            active={Boolean(llmPatch.llm_enabled)}
+            onPress={() => updateLlmPatch({ llm_enabled: !llmPatch.llm_enabled })}
+          />
+          <View
+            style={[styles.fadeSection, llmSettingsEnabled ? null : styles.fadeSectionDisabled]}
+            pointerEvents={llmSettingsEnabled ? "auto" : "none"}
+          >
+            <ToggleRow
+              label="Allow public network endpoint"
+              active={Boolean(llmPatch.llm_allow_public_network)}
+              onPress={setLlmAllowPublicNetwork}
+            />
+
+            <Text style={styles.fieldLabel}>Provider</Text>
+            <View style={styles.optionGrid}>
+              {(llmProviders.length ? llmProviders : [{ key: "openai", label: "OpenAI / ChatGPT", mode: "cloud" }]).map((provider) => {
+                const providerDisabled =
+                  !llmSettingsEnabled ||
+                  (provider.mode === "cloud" && !llmPatch.llm_allow_public_network);
+                return (
+                  <Pressable
+                    key={provider.key}
+                    style={[
+                      styles.optionButton,
+                      llmPatch.llm_provider === provider.key ? styles.optionButtonSelected : null,
+                      providerDisabled ? styles.disabledButton : null,
+                    ]}
+                    disabled={providerDisabled}
+                    onPress={() => selectLlmProvider(provider.key)}
+                  >
+                    <Text style={styles.optionButtonText}>{provider.label || provider.key}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Text style={styles.fieldLabel}>Model</Text>
+            <StatRow label="Selected Model" value={llmPatch.llm_model || "-"} />
+            {selectedModelSuggestions.length ? (
+              <View style={styles.optionGrid}>
+                {selectedModelSuggestions.map((model) => (
+                  <Pressable
+                    key={model}
+                    style={[
+                      styles.optionButton,
+                      llmPatch.llm_model === model ? styles.optionButtonSelected : null,
+                    ]}
+                    disabled={!llmSettingsEnabled}
+                    onPress={() => updateLlmPatch({ llm_model: model })}
+                  >
+                    <Text style={styles.optionButtonText}>{model}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+
+            <Text style={styles.fieldLabel}>Reasoning / Thinking</Text>
+            <StatRow label="Selected Effort" value={llmPatch.llm_reasoning_effort || "default"} />
+            <View style={styles.optionGrid}>
+              {selectedReasoningEfforts.map((effort) => (
+                <Pressable
+                  key={effort}
+                  style={[
+                    styles.optionButton,
+                    (llmPatch.llm_reasoning_effort || "default") === effort ? styles.optionButtonSelected : null,
+                  ]}
+                  disabled={!llmSettingsEnabled}
+                  onPress={() => updateLlmPatch({ llm_reasoning_effort: effort })}
+                >
+                  <Text style={styles.optionButtonText}>{effort}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.fieldLabel}>Base URL / Local or Private IP</Text>
+            <TextInput
+              value={llmPatch.llm_base_url}
+              onChangeText={(value) => updateLlmPatch({ llm_base_url: value })}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={llmSettingsEnabled}
+              style={styles.input}
+              placeholder="http://192.168.1.20:11434/v1"
+              placeholderTextColor="#7d93aa"
+            />
+
+            <Text style={styles.fieldLabel}>API Key Environment Variable</Text>
+            <TextInput
+              value={llmPatch.llm_api_key_env}
+              onChangeText={(value) => updateLlmPatch({ llm_api_key_env: value })}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={llmSettingsEnabled}
+              style={styles.input}
+              placeholder="OPENAI_API_KEY"
+              placeholderTextColor="#7d93aa"
+            />
+
+            <Text style={styles.fieldLabel}>API Token</Text>
+            <TextInput
+              value={llmPatch.llm_api_key}
+              onChangeText={(value) => updateLlmPatch({ llm_api_key: value })}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={llmSettingsEnabled}
+              secureTextEntry
+              style={styles.input}
+              placeholder={llmConfig?.api_key_present ? "Token is already configured" : "Optional"}
+              placeholderTextColor="#7d93aa"
+            />
+
+            <Text style={styles.fieldLabel}>Use For</Text>
+            <View style={styles.optionGrid}>
+              {LLM_USE_FOR_OPTIONS.map((option) => (
+                <Pressable
+                  key={option.value}
+                  style={[
+                    styles.optionButton,
+                    llmPatch.llm_use_for === option.value ? styles.optionButtonSelected : null,
+                  ]}
+                  disabled={!llmSettingsEnabled}
+                  onPress={() => updateLlmPatch({ llm_use_for: option.value })}
+                >
+                  <Text style={styles.optionButtonText}>{option.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.fieldLabel}>Dry-Run Test Prompt</Text>
+            <TextInput
+              value={llmPrompt}
+              onChangeText={setLlmPrompt}
+              autoCapitalize="sentences"
+              autoCorrect={false}
+              editable={llmSettingsEnabled}
+              style={[styles.input, styles.multiInput]}
+              multiline
+              placeholder="Ask the selected provider to explain current risk."
+              placeholderTextColor="#7d93aa"
+            />
+          </View>
+          <View style={styles.buttonRow}>
+            <Pressable style={styles.button} onPress={() => saveLlmSettings()}>
+              <Text style={styles.buttonText}>Save LLM Settings</Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.button,
+                styles.secondaryButton,
+                llmSettingsEnabled ? null : styles.disabledButton,
+              ]}
+              disabled={!llmSettingsEnabled}
+              onPress={() => runLlmDryRun()}
+            >
+              <Text style={styles.buttonText}>Prepare Test</Text>
+            </Pressable>
+          </View>
+          <StatRow label="Current Provider" value={llmConfig?.provider_label || "-"} />
+          <StatRow label="Token" value={llmConfig?.api_key_present ? "Configured" : "Missing"} />
+          {llmResult ? (
+            <Text style={styles.terminalOutput}>{JSON.stringify(llmResult, null, 2)}</Text>
+          ) : null}
         </Card>
 
         <Card title="Terminal">
@@ -420,6 +742,65 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 15,
   },
+  multiInput: {
+    minHeight: 86,
+    textAlignVertical: "top",
+  },
+  optionGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  optionButton: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+    backgroundColor: "rgba(2, 10, 19, 0.54)",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  optionButtonSelected: {
+    borderColor: "#57c6ff",
+    backgroundColor: "rgba(15, 125, 222, 0.32)",
+  },
+  optionButtonText: {
+    color: "#f2f5f9",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  fadeSection: {
+    gap: 10,
+  },
+  fadeSectionDisabled: {
+    opacity: 0.38,
+  },
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+    paddingVertical: 8,
+  },
+  switchTrack: {
+    width: 48,
+    height: 26,
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    padding: 3,
+  },
+  switchTrackOn: {
+    backgroundColor: "rgba(45, 212, 191, 0.38)",
+  },
+  switchKnob: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    backgroundColor: "#9db2c7",
+  },
+  switchKnobOn: {
+    transform: [{ translateX: 22 }],
+    backgroundColor: "#dff5ff",
+  },
   buttonRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -434,6 +815,9 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     backgroundColor: "rgba(255, 255, 255, 0.1)",
+  },
+  disabledButton: {
+    opacity: 0.45,
   },
   buttonText: {
     color: "#ffffff",

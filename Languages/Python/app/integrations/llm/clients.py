@@ -29,6 +29,54 @@ def _system_message(system_prompt: str) -> list[dict[str, str]]:
     return [{"role": "system", "content": text}] if text else []
 
 
+def _reasoning_effort(payload: dict[str, object]) -> str:
+    return str(payload.get("reasoning_effort") or "default").strip().lower().replace("_", "-")
+
+
+def _openai_compatible_reasoning_body(provider: str, effort: str) -> dict[str, object]:
+    if effort in {"", "default"}:
+        return {}
+    if provider == "deepseek":
+        if effort in {"none", "disabled", "off"}:
+            return {"thinking": {"type": "disabled"}}
+        body: dict[str, object] = {"thinking": {"type": "enabled"}}
+        if effort in {"high", "max", "xhigh", "low", "medium"}:
+            body["reasoning_effort"] = "max" if effort in {"max", "xhigh"} else effort
+        return body
+    return {"reasoning_effort": effort}
+
+
+def _anthropic_thinking_body(effort: str) -> dict[str, object]:
+    if effort in {"", "default"}:
+        return {}
+    if effort in {"none", "disabled", "off"}:
+        return {"thinking": {"type": "disabled"}}
+    budgets = {
+        "enabled": 2048,
+        "low": 2048,
+        "medium": 4096,
+        "high": 8192,
+    }
+    budget_tokens = budgets.get(effort)
+    if not budget_tokens:
+        return {}
+    return {
+        "max_tokens": max(1024, budget_tokens + 1024),
+        "thinking": {"type": "enabled", "budget_tokens": budget_tokens},
+    }
+
+
+def _gemini_generation_config(effort: str, model: str) -> dict[str, object]:
+    if effort in {"", "default"}:
+        return {}
+    thinking_level = "minimal" if effort in {"none", "disabled", "minimal"} else effort
+    if str(model or "").startswith("gemini-3-pro") and thinking_level in {"minimal", "medium"}:
+        thinking_level = "low" if thinking_level == "minimal" else "high"
+    if thinking_level not in {"minimal", "low", "medium", "high"}:
+        return {}
+    return {"thinkingConfig": {"thinkingLevel": thinking_level}}
+
+
 def build_llm_chat_request(
     config: dict | None,
     *,
@@ -42,6 +90,7 @@ def build_llm_chat_request(
     protocol = str(payload["protocol"])
     base_url = str(payload["base_url"])
     model = str(payload["model"])
+    reasoning_effort = _reasoning_effort(payload)
     user_prompt = str(prompt or "").strip()
     if not user_prompt:
         raise ValueError("LLM prompt cannot be empty.")
@@ -67,6 +116,7 @@ def build_llm_chat_request(
                 {"role": "system", "content": f"Trading context JSON: {context}"},
             )
         body = {"model": model, "messages": messages}
+        body.update(_openai_compatible_reasoning_body(provider, reasoning_effort))
     elif protocol == ANTHROPIC_MESSAGES_PROTOCOL:
         if not api_key:
             raise ValueError("Anthropic Claude requires an API key.")
@@ -82,6 +132,7 @@ def build_llm_chat_request(
             body["system"] = str(system_prompt)
         if context:
             body["messages"].insert(0, {"role": "user", "content": f"Trading context JSON: {context}"})
+        body.update(_anthropic_thinking_body(reasoning_effort))
     elif protocol == GEMINI_GENERATE_CONTENT_PROTOCOL:
         if not api_key:
             raise ValueError("Google Gemini requires an API key.")
@@ -95,6 +146,9 @@ def build_llm_chat_request(
             parts.append({"text": f"Trading context JSON: {context}"})
         parts.append({"text": user_prompt})
         body = {"contents": [{"parts": parts}]}
+        generation_config = _gemini_generation_config(reasoning_effort, model)
+        if generation_config:
+            body["generationConfig"] = generation_config
     else:
         raise ValueError(f"Unsupported LLM protocol for provider {provider}: {protocol}")
 

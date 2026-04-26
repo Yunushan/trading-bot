@@ -15,14 +15,61 @@
       place-items: center;
     }
     main {
-      max-width: 720px;
+      width: min(960px, calc(100vw - 40px));
       padding: 32px;
       border: 1px solid #334155;
-      border-radius: 18px;
+      border-radius: 8px;
       background: #111827;
     }
     h1 {
       margin-top: 0;
+    }
+    section {
+      display: grid;
+      gap: 12px;
+      margin-top: 20px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      color: #cbd5e1;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    input,
+    select {
+      min-height: 36px;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      background: #020617;
+      color: #f8fafc;
+      padding: 8px 10px;
+    }
+    .checks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .checks label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    fieldset {
+      border: 0;
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      transition: opacity 160ms ease;
+    }
+    fieldset:disabled {
+      opacity: 0.38;
     }
   </style>
 </head>
@@ -30,7 +77,146 @@
   <main>
     <h1>Trading Bot Tauri Shell</h1>
     <p>This is the Rust Tauri scaffold for the trading bot workspace.</p>
-    <p>Wire this shell to the shared Rust core and your preferred web frontend.</p>
+    <section aria-label="AI LLM Settings">
+      <h2>AI / LLM Settings</h2>
+      <div class="checks">
+        <label><input type="checkbox" id="llm-enabled"> Enable LLM assistance</label>
+      </div>
+      <fieldset id="llm-controls" disabled>
+        <div class="checks">
+          <label><input type="checkbox" id="llm-public"> Allow public network endpoint</label>
+        </div>
+        <div class="row">
+          <label>
+            Provider
+            <select id="llm-provider">
+              <option value="openai" data-mode="cloud" data-base="https://api.openai.com/v1" data-env="OPENAI_API_KEY">OpenAI / ChatGPT</option>
+              <option value="anthropic" data-mode="cloud" data-base="https://api.anthropic.com" data-env="ANTHROPIC_API_KEY">Anthropic Claude</option>
+              <option value="gemini" data-mode="cloud" data-base="https://generativelanguage.googleapis.com/v1beta" data-env="GEMINI_API_KEY">Google Gemini</option>
+              <option value="deepseek" data-mode="cloud" data-base="https://api.deepseek.com" data-env="DEEPSEEK_API_KEY">DeepSeek</option>
+              <option value="grok" data-mode="cloud" data-base="https://api.x.ai/v1" data-env="XAI_API_KEY">xAI Grok</option>
+              <option value="qwen" data-mode="cloud" data-base="https://dashscope-intl.aliyuncs.com/compatible-mode/v1" data-env="DASHSCOPE_API_KEY">Alibaba Qwen / DashScope</option>
+              <option value="local" data-mode="local" data-base="http://127.0.0.1:11434/v1" data-env="LOCAL_LLM_API_KEY">Local / Custom OpenAI-Compatible</option>
+            </select>
+          </label>
+          <label>
+            Model
+            <select id="llm-model"></select>
+          </label>
+        </div>
+        <label>
+          Reasoning / Thinking
+          <select id="llm-reasoning"></select>
+        </label>
+        <label>
+          Base URL / Local or Private IP
+          <input id="llm-base-url" value="https://api.openai.com/v1">
+        </label>
+        <div class="row">
+          <label>
+            API key env
+            <input id="llm-api-env" value="OPENAI_API_KEY">
+          </label>
+          <label>
+            API token
+            <input id="llm-api-token" type="password" placeholder="Optional; env var is preferred">
+          </label>
+        </div>
+        <label>
+          Use for
+          <select id="llm-use-for">
+            <option value="advisory">Advisory</option>
+            <option value="signal_confirmation">Signal confirmation</option>
+            <option value="risk_review">Risk review</option>
+            <option value="backtest_explanation">Backtest explanation</option>
+          </select>
+        </label>
+      </fieldset>
+    </section>
   </main>
+  <script>
+    const modelSuggestions = {
+      openai: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-chat-latest", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.1", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano"],
+      anthropic: [
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-4-1-20250805",
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+        "claude-opus-4-1",
+        "claude-opus-4-0",
+        "claude-sonnet-4-0"
+      ],
+      gemini: ["gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+      deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
+      grok: ["grok-4.20", "grok-4.20-reasoning", "grok-4.20-non-reasoning", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"],
+      qwen: ["qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-flash"],
+      local: ["llama3.3", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"]
+    };
+    const reasoningSuggestions = {
+      openai: ["default", "none", "minimal", "low", "medium", "high", "xhigh"],
+      anthropic: ["default", "disabled", "enabled", "low", "medium", "high"],
+      gemini: ["default", "minimal", "low", "medium", "high"],
+      deepseek: ["default", "disabled", "enabled", "high", "max"],
+      grok: ["default", "low", "medium", "high"],
+      qwen: ["default", "low", "medium", "high"],
+      local: ["default", "none", "low", "medium", "high", "xhigh"]
+    };
+    const enabled = document.getElementById("llm-enabled");
+    const controls = document.getElementById("llm-controls");
+    const allowPublic = document.getElementById("llm-public");
+    const provider = document.getElementById("llm-provider");
+    const model = document.getElementById("llm-model");
+    const reasoning = document.getElementById("llm-reasoning");
+    const syncEnabledState = () => {
+      controls.disabled = !enabled.checked;
+    };
+    const syncModelOptions = () => {
+      const suggestions = modelSuggestions[provider.value] || [];
+      model.replaceChildren(...suggestions.map((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        return option;
+      }));
+    };
+    const syncReasoningOptions = () => {
+      const suggestions = reasoningSuggestions[provider.value] || ["default"];
+      reasoning.replaceChildren(...suggestions.map((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        return option;
+      }));
+    };
+    const syncProviderDefaults = () => {
+      const option = provider.selectedOptions[0];
+      document.getElementById("llm-base-url").value = option.dataset.base || "";
+      document.getElementById("llm-api-env").value = option.dataset.env || "";
+      syncModelOptions();
+      syncReasoningOptions();
+    };
+    const syncProviderAccess = () => {
+      for (const option of provider.options) {
+        option.disabled = option.dataset.mode === "cloud" && !allowPublic.checked;
+      }
+      if (provider.selectedOptions[0]?.disabled) {
+        provider.value = "local";
+        syncProviderDefaults();
+      }
+    };
+    enabled.addEventListener("change", syncEnabledState);
+    allowPublic.addEventListener("change", syncProviderAccess);
+    provider.addEventListener("change", () => {
+      allowPublic.checked = provider.selectedOptions[0]?.dataset.mode === "cloud";
+      syncProviderAccess();
+      syncProviderDefaults();
+    });
+    syncProviderAccess();
+    syncProviderDefaults();
+    syncEnabledState();
+  </script>
 </body>
 </html>

@@ -218,6 +218,11 @@ def load_config(self):
             self._update_runtime_stop_loss_widgets()
             self._update_backtest_stop_loss_widgets()
             self._update_connector_labels()
+            for panel in list(getattr(self, "_llm_settings_panels", []) or []):
+                try:
+                    panel.refresh_from_config()
+                except Exception:
+                    pass
         except Exception:
             pass
     except Exception as e:

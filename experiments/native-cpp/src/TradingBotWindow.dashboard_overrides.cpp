@@ -9,6 +9,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QSpinBox>
@@ -280,6 +282,39 @@ void TradingBotWindow::saveDashboardConfig() {
 
     QJsonObject payload;
     payload.insert(QStringLiteral("overrides"), rowsJson);
+    QJsonObject llmJson;
+    if (dashboardLlmProviderCombo_) {
+        const QVariantMap providerSpec = dashboardLlmProviderCombo_->currentData().toMap();
+        llmJson.insert(QStringLiteral("provider"), providerSpec.value(QStringLiteral("key")).toString());
+        llmJson.insert(QStringLiteral("provider_label"), dashboardLlmProviderCombo_->currentText().trimmed());
+    }
+    if (dashboardLlmEnableCheck_) {
+        llmJson.insert(QStringLiteral("enabled"), dashboardLlmEnableCheck_->isChecked());
+    }
+    if (dashboardLlmModelCombo_) {
+        llmJson.insert(QStringLiteral("model"), dashboardLlmModelCombo_->currentText().trimmed());
+    }
+    if (dashboardLlmReasoningCombo_) {
+        llmJson.insert(QStringLiteral("reasoning_effort"), dashboardLlmReasoningCombo_->currentText().trimmed());
+    }
+    if (dashboardLlmBaseUrlEdit_) {
+        llmJson.insert(QStringLiteral("base_url"), dashboardLlmBaseUrlEdit_->text().trimmed());
+    }
+    if (dashboardLlmApiKeyEnvEdit_) {
+        llmJson.insert(QStringLiteral("api_key_env"), dashboardLlmApiKeyEnvEdit_->text().trimmed());
+    }
+    if (dashboardLlmApiKeyEdit_
+        && !dashboardLlmApiKeyEdit_->text().trimmed().isEmpty()
+        && dashboardLlmApiKeyEdit_->text().trimmed() != QStringLiteral("********")) {
+        llmJson.insert(QStringLiteral("api_key"), dashboardLlmApiKeyEdit_->text().trimmed());
+    }
+    if (dashboardLlmUseForCombo_) {
+        llmJson.insert(QStringLiteral("use_for"), dashboardLlmUseForCombo_->currentData().toString());
+    }
+    if (dashboardLlmAllowPublicNetworkCheck_) {
+        llmJson.insert(QStringLiteral("allow_public_network"), dashboardLlmAllowPublicNetworkCheck_->isChecked());
+    }
+    payload.insert(QStringLiteral("llm"), llmJson);
     payload.insert(QStringLiteral("saved_at"), QDateTime::currentDateTime().toString(Qt::ISODate));
 
     QFile out(filePath);
@@ -324,6 +359,52 @@ void TradingBotWindow::loadDashboardConfig() {
     }
 
     const QJsonArray rowsJson = document.object().value(QStringLiteral("overrides")).toArray();
+    const QJsonObject llmJson = document.object().value(QStringLiteral("llm")).toObject();
+    if (!llmJson.isEmpty()) {
+        const QString providerKey = llmJson.value(QStringLiteral("provider")).toString().trimmed();
+        if (dashboardLlmProviderCombo_ && !providerKey.isEmpty()) {
+            for (int i = 0; i < dashboardLlmProviderCombo_->count(); ++i) {
+                const QVariantMap spec = dashboardLlmProviderCombo_->itemData(i).toMap();
+                if (spec.value(QStringLiteral("key")).toString().compare(providerKey, Qt::CaseInsensitive) == 0) {
+                    dashboardLlmProviderCombo_->setCurrentIndex(i);
+                    break;
+                }
+            }
+        }
+        if (dashboardLlmEnableCheck_) {
+            dashboardLlmEnableCheck_->setChecked(llmJson.value(QStringLiteral("enabled")).toBool(false));
+        }
+        if (dashboardLlmModelCombo_) {
+            dashboardLlmModelCombo_->setCurrentText(llmJson.value(QStringLiteral("model")).toString().trimmed());
+        }
+        if (dashboardLlmReasoningCombo_) {
+            const QString reasoningEffort = llmJson.value(QStringLiteral("reasoning_effort")).toString().trimmed();
+            const int idx = dashboardLlmReasoningCombo_->findText(reasoningEffort);
+            dashboardLlmReasoningCombo_->setCurrentIndex(idx >= 0 ? idx : 0);
+        }
+        if (dashboardLlmBaseUrlEdit_) {
+            dashboardLlmBaseUrlEdit_->setText(llmJson.value(QStringLiteral("base_url")).toString().trimmed());
+        }
+        if (dashboardLlmApiKeyEnvEdit_) {
+            dashboardLlmApiKeyEnvEdit_->setText(llmJson.value(QStringLiteral("api_key_env")).toString().trimmed());
+        }
+        if (dashboardLlmApiKeyEdit_) {
+            dashboardLlmApiKeyEdit_->setText(llmJson.contains(QStringLiteral("api_key")) ? QStringLiteral("********") : QString());
+        }
+        if (dashboardLlmUseForCombo_) {
+            const QString useFor = llmJson.value(QStringLiteral("use_for")).toString().trimmed();
+            const int idx = dashboardLlmUseForCombo_->findData(useFor);
+            if (idx >= 0) {
+                dashboardLlmUseForCombo_->setCurrentIndex(idx);
+            }
+        }
+        if (dashboardLlmAllowPublicNetworkCheck_) {
+            dashboardLlmAllowPublicNetworkCheck_->setChecked(llmJson.value(QStringLiteral("allow_public_network")).toBool(false));
+        }
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("LLM settings loaded from dashboard config."));
+        }
+    }
     dashboardOverridesTable_->setRowCount(0);
 
     int loadedCount = 0;

@@ -106,6 +106,7 @@ private:
     bool addDashboardOverrideRow(const QString &symbolRaw, const QString &intervalRaw);
 
     void createDashboardAccountStatusSection(QWidget *page, QVBoxLayout *root);
+    void createDashboardLlmSection(QWidget *page, QVBoxLayout *root);
     void createDashboardExchangeAndMarketsSections(QWidget *page, QVBoxLayout *root);
     void createDashboardStrategySection(QWidget *page, QVBoxLayout *root);
     void createDashboardRuntimeSection(QWidget *page, QVBoxLayout *root);
@@ -163,6 +164,16 @@ private:
     QComboBox *dashboardTemplateCombo_;
     QComboBox *dashboardMarginModeCombo_;
     QComboBox *dashboardPositionModeCombo_;
+    QCheckBox *dashboardLlmEnableCheck_ = nullptr;
+    QComboBox *dashboardLlmProviderCombo_ = nullptr;
+    QComboBox *dashboardLlmModelCombo_ = nullptr;
+    QComboBox *dashboardLlmReasoningCombo_ = nullptr;
+    QLineEdit *dashboardLlmBaseUrlEdit_ = nullptr;
+    QLineEdit *dashboardLlmApiKeyEnvEdit_ = nullptr;
+    QLineEdit *dashboardLlmApiKeyEdit_ = nullptr;
+    QComboBox *dashboardLlmUseForCombo_ = nullptr;
+    QCheckBox *dashboardLlmAllowPublicNetworkCheck_ = nullptr;
+    QLabel *dashboardLlmStatusLabel_ = nullptr;
     QComboBox *dashboardSideCombo_ = nullptr;
     QComboBox *dashboardLoopOverrideCombo_ = nullptr;
     QDoubleSpinBox *dashboardPositionPctSpin_;

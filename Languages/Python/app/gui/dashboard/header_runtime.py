@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
+from ..shared.llm_settings_panel import create_llm_settings_panel
+
 _ACCOUNT_MODE_OPTIONS = ()
 _CONNECTOR_OPTIONS = ()
 _FUTURES_CONNECTOR_KEYS = ()
@@ -225,6 +227,15 @@ def _create_dashboard_header_section(self, scroll_layout):
 
     self._on_account_type_changed(self.account_combo.currentText())
     scroll_layout.addLayout(grid)
+    try:
+        scroll_layout.addWidget(
+            create_llm_settings_panel(
+                self,
+                title="AI / LLM Settings (Python Dashboard)",
+            )
+        )
+    except Exception:
+        pass
 
 
 def bind_main_window_dashboard_header_runtime(

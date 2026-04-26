@@ -10,6 +10,7 @@ Today it is a C++ desktop preview and re-platforming path, not the primary end-u
 - C++23 / Qt 6 build target
 - Dashboard, chart, positions, backtest, and web/runtime slices under active restructuring
 - Native exchange connectivity experiments, with Binance as the current implemented connector path inside the C++ tree
+- Dashboard LLM settings for cloud providers and local/private OpenAI-compatible endpoints
 
 ## Current status
 

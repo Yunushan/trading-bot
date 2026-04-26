@@ -10,6 +10,7 @@ This client is intentionally small:
 - inspect runtime, status, backtest state, and recent logs
 - request bot start/stop
 - trigger the extracted service-owned backtest runner
+- select and save LLM provider settings for OpenAI/ChatGPT, Claude, Gemini, DeepSeek, Grok, Qwen, or a local/private OpenAI-compatible endpoint
 - run controlled service terminal commands such as `status`, `start 1`, `stop`, `config get`, and `llm providers`
 
 It does **not** run trading logic locally, and it should never store exchange or broker credentials on the phone.
