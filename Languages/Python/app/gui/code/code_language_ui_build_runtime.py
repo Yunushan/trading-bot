@@ -4,7 +4,6 @@ import os
 
 from PyQt6 import QtCore, QtWidgets
 
-from ..shared.llm_settings_panel import create_llm_settings_panel
 from .code_language_catalog import (
     RUST_CODE_LANGUAGE_KEY,
     RUST_FRAMEWORK_OPTIONS,
@@ -244,17 +243,6 @@ def init_code_language_tab(
             status_layout.addWidget(lbl)
     self._register_pnl_summary_labels(self.pnl_active_label_code_tab, self.pnl_closed_label_code_tab)
     layout.addWidget(status_widget)
-
-    try:
-        layout.addWidget(
-            create_llm_settings_panel(
-                self,
-                content,
-                title="AI / LLM Settings (Python, C++, Rust, Mobile)",
-            )
-        )
-    except Exception:
-        pass
 
     self._dep_version_labels = {}
     self._dep_version_targets = []
