@@ -9,7 +9,7 @@
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/python-3.10--3.13-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10 to 3.13" />
+    <img src="https://img.shields.io/badge/python-3.10--3.14-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10 to 3.14" />
     <img src="https://img.shields.io/badge/gui-PyQt6-41CD52?logo=qt&amp;logoColor=white" alt="PyQt6 GUI" />
     <img src="https://img.shields.io/badge/markets-Exchanges%20%7C%20FX%20%7C%20Crypto-111827" alt="Markets" />
     <img src="https://img.shields.io/badge/primary%20live%20integration-Binance-F3BA2F?logo=binance&amp;logoColor=black" alt="Primary live integration Binance" />
@@ -61,7 +61,7 @@ A desktop-first trading workspace centered on the **PyQt6 Python app** in `Langu
 
 ## System requirements
 
-- **Python**: 3.10 – 3.13 (3.11+ recommended). Python 3.14 has not been fully verified.
+- **Python**: 3.10 – 3.14 (3.11+ recommended).
 - **pip**: bundled with Python, used to install dependencies.
 - **Internet access**: required for supported exchange/broker REST or WebSocket APIs. Binance is the primary current live path.
 - **Operating system**:

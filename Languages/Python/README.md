@@ -29,12 +29,12 @@ The workspace is broader than a Binance-only bot. It is intended for exchange, c
 
 ## Requirements
 
-- Python 3.10 to 3.13
+- Python 3.10 to 3.14
 - `pip`
 - Internet access for supported exchange or broker APIs
 - API credentials for a supported venue if you want live/demo connectivity
 
-Python 3.11 or 3.12 is the safest choice today. Python 3.14 has not been fully verified.
+Python 3.11 or newer is recommended.
 
 ## Install
 
@@ -48,7 +48,7 @@ cd Languages/Python
 
 One-click launch:
 
-- If Python 3.10 to 3.13 is already installed, double-click `Trading-Bot-Python.bat`.
+- If Python 3.10 to 3.14 is already installed, double-click `Trading-Bot-Python.bat`.
 
 Manual setup:
 
