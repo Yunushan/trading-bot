@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from decimal import Decimal, ROUND_DOWN, getcontext
+from decimal import Decimal, getcontext
 import math
 import time
 from typing import Any, Dict, List

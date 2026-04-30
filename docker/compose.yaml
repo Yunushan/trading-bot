@@ -6,9 +6,9 @@ services:
     image: trading-bot-service:dev
     container_name: trading-bot-service
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
-      BOT_SERVICE_API_TOKEN: ${BOT_SERVICE_API_TOKEN:-}
+      BOT_SERVICE_API_TOKEN: ${BOT_SERVICE_API_TOKEN:?Set BOT_SERVICE_API_TOKEN before exposing the service API}
     healthcheck:
       test:
         [

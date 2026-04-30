@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui
 
-_SAVE_APP_STATE_FILE = lambda path, data: None  # type: ignore
+
+def _SAVE_APP_STATE_FILE(path, data):  # type: ignore
+    return None
 
 
 def bind_main_window_service_api_runtime(main_window_cls, *, save_app_state_file) -> None:

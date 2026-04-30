@@ -6,7 +6,10 @@ from app.config import MDD_LOGIC_DEFAULT, MDD_LOGIC_OPTIONS
 from ..shared.helper_runtime import _normalize_datetime_pair
 
 _MDD_LOGIC_LABELS: dict[str, str] = {}
-_normalize_loop_override = lambda value: None  # type: ignore
+
+
+def _normalize_loop_override(value):  # type: ignore
+    return None
 
 
 def configure_backtest_results_normalize_runtime(

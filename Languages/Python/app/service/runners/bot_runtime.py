@@ -19,8 +19,9 @@ if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[3]
     if str(_PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(_PYTHON_ROOT))
-    from app.config import build_default_config
+    from app.config import build_default_config, validate_runtime_config
     from app.service.runners.bot_runtime_control import BotRuntimeControlMixin
+    from app.service.runners.bot_runtime_shared import _deep_merge_mappings
     from app.service.runners.bot_runtime_state import BotRuntimeStateMixin
     from app.service.schemas.account import build_account_snapshot
     from app.service.schemas.backtest import build_backtest_snapshot
@@ -29,8 +30,9 @@ if __package__ in (None, ""):
     from app.service.schemas.logs import ServiceLogEvent
     from app.service.schemas.positions import build_portfolio_snapshot
 else:
-    from ...config import build_default_config
+    from ...config import build_default_config, validate_runtime_config
     from .bot_runtime_control import BotRuntimeControlMixin
+    from .bot_runtime_shared import _deep_merge_mappings
     from .bot_runtime_state import BotRuntimeStateMixin
     from ..schemas.account import build_account_snapshot
     from ..schemas.backtest import build_backtest_snapshot
@@ -43,9 +45,9 @@ else:
 class BotRuntimeCoordinator(BotRuntimeStateMixin, BotRuntimeControlMixin):
     def __init__(self, config: dict | None = None) -> None:
         self._lock = threading.RLock()
-        self._config = build_default_config()
+        self._config = validate_runtime_config(build_default_config())
         if isinstance(config, dict):
-            self._config.update(copy.deepcopy(config))
+            self._config = validate_runtime_config(_deep_merge_mappings(self._config, copy.deepcopy(config)))
         self._runtime_active = False
         self._active_engine_count = 0
         self._runtime_source = "service"

@@ -67,6 +67,26 @@ class BacktestRequestBehaviorTests(unittest.TestCase):
         self.assertEqual(("ema",), summary["indicator_keys"])
         self.assertFalse(request.stop_loss_enabled)
 
+    def test_build_request_defaults_missing_mode_to_demo(self):
+        runtime = _build_runtime()
+        runtime.config.pop("mode", None)
+
+        _request, wrapper_kwargs, _summary = build_request(
+            runtime,
+            {
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1h"],
+                "capital": 1000.0,
+                "start": "2025-01-01T00:00:00",
+                "end": "2025-01-02T00:00:00",
+                "indicators": {
+                    "ema": {"enabled": True, "length": 20},
+                },
+            },
+        )
+
+        self.assertEqual("Demo/Testnet", wrapper_kwargs["mode"])
+
     def test_build_request_canonicalizes_interval_aliases_and_pair_overrides(self):
         runtime = _build_runtime()
         runtime.config["backtest_symbol_interval_pairs"] = [

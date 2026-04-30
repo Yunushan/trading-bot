@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: F822
+
 from PyQt6 import QtCore
 
 from . import (

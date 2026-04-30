@@ -5,7 +5,6 @@ import os
 from PyQt6 import QtCore, QtWidgets
 
 from .code_language_catalog import (
-    RUST_CODE_LANGUAGE_KEY,
     RUST_FRAMEWORK_OPTIONS,
     STARTER_LANGUAGE_OPTIONS,
 )

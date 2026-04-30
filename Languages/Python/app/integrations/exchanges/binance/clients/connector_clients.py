@@ -77,7 +77,7 @@ if _OfficialAPIBase is not None and _OfficialSpotClient is not None:
 
     class OfficialConnectorAdapter:
         def __init__(self, api_key, api_secret, *, mode="Live"):
-            mode_text = (mode or "Live").strip().lower()
+            mode_text = (mode or "Demo/Testnet").strip().lower()
             is_testnet = any(tag in mode_text for tag in ("test", "demo"))
             spot_base = (
                 "https://testnet.binance.vision"

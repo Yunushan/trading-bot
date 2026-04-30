@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from collections import deque
 from datetime import datetime, timezone
 

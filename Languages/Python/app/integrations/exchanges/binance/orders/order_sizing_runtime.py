@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .order_audit_runtime import audit_order_method
+
 
 def required_percent_for_symbol(self, symbol: str, leverage: int | float | None = None) -> float:
     try:
@@ -64,9 +66,9 @@ def place_spot_market_order(
             qty = self._floor_to_step(qty, step)
     if min_notional > 0 and (qty * px) < min_notional:
         needed = min_notional / px
-        qty = needed
         if step > 0:
-            qty = self._floor_to_step(qty, step)
+            needed = self._ceil_to_step(needed, step)
+        qty = max(needed, min_qty)
     try:
         res = self.client.create_order(symbol=sym, side=side.upper(), type="MARKET", quantity=str(qty))
         return {
@@ -151,11 +153,12 @@ def adjust_qty_to_filters_spot(self, symbol: str, qty: float, est_price: float):
         adj = min_qty
     if min_notional > 0 and (est_price or 0) > 0:
         needed = min_notional / float(est_price)
+        if step > 0:
+            needed = self._ceil_to_step(needed, step)
+        if min_qty > 0:
+            needed = max(needed, min_qty)
         if adj < needed:
             adj = needed
-        adj = min_qty
-        if step > 0:
-            adj = self._floor_to_step(adj, step)
 
     if est_price and min_notional > 0:
         notional = adj * est_price
@@ -203,7 +206,7 @@ def adjust_qty_to_filters_futures(self, symbol: str, qty: float, price: float | 
 
 def bind_binance_order_sizing_runtime(wrapper_cls) -> None:
     wrapper_cls.required_percent_for_symbol = required_percent_for_symbol
-    wrapper_cls.place_spot_market_order = place_spot_market_order
+    wrapper_cls.place_spot_market_order = audit_order_method(place_spot_market_order, market="spot")
     wrapper_cls._ceil_to_step = _ceil_to_step
     wrapper_cls._floor_to_step = staticmethod(_floor_to_step)
     wrapper_cls.floor_to_decimals = staticmethod(floor_to_decimals)

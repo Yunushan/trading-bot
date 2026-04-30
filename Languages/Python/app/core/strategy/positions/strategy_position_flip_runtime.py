@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-import time
 
 from . import strategy_close_opposite_runtime
 

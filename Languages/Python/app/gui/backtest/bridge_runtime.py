@@ -6,8 +6,14 @@ import traceback
 from PyQt6 import QtCore
 
 _DBG_BACKTEST_DASHBOARD = False
-_normalize_indicator_values = lambda value: []  # type: ignore
-_normalize_stop_loss_dict = lambda value: value  # type: ignore
+
+
+def _normalize_indicator_values(value):  # type: ignore
+    return []
+
+
+def _normalize_stop_loss_dict(value):  # type: ignore
+    return value
 
 
 def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):

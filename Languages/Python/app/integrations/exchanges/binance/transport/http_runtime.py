@@ -5,7 +5,6 @@ from .http_base_runtime import (
     _futures_api_prefix,
     _futures_base,
     _futures_base_live,
-    _is_testnet_mode,
     _normalize_futures_prefix,
     _spot_base,
 )

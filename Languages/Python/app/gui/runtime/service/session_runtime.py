@@ -6,8 +6,14 @@ from datetime import datetime
 from PyQt6 import QtWidgets
 
 _DEFAULT_CONNECTOR_BACKEND = ""
-_NORMALIZE_CONNECTOR_BACKEND = lambda value: value  # type: ignore
-_SAVE_APP_STATE_FILE = lambda path, data: None  # type: ignore
+
+
+def _NORMALIZE_CONNECTOR_BACKEND(value):  # type: ignore
+    return value
+
+
+def _SAVE_APP_STATE_FILE(path, data):  # type: ignore
+    return None
 
 
 def bind_main_window_session_runtime(

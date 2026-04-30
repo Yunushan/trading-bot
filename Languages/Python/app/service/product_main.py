@@ -19,11 +19,13 @@ if __package__ in (None, ""):
     from app.service.api_contract import SERVICE_API_BASE_PATH, service_api_route
     from app.service.runtime import TradingBotService
     from app.service.schemas.control import make_start_request, make_stop_request
+    from app.settings import ConfigValidationError
 else:
     from .api import run_service_api_server
     from .api_contract import SERVICE_API_BASE_PATH, service_api_route
     from .runtime import TradingBotService
     from .schemas.control import make_start_request, make_stop_request
+    from ..settings import ConfigValidationError
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -41,7 +43,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serve", action="store_true", help="Run the optional HTTP service API.")
     parser.add_argument("--host", default="127.0.0.1", help="Host binding for --serve. Default: 127.0.0.1")
     parser.add_argument("--port", type=int, default=8000, help="Port for --serve. Default: 8000")
-    parser.add_argument("--api-token", default="", help="Optional bearer token for protecting the HTTP API.")
+    parser.add_argument(
+        "--api-token",
+        default="",
+        help="Bearer token for the HTTP API; required when --host binds outside loopback.",
+    )
     parser.add_argument(
         "--base-url",
         default="",
@@ -155,7 +161,11 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(config_patch, dict):
             print("--config-patch expects a JSON object.", file=sys.stderr)
             return 2
-        service.update_config(config_patch)
+        try:
+            service.update_config(config_patch)
+        except ConfigValidationError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     descriptor = service.describe_runtime()
     status = service.get_status()
     config_summary = service.get_config_summary()

@@ -23,8 +23,14 @@ if __package__ in (None, ""):
         SERVICE_API_UI_PATH,
         SERVICE_API_VERSION,
     )
-    from app.service.auth import auth_required, resolve_service_api_token, validate_bearer_token
+    from app.service.auth import (
+        auth_required,
+        resolve_service_api_token,
+        validate_bearer_token,
+        validate_service_api_exposure,
+    )
     from app.service.runtime import TradingBotService
+    from app.settings import ConfigValidationError
 else:
     from ..api_contract import (
         SERVICE_API_BASE_PATH,
@@ -36,8 +42,14 @@ else:
         SERVICE_API_UI_PATH,
         SERVICE_API_VERSION,
     )
-    from ..auth import auth_required, resolve_service_api_token, validate_bearer_token
+    from ..auth import (
+        auth_required,
+        resolve_service_api_token,
+        validate_bearer_token,
+        validate_service_api_exposure,
+    )
     from ..runtime import TradingBotService
+    from ...settings import ConfigValidationError
 
 try:
     from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -244,6 +256,12 @@ def create_service_api_app(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    def _raise_config_validation_error(exc: ConfigValidationError) -> None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.to_dict(),
+        ) from exc
+
     if web_ui_available:
         app.mount(SERVICE_API_UI_PATH, StaticFiles(directory=str(web_client_dir), html=True), name="web-ui")
 
@@ -290,12 +308,18 @@ def create_service_api_app(
 
     @api_router.put("/config")
     def replace_config(payload: ConfigReplaceRequest):
-        _service().replace_config(payload.config)
+        try:
+            _service().replace_config(payload.config)
+        except ConfigValidationError as exc:
+            _raise_config_validation_error(exc)
         return _service().get_config_payload().to_dict()
 
     @api_router.patch("/config")
     def update_config(payload: ConfigReplaceRequest):
-        return _service().update_config(payload.config).to_dict()
+        try:
+            return _service().update_config(payload.config).to_dict()
+        except ConfigValidationError as exc:
+            _raise_config_validation_error(exc)
 
     @api_router.put("/runtime/state")
     def set_runtime_state(payload: RuntimeStateRequest):
@@ -404,7 +428,10 @@ def create_service_api_app(
 
     @api_router.patch("/llm/config")
     def update_llm_config(payload: LLMConfigPatchRequest):
-        return _service().update_llm_config(payload.config)
+        try:
+            return _service().update_llm_config(payload.config)
+        except ConfigValidationError as exc:
+            _raise_config_validation_error(exc)
 
     @api_router.post("/llm/prompt")
     def run_llm_prompt(payload: LLMPromptRequest):
@@ -459,6 +486,8 @@ def run_service_api_server(
     api_token: str | None = None,
 ) -> None:
     _require_fastapi()
+    resolved_token = resolve_service_api_token(api_token)
+    validate_service_api_exposure(host, resolved_token)
     try:
         import uvicorn
     except Exception as exc:  # pragma: no cover - handled via runtime check
@@ -469,7 +498,7 @@ def run_service_api_server(
 
     app = create_service_api_app(
         service=service,
-        api_token=api_token,
+        api_token=resolved_token,
         host_context="standalone-service",
         host_owner="service-process",
         enable_local_executor=True,

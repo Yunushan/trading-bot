@@ -96,7 +96,7 @@ def _close_interval_side_entries(
             indicator_hold_key = indicator_filter_norm or (entry_keys[0] if entry_keys else None)
             if indicator_hold_key:
                 try:
-                    interval_seconds_entry = float(_interval_to_seconds(str(interval_for_entry or "1m")))
+                    interval_seconds_entry = float(self._interval_to_seconds(str(interval_for_entry or "1m")))
                 except Exception:
                     interval_seconds_entry = 60.0
                 if not self._indicator_hold_ready(

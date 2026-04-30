@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Optional SDK globals are imported here and consumed by specialized client modules.
+# ruff: noqa: F401
+
 from enum import Enum
 from typing import Any
 

@@ -269,6 +269,7 @@ def snapshot_live_indicator_context(window, *, snapshot_auth_state) -> dict:
         "auth": auth,
         "connector_backend": backend,
         "indicator_source": indicator_source,
+        "live_safety_config": dict(getattr(window, "config", {}) or {}),
     }
 
 
@@ -281,9 +282,13 @@ def get_live_indicator_wrapper(window, context: dict, *, normalize_connector_bac
         backend = normalize_connector_backend(context.get("connector_backend"))
     except Exception:
         backend = None
+    try:
+        live_safety_config = dict(context.get("live_safety_config") or {})
+    except Exception:
+        live_safety_config = {}
     api_key = str(auth.get("api_key") or "")
     api_secret = str(auth.get("api_secret") or "")
-    mode = str(auth.get("mode") or "Live")
+    mode = str(auth.get("mode") or "Demo/Testnet")
     account_type = str(auth.get("account_type") or "Futures")
     signature = (api_key, api_secret, mode, account_type, str(backend or ""))
     wrapper = getattr(window, "_live_indicator_wrapper", None)
@@ -297,6 +302,7 @@ def get_live_indicator_wrapper(window, context: dict, *, normalize_connector_bac
                 connector_backend=backend,
                 default_leverage=int(auth.get("default_leverage", 1) or 1),
                 default_margin_mode=str(auth.get("default_margin_mode") or "Isolated"),
+                live_safety_config=live_safety_config,
             )
         except Exception:
             wrapper = None
@@ -346,6 +352,10 @@ def start_live_indicator_refresh_worker(
     wrapper = get_live_indicator_wrapper(window, context)
     auth = context.get("auth") or {}
     backend = normalize_connector_backend(context.get("connector_backend"))
+    try:
+        live_safety_config = dict(context.get("live_safety_config") or {})
+    except Exception:
+        live_safety_config = {}
 
     def _do():
         bw = wrapper
@@ -353,11 +363,12 @@ def start_live_indicator_refresh_worker(
             bw = BinanceWrapper(
                 str(auth.get("api_key") or ""),
                 str(auth.get("api_secret") or ""),
-                mode=str(auth.get("mode") or "Live"),
+                mode=str(auth.get("mode") or "Demo/Testnet"),
                 account_type=str(auth.get("account_type") or "Futures"),
                 connector_backend=backend,
                 default_leverage=int(auth.get("default_leverage", 1) or 1),
                 default_margin_mode=str(auth.get("default_margin_mode") or "Isolated"),
+                live_safety_config=live_safety_config,
             )
         if indicator_source:
             try:

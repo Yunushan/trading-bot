@@ -20,7 +20,11 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.desktop import EmbeddedDesktopServiceClient, RemoteDesktopServiceClient, create_desktop_service_client  # noqa: E402
-from app.service.auth import auth_required, validate_bearer_token  # noqa: E402
+from app.service.auth import (  # noqa: E402
+    auth_required,
+    host_requires_service_api_token,
+    validate_bearer_token,
+)
 from app.service.api_contract import (  # noqa: E402
     SERVICE_API_BASE_PATH,
     SERVICE_API_LEGACY_BASE_PATH,
@@ -29,8 +33,14 @@ from app.service.api_contract import (  # noqa: E402
     SERVICE_API_STREAM_DASHBOARD_PATH,
     SERVICE_API_VERSION,
 )
-from app.service.api import FASTAPI_AVAILABLE, ServiceApiBackgroundHost, create_service_api_app  # noqa: E402
+from app.service.api import (  # noqa: E402
+    FASTAPI_AVAILABLE,
+    ServiceApiBackgroundHost,
+    create_service_api_app,
+    run_service_api_server,
+)
 from app.service.runtime import TradingBotService  # noqa: E402
+from app.settings import ConfigValidationError  # noqa: E402
 
 
 class _FakeBacktestWrapper:
@@ -142,11 +152,22 @@ class ServiceApiSmokeTests(unittest.TestCase):
         self.assertTrue(validate_bearer_token(None, ""))
         self.assertTrue(validate_bearer_token("Bearer token-123", "token-123"))
         self.assertFalse(validate_bearer_token("Bearer wrong", "token-123"))
+        self.assertFalse(host_requires_service_api_token("127.0.0.1"))
+        self.assertFalse(host_requires_service_api_token("localhost"))
+        self.assertTrue(host_requires_service_api_token("0.0.0.0"))
+        self.assertTrue(host_requires_service_api_token("192.168.1.10"))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_exposed_service_api_requires_token(self):
+        with self.assertRaisesRegex(RuntimeError, "BOT_SERVICE_API_TOKEN"):
+            run_service_api_server(host="0.0.0.0", port=8000, api_token="")
+        with self.assertRaisesRegex(RuntimeError, "BOT_SERVICE_API_TOKEN"):
+            ServiceApiBackgroundHost(host="0.0.0.0", port=8000, api_token="")
 
     def test_service_config_patch_round_trip(self):
         service = TradingBotService()
         initial_config = service.get_config_payload().to_dict()
-        self.assertEqual(initial_config["mode"], "Live")
+        self.assertEqual(initial_config["mode"], "Demo/Testnet")
 
         payload = service.update_config(
             {
@@ -168,6 +189,48 @@ class ServiceApiSmokeTests(unittest.TestCase):
         self.assertEqual(summary["interval_count"], 2)
         self.assertEqual(summary["llm_provider"], "openai")
         self.assertFalse(summary["llm_enabled"])
+
+    def test_service_config_patch_rejects_invalid_values_and_preserves_previous_config(self):
+        service = TradingBotService()
+        previous = service.get_config_payload().to_dict()
+
+        with self.assertRaises(ConfigValidationError) as caught:
+            service.update_config(
+                {
+                    "symbols": [],
+                    "intervals": ["bad interval"],
+                    "leverage": 0,
+                    "position_pct": 0,
+                }
+            )
+
+        fields = {issue.field for issue in caught.exception.issues}
+        self.assertIn("symbols", fields)
+        self.assertIn("intervals", fields)
+        self.assertIn("leverage", fields)
+        self.assertIn("position_pct", fields)
+        self.assertEqual(previous, service.get_config_payload().to_dict())
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_config_validation_errors_are_client_errors(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception as exc:  # pragma: no cover - depends on optional test dependency stack
+            self.skipTest(f"FastAPI TestClient unavailable: {exc}")
+
+        app = create_service_api_app(service=TradingBotService())
+        client = TestClient(app)
+
+        response = client.patch(
+            f"{SERVICE_API_BASE_PATH}/config",
+            json={"config": {"leverage": 0, "position_pct": 0}},
+        )
+
+        self.assertEqual(422, response.status_code)
+        detail = response.json()["detail"]
+        fields = {issue["field"] for issue in detail["issues"]}
+        self.assertIn("leverage", fields)
+        self.assertIn("position_pct", fields)
 
     def test_service_dashboard_snapshot_contains_expected_sections(self):
         service = TradingBotService()

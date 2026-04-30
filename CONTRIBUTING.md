@@ -41,10 +41,10 @@ Python boundary checks:
 
 ```bash
 cd Languages/Python
-python -m ruff check main.py app/service/main.py app/service/api/app.py app/desktop/bootstrap/main.py
+python -m ruff check --config pyproject.toml .
 python -m mypy --config-file pyproject.toml
 python -m pytest
-python -m compileall app main.py ../../tools
+python -m compileall -q app trading_core main.py
 ```
 
 Rust:
@@ -109,4 +109,3 @@ At minimum, consider:
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - [docs/RELEASES.md](docs/RELEASES.md)
 - [docs/SERVICE_API.md](docs/SERVICE_API.md)
-

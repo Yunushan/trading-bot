@@ -6,8 +6,6 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
-from app.integrations.llm import call_llm
-
 
 @dataclass(frozen=True, slots=True)
 class ServiceTerminalCommandResult:

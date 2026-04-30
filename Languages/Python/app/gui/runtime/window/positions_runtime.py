@@ -69,6 +69,7 @@ def _mw_reconfigure_positions_worker(self, symbols=None):
             account_type=self.account_combo.currentText(),
             symbols=target_symbols or None,
             connector_backend=self._runtime_connector_backend(suppress_refresh=True),
+            live_safety_config=dict(getattr(self, "config", {}) or {}),
         )
         setattr(self, "_pos_symbol_filter", target_symbols)
     except Exception:

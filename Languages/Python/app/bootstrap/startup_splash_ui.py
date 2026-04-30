@@ -97,10 +97,6 @@ class _SplashScreen:
                 "on",
             }
             if host_widget is not None:
-                try:
-                    host_rect = host_widget.rect()
-                except Exception:
-                    host_rect = QtCore.QRect(0, 0, 1920, 1080)
                 splash = _SplashWidget(host_widget)
             else:
                 screen = QtGui.QGuiApplication.primaryScreen()

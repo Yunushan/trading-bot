@@ -12,7 +12,6 @@ from .account_cache_runtime import (
     _get_futures_account_balance_cached,
     _get_futures_account_cached,
     _invalidate_futures_account_cache,
-    _is_testnet_mode,
     _spot_account_dict,
     _try_alt_futures_prefix_on_auth_error,
 )

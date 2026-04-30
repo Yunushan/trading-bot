@@ -1,30 +1,20 @@
 
-import copy
-from datetime import datetime, timezone
-import hashlib
-import hmac
-import math
 import threading
-import time
-import urllib.parse
-from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
-from typing import Any
-import requests
+from collections.abc import Mapping
+from decimal import getcontext
 
-import pandas as pd
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from ....settings.live_safety import validate_live_trading_safety
 from .account import bind_binance_account_data
 from .clients import (
     CcxtBinanceAdapter,
-    CcxtConnectorError,
     OfficialConnectorAdapter,
-    OfficialConnectorError,
     _normalize_connector_choice,
 )
 from .metadata import bind_binance_exchange_metadata
 from .positions import bind_binance_futures_positions
 from .orders import (
+    bind_binance_order_audit_runtime,
     bind_binance_futures_orders,
     bind_binance_order_fallback_runtime,
     bind_binance_order_sizing_runtime,
@@ -35,16 +25,14 @@ from .runtime import (
     bind_binance_operational_runtime,
 )
 from .transport import (
-    _coerce_interval_seconds,
-    _coerce_int,
+    _coerce_interval_seconds as _coerce_interval_seconds,
     _env_flag,
     _env_float,
-    _is_binance_error_payload,
     _requests_timeout,
     bind_binance_http_runtime,
     bind_binance_rate_limit_runtime,
     bind_binance_ws_runtime,
-    normalize_margin_ratio,
+    normalize_margin_ratio as normalize_margin_ratio,
 )
 from .market import bind_binance_market_data
 from .clients import (
@@ -150,11 +138,22 @@ class BinanceWrapper:
                 pass
             return client
 
-    def __init__(self, api_key="", api_secret="", mode="Demo/Testnet", account_type="Spot", *, default_leverage: int | None = None, default_margin_mode: str | None = None, connector_backend: str | None = None):
+    def __init__(
+        self,
+        api_key="",
+        api_secret="",
+        mode="Demo/Testnet",
+        account_type="Spot",
+        *,
+        default_leverage: int | None = None,
+        default_margin_mode: str | None = None,
+        connector_backend: str | None = None,
+        live_safety_config: Mapping[str, object] | None = None,
+    ):
         self.api_key = (api_key or "").strip()
         self.api_secret = (api_secret or "").strip()
         self.mode = (mode or "Demo/Testnet").strip()
-        initial_leverage = int(default_leverage) if (default_leverage is not None) else 20
+        initial_leverage = int(default_leverage) if (default_leverage is not None) else 1
         if initial_leverage < 1:
             initial_leverage = 1
         if initial_leverage > MAX_FUTURES_LEVERAGE:
@@ -164,6 +163,19 @@ class BinanceWrapper:
         self.futures_leverage = initial_leverage
         self._default_margin_mode = str((default_margin_mode or "ISOLATED")).upper()
         self.account_type = (account_type or "Spot").strip().upper()  # "SPOT" or "FUTURES"
+        try:
+            self._configure_order_audit(config=live_safety_config)
+        except Exception:
+            pass
+        validate_live_trading_safety(
+            mode=self.mode,
+            api_key=self.api_key,
+            api_secret=self.api_secret,
+            account_type=self.account_type,
+            leverage=initial_leverage,
+            margin_mode=self._default_margin_mode,
+            config=live_safety_config,
+        )
         if self.account_type.startswith("FUT"):
             self.indicator_source = "Binance futures"
         else:
@@ -280,6 +292,7 @@ class BinanceWrapper:
         self._futures_api_prefix_override: str | None = None
         getcontext().prec = 28
 
+bind_binance_order_audit_runtime(BinanceWrapper)
 bind_binance_http_runtime(BinanceWrapper)
 bind_binance_order_fallback_runtime(BinanceWrapper)
 bind_binance_order_sizing_runtime(BinanceWrapper)

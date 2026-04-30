@@ -87,7 +87,7 @@ def build_editable_config(config: dict | None) -> ServiceEditableConfig:
     api_secret = str(cfg.get("api_secret") or "").strip()
 
     return ServiceEditableConfig(
-        mode=str(cfg.get("mode") or "Live"),
+        mode=str(cfg.get("mode") or "Demo/Testnet"),
         account_type=str(cfg.get("account_type") or "Futures"),
         margin_mode=str(cfg.get("margin_mode") or "Isolated"),
         position_mode=str(cfg.get("position_mode") or "Hedge"),

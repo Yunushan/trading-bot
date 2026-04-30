@@ -19,6 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.config import build_default_config  # noqa: E402
 from app.core.strategy import StrategyEngine  # noqa: E402
+from app.core.strategy.positions.strategy_close_opposite_ledger_runtime import (  # noqa: E402
+    _close_interval_side_entries,
+)
 
 
 class _FakeStrategyBinance:
@@ -208,3 +211,69 @@ class StrategyRuntimeBehaviorTests(unittest.TestCase):
         self.assertFalse(state["aborted"])
         self.assertTrue(state["reduce_only"])
         self.assertAlmostEqual(2.0, state["qty_est"])
+
+    def test_close_interval_side_entries_uses_bound_interval_helper(self):
+        engine = _build_engine()
+        leg_key = ("BTCUSDT", "5m", "SELL")
+        entry = {
+            "qty": 0.5,
+            "timestamp": 0.0,
+            "indicator_keys": ["rsi"],
+            "trigger_signature": ["rsi"],
+        }
+        engine._leg_ledger[leg_key] = {"qty": 0.5, "entries": [entry]}
+        interval_calls: list[str] = []
+        hold_calls: list[tuple[str, float]] = []
+        close_calls: list[tuple[tuple[str, str, str], str, str]] = []
+
+        def _interval_seconds(value: str) -> int:
+            interval_calls.append(value)
+            return 300
+
+        def _hold_ready(
+            _timestamp,
+            _symbol,
+            interval,
+            _indicator,
+            _side,
+            interval_seconds,
+        ):
+            hold_calls.append((str(interval), float(interval_seconds)))
+            return True
+
+        def _close_leg_entry(
+            _cw_ctx,
+            closed_leg_key,
+            _entry,
+            leg_side_norm,
+            close_side,
+            _position_side,
+            **_kwargs,
+        ):
+            close_calls.append((closed_leg_key, leg_side_norm, close_side))
+            return 0.5
+
+        engine._interval_to_seconds = _interval_seconds
+        engine._indicator_hold_ready = _hold_ready
+        engine._close_leg_entry = _close_leg_entry
+
+        closed, failed, qty = _close_interval_side_entries(
+            engine,
+            symbol="BTCUSDT",
+            interval_norm="5m",
+            interval_tokens={"5m"},
+            interval_has_filter=True,
+            interval_norm_guard=("5m",),
+            opp="SELL",
+            dual=False,
+            indicator_filter="rsi",
+            signature_filter=("rsi",),
+            qty_limit=None,
+        )
+
+        self.assertEqual(1, closed)
+        self.assertFalse(failed)
+        self.assertAlmostEqual(0.5, qty)
+        self.assertEqual(["5m"], interval_calls)
+        self.assertEqual([("5m", 300.0)], hold_calls)
+        self.assertEqual([(leg_key, "SELL", "BUY")], close_calls)

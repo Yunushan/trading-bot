@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import sys
 import unittest
 from pathlib import Path

@@ -10,7 +10,7 @@ import time
 
 from .app import create_service_api_app
 from ..api_contract import SERVICE_API_BASE_PATH, SERVICE_API_LEGACY_BASE_PATH
-from ..auth import resolve_service_api_token
+from ..auth import resolve_service_api_token, validate_service_api_exposure
 from ..runtime import TradingBotService
 
 
@@ -27,6 +27,7 @@ class ServiceApiBackgroundHost:
         self._host = str(host or "127.0.0.1").strip() or "127.0.0.1"
         self._port = max(1, int(port))
         self._api_token = resolve_service_api_token(api_token)
+        validate_service_api_exposure(self._host, self._api_token)
         self._app = None
         self._server = None
         self._thread = None

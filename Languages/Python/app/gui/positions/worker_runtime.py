@@ -22,6 +22,7 @@ class _PositionsWorker(QtCore.QObject):
         mode: str,
         account_type: str,
         connector_backend: str | None = None,
+        live_safety_config: dict | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -40,6 +41,7 @@ class _PositionsWorker(QtCore.QObject):
         self._connector_backend = helper_runtime._normalize_connector_backend(
             connector_backend
         )
+        self._live_safety_config = dict(live_safety_config or {})
 
     @QtCore.pyqtSlot(int)
     def start_with_interval(self, interval_ms: int):
@@ -94,6 +96,7 @@ class _PositionsWorker(QtCore.QObject):
         account_type=None,
         symbols=None,
         connector_backend=None,
+        live_safety_config=None,
     ):
         if api_key is not None:
             self._api_key = api_key
@@ -107,6 +110,8 @@ class _PositionsWorker(QtCore.QObject):
             self._connector_backend = helper_runtime._normalize_connector_backend(
                 connector_backend
             )
+        if live_safety_config is not None:
+            self._live_safety_config = dict(live_safety_config or {})
         self._symbols = set(symbols) if symbols else None
         self._wrapper = None
         self._spot_filter_cache = {}
@@ -117,9 +122,10 @@ class _PositionsWorker(QtCore.QObject):
                 self._wrapper = BinanceWrapper(
                     self._api_key or "",
                     self._api_secret or "",
-                    mode=self._mode or "Live",
+                    mode=self._mode or "Demo/Testnet",
                     account_type=self._acct or "Futures",
                     connector_backend=self._connector_backend,
+                    live_safety_config=self._live_safety_config,
                 )
             except Exception:
                 self._wrapper = None

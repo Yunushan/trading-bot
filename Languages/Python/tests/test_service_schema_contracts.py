@@ -184,3 +184,8 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertTrue(summary["llm_enabled"])
         self.assertEqual("qwen", summary["llm_provider"])
         self.assertEqual("cloud", summary["llm_mode"])
+
+    def test_editable_config_defaults_missing_mode_to_demo(self):
+        editable = build_editable_config({}).to_dict()
+
+        self.assertEqual("Demo/Testnet", editable["mode"])

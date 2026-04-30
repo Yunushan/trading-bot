@@ -1,5 +1,10 @@
 
-import time, copy, math, threading, os, sys
+import copy
+import math
+import os
+import sys
+import threading
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -8,54 +13,17 @@ if __package__ in (None, ""):
     if str(_APP_DIR) not in sys.path:
         sys.path.insert(0, str(_APP_DIR))
 
-import pandas as pd
 try:
     from ...config import (
-        STOP_LOSS_MODE_ORDER,
-        STOP_LOSS_SCOPE_OPTIONS,
         normalize_stop_loss_dict,
         INDICATOR_DISPLAY_NAMES,
         coerce_bool,
-    )
-    from ...integrations.exchanges.binance import normalize_margin_ratio
-    from ..indicators import (
-        sma,
-        ema,
-        bollinger_bands,
-        rsi as rsi_fallback,
-        macd as macd_fallback,
-        stoch_rsi as stoch_rsi_fallback,
-        williams_r as williams_r_fallback,
-        parabolic_sar as psar_fallback,
-        ultimate_oscillator as uo_fallback,
-        dmi as dmi_fallback,
-        adx as adx_fallback,
-        supertrend as supertrend_fallback,
-        stochastic as stochastic_fallback,
     )
 except ImportError:  # pragma: no cover - standalone execution fallback
     from config import (
-        STOP_LOSS_MODE_ORDER,
-        STOP_LOSS_SCOPE_OPTIONS,
         normalize_stop_loss_dict,
         INDICATOR_DISPLAY_NAMES,
         coerce_bool,
-    )
-    from binance_wrapper import normalize_margin_ratio
-    from indicators import (
-        sma,
-        ema,
-        bollinger_bands,
-        rsi as rsi_fallback,
-        macd as macd_fallback,
-        stoch_rsi as stoch_rsi_fallback,
-        williams_r as williams_r_fallback,
-        parabolic_sar as psar_fallback,
-        ultimate_oscillator as uo_fallback,
-        dmi as dmi_fallback,
-        adx as adx_fallback,
-        supertrend as supertrend_fallback,
-        stochastic as stochastic_fallback,
     )
 try:
     from .orders import strategy_signal_orders_runtime
@@ -92,12 +60,16 @@ except ImportError:  # pragma: no cover - standalone execution fallback
         strategy_signal_generation,
     )
 
-def _interval_to_seconds(iv:str)->int:
+def _interval_to_seconds(iv: str) -> int:
     try:
-        if iv.endswith('m'): return int(iv[:-1])*60
-        if iv.endswith('s'): return int(iv[:-1])
-        if iv.endswith('h'): return int(iv[:-1])*3600
-        if iv.endswith('d'): return int(iv[:-1])*86400
+        if iv.endswith('m'):
+            return int(iv[:-1]) * 60
+        if iv.endswith('s'):
+            return int(iv[:-1])
+        if iv.endswith('h'):
+            return int(iv[:-1]) * 3600
+        if iv.endswith('d'):
+            return int(iv[:-1]) * 86400
     except Exception:
         pass
     return 60

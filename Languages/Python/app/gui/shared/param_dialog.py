@@ -1,4 +1,4 @@
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets
 
 class ParamDialog(QtWidgets.QDialog):
     def __init__(self, key, original_params: dict, parent=None, display_name=None):

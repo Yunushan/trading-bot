@@ -52,7 +52,7 @@ BACKTEST_TEMPLATE_DEFINITIONS = {
         "position_mode": "Hedge",
         "assets_mode": "Single-Asset",
         "account_mode": "Classic Trading",
-        "leverage": 20,
+        "leverage": 1,
         "mdd_logic": "per_trade",
         "loop_interval_override": "30s",
         "symbol_selection": {
@@ -100,7 +100,7 @@ BACKTEST_TEMPLATE_DEFINITIONS = {
         "position_mode": "Hedge",
         "assets_mode": "Single-Asset",
         "account_mode": "Classic Trading",
-        "leverage": 20,
+        "leverage": 1,
         "mdd_logic": "entire_account",
         "connector_backend": "binance-connector",
         "symbol_selection": {
@@ -110,7 +110,7 @@ BACKTEST_TEMPLATE_DEFINITIONS = {
         },
     },
     "top100_isolated_1pct_sl": {
-        "label": "Top 100, %2 per trade, isolated, %20 (%1 Actual Move) per trade SL",
+        "label": "Top 100, %2 per trade, isolated, %20 per trade SL",
         "intervals": [
             "1m",
             "3m",
@@ -154,7 +154,7 @@ BACKTEST_TEMPLATE_DEFINITIONS = {
         "assets_mode": "Single-Asset",
         "account_mode": "Classic Trading",
         "connector_backend": "binance-sdk-derivatives-trading-usds-futures",
-        "leverage": 20,
+        "leverage": 1,
         "mdd_logic": "entire_account",
         "indicators": {
             "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},

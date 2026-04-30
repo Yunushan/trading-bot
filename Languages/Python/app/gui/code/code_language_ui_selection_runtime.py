@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore
 
 from .code_language_catalog import (
     CPP_CODE_LANGUAGE_KEY,
@@ -75,7 +75,6 @@ def _show_code_tab_confirmation(
     title_label = getattr(self, "_code_tab_confirmation_title_label", None)
     body_label = getattr(self, "_code_tab_confirmation_body_label", None)
     no_btn = getattr(self, "_code_tab_confirmation_no_btn", None)
-    yes_btn = getattr(self, "_code_tab_confirmation_yes_btn", None)
     if overlay is None or panel is None or title_label is None or body_label is None:
         return False
 

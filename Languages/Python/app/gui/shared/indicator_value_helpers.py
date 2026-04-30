@@ -1,6 +1,7 @@
-from __future__ import annotations
-
 """Backward-compatible facade for shared indicator value helpers."""
+
+# ruff: noqa: F401
+from __future__ import annotations
 
 from .indicator_value_collect_runtime import (
     collect_indicator_value_strings,

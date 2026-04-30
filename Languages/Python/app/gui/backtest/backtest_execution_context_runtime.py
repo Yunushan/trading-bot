@@ -2,7 +2,12 @@ from __future__ import annotations
 
 _DBG_BACKTEST_RUN = False
 _SYMBOL_FETCH_TOP_N = 200
-_normalize_stop_loss_dict = lambda value: value  # type: ignore
+
+
+def _normalize_stop_loss_dict(value):  # type: ignore
+    return value
+
+
 _BacktestWorker = None
 
 

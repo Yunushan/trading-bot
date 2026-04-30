@@ -18,9 +18,10 @@ The API will listen on:
 http://127.0.0.1:8000
 ```
 
-## Optional bearer token
+## Required bearer token
 
-Protect the API by exporting `BOT_SERVICE_API_TOKEN` before launch:
+The container binds the app inside Docker to `0.0.0.0` and publishes it on host-local
+`127.0.0.1:8000`, so a bearer token is required before launch:
 
 ```bash
 export BOT_SERVICE_API_TOKEN=your-secret-token

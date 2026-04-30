@@ -9,9 +9,18 @@ _DEFAULT_CONNECTOR_BACKEND = ""
 _FUTURES_CONNECTOR_KEYS = frozenset()
 _SPOT_CONNECTOR_KEYS = frozenset()
 _SIDE_LABELS = {}
-_normalize_connector_backend = lambda value: value  # type: ignore
-_recommended_connector_for_key = lambda account_key: account_key  # type: ignore
-_refresh_dependency_usage_labels = lambda window: None  # type: ignore
+
+
+def _normalize_connector_backend(value):  # type: ignore[no-untyped-def]
+    return value
+
+
+def _recommended_connector_for_key(account_key):  # type: ignore[no-untyped-def]
+    return account_key
+
+
+def _refresh_dependency_usage_labels(window):  # type: ignore[no-untyped-def]
+    return None
 
 
 def _normalize_assets_mode(value):
@@ -186,6 +195,7 @@ def _create_binance_wrapper(
     **kwargs,
 ) -> BinanceWrapper:
     backend = connector_backend or self._runtime_connector_backend(suppress_refresh=True)
+    kwargs.setdefault("live_safety_config", dict(getattr(self, "config", {}) or {}))
     return BinanceWrapper(
         api_key,
         api_secret,
@@ -228,7 +238,7 @@ def _on_api_credentials_changed(self):
 
 def _on_mode_changed(self, value: str):
     try:
-        self.config["mode"] = str(value or self.mode_combo.currentText() or "Live")
+        self.config["mode"] = str(value or self.mode_combo.currentText() or "Demo")
     except Exception:
         pass
     self._invalidate_shared_binance("mode_changed")

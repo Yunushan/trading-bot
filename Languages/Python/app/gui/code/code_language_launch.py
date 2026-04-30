@@ -46,7 +46,6 @@ class LanguageSwitchSplash:
 
             class _Widget(QtWidgets.QWidget):
                 def paintEvent(inner_self, event):  # noqa: N802, ANN001
-                    Q_UNUSED = event
                     splash_ref = getattr(inner_self, "_splash_ref", None)
                     if splash_ref is None:
                         return
@@ -229,7 +228,6 @@ class LanguageSwitchSplash:
 
 
 def create_launch_progress_dialog(status_text: str, parent: QtWidgets.QWidget | None = None) -> LanguageSwitchSplash | None:
-    Q_UNUSED = parent
     try:
         splash = LanguageSwitchSplash(status_text)
         splash.raise_window()

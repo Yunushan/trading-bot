@@ -59,10 +59,12 @@ python -m app.service.main --serve --host 127.0.0.1 --port 8000
 Expose it to the local network:
 
 ```bash
-python apps/service-api/main.py --serve --host 0.0.0.0 --port 8000
+BOT_SERVICE_API_TOKEN=your-secret-token python apps/service-api/main.py --serve --host 0.0.0.0 --port 8000
 ```
 
-## Optional bearer token
+Non-loopback host bindings such as `0.0.0.0` require a bearer token.
+
+## Bearer token
 
 CLI form:
 

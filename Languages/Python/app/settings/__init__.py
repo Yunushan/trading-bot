@@ -24,6 +24,16 @@ from .indicators import (
     build_backtest_indicator_defaults,
     build_runtime_indicator_defaults,
 )
+from .live_safety import (
+    DEFAULT_LIVE_MAX_LEVERAGE,
+    DEFAULT_LIVE_MAX_POSITION_PCT,
+    LIVE_TRADING_ACKNOWLEDGEMENT,
+    LIVE_TRADING_ACK_ENV,
+    LIVE_TRADING_ENABLED_ENV,
+    LiveTradingSafetyError,
+    is_live_trading_mode,
+    validate_live_trading_safety,
+)
 from .models import (
     DEFAULT_CONFIG,
     DEFAULT_SETTINGS,
@@ -42,6 +52,13 @@ from .risk import (
     normalize_stop_loss_dict,
 )
 from .ui import DEFAULT_CODE_LANGUAGE, DEFAULT_SELECTED_EXCHANGE, UserInterfaceSettings
+from .validation import (
+    BINANCE_MAX_FUTURES_LEVERAGE,
+    ConfigValidationError,
+    ConfigValidationIssue,
+    format_config_validation_issues,
+    validate_runtime_config,
+)
 
 __all__ = [
     "AppSettings",
@@ -51,6 +68,9 @@ __all__ = [
     "BACKTEST_TEMPLATE_DEFAULT",
     "BacktestSettings",
     "BacktestTemplateSettings",
+    "BINANCE_MAX_FUTURES_LEVERAGE",
+    "ConfigValidationError",
+    "ConfigValidationIssue",
     "ConnectorSettings",
     "DEFAULT_API_KEY_ENV",
     "DEFAULT_API_SECRET_ENV",
@@ -58,12 +78,18 @@ __all__ = [
     "DEFAULT_CONFIG",
     "DEFAULT_CONNECTOR_BACKEND",
     "DEFAULT_INDICATOR_SOURCE",
+    "DEFAULT_LIVE_MAX_LEVERAGE",
+    "DEFAULT_LIVE_MAX_POSITION_PCT",
     "DEFAULT_SELECTED_EXCHANGE",
     "DEFAULT_SETTINGS",
     "ExecutionSettings",
     "IndicatorDefinition",
     "INDICATOR_CATALOG",
     "INDICATOR_DISPLAY_NAMES",
+    "LIVE_TRADING_ACKNOWLEDGEMENT",
+    "LIVE_TRADING_ACK_ENV",
+    "LIVE_TRADING_ENABLED_ENV",
+    "LiveTradingSafetyError",
     "MDD_LOGIC_DEFAULT",
     "MDD_LOGIC_OPTIONS",
     "RiskManagementSettings",
@@ -79,5 +105,9 @@ __all__ = [
     "build_default_settings",
     "build_runtime_indicator_defaults",
     "coerce_bool",
+    "format_config_validation_issues",
+    "is_live_trading_mode",
     "normalize_stop_loss_dict",
+    "validate_runtime_config",
+    "validate_live_trading_safety",
 ]

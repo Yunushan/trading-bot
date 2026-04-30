@@ -245,7 +245,7 @@ def _snapshot_auth_state(self) -> dict:
     try:
         mode = self.mode_combo.currentText()
     except Exception:
-        mode = "Live"
+        mode = "Demo"
     try:
         account_type = self.account_combo.currentText()
     except Exception:
@@ -272,7 +272,7 @@ def _build_wrapper_from_values(self, auth: dict):
     return self._create_binance_wrapper(
         api_key=auth.get("api_key", ""),
         api_secret=auth.get("api_secret", ""),
-        mode=auth.get("mode", "Live"),
+        mode=auth.get("mode", "Demo/Testnet"),
         account_type=auth.get("account_type", "Futures"),
         default_leverage=int(auth.get("default_leverage", 1) or 1),
         default_margin_mode=auth.get("default_margin_mode", "Isolated") or "Isolated",

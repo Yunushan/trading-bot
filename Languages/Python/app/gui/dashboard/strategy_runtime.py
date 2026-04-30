@@ -9,8 +9,14 @@ _STOP_LOSS_MODE_ORDER = ()
 _STOP_LOSS_MODE_LABELS = {}
 _STOP_LOSS_SCOPE_OPTIONS = ()
 _STOP_LOSS_SCOPE_LABELS = {}
-_coerce_bool = lambda value, default=False: default  # type: ignore
-_normalize_stop_loss_dict = lambda value: value  # type: ignore
+
+
+def _coerce_bool(value, default=False):  # type: ignore[no-untyped-def]
+    return default
+
+
+def _normalize_stop_loss_dict(value):  # type: ignore[no-untyped-def]
+    return value
 
 
 def _create_dashboard_strategy_controls_section(self, scroll_layout):
@@ -237,9 +243,9 @@ def _create_dashboard_strategy_controls_section(self, scroll_layout):
 
     self._dashboard_templates = {
         "top10": {
-            "label": "Top 10 %2 per trade 5x Isolated",
+            "label": "Top 10 %2 per trade 1x Isolated",
             "position_pct": 2.0,
-            "leverage": 5,
+            "leverage": 1,
             "margin_mode": "Isolated",
             "indicators": {
                 "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
@@ -248,9 +254,9 @@ def _create_dashboard_strategy_controls_section(self, scroll_layout):
             },
         },
         "top50": {
-            "label": "Top 50 %2 per trade 20x",
+            "label": "Top 50 %2 per trade 1x",
             "position_pct": 2.0,
-            "leverage": 20,
+            "leverage": 1,
             "margin_mode": "Isolated",
             "indicators": {
                 "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},
@@ -259,9 +265,9 @@ def _create_dashboard_strategy_controls_section(self, scroll_layout):
             },
         },
         "top100": {
-            "label": "Top 100 %1 per trade 5x",
+            "label": "Top 100 %1 per trade 1x",
             "position_pct": 1.0,
-            "leverage": 5,
+            "leverage": 1,
             "margin_mode": "Isolated",
             "indicators": {
                 "rsi": {"enabled": True, "buy_value": 30, "sell_value": 70},

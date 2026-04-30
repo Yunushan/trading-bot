@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
-_coerce_bool = lambda value, default=False: default  # type: ignore
+
+def _coerce_bool(value, default=False):  # type: ignore
+    return default
+
+
 _POS_CLOSE_COLUMN = 0
 _PositionsWorkerCls = None
 
@@ -147,6 +151,7 @@ def _create_positions_tab(self):
         self.mode_combo.currentText(),
         self.account_combo.currentText(),
         connector_backend=self._runtime_connector_backend(suppress_refresh=True),
+        live_safety_config=dict(getattr(self, "config", {}) or {}),
     )
     self.req_pos_start.connect(self._pos_worker.start_with_interval)
     self.req_pos_stop.connect(self._pos_worker.stop_timer)

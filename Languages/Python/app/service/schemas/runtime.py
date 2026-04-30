@@ -84,7 +84,7 @@ def build_runtime_descriptor(
                 f"or the installed command '{SERVICE_ENTRYPOINT_CONTRACT.installed_command}'."
             ),
             SERVICE_ENTRYPOINT_CONTRACT.compatibility_notice(),
-            "Optional bearer-token auth can protect the HTTP API via BOT_SERVICE_API_TOKEN or --api-token.",
+            "Bearer-token auth is required for non-loopback API hosts via BOT_SERVICE_API_TOKEN or --api-token.",
             "A thin same-origin web dashboard is available at '/ui/' when the service API is running.",
             f"The dashboard can follow live service updates over the SSE stream at '{SERVICE_API_STREAM_DASHBOARD_PATH}'.",
         ),

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-
 
 def _refresh_positions_snapshot(self, symbol: str, interval: str) -> list[dict] | None:
     try:

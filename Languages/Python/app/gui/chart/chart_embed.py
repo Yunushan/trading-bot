@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: F822
+
 from . import chart_embed_host_runtime, chart_embed_state_runtime
 
 _native_chart_host_prewarm_enabled = chart_embed_state_runtime._native_chart_host_prewarm_enabled

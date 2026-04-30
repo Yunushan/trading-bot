@@ -1,5 +1,6 @@
 from binance.client import Client
-import sys, time
+import sys
+import time
 
 def ensure_symbol(client: Client, symbol: str, leverage: int, margin_mode: str):
     margin_mode = margin_mode.upper()

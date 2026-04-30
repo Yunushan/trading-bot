@@ -49,7 +49,7 @@ If you run this on a physical phone, do not use `127.0.0.1` unless the backend i
 Point the app at the LAN IP of the machine running:
 
 ```bash
-python ../service-api/main.py --serve --host 0.0.0.0 --port 8000
+BOT_SERVICE_API_TOKEN=your-secret-token python ../service-api/main.py --serve --host 0.0.0.0 --port 8000
 ```
 
 Example:
@@ -58,7 +58,7 @@ Example:
 http://192.168.1.25:8000
 ```
 
-If the backend is protected, enter the same bearer token used by `BOT_SERVICE_API_TOKEN`.
+Enter the same bearer token used by `BOT_SERVICE_API_TOKEN` in the mobile app connection settings.
 
 ## Notes
 

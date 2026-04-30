@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from PyQt6 import QtCore
-
 from . import chart_embed
 from . import tradingview_window_suppression_runtime
 from ..runtime.window import runtime as main_window_runtime, window_webengine_guard_runtime

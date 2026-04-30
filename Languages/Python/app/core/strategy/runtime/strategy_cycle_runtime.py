@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-
 from . import strategy_cycle_risk_runtime
 
 def run_once(self):
@@ -25,11 +23,9 @@ def run_once(self):
     if not market_state:
         return
     df = market_state["df"]
-    ind = market_state["ind"]
     signal = market_state["signal"]
     signal_timestamp = market_state["signal_timestamp"]
     trigger_desc = market_state["trigger_desc"]
-    trigger_price = market_state["trigger_price"]
     trigger_sources = market_state["trigger_sources"]
     trigger_actions = market_state["trigger_actions"]
     trigger_segments = list(market_state.get("trigger_segments") or [])

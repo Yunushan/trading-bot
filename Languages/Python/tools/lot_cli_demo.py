@@ -1,5 +1,7 @@
 
-import argparse, json, time
+import argparse
+import json
+import time
 from app.integrations.exchanges.binance import BinanceWrapper
 
 def main():
@@ -8,7 +10,7 @@ def main():
     ap.add_argument("--side", choices=["BUY","SELL"], required=True)
     ap.add_argument("--pct", type=float, required=True)
     ap.add_argument("--mode", default="Demo/Testnet")
-    ap.add_argument("--leverage", type=int, default=20)
+    ap.add_argument("--leverage", type=int, default=1)
     ap.add_argument("--margin", default="ISOLATED")
     ap.add_argument("--reverse_pct", type=float, default=None)
     args = ap.parse_args()

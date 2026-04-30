@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Re-exported constants are consumed as attributes on this shared module.
+# ruff: noqa: F401
+
 import threading
 from pathlib import Path
 

@@ -11,7 +11,10 @@ _BACKTEST_TEMPLATE_DEFAULT = {}
 _INDICATOR_DISPLAY_NAMES = {}
 _SIDE_LABELS = {}
 _ParamDialog = None
-_normalize_connector_backend = lambda value: value  # type: ignore
+
+
+def _normalize_connector_backend(value):  # type: ignore
+    return value
 
 
 def _get_selected_mdd_logic(self) -> str:

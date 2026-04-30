@@ -12,6 +12,38 @@ Reusable trading-domain code is now exposed through the `trading_core` Python pa
 
 The workspace is broader than a Binance-only bot. It is intended for exchange, crypto, and future FX/broker integrations, with Binance currently serving as the primary live/demo connector path.
 
+## Live trading safety
+
+Live exchange mode is fail-closed. A runtime that would talk to live endpoints is blocked unless all of these are configured:
+
+- `live_trading_enabled: true`
+- `live_trading_acknowledgement: "I_UNDERSTAND_LIVE_TRADING_RISK"`
+- non-placeholder Binance API credentials
+- valid caps: `live_trading_max_leverage` and `live_trading_max_position_pct`
+
+Environment alternative:
+
+```bash
+export BOT_ENABLE_LIVE_TRADING=true
+export BOT_LIVE_TRADING_ACKNOWLEDGEMENT=I_UNDERSTAND_LIVE_TRADING_RISK
+export BOT_LIVE_MAX_LEVERAGE=5
+export BOT_LIVE_MAX_POSITION_PCT=2
+```
+
+## Order audit log
+
+Order intent, local rejection, exchange request, exchange response, exchange error, and fill-summary events are written as append-only JSON Lines. The default path is `~/.trading-bot/order_audit.jsonl`.
+
+Override the path when needed:
+
+```bash
+export BOT_ORDER_AUDIT_LOG=/secure/path/order_audit.jsonl
+```
+
+## Config validation
+
+Runtime config updates are validated before the service stores them. Invalid symbols, intervals, leverage, position size, stop-loss objects, and symbol/interval override rows are rejected instead of being applied silently. The HTTP API returns `422` with per-field validation details for invalid config requests.
+
 ## Support tiers
 
 - Desktop GUI: Windows, macOS, Linux, and FreeBSD
@@ -109,7 +141,7 @@ For non-FreeBSD BSD systems and Solaris/illumos, the current best-effort path is
 
 ```bash
 pip install -r requirements.backend.txt
-python ../../apps/service-api/main.py --serve --host 0.0.0.0 --port 8000
+python ../../apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 ```
 
 Exact OS package names for Python, `pip`, `venv`, and Qt vary by platform, so those system-level install commands are intentionally left platform-specific.
@@ -138,7 +170,7 @@ python ../../apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 Use that guide for:
 
 - standalone API startup
-- bearer-token protection
+- bearer-token protection, which is required for non-loopback hosts
 - built-in `/ui/` dashboard usage
 - desktop-hosted API mode
 - current endpoint coverage
@@ -151,6 +183,7 @@ The repo includes optional backend-only Docker packaging in [../../docker/README
 Quick start from the repository root:
 
 ```bash
+export BOT_SERVICE_API_TOKEN=your-secret-token
 docker compose -f docker/compose.yaml up --build
 ```
 

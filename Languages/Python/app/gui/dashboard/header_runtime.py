@@ -32,7 +32,7 @@ def _create_dashboard_header_section(self, scroll_layout):
         "Testnet",
     ]
     self.mode_combo.addItems(mode_options)
-    loaded_mode = self.config.get("mode", "Live") or "Live"
+    loaded_mode = self.config.get("mode", "Demo/Testnet") or "Demo/Testnet"
     if loaded_mode == "Demo/Testnet":
         loaded_mode = "Demo"
     if loaded_mode == "Futures WebSocket (live market data)":
@@ -40,7 +40,7 @@ def _create_dashboard_header_section(self, scroll_layout):
     if loaded_mode == "Testnet WebSocket":
         loaded_mode = "Testnet"
     if loaded_mode not in mode_options:
-        loaded_mode = "Live"
+        loaded_mode = "Demo"
     self.mode_combo.setCurrentText(loaded_mode)
     grid.addWidget(self.mode_combo, 0, 3)
     self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
@@ -134,7 +134,7 @@ def _create_dashboard_header_section(self, scroll_layout):
     grid.addWidget(QtWidgets.QLabel("Leverage (Futures):"), 2, 3)
     self.leverage_spin = QtWidgets.QSpinBox()
     self.leverage_spin.setRange(1, 150)
-    self.leverage_spin.setValue(self.config.get("leverage", 5))
+    self.leverage_spin.setValue(self.config.get("leverage", 1))
     self.leverage_spin.valueChanged.connect(self.on_leverage_changed)
     grid.addWidget(self.leverage_spin, 2, 4)
     self._update_leverage_enabled()

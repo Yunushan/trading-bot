@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
 from importlib import metadata as _md
 
 # Must be set BEFORE any Qt object exists. Force the value so Qt picks it up even if the

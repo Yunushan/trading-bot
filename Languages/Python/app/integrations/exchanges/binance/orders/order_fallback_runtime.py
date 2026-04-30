@@ -48,6 +48,22 @@ def _testnet_order_fallback_client(self):
 
 def _futures_create_order_with_fallback(self, params: dict):
     order_via = "primary"
+    audit = getattr(self, "_audit_order_event", None)
+
+    def _audit(event: str, *, order_params: dict, result=None, error=None, via: str | None = None) -> None:
+        if not callable(audit):
+            return
+        audit(
+            event,
+            symbol=order_params.get("symbol"),
+            side=order_params.get("side"),
+            market="futures",
+            params=order_params,
+            result=result if isinstance(result, dict) else None,
+            error=error,
+            via=via,
+            source="_futures_create_order_with_fallback",
+        )
 
     def _order_has_id(order_obj: dict) -> bool:
         return any(
@@ -111,25 +127,32 @@ def _futures_create_order_with_fallback(self, params: dict):
             _raise_from_last_error("order rejected: empty response")
 
     try:
+        _audit("exchange_order_request", order_params=params, via=order_via)
         order = self.client.futures_create_order(**params)
         _raise_if_error_payload(order)
+        _audit("exchange_order_response", order_params=params, result=order, via=order_via)
         return order, order_via
     except Exception as primary_err:
+        _audit("exchange_order_error", order_params=params, error=primary_err, via=order_via)
         fb_client = self._testnet_order_fallback_client()
         fb_err = None
         if fb_client is not None:
             try:
+                _audit("exchange_order_request", order_params=params, via="fallback-pybinance")
                 order = fb_client.futures_create_order(**params)
                 _raise_if_error_payload(order)
                 order_via = "fallback-pybinance"
+                _audit("exchange_order_response", order_params=params, result=order, via=order_via)
                 return order, order_via
             except Exception as exc:
                 fb_err = exc
+                _audit("exchange_order_error", order_params=params, error=exc, via="fallback-pybinance")
 
         rest_err = None
         if _is_testnet_mode(self.mode):
             try:
                 self._clear_futures_http_error()
+                _audit("exchange_order_request", order_params=params, via="fallback-rest")
                 order = self._http_signed_futures_request(
                     "POST",
                     "/v1/order",
@@ -138,9 +161,11 @@ def _futures_create_order_with_fallback(self, params: dict):
                 )
                 _raise_if_error_payload(order, allow_last_error=True)
                 order_via = "fallback-rest"
+                _audit("exchange_order_response", order_params=params, result=order, via=order_via)
                 return order, order_via
             except Exception as exc:
                 rest_err = exc
+                _audit("exchange_order_error", order_params=params, error=exc, via="fallback-rest")
                 try:
                     last_err = getattr(self, "_last_futures_http_error", None)
                     err_code = last_err.get("code") if isinstance(last_err, dict) else None
@@ -150,6 +175,7 @@ def _futures_create_order_with_fallback(self, params: dict):
                 if alt_prefix:
                     try:
                         self._clear_futures_http_error()
+                        _audit("exchange_order_request", order_params=params, via="fallback-rest-alt")
                         order = self._http_signed_futures_request(
                             "POST",
                             "/v1/order",
@@ -159,9 +185,11 @@ def _futures_create_order_with_fallback(self, params: dict):
                         _raise_if_error_payload(order, allow_last_error=True)
                         self._futures_api_prefix_override = alt_prefix
                         order_via = "fallback-rest-alt"
+                        _audit("exchange_order_response", order_params=params, result=order, via=order_via)
                         return order, order_via
                     except Exception as alt_exc:
                         rest_err = alt_exc
+                        _audit("exchange_order_error", order_params=params, error=alt_exc, via="fallback-rest-alt")
 
         msg = str(primary_err)
         if fb_err is not None:

@@ -6,13 +6,13 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True, slots=True)
 class ExecutionSettings:
-    mode: str = "Live"
+    mode: str = "Demo/Testnet"
     account_type: str = "Futures"
     margin_mode: str = "Isolated"
     symbols: tuple[str, ...] = ("BTCUSDT",)
     intervals: tuple[str, ...] = ("1m",)
     lookback: int = 200
-    leverage: int = 20
+    leverage: int = 1
     tif: str = "GTC"
     gtd_minutes: int = 30
     position_mode: str = "Hedge"
@@ -26,6 +26,12 @@ class ExecutionSettings:
     side: str = "BOTH"
     position_pct: float = 2.0
     order_type: str = "MARKET"
+    live_trading_enabled: bool = False
+    live_trading_acknowledgement: str = ""
+    live_trading_max_leverage: int = 20
+    live_trading_max_position_pct: float = 10.0
+    order_audit_enabled: bool = True
+    order_audit_log_path: str = ""
 
     def to_config_dict(self) -> dict[str, object]:
         return {
@@ -49,4 +55,10 @@ class ExecutionSettings:
             "side": self.side,
             "position_pct": self.position_pct,
             "order_type": self.order_type,
+            "live_trading_enabled": self.live_trading_enabled,
+            "live_trading_acknowledgement": self.live_trading_acknowledgement,
+            "live_trading_max_leverage": self.live_trading_max_leverage,
+            "live_trading_max_position_pct": self.live_trading_max_position_pct,
+            "order_audit_enabled": self.order_audit_enabled,
+            "order_audit_log_path": self.order_audit_log_path,
         }

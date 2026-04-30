@@ -108,7 +108,6 @@ def atr(df, length=14):
 def dmi(df, length=14):
     high = df['high']
     low = df['low']
-    close = df['close']
 
     up_move = high.diff()
     down_move = (-low.diff())

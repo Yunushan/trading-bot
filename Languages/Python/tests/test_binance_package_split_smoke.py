@@ -1,10 +1,14 @@
 # ruff: noqa: E402
 
 import importlib
+import json
+import os
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +41,9 @@ from app.integrations.exchanges.binance.metadata.exchange_metadata import (
 )
 from app.integrations.exchanges.binance.orders.futures_orders import (
     bind_binance_futures_orders as new_bind_futures_orders,
+)
+from app.integrations.exchanges.binance.orders.order_audit_runtime import (
+    bind_binance_order_audit_runtime as new_bind_order_audit,
 )
 from app.integrations.exchanges.binance.orders.order_fallback_runtime import (
     bind_binance_order_fallback_runtime as new_bind_order_fallback,
@@ -79,6 +86,7 @@ from app.integrations.exchanges.binance.transport.rate_limit_runtime import (
     bind_binance_rate_limit_runtime as new_bind_rate_limit,
 )
 from app.integrations.exchanges.binance.transport.ws_runtime import bind_binance_ws_runtime as new_bind_ws
+from app.settings import LiveTradingSafetyError
 
 
 class _DummyThread:
@@ -112,6 +120,69 @@ class _DummyOperationalWrapper:
 
     def _log(self, message, lvl="info"):
         self.logged.append((lvl, message))
+
+
+class _SpotSizingClient:
+    def __init__(self):
+        self.orders = []
+
+    def create_order(self, **kwargs):
+        self.orders.append(dict(kwargs))
+        return {"orderId": 1, **kwargs}
+
+
+class _SpotSizingWrapper:
+    def __init__(self, *, price=100.0, filters=None):
+        self.account_type = "SPOT"
+        self.client = _SpotSizingClient()
+        self._price = float(price)
+        self._filters = dict(
+            filters
+            or {
+                "stepSize": 0.001,
+                "minQty": 0.001,
+                "minNotional": 5.0,
+            }
+        )
+
+    def get_last_price(self, _symbol):
+        return self._price
+
+    def get_spot_symbol_filters(self, _symbol):
+        return dict(self._filters)
+
+
+class _FuturesAuditClient:
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.orders = []
+
+    def futures_create_order(self, **kwargs):
+        self.orders.append(dict(kwargs))
+        if self.fail:
+            raise RuntimeError("exchange rejected")
+        return {"orderId": 99, "status": "FILLED", **kwargs}
+
+
+class _FuturesAuditWrapper:
+    def __init__(self, *, fail=False):
+        self.mode = "Live"
+        self.account_type = "FUTURES"
+        self._connector_backend = "unit-test"
+        self.client = _FuturesAuditClient(fail=fail)
+        self.warned = []
+
+    def _log(self, message, lvl="info"):
+        self.warned.append((lvl, message))
+
+    def _testnet_order_fallback_client(self):
+        return None
+
+
+new_bind_order_audit(_SpotSizingWrapper)
+new_bind_order_sizing(_SpotSizingWrapper)
+new_bind_order_audit(_FuturesAuditWrapper)
+new_bind_order_fallback(_FuturesAuditWrapper)
 
 
 class BinancePackageSplitSmokeTests(unittest.TestCase):
@@ -194,7 +265,59 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         for method_name in expected_methods:
             with self.subTest(method_name=method_name):
                 self.assertTrue(hasattr(BinanceWrapper, method_name))
-                self.assertTrue(callable(getattr(BinanceWrapper, method_name)))
+            self.assertTrue(callable(getattr(BinanceWrapper, method_name)))
+
+    def test_binance_wrapper_blocks_live_mode_without_safety_confirmation(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(LiveTradingSafetyError):
+                BinanceWrapper("key", "secret", mode="Live", account_type="Futures")
+
+    def test_spot_market_order_writes_append_only_audit_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "orders.jsonl"
+            wrapper = _SpotSizingWrapper(price=100.0)
+            wrapper._configure_order_audit(path=audit_path)
+
+            result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=0.001)
+
+            self.assertTrue(result["ok"])
+            rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(["order_intent", "order_accepted"], [row["event"] for row in rows])
+            self.assertEqual("BTCUSDT", rows[0]["symbol"])
+            self.assertEqual("BUY", rows[0]["side"])
+            self.assertEqual("spot", rows[0]["market"])
+            self.assertEqual(1, rows[1]["order_id"])
+
+    def test_futures_exchange_submit_writes_response_and_error_audit_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "futures.jsonl"
+            wrapper = _FuturesAuditWrapper()
+            wrapper._configure_order_audit(path=audit_path)
+
+            order, via = wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"}
+            )
+
+            self.assertEqual("primary", via)
+            self.assertEqual(99, order["orderId"])
+            rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(["exchange_order_request", "exchange_order_response"], [row["event"] for row in rows])
+            self.assertEqual("ETHUSDT", rows[1]["symbol"])
+            self.assertEqual(99, rows[1]["order_id"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "futures-error.jsonl"
+            wrapper = _FuturesAuditWrapper(fail=True)
+            wrapper._configure_order_audit(path=audit_path)
+
+            with self.assertRaisesRegex(RuntimeError, "exchange rejected"):
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"}
+                )
+
+            rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(["exchange_order_request", "exchange_order_error"], [row["event"] for row in rows])
+            self.assertIn("exchange rejected", rows[1]["error"])
 
     def test_new_subpackages_expose_expected_binders(self):
         binders = [
@@ -202,6 +325,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             new_bind_rate_limit,
             new_bind_ws,
             new_bind_futures_orders,
+            new_bind_order_audit,
             new_bind_order_fallback,
             new_bind_order_sizing,
             new_bind_positions,
@@ -244,6 +368,30 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         finally:
             close_all_runtime_module.close_all_futures_positions = original_close_all
             runtime_trigger_emergency_close_all.__globals__["threading"].Thread = original_thread
+
+    def test_spot_market_order_ceil_sizes_to_min_notional(self):
+        wrapper = _SpotSizingWrapper(price=1999.0)
+
+        result = wrapper.place_spot_market_order(
+            "ETHUSDT",
+            "BUY",
+            price=1999.0,
+            use_quote=True,
+            quote_amount=5.0,
+        )
+
+        self.assertTrue(result["ok"])
+        qty = float(result["computed"]["qty"])
+        self.assertGreaterEqual(qty * 1999.0, 5.0)
+        self.assertEqual(wrapper.client.orders[-1]["quantity"], str(qty))
+
+    def test_adjust_spot_quantity_keeps_min_notional_quantity(self):
+        wrapper = _SpotSizingWrapper(price=100.0)
+
+        qty, error = wrapper.adjust_qty_to_filters_spot("ETHUSDT", 0.002, 100.0)
+
+        self.assertIsNone(error)
+        self.assertEqual(qty, 0.05)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +53,12 @@ else:
         list_llm_provider_specs,
         update_llm_config,
     )
+
+if TYPE_CHECKING:
+    if __package__ in (None, ""):
+        from app.service.runners.backtest_executor import ServiceBacktestExecutionAdapter
+    else:
+        from .runners.backtest_executor import ServiceBacktestExecutionAdapter
 
 
 class TradingBotService:

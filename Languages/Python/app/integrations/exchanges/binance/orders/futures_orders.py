@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .order_audit_runtime import audit_order_method
+
 
 def place_futures_market_order(
     self,
@@ -456,8 +458,8 @@ def bind_binance_futures_orders(wrapper_cls, *, default_mode: str = "flex"):
 
     mode = str(default_mode or "flex").strip().lower()
     if mode == "base":
-        wrapper_cls.place_futures_market_order = place_futures_market_order
+        wrapper_cls.place_futures_market_order = audit_order_method(place_futures_market_order, market="futures")
     elif mode == "strict":
-        wrapper_cls.place_futures_market_order = _place_futures_market_order_STRICT
+        wrapper_cls.place_futures_market_order = audit_order_method(_place_futures_market_order_STRICT, market="futures")
     else:
-        wrapper_cls.place_futures_market_order = _place_futures_market_order_FLEX
+        wrapper_cls.place_futures_market_order = audit_order_method(_place_futures_market_order_FLEX, market="futures")

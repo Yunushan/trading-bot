@@ -236,6 +236,8 @@ def _execute_signal_order(
                 guard_claimed = False
 
         try:
+            slot_key_tuple = None
+            lev = None
             account_state = self._resolve_signal_order_account_state(cw=cw, last_price=last_price)
             account_type = str(account_state.get("account_type") or "").upper()
             futures_balance_snap = account_state.get("futures_balance_snap")

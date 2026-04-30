@@ -264,7 +264,7 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         pair_overrides=pair_overrides,
     )
 
-    mode = clean_text(patch.get("mode", config.get("mode", "Live")), "Live")
+    mode = clean_text(patch.get("mode", config.get("mode", "Demo/Testnet")), "Demo/Testnet")
     account_type = clean_text(
         patch.get(
             "account_type",
