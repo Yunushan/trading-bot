@@ -145,6 +145,33 @@ class TradingBotService:
     def get_portfolio_snapshot(self) -> ServicePortfolioSnapshot:
         return self._runtime.get_portfolio_snapshot()
 
+    def set_exchange_connector_snapshot(self, snapshot: dict | None = None, **kwargs) -> dict[str, object]:
+        return self._runtime.set_exchange_connector_snapshot(snapshot, **kwargs)
+
+    def get_exchange_connector_snapshot(self) -> dict[str, object]:
+        return self._runtime.get_exchange_connector_snapshot()
+
+    def set_connector_order_circuit_breaker_snapshot(
+        self,
+        snapshot: dict | None = None,
+        **kwargs,
+    ) -> dict[str, object]:
+        return self._runtime.set_connector_order_circuit_breaker_snapshot(snapshot, **kwargs)
+
+    def reset_connector_order_circuit_breaker(
+        self,
+        *,
+        source: str = "service",
+        force: bool = False,
+    ) -> dict[str, object]:
+        return self._runtime.reset_connector_order_circuit_breaker(source=source, force=force)
+
+    def get_connector_order_circuit_breaker_snapshot(self) -> dict[str, object]:
+        return self._runtime.get_connector_order_circuit_breaker_snapshot()
+
+    def get_connector_order_circuit_incidents(self, *, limit: int = 20) -> dict[str, object]:
+        return self._runtime.get_connector_order_circuit_incidents(limit=limit)
+
     def set_execution_snapshot(self, **kwargs) -> ServiceExecutionSnapshot:
         return self._runtime.set_execution_snapshot(**kwargs)
 
@@ -284,6 +311,14 @@ class TradingBotService:
 
     def get_status(self) -> BotStatusSnapshot:
         return self._runtime.get_status()
+
+    def get_operational_snapshot(self) -> dict[str, object]:
+        return self._runtime.get_operational_snapshot()
+
+    def get_operational_preflight(self) -> dict[str, object]:
+        snapshot = self.get_operational_snapshot()
+        preflight = snapshot.get("preflight") if isinstance(snapshot, dict) else None
+        return dict(preflight) if isinstance(preflight, dict) else {}
 
     def get_dashboard_snapshot(self, *, log_limit: int = 30) -> dict[str, object]:
         return self._runtime.get_dashboard_snapshot(log_limit=log_limit)

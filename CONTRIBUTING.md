@@ -42,9 +42,16 @@ Python boundary checks:
 ```bash
 cd Languages/Python
 python -m ruff check --config pyproject.toml .
+python tools/check_dependency_metadata.py
 python -m mypy --config-file pyproject.toml
 python -m pytest
 python -m compileall -q app trading_core main.py
+```
+
+Release or packaging preflight from the repository root:
+
+```bash
+python tools/release_smoke.py --skip-full-tests --manual-smoke-mode fast
 ```
 
 Rust:

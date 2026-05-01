@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from ...security.redaction import redact_text
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -58,7 +60,7 @@ def build_execution_snapshot(
     source: str = "service",
     notes: tuple[str, ...] | list[str] | None = None,
 ) -> ServiceExecutionSnapshot:
-    normalized_notes = tuple(str(item or "").strip() for item in (notes or ()) if str(item or "").strip())
+    normalized_notes = tuple(redact_text(str(item or "").strip()) for item in (notes or ()) if str(item or "").strip())
     return ServiceExecutionSnapshot(
         executor_kind=str(executor_kind or "unbound"),
         owner=str(owner or "service-runtime"),
@@ -67,14 +69,14 @@ def build_execution_snapshot(
         session_id=str(session_id or ""),
         requested_job_count=max(0, int(requested_job_count or 0)),
         active_engine_count=max(0, int(active_engine_count or 0)),
-        progress_label=str(progress_label or ""),
+        progress_label=redact_text(progress_label or ""),
         progress_percent=None if progress_percent is None else float(progress_percent),
         heartbeat_at=str(heartbeat_at or ""),
         tick_count=max(0, int(tick_count or 0)),
-        last_action=str(last_action or ""),
-        last_message=str(last_message or ""),
+        last_action=redact_text(last_action or ""),
+        last_message=redact_text(last_message or ""),
         started_at=str(started_at or ""),
         updated_at=str(updated_at or _utc_now_iso()),
-        source=str(source or "service"),
+        source=redact_text(source or "service"),
         notes=normalized_notes,
     )

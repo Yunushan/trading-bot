@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from ...security.redaction import redact_text
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -56,8 +58,8 @@ def make_start_request(
         action="start",
         requested_job_count=job_count,
         close_positions=False,
-        source=str(source or "service"),
-        reason=str(reason or ""),
+        source=redact_text(source or "service"),
+        reason=redact_text(reason or ""),
         generated_at=_utc_now_iso(),
     )
 
@@ -72,8 +74,8 @@ def make_stop_request(
         action="stop",
         requested_job_count=0,
         close_positions=bool(close_positions),
-        source=str(source or "service"),
-        reason=str(reason or ""),
+        source=redact_text(source or "service"),
+        reason=redact_text(reason or ""),
         generated_at=_utc_now_iso(),
     )
 
@@ -106,7 +108,7 @@ def make_control_result(
         active_engine_count=engine_count,
         requested_job_count=job_count,
         close_positions_requested=bool(close_positions_requested),
-        source=str(source or "service"),
-        status_message=str(status_message or ""),
+        source=redact_text(source or "service"),
+        status_message=redact_text(status_message or ""),
         generated_at=_utc_now_iso(),
     )

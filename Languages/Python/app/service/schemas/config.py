@@ -24,6 +24,16 @@ class ServiceEditableConfig:
     selected_exchange: str
     code_language: str
     theme: str
+    order_audit_max_bytes: int
+    order_audit_backup_count: int
+    connector_order_circuit_incident_log_max_bytes: int
+    connector_order_circuit_incident_log_backup_count: int
+    operational_connector_snapshot_stale_seconds: float
+    operational_execution_heartbeat_stale_seconds: float
+    operational_account_snapshot_stale_seconds: float
+    operational_portfolio_snapshot_stale_seconds: float
+    operational_live_start_gate_enabled: bool
+    operational_live_order_gate_enabled: bool
     symbols: tuple[str, ...]
     intervals: tuple[str, ...]
     api_credentials_present: bool
@@ -81,6 +91,13 @@ def _number(value, default: float = 0.0) -> float:
         return float(default)
 
 
+def _integer(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
 def build_editable_config(config: dict | None) -> ServiceEditableConfig:
     cfg = config if isinstance(config, dict) else {}
     api_key = str(cfg.get("api_key") or "").strip()
@@ -98,6 +115,34 @@ def build_editable_config(config: dict | None) -> ServiceEditableConfig:
         selected_exchange=str(cfg.get("selected_exchange") or ""),
         code_language=str(cfg.get("code_language") or ""),
         theme=str(cfg.get("theme") or ""),
+        order_audit_max_bytes=_integer(cfg.get("order_audit_max_bytes"), 10 * 1024 * 1024),
+        order_audit_backup_count=_integer(cfg.get("order_audit_backup_count"), 1),
+        connector_order_circuit_incident_log_max_bytes=_integer(
+            cfg.get("connector_order_circuit_incident_log_max_bytes"),
+            2 * 1024 * 1024,
+        ),
+        connector_order_circuit_incident_log_backup_count=_integer(
+            cfg.get("connector_order_circuit_incident_log_backup_count"),
+            1,
+        ),
+        operational_connector_snapshot_stale_seconds=_number(
+            cfg.get("operational_connector_snapshot_stale_seconds"),
+            120.0,
+        ),
+        operational_execution_heartbeat_stale_seconds=_number(
+            cfg.get("operational_execution_heartbeat_stale_seconds"),
+            10.0,
+        ),
+        operational_account_snapshot_stale_seconds=_number(
+            cfg.get("operational_account_snapshot_stale_seconds"),
+            300.0,
+        ),
+        operational_portfolio_snapshot_stale_seconds=_number(
+            cfg.get("operational_portfolio_snapshot_stale_seconds"),
+            300.0,
+        ),
+        operational_live_start_gate_enabled=coerce_bool(cfg.get("operational_live_start_gate_enabled"), True),
+        operational_live_order_gate_enabled=coerce_bool(cfg.get("operational_live_order_gate_enabled"), True),
         symbols=_string_list(cfg.get("symbols")),
         intervals=_interval_tuple(cfg.get("intervals")),
         api_credentials_present=bool(api_key and api_secret),

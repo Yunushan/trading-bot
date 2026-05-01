@@ -6,6 +6,8 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from app.security.redaction import redact_text, redact_value
+
 
 @dataclass(frozen=True, slots=True)
 class ServiceTerminalCommandResult:
@@ -36,7 +38,7 @@ def _split_command(command: str) -> list[str]:
 
 
 def _json_output(payload: object) -> str:
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return json.dumps(redact_value(payload), indent=2, sort_keys=True)
 
 
 def _result(
@@ -49,10 +51,10 @@ def _result(
 ) -> ServiceTerminalCommandResult:
     return ServiceTerminalCommandResult(
         accepted=bool(accepted),
-        command=str(command or "").strip(),
+        command=redact_text(str(command or "").strip()),
         exit_code=int(exit_code),
-        output=str(output or ""),
-        source=str(source or "terminal").strip() or "terminal",
+        output=redact_text(output or ""),
+        source=redact_text(str(source or "terminal").strip() or "terminal"),
         created_at=_now_iso(),
     )
 

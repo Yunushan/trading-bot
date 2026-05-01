@@ -14,6 +14,7 @@ BINANCE_MAX_FUTURES_LEVERAGE = 125
 MAX_LOOKBACK_BARS = 1_000_000
 MAX_GTD_MINUTES = 7 * 24 * 60
 MAX_SCAN_TOP_N = 10_000
+MAX_OPERATIONAL_FRESHNESS_SECONDS = 24 * 60 * 60
 
 _CONTROL_TEXT_RE = re.compile(r"[\x00-\x1f\x7f]")
 _INTERVAL_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$")
@@ -479,6 +480,53 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     )
     _validate_bool(cfg, "order_audit_enabled", default=True)
     _validate_text(cfg, "order_audit_log_path", issues, allow_empty=True)
+    _validate_int_range(cfg, "order_audit_max_bytes", issues, min_value=1, max_value=1_000_000_000)
+    _validate_int_range(cfg, "order_audit_backup_count", issues, min_value=0, max_value=100)
+    _validate_text(cfg, "connector_order_circuit_incident_log_path", issues, allow_empty=True)
+    _validate_int_range(
+        cfg,
+        "connector_order_circuit_incident_log_max_bytes",
+        issues,
+        min_value=1,
+        max_value=1_000_000_000,
+    )
+    _validate_int_range(
+        cfg,
+        "connector_order_circuit_incident_log_backup_count",
+        issues,
+        min_value=0,
+        max_value=100,
+    )
+    _validate_float_range(
+        cfg,
+        "operational_connector_snapshot_stale_seconds",
+        issues,
+        min_value=1.0,
+        max_value=MAX_OPERATIONAL_FRESHNESS_SECONDS,
+    )
+    _validate_float_range(
+        cfg,
+        "operational_execution_heartbeat_stale_seconds",
+        issues,
+        min_value=1.0,
+        max_value=MAX_OPERATIONAL_FRESHNESS_SECONDS,
+    )
+    _validate_float_range(
+        cfg,
+        "operational_account_snapshot_stale_seconds",
+        issues,
+        min_value=1.0,
+        max_value=MAX_OPERATIONAL_FRESHNESS_SECONDS,
+    )
+    _validate_float_range(
+        cfg,
+        "operational_portfolio_snapshot_stale_seconds",
+        issues,
+        min_value=1.0,
+        max_value=MAX_OPERATIONAL_FRESHNESS_SECONDS,
+    )
+    _validate_bool(cfg, "operational_live_start_gate_enabled", default=True)
+    _validate_bool(cfg, "operational_live_order_gate_enabled", default=True)
     _validate_text(cfg, "connector_backend", issues)
     _validate_text(cfg, "indicator_source", issues)
     _validate_text(cfg, "code_language", issues)

@@ -29,6 +29,7 @@ if __package__ in (None, ""):
     from app.service.schemas.execution import build_execution_snapshot
     from app.service.schemas.logs import ServiceLogEvent
     from app.service.schemas.positions import build_portfolio_snapshot
+    from app.service.schemas.status import build_exchange_connector_snapshot
 else:
     from ...config import build_default_config, validate_runtime_config
     from .bot_runtime_control import BotRuntimeControlMixin
@@ -40,6 +41,7 @@ else:
     from ..schemas.execution import build_execution_snapshot
     from ..schemas.logs import ServiceLogEvent
     from ..schemas.positions import build_portfolio_snapshot
+    from ..schemas.status import build_exchange_connector_snapshot
 
 
 class BotRuntimeCoordinator(BotRuntimeStateMixin, BotRuntimeControlMixin):
@@ -69,6 +71,26 @@ class BotRuntimeCoordinator(BotRuntimeStateMixin, BotRuntimeControlMixin):
         self._closed_margin = None
         self._account_snapshot = build_account_snapshot(config=self._config, source="service-bootstrap")
         self._portfolio_snapshot = build_portfolio_snapshot(config=self._config, source="service-bootstrap")
+        self._exchange_connector_snapshot = build_exchange_connector_snapshot(
+            config=self._config,
+            source="service-bootstrap",
+        )
+        self._connector_order_circuit_breaker_snapshot = {
+            "active": False,
+            "state": "closed",
+            "reason": "",
+            "message": "",
+            "block_count": 0,
+            "block_threshold": int(self._config.get("connector_order_block_pause_threshold") or 2),
+            "block_window_seconds": float(self._config.get("connector_order_block_window_seconds") or 60.0),
+            "tripped_at": "",
+            "cleared_at": "",
+            "source": "service-bootstrap",
+        }
+        self._connector_order_circuit_last_incident = None
+        self._connector_order_circuit_incident_log_warned = False
+        self._connector_order_circuit_incident_log_last_write_error = None
+        self._connector_order_circuit_incident_log_last_write_ok_at = ""
         self._control_request_handler: Callable[[BotControlRequest], object] | None = None
         self._control_plane_mode = "intent-only"
         self._control_plane_owner = "service-runtime"

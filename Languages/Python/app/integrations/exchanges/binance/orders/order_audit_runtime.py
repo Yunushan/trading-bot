@@ -9,14 +9,17 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from app.jsonl_rotation import rotate_jsonl_if_needed
+from app.security.redaction import redact_text, redact_value
 from app.settings.risk import coerce_bool
 
+DEFAULT_ORDER_AUDIT_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_ORDER_AUDIT_BACKUP_COUNT = 1
 ORDER_AUDIT_LOG_ENV = "BOT_ORDER_AUDIT_LOG"
 ORDER_AUDIT_LOG_PATH_ENV = "BOT_ORDER_AUDIT_LOG_PATH"
 ORDER_AUDIT_DISABLED_ENV = "BOT_ORDER_AUDIT_DISABLED"
 
 _AUDIT_LOCK = threading.Lock()
-_SENSITIVE_KEY_PARTS = ("api", "secret", "signature", "token", "authorization", "x-mbx-apikey")
 
 
 def _default_order_audit_path() -> Path:
@@ -32,26 +35,20 @@ def _configured_audit_path(value: object | None = None) -> Path:
     return Path(raw).expanduser()
 
 
-def _sanitize(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            key_lower = key_text.lower()
-            if any(part in key_lower for part in _SENSITIVE_KEY_PARTS):
-                out[key_text] = "<redacted>"
-            else:
-                out[key_text] = _sanitize(item)
-        return out
-    if isinstance(value, (list, tuple, set)):
-        return [_sanitize(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
+def _configured_audit_max_bytes(value: object | None = None) -> int:
     try:
-        json.dumps(value)
-        return value
+        return max(1, int(float(str(value).strip() if isinstance(value, str) else value)))
     except Exception:
-        return str(value)
+        return DEFAULT_ORDER_AUDIT_MAX_BYTES
+
+
+def _configured_audit_backup_count(value: object | None = None) -> int:
+    if value in (None, ""):
+        return DEFAULT_ORDER_AUDIT_BACKUP_COUNT
+    try:
+        return max(0, min(100, int(float(str(value).strip() if isinstance(value, str) else value))))
+    except Exception:
+        return DEFAULT_ORDER_AUDIT_BACKUP_COUNT
 
 
 def _extract_order_id(payload: Any) -> Any:
@@ -74,6 +71,8 @@ def _configure_order_audit(
     config: Mapping[str, object] | None = None,
     path: object | None = None,
     enabled: bool | None = None,
+    max_bytes: object | None = None,
+    backup_count: object | None = None,
 ) -> None:
     cfg = config if isinstance(config, Mapping) else {}
     env_disabled = coerce_bool(os.environ.get(ORDER_AUDIT_DISABLED_ENV), False)
@@ -81,7 +80,16 @@ def _configure_order_audit(
         enabled = coerce_bool(cfg.get("order_audit_enabled"), True)
     self._order_audit_enabled = bool(enabled) and not env_disabled
     self._order_audit_log_path = _configured_audit_path(path if path is not None else cfg.get("order_audit_log_path"))
+    self._order_audit_max_bytes = _configured_audit_max_bytes(
+        max_bytes if max_bytes is not None else cfg.get("order_audit_max_bytes")
+    )
+    self._order_audit_backup_count = _configured_audit_backup_count(
+        backup_count if backup_count is not None else cfg.get("order_audit_backup_count")
+    )
     self._order_audit_warned = False
+    self._order_audit_last_write_error = None
+    self._order_audit_last_write_error_at = ""
+    self._order_audit_last_write_ok_at = ""
 
 
 def _audit_order_event(
@@ -124,30 +132,74 @@ def _audit_order_event(
         if source is not None:
             payload["source"] = str(source or "")
         if params:
-            payload["params"] = _sanitize(dict(params))
+            payload["params"] = redact_value(dict(params))
         if computed:
-            payload["computed"] = _sanitize(dict(computed))
+            payload["computed"] = redact_value(dict(computed))
         if result:
-            payload["result"] = _sanitize(dict(result))
+            payload["result"] = redact_value(dict(result))
             order_id = _extract_order_id(result)
             if order_id is not None:
                 payload["order_id"] = order_id
         if error is not None:
-            payload["error"] = str(error)
+            payload["error"] = redact_text(error)
         if extra:
-            payload["extra"] = _sanitize(dict(extra))
+            payload["extra"] = redact_value(dict(extra))
         line = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        incoming_bytes = len((line + "\n").encode("utf-8"))
         with _AUDIT_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
+            rotate_jsonl_if_needed(
+                path,
+                incoming_bytes,
+                max_bytes=getattr(self, "_order_audit_max_bytes", DEFAULT_ORDER_AUDIT_MAX_BYTES),
+                backup_count=getattr(
+                    self,
+                    "_order_audit_backup_count",
+                    DEFAULT_ORDER_AUDIT_BACKUP_COUNT,
+                ),
+            )
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+        self._order_audit_last_write_error = None
+        self._order_audit_last_write_error_at = ""
+        self._order_audit_last_write_ok_at = datetime.now(timezone.utc).isoformat()
     except Exception as exc:
+        self._order_audit_last_write_error = {
+            "message": redact_text(str(exc)),
+            "path": redact_text(str(path)),
+        }
+        self._order_audit_last_write_error_at = datetime.now(timezone.utc).isoformat()
         if not getattr(self, "_order_audit_warned", False):
             self._order_audit_warned = True
             try:
-                self._log(f"Order audit write failed: {exc}", lvl="warn")
+                self._log(f"Order audit write failed: {redact_text(str(exc))}", lvl="warn")
             except Exception:
                 pass
+
+
+def get_order_audit_status(self) -> dict[str, object]:
+    enabled = bool(getattr(self, "_order_audit_enabled", True))
+    path = getattr(self, "_order_audit_log_path", None)
+    if path is None:
+        path = _configured_audit_path()
+    last_error = getattr(self, "_order_audit_last_write_error", None)
+    last_error_payload = redact_value(dict(last_error)) if isinstance(last_error, Mapping) else None
+    payload = {
+        "enabled": enabled,
+        "state": "disabled" if not enabled else "write_failed" if last_error_payload else "ready",
+        "path": redact_text(str(Path(path).expanduser())),
+        "max_bytes": _configured_audit_max_bytes(
+            getattr(self, "_order_audit_max_bytes", DEFAULT_ORDER_AUDIT_MAX_BYTES)
+        ),
+        "backup_count": _configured_audit_backup_count(
+            getattr(self, "_order_audit_backup_count", DEFAULT_ORDER_AUDIT_BACKUP_COUNT)
+        ),
+        "write_ok": not bool(last_error_payload),
+        "last_write_error": last_error_payload,
+        "last_write_error_at": str(getattr(self, "_order_audit_last_write_error_at", "") or ""),
+        "last_write_ok_at": str(getattr(self, "_order_audit_last_write_ok_at", "") or ""),
+    }
+    return redact_value({key: value for key, value in payload.items() if value not in (None, "", {})})
 
 
 def _extract_symbol_side(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -219,3 +271,4 @@ def audit_order_method(method: Callable, *, market: str) -> Callable:
 def bind_binance_order_audit_runtime(wrapper_cls) -> None:
     wrapper_cls._configure_order_audit = _configure_order_audit
     wrapper_cls._audit_order_event = _audit_order_event
+    wrapper_cls.get_order_audit_status = get_order_audit_status

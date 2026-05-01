@@ -156,6 +156,40 @@ class EmbeddedDesktopServiceClient:
             return None
         return _maybe_to_dict(self._service.get_portfolio_snapshot())
 
+    def set_exchange_connector_snapshot(self, snapshot: dict | None = None, **kwargs) -> dict | None:
+        if self._service is None:
+            return None
+        return _maybe_to_dict(self._service.set_exchange_connector_snapshot(snapshot, **kwargs))
+
+    def get_exchange_connector_snapshot(self) -> dict | None:
+        if self._service is None:
+            return None
+        result = self._service.get_exchange_connector_snapshot()
+        return result if isinstance(result, dict) else None
+
+    def get_operational_snapshot(self) -> dict | None:
+        if self._service is None:
+            return None
+        result = self._service.get_operational_snapshot()
+        return result if isinstance(result, dict) else None
+
+    def set_connector_order_circuit_breaker_snapshot(self, snapshot: dict | None = None, **kwargs) -> dict | None:
+        if self._service is None:
+            return None
+        return _maybe_to_dict(self._service.set_connector_order_circuit_breaker_snapshot(snapshot, **kwargs))
+
+    def reset_connector_order_circuit_breaker(self, *, source: str = "desktop", force: bool = False) -> dict | None:
+        if self._service is None:
+            return None
+        result = self._service.reset_connector_order_circuit_breaker(source=source, force=force)
+        return result if isinstance(result, dict) else None
+
+    def get_connector_order_circuit_breaker_snapshot(self) -> dict | None:
+        if self._service is None:
+            return None
+        result = self._service.get_connector_order_circuit_breaker_snapshot()
+        return result if isinstance(result, dict) else None
+
     def record_log_event(
         self,
         message: str,
@@ -313,6 +347,49 @@ class RemoteDesktopServiceClient:
 
     def get_portfolio_snapshot(self) -> dict | None:
         return self._request("GET", service_api_route("portfolio"))
+
+    def set_exchange_connector_snapshot(self, snapshot: dict | None = None, **kwargs) -> dict | None:
+        payload = dict(snapshot or {})
+        source = str(kwargs.pop("source", payload.pop("source", "desktop")) or "desktop")
+        if kwargs:
+            payload.update(kwargs)
+        return self._request(
+            "PUT",
+            service_api_route("exchange_connector"),
+            payload={"snapshot": payload, "source": source},
+        )
+
+    def get_exchange_connector_snapshot(self) -> dict | None:
+        payload = self._request("GET", service_api_route("exchange_connector"))
+        return payload if isinstance(payload, dict) else None
+
+    def get_operational_snapshot(self) -> dict | None:
+        payload = self._request("GET", service_api_route("dashboard"))
+        if isinstance(payload, dict) and isinstance(payload.get("operational"), dict):
+            return payload["operational"]
+        return None
+
+    def set_connector_order_circuit_breaker_snapshot(self, snapshot: dict | None = None, **kwargs) -> dict | None:
+        payload = dict(snapshot or {})
+        source = str(kwargs.pop("source", payload.pop("source", "desktop")) or "desktop")
+        if kwargs:
+            payload.update(kwargs)
+        return self._request(
+            "PUT",
+            service_api_route("connector_order_circuit_breaker"),
+            payload={"snapshot": payload, "source": source},
+        )
+
+    def reset_connector_order_circuit_breaker(self, *, source: str = "desktop", force: bool = False) -> dict | None:
+        return self._request(
+            "POST",
+            service_api_route("connector_order_circuit_breaker_reset"),
+            payload={"snapshot": {}, "source": source, "force": force},
+        )
+
+    def get_connector_order_circuit_breaker_snapshot(self) -> dict | None:
+        payload = self._request("GET", service_api_route("connector_order_circuit_breaker"))
+        return payload if isinstance(payload, dict) else None
 
     def record_log_event(
         self,

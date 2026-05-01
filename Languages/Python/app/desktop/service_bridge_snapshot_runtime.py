@@ -144,6 +144,79 @@ def _sync_service_portfolio_snapshot(
         pass
 
 
+def _sync_service_exchange_connector_snapshot(
+    self,
+    wrapper=None,
+    snapshot: dict | None = None,
+    *,
+    source: str = "desktop-exchange",
+) -> None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return
+    payload = copy.deepcopy(snapshot) if isinstance(snapshot, dict) else None
+    exchange_wrapper = wrapper
+    if payload is None:
+        if exchange_wrapper is None:
+            try:
+                exchange_wrapper = getattr(self, "shared_binance", None)
+            except Exception:
+                exchange_wrapper = None
+        if exchange_wrapper is None:
+            try:
+                exchange_wrapper = getattr(self, "_live_indicator_wrapper", None)
+            except Exception:
+                exchange_wrapper = None
+        health_snapshot = getattr(exchange_wrapper, "get_connector_health_snapshot", None)
+        if callable(health_snapshot):
+            try:
+                payload = health_snapshot()
+            except Exception:
+                payload = None
+    if not isinstance(payload, dict):
+        return
+    try:
+        set_exchange_connector_snapshot = getattr(client, "set_exchange_connector_snapshot", None)
+        if callable(set_exchange_connector_snapshot):
+            set_exchange_connector_snapshot(payload, source=source)
+    except Exception:
+        pass
+
+
+def _sync_service_connector_order_circuit_breaker_snapshot(
+    self,
+    snapshot: dict | None = None,
+    *,
+    source: str = "desktop-strategy",
+) -> None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return
+    payload = copy.deepcopy(snapshot) if isinstance(snapshot, dict) else {}
+    try:
+        set_snapshot = getattr(client, "set_connector_order_circuit_breaker_snapshot", None)
+        if callable(set_snapshot):
+            set_snapshot(payload, source=source)
+    except Exception:
+        pass
+
+
+def _reset_service_connector_order_circuit_breaker(
+    self,
+    *,
+    source: str = "desktop-start",
+) -> None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return
+    try:
+        reset_snapshot = getattr(client, "reset_connector_order_circuit_breaker", None)
+        if callable(reset_snapshot):
+            reset_snapshot(source=source)
+    except Exception:
+        pass
+
+
 def _get_service_client_descriptor(self) -> dict | None:
     client = _ensure_service_client(self)
     if client is None:
@@ -194,6 +267,48 @@ def _get_service_portfolio_snapshot(self) -> dict | None:
         get_portfolio_snapshot = getattr(client, "get_portfolio_snapshot", None)
         if callable(get_portfolio_snapshot):
             result = get_portfolio_snapshot()
+            return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def _get_service_exchange_connector_snapshot(self) -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        get_exchange_connector_snapshot = getattr(client, "get_exchange_connector_snapshot", None)
+        if callable(get_exchange_connector_snapshot):
+            result = get_exchange_connector_snapshot()
+            return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def _get_service_operational_snapshot(self) -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        get_operational_snapshot = getattr(client, "get_operational_snapshot", None)
+        if callable(get_operational_snapshot):
+            result = get_operational_snapshot()
+            return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def _get_service_connector_order_circuit_breaker_snapshot(self) -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        get_snapshot = getattr(client, "get_connector_order_circuit_breaker_snapshot", None)
+        if callable(get_snapshot):
+            result = get_snapshot()
             return result if isinstance(result, dict) else None
     except Exception:
         return None

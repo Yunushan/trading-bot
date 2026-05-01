@@ -152,6 +152,17 @@ if FASTAPI_AVAILABLE:
         source: str = "api"
 
 
+    class ExchangeConnectorSnapshotRequest(BaseModel):
+        snapshot: dict | None = None
+        source: str = "api"
+
+
+    class ConnectorOrderCircuitBreakerSnapshotRequest(BaseModel):
+        snapshot: dict | None = None
+        source: str = "api"
+        force: bool = False
+
+
     class BacktestRunRequest(BaseModel):
         request: dict | None = None
         source: str = "api"
@@ -229,9 +240,12 @@ def create_service_api_app(
             "service_api": service_api,
         }
 
-    def _build_dashboard_payload(*, log_limit: int = 30) -> dict[str, object]:
+    def _build_dashboard_payload(*, log_limit: int = 30, incident_limit: int = 20) -> dict[str, object]:
         payload = dict(_service().get_dashboard_snapshot(log_limit=log_limit))
         payload["service_api"] = _service_api_meta()
+        payload["connector_order_circuit_incidents"] = _service().get_connector_order_circuit_incidents(
+            limit=incident_limit
+        )
         return payload
 
     def _require_api_auth(authorization: str | None = Header(default=None)):
@@ -283,8 +297,8 @@ def create_service_api_app(
         return _service().describe_runtime().to_dict()
 
     @api_router.get("/dashboard")
-    def get_dashboard(log_limit: int = 30):
-        return _build_dashboard_payload(log_limit=log_limit)
+    def get_dashboard(log_limit: int = 30, incident_limit: int = 20):
+        return _build_dashboard_payload(log_limit=log_limit, incident_limit=incident_limit)
 
     @api_router.get("/status")
     def get_status():
@@ -329,6 +343,10 @@ def create_service_api_app(
             source=payload.source,
         )
         return result.to_dict()
+
+    @api_router.get("/runtime/operational-preflight")
+    def get_operational_preflight():
+        return _service().get_operational_preflight()
 
     @api_router.post("/control/start")
     def request_start(payload: StartControlRequest):
@@ -400,6 +418,39 @@ def create_service_api_app(
         )
         return snapshot.to_dict()
 
+    @api_router.get("/exchange/connector")
+    def get_exchange_connector_snapshot():
+        return _service().get_exchange_connector_snapshot()
+
+    @api_router.put("/exchange/connector")
+    def set_exchange_connector_snapshot(payload: ExchangeConnectorSnapshotRequest):
+        return _service().set_exchange_connector_snapshot(
+            payload.snapshot if isinstance(payload.snapshot, dict) else {},
+            source=payload.source,
+        )
+
+    @api_router.get("/runtime/connector-order-circuit-breaker")
+    def get_connector_order_circuit_breaker_snapshot():
+        return _service().get_connector_order_circuit_breaker_snapshot()
+
+    @api_router.put("/runtime/connector-order-circuit-breaker")
+    def set_connector_order_circuit_breaker_snapshot(payload: ConnectorOrderCircuitBreakerSnapshotRequest):
+        return _service().set_connector_order_circuit_breaker_snapshot(
+            payload.snapshot if isinstance(payload.snapshot, dict) else {},
+            source=payload.source,
+        )
+
+    @api_router.post("/runtime/connector-order-circuit-breaker/reset")
+    def reset_connector_order_circuit_breaker(payload: ConnectorOrderCircuitBreakerSnapshotRequest):
+        return _service().reset_connector_order_circuit_breaker(
+            source=payload.source,
+            force=payload.force,
+        )
+
+    @api_router.get("/runtime/connector-order-circuit-breaker/incidents")
+    def get_connector_order_circuit_incidents(limit: int = 20):
+        return _service().get_connector_order_circuit_incidents(limit=limit)
+
     @api_router.get("/logs")
     def get_recent_logs(limit: int = 100):
         return [item.to_dict() for item in _service().get_recent_logs(limit=limit)]
@@ -447,6 +498,7 @@ def create_service_api_app(
         request: Request,
         token: str | None = Query(default=None),
         log_limit: int = 30,
+        incident_limit: int = 20,
         interval_ms: int = 1000,
     ):
         _require_stream_auth(token)
@@ -456,7 +508,7 @@ def create_service_api_app(
             while True:
                 if await request.is_disconnected():
                     break
-                payload = _build_dashboard_payload(log_limit=log_limit)
+                payload = _build_dashboard_payload(log_limit=log_limit, incident_limit=incident_limit)
                 yield f"event: dashboard\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
                 await asyncio.sleep(stream_interval)
 

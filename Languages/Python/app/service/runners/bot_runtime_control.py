@@ -10,6 +10,7 @@ if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[3]
     if str(_PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(_PYTHON_ROOT))
+    from app.settings import coerce_bool, is_live_trading_mode
     from app.service.runners.bot_runtime_shared import _MISSING, _normalize_control_plane_notes
     from app.service.schemas.control import (
         BotControlRequest,
@@ -21,8 +22,9 @@ if __package__ in (None, ""):
     from app.service.schemas.execution import ServiceExecutionSnapshot, build_execution_snapshot
     from app.service.schemas.runtime import ServiceControlPlaneDescriptor, ServiceRuntimeDescriptor
     from app.service.schemas.runtime import build_runtime_descriptor
-    from app.service.schemas.status import BotStatusSnapshot, make_initial_status
+    from app.service.schemas.status import BotStatusSnapshot, build_exchange_connector_snapshot, make_initial_status
 else:
+    from ...settings import coerce_bool, is_live_trading_mode
     from .bot_runtime_shared import _MISSING, _normalize_control_plane_notes
     from ..schemas.control import (
         BotControlRequest,
@@ -34,12 +36,109 @@ else:
     from ..schemas.execution import ServiceExecutionSnapshot, build_execution_snapshot
     from ..schemas.runtime import ServiceControlPlaneDescriptor, ServiceRuntimeDescriptor
     from ..schemas.runtime import build_runtime_descriptor
-    from ..schemas.status import BotStatusSnapshot, make_initial_status
+    from ..schemas.status import BotStatusSnapshot, build_exchange_connector_snapshot, make_initial_status
 
 
 class BotRuntimeControlMixin:
     _lock: object
     _control_request_handler: Callable[[BotControlRequest], object] | None
+
+    @staticmethod
+    def _combine_start_guard_level(*levels: str) -> str:
+        normalized = {str(level or "info").strip().lower() for level in levels}
+        if "error" in normalized:
+            return "error"
+        if "warning" in normalized or "warn" in normalized:
+            return "warning"
+        return "info"
+
+    def _evaluate_connector_start_guard_unlocked(self) -> tuple[bool, str, str]:
+        connector_snapshot = build_exchange_connector_snapshot(
+            config=self._config,
+            snapshot=self._exchange_connector_snapshot,
+            source=str(self._exchange_connector_snapshot.get("source") or "service"),
+        )
+        health = str(connector_snapshot.get("health") or "unknown").strip().lower()
+        state = str(connector_snapshot.get("state") or "unknown").strip().lower() or "unknown"
+        attention = connector_snapshot.get("attention")
+        detail = ""
+        if isinstance(attention, list) and attention:
+            detail = str(attention[0] or "").strip()
+        if not detail:
+            last_error = connector_snapshot.get("last_error")
+            if isinstance(last_error, dict):
+                detail = str(last_error.get("message") or "").strip()
+
+        if health == "error":
+            reason = f"Start blocked: exchange connector health is error ({state})."
+            if detail:
+                reason = f"{reason} {detail}"
+            return False, reason, "error"
+
+        rate_limit = connector_snapshot.get("rate_limit")
+        rate_limit_active = isinstance(rate_limit, dict) and bool(rate_limit.get("active"))
+        if health == "warning" and (state == "rate_limited" or rate_limit_active):
+            seconds = 0.0
+            if isinstance(rate_limit, dict):
+                try:
+                    seconds = max(0.0, float(rate_limit.get("seconds_until_unban") or 0.0))
+                except Exception:
+                    seconds = 0.0
+            warning = "Warning: exchange connector is rate limited."
+            if seconds > 0.0:
+                warning = f"Warning: exchange connector is rate limited for {seconds:.0f}s."
+            if detail:
+                warning = f"{warning} {detail}"
+            return True, warning, "warning"
+
+        if health == "warning":
+            warning = f"Warning: exchange connector health is warning ({state})."
+            if detail:
+                warning = f"{warning} {detail}"
+            return True, warning, "warning"
+
+        return True, "", "info"
+
+    def _evaluate_operational_start_guard_unlocked(self) -> tuple[bool, str, str]:
+        gate_enabled = coerce_bool(self._config.get("operational_live_start_gate_enabled"), True)
+        if not gate_enabled:
+            return True, "Warning: operational live start safety gate is disabled.", "warning"
+
+        operational = self._build_operational_snapshot_unlocked(require_fresh_snapshots=True)
+        health = str(operational.get("health") or "unknown").strip().lower()
+        freshness = operational.get("freshness")
+        stale_labels: list[str] = []
+        if isinstance(freshness, dict):
+            for key, label in (
+                ("exchange_connector", "exchange connector"),
+                ("account", "account"),
+                ("portfolio", "portfolio"),
+                ("execution", "execution heartbeat"),
+            ):
+                item = freshness.get(key)
+                if isinstance(item, dict) and bool(item.get("stale")):
+                    stale_labels.append(label)
+
+        issues: list[str] = []
+        if health == "error":
+            issues.append("operational health is error")
+        if stale_labels:
+            issues.append("critical snapshots are stale: " + ", ".join(stale_labels))
+        if not issues:
+            return True, "", "info"
+
+        detail = "; ".join(issues)
+        if is_live_trading_mode(self._config.get("mode")):
+            return (
+                False,
+                f"Start blocked: operational safety gate requires healthy fresh snapshots for live mode. {detail}.",
+                "error",
+            )
+        return (
+            True,
+            f"Warning: operational safety gate found {detail}; demo/test mode start remains allowed.",
+            "warning",
+        )
 
     def set_execution_snapshot(
         self,
@@ -246,6 +345,34 @@ class BotRuntimeControlMixin:
                 if isinstance(request, BotControlRequest)
                 else make_start_request(requested_job_count=requested_job_count, source=source)
             )
+            start_allowed, connector_guard_message, connector_guard_level = self._evaluate_connector_start_guard_unlocked()
+            operational_allowed, operational_guard_message, operational_guard_level = (
+                self._evaluate_operational_start_guard_unlocked()
+            )
+            if not start_allowed or not operational_allowed:
+                guard_level = self._combine_start_guard_level(connector_guard_level, operational_guard_level)
+                guard_messages = [
+                    message
+                    for message in (connector_guard_message, operational_guard_message)
+                    if message
+                ]
+                self._runtime_source = control_request.source
+                self._lifecycle_phase = "running" if self._runtime_active else "idle"
+                self._requested_action = ""
+                self._close_positions_requested = False
+                self._status_message = " ".join(guard_messages) or "Start blocked by runtime safety guard."
+                self._last_transition_at = self._now_iso()
+                self.record_log_event(
+                    self._status_message,
+                    source="service-control-plane",
+                    level=guard_level,
+                )
+                return self._make_control_result(
+                    action=control_request.action,
+                    requested_job_count=control_request.requested_job_count,
+                    close_positions_requested=False,
+                    accepted=False,
+                )
             self._runtime_source = control_request.source
             self._lifecycle_phase = "starting"
             self._requested_action = "start"
@@ -257,6 +384,17 @@ class BotRuntimeControlMixin:
             else:
                 self._status_message = "Start requested."
             self._last_transition_at = self._now_iso()
+            for guard_message, guard_level in (
+                (connector_guard_message, connector_guard_level),
+                (operational_guard_message, operational_guard_level),
+            ):
+                if not guard_message:
+                    continue
+                self.record_log_event(
+                    guard_message,
+                    source="service-control-plane",
+                    level=guard_level,
+                )
         dispatch_accepted, dispatch_message = self._dispatch_control_request(control_request)
         with self._lock:
             accepted = dispatch_accepted is not False
@@ -264,10 +402,22 @@ class BotRuntimeControlMixin:
                 self._lifecycle_phase = "running" if self._runtime_active else "idle"
                 self._requested_action = ""
                 self._close_positions_requested = False
-                self._status_message = dispatch_message or "Start request could not be dispatched."
+                failure_parts = [dispatch_message or "Start request could not be dispatched."]
+                if connector_guard_message:
+                    failure_parts.append(connector_guard_message)
+                if operational_guard_message:
+                    failure_parts.append(operational_guard_message)
+                self._status_message = " ".join(part for part in failure_parts if part).strip()
                 self._last_transition_at = self._now_iso()
-            elif dispatch_message:
-                self._status_message = f"{self._status_message} {dispatch_message}".strip()
+            else:
+                status_parts = [self._status_message]
+                if connector_guard_message:
+                    status_parts.append(connector_guard_message)
+                if operational_guard_message:
+                    status_parts.append(operational_guard_message)
+                if dispatch_message:
+                    status_parts.append(dispatch_message)
+                self._status_message = " ".join(part for part in status_parts if part).strip()
             return self._make_control_result(
                 action=control_request.action,
                 requested_job_count=control_request.requested_job_count,
@@ -382,4 +532,5 @@ class BotRuntimeControlMixin:
                 mode=str(self._config.get("mode") or ""),
                 selected_exchange=str(self._config.get("selected_exchange") or ""),
                 connector_backend=str(self._config.get("connector_backend") or ""),
+                operational=self._build_operational_snapshot_unlocked(),
             )

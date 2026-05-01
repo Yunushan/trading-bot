@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from ...security.redaction import redact_text
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -38,7 +40,7 @@ def make_log_event(
     return ServiceLogEvent(
         sequence_id=seq,
         level=str(level or "info").strip().lower() or "info",
-        message=str(message or ""),
-        source=str(source or "service"),
+        message=redact_text(message or ""),
+        source=redact_text(source or "service"),
         generated_at=_utc_now_iso(),
     )

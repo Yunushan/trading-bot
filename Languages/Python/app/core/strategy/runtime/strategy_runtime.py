@@ -64,6 +64,16 @@ def resume_trading(cls) -> None:
     try:
         if not cls._GLOBAL_SHUTDOWN.is_set():
             cls._GLOBAL_PAUSE.clear()
+            lock = getattr(cls, "_CONNECTOR_ORDER_BLOCK_LOCK", None)
+            if lock is not None:
+                try:
+                    with lock:
+                        events = getattr(cls, "_CONNECTOR_ORDER_BLOCK_EVENTS", None)
+                        if isinstance(events, list):
+                            events.clear()
+                        cls._CONNECTOR_ORDER_CIRCUIT_OPEN = False
+                except Exception:
+                    pass
     except Exception:
         pass
 

@@ -45,6 +45,17 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual(10.0, config["live_trading_max_position_pct"])
         self.assertTrue(config["order_audit_enabled"])
         self.assertEqual("", config["order_audit_log_path"])
+        self.assertEqual(10 * 1024 * 1024, config["order_audit_max_bytes"])
+        self.assertEqual(1, config["order_audit_backup_count"])
+        self.assertEqual("", config["connector_order_circuit_incident_log_path"])
+        self.assertEqual(2 * 1024 * 1024, config["connector_order_circuit_incident_log_max_bytes"])
+        self.assertEqual(1, config["connector_order_circuit_incident_log_backup_count"])
+        self.assertEqual(120.0, config["operational_connector_snapshot_stale_seconds"])
+        self.assertEqual(10.0, config["operational_execution_heartbeat_stale_seconds"])
+        self.assertEqual(300.0, config["operational_account_snapshot_stale_seconds"])
+        self.assertEqual(300.0, config["operational_portfolio_snapshot_stale_seconds"])
+        self.assertTrue(config["operational_live_start_gate_enabled"])
+        self.assertTrue(config["operational_live_order_gate_enabled"])
 
     def test_default_config_passes_runtime_validation(self):
         validated = validate_runtime_config(build_default_config())
@@ -63,6 +74,10 @@ class SettingsDefaultsTests(unittest.TestCase):
                 "position_pct": 250,
                 "lookback": 0,
                 "live_trading_max_position_pct": 0,
+                "operational_connector_snapshot_stale_seconds": 0,
+                "operational_execution_heartbeat_stale_seconds": 0,
+                "operational_account_snapshot_stale_seconds": 0,
+                "operational_portfolio_snapshot_stale_seconds": 0,
             }
         )
 
@@ -74,6 +89,10 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("position_pct", fields)
         self.assertIn("lookback", fields)
         self.assertIn("live_trading_max_position_pct", fields)
+        self.assertIn("operational_connector_snapshot_stale_seconds", fields)
+        self.assertIn("operational_execution_heartbeat_stale_seconds", fields)
+        self.assertIn("operational_account_snapshot_stale_seconds", fields)
+        self.assertIn("operational_portfolio_snapshot_stale_seconds", fields)
 
     def test_runtime_validation_normalizes_symbols_intervals_and_stop_loss(self):
         config = build_default_config()

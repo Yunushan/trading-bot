@@ -41,7 +41,21 @@ def _reset_stale_signal_order_guard(self, *, symbol: str, interval_key: str, sid
                 last_ts_guard = float(state.get("last") or 0.0)
             except Exception:
                 last_ts_guard = 0.0
-            age = (time.time() - last_ts_guard) if last_ts_guard > 0.0 else float("inf")
+            age_candidates = []
+            if last_ts_guard > 0.0:
+                age_candidates.append(last_ts_guard)
+            for bucket_name in ("pending_map", "signatures"):
+                bucket = state.get(bucket_name)
+                if not isinstance(bucket, dict):
+                    continue
+                for ts in bucket.values():
+                    try:
+                        ts_value = float(ts or 0.0)
+                    except Exception:
+                        ts_value = 0.0
+                    if ts_value > 0.0:
+                        age_candidates.append(ts_value)
+            age = (time.time() - max(age_candidates)) if age_candidates else float("inf")
             if live_qty_sym <= qty_tol_guard and age > guard_window * 2.0:
                 state["pending_map"] = {}
                 state["signatures"] = {}

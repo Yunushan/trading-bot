@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 import time
 
+from app.security.redaction import redact_value
+
 
 def _float_or(value, default=0.0):
     try:
@@ -456,7 +458,7 @@ def _emit_signal_order_info(
     if origin_timestamp is not None and order_ok:
         latency = max(0.0, time.time() - float(origin_timestamp))
         self._log_latency_metric(cw["symbol"], cw["interval"], side, latency)
-    self.log(f"{cw['symbol']}@{cw['interval']} Order placed: {order_res}")
+    self.log(f"{cw['symbol']}@{cw['interval']} Order placed: {redact_value(order_res)}")
 
 
 def bind_strategy_signal_order_result_runtime(strategy_cls) -> None:

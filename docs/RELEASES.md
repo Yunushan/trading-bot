@@ -24,6 +24,24 @@ Rust framework shell assets are best-effort. If one optional framework fails to 
 
 > FreeBSD release workflow depends on a matching self-hosted runner. Other BSD-family systems and Solaris/illumos currently rely on manual validation against the service/backend path.
 
+## Release preflight
+
+Run the local release smoke before creating a tag:
+
+```bash
+python tools/release_smoke.py
+```
+
+That command compiles canonical entrypoints and tool scripts, runs Ruff, checks dependency metadata and requirement shims, runs the configured mypy targets, checks the service launcher healthcheck, runs the desktop/service manual smoke, and runs the Python test suite.
+
+For a faster local pass when the full test suite already ran separately:
+
+```bash
+python tools/release_smoke.py --skip-full-tests --manual-smoke-mode fast
+```
+
+Use `--dry-run` to print the planned checks without executing them.
+
 ## Release steps
 
 1. Commit and push your source changes.

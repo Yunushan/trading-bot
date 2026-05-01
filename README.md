@@ -327,6 +327,7 @@ GitHub release workflow details now also have a dedicated home in [docs/RELEASES
 
 Use that guide for:
 
+- pre-tag release smoke checks
 - release workflows and asset matrix
 - tagging steps
 - published asset verification

@@ -19,6 +19,7 @@ from app.service.schemas.backtest import (  # noqa: E402
     make_backtest_command_result,
 )
 from app.service.schemas.config import build_config_summary, build_editable_config  # noqa: E402
+from app.service.schemas.status import build_exchange_connector_snapshot  # noqa: E402
 
 
 class ServiceSchemaContractTests(unittest.TestCase):
@@ -143,6 +144,12 @@ class ServiceSchemaContractTests(unittest.TestCase):
             "selected_exchange": "Binance",
             "code_language": "Python",
             "theme": "Light",
+            "order_audit_max_bytes": "4096",
+            "order_audit_backup_count": "3",
+            "connector_order_circuit_incident_log_max_bytes": "2048",
+            "connector_order_circuit_incident_log_backup_count": "4",
+            "operational_live_start_gate_enabled": "false",
+            "operational_live_order_gate_enabled": "false",
             "symbols": ["BTCUSDT", "ETHUSDT"],
             "intervals": ["60m", "1H", ""],
             "api_key": "key",
@@ -171,6 +178,12 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertEqual(["BTCUSDT", "ETHUSDT"], editable["symbols"])
         self.assertEqual(["1h"], editable["intervals"])
         self.assertFalse(editable["api_credentials_present"])
+        self.assertEqual(4096, editable["order_audit_max_bytes"])
+        self.assertEqual(3, editable["order_audit_backup_count"])
+        self.assertEqual(2048, editable["connector_order_circuit_incident_log_max_bytes"])
+        self.assertEqual(4, editable["connector_order_circuit_incident_log_backup_count"])
+        self.assertFalse(editable["operational_live_start_gate_enabled"])
+        self.assertFalse(editable["operational_live_order_gate_enabled"])
         self.assertTrue(editable["llm"]["enabled"])
         self.assertEqual("qwen", editable["llm"]["provider"])
         self.assertIn("qwen3-max", editable["llm"]["model_suggestions"])
@@ -189,3 +202,30 @@ class ServiceSchemaContractTests(unittest.TestCase):
         editable = build_editable_config({}).to_dict()
 
         self.assertEqual("Demo/Testnet", editable["mode"])
+
+    def test_exchange_connector_snapshot_normalizes_health_and_redacts_errors(self):
+        snapshot = build_exchange_connector_snapshot(
+            config={
+                "selected_exchange": "Binance",
+                "connector_backend": "python-binance",
+                "account_type": "Futures",
+                "mode": "Demo/Testnet",
+            },
+            snapshot={
+                "state": "auth_error",
+                "last_error": {
+                    "category": "auth",
+                    "message": "api_secret=exchange-secret signature=order-signature",
+                    "retryable": False,
+                },
+            },
+            source="unit-test",
+        )
+
+        self.assertEqual("error", snapshot["health"])
+        self.assertEqual("auth_error", snapshot["state"])
+        self.assertEqual("Binance", snapshot["selected_exchange"])
+        self.assertEqual("python-binance", snapshot["connector_backend"])
+        self.assertIn("<redacted>", snapshot["last_error"]["message"])
+        self.assertNotIn("exchange-secret", snapshot["last_error"]["message"])
+        self.assertNotIn("order-signature", snapshot["last_error"]["message"])

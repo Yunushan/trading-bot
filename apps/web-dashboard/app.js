@@ -1,5 +1,10 @@
 import { fetchJson, sendJson } from "./modules/api.js";
-import { renderConfig, renderDashboardSnapshot, renderServiceApi } from "./modules/render.js";
+import {
+  renderConfig,
+  renderDashboardSnapshot,
+  renderPreflight,
+  renderServiceApi,
+} from "./modules/render.js";
 import {
   closeDashboardStream,
   elements,
@@ -31,6 +36,10 @@ function setControlMessage(message) {
   elements.controlMessage.textContent = message;
 }
 
+function setConnectorMessage(message) {
+  elements.connectorMessage.textContent = message;
+}
+
 function setConfigMessage(message) {
   elements.configMessage.textContent = message;
 }
@@ -48,6 +57,25 @@ function collectConfigPatch() {
     theme: elements.configTheme.value.trim(),
     leverage: readInteger(elements.configLeverage, 0),
     position_pct: readNumber(elements.configPositionPct, 0),
+    order_audit_max_bytes: readInteger(elements.configOrderAuditMaxBytes, 1),
+    order_audit_backup_count: readInteger(elements.configOrderAuditBackupCount, 0),
+    connector_order_circuit_incident_log_max_bytes: readInteger(
+      elements.configIncidentLogMaxBytes,
+      1,
+    ),
+    connector_order_circuit_incident_log_backup_count: readInteger(
+      elements.configIncidentLogBackupCount,
+      0,
+    ),
+    operational_connector_snapshot_stale_seconds: readNumber(elements.configConnectorStaleSeconds, 120),
+    operational_execution_heartbeat_stale_seconds: readNumber(
+      elements.configExecutionHeartbeatStaleSeconds,
+      10,
+    ),
+    operational_account_snapshot_stale_seconds: readNumber(elements.configAccountStaleSeconds, 300),
+    operational_portfolio_snapshot_stale_seconds: readNumber(elements.configPortfolioStaleSeconds, 300),
+    operational_live_start_gate_enabled: Boolean(elements.configLiveStartGateEnabled.checked),
+    operational_live_order_gate_enabled: Boolean(elements.configLiveOrderGateEnabled.checked),
     symbols: splitList(elements.configSymbols.value),
     intervals: splitList(elements.configIntervals.value),
   };
@@ -99,7 +127,7 @@ async function refreshDashboard() {
     setConnectionMessage("The API requires a bearer token. Enter it above and connect again.");
     return;
   }
-  const snapshot = await fetchJson(`${apiPath("dashboard")}?log_limit=30`);
+  const snapshot = await fetchJson(`${apiPath("dashboard")}?log_limit=30&incident_limit=20`);
   renderDashboardSnapshot(snapshot);
   setConnectionState("Connected", "ok");
   setConnectionMessage(
@@ -123,7 +151,7 @@ function openDashboardStream() {
     startPollingFallback();
     return;
   }
-  const params = new URLSearchParams({ log_limit: "30", interval_ms: "1000" });
+  const params = new URLSearchParams({ log_limit: "30", incident_limit: "20", interval_ms: "1000" });
   if (state.token) {
     params.set("token", state.token);
   }
@@ -248,6 +276,39 @@ async function syncIdle() {
   }
 }
 
+async function resetConnectorOrderCircuit() {
+  try {
+    const result = await sendJson("POST", apiPath("runtime/connector-order-circuit-breaker/reset"), {
+      source: "web-ui",
+    });
+    if (result && result.reset_blocked) {
+      setConnectorMessage(result.reset_blocked_reason || result.message || "Order circuit reset blocked.");
+    } else {
+      setConnectorMessage(result?.message || "Order circuit reset.");
+    }
+    await refreshDashboard();
+  } catch (error) {
+    setConnectorMessage(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function recheckPreflight() {
+  if (elements.preflightRecheckButton) {
+    elements.preflightRecheckButton.disabled = true;
+  }
+  elements.preflightMessage.textContent = "Rechecking operational preflight...";
+  try {
+    const preflight = await fetchJson(apiPath("runtime/operational-preflight"));
+    renderPreflight(preflight);
+  } catch (error) {
+    elements.preflightMessage.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (elements.preflightRecheckButton) {
+      elements.preflightRecheckButton.disabled = false;
+    }
+  }
+}
+
 async function reloadConfig() {
   try {
     const config = await fetchJson(apiPath("config"));
@@ -322,6 +383,12 @@ function bootstrap() {
   });
   elements.markIdleButton.addEventListener("click", () => {
     syncIdle();
+  });
+  elements.resetConnectorCircuitButton.addEventListener("click", () => {
+    resetConnectorOrderCircuit();
+  });
+  elements.preflightRecheckButton.addEventListener("click", () => {
+    recheckPreflight();
   });
   elements.reloadConfigButton.addEventListener("click", () => {
     reloadConfig();

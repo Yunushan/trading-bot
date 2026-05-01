@@ -45,6 +45,7 @@ from app.integrations.exchanges.binance.orders.futures_orders import (
 from app.integrations.exchanges.binance.orders.order_audit_runtime import (
     bind_binance_order_audit_runtime as new_bind_order_audit,
 )
+from app.integrations.exchanges.binance.orders import order_audit_runtime as order_audit_runtime_module
 from app.integrations.exchanges.binance.orders.order_fallback_runtime import (
     bind_binance_order_fallback_runtime as new_bind_order_fallback,
 )
@@ -81,11 +82,13 @@ from app.integrations.exchanges.binance.runtime.operational_runtime import (
 from app.integrations.exchanges.binance.transport.helpers import (
     _coerce_interval_seconds as new_coerce_interval_seconds,
 )
+from app.integrations.exchanges.binance.transport import http_request_runtime as http_request_runtime_module
 from app.integrations.exchanges.binance.transport.http_runtime import bind_binance_http_runtime as new_bind_http
 from app.integrations.exchanges.binance.transport.rate_limit_runtime import (
     bind_binance_rate_limit_runtime as new_bind_rate_limit,
 )
 from app.integrations.exchanges.binance.transport.ws_runtime import bind_binance_ws_runtime as new_bind_ws
+from app.jsonl_rotation import jsonl_backup_path
 from app.settings import LiveTradingSafetyError
 
 
@@ -179,10 +182,64 @@ class _FuturesAuditWrapper:
         return None
 
 
+class _FakeDirectHttpResponse:
+    def __init__(self, status_code=200, payload=None, text="", headers=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = text
+        self.headers = dict(headers or {})
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _DirectFuturesHttpWrapper:
+    _limiter_lock = threading.Lock()
+    _limiter_pool = {}
+    _ban_state_lock = threading.Lock()
+    _ban_until_epoch = {}
+    _instance_counter = 0
+
+    def __init__(self):
+        type(self)._instance_counter += 1
+        self.api_key = "unit-api-key"
+        self.api_secret = "unit-api-secret"
+        self.mode = "Demo/Testnet"
+        self.account_type = "FUTURES"
+        self.recv_window = 5000
+        self._connector_backend = "unit-test"
+        self._limiter_key = f"unit-test:{type(self)._instance_counter}"
+        self._request_limiter = None
+        self._last_futures_http_error = None
+        self._futures_time_offset_ms = 0
+        self._futures_time_offset_ts = 1.0
+        self.offline = []
+        self.recovered = 0
+        self.synced_time = 0
+        self.logged = []
+
+    def _log(self, message, lvl="info"):
+        self.logged.append((lvl, message))
+
+    def _sync_futures_time_offset(self, *, force=False):
+        self.synced_time += 1
+
+    def _handle_network_offline(self, context, exc):
+        self.offline.append((context, str(exc)))
+
+    def _handle_network_recovered(self):
+        self.recovered += 1
+
+
 new_bind_order_audit(_SpotSizingWrapper)
 new_bind_order_sizing(_SpotSizingWrapper)
 new_bind_order_audit(_FuturesAuditWrapper)
 new_bind_order_fallback(_FuturesAuditWrapper)
+new_bind_order_audit(_DirectFuturesHttpWrapper)
+new_bind_http(_DirectFuturesHttpWrapper)
+new_bind_rate_limit(_DirectFuturesHttpWrapper)
 
 
 class BinancePackageSplitSmokeTests(unittest.TestCase):
@@ -255,6 +312,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             "place_futures_market_order",
             "place_spot_market_order",
             "get_last_price",
+            "get_connector_health_snapshot",
             "set_position_mode",
             "ensure_futures_settings",
             "trigger_emergency_close_all",
@@ -318,6 +376,220 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(["exchange_order_request", "exchange_order_error"], [row["event"] for row in rows])
             self.assertIn("exchange rejected", rows[1]["error"])
+
+    def test_order_audit_redacts_nested_secret_values_and_error_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "secrets.jsonl"
+            wrapper = _FuturesAuditWrapper()
+            wrapper._configure_order_audit(path=audit_path)
+
+            wrapper._audit_order_event(
+                "exchange_order_error",
+                symbol="BTCUSDT",
+                side="BUY",
+                market="futures",
+                params={
+                    "symbol": "BTCUSDT",
+                    "signature": "order-signature",
+                    "headers": {"X-MBX-APIKEY": "header-api-key"},
+                },
+                result={
+                    "info": {
+                        "orderId": 100,
+                        "authorization": "Bearer result-token",
+                        "api_secret": "result-secret",
+                    }
+                },
+                error=RuntimeError("Authorization: Bearer error-token api_secret=error-secret"),
+                extra={"llm_api_key": "llm-secret"},
+            )
+
+            raw = audit_path.read_text(encoding="utf-8")
+            row = json.loads(raw)
+            self.assertEqual("exchange_order_error", row["event"])
+            self.assertEqual("<redacted>", row["params"]["signature"])
+            self.assertEqual("<redacted>", row["params"]["headers"]["X-MBX-APIKEY"])
+            self.assertEqual("<redacted>", row["result"]["info"]["authorization"])
+            self.assertEqual("<redacted>", row["result"]["info"]["api_secret"])
+            self.assertIn("<redacted>", row["error"])
+            for secret in (
+                "order-signature",
+                "header-api-key",
+                "result-token",
+                "result-secret",
+                "error-token",
+                "error-secret",
+                "llm-secret",
+            ):
+                self.assertNotIn(secret, raw)
+
+    def test_order_audit_rotates_when_size_limit_is_exceeded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "rotating-orders.jsonl"
+            backup_path = jsonl_backup_path(audit_path)
+            second_backup_path = jsonl_backup_path(audit_path, 2)
+            expired_backup_path = jsonl_backup_path(audit_path, 3)
+            wrapper = _FuturesAuditWrapper()
+            wrapper._configure_order_audit(path=audit_path, max_bytes=1, backup_count=2)
+
+            for index in range(4):
+                wrapper._audit_order_event(
+                    "exchange_order_request",
+                    symbol="BTCUSDT",
+                    side="BUY",
+                    market="futures",
+                    extra={"index": index},
+                )
+
+            self.assertTrue(audit_path.exists())
+            self.assertTrue(backup_path.exists())
+            self.assertTrue(second_backup_path.exists())
+            self.assertFalse(expired_backup_path.exists())
+            active_rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            backup_rows = [json.loads(line) for line in backup_path.read_text(encoding="utf-8").splitlines()]
+            second_backup_rows = [
+                json.loads(line) for line in second_backup_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([3], [row["extra"]["index"] for row in active_rows])
+            self.assertEqual([2], [row["extra"]["index"] for row in backup_rows])
+            self.assertEqual([1], [row["extra"]["index"] for row in second_backup_rows])
+
+    def test_order_audit_write_failure_is_exposed_in_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "orders.jsonl"
+            wrapper = _DirectFuturesHttpWrapper()
+            wrapper._configure_order_audit(path=audit_path)
+            original_rotate = order_audit_runtime_module.rotate_jsonl_if_needed
+
+            def fail_rotate(*_args, **_kwargs):
+                raise OSError("disk full api_secret=leaked")
+
+            try:
+                order_audit_runtime_module.rotate_jsonl_if_needed = fail_rotate
+                wrapper._audit_order_event(
+                    "exchange_order_request",
+                    symbol="BTCUSDT",
+                    side="BUY",
+                    market="futures",
+                )
+            finally:
+                order_audit_runtime_module.rotate_jsonl_if_needed = original_rotate
+
+            audit_status = wrapper.get_order_audit_status()
+            connector_status = wrapper.get_connector_health_snapshot()
+            rendered_status = json.dumps({"audit": audit_status, "connector": connector_status}, sort_keys=True)
+
+            self.assertEqual("write_failed", audit_status["state"])
+            self.assertFalse(audit_status["write_ok"])
+            self.assertIn("disk full", audit_status["last_write_error"]["message"])
+            self.assertEqual("warning", connector_status["health"])
+            self.assertEqual("order_audit_write_failed", connector_status["state"])
+            self.assertEqual("write_failed", connector_status["order_audit"]["state"])
+            self.assertIn("<redacted>", rendered_status)
+            self.assertNotIn("leaked", rendered_status)
+
+            wrapper._audit_order_event(
+                "exchange_order_request",
+                symbol="BTCUSDT",
+                side="BUY",
+                market="futures",
+            )
+
+            recovered_status = wrapper.get_order_audit_status()
+            self.assertTrue(recovered_status["write_ok"])
+            self.assertEqual("ready", recovered_status["state"])
+            self.assertTrue(recovered_status["last_write_ok_at"])
+
+    def test_direct_futures_http_rate_limit_records_structured_backoff(self):
+        wrapper = _DirectFuturesHttpWrapper()
+        response = _FakeDirectHttpResponse(
+            429,
+            {"code": -1003, "msg": "Too many requests; banned until 2524608000000 signature=leaked"},
+        )
+
+        with mock.patch.object(http_request_runtime_module.requests, "request", return_value=response) as request_mock:
+            result = wrapper._http_signed_futures("/v1/order", {"symbol": "BTCUSDT"})
+
+        self.assertEqual({}, result)
+        self.assertEqual(1, request_mock.call_count)
+        error = wrapper._last_futures_http_error
+        self.assertIsInstance(error, dict)
+        self.assertEqual("rate_limited", error["category"])
+        self.assertTrue(error["retryable"])
+        self.assertEqual(429, error["status_code"])
+        self.assertEqual(-1003, error["code"])
+        self.assertIn("<redacted>", error["message"])
+        self.assertNotIn("leaked", error["message"])
+        self.assertGreater(wrapper._seconds_until_unban(), 0.0)
+
+    def test_direct_futures_http_retries_timeout_and_marks_recovery(self):
+        wrapper = _DirectFuturesHttpWrapper()
+        calls = []
+
+        def fake_request(method, url, headers=None, timeout=None):
+            calls.append((method, url, headers, timeout))
+            if len(calls) == 1:
+                raise http_request_runtime_module.requests.exceptions.Timeout(f"Read timed out for {url}")
+            return _FakeDirectHttpResponse(200, {"ok": True})
+
+        with (
+            mock.patch.object(http_request_runtime_module.time, "sleep", return_value=None),
+            mock.patch.object(http_request_runtime_module.requests, "request", side_effect=fake_request),
+        ):
+            result = wrapper._http_signed_futures("/v1/account", {"symbol": "BTCUSDT"})
+
+        self.assertEqual({"ok": True}, result)
+        self.assertEqual(2, len(calls))
+        self.assertIsNone(wrapper._last_futures_http_error)
+        self.assertEqual(1, len(wrapper.offline))
+        self.assertEqual(1, wrapper.recovered)
+
+    def test_direct_futures_http_redacts_persistent_network_error(self):
+        wrapper = _DirectFuturesHttpWrapper()
+
+        with (
+            mock.patch.object(http_request_runtime_module.time, "sleep", return_value=None),
+            mock.patch.object(
+                http_request_runtime_module.requests,
+                "request",
+                side_effect=http_request_runtime_module.requests.exceptions.Timeout(
+                    "signature=leaked api_secret=unit-api-secret"
+                ),
+            ),
+        ):
+            result = wrapper._http_signed_futures("/v1/account", {"symbol": "BTCUSDT"})
+
+        self.assertEqual({}, result)
+        error = wrapper._last_futures_http_error
+        self.assertIsInstance(error, dict)
+        self.assertEqual("network", error["category"])
+        self.assertTrue(error["retryable"])
+        self.assertEqual(2, error["attempt"])
+        self.assertIn("<redacted>", error["message"])
+        self.assertNotIn("leaked", error["message"])
+        self.assertNotIn("unit-api-secret", error["message"])
+
+    def test_connector_health_snapshot_reflects_last_http_error(self):
+        wrapper = _DirectFuturesHttpWrapper()
+
+        wrapper._record_futures_http_error(
+            "/v2/account",
+            status_code=401,
+            code=-2015,
+            message="api_secret=unit-api-secret signature=leaked",
+            category="auth",
+            retryable=False,
+            method="GET",
+        )
+
+        snapshot = wrapper.get_connector_health_snapshot()
+
+        self.assertEqual("error", snapshot["health"])
+        self.assertEqual("auth_error", snapshot["state"])
+        self.assertEqual("unit-test", snapshot["connector_backend"])
+        self.assertIn("<redacted>", snapshot["last_error"]["message"])
+        self.assertNotIn("unit-api-secret", snapshot["last_error"]["message"])
+        self.assertNotIn("leaked", snapshot["last_error"]["message"])
 
     def test_new_subpackages_expose_expected_binders(self):
         binders = [

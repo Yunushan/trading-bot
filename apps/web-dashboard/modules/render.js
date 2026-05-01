@@ -115,9 +115,261 @@ function renderStatus(status) {
   elements.statusEngines.textContent = formatNumber(status.active_engine_count);
   elements.statusAccount.textContent = `${status.mode || "-"} / ${status.account_type || "-"}`;
   elements.statusExchange.textContent = status.selected_exchange || "-";
-  elements.statusMessage.textContent = `${status.status_message || "No status message."} Source: ${status.runtime_source || "-"}. Last transition: ${formatTimestamp(status.last_transition_at)}.`;
+  const operationalHealth = String(status.operational_health || status.operational?.health || "unknown").toLowerCase();
+  elements.statusOperational.textContent = titleizeLabel(operationalHealth);
+  elements.statusOperational.className = `pill ${healthTone(operationalHealth)}`;
+  const operationalAttention = Array.isArray(status.operational?.attention)
+    ? status.operational.attention
+    : [];
+  const attentionItems = operationalAttention.slice(0, 3).filter(Boolean);
+  const attention = attentionItems.length ? ` Attention: ${attentionItems.join(" ")}` : "";
+  elements.statusMessage.textContent = `${status.status_message || "No status message."} Source: ${status.runtime_source || "-"}. Last transition: ${formatTimestamp(status.last_transition_at)}.${attention}`;
   elements.controlPhase.textContent = lifecycle;
   elements.controlPhase.className = elements.statusMode.className;
+}
+
+function healthTone(health) {
+  const value = String(health || "").toLowerCase();
+  if (value === "ok") {
+    return "ok";
+  }
+  if (value === "warning") {
+    return "warn";
+  }
+  if (value === "error") {
+    return "error";
+  }
+  return "muted";
+}
+
+function preflightTone(preflightState) {
+  const value = String(preflightState || "").toLowerCase();
+  if (value === "ok") {
+    return "ok";
+  }
+  if (value === "warning" || value === "disabled") {
+    return "warn";
+  }
+  if (value === "blocked" || value === "error") {
+    return "error";
+  }
+  return "muted";
+}
+
+function renderPreflightGate(gate) {
+  const payload = gate && typeof gate === "object" ? gate : {};
+  const stateLabel = titleizeLabel(payload.state || (payload.allowed === false ? "blocked" : "unknown"));
+  const enabledLabel = payload.gate_enabled === false ? "Gate disabled" : "Gate enabled";
+  const allowedLabel = payload.allowed === false ? "blocked" : payload.allowed === true ? "allowed" : "unknown";
+  const reasons = Array.isArray(payload.reasons) ? payload.reasons.filter(Boolean) : [];
+  const reason = reasons.length ? ` - ${reasons[0]}` : "";
+  return `${stateLabel} (${enabledLabel}, ${allowedLabel})${reason}`;
+}
+
+function preflightCriticalLabels(preflight) {
+  const payload = preflight && typeof preflight === "object" ? preflight : {};
+  const critical = payload.critical_stale;
+  const labels = [];
+  const addLabel = (label) => {
+    const value = String(label || "").trim();
+    if (value && !labels.includes(value)) {
+      labels.push(value);
+    }
+  };
+  if (Array.isArray(critical)) {
+    critical.forEach(addLabel);
+  } else if (critical && typeof critical === "object") {
+    Object.values(critical).forEach((items) => {
+      if (Array.isArray(items)) {
+        items.forEach(addLabel);
+      }
+    });
+  }
+  return labels;
+}
+
+export function renderPreflight(preflight) {
+  const payload = preflight && typeof preflight === "object" ? preflight : {};
+  const stateLabel = String(payload.state || "unknown").toLowerCase();
+  const critical = preflightCriticalLabels(payload);
+  const reasons = Array.isArray(payload.reasons) ? payload.reasons.filter(Boolean) : [];
+  const message = String(payload.message || "").trim();
+  const reasonText = reasons.length ? ` Reasons: ${reasons.join(" ")}` : "";
+  elements.preflightState.textContent = titleizeLabel(stateLabel);
+  elements.preflightState.className = `pill ${preflightTone(stateLabel)}`;
+  elements.preflightStart.textContent = renderPreflightGate(payload.start);
+  elements.preflightOrders.textContent = renderPreflightGate(payload.orders);
+  elements.preflightMode.textContent = `${payload.live_mode ? "Live" : "Demo/Test"} / ${payload.mode || "-"}`;
+  elements.preflightCritical.textContent = critical.length ? critical.join(", ") : "Fresh";
+  elements.preflightMessage.textContent = `${message || "No preflight snapshot received yet."}${reasonText}`;
+}
+
+function renderRateLimit(rateLimit) {
+  const payload = rateLimit && typeof rateLimit === "object" ? rateLimit : {};
+  if (payload.active) {
+    const seconds = Number(payload.seconds_until_unban);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return `Limited for ${formatNumber(seconds)}s`;
+    }
+    return "Limited";
+  }
+  if (Object.hasOwn(payload, "active")) {
+    return "Clear";
+  }
+  return "-";
+}
+
+function renderNetwork(network) {
+  const payload = network && typeof network === "object" ? network : {};
+  if (payload.offline) {
+    const hits = Number(payload.offline_hits);
+    return Number.isFinite(hits) && hits > 0 ? `Offline (${formatNumber(hits)} hits)` : "Offline";
+  }
+  if (Object.hasOwn(payload, "offline")) {
+    return "Online";
+  }
+  return "-";
+}
+
+function renderConnectorError(lastError) {
+  const payload = lastError && typeof lastError === "object" ? lastError : null;
+  if (!payload) {
+    return "No recent error";
+  }
+  const category = titleizeLabel(payload.category || "exchange");
+  const message = String(payload.message || "").trim();
+  return message ? `${category}: ${message}` : category;
+}
+
+function renderOrderCircuit(orderCircuit) {
+  const payload = orderCircuit && typeof orderCircuit === "object" ? orderCircuit : {};
+  if (payload.active) {
+    const blockCount = formatNumber(payload.block_count);
+    const threshold = formatNumber(payload.block_threshold);
+    return `Open (${blockCount}/${threshold} blocks)`;
+  }
+  if (payload.cleared_at) {
+    return `Closed ${formatTimestamp(payload.cleared_at)}`;
+  }
+  return titleizeLabel(payload.state || "closed");
+}
+
+function renderCircuitIncidentLog(incidentLog) {
+  const payload = incidentLog && typeof incidentLog === "object" ? incidentLog : {};
+  const path = String(payload.path || "").trim();
+  if (!path) {
+    return "-";
+  }
+  const writeError = String(payload.last_write_error?.message || "").trim();
+  if (payload.write_ok === false || writeError) {
+    return `${path} (write failed${writeError ? `: ${writeError}` : ""})`;
+  }
+  const source = titleizeLabel(payload.path_source || "");
+  const maxBytes = Number(payload.max_bytes || 0);
+  const backupCount = Number(payload.backup_count ?? -1);
+  const retention = [];
+  if (source && source !== "-") {
+    retention.push(source);
+  }
+  if (Number.isFinite(maxBytes) && maxBytes > 0) {
+    retention.push(`${formatNumber(maxBytes)} B`);
+  }
+  if (Number.isFinite(backupCount) && backupCount >= 0) {
+    retention.push(`${formatNumber(backupCount)} backup${backupCount === 1 ? "" : "s"}`);
+  }
+  return retention.length ? `${path} (${retention.join(", ")})` : path;
+}
+
+function renderLastCircuitIncident(incidentLog) {
+  const payload = incidentLog && typeof incidentLog === "object" ? incidentLog : {};
+  const event = payload.last_event && typeof payload.last_event === "object" ? payload.last_event : null;
+  if (!event) {
+    return "No persisted incident";
+  }
+  const rawAction = String(event.action || event.event || "incident").replace(
+    /^connector_order_circuit_/,
+    "",
+  );
+  const action = titleizeLabel(rawAction.replaceAll("_", "-"));
+  const timestamp = formatTimestamp(event.ts || event.created_at || event.generated_at);
+  return timestamp === "-" ? action : `${action} @ ${timestamp}`;
+}
+
+function renderConnectorIncidents(incidents) {
+  const payload = incidents && typeof incidents === "object" ? incidents : {};
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  elements.connectorIncidentsCount.textContent = String(events.length);
+  elements.connectorIncidentsEmpty.style.display = events.length ? "none" : "block";
+  elements.connectorIncidentsList.innerHTML = events
+    .map((item) => {
+      const rawAction = String(item.action || item.event || "incident").replace(
+        /^connector_order_circuit_/,
+        "",
+      );
+      const action = titleizeLabel(rawAction.replaceAll("_", "-"));
+      const timestamp = formatTimestamp(item.ts || item.created_at || item.generated_at);
+      const reason = titleizeLabel(item.reason || item.state || "");
+      const blockCount =
+        item.block_count === null || item.block_count === undefined
+          ? ""
+          : `Blocks ${escapeHtml(formatNumber(item.block_count))}`;
+      const message = String(item.message || item.circuit?.message || "").trim();
+      const meta = [timestamp, reason, blockCount].filter((value) => value && value !== "-");
+      return `
+        <article class="mini-row">
+          <div class="mini-head">
+            <strong>${escapeHtml(action)}</strong>
+            <span>${escapeHtml(timestamp)}</span>
+          </div>
+          ${meta.length ? `<div class="mini-meta">${meta.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>` : ""}
+          ${message ? `<div class="mini-error">${escapeHtml(message)}</div>` : ""}
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderConnectorMessage(connector, orderCircuit) {
+  const circuit = orderCircuit && typeof orderCircuit === "object" ? orderCircuit : {};
+  if (circuit.active && circuit.reset_blocked_reason) {
+    return circuit.reset_blocked_reason;
+  }
+  if (circuit.active && circuit.message) {
+    return circuit.message;
+  }
+  const attention = Array.isArray(connector.attention) ? connector.attention : [];
+  if (attention.length) {
+    return attention[0];
+  }
+  const source = connector.source || "-";
+  const generatedAt = formatTimestamp(connector.generated_at);
+  return `Source: ${source}. Updated: ${generatedAt}.`;
+}
+
+function renderExchangeConnector(connector, status = {}, orderCircuit = {}, incidentLog = {}) {
+  const payload = connector && typeof connector === "object" ? connector : {};
+  const circuit = orderCircuit && typeof orderCircuit === "object" ? orderCircuit : {};
+  const incidents = incidentLog && typeof incidentLog === "object" ? incidentLog : {};
+  const health = String(payload.health || status.connector_health || "unknown").toLowerCase();
+  const exchange = payload.selected_exchange || status.selected_exchange || "-";
+  const backend = payload.connector_backend || "-";
+  elements.connectorHealth.textContent = titleizeLabel(health);
+  elements.connectorHealth.className = `pill ${healthTone(health)}`;
+  elements.connectorState.textContent = titleizeLabel(payload.state || "-");
+  elements.connectorBackend.textContent = `${exchange} / ${backend}`;
+  elements.connectorRateLimit.textContent = renderRateLimit(payload.rate_limit);
+  elements.connectorNetwork.textContent = renderNetwork(payload.network);
+  elements.connectorOrderCircuit.textContent = renderOrderCircuit(circuit);
+  elements.connectorIncidentLog.textContent = renderCircuitIncidentLog(incidents);
+  elements.connectorIncidentLog.title = String(incidents.last_write_error?.message || incidents.path || "");
+  elements.connectorLastIncident.textContent = renderLastCircuitIncident(incidents);
+  elements.connectorLastIncident.title = String(incidents.last_event?.message || "");
+  elements.connectorUpdated.textContent = formatTimestamp(payload.generated_at);
+  elements.connectorLastError.textContent = renderConnectorError(payload.last_error);
+  elements.connectorMessage.textContent = renderConnectorMessage(payload, circuit);
+  if (elements.resetConnectorCircuitButton) {
+    elements.resetConnectorCircuitButton.disabled = !circuit.active;
+  }
 }
 
 function renderExecution(execution) {
@@ -184,6 +436,21 @@ export function renderConfig(config) {
   elements.configTheme.value = config.theme || "";
   elements.configLeverage.value = config.leverage ?? 0;
   elements.configPositionPct.value = config.position_pct ?? 0;
+  elements.configOrderAuditMaxBytes.value = config.order_audit_max_bytes ?? 10485760;
+  elements.configOrderAuditBackupCount.value = config.order_audit_backup_count ?? 1;
+  elements.configIncidentLogMaxBytes.value =
+    config.connector_order_circuit_incident_log_max_bytes ?? 2097152;
+  elements.configIncidentLogBackupCount.value =
+    config.connector_order_circuit_incident_log_backup_count ?? 1;
+  elements.configConnectorStaleSeconds.value =
+    config.operational_connector_snapshot_stale_seconds ?? 120;
+  elements.configExecutionHeartbeatStaleSeconds.value =
+    config.operational_execution_heartbeat_stale_seconds ?? 10;
+  elements.configAccountStaleSeconds.value = config.operational_account_snapshot_stale_seconds ?? 300;
+  elements.configPortfolioStaleSeconds.value =
+    config.operational_portfolio_snapshot_stale_seconds ?? 300;
+  elements.configLiveStartGateEnabled.checked = config.operational_live_start_gate_enabled ?? true;
+  elements.configLiveOrderGateEnabled.checked = config.operational_live_order_gate_enabled ?? true;
   elements.configSymbols.value = Array.isArray(config.symbols) ? config.symbols.join(", ") : "";
   elements.configIntervals.value = Array.isArray(config.intervals) ? config.intervals.join(", ") : "";
   elements.configCredentials.textContent = config.api_credentials_present ? "Keys Present" : "No Keys";
@@ -248,6 +515,14 @@ export function renderDashboardSnapshot(payload) {
   if (payload.status) {
     renderStatus(payload.status);
   }
+  renderPreflight(payload.operational?.preflight || payload.status?.operational?.preflight);
+  renderExchangeConnector(
+    payload.operational?.exchange_connector || payload.status?.exchange_connector,
+    payload.status || {},
+    payload.operational?.connector_order_circuit_breaker || payload.status?.operational?.connector_order_circuit_breaker,
+    payload.operational?.connector_order_circuit_incident_log
+      || payload.status?.operational?.connector_order_circuit_incident_log,
+  );
   if (payload.execution) {
     renderExecution(payload.execution);
   }
@@ -266,4 +541,9 @@ export function renderDashboardSnapshot(payload) {
   if (Array.isArray(payload.logs)) {
     renderLogs(payload.logs);
   }
+  renderConnectorIncidents(
+    payload.connector_order_circuit_incidents
+      || payload.operational?.connector_order_circuit_incidents
+      || {},
+  );
 }

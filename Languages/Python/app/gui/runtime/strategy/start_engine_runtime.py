@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 
 from .start_shared_runtime import (
     _coerce_bool,
@@ -9,6 +10,19 @@ from .start_shared_runtime import (
     _normalize_indicator_keys,
     _normalize_stop_loss,
 )
+
+
+def _callable_accepts_keyword(target, keyword: str) -> bool:  # noqa: ANN001
+    try:
+        signature = inspect.signature(target)
+    except Exception:
+        return True
+    if keyword in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
 
 
 def _prepare_strategy_runtime_start(
@@ -59,6 +73,13 @@ def _prepare_strategy_runtime_start(
             default_leverage=int(self.leverage_spin.value() or 1),
             default_margin_mode=self.margin_mode_combo.currentText() or "Isolated",
         )
+    try:
+        self._sync_service_exchange_connector_snapshot(
+            wrapper=self.shared_binance,
+            source="desktop-start",
+        )
+    except Exception:
+        pass
 
     if not hasattr(self, "strategy_engines"):
         self.strategy_engines = {}
@@ -132,6 +153,13 @@ def _prepare_strategy_runtime_start(
                 )
         except Exception as guard_reconcile_err:
             self.log(f"Guard reconcile warning: {guard_reconcile_err}")
+        try:
+            self._sync_service_exchange_connector_snapshot(
+                wrapper=self.shared_binance,
+                source="desktop-start",
+            )
+        except Exception:
+            pass
 
     return guard_obj, guard_can_open
 
@@ -178,14 +206,29 @@ def _start_strategy_engines(
                     normalize_stop_loss_dict=normalize_stop_loss_dict,
                 )
             )
-            eng = strategy_engine_cls(
-                self.shared_binance,
-                cfg,
-                log_callback=self.log,
-                trade_callback=self._on_trade_signal,
-                loop_interval_override=loop_override_entry,
-                can_open_callback=guard_can_open,
+            engine_kwargs = {
+                "log_callback": self.log,
+                "trade_callback": self._on_trade_signal,
+                "loop_interval_override": loop_override_entry,
+                "can_open_callback": guard_can_open,
+            }
+            circuit_callback = getattr(
+                self,
+                "_sync_service_connector_order_circuit_breaker_snapshot",
+                None,
             )
+            if callable(circuit_callback) and _callable_accepts_keyword(
+                strategy_engine_cls,
+                "connector_order_circuit_breaker_callback",
+            ):
+                engine_kwargs["connector_order_circuit_breaker_callback"] = circuit_callback
+            operational_callback = getattr(self, "_get_service_operational_snapshot", None)
+            if callable(operational_callback) and _callable_accepts_keyword(
+                strategy_engine_cls,
+                "operational_snapshot_callback",
+            ):
+                engine_kwargs["operational_snapshot_callback"] = operational_callback
+            eng = strategy_engine_cls(self.shared_binance, cfg, **engine_kwargs)
             if guard_obj and hasattr(eng, "set_guard"):
                 try:
                     eng.set_guard(guard_obj)

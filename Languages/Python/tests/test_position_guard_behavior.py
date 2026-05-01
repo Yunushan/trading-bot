@@ -49,6 +49,19 @@ class _AbortGuardBinance(_FakeStrategyBinance):
             {"symbol": "BTCUSDT", "positionAmt": "-1", "positionSide": "BOTH"},
         ]
         self.place_calls = 0
+        self.connector_health = {
+            "health": "ok",
+            "state": "ready",
+            "rate_limit": {"active": False, "seconds_until_unban": 0.0},
+            "network": {"offline": False, "offline_hits": 0},
+        }
+        self.operational_snapshot = {}
+
+    def get_connector_health_snapshot(self):
+        return dict(self.connector_health)
+
+    def get_operational_snapshot(self):
+        return dict(self.operational_snapshot)
 
     def list_open_futures_positions(self, max_age=0.0, force_refresh=False):  # noqa: ARG002
         return list(self.positions)
@@ -215,6 +228,50 @@ class PositionGuardBehaviorTests(unittest.TestCase):
         self.assertEqual([], guard.snapshot_pending_attempts())
         self.assertEqual({}, guard.active)
 
+    def test_clear_symbol_side_interval_filter_preserves_other_intervals(self):
+        guard = IntervalPositionGuard()
+        first_context = "1m:BUY:rsi|slot0"
+        second_context = "5m:BUY:ema|slot0"
+
+        guard.end_open("BTCUSDT", "1m", "BUY", True, context=first_context)
+        guard.end_open("BTCUSDT", "5m", "BUY", True, context=second_context)
+        guard.begin_open("BTCUSDT", "1m", "BUY", context=first_context)
+        guard.begin_open("BTCUSDT", "5m", "BUY", context=second_context)
+
+        guard.clear_symbol_side("BTCUSDT", "BUY", intervals=["1m"])
+
+        self.assertNotIn(("BTCUSDT", "1m", "BUY"), guard.ledger)
+        self.assertIn(second_context, guard.ledger.get(("BTCUSDT", "5m", "BUY"), {}))
+        pending_contexts = {item["context"] for item in guard.snapshot_pending_attempts()}
+        self.assertNotIn(first_context, pending_contexts)
+        self.assertIn(second_context, pending_contexts)
+        self.assertEqual({"BUY": 1, "SELL": 0}, guard.active[("BTCUSDT", "5m")])
+
+    def test_opposite_side_is_blocked_until_active_context_closes(self):
+        guard = IntervalPositionGuard()
+        context_key = "1m:BUY:rsi|slot0"
+
+        guard.end_open("BTCUSDT", "1m", "BUY", True, context=context_key)
+
+        self.assertFalse(guard.can_open("BTCUSDT", "1m", "SELL", "1m:SELL:rsi|slot0"))
+        self.assertFalse(guard.can_open("BTCUSDT", "1m", "SELL"))
+
+        guard.mark_closed("BTCUSDT", "1m", "BUY", context=context_key)
+
+        self.assertTrue(guard.can_open("BTCUSDT", "1m", "SELL", "1m:SELL:rsi|slot0"))
+
+    def test_strict_symbol_side_blocks_same_side_stacking_across_intervals(self):
+        relaxed_guard = IntervalPositionGuard(strict_symbol_side=False)
+        strict_guard = IntervalPositionGuard(strict_symbol_side=True)
+        first_context = "1m:BUY:rsi|slot0"
+        second_context = "5m:BUY:ema|slot0"
+
+        relaxed_guard.end_open("BTCUSDT", "1m", "BUY", True, context=first_context)
+        strict_guard.end_open("BTCUSDT", "1m", "BUY", True, context=first_context)
+
+        self.assertTrue(relaxed_guard.can_open("BTCUSDT", "5m", "BUY", second_context))
+        self.assertFalse(strict_guard.can_open("BTCUSDT", "5m", "BUY", second_context))
+
     def test_submit_order_releases_pending_guard_claim_on_exchange_abort(self):
         wrapper = _AbortGuardBinance()
         guard = IntervalPositionGuard()
@@ -262,3 +319,185 @@ class PositionGuardBehaviorTests(unittest.TestCase):
 
         wrapper.positions = []
         self.assertTrue(guard.can_open("BTCUSDT", "1m", "BUY", "1m:BUY:rsi|slot0"))
+
+    def test_submit_order_blocks_rate_limited_connector_before_exchange_submit(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.connector_health = {
+            "health": "warning",
+            "state": "rate_limited",
+            "rate_limit": {"active": True, "seconds_until_unban": 9.0},
+            "network": {"offline": False, "offline_hits": 0},
+            "last_error": {
+                "category": "rate_limited",
+                "message": "Too many requests.",
+                "retryable": True,
+            },
+        }
+        logs: list[str] = []
+        guard = IntervalPositionGuard()
+        guard.attach_wrapper(wrapper)
+        engine = StrategyEngine(
+            wrapper,
+            {
+                **build_default_config(),
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "account_type": "FUTURES",
+                "side": "BOTH",
+                "leverage": 5,
+                "position_pct": 25,
+                "position_pct_units": "percent",
+                "allow_opposite_positions": False,
+            },
+            log_callback=logs.append,
+            can_open_callback=guard.can_open,
+        )
+        engine.set_guard(guard)
+
+        _order_res, order_success, submit_aborted = engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            flip_active=False,
+            context_key="1m:BUY:rsi|slot0",
+            signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"),
+            key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0,
+            order_batch_total=1,
+            desired_ps=None,
+            qty_est=1.0,
+            reduce_only=False,
+            last_price=100.0,
+            lev=5,
+            abort_guard=lambda: None,
+        )
+
+        self.assertTrue(submit_aborted)
+        self.assertFalse(order_success)
+        self.assertEqual(0, wrapper.place_calls)
+        self.assertEqual([], guard.snapshot_pending_attempts())
+        joined_logs = "\n".join(str(item) for item in logs)
+        self.assertIn("futures order blocked by connector health", joined_logs)
+        self.assertIn("rate limited for 9s", joined_logs)
+
+    def test_submit_order_blocks_live_when_operational_inputs_are_stale(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.operational_snapshot = {
+            "health": "warning",
+            "freshness": {
+                "exchange_connector": {"stale": True},
+                "account": {"stale": True},
+                "portfolio": {"stale": False},
+            },
+        }
+        logs: list[str] = []
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+        engine.log = logs.append
+
+        order_res, order_success, submit_aborted = engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            flip_active=False,
+            context_key="1m:BUY:rsi|slot0",
+            signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"),
+            key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0,
+            order_batch_total=1,
+            desired_ps=None,
+            qty_est=1.0,
+            reduce_only=False,
+            last_price=100.0,
+            lev=5,
+            abort_guard=lambda: None,
+        )
+
+        self.assertTrue(submit_aborted)
+        self.assertFalse(order_success)
+        self.assertEqual(0, wrapper.place_calls)
+        self.assertIn("operational safety gate", str(order_res.get("error")))
+        joined_logs = "\n".join(str(item) for item in logs)
+        self.assertIn("futures order blocked by operational safety", joined_logs)
+        self.assertIn("exchange connector", joined_logs)
+        self.assertIn("account", joined_logs)
+
+    def test_submit_order_warns_but_allows_demo_when_operational_inputs_are_stale(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.operational_snapshot = {
+            "health": "warning",
+            "freshness": {
+                "exchange_connector": {"stale": True},
+                "account": {"stale": False},
+                "portfolio": {"stale": True},
+            },
+        }
+        logs: list[str] = []
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Demo/Testnet"
+        engine.log = logs.append
+
+        _order_res, order_success, submit_aborted = engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            flip_active=False,
+            context_key="1m:BUY:rsi|slot0",
+            signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"),
+            key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0,
+            order_batch_total=1,
+            desired_ps=None,
+            qty_est=1.0,
+            reduce_only=False,
+            last_price=100.0,
+            lev=5,
+            abort_guard=lambda: None,
+        )
+
+        self.assertFalse(submit_aborted)
+        self.assertTrue(order_success)
+        self.assertEqual(1, wrapper.place_calls)
+        joined_logs = "\n".join(str(item) for item in logs)
+        self.assertIn("futures order operational safety warning", joined_logs)
+        self.assertIn("demo/test mode order remains allowed", joined_logs)
+
+    def test_submit_order_warns_but_allows_live_when_operational_order_gate_is_disabled(self):
+        wrapper = _AbortGuardBinance()
+        wrapper.positions = []
+        wrapper.operational_snapshot = {
+            "health": "warning",
+            "freshness": {"exchange_connector": {"stale": True}},
+        }
+        logs: list[str] = []
+        engine = _build_engine(wrapper=wrapper)
+        engine.config["mode"] = "Live"
+        engine.config["operational_live_order_gate_enabled"] = False
+        engine.log = logs.append
+
+        _order_res, order_success, submit_aborted = engine._submit_futures_signal_order(
+            cw={"symbol": "BTCUSDT", "interval": "1m"},
+            side="BUY",
+            flip_active=False,
+            context_key="1m:BUY:rsi|slot0",
+            signature=("rsi", "slot0"),
+            key_bar=("BTCUSDT", "1m", "BUY"),
+            key_dup=("BTCUSDT", "1m", "BUY"),
+            current_batch_index=0,
+            order_batch_total=1,
+            desired_ps=None,
+            qty_est=1.0,
+            reduce_only=False,
+            last_price=100.0,
+            lev=5,
+            abort_guard=lambda: None,
+        )
+
+        self.assertFalse(submit_aborted)
+        self.assertTrue(order_success)
+        self.assertEqual(1, wrapper.place_calls)
+        joined_logs = "\n".join(str(item) for item in logs)
+        self.assertIn("operational live order safety gate is disabled", joined_logs)

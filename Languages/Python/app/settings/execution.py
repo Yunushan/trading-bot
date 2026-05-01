@@ -32,6 +32,20 @@ class ExecutionSettings:
     live_trading_max_position_pct: float = 10.0
     order_audit_enabled: bool = True
     order_audit_log_path: str = ""
+    order_audit_max_bytes: int = 10 * 1024 * 1024
+    order_audit_backup_count: int = 1
+    connector_order_circuit_incident_log_path: str = ""
+    connector_order_circuit_incident_log_max_bytes: int = 2 * 1024 * 1024
+    connector_order_circuit_incident_log_backup_count: int = 1
+    operational_connector_snapshot_stale_seconds: float = 120.0
+    operational_execution_heartbeat_stale_seconds: float = 10.0
+    operational_account_snapshot_stale_seconds: float = 300.0
+    operational_portfolio_snapshot_stale_seconds: float = 300.0
+    operational_live_start_gate_enabled: bool = True
+    operational_live_order_gate_enabled: bool = True
+    connector_order_block_circuit_breaker_enabled: bool = True
+    connector_order_block_pause_threshold: int = 2
+    connector_order_block_window_seconds: float = 60.0
 
     def to_config_dict(self) -> dict[str, object]:
         return {
@@ -61,4 +75,20 @@ class ExecutionSettings:
             "live_trading_max_position_pct": self.live_trading_max_position_pct,
             "order_audit_enabled": self.order_audit_enabled,
             "order_audit_log_path": self.order_audit_log_path,
+            "order_audit_max_bytes": self.order_audit_max_bytes,
+            "order_audit_backup_count": self.order_audit_backup_count,
+            "connector_order_circuit_incident_log_path": self.connector_order_circuit_incident_log_path,
+            "connector_order_circuit_incident_log_max_bytes": self.connector_order_circuit_incident_log_max_bytes,
+            "connector_order_circuit_incident_log_backup_count": (
+                self.connector_order_circuit_incident_log_backup_count
+            ),
+            "operational_connector_snapshot_stale_seconds": self.operational_connector_snapshot_stale_seconds,
+            "operational_execution_heartbeat_stale_seconds": self.operational_execution_heartbeat_stale_seconds,
+            "operational_account_snapshot_stale_seconds": self.operational_account_snapshot_stale_seconds,
+            "operational_portfolio_snapshot_stale_seconds": self.operational_portfolio_snapshot_stale_seconds,
+            "operational_live_start_gate_enabled": self.operational_live_start_gate_enabled,
+            "operational_live_order_gate_enabled": self.operational_live_order_gate_enabled,
+            "connector_order_block_circuit_breaker_enabled": self.connector_order_block_circuit_breaker_enabled,
+            "connector_order_block_pause_threshold": self.connector_order_block_pause_threshold,
+            "connector_order_block_window_seconds": self.connector_order_block_window_seconds,
         }

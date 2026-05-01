@@ -70,8 +70,56 @@
           <div><dt>Engines</dt><dd id="status-engines">-</dd></div>
           <div><dt>Mode / Account</dt><dd id="status-account">-</dd></div>
           <div><dt>Exchange</dt><dd id="status-exchange">-</dd></div>
+          <div><dt>Operational</dt><dd id="status-operational" class="pill muted">-</dd></div>
         </dl>
         <p id="status-message" class="hint compact-hint">-</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Preflight</h2>
+          <span id="preflight-state" class="pill muted">Unknown</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Start</dt><dd id="preflight-start">-</dd></div>
+          <div><dt>Orders</dt><dd id="preflight-orders">-</dd></div>
+          <div><dt>Mode</dt><dd id="preflight-mode">-</dd></div>
+          <div><dt>Critical</dt><dd id="preflight-critical">-</dd></div>
+        </dl>
+        <div class="actions">
+          <button id="preflight-recheck-button" type="button" class="secondary">Recheck Preflight</button>
+        </div>
+        <p id="preflight-message" class="hint compact-hint">-</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Exchange Connector</h2>
+          <span id="connector-health" class="pill muted">Unknown</span>
+        </div>
+        <dl class="stats">
+          <div><dt>State</dt><dd id="connector-state">-</dd></div>
+          <div><dt>Backend</dt><dd id="connector-backend">-</dd></div>
+          <div><dt>Rate Limit</dt><dd id="connector-rate-limit">-</dd></div>
+          <div><dt>Network</dt><dd id="connector-network">-</dd></div>
+          <div><dt>Order Circuit</dt><dd id="connector-order-circuit">-</dd></div>
+          <div><dt>Incident Log</dt><dd id="connector-incident-log">-</dd></div>
+          <div><dt>Last Incident</dt><dd id="connector-last-incident">-</dd></div>
+          <div><dt>Updated</dt><dd id="connector-updated">-</dd></div>
+          <div><dt>Last Error</dt><dd id="connector-last-error">-</dd></div>
+        </dl>
+        <div class="actions">
+          <button id="reset-connector-circuit-button" type="button" class="secondary">Reset Order Circuit</button>
+        </div>
+        <p id="connector-message" class="hint compact-hint">No connector health snapshot received yet.</p>
+        <div class="connector-incidents">
+          <div class="detail-head">
+            <h3>Recent Incidents</h3>
+            <span class="pill muted" id="connector-incidents-count">0</span>
+          </div>
+          <div id="connector-incidents-empty" class="empty-state compact-empty">No persisted incidents found.</div>
+          <div id="connector-incidents-list" class="mini-list"></div>
+        </div>
       </section>
 
       <section class="card">
@@ -271,6 +319,46 @@
           <label class="field">
             <span>Position %</span>
             <input id="config-position-pct" type="number" min="0" step="0.01">
+          </label>
+          <label class="field">
+            <span>Order Audit Max Bytes</span>
+            <input id="config-order-audit-max-bytes" type="number" min="1" step="1">
+          </label>
+          <label class="field">
+            <span>Order Audit Backups</span>
+            <input id="config-order-audit-backup-count" type="number" min="0" max="100" step="1">
+          </label>
+          <label class="field">
+            <span>Incident Log Max Bytes</span>
+            <input id="config-incident-log-max-bytes" type="number" min="1" step="1">
+          </label>
+          <label class="field">
+            <span>Incident Log Backups</span>
+            <input id="config-incident-log-backup-count" type="number" min="0" max="100" step="1">
+          </label>
+          <label class="field">
+            <span>Connector Stale Seconds</span>
+            <input id="config-connector-stale-seconds" type="number" min="1" max="86400" step="1">
+          </label>
+          <label class="field">
+            <span>Heartbeat Stale Seconds</span>
+            <input id="config-execution-heartbeat-stale-seconds" type="number" min="1" max="86400" step="1">
+          </label>
+          <label class="field">
+            <span>Account Stale Seconds</span>
+            <input id="config-account-stale-seconds" type="number" min="1" max="86400" step="1">
+          </label>
+          <label class="field">
+            <span>Portfolio Stale Seconds</span>
+            <input id="config-portfolio-stale-seconds" type="number" min="1" max="86400" step="1">
+          </label>
+          <label class="check-row field-span">
+            <input id="config-live-start-gate-enabled" type="checkbox">
+            <span>Live start safety gate</span>
+          </label>
+          <label class="check-row field-span">
+            <input id="config-live-order-gate-enabled" type="checkbox">
+            <span>Live order safety gate</span>
           </label>
           <label class="field field-span">
             <span>Symbols</span>

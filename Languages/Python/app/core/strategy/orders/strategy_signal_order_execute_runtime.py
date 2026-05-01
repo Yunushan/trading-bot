@@ -3,11 +3,13 @@ from __future__ import annotations
 import time
 
 try:
+    from . import strategy_order_error_logging
     from . import strategy_signal_order_guard_runtime
     from . import strategy_signal_order_result_runtime
     from . import strategy_signal_order_sizing_runtime
     from . import strategy_signal_order_submit_runtime
 except ImportError:  # pragma: no cover - standalone execution fallback
+    import strategy_order_error_logging  # type: ignore[no-redef]
     import strategy_signal_order_guard_runtime  # type: ignore[no-redef]
     import strategy_signal_order_result_runtime  # type: ignore[no-redef]
     import strategy_signal_order_sizing_runtime  # type: ignore[no-redef]
@@ -143,6 +145,60 @@ def _execute_signal_order(
             else side.lower()
         )
 
+        connector_allowed, connector_message, connector_level, connector_snapshot = (
+            strategy_signal_order_submit_runtime._evaluate_connector_order_guard(self.binance)
+        )
+        configured_account_type = str(
+            cw.get("account_type")
+            or self.config.get("account_type")
+            or getattr(self.binance, "account_type", "")
+            or ""
+        ).upper()
+        if not connector_allowed:
+            strategy_order_error_logging.log_order_error(
+                self,
+                "signal order blocked by connector health",
+                cw=cw,
+                side=side,
+                account_type=configured_account_type,
+                extra={
+                    "context_key": context_key,
+                    "signature": signature,
+                    "connector_health": connector_snapshot.get("health"),
+                    "connector_state": connector_snapshot.get("state"),
+                    "connector_message": connector_message,
+                },
+                level=connector_level,
+            )
+            recorder = getattr(self, "_record_connector_order_block", None)
+            if callable(recorder):
+                recorder(
+                    cw=cw,
+                    side=side,
+                    account_type=configured_account_type,
+                    connector_message=connector_message,
+                    connector_snapshot=connector_snapshot,
+                    context_key=context_key,
+                    signature=signature,
+                )
+            return
+        if connector_message:
+            strategy_order_error_logging.log_order_error(
+                self,
+                "signal order connector health warning",
+                cw=cw,
+                side=side,
+                account_type=configured_account_type,
+                extra={
+                    "context_key": context_key,
+                    "signature": signature,
+                    "connector_health": connector_snapshot.get("health"),
+                    "connector_state": connector_snapshot.get("state"),
+                    "connector_message": connector_message,
+                },
+                level=connector_level,
+            )
+
         indicator_tokens_for_order = type(self)._normalize_indicator_token_list(signature)
         if not indicator_tokens_for_order:
             indicator_tokens_for_order = type(self)._normalize_indicator_token_list(trigger_labels)
@@ -235,6 +291,10 @@ def _execute_signal_order(
                 self._abort_signal_order_guard(guard_key_symbol, signature_guard_key)
                 guard_claimed = False
 
+        account_type = None
+        pct = None
+        free_usdt = None
+        price = last_price
         try:
             slot_key_tuple = None
             lev = None
@@ -390,7 +450,25 @@ def _execute_signal_order(
                 leverage_used=leverage_used,
             )
         except Exception as e:
-            self.log(f"{cw['symbol']}@{cw['interval']} Order failed: {e}")
+            strategy_order_error_logging.log_order_error(
+                self,
+                "signal order failed",
+                cw=cw,
+                side=side,
+                account_type=account_type,
+                exc=e,
+                extra={
+                    "context_key": context_key,
+                    "signature": signature,
+                    "price": price,
+                    "last_price": last_price,
+                    "position_pct": pct,
+                    "free_usdt": free_usdt,
+                    "guard_claimed": guard_claimed,
+                    "current_bar": current_bar_marker,
+                },
+                include_traceback=True,
+            )
             if guard_claimed:
                 self._abort_signal_order_guard(guard_key_symbol, signature_guard_key)
     finally:

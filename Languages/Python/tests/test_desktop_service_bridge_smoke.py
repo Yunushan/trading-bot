@@ -14,9 +14,33 @@ from app.desktop import service_bridge
 class _FakeDesktopClient:
     def __init__(self, config=None):
         self.config = config
+        self.exchange_connector_snapshot = None
+        self.connector_order_circuit_breaker_snapshot = None
 
     def replace_config(self, config):
         self.config = config
+
+    def set_exchange_connector_snapshot(self, snapshot=None, **kwargs):
+        self.exchange_connector_snapshot = dict(snapshot or {})
+        self.exchange_connector_snapshot.update(kwargs)
+        return self.exchange_connector_snapshot
+
+    def set_connector_order_circuit_breaker_snapshot(self, snapshot=None, **kwargs):
+        self.connector_order_circuit_breaker_snapshot = dict(snapshot or {})
+        self.connector_order_circuit_breaker_snapshot.update(kwargs)
+        return self.connector_order_circuit_breaker_snapshot
+
+    def reset_connector_order_circuit_breaker(self, *, source="desktop", force=False):
+        self.connector_order_circuit_breaker_snapshot = {
+            "active": False,
+            "state": "closed",
+            "source": source,
+            "force": force,
+        }
+        return self.connector_order_circuit_breaker_snapshot
+
+    def get_connector_order_circuit_breaker_snapshot(self):
+        return self.connector_order_circuit_breaker_snapshot
 
 
 class DesktopServiceBridgeSmokeTests(unittest.TestCase):
@@ -42,6 +66,9 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
             "_sync_service_runtime_snapshot",
             "_sync_service_account_snapshot",
             "_sync_service_portfolio_snapshot",
+            "_sync_service_exchange_connector_snapshot",
+            "_sync_service_connector_order_circuit_breaker_snapshot",
+            "_reset_service_connector_order_circuit_breaker",
             "_service_request_start",
             "_service_request_stop",
             "_service_mark_start_failed",
@@ -51,6 +78,9 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
             "_get_service_status_snapshot",
             "_get_service_config_summary",
             "_get_service_portfolio_snapshot",
+            "_get_service_exchange_connector_snapshot",
+            "_get_service_operational_snapshot",
+            "_get_service_connector_order_circuit_breaker_snapshot",
             "_get_service_recent_logs",
             "_maybe_start_desktop_service_api_host",
             "_shutdown_desktop_service_api_host",

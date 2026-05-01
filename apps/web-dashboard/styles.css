@@ -319,6 +319,10 @@ button:disabled {
   margin-top: 16px;
 }
 
+.connector-incidents {
+  margin-top: 18px;
+}
+
 .empty-state {
   margin-top: 18px;
   padding: 16px;

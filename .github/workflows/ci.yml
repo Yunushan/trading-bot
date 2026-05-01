@@ -97,13 +97,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m compileall apps/desktop-pyqt/main.py apps/service-api/main.py Languages/Python/app Languages/Python/trading_core Languages/Python/main.py tools
+          python -m compileall apps/desktop-pyqt/main.py apps/service-api/main.py Languages/Python/app Languages/Python/trading_core Languages/Python/main.py Languages/Python/tools tools
 
       - name: Lint Python workspace
         shell: bash
         run: |
           set -euo pipefail
           python -m ruff check --config Languages/Python/pyproject.toml Languages/Python
+
+      - name: Check Python dependency metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python Languages/Python/tools/check_dependency_metadata.py
 
       - name: Type-check configured Python targets
         shell: bash
@@ -117,6 +123,13 @@ jobs:
         run: |
           set -euo pipefail
           python apps/service-api/main.py --healthcheck
+
+      - name: Run manual desktop/service smoke
+        shell: bash
+        working-directory: Languages/Python
+        run: |
+          set -euo pipefail
+          python tools/manual_smoke.py --json
 
       - name: Run Python smoke tests
         shell: bash

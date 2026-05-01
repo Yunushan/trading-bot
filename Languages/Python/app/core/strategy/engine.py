@@ -171,6 +171,9 @@ class StrategyEngine:
     _BAR_GLOBAL_SIGNATURES: dict[tuple[str, str, str], dict[str, object]] = {}
     _SYMBOL_GUARD_LOCK = threading.Lock()
     _SYMBOL_ORDER_STATE: dict[tuple[str, str, str], dict[str, object]] = {}
+    _CONNECTOR_ORDER_BLOCK_LOCK = threading.Lock()
+    _CONNECTOR_ORDER_BLOCK_EVENTS: list[dict[str, object]] = []
+    _CONNECTOR_ORDER_CIRCUIT_OPEN = False
 
     @classmethod
     def concurrent_limit(cls, job_count: int | None = None) -> int:
@@ -203,7 +206,17 @@ class StrategyEngine:
         with cls._ORDER_THROTTLE_LOCK:
             cls._ORDER_LAST_TS = max(cls._ORDER_LAST_TS, time.time())
 
-    def __init__(self, binance_wrapper, config, log_callback, trade_callback=None, loop_interval_override=None, can_open_callback=None):
+    def __init__(
+        self,
+        binance_wrapper,
+        config,
+        log_callback,
+        trade_callback=None,
+        loop_interval_override=None,
+        can_open_callback=None,
+        connector_order_circuit_breaker_callback=None,
+        operational_snapshot_callback=None,
+    ):
         self.config = copy.deepcopy(config)
         self.config.setdefault("indicator_flip_cooldown_bars", 1)
         self.config.setdefault("indicator_flip_cooldown_seconds", 0.0)
@@ -219,11 +232,20 @@ class StrategyEngine:
         self.config.setdefault("allow_close_ignoring_hold", False)
         self.config.setdefault("futures_flat_purge_grace_seconds", 12.0)
         self.config.setdefault("futures_flat_purge_miss_threshold", 2)
+        self.config.setdefault("connector_order_block_circuit_breaker_enabled", True)
+        self.config.setdefault("connector_order_block_pause_threshold", 2)
+        self.config.setdefault("connector_order_block_window_seconds", 60.0)
         self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
         self.binance = binance_wrapper
         self.log = log_callback
         self.trade_cb = trade_callback
         self.loop_override = loop_interval_override
+        self.connector_order_circuit_breaker_callback = (
+            connector_order_circuit_breaker_callback if callable(connector_order_circuit_breaker_callback) else None
+        )
+        self.operational_snapshot_callback = (
+            operational_snapshot_callback if callable(operational_snapshot_callback) else None
+        )
         self._leg_ledger = {}
         self._last_order_time = {}  # (symbol, interval, side)->{'qty': float, 'timestamp': float}
         self._last_bar_key = set()  # prevent multi entries within same bar per (symbol, interval, side)

@@ -18,6 +18,7 @@ from .http_diagnostic_runtime import (
     _sync_futures_time_offset,
     _testnet_auth_hint,
     futures_api_ok,
+    get_connector_health_snapshot,
     spot_api_ok,
 )
 from .http_request_runtime import (
@@ -43,6 +44,7 @@ def bind_binance_http_runtime(wrapper_cls) -> None:
     wrapper_cls._http_signed_futures_list = _http_signed_futures_list
     wrapper_cls._record_futures_http_error = _record_futures_http_error
     wrapper_cls._clear_futures_http_error = _clear_futures_http_error
+    wrapper_cls.get_connector_health_snapshot = get_connector_health_snapshot
     wrapper_cls._diagnose_testnet_key_scope = _diagnose_testnet_key_scope
     wrapper_cls._probe_testnet_key_acceptance = _probe_testnet_key_acceptance
     wrapper_cls._testnet_auth_hint = _testnet_auth_hint

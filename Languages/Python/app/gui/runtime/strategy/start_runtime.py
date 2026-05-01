@@ -31,6 +31,7 @@ def start_strategy(
         return
     try:
         strategy_engine_cls.resume_trading()
+        self._reset_service_connector_order_circuit_breaker(source="desktop-start")
     except Exception:
         pass
 

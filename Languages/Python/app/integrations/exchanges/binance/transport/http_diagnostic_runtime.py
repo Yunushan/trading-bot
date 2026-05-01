@@ -4,6 +4,8 @@ import time
 
 import requests
 
+from app.security.redaction import redact_text, redact_value
+
 from .helpers import _requests_timeout
 from .http_base_runtime import _is_testnet_mode
 
@@ -15,6 +17,13 @@ def _record_futures_http_error(
     status_code: int | None = None,
     code: int | None = None,
     message: str | None = None,
+    category: str | None = None,
+    retryable: bool | None = None,
+    attempt: int | None = None,
+    max_attempts: int | None = None,
+    method: str | None = None,
+    retry_after: float | None = None,
+    ban_until: float | None = None,
 ) -> None:
     try:
         base_url = None
@@ -28,7 +37,14 @@ def _record_futures_http_error(
             "base": base_url,
             "status_code": int(status_code) if status_code is not None else None,
             "code": int(code) if code is not None else None,
-            "message": str(message or ""),
+            "message": redact_text(message or ""),
+            "category": str(category or "exchange_http"),
+            "retryable": bool(retryable) if retryable is not None else None,
+            "attempt": int(attempt) if attempt is not None else None,
+            "max_attempts": int(max_attempts) if max_attempts is not None else None,
+            "method": str(method or "").upper() or None,
+            "retry_after": float(retry_after) if retry_after is not None else None,
+            "ban_until": float(ban_until) if ban_until is not None else None,
         }
     except Exception:
         pass
@@ -39,6 +55,94 @@ def _clear_futures_http_error(self) -> None:
         self._last_futures_http_error = None
     except Exception:
         pass
+
+
+def get_connector_health_snapshot(self) -> dict[str, object]:
+    now = time.time()
+    last_error_raw = getattr(self, "_last_futures_http_error", None)
+    last_error = redact_value(dict(last_error_raw)) if isinstance(last_error_raw, dict) else None
+    order_audit_status = None
+    order_audit_getter = getattr(self, "get_order_audit_status", None)
+    if callable(order_audit_getter):
+        try:
+            status = order_audit_getter()
+            order_audit_status = status if isinstance(status, dict) else None
+        except Exception:
+            order_audit_status = None
+    try:
+        seconds_until_unban = max(0.0, float(self._seconds_until_unban()))
+    except Exception:
+        seconds_until_unban = 0.0
+    try:
+        network_offline = bool(getattr(self, "_network_offline", False))
+    except Exception:
+        network_offline = False
+    try:
+        network_offline_since = float(getattr(self, "_network_offline_since", 0.0) or 0.0) or None
+    except Exception:
+        network_offline_since = None
+    try:
+        network_offline_hits = max(0, int(getattr(self, "_network_offline_hits", 0) or 0))
+    except Exception:
+        network_offline_hits = 0
+
+    category = ""
+    retryable = None
+    if isinstance(last_error, dict):
+        category = str(last_error.get("category") or "").strip().lower()
+        retryable = last_error.get("retryable")
+
+    credentials_present = bool(getattr(self, "api_key", None) and getattr(self, "api_secret", None))
+    health = "ok" if credentials_present else "unknown"
+    state = "ready" if credentials_present else "missing_credentials"
+    if network_offline:
+        health = "error"
+        state = "network_offline"
+    elif seconds_until_unban > 0.0:
+        health = "warning"
+        state = "rate_limited"
+    elif isinstance(last_error, dict):
+        if category == "auth":
+            health = "error"
+            state = "auth_error"
+        elif category == "rate_limited":
+            health = "warning"
+            state = "rate_limited"
+        elif retryable is True:
+            health = "warning"
+            state = category or "exchange_warning"
+        else:
+            health = "error"
+            state = category or "exchange_error"
+    if isinstance(order_audit_status, dict) and order_audit_status.get("last_write_error") and health != "error":
+        health = "warning"
+        if state in {"ready", "missing_credentials", "unknown"}:
+            state = "order_audit_write_failed"
+
+    payload = {
+        "health": health,
+        "state": state,
+        "generated_at": now,
+        "source": "binance-wrapper",
+        "selected_exchange": "Binance",
+        "connector_backend": str(getattr(self, "_connector_backend", "") or "Unknown"),
+        "account_type": str(getattr(self, "account_type", "") or "Unknown"),
+        "mode": str(getattr(self, "mode", "") or "Unknown"),
+        "rate_limit": {
+            "active": seconds_until_unban > 0.0,
+            "seconds_until_unban": seconds_until_unban,
+            "ban_until": (now + seconds_until_unban) if seconds_until_unban > 0.0 else None,
+        },
+        "network": {
+            "offline": network_offline,
+            "offline_since": network_offline_since,
+            "offline_hits": network_offline_hits,
+        },
+        "last_error": last_error,
+    }
+    if isinstance(order_audit_status, dict):
+        payload["order_audit"] = order_audit_status
+    return redact_value(payload)
 
 
 def _diagnose_testnet_key_scope(self) -> str | None:
@@ -283,7 +387,7 @@ def futures_api_ok(self) -> tuple[bool, str | None]:
         _ = self._futures_call("futures_account_balance", allow_recv=True)
         return True, None
     except Exception as exc:
-        return False, str(exc)
+        return False, redact_text(exc)
 
 
 def spot_api_ok(self) -> tuple[bool, str | None]:
@@ -291,4 +395,4 @@ def spot_api_ok(self) -> tuple[bool, str | None]:
         _ = self.client.get_account()
         return True, None
     except Exception as exc:
-        return False, str(exc)
+        return False, redact_text(exc)

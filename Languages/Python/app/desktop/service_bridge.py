@@ -27,6 +27,15 @@ def bind_main_window_desktop_service_bridge(
     main_window_cls._sync_service_runtime_snapshot = service_bridge_snapshot_runtime._sync_service_runtime_snapshot
     main_window_cls._sync_service_account_snapshot = service_bridge_snapshot_runtime._sync_service_account_snapshot
     main_window_cls._sync_service_portfolio_snapshot = service_bridge_snapshot_runtime._sync_service_portfolio_snapshot
+    main_window_cls._sync_service_exchange_connector_snapshot = (
+        service_bridge_snapshot_runtime._sync_service_exchange_connector_snapshot
+    )
+    main_window_cls._sync_service_connector_order_circuit_breaker_snapshot = (
+        service_bridge_snapshot_runtime._sync_service_connector_order_circuit_breaker_snapshot
+    )
+    main_window_cls._reset_service_connector_order_circuit_breaker = (
+        service_bridge_snapshot_runtime._reset_service_connector_order_circuit_breaker
+    )
     main_window_cls._service_request_start = service_bridge_control_runtime._service_request_start
     main_window_cls._service_request_stop = service_bridge_control_runtime._service_request_stop
     main_window_cls._service_mark_start_failed = service_bridge_control_runtime._service_mark_start_failed
@@ -36,6 +45,13 @@ def bind_main_window_desktop_service_bridge(
     main_window_cls._get_service_status_snapshot = service_bridge_snapshot_runtime._get_service_status_snapshot
     main_window_cls._get_service_config_summary = service_bridge_snapshot_runtime._get_service_config_summary
     main_window_cls._get_service_portfolio_snapshot = service_bridge_snapshot_runtime._get_service_portfolio_snapshot
+    main_window_cls._get_service_exchange_connector_snapshot = (
+        service_bridge_snapshot_runtime._get_service_exchange_connector_snapshot
+    )
+    main_window_cls._get_service_operational_snapshot = service_bridge_snapshot_runtime._get_service_operational_snapshot
+    main_window_cls._get_service_connector_order_circuit_breaker_snapshot = (
+        service_bridge_snapshot_runtime._get_service_connector_order_circuit_breaker_snapshot
+    )
     main_window_cls._get_service_recent_logs = service_bridge_snapshot_runtime._get_service_recent_logs
     main_window_cls._maybe_start_desktop_service_api_host = service_bridge_host_runtime._maybe_start_desktop_service_api_host
     main_window_cls._shutdown_desktop_service_api_host = service_bridge_host_runtime._shutdown_desktop_service_api_host
@@ -51,6 +67,7 @@ def _initialize_desktop_service_bridge(self) -> None:
     service_bridge_snapshot_runtime._sync_service_runtime_snapshot(self, active=False, source="desktop-bootstrap")
     service_bridge_snapshot_runtime._sync_service_account_snapshot(self, source="desktop-bootstrap")
     service_bridge_snapshot_runtime._sync_service_portfolio_snapshot(self, source="desktop-bootstrap")
+    service_bridge_snapshot_runtime._sync_service_exchange_connector_snapshot(self, source="desktop-bootstrap")
     try:
         self._desktop_service_api_host_status = None
     except Exception:

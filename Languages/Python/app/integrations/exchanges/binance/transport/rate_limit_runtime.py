@@ -178,6 +178,51 @@ def _handle_potential_ban(self, exc) -> float | None:
     return until
 
 
+def _apply_http_backoff(
+    self,
+    *,
+    status_code: int | None = None,
+    code: int | None = None,
+    message: str | None = None,
+    retry_after: float | str | None = None,
+) -> float | None:
+    triggered = False
+    try:
+        parsed_code = int(code) if code is not None else None
+    except Exception:
+        parsed_code = None
+    try:
+        parsed_status = int(status_code) if status_code is not None else None
+    except Exception:
+        parsed_status = None
+    msg = str(message or "")
+    msg_lower = msg.lower()
+    if parsed_code in (-1003, 429) or parsed_status in (418, 429):
+        triggered = True
+    elif msg_lower:
+        if "banned until" in msg_lower or "too many requests" in msg_lower or "too frequent" in msg_lower or "frequency" in msg_lower:
+            triggered = True
+    if not triggered:
+        return None
+    until = self._extract_ban_until(msg)
+    if until is None and retry_after not in (None, ""):
+        try:
+            until = time.time() + max(float(retry_after), 0.0)
+        except Exception:
+            until = None
+    if until is None:
+        until = time.time() + 8.0
+    self._register_ban_until(until)
+    remaining = max(0.0, until - time.time())
+    try:
+        limiter = getattr(self, "_request_limiter", None)
+        if limiter is not None:
+            limiter.pause_for(remaining + 3.0)
+    except Exception:
+        pass
+    return until
+
+
 def bind_binance_rate_limit_runtime(wrapper_cls) -> None:
     wrapper_cls._estimate_request_weight = staticmethod(_estimate_request_weight)
     wrapper_cls._throttle_request = _throttle_request
@@ -191,3 +236,4 @@ def bind_binance_rate_limit_runtime(wrapper_cls) -> None:
     wrapper_cls._seconds_until_unban = _seconds_until_unban
     wrapper_cls._extract_ban_until = staticmethod(_extract_ban_until)
     wrapper_cls._handle_potential_ban = _handle_potential_ban
+    wrapper_cls._apply_http_backoff = _apply_http_backoff

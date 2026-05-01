@@ -46,6 +46,10 @@ def _update_positions_balance_labels(
         self._sync_service_portfolio_snapshot(source="desktop-balance")
     except Exception:
         pass
+    try:
+        self._sync_service_exchange_connector_snapshot(source="desktop-balance")
+    except Exception:
+        pass
 
 
 def _compute_global_pnl_totals(
