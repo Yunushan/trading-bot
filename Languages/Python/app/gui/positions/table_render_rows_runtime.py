@@ -238,6 +238,65 @@ def _restrict_live_indicator_scope(
     return restricted_keys, restricted_map
 
 
+def _filter_live_indicator_entries_to_row_scope(
+    entries: list[str] | None,
+    *,
+    indicators_list: list[str],
+    interval_map: dict[str, list[str]],
+    filtered_indicator_values: list[str],
+) -> list[str]:
+    if not entries:
+        return []
+
+    exact_signatures = {
+        table_render_state_runtime._indicator_entry_signature(entry)
+        for entry in filtered_indicator_values or []
+    }
+    exact_signatures = {sig for sig in exact_signatures if sig[0]}
+    if exact_signatures:
+        return [
+            entry
+            for entry in entries
+            if table_render_state_runtime._indicator_entry_signature(entry) in exact_signatures
+        ]
+
+    label_by_key: dict[str, str] = {}
+    for key in indicators_list or []:
+        key_text = str(key or "").strip()
+        label = table_render_state_runtime._indicator_short_label(key_text).strip().lower()
+        if key_text and label:
+            label_by_key[key_text.lower()] = label
+
+    if not label_by_key:
+        return list(entries or [])
+
+    allowed_intervals_by_label: dict[str, set[str]] = {}
+    if isinstance(interval_map, dict):
+        for key_lower, label in label_by_key.items():
+            slots = interval_map.get(key_lower) or interval_map.get(key_lower.lower()) or []
+            normalized_slots = {
+                str(slot or "").strip().lower()
+                for slot in slots
+                if str(slot or "").strip()
+            }
+            if normalized_slots:
+                allowed_intervals_by_label[label] = normalized_slots
+
+    allowed_labels = set(label_by_key.values())
+    scoped_entries: list[str] = []
+    for entry in entries:
+        label_part, interval_part = table_render_state_runtime._indicator_entry_signature(entry)
+        label_key = str(label_part or "").strip().lower()
+        interval_key = str(interval_part or "").strip().lower()
+        if label_key not in allowed_labels:
+            continue
+        allowed_intervals = allowed_intervals_by_label.get(label_key)
+        if allowed_intervals is not None and interval_key not in allowed_intervals:
+            continue
+        scoped_entries.append(entry)
+    return scoped_entries
+
+
 def _resolve_live_values_entries(
     self,
     *,
@@ -275,14 +334,46 @@ def _resolve_live_values_entries(
                 interval,
             )
             rec["_current_indicator_values"] = live_values_entries
+    else:
+        live_values_entries = _filter_live_indicator_entries_to_row_scope(
+            list(live_values_entries or []),
+            indicators_list=indicators_list,
+            interval_map=interval_map,
+            filtered_indicator_values=filtered_indicator_values,
+        )
+        if not live_values_entries and not is_closed_like:
+            live_indicator_keys = indicators_list
+            live_interval_map = interval_map
+            if strict_interval_values and filtered_indicator_values:
+                restricted_keys, restricted_map = _restrict_live_indicator_scope(
+                    indicators_list,
+                    filtered_indicator_values,
+                )
+                if restricted_keys:
+                    live_indicator_keys = restricted_keys
+                    live_interval_map = restricted_map
+            live_values_entries = table_render_state_runtime._collect_current_indicator_live_strings(
+                self,
+                sym,
+                live_indicator_keys,
+                live_value_cache,
+                live_interval_map,
+                interval,
+            )
     if live_values_entries:
+        live_values_entries = _filter_live_indicator_entries_to_row_scope(
+            list(live_values_entries or []),
+            indicators_list=indicators_list,
+            interval_map=interval_map,
+            filtered_indicator_values=filtered_indicator_values,
+        )
         live_values_entries = table_render_state_runtime._dedupe_indicator_entries_normalized(
             live_values_entries
         )
         live_values_entries = table_render_state_runtime._canonicalize_indicator_entries(
             live_values_entries
         )
-        rec["_current_indicator_values"] = live_values_entries
+    rec["_current_indicator_values"] = live_values_entries or []
     return live_values_entries
 
 

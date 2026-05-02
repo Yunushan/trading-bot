@@ -14,7 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.gui.positions import table_render_state_runtime  # noqa: E402
 from app.gui.positions.table_render_prepare_runtime import _prepare_record_snapshot  # noqa: E402
-from app.gui.positions.table_render_rows_runtime import _merge_indicator_sources  # noqa: E402
+from app.gui.positions.table_render_rows_runtime import (  # noqa: E402
+    _merge_indicator_sources,
+    _resolve_live_values_entries,
+)
 
 
 @contextmanager
@@ -89,7 +92,13 @@ def _patched_table_render_state():
         return label_part, interval_part
 
     def _indicator_short_label(key: Any) -> str:
-        return str(key or "").strip().upper()
+        text = str(key or "").strip()
+        labels = {
+            "rsi": "RSI",
+            "stoch_rsi": "SRSI",
+            "willr": "W%R",
+        }
+        return labels.get(text.lower(), text.upper())
 
     setattr(
         table_render_state_runtime,
@@ -280,6 +289,40 @@ class TableRenderIndicatorStabilityTests(unittest.TestCase):
             (("rsi", ("1M",)), ("macd", ("5M",))),
             first[6],
         )
+
+    def test_cached_current_values_are_scoped_to_rendered_indicator_entries(self):
+        rec = {
+            "symbol": "BTCUSDT",
+            "side_key": "L",
+            "entry_tf": "1m, 3m",
+            "status": "Active",
+            "_current_indicator_values": [
+                "SRSI@1M 14.07 -Buy",
+                "RSI@1M 29.30 -Buy",
+                "SRSI@3M 28.33",
+                "W%R@5M -95.00 -Buy",
+            ],
+        }
+
+        with _patched_table_render_state():
+            scoped = _resolve_live_values_entries(
+                _SnapshotWindow(),
+                rec=rec,
+                sym="BTCUSDT",
+                interval="1m, 3m",
+                indicators_list=["rsi", "stoch_rsi"],
+                interval_map={"rsi": ["1M"], "stoch_rsi": ["3M"]},
+                filtered_indicator_values=[
+                    "RSI@1M 30.00 -Buy",
+                    "SRSI@3M 42.00 -Buy",
+                ],
+                strict_interval_values=False,
+                is_closed_like=False,
+                live_value_cache={},
+            )
+
+        self.assertEqual(["RSI@1M 29.30 -Buy", "SRSI@3M 28.33"], scoped)
+        self.assertEqual(scoped, rec["_current_indicator_values"])
 
 
 if __name__ == "__main__":
