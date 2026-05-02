@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from decimal import Decimal, getcontext
+from decimal import Decimal, InvalidOperation, getcontext
 import math
 import time
 from typing import Any, Dict, List
@@ -139,7 +139,189 @@ def _is_unknown_execution_error(err: object) -> bool:
     return False
 
 
-def _gather_positions(binance) -> tuple[List[Dict[str, Any]], bool]:
+def _decimal_from_position(value: Any) -> Decimal:
+    try:
+        if value in (None, ""):
+            return Decimal("0")
+        return Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")
+
+
+def _format_decimal_amount(value: Decimal) -> str:
+    try:
+        if value <= 0:
+            return "0"
+        return format(value.normalize(), "f")
+    except Exception:
+        return str(value)
+
+
+def _zero_qty_negative_isolated_margin_amount(row: Dict[str, Any]) -> Decimal:
+    try:
+        amt = _decimal_from_position(row.get("positionAmt"))
+        if abs(amt) > Decimal("0"):
+            return Decimal("0")
+    except Exception:
+        return Decimal("0")
+    for key in ("isolatedWallet", "isolatedMargin", "margin", "positionMargin"):
+        value = _decimal_from_position(row.get(key))
+        if value < 0:
+            return abs(value)
+    return Decimal("0")
+
+
+def _call_position_margin_add(binance, payload: dict) -> dict:
+    client = getattr(binance, "client", None)
+    unavailable_error: Exception | None = None
+    method_names = (
+        "futures_change_position_margin",
+        "modify_isolated_position_margin",
+        "futures_position_margin",
+    )
+    for name in method_names:
+        method = getattr(client, name, None)
+        if not callable(method):
+            continue
+        try:
+            response = method(**payload) or {}
+        except (AttributeError, NotImplementedError) as exc:
+            unavailable_error = exc
+            continue
+        if not isinstance(response, dict):
+            return {"response": response}
+        return response
+
+    request_api = getattr(client, "_request_futures_api", None)
+    if callable(request_api):
+        try:
+            response = request_api("post", "positionMargin", signed=True, data=payload) or {}
+            if not isinstance(response, dict):
+                return {"response": response}
+            return response
+        except (AttributeError, NotImplementedError) as exc:
+            unavailable_error = exc
+
+    signed_request = getattr(binance, "_http_signed_futures_request", None)
+    if callable(signed_request):
+        try:
+            prefix_func = getattr(binance, "_futures_api_prefix", None)
+            prefix = prefix_func() if callable(prefix_func) else None
+        except Exception:
+            prefix = None
+        response = signed_request("POST", "/v1/positionMargin", payload, prefix=prefix) or {}
+        if response:
+            return response if isinstance(response, dict) else {"response": response}
+        try:
+            last_error = getattr(binance, "_last_futures_http_error", None)
+        except Exception:
+            last_error = None
+        if isinstance(last_error, dict):
+            msg = str(last_error.get("message") or "").strip()
+            code = last_error.get("code")
+            if msg:
+                if code is None:
+                    raise RuntimeError(f"position margin cleanup rejected: {msg}")
+                raise RuntimeError(f"position margin cleanup rejected (code={code}): {msg}")
+        return {}
+
+    if unavailable_error is not None:
+        raise RuntimeError(
+            f"position margin cleanup endpoint is not available for this Binance client: {unavailable_error}"
+        ) from unavailable_error
+    raise RuntimeError("position margin cleanup endpoint is not available for this Binance client")
+
+
+def _raise_if_position_margin_error(response: dict) -> None:
+    if not isinstance(response, dict):
+        return
+    if not response:
+        raise RuntimeError("position margin cleanup rejected: empty response")
+    code = response.get("code")
+    if code is None:
+        err_obj = response.get("error")
+        if isinstance(err_obj, dict):
+            code = err_obj.get("code")
+            msg = err_obj.get("msg") or err_obj.get("message")
+            if code is not None or msg:
+                raise RuntimeError(f"position margin cleanup rejected (code={code}): {msg or err_obj}")
+        return
+    try:
+        code_int = int(code)
+    except Exception:
+        code_int = None
+    if code_int is not None and code_int < 0:
+        msg = response.get("msg") or response.get("message") or response
+        raise RuntimeError(f"position margin cleanup rejected (code={code_int}): {msg}")
+
+
+def _cleanup_zero_qty_negative_margin_position(binance, row: Dict[str, Any], dual: bool) -> Dict[str, Any]:
+    sym = str(row.get("symbol") or "").upper()
+    pos_side = _normalize_position_side(row.get("positionSide"))
+    amount = _zero_qty_negative_isolated_margin_amount(row)
+    if not sym or amount <= 0:
+        return {
+            "ok": True,
+            "symbol": sym or "?",
+            "positionSide": pos_side,
+            "skipped": True,
+            "reason": "zero-qty-no-negative-isolated-margin",
+        }
+    amount_str = _format_decimal_amount(amount)
+    payload = {
+        "symbol": sym,
+        "amount": amount_str,
+        "type": 1,
+    }
+    if dual and pos_side in ("LONG", "SHORT"):
+        payload["positionSide"] = pos_side
+    elif pos_side and pos_side != "BOTH":
+        payload["positionSide"] = pos_side
+    try:
+        info = _call_position_margin_add(binance, payload)
+        _raise_if_position_margin_error(info)
+        try:
+            invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
+            if callable(invalidate):
+                invalidate()
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "symbol": sym,
+            "positionSide": pos_side,
+            "amount": amount_str,
+            "info": info,
+            "method": "positionMargin",
+            "reason": "zero-qty-negative-isolated-margin",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "symbol": sym,
+            "positionSide": pos_side,
+            "amount": amount_str,
+            "error": str(exc),
+            "method": "positionMargin",
+            "reason": "zero-qty-negative-isolated-margin",
+        }
+
+
+def _cleanup_zero_qty_negative_margin_positions(binance, dual: bool) -> List[Dict[str, Any]]:
+    if not _is_testnet_wrapper(binance):
+        return []
+    positions, ok = _gather_positions(binance, include_zero_qty_residuals=True)
+    if not ok:
+        return []
+    results: List[Dict[str, Any]] = []
+    for row in positions:
+        if not row.get("zeroQtyNegativeMargin"):
+            continue
+        results.append(_cleanup_zero_qty_negative_margin_position(binance, row, dual))
+    return results
+
+
+def _gather_positions(binance, *, include_zero_qty_residuals: bool = False) -> tuple[List[Dict[str, Any]], bool]:
     # Try position info first
     infos = None
     ok = False
@@ -161,6 +343,26 @@ def _gather_positions(binance) -> tuple[List[Dict[str, Any]], bool]:
         except Exception:
             amt = 0.0
         if abs(amt) <= 0.0:
+            residual_amount = (
+                _zero_qty_negative_isolated_margin_amount(p)
+                if include_zero_qty_residuals and isinstance(p, dict)
+                else Decimal("0")
+            )
+            if residual_amount <= 0:
+                continue
+            out.append(
+                {
+                    "symbol": (p.get("symbol") or "").upper(),
+                    "positionAmt": 0.0,
+                    "positionSide": _normalize_position_side(p.get("positionSide")),
+                    "zeroQtyNegativeMargin": True,
+                    "negativeMarginAmount": _format_decimal_amount(residual_amount),
+                    "isolatedWallet": p.get("isolatedWallet"),
+                    "isolatedMargin": p.get("isolatedMargin"),
+                    "margin": p.get("margin"),
+                    "positionMargin": p.get("positionMargin"),
+                }
+            )
             continue
         out.append(
             {
@@ -214,9 +416,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
         except Exception:
             pass
         positions, _ = _gather_positions(binance)
-        if not positions:
-            return results
-        if max_workers is None:
+        if positions and max_workers is None:
             max_workers = min(6, max(1, len(positions)))
 
         def _attempt_close_position(p):
@@ -292,13 +492,14 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     "positionAmt": amt,
                 }
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_attempt_close_position, p) for p in positions]
-            for future in as_completed(futures):
-                try:
-                    results.append(future.result())
-                except Exception as e:
-                    results.append({"ok": False, "symbol": "?", "error": str(e)})
+        if positions:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_attempt_close_position, p) for p in positions]
+                for future in as_completed(futures):
+                    try:
+                        results.append(future.result())
+                    except Exception as e:
+                        results.append({"ok": False, "symbol": "?", "error": str(e)})
 
         failures = [r for r in results if not r.get("ok")]
         if failures and use_close_position:
@@ -402,6 +603,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     if sym and sym not in open_symbols:
                         r["ok"] = True
                         r["reconciled"] = True
+        results.extend(_cleanup_zero_qty_negative_margin_positions(binance, dual))
         return results
 
     # up to 3 passes: handle partial fills / changes
@@ -489,4 +691,5 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                         )
             except Exception as e:
                 results.append({"ok": False, "symbol": sym, "positionSide": pos_side, "error": str(e)})
+    results.extend(_cleanup_zero_qty_negative_margin_positions(binance, dual))
     return results
