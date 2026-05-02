@@ -251,3 +251,9 @@ def _set_runtime_controls_enabled(self, enabled: bool):
             self._apply_lead_trader_state(bool(self.config.get("lead_trader_enabled", False)))
         except Exception:
             pass
+    try:
+        apply_start_gate = getattr(self, "_apply_desktop_service_start_gate", None)
+        if callable(apply_start_gate):
+            apply_start_gate(active=not bool(enabled))
+    except Exception:
+        pass

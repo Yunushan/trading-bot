@@ -301,6 +301,25 @@ def _get_service_operational_snapshot(self) -> dict | None:
     return None
 
 
+def _get_service_operational_preflight(self) -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        get_operational_preflight = getattr(client, "get_operational_preflight", None)
+        if callable(get_operational_preflight):
+            result = get_operational_preflight()
+            return result if isinstance(result, dict) else None
+        get_operational_snapshot = getattr(client, "get_operational_snapshot", None)
+        if callable(get_operational_snapshot):
+            operational = get_operational_snapshot()
+            if isinstance(operational, dict) and isinstance(operational.get("preflight"), dict):
+                return operational["preflight"]
+    except Exception:
+        return None
+    return None
+
+
 def _get_service_connector_order_circuit_breaker_snapshot(self) -> dict | None:
     client = _ensure_service_client(self)
     if client is None:

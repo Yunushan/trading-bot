@@ -70,6 +70,10 @@ When an indicator fires, the bot records the **indicator key**, **interval**, an
 ### Session controls & presets
 
 - **Start** launches workers for every selected symbol/interval/side combination.
+- **Preflight** is shown in the Desktop Service API panel. If Start changes to
+  `Start Blocked`, use **Recheck Preflight** and follow the
+  [Operational Preflight Runbook](OPERATIONAL_PREFLIGHT_RUNBOOK.md) before
+  starting live trading.
 - **Save Config / Load Config** persists your dashboard settings to JSON for later reuse.
 - **Template** quickly loads a pre-bundled setup.
 - **Lead Trader** is reserved for future copy-trading style work.

@@ -145,14 +145,16 @@ def _handle_service_control_request(self, payload: dict | None) -> None:
         pass
 
 
-def _service_request_start(self, *, requested_job_count: int = 0, source: str = "desktop-start") -> None:
+def _service_request_start(self, *, requested_job_count: int = 0, source: str = "desktop-start") -> dict | None:
     client = _ensure_service_client(self)
     if client is None:
-        return
+        return None
     try:
-        client.request_start(requested_job_count=requested_job_count, source=source)
+        result = client.request_start(requested_job_count=requested_job_count, source=source)
+        payload = _coerce_service_control_payload(result)
+        return payload if payload else None
     except Exception:
-        pass
+        return None
 
 
 def _service_request_stop(self, *, close_positions: bool = False, source: str = "desktop-stop") -> None:

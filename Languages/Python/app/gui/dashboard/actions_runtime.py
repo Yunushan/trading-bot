@@ -63,6 +63,12 @@ def _create_dashboard_action_section(self, scroll_layout):
 
     self.desktop_service_api_status_label = QtWidgets.QLabel("Service API: off")
     service_layout.addWidget(self.desktop_service_api_status_label, 1, 0, 1, 9)
+    self.desktop_service_preflight_label = QtWidgets.QLabel("Preflight: unknown")
+    self.desktop_service_preflight_label.setWordWrap(True)
+    service_layout.addWidget(self.desktop_service_preflight_label, 2, 0, 1, 8)
+    self.desktop_service_preflight_recheck_btn = QtWidgets.QPushButton("Recheck Preflight")
+    self.desktop_service_preflight_recheck_btn.clicked.connect(self._recheck_desktop_service_preflight)
+    service_layout.addWidget(self.desktop_service_preflight_recheck_btn, 2, 8)
     scroll_layout.addWidget(service_box)
     try:
         self._refresh_desktop_service_api_ui()

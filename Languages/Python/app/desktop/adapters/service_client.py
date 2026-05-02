@@ -173,6 +173,12 @@ class EmbeddedDesktopServiceClient:
         result = self._service.get_operational_snapshot()
         return result if isinstance(result, dict) else None
 
+    def get_operational_preflight(self) -> dict | None:
+        if self._service is None:
+            return None
+        result = self._service.get_operational_preflight()
+        return result if isinstance(result, dict) else None
+
     def set_connector_order_circuit_breaker_snapshot(self, snapshot: dict | None = None, **kwargs) -> dict | None:
         if self._service is None:
             return None
@@ -368,6 +374,10 @@ class RemoteDesktopServiceClient:
         if isinstance(payload, dict) and isinstance(payload.get("operational"), dict):
             return payload["operational"]
         return None
+
+    def get_operational_preflight(self) -> dict | None:
+        payload = self._request("GET", service_api_route("operational_preflight"))
+        return payload if isinstance(payload, dict) else None
 
     def set_connector_order_circuit_breaker_snapshot(self, snapshot: dict | None = None, **kwargs) -> dict | None:
         payload = dict(snapshot or {})

@@ -247,6 +247,9 @@ def _sync_runtime_state(self):
             start_btn.setEnabled(not active)
         if stop_btn is not None:
             stop_btn.setEnabled(active)
+        apply_start_gate = getattr(self, "_apply_desktop_service_start_gate", None)
+        if callable(apply_start_gate):
+            apply_start_gate(active=active)
     except Exception:
         pass
     try:

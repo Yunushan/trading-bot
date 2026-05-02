@@ -16,6 +16,8 @@ class _FakeDesktopClient:
         self.config = config
         self.exchange_connector_snapshot = None
         self.connector_order_circuit_breaker_snapshot = None
+        self.operational_preflight = {"state": "ok", "start": {"allowed": True}}
+        self.start_result = {"accepted": True, "status_message": "Start requested."}
 
     def replace_config(self, config):
         self.config = config
@@ -41,6 +43,17 @@ class _FakeDesktopClient:
 
     def get_connector_order_circuit_breaker_snapshot(self):
         return self.connector_order_circuit_breaker_snapshot
+
+    def get_operational_snapshot(self):
+        return {"preflight": self.operational_preflight}
+
+    def get_operational_preflight(self):
+        return self.operational_preflight
+
+    def request_start(self, *, requested_job_count=0, source="desktop-start"):
+        self.start_result["requested_job_count"] = requested_job_count
+        self.start_result["source"] = source
+        return self.start_result
 
 
 class DesktopServiceBridgeSmokeTests(unittest.TestCase):
@@ -80,6 +93,7 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
             "_get_service_portfolio_snapshot",
             "_get_service_exchange_connector_snapshot",
             "_get_service_operational_snapshot",
+            "_get_service_operational_preflight",
             "_get_service_connector_order_circuit_breaker_snapshot",
             "_get_service_recent_logs",
             "_maybe_start_desktop_service_api_host",
@@ -92,6 +106,8 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
                 self.assertTrue(callable(getattr(DummyWindow, method_name)))
         self.assertIsInstance(window._desktop_service_client, _FakeDesktopClient)
         self.assertEqual(window._desktop_service_client.config, {"demo": True})
+        self.assertEqual(window._get_service_operational_preflight()["state"], "ok")
+        self.assertTrue(window._service_request_start(requested_job_count=2)["accepted"])
 
 
 if __name__ == "__main__":

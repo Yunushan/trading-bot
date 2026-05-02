@@ -138,6 +138,34 @@ jobs:
           set -euo pipefail
           python -m pytest
 
+  web-dashboard-quality:
+    name: Web Dashboard Quality
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Check dashboard JavaScript syntax
+        shell: bash
+        working-directory: apps/web-dashboard
+        run: |
+          set -euo pipefail
+          node --check modules/render.js
+          node --check modules/state.js
+          node --check tests/render-preflight.test.mjs
+
+      - name: Run dashboard behavior tests
+        shell: bash
+        working-directory: apps/web-dashboard
+        run: |
+          set -euo pipefail
+          npm test
+
   rust-smoke:
     name: Rust Smoke
     runs-on: ubuntu-24.04

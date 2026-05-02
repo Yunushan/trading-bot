@@ -1019,6 +1019,8 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             "_update_positions_balance_labels",
             "update_balance_label",
             "_refresh_desktop_service_api_ui",
+            "_apply_desktop_service_start_gate",
+            "_recheck_desktop_service_preflight",
             "_mark_session_active",
             "_sync_runtime_state",
             "start_strategy",
@@ -1036,6 +1038,102 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             with self.subTest(method_name=method_name):
                 self.assertTrue(hasattr(MainWindow, method_name))
                 self.assertTrue(callable(getattr(MainWindow, method_name)))
+
+    def test_desktop_preflight_gate_controls_start_button(self):
+        class _Button:
+            def __init__(self, text=""):
+                self.enabled = True
+                self.text = text
+                self.tooltip = ""
+
+            def setEnabled(self, enabled):
+                self.enabled = bool(enabled)
+
+            def setText(self, text):
+                self.text = str(text)
+
+            def setToolTip(self, text):
+                self.tooltip = str(text)
+
+        class _DesktopPreflightWindow:
+            def __init__(self):
+                self.start_btn = _Button("Start")
+                self.stop_btn = _Button("Stop")
+                self.config = {}
+                self.strategy_engines = {}
+                self.preflight = {
+                    "state": "blocked",
+                    "start": {
+                        "allowed": False,
+                        "reasons": ["exchange connector snapshot is stale"],
+                    },
+                    "orders": {"allowed": True, "reasons": []},
+                }
+                self.desktop_service_preflight_recheck_btn = _Button("Recheck Preflight")
+
+            def _get_service_operational_preflight(self):
+                return self.preflight
+
+            def _get_desktop_service_api_host_status(self):
+                return {"running": False}
+
+            def _set_runtime_controls_enabled(self, enabled):
+                self.start_btn.setEnabled(enabled)
+
+            def _sync_service_config_snapshot(self):
+                return None
+
+            def _update_bot_status(self, active):
+                self.active_status = bool(active)
+
+            def _update_runtime_stop_loss_widgets(self):
+                return None
+
+        new_bind_service_api(_DesktopPreflightWindow, save_app_state_file=lambda _path, _data: None)
+        new_bind_status(_DesktopPreflightWindow)
+
+        window = _DesktopPreflightWindow()
+        window._refresh_desktop_service_api_ui(status={"running": False})
+
+        self.assertFalse(window.start_btn.enabled)
+        self.assertEqual(window.start_btn.text, "Start Blocked")
+        self.assertIn("exchange connector snapshot is stale", window.start_btn.tooltip)
+
+        window.preflight = {
+            "state": "warning",
+            "start": {"allowed": True, "reasons": ["demo mode warning"]},
+            "orders": {"allowed": True, "reasons": []},
+        }
+        window._refresh_desktop_service_api_ui(status={"running": False})
+
+        self.assertTrue(window.start_btn.enabled)
+        self.assertEqual(window.start_btn.text, "Start")
+        self.assertEqual(window.start_btn.tooltip, "")
+
+        window.preflight = {
+            "state": "blocked",
+            "start": {"allowed": False, "reasons": ["account snapshot is stale"]},
+            "orders": {"allowed": True, "reasons": []},
+        }
+        window._refresh_desktop_service_api_ui(status={"running": False})
+        window._sync_runtime_state()
+
+        self.assertFalse(window.start_btn.enabled)
+        self.assertEqual(window.start_btn.text, "Start Blocked")
+        self.assertIn("account snapshot is stale", window.start_btn.tooltip)
+
+        window.preflight = {
+            "state": "ok",
+            "start": {"allowed": True, "reasons": []},
+            "orders": {"allowed": True, "reasons": []},
+        }
+        refreshed = window._recheck_desktop_service_preflight()
+
+        self.assertEqual(refreshed, window.preflight)
+        self.assertTrue(window.start_btn.enabled)
+        self.assertEqual(window.start_btn.text, "Start")
+        self.assertEqual(window.desktop_service_preflight_recheck_btn.text, "Recheck Preflight")
+        self.assertTrue(window.desktop_service_preflight_recheck_btn.enabled)
 
     def test_positions_runtime_surfaces_expose_record_build_helpers(self):
         helpers = [
@@ -1507,6 +1605,101 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         self.assertEqual(indicator_state["configured_indicators"], ["macd", "rsi"])
         self.assertTrue(indicator_state["stop_loss_enabled"])
         self.assertTrue(any("Loop start for BTCUSDT:1h|macd,rsi" in msg for msg in window.logged))
+
+    def test_start_strategy_honors_blocked_service_start_gate(self):
+        class _Value:
+            def __init__(self, value):
+                self._value = value
+
+            def currentText(self):
+                return str(self._value)
+
+        class _Engine:
+            resume_calls = 0
+
+            @classmethod
+            def resume_trading(cls):
+                cls.resume_calls += 1
+
+            @classmethod
+            def concurrent_limit(cls, total_jobs):
+                return total_jobs
+
+            def __init__(self, *_args, **_kwargs):
+                raise AssertionError("engine should not be created when preflight blocks start")
+
+        class _BlockedStartWindow:
+            def __init__(self):
+                self.logged = []
+                self.service_starts = []
+                self.reset_calls = 0
+                self.sync_runtime_state_calls = 0
+                self.shared_binance = None
+                self._is_stopping_engines = False
+                self.loop_combo = None
+                self.account_combo = _Value("Futures")
+                self.config = {
+                    "runtime_symbol_interval_pairs": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "interval": "1h",
+                            "indicators": ["rsi"],
+                            "strategy_controls": {"side": "BUY"},
+                        }
+                    ]
+                }
+
+            def log(self, message):
+                self.logged.append(str(message))
+
+            def _reset_service_connector_order_circuit_breaker(self, **_kwargs):
+                self.reset_calls += 1
+
+            def _loop_choice_value(self, _combo):
+                return ""
+
+            def _override_ctx(self, _kind):
+                return {}
+
+            def _canonicalize_interval(self, value):
+                return str(value or "").strip()
+
+            def _normalize_strategy_controls(self, _kind, controls):
+                return dict(controls or {})
+
+            def _connector_label_text(self, backend):
+                return str(backend)
+
+            def _runtime_connector_backend(self, suppress_refresh=False):
+                return "binance-sdk"
+
+            def _sync_service_config_snapshot(self):
+                return None
+
+            def _service_request_start(self, **payload):
+                self.service_starts.append(dict(payload))
+                return {
+                    "accepted": False,
+                    "status_message": "Start blocked: operational safety gate requires fresh snapshots.",
+                }
+
+            def _sync_runtime_state(self):
+                self.sync_runtime_state_calls += 1
+
+            def _service_mark_start_failed(self, **_kwargs):
+                raise AssertionError("backend rejection already recorded the failed start")
+
+        window = _BlockedStartWindow()
+        _Engine.resume_calls = 0
+
+        new_start_strategy(window, strategy_engine_cls=_Engine)
+
+        self.assertEqual(_Engine.resume_calls, 0)
+        self.assertEqual(window.reset_calls, 0)
+        self.assertEqual(window.sync_runtime_state_calls, 0)
+        self.assertEqual(len(window.service_starts), 1)
+        self.assertEqual(window.service_starts[0]["requested_job_count"], 1)
+        self.assertTrue(any("Start blocked by service control plane" in msg for msg in window.logged))
 
     def test_positions_history_update_close_runtime_uses_real_source_module(self):
         close_runtime = importlib.import_module("app.gui.positions.history_update_close_runtime")

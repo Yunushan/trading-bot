@@ -323,6 +323,10 @@ button:disabled {
   margin-top: 18px;
 }
 
+.preflight-remediation {
+  margin-top: 18px;
+}
+
 .empty-state {
   margin-top: 18px;
   padding: 16px;
@@ -430,6 +434,10 @@ button:disabled {
 
 .mini-error {
   line-height: 1.5;
+}
+
+.mini-meta + .mini-error {
+  margin-top: 6px;
 }
 
 .error-row {

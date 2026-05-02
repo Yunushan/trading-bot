@@ -798,6 +798,7 @@ class BotRuntimeStateMixin:
             attention.append(circuit_message)
 
         execution_state = str(self._execution_state or "").strip().lower()
+        execution_heartbeat_required = execution_state == "running"
         runtime_needs_fresh_snapshots = bool(
             require_fresh_snapshots
             or self._runtime_active
@@ -838,7 +839,7 @@ class BotRuntimeStateMixin:
                 timestamp_field="heartbeat_at",
                 now_epoch=now_epoch,
                 max_age_seconds=execution_stale_seconds,
-                should_warn=execution_state == "running",
+                should_warn=execution_heartbeat_required,
                 state=execution_state,
                 source=self._execution_source,
             ),
@@ -874,7 +875,7 @@ class BotRuntimeStateMixin:
                 timestamp_field="heartbeat_at",
                 now_epoch=now_epoch,
                 max_age_seconds=execution_stale_seconds,
-                should_warn=True,
+                should_warn=execution_heartbeat_required,
                 state=execution_state,
                 source=self._execution_source,
             ),

@@ -47,6 +47,8 @@ from app.service.runners import bot_runtime_state as bot_runtime_state_module  #
 from app.service.runtime import TradingBotService  # noqa: E402
 from app.settings import ConfigValidationError  # noqa: E402
 
+REPO_ROOT = PYTHON_ROOT.parents[1]
+
 
 class _FakeBacktestWrapper:
     def __init__(self, **kwargs):
@@ -107,6 +109,57 @@ def _mark_operational_inputs_stale(service: TradingBotService, *, seconds: int =
             generated_at=stale_at,
         )
     return stale_at
+
+
+def _mark_operational_inputs_fresh(service: TradingBotService) -> str:
+    fresh_at = datetime.now(timezone.utc).isoformat()
+    service.set_exchange_connector_snapshot(
+        {
+            "health": "ok",
+            "state": "ready",
+            "generated_at": fresh_at,
+        },
+        source="unit-test",
+    )
+    service.set_account_snapshot(
+        total_balance=1000.0,
+        available_balance=900.0,
+        source="unit-test",
+    )
+    service.set_portfolio_snapshot(
+        open_position_records={},
+        closed_position_records=[],
+        source="unit-test",
+    )
+    return fresh_at
+
+
+def _mark_running_execution_heartbeat_stale(service: TradingBotService, *, seconds: int = 900) -> str:
+    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+    service.set_runtime_state(active=True, active_engine_count=1, source="unit-test")
+    service.set_execution_snapshot(
+        executor_kind="local-service-executor",
+        owner="service-process",
+        state="running",
+        workload_kind="service-runtime-session",
+        session_id="stale-session",
+        requested_job_count=1,
+        active_engine_count=1,
+        heartbeat_at=stale_at,
+        last_action="heartbeat",
+        last_message="Execution heartbeat is stale.",
+        started_at=stale_at,
+        source="unit-test",
+    )
+    return stale_at
+
+
+def _shape(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _shape(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_shape(value[0])] if value else []
+    return type(value)
 
 
 class ServiceApiSmokeTests(unittest.TestCase):
@@ -171,6 +224,10 @@ class ServiceApiSmokeTests(unittest.TestCase):
         self.assertIsInstance(client, EmbeddedDesktopServiceClient)
         descriptor = client.describe()
         self.assertEqual(descriptor.get("client_mode"), "embedded")
+        preflight = client.get_operational_preflight()
+        self.assertIsInstance(preflight, dict)
+        self.assertIn("start", preflight)
+        self.assertIn("orders", preflight)
 
     def test_desktop_service_client_can_be_forced_to_remote_mode(self):
         client = create_desktop_service_client(
@@ -181,6 +238,7 @@ class ServiceApiSmokeTests(unittest.TestCase):
         descriptor = client.describe()
         self.assertEqual(descriptor.get("client_mode"), "remote")
         self.assertEqual(descriptor.get("base_url"), "http://127.0.0.1:9000")
+        self.assertTrue(callable(getattr(client, "get_operational_preflight", None)))
 
     def test_service_api_auth_helpers(self):
         self.assertFalse(auth_required(""))
@@ -1182,6 +1240,68 @@ class ServiceApiSmokeTests(unittest.TestCase):
         self.assertIn("portfolio", result["status_message"])
         self.assertTrue(any("operational safety gate" in item["message"] for item in dashboard["logs"]))
 
+    def test_service_operational_preflight_allows_idle_live_start_without_execution_heartbeat(self):
+        service = TradingBotService(
+            config={
+                "mode": "Live",
+                "operational_connector_snapshot_stale_seconds": 60,
+                "operational_execution_heartbeat_stale_seconds": 60,
+                "operational_account_snapshot_stale_seconds": 60,
+                "operational_portfolio_snapshot_stale_seconds": 60,
+            }
+        )
+        _mark_operational_inputs_fresh(service)
+
+        preflight = service.get_operational_preflight()
+        result = service.request_start(requested_job_count=1, source="web-ui").to_dict()
+
+        self.assertEqual("ok", preflight["state"])
+        self.assertTrue(preflight["live_mode"])
+        self.assertTrue(preflight["start"]["allowed"])
+        self.assertTrue(preflight["orders"]["allowed"])
+        self.assertFalse(preflight["freshness"]["execution"]["stale"])
+        self.assertNotIn("execution heartbeat", preflight["critical_stale"]["start"])
+        self.assertNotIn("execution heartbeat", "\n".join(preflight["reasons"]))
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("operational safety gate", result["status_message"].lower())
+
+    def test_service_live_start_blocks_when_running_execution_heartbeat_is_stale(self):
+        service = TradingBotService(
+            config={
+                "mode": "Live",
+                "operational_connector_snapshot_stale_seconds": 60,
+                "operational_execution_heartbeat_stale_seconds": 60,
+                "operational_account_snapshot_stale_seconds": 60,
+                "operational_portfolio_snapshot_stale_seconds": 60,
+            }
+        )
+        dispatched: list[dict] = []
+
+        def _handler(request):
+            dispatched.append(request.to_dict())
+            return {"accepted": True, "message": "Should not dispatch."}
+
+        service.set_control_request_handler(_handler)
+        _mark_operational_inputs_fresh(service)
+        _mark_running_execution_heartbeat_stale(service)
+
+        preflight = service.get_operational_preflight()
+        result = service.request_start(requested_job_count=1, source="web-ui").to_dict()
+        status = service.get_status().to_dict()
+
+        self.assertEqual("blocked", preflight["state"])
+        self.assertFalse(preflight["start"]["allowed"])
+        self.assertTrue(preflight["orders"]["allowed"])
+        self.assertTrue(preflight["freshness"]["execution"]["stale"])
+        self.assertIn("execution heartbeat", preflight["critical_stale"]["start"])
+        self.assertNotIn("execution heartbeat", preflight["critical_stale"]["orders"])
+        self.assertIn("execution heartbeat", "\n".join(preflight["start"]["reasons"]))
+        self.assertFalse(result["accepted"])
+        self.assertEqual([], dispatched)
+        self.assertEqual("running", status["lifecycle_phase"])
+        self.assertIn("critical snapshots are stale", result["status_message"])
+        self.assertIn("execution heartbeat", result["status_message"])
+
     def test_service_operational_preflight_reports_live_gate_block_reasons(self):
         service = TradingBotService(
             config={
@@ -1214,6 +1334,35 @@ class ServiceApiSmokeTests(unittest.TestCase):
         self.assertTrue(preflight["freshness"]["exchange_connector"]["stale"])
         self.assertTrue(preflight["freshness"]["account"]["stale"])
         self.assertTrue(preflight["freshness"]["portfolio"]["stale"])
+
+    def test_service_operational_preflight_matches_contract_sample_shape(self):
+        sample_path = REPO_ROOT / "apps" / "service-api" / "contracts" / "operational-preflight.sample.json"
+        sample = json.loads(sample_path.read_text(encoding="utf-8"))
+        service = TradingBotService(
+            config={
+                "mode": "Live",
+                "operational_connector_snapshot_stale_seconds": 60,
+                "operational_account_snapshot_stale_seconds": 60,
+                "operational_portfolio_snapshot_stale_seconds": 60,
+            }
+        )
+        _mark_operational_inputs_stale(service)
+
+        preflight = service.get_operational_preflight()
+
+        self.assertEqual(SERVICE_API_ROUTE_PATHS["operational_preflight"], "/api/v1/runtime/operational-preflight")
+        self.assertEqual(set(sample), set(preflight))
+        self.assertEqual(_shape(sample), _shape(preflight))
+        self.assertEqual({"allowed", "state", "gate_enabled", "reasons"}, set(sample["start"]))
+        self.assertEqual({"allowed", "state", "gate_enabled", "reasons"}, set(sample["orders"]))
+        self.assertEqual(
+            {"exchange_connector", "execution", "account", "portfolio"},
+            set(sample["freshness"]),
+        )
+        self.assertEqual({"start", "orders"}, set(sample["critical_stale"]))
+        self.assertEqual("blocked", sample["state"])
+        self.assertFalse(sample["start"]["allowed"])
+        self.assertFalse(sample["orders"]["allowed"])
 
     def test_service_demo_start_warns_but_allows_stale_operational_inputs(self):
         service = TradingBotService(

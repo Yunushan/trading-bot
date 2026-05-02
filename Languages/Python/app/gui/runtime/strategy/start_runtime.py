@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .start_collect_runtime import _collect_strategy_start_context
 from .start_engine_runtime import (
+    ServiceStartRejected,
     _prepare_strategy_runtime_start,
     _start_strategy_engines,
 )
@@ -29,13 +30,9 @@ def start_strategy(
     if shared is not None and getattr(shared, "_emergency_close_requested", False):
         self.log("Emergency close-all in progress; wait for it to finish before starting.")
         return
-    try:
-        strategy_engine_cls.resume_trading()
-        self._reset_service_connector_order_circuit_breaker(source="desktop-start")
-    except Exception:
-        pass
 
     started = 0
+    service_start_rejected = False
     try:
         start_context = _collect_strategy_start_context(self)
         if not start_context.pair_entries:
@@ -53,6 +50,11 @@ def start_strategy(
             strategy_engine_cls=strategy_engine_cls,
             coerce_bool=coerce_bool,
         )
+        try:
+            strategy_engine_cls.resume_trading()
+            self._reset_service_connector_order_circuit_breaker(source="desktop-start")
+        except Exception:
+            pass
         started = _start_strategy_engines(
             self,
             combos=start_context.combos,
@@ -74,6 +76,12 @@ def start_strategy(
                 )
             except Exception:
                 pass
+    except ServiceStartRejected as exc:
+        service_start_rejected = True
+        try:
+            self.log(str(exc))
+        except Exception:
+            pass
     except Exception as exc:
         try:
             self.log(f"Start error: {exc}")
@@ -87,7 +95,8 @@ def start_strategy(
         except Exception:
             pass
     finally:
-        try:
-            self._sync_runtime_state()
-        except Exception:
-            pass
+        if not service_start_rejected:
+            try:
+                self._sync_runtime_state()
+            except Exception:
+                pass

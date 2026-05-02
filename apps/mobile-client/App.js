@@ -53,6 +53,144 @@ function formatNumber(value) {
   return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
+function titleizeLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "Unknown";
+  }
+  return text
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function preflightTone(value) {
+  const state = String(value || "").toLowerCase();
+  if (state === "blocked" || state === "error") {
+    return "error";
+  }
+  if (state === "ok" || state === "ready") {
+    return "ok";
+  }
+  if (state === "warning") {
+    return "warning";
+  }
+  return "muted";
+}
+
+function currentPreflight(dashboard) {
+  return dashboard?.operational?.preflight || dashboard?.status?.operational?.preflight || null;
+}
+
+function isPreflightStartBlocked(preflight) {
+  return Boolean(preflight?.start && typeof preflight.start === "object" && preflight.start.allowed === false);
+}
+
+function preflightStartGateLabel(preflight) {
+  if (!preflight) {
+    return "Preflight Unknown";
+  }
+  return isPreflightStartBlocked(preflight)
+    ? "Preflight Blocked"
+    : `Preflight ${titleizeLabel(preflight.state || "ready")}`;
+}
+
+function formatPreflightGate(gate) {
+  if (!gate || typeof gate !== "object") {
+    return "-";
+  }
+  const allowed = gate.allowed === false ? "Blocked" : "Allowed";
+  const state = titleizeLabel(gate.state || (gate.allowed === false ? "blocked" : "ok"));
+  const gateState = gate.gate_enabled === false ? "Gate Off" : "Gate On";
+  return `${allowed} / ${state} / ${gateState}`;
+}
+
+function formatPreflightMode(preflight) {
+  if (!preflight || typeof preflight !== "object") {
+    return "-";
+  }
+  return `${preflight.live_mode ? "Live" : "Demo/Test"} / ${preflight.mode || "-"}`;
+}
+
+function preflightGateReason(gate) {
+  const reasons = Array.isArray(gate?.reasons) ? gate.reasons : [];
+  return reasons.map((reason) => String(reason || "").trim()).filter(Boolean).join("; ");
+}
+
+function preflightCriticalLabels(preflight) {
+  const critical = preflight?.critical_stale && typeof preflight.critical_stale === "object"
+    ? preflight.critical_stale
+    : {};
+  const labels = [];
+  for (const key of ["start", "orders"]) {
+    const items = Array.isArray(critical[key]) ? critical[key] : [];
+    for (const item of items) {
+      const label = String(item || "").trim();
+      if (label && !labels.includes(label)) {
+        labels.push(label);
+      }
+    }
+  }
+  return labels;
+}
+
+const PREFLIGHT_FRESHNESS_LABELS = [
+  ["exchange_connector", "Exchange"],
+  ["execution", "Execution"],
+  ["account", "Account"],
+  ["portfolio", "Portfolio"],
+];
+
+function formatFreshnessAge(item) {
+  const maxAge = Number(item?.max_age_seconds);
+  const maxText = Number.isFinite(maxAge) ? `${Math.round(maxAge)}s` : "-";
+  const age = Number(item?.age_seconds);
+  const ageText = Number.isFinite(age) ? `${Math.round(age)}s` : "missing";
+  return `${ageText}/${maxText} ${item?.stale ? "stale" : "fresh"}`;
+}
+
+function preflightFreshnessAges(preflight) {
+  const freshness = preflight?.freshness && typeof preflight.freshness === "object" ? preflight.freshness : {};
+  const ages = PREFLIGHT_FRESHNESS_LABELS.map(([key, label]) => {
+    const item = freshness[key];
+    return item && typeof item === "object" ? `${label} ${formatFreshnessAge(item)}` : "";
+  }).filter(Boolean);
+  return ages.length ? ages.join("; ") : "-";
+}
+
+const PREFLIGHT_REMEDIATION_LABELS = {
+  exchange_connector: {
+    label: "Exchange connector",
+    action: "Check connector health, credentials, network, and rate-limit state.",
+  },
+  execution: {
+    label: "Execution heartbeat",
+    action: "Check the execution runner heartbeat before starting live trading.",
+  },
+  account: {
+    label: "Account snapshot",
+    action: "Refresh account balances from the service or exchange connector.",
+  },
+  portfolio: {
+    label: "Portfolio snapshot",
+    action: "Refresh open and closed position state before live actions.",
+  },
+};
+
+function preflightFreshnessRemediations(preflight) {
+  const freshness = preflight?.freshness && typeof preflight.freshness === "object" ? preflight.freshness : {};
+  return Object.entries(PREFLIGHT_REMEDIATION_LABELS)
+    .filter(([key]) => Boolean(freshness[key]?.stale))
+    .map(([key, detail]) => {
+      const item = freshness[key];
+      const maxAge = Number(item?.max_age_seconds);
+      const age = Number(item?.age_seconds);
+      const maxText = Number.isFinite(maxAge) ? `${Math.round(maxAge)}s max` : "unknown max age";
+      const ageText = Number.isFinite(age) ? `${Math.round(age)}s old` : "missing";
+      return `${detail.label}: ${ageText}, ${maxText}. ${detail.action}`;
+    });
+}
+
 function hydrateLlmPatch(config) {
   const payload = config || {};
   return {
@@ -167,7 +305,36 @@ export default function App() {
     }
   };
 
+  const recheckPreflight = async () => {
+    setLoading(true);
+    try {
+      const nextPreflight = await requestJson(apiPath("runtime/operational-preflight"));
+      setDashboard((current) => {
+        const payload = current && typeof current === "object" ? current : {};
+        const operational = payload.operational && typeof payload.operational === "object" ? payload.operational : {};
+        return {
+          ...payload,
+          operational: {
+            ...operational,
+            preflight: nextPreflight,
+          },
+        };
+      });
+      setMessage(nextPreflight.message || "Preflight refreshed.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const sendLifecycle = async (action) => {
+    const preflight = currentPreflight(dashboard);
+    if (action === "start" && isPreflightStartBlocked(preflight)) {
+      const detail = preflightGateReason(preflight.start) || preflight.message || "live start is blocked";
+      setMessage(`Live start blocked by preflight: ${detail}`);
+      return;
+    }
     setLoading(true);
     try {
       const path = action === "start" ? apiPath("control/start") : apiPath("control/stop");
@@ -352,6 +519,22 @@ export default function App() {
     ? { label: "Enabled", tone: "ok" }
     : { label: "Disabled", tone: "muted" };
   const llmSettingsEnabled = Boolean(llmPatch.llm_enabled);
+  const preflight = currentPreflight(dashboard);
+  const preflightState = preflight?.state || "unknown";
+  const preflightStartBlocked = isPreflightStartBlocked(preflight);
+  const preflightReasons = Array.isArray(preflight?.reasons)
+    ? preflight.reasons.map((reason) => String(reason || "").trim()).filter(Boolean)
+    : [];
+  const preflightCritical = preflightCriticalLabels(preflight);
+  const preflightAttention = preflightFreshnessRemediations(preflight);
+  const preflightToneInfo = {
+    label: titleizeLabel(preflightState),
+    tone: preflightTone(preflightState),
+  };
+  const startGateToneInfo = {
+    label: preflightStartGateLabel(preflight),
+    tone: preflightTone(preflightStartBlocked ? "blocked" : preflightState),
+  };
 
   return (
     <SafeAreaView style={styles.root}>
@@ -404,9 +587,44 @@ export default function App() {
           <StatRow label="Exchange" value={status.selected_exchange || "-"} />
         </Card>
 
-        <Card title="Controls">
+        <Card title="Preflight" tone={preflightToneInfo}>
+          <StatRow label="Start" value={formatPreflightGate(preflight?.start)} />
+          <StatRow label="Orders" value={formatPreflightGate(preflight?.orders)} />
+          <StatRow label="Mode" value={formatPreflightMode(preflight)} />
+          <StatRow
+            label="Critical"
+            value={preflightCritical.length ? preflightCritical.join(", ") : "Fresh"}
+          />
+          <StatRow label="Ages" value={preflightFreshnessAges(preflight)} />
+          <Text style={styles.message}>
+            {preflight?.message || "No preflight snapshot returned yet."}
+            {preflightReasons.length ? ` ${preflightReasons.join("; ")}` : ""}
+          </Text>
+          {preflightAttention.length ? (
+            preflightAttention.map((item) => (
+              <Text key={item} style={styles.attentionItem}>
+                {item}
+              </Text>
+            ))
+          ) : (
+            <Text style={styles.message}>No stale preflight inputs reported.</Text>
+          )}
           <View style={styles.buttonRow}>
-            <Pressable style={styles.button} onPress={() => sendLifecycle("start")}>
+            <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => recheckPreflight()}>
+              <Text style={styles.buttonText}>Recheck Preflight</Text>
+            </Pressable>
+          </View>
+        </Card>
+
+        <Card title="Controls" tone={startGateToneInfo}>
+          <StatRow label="Start Gate" value={preflightStartGateLabel(preflight)} />
+          <View style={styles.buttonRow}>
+            <Pressable
+              style={[styles.button, preflightStartBlocked ? styles.disabledButton : null]}
+              disabled={preflightStartBlocked}
+              accessibilityState={{ disabled: preflightStartBlocked }}
+              onPress={() => sendLifecycle("start")}
+            >
               <Text style={styles.buttonText}>Request Start</Text>
             </Pressable>
             <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => sendLifecycle("stop")}>
@@ -723,6 +941,9 @@ const styles = StyleSheet.create({
   pill_error: {
     backgroundColor: "rgba(251, 113, 133, 0.18)",
   },
+  pill_warning: {
+    backgroundColor: "rgba(245, 158, 11, 0.2)",
+  },
   pill_muted: {
     backgroundColor: "rgba(255, 255, 255, 0.08)",
   },
@@ -848,6 +1069,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     marginTop: 4,
+  },
+  attentionItem: {
+    color: "#ffdca8",
+    fontSize: 12,
+    lineHeight: 18,
+    backgroundColor: "rgba(245, 158, 11, 0.08)",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(245, 158, 11, 0.18)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   loader: {
     marginTop: 6,

@@ -118,6 +118,8 @@ For the Python implementation, the longer-term architecture should also separate
 - `Languages/Python/app/service/` for headless backend/runtime/API work
 - `Languages/Python/app/service/runners/` for headless lifecycle/runtime coordinators
 - `Languages/Python/app/service/runners/backtest_executor.py` as the first service-owned extracted workload reusing the shared backtest engine, with request parsing in `backtest_executor_request_runtime.py`, snapshot publishing in `backtest_executor_snapshot_runtime.py`, and worker-thread execution in `backtest_executor_worker_runtime.py`
+- `docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md` for operator recovery steps when live
+  start or order submission is blocked by stale operational data
 - `Languages/Python/app/desktop/` for desktop-only bootstrap and client adapters
 - `Languages/Python/app/desktop/service_bridge.py` now keeps the desktop-service bind surface, with client/factory helpers in `service_bridge_client_runtime.py`, control dispatch in `service_bridge_control_runtime.py`, snapshot sync/query helpers in `service_bridge_snapshot_runtime.py`, and API host/config helpers in `service_bridge_host_runtime.py`
 - `Languages/Python/app/desktop/bootstrap/` as the moved desktop-bootstrap implementation, with `apps/desktop-pyqt/main.py` now the canonical top-level desktop launcher and `Languages/Python/main.py` kept as the stable compatibility launcher

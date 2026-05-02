@@ -1,0 +1,68 @@
+{
+  "state": "blocked",
+  "message": "Live preflight blocked. Review the reasons before starting or submitting orders.",
+  "mode": "Live",
+  "live_mode": true,
+  "generated_at": "2026-05-02T08:34:24.578020+00:00",
+  "start": {
+    "allowed": false,
+    "state": "blocked",
+    "gate_enabled": true,
+    "reasons": [
+      "critical snapshots are stale: exchange connector, account, portfolio"
+    ]
+  },
+  "orders": {
+    "allowed": false,
+    "state": "blocked",
+    "gate_enabled": true,
+    "reasons": [
+      "critical snapshots are stale: exchange connector, account, portfolio"
+    ]
+  },
+  "freshness": {
+    "exchange_connector": {
+      "stale": true,
+      "max_age_seconds": 60.0,
+      "generated_at": "2026-05-02T08:19:24.577873+00:00",
+      "age_seconds": 900.0,
+      "state": "ready",
+      "source": "unit-test"
+    },
+    "execution": {
+      "stale": false,
+      "max_age_seconds": 10.0,
+      "state": "idle",
+      "source": "service-bootstrap"
+    },
+    "account": {
+      "stale": true,
+      "max_age_seconds": 60.0,
+      "generated_at": "2026-05-02T08:19:24.577873+00:00",
+      "age_seconds": 900.0,
+      "source": "unit-test"
+    },
+    "portfolio": {
+      "stale": true,
+      "max_age_seconds": 60.0,
+      "generated_at": "2026-05-02T08:19:24.577873+00:00",
+      "age_seconds": 900.0,
+      "source": "unit-test"
+    }
+  },
+  "critical_stale": {
+    "start": [
+      "exchange connector",
+      "account",
+      "portfolio"
+    ],
+    "orders": [
+      "exchange connector",
+      "account",
+      "portfolio"
+    ]
+  },
+  "reasons": [
+    "critical snapshots are stale: exchange connector, account, portfolio"
+  ]
+}

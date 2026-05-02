@@ -134,6 +134,7 @@ For the fuller breakdown, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
 assets/
 docs/
   DEVELOPMENT.md          # contributor notes and maintenance guidance
+  OPERATIONAL_PREFLIGHT_RUNBOOK.md
   PLATFORM_EXPANSION_PLAN.md
   PROJECT_STRUCTURE.md    # repo/source/output layout
   RELEASES.md             # GitHub release workflow and asset guide
@@ -181,6 +182,7 @@ Contributor-facing structure and maintenance docs now live here:
 - `docs/DEVELOPMENT.md`
 - `docs/PLATFORM_EXPANSION_PLAN.md`
 - `docs/SERVICE_API.md`
+- `docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md`
 
 ## Contributing and security
 

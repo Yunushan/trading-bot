@@ -12,6 +12,10 @@ from .start_shared_runtime import (
 )
 
 
+class ServiceStartRejected(RuntimeError):
+    pass
+
+
 def _callable_accepts_keyword(target, keyword: str) -> bool:  # noqa: ANN001
     try:
         signature = inspect.signature(target)
@@ -23,6 +27,19 @@ def _callable_accepts_keyword(target, keyword: str) -> bool:  # noqa: ANN001
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in signature.parameters.values()
     )
+
+
+def _coerce_control_result(value) -> dict | None:  # noqa: ANN001
+    if isinstance(value, dict):
+        return value
+    try:
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            result = to_dict()
+            return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+    return None
 
 
 def _prepare_strategy_runtime_start(
@@ -45,10 +62,20 @@ def _prepare_strategy_runtime_start(
     except Exception:
         pass
     try:
-        self._service_request_start(
+        start_result = self._service_request_start(
             requested_job_count=len(combos),
             source="desktop-start",
         )
+        start_payload = _coerce_control_result(start_result)
+        if isinstance(start_payload, dict) and start_payload.get("accepted") is False:
+            message = str(
+                start_payload.get("status_message")
+                or start_payload.get("message")
+                or "Desktop service start request was rejected."
+            ).strip()
+            raise ServiceStartRejected(f"Start blocked by service control plane: {message}")
+    except ServiceStartRejected:
+        raise
     except Exception:
         pass
 

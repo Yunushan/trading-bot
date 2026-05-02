@@ -37,3 +37,16 @@ python apps/service-api/main.py --base-url http://127.0.0.1:8000 --terminal "sta
 
 The terminal command surface is intentionally allowlisted and does not execute
 raw operating-system shell commands.
+
+## Contract Samples
+
+The service keeps sample response payloads in `contracts/` for clients that
+consume the HTTP API directly.
+
+- `contracts/operational-preflight.sample.json` documents
+  `GET /api/v1/runtime/operational-preflight`. Desktop, mobile, and dashboard
+  clients should treat the top-level fields, `start` and `orders` gate objects,
+  `freshness` inputs, `critical_stale` lists, and `reasons` as the stable shape.
+
+Operator recovery steps for blocked or warning preflight states are documented
+in [docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md](../../docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md).

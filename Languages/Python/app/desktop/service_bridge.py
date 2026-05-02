@@ -49,6 +49,9 @@ def bind_main_window_desktop_service_bridge(
         service_bridge_snapshot_runtime._get_service_exchange_connector_snapshot
     )
     main_window_cls._get_service_operational_snapshot = service_bridge_snapshot_runtime._get_service_operational_snapshot
+    main_window_cls._get_service_operational_preflight = (
+        service_bridge_snapshot_runtime._get_service_operational_preflight
+    )
     main_window_cls._get_service_connector_order_circuit_breaker_snapshot = (
         service_bridge_snapshot_runtime._get_service_connector_order_circuit_breaker_snapshot
     )

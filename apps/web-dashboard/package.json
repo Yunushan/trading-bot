@@ -2,5 +2,8 @@
   "name": "trading-bot-web-dashboard",
   "version": "1.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "test": "node tests/render-preflight.test.mjs"
+  }
 }

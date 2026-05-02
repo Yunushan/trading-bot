@@ -85,11 +85,20 @@
           <div><dt>Orders</dt><dd id="preflight-orders">-</dd></div>
           <div><dt>Mode</dt><dd id="preflight-mode">-</dd></div>
           <div><dt>Critical</dt><dd id="preflight-critical">-</dd></div>
+          <div><dt>Ages</dt><dd id="preflight-ages">-</dd></div>
         </dl>
         <div class="actions">
           <button id="preflight-recheck-button" type="button" class="secondary">Recheck Preflight</button>
         </div>
         <p id="preflight-message" class="hint compact-hint">-</p>
+        <div class="preflight-remediation">
+          <div class="detail-head">
+            <h3>Attention</h3>
+            <span id="preflight-remediation-count" class="pill muted">0</span>
+          </div>
+          <div id="preflight-remediation-empty" class="empty-state compact-empty">No stale preflight inputs reported.</div>
+          <div id="preflight-remediation-list" class="mini-list"></div>
+        </div>
       </section>
 
       <section class="card">
@@ -240,6 +249,7 @@
         </label>
         <div class="actions">
           <button id="request-start-button" type="button">Request Start</button>
+          <span id="start-gate-state" class="pill muted">Preflight Unknown</span>
           <button id="mark-running-button" type="button" class="secondary">Mark Running</button>
         </div>
         <div id="runtime-sync-actions" class="actions">

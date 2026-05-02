@@ -109,6 +109,9 @@ Current dashboard capabilities:
 - service-owned backtest visibility and control
 - live dashboard refresh over Server-Sent Events
 
+Operational preflight blocks and warnings are handled with the
+[Operational Preflight Runbook](OPERATIONAL_PREFLIGHT_RUNBOOK.md).
+
 ## Desktop-hosted API mode
 
 If you want browser clients to follow the real desktop-owned runtime instead of a separate standalone service process, use the embedded desktop host.
@@ -147,6 +150,7 @@ Core routes:
 - `GET /health`
 - `GET /api/v1/dashboard`
 - `GET /api/v1/runtime`
+- `GET /api/v1/runtime/operational-preflight`
 - `GET /api/v1/status`
 - `GET /api/v1/config`
 - `GET /api/v1/config-summary`

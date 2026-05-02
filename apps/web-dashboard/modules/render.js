@@ -156,6 +156,33 @@ function preflightTone(preflightState) {
   return "muted";
 }
 
+const PREFLIGHT_FRESHNESS_INPUTS = [
+  {
+    key: "exchange_connector",
+    ageLabel: "Exchange",
+    label: "Exchange connector snapshot",
+    action: "Check connector health, API credentials, network, and rate-limit state; then recheck preflight.",
+  },
+  {
+    key: "execution",
+    ageLabel: "Execution",
+    label: "Execution heartbeat",
+    action: "Confirm the runtime executor is active and sending heartbeats before starting live trading.",
+  },
+  {
+    key: "account",
+    ageLabel: "Account",
+    label: "Account snapshot",
+    action: "Refresh account sync so balances and available margin are current before live start or orders.",
+  },
+  {
+    key: "portfolio",
+    ageLabel: "Portfolio",
+    label: "Portfolio snapshot",
+    action: "Refresh portfolio sync so open positions and exposure are current before live start or orders.",
+  },
+];
+
 function renderPreflightGate(gate) {
   const payload = gate && typeof gate === "object" ? gate : {};
   const stateLabel = titleizeLabel(payload.state || (payload.allowed === false ? "blocked" : "unknown"));
@@ -188,6 +215,113 @@ function preflightCriticalLabels(preflight) {
   return labels;
 }
 
+function preflightFreshnessAges(preflight) {
+  const payload = preflight && typeof preflight === "object" ? preflight : {};
+  const freshness = payload.freshness && typeof payload.freshness === "object" ? payload.freshness : {};
+  const items = PREFLIGHT_FRESHNESS_INPUTS
+    .map(({ key, ageLabel }) => {
+      const item = freshness[key] && typeof freshness[key] === "object" ? freshness[key] : null;
+      if (!item) {
+        return "";
+      }
+      const age = Number(item.age_seconds);
+      const maxAge = Number(item.max_age_seconds);
+      const ageText = Number.isFinite(age) ? `${formatNumber(age)}s` : "-";
+      const maxText = Number.isFinite(maxAge) ? `${formatNumber(maxAge)}s` : "-";
+      const stateText = item.stale ? "stale" : "fresh";
+      return `${ageLabel} ${ageText}/${maxText} ${stateText}`;
+    })
+    .filter(Boolean);
+  return items.length ? items.join(" | ") : "-";
+}
+
+function preflightFreshnessRemediations(preflight) {
+  const payload = preflight && typeof preflight === "object" ? preflight : {};
+  const freshness = payload.freshness && typeof payload.freshness === "object" ? payload.freshness : {};
+  return PREFLIGHT_FRESHNESS_INPUTS
+    .map(({ key, label, action }) => {
+      const item = freshness[key] && typeof freshness[key] === "object" ? freshness[key] : null;
+      if (!item || !item.stale) {
+        return null;
+      }
+      const age = Number(item.age_seconds);
+      const maxAge = Number(item.max_age_seconds);
+      const details = [];
+      if (Number.isFinite(age)) {
+        details.push(`Age ${formatNumber(age)}s`);
+      }
+      if (Number.isFinite(maxAge)) {
+        details.push(`Limit ${formatNumber(maxAge)}s`);
+      }
+      const stateText = titleizeLabel(item.state || "");
+      if (stateText && stateText !== "-") {
+        details.push(`State ${stateText}`);
+      }
+      const source = String(item.source || "").trim();
+      if (source) {
+        details.push(`Source ${source}`);
+      }
+      return {
+        label,
+        action,
+        details,
+      };
+    })
+    .filter(Boolean);
+}
+
+function renderPreflightRemediations(preflight) {
+  const items = preflightFreshnessRemediations(preflight);
+  elements.preflightRemediationCount.textContent = String(items.length);
+  elements.preflightRemediationCount.className = `pill ${items.length ? "warn" : "muted"}`;
+  elements.preflightRemediationEmpty.style.display = items.length ? "none" : "block";
+  elements.preflightRemediationList.innerHTML = items
+    .map(
+      (item) => `
+        <article class="mini-row">
+          <div class="mini-head">
+            <strong>${escapeHtml(item.label)}</strong>
+            <span>Stale</span>
+          </div>
+          ${item.details.length ? `<div class="mini-meta">${item.details.map((detail) => `<span>${escapeHtml(detail)}</span>`).join("")}</div>` : ""}
+          <div class="mini-error">${escapeHtml(item.action)}</div>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function updateStartControlFromPreflight(preflight) {
+  const payload = preflight && typeof preflight === "object" ? preflight : {};
+  const start = payload.start && typeof payload.start === "object" ? payload.start : {};
+  const hasStartDecision = Object.hasOwn(start, "allowed");
+  const blocked = hasStartDecision && start.allowed === false;
+  const stateLabel = String(start.state || payload.state || "unknown").toLowerCase();
+  const reasons = Array.isArray(start.reasons) ? start.reasons.filter(Boolean) : [];
+  const fallbackMessage = String(payload.message || "No preflight snapshot received yet.").trim();
+  const detail = reasons.length ? reasons.join(" ") : fallbackMessage;
+  const title = blocked
+    ? `Live start blocked by preflight: ${detail}`
+    : stateLabel === "ok"
+      ? "Preflight allows start."
+      : `Preflight ${stateLabel}: ${detail}`;
+
+  if (elements.requestStartButton) {
+    elements.requestStartButton.disabled = blocked;
+    elements.requestStartButton.textContent = blocked ? "Start Blocked" : "Request Start";
+    elements.requestStartButton.title = title;
+  }
+  if (elements.startGateState) {
+    elements.startGateState.textContent = blocked
+      ? "Preflight Blocked"
+      : stateLabel === "ok"
+        ? "Preflight Ready"
+        : `Preflight ${titleizeLabel(stateLabel)}`;
+    elements.startGateState.className = `pill ${preflightTone(stateLabel)}`;
+    elements.startGateState.title = title;
+  }
+}
+
 export function renderPreflight(preflight) {
   const payload = preflight && typeof preflight === "object" ? preflight : {};
   const stateLabel = String(payload.state || "unknown").toLowerCase();
@@ -201,7 +335,10 @@ export function renderPreflight(preflight) {
   elements.preflightOrders.textContent = renderPreflightGate(payload.orders);
   elements.preflightMode.textContent = `${payload.live_mode ? "Live" : "Demo/Test"} / ${payload.mode || "-"}`;
   elements.preflightCritical.textContent = critical.length ? critical.join(", ") : "Fresh";
+  elements.preflightAges.textContent = preflightFreshnessAges(payload);
   elements.preflightMessage.textContent = `${message || "No preflight snapshot received yet."}${reasonText}`;
+  renderPreflightRemediations(payload);
+  updateStartControlFromPreflight(payload);
 }
 
 function renderRateLimit(rateLimit) {

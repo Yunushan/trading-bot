@@ -7,7 +7,7 @@ Thin Expo-based native Android/iOS client over the existing Trading Bot service 
 This client is intentionally small:
 
 - connect to the headless service API
-- inspect runtime, status, backtest state, and recent logs
+- inspect runtime, status, operational preflight, backtest state, and recent logs
 - request bot start/stop
 - trigger the extracted service-owned backtest runner
 - select and save LLM provider settings for OpenAI/ChatGPT, Claude, Gemini, DeepSeek, Grok, Qwen, or a local/private OpenAI-compatible endpoint
@@ -59,6 +59,19 @@ http://192.168.1.25:8000
 ```
 
 Enter the same bearer token used by `BOT_SERVICE_API_TOKEN` in the mobile app connection settings.
+
+## Preflight Safety
+
+The mobile client reads the same operational preflight payload as the web
+dashboard. The Preflight card shows Start, Orders, Mode, Critical, Ages, and
+stale-input attention rows from `/api/v1/runtime/operational-preflight`.
+
+Request Start is disabled only when the backend preflight reports
+`start.allowed === false`. Warning, demo/test, and disabled-gate states remain
+clickable so the backend remains the source of truth for lifecycle requests.
+
+For blocked-state triage and recovery steps, use the operator runbook:
+[docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md](../../docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md).
 
 ## Notes
 

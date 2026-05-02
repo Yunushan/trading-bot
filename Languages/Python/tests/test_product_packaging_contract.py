@@ -91,8 +91,13 @@ class ProductPackagingContractTests(unittest.TestCase):
             "preflight-orders",
             "preflight-mode",
             "preflight-critical",
+            "preflight-ages",
             "preflight-recheck-button",
             "preflight-message",
+            "preflight-remediation-count",
+            "preflight-remediation-empty",
+            "preflight-remediation-list",
+            "start-gate-state",
         ):
             self.assertIn(f'id="{element_id}"', index)
 
@@ -126,12 +131,36 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertIn("preflightState: document.getElementById(\"preflight-state\")", state)
         self.assertIn("preflightOrders: document.getElementById(\"preflight-orders\")", state)
+        self.assertIn("preflightAges: document.getElementById(\"preflight-ages\")", state)
         self.assertIn(
             "preflightRecheckButton: document.getElementById(\"preflight-recheck-button\")",
             state,
         )
+        self.assertIn(
+            "preflightRemediationCount: document.getElementById(\"preflight-remediation-count\")",
+            state,
+        )
+        self.assertIn(
+            "preflightRemediationEmpty: document.getElementById(\"preflight-remediation-empty\")",
+            state,
+        )
+        self.assertIn(
+            "preflightRemediationList: document.getElementById(\"preflight-remediation-list\")",
+            state,
+        )
+        self.assertIn("startGateState: document.getElementById(\"start-gate-state\")", state)
         self.assertIn("function renderExchangeConnector", render)
         self.assertIn("export function renderPreflight", render)
+        self.assertIn("function preflightFreshnessAges", render)
+        self.assertIn("function preflightFreshnessRemediations", render)
+        self.assertIn("function renderPreflightRemediations", render)
+        self.assertIn("Execution heartbeat", render)
+        self.assertIn("elements.preflightAges.textContent", render)
+        self.assertIn("elements.preflightRemediationEmpty.style.display", render)
+        self.assertIn("elements.preflightRemediationList.innerHTML", render)
+        self.assertIn("function updateStartControlFromPreflight", render)
+        self.assertIn("requestStartButton.disabled = blocked", render)
+        self.assertIn("Start Blocked", render)
         self.assertIn("function renderCircuitIncidentLog", render)
         self.assertIn("function renderLastCircuitIncident", render)
         self.assertIn("function renderConnectorIncidents", render)
@@ -176,11 +205,175 @@ class ProductPackagingContractTests(unittest.TestCase):
         ):
             self.assertIn(required_id, bound_ids)
 
+    def test_web_dashboard_preflight_renderer_behavior_test_is_packaged(self):
+        dashboard_dir = REPO_ROOT / "apps" / "web-dashboard"
+        package_json = (dashboard_dir / "package.json").read_text(encoding="utf-8")
+        test_script = (dashboard_dir / "tests" / "render-preflight.test.mjs").read_text(encoding="utf-8")
+
+        self.assertIn('"test": "node tests/render-preflight.test.mjs"', package_json)
+        self.assertIn("await import(\"../modules/render.js\")", test_script)
+        self.assertIn("blocked start disables the Request Start button", test_script)
+        self.assertIn("idle live preflight keeps Request Start ready", test_script)
+        self.assertIn("warning preflight leaves Request Start clickable", test_script)
+        self.assertIn("request-start-button", test_script)
+        self.assertIn("preflight-remediation-list", test_script)
+
+    def test_web_dashboard_readme_documents_preflight_operator_safety(self):
+        readme = (REPO_ROOT / "apps" / "web-dashboard" / "README.md").read_text(encoding="utf-8")
+        normalized_readme = " ".join(readme.split())
+
+        for phrase in (
+            "## Preflight And Live Safety",
+            "mirrors backend operational live safety checks",
+            "Start shows whether live start is allowed, blocked, or warning",
+            "A blocked Start disables Request Start",
+            "Warnings, demo mode, and disabled gates keep Request Start clickable",
+            "Orders shows whether live order submission is allowed, blocked, or warning",
+            "Ages lists exchange connector, execution heartbeat, account snapshot",
+            "A missing idle execution heartbeat is not a live-start blocker",
+            "stale running execution heartbeat is",
+            "Attention lists stale inputs and remediation hints",
+            "`/runtime/operational-preflight`",
+        ):
+            self.assertIn(phrase, normalized_readme)
+
+    def test_mobile_client_surfaces_operational_preflight_start_gate(self):
+        mobile_dir = REPO_ROOT / "apps" / "mobile-client"
+        app = (mobile_dir / "App.js").read_text(encoding="utf-8")
+        readme = (mobile_dir / "README.md").read_text(encoding="utf-8")
+        normalized_readme = " ".join(readme.split())
+
+        for phrase in (
+            "function currentPreflight",
+            "dashboard?.operational?.preflight",
+            "function isPreflightStartBlocked",
+            "function preflightFreshnessAges",
+            "function preflightFreshnessRemediations",
+            "const recheckPreflight = async",
+            'apiPath("runtime/operational-preflight")',
+            'Card title="Preflight"',
+            'Card title="Controls" tone={startGateToneInfo}',
+            "disabled={preflightStartBlocked}",
+            "Preflight Blocked",
+            "Live start blocked by preflight",
+            "Request Start",
+        ):
+            self.assertIn(phrase, app)
+
+        for phrase in (
+            "## Preflight Safety",
+            "same operational preflight payload as the web dashboard",
+            "Start, Orders, Mode, Critical, Ages",
+            "`/api/v1/runtime/operational-preflight`",
+            "Request Start is disabled only when the backend preflight reports",
+            "`start.allowed === false`",
+            "docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md",
+        ):
+            self.assertIn(phrase, normalized_readme)
+
+    def test_desktop_client_surfaces_and_enforces_operational_preflight_start_gate(self):
+        desktop_client = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "desktop" / "adapters" / "service_client.py"
+        ).read_text(encoding="utf-8")
+        bridge = (REPO_ROOT / "Languages" / "Python" / "app" / "desktop" / "service_bridge.py").read_text(
+            encoding="utf-8"
+        )
+        snapshot_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "desktop" / "service_bridge_snapshot_runtime.py"
+        ).read_text(encoding="utf-8")
+        control_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "desktop" / "service_bridge_control_runtime.py"
+        ).read_text(encoding="utf-8")
+        actions_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "dashboard" / "actions_runtime.py"
+        ).read_text(encoding="utf-8")
+        service_api_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "runtime" / "service" / "service_api_runtime.py"
+        ).read_text(encoding="utf-8")
+        session_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "runtime" / "service" / "session_runtime.py"
+        ).read_text(encoding="utf-8")
+        status_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "runtime" / "service" / "status_runtime.py"
+        ).read_text(encoding="utf-8")
+        start_engine_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "runtime" / "strategy" / "start_engine_runtime.py"
+        ).read_text(encoding="utf-8")
+        start_runtime = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "runtime" / "strategy" / "start_runtime.py"
+        ).read_text(encoding="utf-8")
+
+        for phrase in (
+            "def get_operational_preflight",
+            'service_api_route("operational_preflight")',
+        ):
+            self.assertIn(phrase, desktop_client)
+        self.assertIn("_get_service_operational_preflight", bridge)
+        self.assertIn("def _get_service_operational_preflight", snapshot_runtime)
+        self.assertIn("def _service_request_start", control_runtime)
+        self.assertIn("_coerce_service_control_payload(result)", control_runtime)
+        self.assertIn("desktop_service_preflight_label", actions_runtime)
+        self.assertIn("desktop_service_preflight_recheck_btn", actions_runtime)
+        self.assertIn("Recheck Preflight", actions_runtime)
+        self.assertIn("Preflight: start blocked", service_api_runtime)
+        self.assertIn("_apply_desktop_service_start_gate", service_api_runtime)
+        self.assertIn("_recheck_desktop_service_preflight", service_api_runtime)
+        self.assertIn("Start Blocked", service_api_runtime)
+        self.assertIn("start_btn.setEnabled(False)", service_api_runtime)
+        self.assertIn("_apply_desktop_service_start_gate", session_runtime)
+        self.assertIn("_apply_desktop_service_start_gate", status_runtime)
+        self.assertIn("ServiceStartRejected", start_engine_runtime)
+        self.assertIn("Start blocked by service control plane", start_engine_runtime)
+        self.assertIn("except ServiceStartRejected", start_runtime)
+        self.assertIn("service_start_rejected", start_runtime)
+
+    def test_operational_preflight_runbook_is_packaged_and_linked(self):
+        runbook = (REPO_ROOT / "docs" / "OPERATIONAL_PREFLIGHT_RUNBOOK.md").read_text(encoding="utf-8")
+        root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        user_guide = (REPO_ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
+        service_guide = (REPO_ROOT / "docs" / "SERVICE_API.md").read_text(encoding="utf-8")
+        service_readme = (REPO_ROOT / "apps" / "service-api" / "README.md").read_text(encoding="utf-8")
+        dashboard_readme = (REPO_ROOT / "apps" / "web-dashboard" / "README.md").read_text(encoding="utf-8")
+        mobile_readme = (REPO_ROOT / "apps" / "mobile-client" / "README.md").read_text(encoding="utf-8")
+
+        for phrase in (
+            "# Operational Preflight Runbook",
+            "GET /api/v1/runtime/operational-preflight",
+            "critical_stale.start",
+            "freshness.exchange_connector",
+            "Exchange Connector",
+            "Account Snapshot",
+            "Portfolio Snapshot",
+            "Execution Heartbeat",
+            "operational_live_start_gate_enabled",
+            "operational_live_order_gate_enabled",
+            "start.allowed",
+            "orders.allowed",
+            "Before Restarting Live",
+        ):
+            self.assertIn(phrase, runbook)
+
+        for docs_text in (
+            root_readme,
+            user_guide,
+            service_guide,
+            service_readme,
+            dashboard_readme,
+            mobile_readme,
+        ):
+            self.assertIn("OPERATIONAL_PREFLIGHT_RUNBOOK.md", docs_text)
+
     def test_ci_smoke_uses_canonical_service_wrapper(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("python apps/service-api/main.py --healthcheck", workflow)
         self.assertIn("apps/desktop-pyqt/main.py", workflow)
         self.assertIn("apps/service-api/main.py", workflow)
+        self.assertIn("Web Dashboard Quality", workflow)
+        self.assertIn("actions/setup-node@v6", workflow)
+        self.assertIn('node-version: "24"', workflow)
+        self.assertIn("working-directory: apps/web-dashboard", workflow)
+        self.assertIn("node --check modules/render.js", workflow)
+        self.assertIn("npm test", workflow)
 
     def test_python_package_metadata_includes_public_trading_core_surface(self):
         pyproject = (REPO_ROOT / "Languages" / "Python" / "pyproject.toml").read_text(encoding="utf-8")
