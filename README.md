@@ -227,6 +227,18 @@ All commands assume you are inside the Python workspace:
 cd Languages/Python
 ```
 
+For local development, CI parity, and the complete Python test surface, install
+the editable workspace with every reviewed optional group:
+
+```bash
+python -m pip install -e ".[desktop,service,dev]"
+python -m unittest discover tests
+```
+
+The `dev` extra includes test-only tools such as the FastAPI `TestClient`
+transport dependency used by service API contract tests. The `requirements*.txt`
+files below are lightweight runtime shims for launching specific app surfaces.
+
 ### Windows
 
 **One-click (recommended if Python ≥ 3.10 is already installed):**
@@ -290,7 +302,7 @@ python3.11 ../../apps/desktop-pyqt/main.py
 | Component | Location | Purpose | How to run |
 |-----------|----------|---------|------------|
 | **Desktop PyQt app** | `apps/desktop-pyqt/main.py` | Full desktop trading workstation | `python apps/desktop-pyqt/main.py` |
-| **Service API** | `apps/service-api/main.py` | Headless backend + `/ui/` dashboard host | `python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000` |
+| **Service API** | `apps/service-api/main.py` | Backend + `/ui/` dashboard host; standalone start/stop is lifecycle heartbeat only | `python apps/service-api/main.py --serve --host 127.0.0.1 --port 8000` |
 | **Windows launcher** | `Languages/Python/Trading-Bot-Python.bat` | Automates environment creation + launch | Double-click on Windows |
 
 All tools are cross-platform except the `.bat` helper which is Windows-only.
@@ -314,6 +326,8 @@ The dedicated guide is now the primary home for day-to-day usage details.
 ## Service API guide
 
 The headless backend, built-in web dashboard, desktop-hosted API mode, and endpoint reference now have a dedicated home in [docs/SERVICE_API.md](docs/SERVICE_API.md).
+
+Standalone service start/stop currently tracks lifecycle heartbeat state only; it does not run live trading strategy loops or submit exchange orders. Use desktop-hosted API mode to observe the desktop-owned live/demo runtime.
 
 Use that guide for:
 

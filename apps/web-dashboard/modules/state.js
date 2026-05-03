@@ -1,6 +1,10 @@
 import { toLocalDateTimeValue } from "./utils.js";
 
 const STORAGE_KEY = "trading-bot-service-dashboard";
+const SESSION_STORAGE_KEY = "trading-bot-service-dashboard-session";
+
+export const PERSISTED_STORAGE_KEY = STORAGE_KEY;
+export const TOKEN_SESSION_STORAGE_KEY = SESSION_STORAGE_KEY;
 
 export const state = {
   baseUrl: "",
@@ -8,8 +12,11 @@ export const state = {
   authRequired: false,
   serviceApiContext: "",
   controlPlaneMode: "",
+  controlPlaneOwner: "",
+  controlPlaneExecutionScope: "",
   controlPlaneStartSupported: false,
   controlPlaneStopSupported: false,
+  controlPlaneTradingExecutionSupported: false,
   backtestFormInitialized: false,
   refreshTimer: null,
   eventSource: null,
@@ -31,8 +38,11 @@ export const elements = {
   runtimePlatform: document.getElementById("runtime-platform"),
   runtimePython: document.getElementById("runtime-python"),
   runtimeDesktop: document.getElementById("runtime-desktop"),
+  runtimeLifecycleMode: document.getElementById("runtime-lifecycle-mode"),
   runtimeControlMode: document.getElementById("runtime-control-mode"),
   runtimeExecOwner: document.getElementById("runtime-exec-owner"),
+  runtimeExecutionScope: document.getElementById("runtime-execution-scope"),
+  runtimeTradingExecution: document.getElementById("runtime-trading-execution"),
   statusMode: document.getElementById("status-mode"),
   statusActive: document.getElementById("status-active"),
   statusEngines: document.getElementById("status-engines"),
@@ -103,6 +113,9 @@ export const elements = {
   controlJobs: document.getElementById("control-jobs"),
   runtimeEngineCount: document.getElementById("runtime-engine-count"),
   controlClosePositions: document.getElementById("control-close-positions"),
+  controlLifecycleMode: document.getElementById("control-lifecycle-mode"),
+  controlExecutionScope: document.getElementById("control-execution-scope"),
+  controlTradingExecution: document.getElementById("control-trading-execution"),
   requestStartButton: document.getElementById("request-start-button"),
   startGateState: document.getElementById("start-gate-state"),
   markRunningButton: document.getElementById("mark-running-button"),
@@ -135,8 +148,12 @@ export const elements = {
   configLiveOrderGateEnabled: document.getElementById("config-live-order-gate-enabled"),
   configSymbols: document.getElementById("config-symbols"),
   configIntervals: document.getElementById("config-intervals"),
+  configPersistenceState: document.getElementById("config-persistence-state"),
+  configPersistencePath: document.getElementById("config-persistence-path"),
   reloadConfigButton: document.getElementById("reload-config-button"),
   saveConfigButton: document.getElementById("save-config-button"),
+  saveConfigFileButton: document.getElementById("save-config-file-button"),
+  loadConfigFileButton: document.getElementById("load-config-file-button"),
   configMessage: document.getElementById("config-message"),
   accountSource: document.getElementById("account-source"),
   accountTotal: document.getElementById("account-total"),
@@ -155,9 +172,13 @@ export const elements = {
 
 export function readStoredConfig() {
   try {
-    const payload = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    state.baseUrl = String(payload.baseUrl || "").trim();
-    state.token = String(payload.token || "").trim();
+    const persisted = readStorageJson(globalThis.localStorage, STORAGE_KEY);
+    const session = readStorageJson(globalThis.sessionStorage, SESSION_STORAGE_KEY);
+    state.baseUrl = String(persisted.baseUrl || "").trim();
+    state.token = String(session.token || persisted.token || "").trim();
+    if (persisted.token) {
+      writeStoredConfig();
+    }
   } catch {
     state.baseUrl = "";
     state.token = "";
@@ -166,15 +187,28 @@ export function readStoredConfig() {
 
 export function writeStoredConfig() {
   try {
-    localStorage.setItem(
+    globalThis.localStorage?.setItem?.(
       STORAGE_KEY,
       JSON.stringify({
         baseUrl: state.baseUrl,
+      }),
+    );
+    globalThis.sessionStorage?.setItem?.(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
         token: state.token,
       }),
     );
   } catch {
-    // Local persistence is only a convenience.
+    // Browser-side persistence is only a convenience.
+  }
+}
+
+function readStorageJson(storage, key) {
+  try {
+    return JSON.parse(storage?.getItem?.(key) || "{}");
+  } catch {
+    return {};
   }
 }
 

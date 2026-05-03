@@ -4,13 +4,8 @@ import copy
 from datetime import datetime, timedelta, timezone
 
 from ...config import coerce_bool, normalize_stop_loss_dict
-from ...core.backtest import (
-    BacktestRequest,
-    IndicatorDefinition,
-    PairOverride,
-    normalize_backtest_interval,
-    normalize_backtest_intervals,
-)
+from ...core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
+from ...core.backtest.models import BacktestRequest, IndicatorDefinition, PairOverride
 
 
 def utc_now_iso() -> str:

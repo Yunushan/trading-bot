@@ -24,17 +24,19 @@ def _record_futures_http_error(
     method: str | None = None,
     retry_after: float | None = None,
     ban_until: float | None = None,
+    base_url: str | None = None,
 ) -> None:
     try:
-        base_url = None
-        try:
-            base_url = str(self._futures_base() or "")
-        except Exception:
-            base_url = None
+        effective_base_url = base_url
+        if effective_base_url is None:
+            try:
+                effective_base_url = str(self._futures_base() or "")
+            except Exception:
+                effective_base_url = None
         self._last_futures_http_error = {
             "ts": time.time(),
             "path": str(path or ""),
-            "base": base_url,
+            "base": effective_base_url,
             "status_code": int(status_code) if status_code is not None else None,
             "code": int(code) if code is not None else None,
             "message": redact_text(message or ""),

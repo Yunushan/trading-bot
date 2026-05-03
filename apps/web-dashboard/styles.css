@@ -109,7 +109,8 @@ body {
   color: var(--muted);
 }
 
-.field input {
+.field input,
+.field output {
   width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
@@ -117,6 +118,13 @@ body {
   color: var(--text);
   padding: 12px 14px;
   font-size: 0.95rem;
+}
+
+.field output {
+  display: block;
+  min-height: 44px;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .field select,
@@ -213,6 +221,10 @@ button:disabled {
 
 .compact-grid {
   margin-top: 0;
+}
+
+.config-persistence-grid {
+  margin-top: 12px;
 }
 
 .field-span {

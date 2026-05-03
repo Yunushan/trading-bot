@@ -2,6 +2,20 @@ from __future__ import annotations
 
 import time
 
+from .....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+
+
+def _coerce_max_futures_leverage(value: object = None) -> int:
+    try:
+        return max(1, int(value or BINANCE_MAX_FUTURES_LEVERAGE))
+    except Exception:
+        return BINANCE_MAX_FUTURES_LEVERAGE
+
+
+def _max_futures_leverage_limit(self) -> int:
+    configured = getattr(self, "_max_futures_leverage_constant", BINANCE_MAX_FUTURES_LEVERAGE)
+    return _coerce_max_futures_leverage(configured)
+
 
 def get_symbol_margin_type(self, symbol: str) -> str | None:
     """Return current margin type for symbol ('ISOLATED' | 'CROSSED') or None on error."""
@@ -266,14 +280,14 @@ def set_futures_leverage(self, lev: int):
         lev = int(lev)
     except Exception:
         return
-    max_futures_leverage = max(1, int(getattr(self, "_max_futures_leverage_constant", 150) or 150))
+    max_futures_leverage = _max_futures_leverage_limit(self)
     lev = max(1, min(max_futures_leverage, lev))
     self._requested_default_leverage = lev
     self._default_leverage = lev
     self.futures_leverage = lev
 
 
-def bind_binance_futures_settings(wrapper_cls, *, max_futures_leverage: int = 150):
+def bind_binance_futures_settings(wrapper_cls, *, max_futures_leverage: int = BINANCE_MAX_FUTURES_LEVERAGE):
     wrapper_cls.get_symbol_margin_type = get_symbol_margin_type
     wrapper_cls._futures_open_orders_count = _futures_open_orders_count
     wrapper_cls._futures_net_position_amt = _futures_net_position_amt
@@ -281,4 +295,4 @@ def bind_binance_futures_settings(wrapper_cls, *, max_futures_leverage: int = 15
     wrapper_cls.ensure_futures_settings = ensure_futures_settings
     wrapper_cls.configure_futures_symbol = configure_futures_symbol
     wrapper_cls.set_futures_leverage = set_futures_leverage
-    wrapper_cls._max_futures_leverage_constant = max(1, int(max_futures_leverage or 150))
+    wrapper_cls._max_futures_leverage_constant = _coerce_max_futures_leverage(max_futures_leverage)

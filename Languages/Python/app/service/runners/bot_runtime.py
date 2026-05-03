@@ -96,6 +96,8 @@ class BotRuntimeCoordinator(BotRuntimeStateMixin, BotRuntimeControlMixin):
         self._control_plane_owner = "service-runtime"
         self._control_plane_start_supported = False
         self._control_plane_stop_supported = False
+        self._control_plane_execution_scope = "intent-only"
+        self._control_plane_trading_execution_supported = False
         self._control_plane_notes = (
             "Control requests are recorded as service intent until an execution adapter is attached.",
         )

@@ -17,6 +17,8 @@ Run all commands from `Languages/Python/` unless a script says otherwise.
 | File | Purpose |
 | --- | --- |
 | `tools/check_dependency_metadata.py` | Verifies Python version metadata, dependency pin policy, requirement shim files, and CI install surface |
+| `tools/check_service_api_contracts.py` | Checks `apps/service-api/contracts/*` and can refresh the generated route contract with `--write` |
+| `tools/run_service_tests.py` | Runs the focused service API/unit/integration test modules as one stable command |
 | `tools/import_policy.py` | Canonical-import registry and deprecated-wrapper policy used by architecture tests |
 | `tools/manual_smoke.py` | Local manual smoke check for desktop imports, service health/API auth/config validation, and a fake exchange order flow |
 | `tools/configure_margin.py` | Quick CLI helper for Binance futures leverage and margin-mode setup |
@@ -26,6 +28,34 @@ Run all commands from `Languages/Python/` unless a script says otherwise.
 | `tools/dump_snippet.py` | Small extraction/debug helper for local code or text snippets |
 
 ## Common examples
+
+Full local dev/test install:
+
+```bash
+python -m pip install -e ".[desktop,service,dev]"
+python -m unittest discover tests
+```
+
+Focused service suite:
+
+```bash
+python tools/run_service_tests.py
+python tools/run_service_tests.py --check-list
+python tools/run_service_tests.py --check-docs
+python tools/run_service_tests.py --print-markdown
+```
+
+Focused service test map:
+
+| Module | Use when checking |
+| --- | --- |
+| `tests.test_service_api_http_contract` | HTTP route contracts, auth behavior, SSE auth, and runtime/dashboard responses |
+| `tests.test_service_schema_contracts` | service response schema builders, payload normalization, and secret redaction contracts |
+| `tests.test_service_config_runtime` | service config validation and durable config persistence |
+| `tests.test_service_operational_runtime` | operational health snapshots, connector incidents, JSONL rotation, and redaction |
+| `tests.test_service_lifecycle_runtime` | lifecycle control, control-plane descriptors, runtime samples, and live preflight gates |
+| `tests.test_service_client_integration` | desktop service client selection and service terminal/LLM commands |
+| `tests.test_service_background_host_integration` | embedded background host and background-hosted backtest API flows |
 
 Windows launcher:
 
@@ -67,4 +97,11 @@ Dependency metadata check:
 
 ```bash
 python tools/check_dependency_metadata.py
+```
+
+Service API contract check:
+
+```bash
+python tools/check_service_api_contracts.py
+python tools/check_service_api_contracts.py --write
 ```

@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ...core.backtest import normalize_backtest_interval, normalize_backtest_intervals
+from ...core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
 
 
 def _clean_text(value, default: str = "") -> str:  # noqa: ANN001

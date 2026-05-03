@@ -225,6 +225,8 @@ class BotRuntimeControlMixin:
         owner: str | None = None,
         start_supported: bool | None = None,
         stop_supported: bool | None = None,
+        execution_scope: str | None = None,
+        trading_execution_supported: bool | None = None,
         notes=None,  # noqa: ANN001
     ) -> None:
         with self._lock:
@@ -234,6 +236,10 @@ class BotRuntimeControlMixin:
                 self._control_plane_owner = str(owner or "external-control-adapter").strip() or "external-control-adapter"
                 self._control_plane_start_supported = True if start_supported is None else bool(start_supported)
                 self._control_plane_stop_supported = True if stop_supported is None else bool(stop_supported)
+                self._control_plane_execution_scope = (
+                    str(execution_scope or "delegated-runtime").strip() or "delegated-runtime"
+                )
+                self._control_plane_trading_execution_supported = bool(trading_execution_supported)
                 self._control_plane_notes = _normalize_control_plane_notes(notes) or (
                     "Control requests are forwarded to an external execution adapter.",
                 )
@@ -241,7 +247,7 @@ class BotRuntimeControlMixin:
                     executor_kind=self._control_plane_mode,
                     owner=self._control_plane_owner,
                     state="idle",
-                    workload_kind="delegated-runtime",
+                    workload_kind=self._control_plane_execution_scope,
                     session_id="",
                     requested_job_count=0,
                     active_engine_count=0,
@@ -262,6 +268,8 @@ class BotRuntimeControlMixin:
                 self._control_plane_owner = "service-runtime"
                 self._control_plane_start_supported = False
                 self._control_plane_stop_supported = False
+                self._control_plane_execution_scope = "intent-only"
+                self._control_plane_trading_execution_supported = False
                 self._control_plane_notes = (
                     "Control requests are recorded as service intent until an execution adapter is attached.",
                 )
@@ -482,6 +490,7 @@ class BotRuntimeControlMixin:
         active: bool,
         active_engine_count: int = 0,
         source: str = "service",
+        status_message: str = "",
     ) -> BotControlResult:
         with self._lock:
             self._runtime_active = bool(active)
@@ -490,14 +499,21 @@ class BotRuntimeControlMixin:
             except Exception:
                 self._active_engine_count = 0
             self._runtime_source = str(source or "service")
+            custom_status_message = str(status_message or "").strip()
             if self._runtime_active:
                 self._lifecycle_phase = "running"
                 self._requested_action = ""
-                self._status_message = f"Runtime active with {self._active_engine_count} engine(s)."
+                self._status_message = (
+                    custom_status_message
+                    if custom_status_message
+                    else f"Runtime active with {self._active_engine_count} engine(s)."
+                )
             else:
                 self._lifecycle_phase = "idle"
                 self._requested_action = ""
-                if self._close_positions_requested:
+                if custom_status_message:
+                    self._status_message = custom_status_message
+                elif self._close_positions_requested:
                     self._status_message = "Runtime idle after stop request."
                 else:
                     self._status_message = "Runtime idle."
@@ -513,6 +529,8 @@ class BotRuntimeControlMixin:
                     owner=self._control_plane_owner,
                     start_supported=self._control_plane_start_supported,
                     stop_supported=self._control_plane_stop_supported,
+                    execution_scope=self._control_plane_execution_scope,
+                    trading_execution_supported=self._control_plane_trading_execution_supported,
                     notes=tuple(self._control_plane_notes),
                 )
             )

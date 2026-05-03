@@ -15,6 +15,7 @@ from .connectors import (
     ConnectorSettings,
 )
 from .execution import ExecutionSettings
+from .exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
 from .indicators import (
     AVAILABLE_INDICATORS,
     INDICATOR_CATALOG,
@@ -53,7 +54,6 @@ from .risk import (
 )
 from .ui import DEFAULT_CODE_LANGUAGE, DEFAULT_SELECTED_EXCHANGE, UserInterfaceSettings
 from .validation import (
-    BINANCE_MAX_FUTURES_LEVERAGE,
     ConfigValidationError,
     ConfigValidationIssue,
     format_config_validation_issues,

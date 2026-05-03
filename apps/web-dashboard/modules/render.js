@@ -47,9 +47,101 @@ function renderBacktestErrors(errors) {
     .join("");
 }
 
+export function controlPlaneLifecycleSummary(controlPlane) {
+  const payload = controlPlane && typeof controlPlane === "object" ? controlPlane : {};
+  const mode = String(payload.mode || "").trim();
+  const owner = String(payload.owner || "").trim();
+  const scope = String(payload.execution_scope || "").trim();
+  const startSupported = Boolean(payload.start_supported);
+  const stopSupported = Boolean(payload.stop_supported);
+  const tradingExecutionSupported = Boolean(payload.trading_execution_supported);
+  const normalized = `${mode} ${owner} ${scope}`.toLowerCase();
+
+  if (normalized.includes("desktop")) {
+    return {
+      label: "Desktop Forwarded",
+      tone: "ok",
+      summary:
+        "Lifecycle requests are forwarded to the desktop GUI, where the real live/demo runtime owns trading execution.",
+    };
+  }
+
+  if (mode === "local-service-executor" || scope === "service-lifecycle-heartbeat") {
+    return {
+      label: "Heartbeat Only",
+      tone: "warn",
+      summary:
+        "Standalone service start/stop manages a lifecycle heartbeat only; it does not run strategies, market-data loops, or exchange orders.",
+    };
+  }
+
+  if (mode === "intent-only" || (!startSupported && !stopSupported)) {
+    return {
+      label: "Intent Only",
+      tone: "warn",
+      summary: "Lifecycle requests are recorded until a real execution adapter is attached.",
+    };
+  }
+
+  if (tradingExecutionSupported) {
+    return {
+      label: "Executor Attached",
+      tone: "ok",
+      summary:
+        "Lifecycle requests are handled by an attached backend executor that reports trading execution support.",
+    };
+  }
+
+  return {
+    label: startSupported || stopSupported ? "Delegated Adapter" : "Unknown",
+    tone: startSupported || stopSupported ? "warn" : "muted",
+    summary: "Lifecycle request handling depends on the attached service control adapter.",
+  };
+}
+
+function currentControlPlanePayload() {
+  return {
+    mode: state.controlPlaneMode,
+    owner: state.controlPlaneOwner,
+    start_supported: state.controlPlaneStartSupported,
+    stop_supported: state.controlPlaneStopSupported,
+    execution_scope: state.controlPlaneExecutionScope,
+    trading_execution_supported: state.controlPlaneTradingExecutionSupported,
+  };
+}
+
+function renderControlPlaneSummary(controlPlane) {
+  const summary = controlPlaneLifecycleSummary(controlPlane);
+  const scope = titleizeLabel(controlPlane.execution_scope || "-");
+  const tradingExecution = controlPlane.trading_execution_supported ? "Supported" : "Not Supported";
+  const tradingTone = controlPlane.trading_execution_supported ? "ok" : "warn";
+  for (const item of [elements.runtimeLifecycleMode, elements.controlLifecycleMode]) {
+    if (item) {
+      item.textContent = summary.label;
+      item.className = `pill ${summary.tone}`;
+      item.title = summary.summary;
+    }
+  }
+  for (const item of [elements.runtimeExecutionScope, elements.controlExecutionScope]) {
+    if (item) {
+      item.textContent = scope;
+      item.title = String(controlPlane.execution_scope || "");
+    }
+  }
+  for (const item of [elements.runtimeTradingExecution, elements.controlTradingExecution]) {
+    if (item) {
+      item.textContent = tradingExecution;
+      item.className = `pill ${tradingTone}`;
+    }
+  }
+  return summary;
+}
+
 function updateControlSurfaceMode() {
+  const controlPlane = currentControlPlanePayload();
+  const lifecycle = renderControlPlaneSummary(controlPlane);
   const desktopEmbedded =
-    state.serviceApiContext === "desktop-embedded" || state.controlPlaneMode === "desktop-gui-dispatch";
+    state.serviceApiContext === "desktop-embedded" || lifecycle.label === "Desktop Forwarded";
   const runtimeControlsVisible = state.controlPlaneMode === "intent-only";
   if (elements.markRunningButton) {
     elements.markRunningButton.style.display = runtimeControlsVisible ? "" : "none";
@@ -64,22 +156,7 @@ function updateControlSurfaceMode() {
     elements.runtimeEngineCount.disabled = desktopEmbedded;
   }
   if (elements.controlModeHint) {
-    if (desktopEmbedded) {
-      elements.controlModeHint.textContent =
-        "Connected to the desktop-embedded API. Start and stop are forwarded into the live desktop GUI, and running/idle state follows the real desktop bot automatically.";
-    } else if (state.controlPlaneMode === "local-service-executor") {
-      elements.controlModeHint.textContent =
-        "This standalone service process owns a local execution adapter. Start and stop run inside the headless service runtime, and manual running/idle sync is not needed.";
-    } else if (state.controlPlaneMode === "intent-only") {
-      elements.controlModeHint.textContent =
-        "This service is running in intent-only mode. Start and stop record lifecycle requests; use manual running/idle sync until a real execution adapter is attached.";
-    } else if (state.controlPlaneStartSupported || state.controlPlaneStopSupported) {
-      elements.controlModeHint.textContent =
-        "This service exposes a delegated control adapter. Start and stop are executable, but runtime state still depends on the attached backend executor.";
-    } else {
-      elements.controlModeHint.textContent =
-        "Control-plane metadata is available, but this service does not currently expose a live execution adapter.";
-    }
+    elements.controlModeHint.textContent = lifecycle.summary;
   }
 }
 
@@ -89,8 +166,11 @@ function renderRuntime(runtime) {
       ? runtime.control_plane
       : {};
   state.controlPlaneMode = String(controlPlane.mode || "").trim();
+  state.controlPlaneOwner = String(controlPlane.owner || "").trim();
+  state.controlPlaneExecutionScope = String(controlPlane.execution_scope || "").trim();
   state.controlPlaneStartSupported = Boolean(controlPlane.start_supported);
   state.controlPlaneStopSupported = Boolean(controlPlane.stop_supported);
+  state.controlPlaneTradingExecutionSupported = Boolean(controlPlane.trading_execution_supported);
   elements.runtimePhase.textContent = runtime.phase || "-";
   elements.runtimeService.textContent = runtime.service_name || "-";
   elements.runtimePlatform.textContent = runtime.platform || "-";
@@ -308,7 +388,7 @@ function updateStartControlFromPreflight(preflight) {
 
   if (elements.requestStartButton) {
     elements.requestStartButton.disabled = blocked;
-    elements.requestStartButton.textContent = blocked ? "Start Blocked" : "Request Start";
+    elements.requestStartButton.textContent = blocked ? "Lifecycle Start Blocked" : "Request Lifecycle Start";
     elements.requestStartButton.title = title;
   }
   if (elements.startGateState) {
@@ -594,6 +674,31 @@ export function renderConfig(config) {
   elements.configCredentials.className = `pill ${config.api_credentials_present ? "ok" : "muted"}`;
 }
 
+export function renderConfigPersistence(persistence) {
+  const payload = persistence && typeof persistence === "object" ? persistence : {};
+  const dirty = Boolean(payload.dirty);
+  const exists = Boolean(payload.exists);
+  const lastSaved = formatTimestamp(payload.last_saved_at || payload.saved_at);
+  const lastLoaded = formatTimestamp(payload.last_loaded_at || payload.loaded_at);
+  let stateText = "Runtime only";
+  if (dirty) {
+    stateText = "Unsaved runtime changes";
+  } else if (exists) {
+    stateText = "Config file in sync";
+  }
+  const detail = [];
+  if (lastSaved !== "-") {
+    detail.push(`saved ${lastSaved}`);
+  }
+  if (lastLoaded !== "-") {
+    detail.push(`loaded ${lastLoaded}`);
+  }
+  elements.configPersistenceState.textContent = detail.length
+    ? `${stateText} · ${detail.join(" · ")}`
+    : stateText;
+  elements.configPersistencePath.textContent = payload.path || "-";
+}
+
 function renderAccount(account) {
   elements.accountSource.textContent = account.source || "-";
   elements.accountTotal.textContent = formatNumber(account.total_balance);
@@ -668,6 +773,9 @@ export function renderDashboardSnapshot(payload) {
   }
   if (payload.config) {
     renderConfig(payload.config);
+  }
+  if (payload.config_persistence) {
+    renderConfigPersistence(payload.config_persistence);
   }
   if (payload.account) {
     renderAccount(payload.account);

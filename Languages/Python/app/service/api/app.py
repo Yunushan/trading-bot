@@ -65,6 +65,10 @@ except Exception as exc:  # pragma: no cover - handled via runtime check
     FASTAPI_AVAILABLE = False
     _FASTAPI_IMPORT_ERROR = exc
 
+_HTTP_422_UNPROCESSABLE_CONTENT = (
+    getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422) if FASTAPI_AVAILABLE else 422
+)
+
 
 def _require_fastapi() -> None:
     if FASTAPI_AVAILABLE:
@@ -112,6 +116,10 @@ if FASTAPI_AVAILABLE:
 
     class ConfigReplaceRequest(BaseModel):
         config: dict | None = None
+
+    class ConfigPersistenceRequest(BaseModel):
+        path: str | None = None
+        source: str = "api"
 
 
     class LogEventRequest(BaseModel):
@@ -215,6 +223,10 @@ def create_service_api_app(
         return app.state.service
 
     def _service_api_meta() -> dict[str, object]:
+        descriptor = _service().describe_runtime().to_dict()
+        control_plane = descriptor.get("control_plane") if isinstance(descriptor, dict) else {}
+        if not isinstance(control_plane, dict):
+            control_plane = {}
         return {
             "version": app.state.service_api_version,
             "api_base_path": app.state.service_api_base_path,
@@ -225,6 +237,8 @@ def create_service_api_app(
             "auth_required": auth_required(app.state.api_token),
             "web_ui_available": app.state.web_ui_available,
             "sse_available": bool(app.state.service_api_streaming),
+            "execution_scope": control_plane.get("execution_scope", ""),
+            "trading_execution_supported": bool(control_plane.get("trading_execution_supported", False)),
         }
 
     def _health_payload() -> dict[str, object]:
@@ -259,8 +273,10 @@ def create_service_api_app(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    def _require_stream_auth(token: str | None = None) -> None:
+    def _require_stream_auth(token: str | None = None, authorization: str | None = None) -> None:
         if not auth_required(app.state.api_token):
+            return
+        if validate_bearer_token(authorization, app.state.api_token):
             return
         if validate_bearer_token(f"Bearer {token}" if token else None, app.state.api_token):
             return
@@ -272,7 +288,7 @@ def create_service_api_app(
 
     def _raise_config_validation_error(exc: ConfigValidationError) -> None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=_HTTP_422_UNPROCESSABLE_CONTENT,
             detail=exc.to_dict(),
         ) from exc
 
@@ -286,7 +302,11 @@ def create_service_api_app(
     def root():
         if app.state.web_ui_available:
             return RedirectResponse(url=f"{SERVICE_API_UI_PATH.rstrip('/')}/")
-        return {"status": "ok", "service_name": _service().describe_runtime().service_name}
+        return {
+            "status": "ok",
+            "service_name": _service().describe_runtime().service_name,
+            "service_api": _service_api_meta(),
+        }
 
     @app.get(SERVICE_API_HEALTH_PATH)
     def health():
@@ -334,6 +354,36 @@ def create_service_api_app(
             return _service().update_config(payload.config).to_dict()
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
+
+    @api_router.get("/config/persistence")
+    def get_config_persistence():
+        return _service().get_config_persistence_status()
+
+    @api_router.post("/config/save")
+    def save_config(payload: ConfigPersistenceRequest):
+        try:
+            return _service().save_config(path=payload.path, source=payload.source)
+        except ConfigValidationError as exc:
+            _raise_config_validation_error(exc)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(exc),
+            ) from exc
+
+    @api_router.post("/config/load")
+    def load_config(payload: ConfigPersistenceRequest):
+        try:
+            return _service().load_config(path=payload.path, source=payload.source)
+        except ConfigValidationError as exc:
+            _raise_config_validation_error(exc)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
 
     @api_router.put("/runtime/state")
     def set_runtime_state(payload: RuntimeStateRequest):
@@ -497,19 +547,26 @@ def create_service_api_app(
     async def stream_dashboard(
         request: Request,
         token: str | None = Query(default=None),
+        authorization: str | None = Header(default=None),
         log_limit: int = 30,
         incident_limit: int = 20,
         interval_ms: int = 1000,
+        max_events: int | None = None,
     ):
-        _require_stream_auth(token)
+        _require_stream_auth(token, authorization)
         stream_interval = max(250, int(interval_ms)) / 1000.0
+        event_limit = None if max_events is None else max(1, int(max_events))
 
         async def event_stream():
+            events_sent = 0
             while True:
                 if await request.is_disconnected():
                     break
                 payload = _build_dashboard_payload(log_limit=log_limit, incident_limit=incident_limit)
                 yield f"event: dashboard\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                events_sent += 1
+                if event_limit is not None and events_sent >= event_limit:
+                    break
                 await asyncio.sleep(stream_interval)
 
         return StreamingResponse(
@@ -536,6 +593,8 @@ def run_service_api_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     api_token: str | None = None,
+    config_path: str | Path | None = None,
+    load_persisted_config: bool = False,
 ) -> None:
     _require_fastapi()
     resolved_token = resolve_service_api_token(api_token)
@@ -548,8 +607,12 @@ def run_service_api_server(
             "(for example: pip install -r requirements.service.txt)."
         ) from exc
 
+    service_instance = service or TradingBotService(
+        config_path=config_path,
+        load_persisted_config=load_persisted_config,
+    )
     app = create_service_api_app(
-        service=service,
+        service=service_instance,
         api_token=resolved_token,
         host_context="standalone-service",
         host_owner="service-process",

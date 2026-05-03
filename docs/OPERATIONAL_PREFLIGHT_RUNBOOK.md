@@ -29,6 +29,25 @@ $headers = @{ Authorization = "Bearer $env:BOT_SERVICE_API_TOKEN" }
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/runtime/operational-preflight -Headers $headers
 ```
 
+## Lifecycle Mode Check
+
+Before treating an allowed preflight as permission to start live trading, check
+`runtime.control_plane` from `GET /api/v1/runtime` or the dashboard snapshot.
+Preflight answers whether operational inputs are fresh enough. The control-plane
+descriptor answers which runtime owner receives lifecycle start/stop requests.
+
+- Desktop Forwarded means `mode` is `desktop-gui-dispatch` or the descriptor
+  otherwise points at `desktop-gui` / `desktop-trading-runtime`; the desktop GUI
+  owns live/demo strategy and order execution.
+- Heartbeat Only means `mode` is `local-service-executor` or
+  `execution_scope` is `service-lifecycle-heartbeat`; standalone start/stop only
+  maintains a lifecycle heartbeat and does not run strategies, market-data
+  loops, or exchange orders.
+- Intent Only means `mode` or `execution_scope` is `intent-only`; requests are
+  recorded until a real execution adapter attaches.
+- Check `trading_execution_supported` before assuming the owner can run
+  strategy loops or submit exchange orders.
+
 ## Decision Rules
 
 - If `state` is `blocked` or `start.allowed` is `false`, do not start live

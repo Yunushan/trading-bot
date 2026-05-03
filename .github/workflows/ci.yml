@@ -111,6 +111,21 @@ jobs:
           set -euo pipefail
           python Languages/Python/tools/check_dependency_metadata.py
 
+      - name: Check service API contract artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python Languages/Python/tools/check_service_api_contracts.py
+
+      - name: Run focused service API tests
+        shell: bash
+        working-directory: Languages/Python
+        run: |
+          set -euo pipefail
+          python tools/run_service_tests.py --check-list
+          python tools/run_service_tests.py --check-docs
+          python tools/run_service_tests.py
+
       - name: Type-check configured Python targets
         shell: bash
         working-directory: Languages/Python

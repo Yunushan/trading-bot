@@ -2,6 +2,20 @@ from __future__ import annotations
 
 import requests
 
+from .....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+
+
+def _coerce_max_futures_leverage(value: object = None) -> int:
+    try:
+        return max(1, int(value or BINANCE_MAX_FUTURES_LEVERAGE))
+    except Exception:
+        return BINANCE_MAX_FUTURES_LEVERAGE
+
+
+def _max_futures_leverage_limit(self) -> int:
+    configured = getattr(self, "_max_futures_leverage_constant", BINANCE_MAX_FUTURES_LEVERAGE)
+    return _coerce_max_futures_leverage(configured)
+
 
 def fetch_symbols(self, sort_by_volume: bool = False, top_n: int | None = None):
     """
@@ -177,7 +191,7 @@ def get_futures_symbol_filters(self, symbol: str) -> dict:
 
 def get_futures_max_leverage(self, symbol: str) -> int:
     sym = str(symbol or "").upper()
-    max_futures_leverage = max(1, int(getattr(self, "_max_futures_leverage_constant", 150) or 150))
+    max_futures_leverage = _max_futures_leverage_limit(self)
     if not sym:
         return max_futures_leverage
     cache = getattr(self, "_futures_max_leverage_cache", {})
@@ -299,7 +313,7 @@ def get_recent_force_orders(
 
 def clamp_futures_leverage(self, symbol: str, leverage: int | None = None) -> int:
     sym = str(symbol or "").upper()
-    max_futures_leverage = max(1, int(getattr(self, "_max_futures_leverage_constant", 150) or 150))
+    max_futures_leverage = _max_futures_leverage_limit(self)
     desired = leverage if leverage is not None else getattr(self, "_requested_default_leverage", getattr(self, "_default_leverage", 5))
     try:
         desired_int = int(float(desired))
@@ -337,7 +351,7 @@ def get_base_quote_assets(self, symbol: str):
     return info.get("baseAsset"), info.get("quoteAsset")
 
 
-def bind_binance_exchange_metadata(wrapper_cls, *, max_futures_leverage: int = 150):
+def bind_binance_exchange_metadata(wrapper_cls, *, max_futures_leverage: int = BINANCE_MAX_FUTURES_LEVERAGE):
     wrapper_cls.fetch_symbols = fetch_symbols
     wrapper_cls.get_symbol_info_spot = get_symbol_info_spot
     wrapper_cls.get_symbol_quote_precision_spot = get_symbol_quote_precision_spot
@@ -349,4 +363,4 @@ def bind_binance_exchange_metadata(wrapper_cls, *, max_futures_leverage: int = 1
     wrapper_cls.get_recent_force_orders = get_recent_force_orders
     wrapper_cls.clamp_futures_leverage = clamp_futures_leverage
     wrapper_cls.get_base_quote_assets = get_base_quote_assets
-    wrapper_cls._max_futures_leverage_constant = max(1, int(max_futures_leverage or 150))
+    wrapper_cls._max_futures_leverage_constant = _coerce_max_futures_leverage(max_futures_leverage)

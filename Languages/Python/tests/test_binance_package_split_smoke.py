@@ -18,6 +18,7 @@ if str(PYTHON_ROOT) not in sys.path:
 from app.integrations.exchanges import binance as binance_pkg
 from app.integrations.exchanges.binance import (
     BinanceWrapper,
+    MAX_FUTURES_LEVERAGE,
     _coerce_interval_seconds,
     _normalize_connector_choice,
     normalize_margin_ratio,
@@ -90,6 +91,9 @@ from app.integrations.exchanges.binance.transport.rate_limit_runtime import (
 from app.integrations.exchanges.binance.transport.ws_runtime import bind_binance_ws_runtime as new_bind_ws
 from app.jsonl_rotation import jsonl_backup_path
 from app.settings import LiveTradingSafetyError
+from app.settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+from app.settings import live_safety as live_safety_module
+from app.settings import validation as validation_module
 
 
 class _DummyThread:
@@ -254,6 +258,13 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             _normalize_connector_choice("binance_sdk_spot"),
             "binance-sdk-spot",
         )
+
+    def test_binance_futures_leverage_limit_is_shared_across_runtime_layers(self):
+        self.assertEqual(125, BINANCE_MAX_FUTURES_LEVERAGE)
+        self.assertEqual(BINANCE_MAX_FUTURES_LEVERAGE, validation_module.BINANCE_MAX_FUTURES_LEVERAGE)
+        self.assertEqual(BINANCE_MAX_FUTURES_LEVERAGE, live_safety_module.BINANCE_MAX_FUTURES_LEVERAGE)
+        self.assertEqual(BINANCE_MAX_FUTURES_LEVERAGE, MAX_FUTURES_LEVERAGE)
+        self.assertEqual(BINANCE_MAX_FUTURES_LEVERAGE, BinanceWrapper._max_futures_leverage_constant)
 
     def test_final_subpackages_resolve_expected_objects(self):
         self.assertTrue(callable(new_bind_account))
@@ -568,6 +579,70 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
         self.assertIn("<redacted>", error["message"])
         self.assertNotIn("leaked", error["message"])
         self.assertNotIn("unit-api-secret", error["message"])
+
+    def test_signed_spot_http_failure_records_connector_health_error(self):
+        wrapper = _DirectFuturesHttpWrapper()
+        wrapper.account_type = "SPOT"
+        response = _FakeDirectHttpResponse(
+            401,
+            {"code": -2015, "msg": "Invalid API-key api_secret=unit-api-secret signature=leaked"},
+        )
+
+        with mock.patch.object(http_request_runtime_module.requests, "get", return_value=response) as get_mock:
+            result = wrapper._http_signed_spot("/v3/account")
+
+        self.assertEqual({}, result)
+        self.assertEqual(1, get_mock.call_count)
+        error = wrapper._last_futures_http_error
+        self.assertIsInstance(error, dict)
+        self.assertEqual("/v3/account", error["path"])
+        self.assertEqual("https://testnet.binance.vision/api", error["base"])
+        self.assertEqual("auth", error["category"])
+        self.assertFalse(error["retryable"])
+        self.assertEqual(401, error["status_code"])
+        self.assertEqual(-2015, error["code"])
+        self.assertIn("<redacted>", error["message"])
+        self.assertNotIn("unit-api-secret", error["message"])
+        self.assertNotIn("leaked", error["message"])
+
+        snapshot = wrapper.get_connector_health_snapshot()
+        self.assertEqual("error", snapshot["health"])
+        self.assertEqual("auth_error", snapshot["state"])
+
+    def test_signed_spot_success_only_clears_prior_spot_error(self):
+        wrapper = _DirectFuturesHttpWrapper()
+        wrapper._record_futures_http_error(
+            "/v2/account",
+            status_code=503,
+            message="futures unavailable",
+            category="exchange_unavailable",
+            retryable=True,
+            method="GET",
+        )
+        response = _FakeDirectHttpResponse(200, {"balances": []})
+
+        with mock.patch.object(http_request_runtime_module.requests, "get", return_value=response):
+            result = wrapper._http_signed_spot("/v3/account")
+
+        self.assertEqual({"balances": []}, result)
+        self.assertIsInstance(wrapper._last_futures_http_error, dict)
+        self.assertEqual("/v2/account", wrapper._last_futures_http_error["path"])
+
+        wrapper._record_futures_http_error(
+            "/v3/account",
+            status_code=401,
+            message="spot auth failed",
+            category="auth",
+            retryable=False,
+            method="GET",
+            base_url="https://testnet.binance.vision/api",
+        )
+
+        with mock.patch.object(http_request_runtime_module.requests, "get", return_value=response):
+            result = wrapper._http_signed_spot("/v3/account")
+
+        self.assertEqual({"balances": []}, result)
+        self.assertIsNone(wrapper._last_futures_http_error)
 
     def test_connector_health_snapshot_reflects_last_http_error(self):
         wrapper = _DirectFuturesHttpWrapper()

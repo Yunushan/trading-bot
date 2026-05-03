@@ -76,6 +76,19 @@ All commands below assume you already switched into the Python workspace:
 cd Languages/Python
 ```
 
+For local development, CI parity, and the complete Python test surface, install
+the editable workspace with all reviewed optional groups:
+
+```bash
+python -m pip install -e ".[desktop,service,dev]"
+python -m unittest discover tests
+```
+
+The `dev` extra includes test-only tools such as the FastAPI `TestClient`
+transport dependency used by service API contract tests. Use the
+`requirements*.txt` shims below when you only need a runtime install for one app
+surface.
+
 ### Windows
 
 One-click launch:

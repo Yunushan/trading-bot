@@ -22,6 +22,8 @@ def _register_service_control_dispatcher(self) -> None:
             owner="desktop-gui",
             start_supported=True,
             stop_supported=True,
+            execution_scope="desktop-trading-runtime",
+            trading_execution_supported=True,
             notes=(
                 "Control requests are queued onto the live desktop GUI thread.",
                 "Desktop runtime state flows back into the service snapshot after actual start/stop transitions.",

@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/render-preflight.test.mjs"
+    "test": "node tests/render-preflight.test.mjs && node tests/auth-storage-stream.test.mjs && node tests/service-contract.test.mjs"
   }
 }

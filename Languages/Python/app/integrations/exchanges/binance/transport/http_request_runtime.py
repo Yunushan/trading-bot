@@ -30,27 +30,14 @@ def _http_signed_spot(
     *,
     timeout: float | tuple[float, float] | None = None,
 ) -> dict:
-    base = self._spot_base().rstrip("/")
-    url = f"{base}/{path.lstrip('/')}"
-    if not self.api_key or not self.api_secret:
-        return {}
-    try:
-        timeout_val = timeout or _requests_timeout()
-        payload = dict(params or {})
-        if "timestamp" not in payload:
-            payload["timestamp"] = int(time.time() * 1000)
-        if "recvWindow" not in payload:
-            payload["recvWindow"] = 5000
-        query = urllib.parse.urlencode(payload)
-        sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
-        full_params = dict(payload)
-        full_params["signature"] = sig
-        resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout_val)
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    result = _http_signed_spot_impl(
+        self,
+        path,
+        params,
+        timeout=timeout,
+        response_kind="dict",
+    )
+    return result if isinstance(result, dict) else {}
 
 
 def _http_signed_spot_list(
@@ -60,27 +47,153 @@ def _http_signed_spot_list(
     *,
     timeout: float | tuple[float, float] | None = None,
 ) -> list:
+    result = _http_signed_spot_impl(
+        self,
+        path,
+        params,
+        timeout=timeout,
+        response_kind="list",
+    )
+    return result if isinstance(result, list) else []
+
+
+def _http_signed_spot_impl(
+    self,
+    path: str,
+    params: dict | None = None,
+    *,
+    timeout: float | tuple[float, float] | None = None,
+    response_kind: str,
+) -> dict | list:
     base = self._spot_base().rstrip("/")
     url = f"{base}/{path.lstrip('/')}"
     if not self.api_key or not self.api_secret:
-        return []
+        return _empty_futures_http_result(response_kind)
+    timeout_val = timeout or _requests_timeout()
+    payload = dict(params or {})
+    if "timestamp" not in payload:
+        payload["timestamp"] = int(time.time() * 1000)
+    if "recvWindow" not in payload:
+        payload["recvWindow"] = 5000
+    query = urllib.parse.urlencode(payload)
+    sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
+    full_params = dict(payload)
+    full_params["signature"] = sig
     try:
-        timeout_val = timeout or _requests_timeout()
-        payload = dict(params or {})
-        if "timestamp" not in payload:
-            payload["timestamp"] = int(time.time() * 1000)
-        if "recvWindow" not in payload:
-            payload["recvWindow"] = 5000
-        query = urllib.parse.urlencode(payload)
-        sig = hmac.new((self.api_secret or "").encode(), query.encode(), hashlib.sha256).hexdigest()
-        full_params = dict(payload)
-        full_params["signature"] = sig
         resp = requests.get(url, params=full_params, headers={"X-MBX-APIKEY": self.api_key}, timeout=timeout_val)
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, list) else []
+    except requests.exceptions.RequestException as exc:
+        _record_direct_futures_http_error(
+            self,
+            path,
+            base_url=base,
+            message=str(exc),
+            category=_futures_error_category(exc=exc),
+            retryable=_is_retryable_request_exception(exc),
+            method="GET",
+        )
+        return _empty_futures_http_result(response_kind)
+    except Exception as exc:
+        _record_direct_futures_http_error(
+            self,
+            path,
+            base_url=base,
+            message=str(exc),
+            category="unexpected",
+            retryable=False,
+            method="GET",
+        )
+        return _empty_futures_http_result(response_kind)
+
+    try:
+        status_code = int(getattr(resp, "status_code", 0) or 0)
     except Exception:
-        return []
+        status_code = 0
+
+    if status_code == 200:
+        try:
+            data = resp.json()
+        except Exception as exc:
+            _record_direct_futures_http_error(
+                self,
+                path,
+                base_url=base,
+                status_code=status_code,
+                message=str(exc),
+                category="decode",
+                retryable=False,
+                method="GET",
+            )
+            return _empty_futures_http_result(response_kind)
+
+        if isinstance(data, dict) and _is_binance_error_payload(data):
+            err_code = _coerce_error_code(data.get("code"))
+            err_msg = str(data.get("msg") or data.get("message") or data)
+            retryable = _is_retryable_exchange_error(status_code, err_code, err_msg)
+            ban_until = None
+            if _is_rate_limit_error(status_code, err_code, err_msg):
+                ban_until = _handle_direct_futures_rate_limit(
+                    self,
+                    status_code=status_code,
+                    code=err_code,
+                    message=err_msg,
+                    retry_after=None,
+                )
+            _record_direct_futures_http_error(
+                self,
+                path,
+                base_url=base,
+                status_code=status_code,
+                code=err_code,
+                message=err_msg,
+                category=_futures_error_category(status_code=status_code, code=err_code, message=err_msg),
+                retryable=retryable,
+                method="GET",
+                ban_until=ban_until,
+            )
+            return _empty_futures_http_result(response_kind)
+
+        _clear_direct_spot_http_error(self)
+        return _coerce_futures_http_result(data, response_kind)
+
+    err_code, err_msg = _parse_futures_error_response(resp)
+    retry_after = _response_retry_after(resp)
+    retryable = _is_retryable_exchange_error(status_code, err_code, err_msg)
+    ban_until = None
+    if _is_rate_limit_error(status_code, err_code, err_msg):
+        ban_until = _handle_direct_futures_rate_limit(
+            self,
+            status_code=status_code,
+            code=err_code,
+            message=err_msg,
+            retry_after=retry_after,
+        )
+    _record_direct_futures_http_error(
+        self,
+        path,
+        base_url=base,
+        status_code=status_code,
+        code=err_code,
+        message=err_msg,
+        category=_futures_error_category(status_code=status_code, code=err_code, message=err_msg),
+        retryable=retryable,
+        method="GET",
+        retry_after=retry_after,
+        ban_until=ban_until,
+    )
+    return _empty_futures_http_result(response_kind)
+
+
+def _clear_direct_spot_http_error(self) -> None:
+    try:
+        last_error = getattr(self, "_last_futures_http_error", None)
+        if not isinstance(last_error, dict):
+            return
+        if str(last_error.get("path") or "").startswith("/v3/"):
+            clear = getattr(self, "_clear_futures_http_error", None)
+            if callable(clear):
+                clear()
+    except Exception:
+        pass
 
 
 def _coerce_error_code(value: Any) -> int | None:
@@ -187,6 +300,7 @@ def _record_direct_futures_http_error(
     method: str | None = None,
     retry_after: float | None = None,
     ban_until: float | None = None,
+    base_url: str | None = None,
 ) -> None:
     recorder = getattr(self, "_record_futures_http_error", None)
     if not callable(recorder):
@@ -204,6 +318,7 @@ def _record_direct_futures_http_error(
             method=method,
             retry_after=retry_after,
             ban_until=ban_until,
+            base_url=base_url,
         )
     except TypeError:
         try:

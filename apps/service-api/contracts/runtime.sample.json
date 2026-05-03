@@ -1,0 +1,48 @@
+{
+  "service_name": "trading-bot-service",
+  "phase": "phase-2-service-api",
+  "python_entrypoint": "apps/service-api/main.py",
+  "desktop_entrypoint": "apps/desktop-pyqt/main.py",
+  "repo_root": "C:/Users/example/trading-bot",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python_version": "3.12.13",
+  "capabilities": {
+    "desktop_client": true,
+    "local_service_process": true,
+    "remote_http_api": true,
+    "websocket_streams": false,
+    "docker_optional": true,
+    "web_client": true,
+    "mobile_clients": false,
+    "service_owned_backtests": true,
+    "standalone_lifecycle_sessions": true,
+    "standalone_trading_execution": false,
+    "desktop_trading_execution": true
+  },
+  "control_plane": {
+    "mode": "local-service-executor",
+    "owner": "service-process",
+    "start_supported": true,
+    "stop_supported": true,
+    "execution_scope": "service-lifecycle-heartbeat",
+    "trading_execution_supported": false,
+    "notes": [
+      "Start and stop are owned by the standalone service process as lifecycle transitions.",
+      "This adapter only maintains a service lifecycle heartbeat.",
+      "It does not run trading strategies, market-data loops, or exchange order execution.",
+      "Use desktop-hosted API mode for desktop-owned live/demo trading runtime state."
+    ]
+  },
+  "notes": [
+    "Canonical product launchers now live under apps/.",
+    "Deprecated compatibility desktop entrypoint remains available via 'Languages/Python/main.py'. Prefer 'apps/desktop-pyqt/main.py' or the installed command 'trading-bot-desktop'.",
+    "Docker is optional and not required for local usage.",
+    "HTTP API is available through 'python apps/service-api/main.py --serve' or the installed command 'trading-bot-service'.",
+    "Deprecated compatibility service entrypoint remains available via 'python -m app.service.main'. Prefer 'apps/service-api/main.py' or the installed command 'trading-bot-service'.",
+    "Bearer-token auth is required for non-loopback API hosts via BOT_SERVICE_API_TOKEN or --api-token.",
+    "A thin same-origin web dashboard is available at '/ui/' when the service API is running.",
+    "The dashboard can follow live service updates over the SSE stream at '/api/v1/stream/dashboard'.",
+    "Standalone service start/stop manages a lifecycle heartbeat only; it does not run strategy loops or submit exchange orders.",
+    "Use the desktop-hosted API to observe desktop-owned live/demo trading runtime state."
+  ]
+}

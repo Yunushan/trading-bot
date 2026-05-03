@@ -55,8 +55,11 @@
           <div><dt>Platform</dt><dd id="runtime-platform">-</dd></div>
           <div><dt>Python</dt><dd id="runtime-python">-</dd></div>
           <div><dt>Desktop</dt><dd id="runtime-desktop">-</dd></div>
+          <div><dt>Lifecycle Mode</dt><dd id="runtime-lifecycle-mode" class="pill muted">Unknown</dd></div>
           <div><dt>Control Mode</dt><dd id="runtime-control-mode">-</dd></div>
           <div><dt>Exec Owner</dt><dd id="runtime-exec-owner">-</dd></div>
+          <div><dt>Scope</dt><dd id="runtime-execution-scope">-</dd></div>
+          <div><dt>Trading Execution</dt><dd id="runtime-trading-execution" class="pill muted">-</dd></div>
         </dl>
       </section>
 
@@ -247,17 +250,22 @@
           <input id="control-close-positions" type="checkbox">
           <span>Close positions when stop is requested</span>
         </label>
+        <dl class="stats compact-stats control-plane-summary">
+          <div><dt>Lifecycle Mode</dt><dd id="control-lifecycle-mode" class="pill muted">Unknown</dd></div>
+          <div><dt>Scope</dt><dd id="control-execution-scope">-</dd></div>
+          <div><dt>Trading Execution</dt><dd id="control-trading-execution" class="pill muted">-</dd></div>
+        </dl>
         <div class="actions">
-          <button id="request-start-button" type="button">Request Start</button>
+          <button id="request-start-button" type="button">Request Lifecycle Start</button>
           <span id="start-gate-state" class="pill muted">Preflight Unknown</span>
           <button id="mark-running-button" type="button" class="secondary">Mark Running</button>
         </div>
         <div id="runtime-sync-actions" class="actions">
-          <button id="request-stop-button" type="button" class="secondary">Request Stop</button>
+          <button id="request-stop-button" type="button" class="secondary">Request Lifecycle Stop</button>
           <button id="mark-idle-button" type="button" class="secondary">Mark Idle</button>
         </div>
         <p id="control-mode-hint" class="hint compact-hint">
-          Start and stop record lifecycle intent. Running and idle mirror the runtime state explicitly in the current standalone service phase.
+          Lifecycle start and stop record heartbeat intent in standalone mode. Running and idle mirror runtime state explicitly until a real executor is attached.
         </p>
         <p id="control-message" class="hint compact-hint">
           No control action yet.
@@ -379,12 +387,24 @@
             <textarea id="config-intervals" rows="3" spellcheck="false" placeholder="1m, 5m, 1h"></textarea>
           </label>
         </div>
+        <div class="field-grid compact-grid config-persistence-grid">
+          <label class="field">
+            <span>Persistence</span>
+            <output id="config-persistence-state">Runtime Only</output>
+          </label>
+          <label class="field">
+            <span>Config File</span>
+            <output id="config-persistence-path">-</output>
+          </label>
+        </div>
         <div class="actions">
           <button id="reload-config-button" type="button" class="secondary">Reload Config</button>
-          <button id="save-config-button" type="button">Save Patch</button>
+          <button id="load-config-file-button" type="button" class="secondary">Load File</button>
+          <button id="save-config-file-button" type="button" class="secondary">Save File</button>
+          <button id="save-config-button" type="button">Patch Runtime</button>
         </div>
         <p id="config-message" class="hint compact-hint">
-          Only the fields shown here are patched. Other service config values remain untouched.
+          Runtime patches stay in memory until Save File persists the full service config.
         </p>
       </section>
 

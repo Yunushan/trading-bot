@@ -1,11 +1,13 @@
 import { fetchJson, sendJson } from "./modules/api.js";
 import {
   renderConfig,
+  renderConfigPersistence,
   renderDashboardSnapshot,
   renderPreflight,
   renderServiceApi,
 } from "./modules/render.js";
 import {
+  authHeaders,
   closeDashboardStream,
   elements,
   initializeBacktestFormDefaults,
@@ -15,13 +17,13 @@ import {
   stopRefreshTimer,
   writeStoredConfig,
 } from "./modules/state.js";
+import {
+  buildDashboardStreamUrl,
+  createDashboardStream,
+  supportsDashboardStream,
+} from "./modules/stream.js";
+import { serviceApiRoute } from "./modules/service-contract.js";
 import { readInteger, readNumber, splitList } from "./modules/utils.js";
-
-const API_BASE_PATH = "/api/v1";
-
-function apiPath(path) {
-  return `${API_BASE_PATH}/${String(path || "").replace(/^\/+/, "")}`;
-}
 
 function setConnectionState(label, tone = "muted") {
   elements.connectionState.textContent = label;
@@ -127,7 +129,7 @@ async function refreshDashboard() {
     setConnectionMessage("The API requires a bearer token. Enter it above and connect again.");
     return;
   }
-  const snapshot = await fetchJson(`${apiPath("dashboard")}?log_limit=30&incident_limit=20`);
+  const snapshot = await fetchJson(`${serviceApiRoute("dashboard")}?log_limit=30&incident_limit=20`);
   renderDashboardSnapshot(snapshot);
   setConnectionState("Connected", "ok");
   setConnectionMessage(
@@ -147,47 +149,45 @@ function startPollingFallback() {
 
 function openDashboardStream() {
   closeDashboardStream();
-  if (typeof EventSource === "undefined") {
+  if (!supportsDashboardStream()) {
     startPollingFallback();
     return;
   }
   const params = new URLSearchParams({ log_limit: "30", incident_limit: "20", interval_ms: "1000" });
-  if (state.token) {
-    params.set("token", state.token);
-  }
-  const streamUrl = `${state.baseUrl}${apiPath("stream/dashboard")}?${params.toString()}`;
-  const source = new EventSource(streamUrl);
-  state.eventSource = source;
-  let opened = false;
-
-  source.addEventListener("open", () => {
-    opened = true;
-    stopRefreshTimer();
-    setConnectionState("Live Stream", "ok");
-    setConnectionMessage(
-      `Connected to ${state.baseUrl}${state.authRequired ? " with bearer auth." : "."} Live updates use SSE.`,
-    );
+  const streamUrl = buildDashboardStreamUrl(
+    state.baseUrl,
+    serviceApiRoute("stream_dashboard"),
+    Object.fromEntries(params.entries()),
+  );
+  state.eventSource = createDashboardStream({
+    streamUrl,
+    headers: authHeaders(),
+    onOpen: () => {
+      stopRefreshTimer();
+      setConnectionState("Live Stream", "ok");
+      setConnectionMessage(
+        `Connected to ${state.baseUrl}${state.authRequired ? " with bearer auth." : "."} Live updates use a header-authenticated stream.`,
+      );
+    },
+    onDashboard: renderDashboardSnapshot,
+    onError: (error, streamState = {}) => {
+      closeDashboardStream();
+      const status = Number(error?.status || 0);
+      if (status === 401) {
+        setConnectionState("Unauthorized", "error");
+        setConnectionMessage("Live stream unauthorized. Update the bearer token and connect again.");
+        return;
+      }
+      if (!streamState.opened) {
+        setConnectionState("Stream Failed", "warn");
+        setConnectionMessage("Live stream failed; falling back to periodic refresh.");
+      } else {
+        setConnectionState("Reconnect", "warn");
+        setConnectionMessage("Live stream interrupted; falling back to periodic refresh.");
+      }
+      startPollingFallback();
+    },
   });
-
-  source.addEventListener("dashboard", (event) => {
-    try {
-      renderDashboardSnapshot(JSON.parse(event.data));
-    } catch (error) {
-      setConnectionMessage(error instanceof Error ? error.message : String(error));
-    }
-  });
-
-  source.onerror = () => {
-    closeDashboardStream();
-    if (!opened) {
-      setConnectionState("Stream Failed", "warn");
-      setConnectionMessage("Live stream failed; falling back to periodic refresh.");
-    } else {
-      setConnectionState("Reconnect", "warn");
-      setConnectionMessage("Live stream interrupted; falling back to periodic refresh.");
-    }
-    startPollingFallback();
-  };
 }
 
 async function connectAndRefresh() {
@@ -203,7 +203,7 @@ async function connectAndRefresh() {
     renderServiceApi(health.service_api || health);
     state.authRequired = Boolean(health.auth_required);
     if (state.authRequired) {
-      const probe = await fetchJson(apiPath("status"), { allowUnauthorized: true });
+      const probe = await fetchJson(serviceApiRoute("status"), { allowUnauthorized: true });
       if (probe && probe.unauthorized) {
         setConnectionState("Unauthorized", "error");
         setConnectionMessage("Bearer token missing or invalid. Update the token and try again.");
@@ -224,8 +224,8 @@ async function requestStart() {
       requested_job_count: readInteger(elements.controlJobs, 0),
       source: "web-ui",
     };
-    const result = await sendJson("POST", apiPath("control/start"), payload);
-    setControlMessage(result.status_message || "Start request recorded.");
+    const result = await sendJson("POST", serviceApiRoute("control_start"), payload);
+    setControlMessage(result.status_message || "Lifecycle start request recorded.");
     await refreshDashboard();
   } catch (error) {
     setControlMessage(error instanceof Error ? error.message : String(error));
@@ -238,8 +238,8 @@ async function requestStop() {
       close_positions: Boolean(elements.controlClosePositions.checked),
       source: "web-ui",
     };
-    const result = await sendJson("POST", apiPath("control/stop"), payload);
-    setControlMessage(result.status_message || "Stop request recorded.");
+    const result = await sendJson("POST", serviceApiRoute("control_stop"), payload);
+    setControlMessage(result.status_message || "Lifecycle stop request recorded.");
     await refreshDashboard();
   } catch (error) {
     setControlMessage(error instanceof Error ? error.message : String(error));
@@ -253,7 +253,7 @@ async function syncRunning() {
       active_engine_count: readInteger(elements.runtimeEngineCount, 0),
       source: "web-ui",
     };
-    const result = await sendJson("PUT", apiPath("runtime/state"), payload);
+    const result = await sendJson("PUT", serviceApiRoute("runtime_state"), payload);
     setControlMessage(result.status_message || "Runtime marked active.");
     await refreshDashboard();
   } catch (error) {
@@ -268,7 +268,7 @@ async function syncIdle() {
       active_engine_count: 0,
       source: "web-ui",
     };
-    const result = await sendJson("PUT", apiPath("runtime/state"), payload);
+    const result = await sendJson("PUT", serviceApiRoute("runtime_state"), payload);
     setControlMessage(result.status_message || "Runtime marked idle.");
     await refreshDashboard();
   } catch (error) {
@@ -278,7 +278,7 @@ async function syncIdle() {
 
 async function resetConnectorOrderCircuit() {
   try {
-    const result = await sendJson("POST", apiPath("runtime/connector-order-circuit-breaker/reset"), {
+    const result = await sendJson("POST", serviceApiRoute("connector_order_circuit_breaker_reset"), {
       source: "web-ui",
     });
     if (result && result.reset_blocked) {
@@ -298,7 +298,7 @@ async function recheckPreflight() {
   }
   elements.preflightMessage.textContent = "Rechecking operational preflight...";
   try {
-    const preflight = await fetchJson(apiPath("runtime/operational-preflight"));
+    const preflight = await fetchJson(serviceApiRoute("operational_preflight"));
     renderPreflight(preflight);
   } catch (error) {
     elements.preflightMessage.textContent = error instanceof Error ? error.message : String(error);
@@ -311,21 +311,59 @@ async function recheckPreflight() {
 
 async function reloadConfig() {
   try {
-    const config = await fetchJson(apiPath("config"));
+    const config = await fetchJson(serviceApiRoute("config"));
     renderConfig(config);
+    await reloadConfigPersistence();
     setConfigMessage("Config reloaded from the service.");
   } catch (error) {
     setConfigMessage(error instanceof Error ? error.message : String(error));
   }
 }
 
+async function reloadConfigPersistence() {
+  const persistence = await fetchJson(serviceApiRoute("config_persistence"));
+  renderConfigPersistence(persistence);
+  return persistence;
+}
+
 async function saveConfigPatch() {
   try {
-    const config = await sendJson("PATCH", apiPath("config"), {
+    const config = await sendJson("PATCH", serviceApiRoute("config"), {
       config: collectConfigPatch(),
     });
     renderConfig(config);
-    setConfigMessage("Config patch saved to the service.");
+    setConfigMessage("Runtime config patched. Use Save File to persist it.");
+    await refreshDashboard();
+  } catch (error) {
+    setConfigMessage(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function saveConfigFile() {
+  try {
+    const persistence = await sendJson("POST", serviceApiRoute("config_save"), {
+      source: "web-dashboard",
+    });
+    renderConfigPersistence(persistence);
+    setConfigMessage("Current runtime config saved to the service config file.");
+    await refreshDashboard();
+  } catch (error) {
+    setConfigMessage(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function loadConfigFile() {
+  try {
+    const result = await sendJson("POST", serviceApiRoute("config_load"), {
+      source: "web-dashboard",
+    });
+    if (result?.config) {
+      renderConfig(result.config);
+    }
+    if (result?.persistence) {
+      renderConfigPersistence(result.persistence);
+    }
+    setConfigMessage("Service config file loaded into the runtime.");
     await refreshDashboard();
   } catch (error) {
     setConfigMessage(error instanceof Error ? error.message : String(error));
@@ -338,7 +376,7 @@ async function runBacktest() {
       request: collectBacktestRequest(),
       source: "web-ui",
     };
-    const result = await sendJson("POST", apiPath("backtest/run"), payload);
+    const result = await sendJson("POST", serviceApiRoute("backtest_run"), payload);
     elements.backtestControlMessage.textContent = result.status_message || "Backtest request submitted.";
     await refreshDashboard();
   } catch (error) {
@@ -348,7 +386,7 @@ async function runBacktest() {
 
 async function stopBacktest() {
   try {
-    const result = await sendJson("POST", apiPath("backtest/stop"), {
+    const result = await sendJson("POST", serviceApiRoute("backtest_stop"), {
       source: "web-ui",
     });
     elements.backtestControlMessage.textContent = result.status_message || "Backtest stop requested.";
@@ -395,6 +433,12 @@ function bootstrap() {
   });
   elements.saveConfigButton.addEventListener("click", () => {
     saveConfigPatch();
+  });
+  elements.saveConfigFileButton.addEventListener("click", () => {
+    saveConfigFile();
+  });
+  elements.loadConfigFileButton.addEventListener("click", () => {
+    loadConfigFile();
   });
   elements.runBacktestButton.addEventListener("click", () => {
     runBacktest();

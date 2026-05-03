@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from ...core.backtest import normalize_backtest_intervals
+from ...core.backtest.intervals import normalize_backtest_intervals
 from ...config import coerce_bool
-from ...integrations.llm import build_llm_config_payload
+from ...integrations.llm.providers import build_llm_config_payload
 
 
 @dataclass(frozen=True, slots=True)

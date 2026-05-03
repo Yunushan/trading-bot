@@ -14,6 +14,15 @@ from datetime import datetime, timezone
 from ..schemas.control import BotControlRequest
 
 
+_EXECUTOR_KIND = "local-service-executor"
+_WORKLOAD_KIND = "service-lifecycle-heartbeat"
+_OWNER = "service-process"
+_SOURCE = "service-local-executor"
+_LIMITATION_NOTE = "Standalone service start/stop manages a lifecycle heartbeat only."
+_NO_TRADING_NOTE = "It does not run trading strategies, market-data loops, or exchange order execution."
+_DESKTOP_RUNTIME_NOTE = "Use desktop-hosted API mode for desktop-owned live/demo trading runtime state."
+
+
 class LocalServiceExecutionAdapter:
     def __init__(self, runtime) -> None:  # noqa: ANN001
         self._runtime = runtime
@@ -45,24 +54,26 @@ class LocalServiceExecutionAdapter:
                     started_at = self._current_started_at
                 heartbeat_at = self._utc_now_iso()
                 self._runtime.set_execution_snapshot(
-                    executor_kind="local-service-executor",
-                    owner="service-process",
+                    executor_kind=_EXECUTOR_KIND,
+                    owner=_OWNER,
                     state="running",
-                    workload_kind="service-runtime-session",
+                    workload_kind=_WORKLOAD_KIND,
                     session_id=session_id,
                     requested_job_count=active_jobs,
                     active_engine_count=active_jobs,
-                    progress_label="Open-ended standalone service session.",
+                    progress_label="Standalone lifecycle heartbeat session.",
                     progress_percent=None,
                     heartbeat_at=heartbeat_at,
                     tick_count=tick_count,
                     last_action="heartbeat",
-                    last_message="Local service executor session is active.",
+                    last_message="Local service lifecycle heartbeat is active; no trading engines are running.",
                     started_at=started_at,
-                    source="service-local-executor",
+                    source=_SOURCE,
                     notes=(
-                        "Standalone service process currently owns the execution session.",
+                        _LIMITATION_NOTE,
                         "Heartbeat updates confirm the local executor loop is still alive.",
+                        _NO_TRADING_NOTE,
+                        _DESKTOP_RUNTIME_NOTE,
                     ),
                 )
         finally:
@@ -77,34 +88,42 @@ class LocalServiceExecutionAdapter:
             if self._is_running_unlocked():
                 current_jobs = max(1, int(self._active_engine_count or requested_jobs))
                 self._runtime.set_execution_snapshot(
-                    executor_kind="local-service-executor",
-                    owner="service-process",
+                    executor_kind=_EXECUTOR_KIND,
+                    owner=_OWNER,
                     state="running",
-                    workload_kind="service-runtime-session",
+                    workload_kind=_WORKLOAD_KIND,
                     session_id=self._current_session_id,
                     requested_job_count=current_jobs,
                     active_engine_count=current_jobs,
-                    progress_label="Open-ended standalone service session.",
+                    progress_label="Standalone lifecycle heartbeat session.",
                     progress_percent=None,
                     heartbeat_at=self._utc_now_iso(),
                     tick_count=self._tick_count,
                     last_action="start-rejected",
-                    last_message=f"Local service executor is already running with {current_jobs} engine(s).",
+                    last_message=(
+                        "Local service lifecycle heartbeat is already running for "
+                        f"{current_jobs} requested loop(s); no trading engines are running."
+                    ),
                     started_at=self._current_started_at,
-                    source="service-local-executor",
+                    source=_SOURCE,
                     notes=(
-                        "Standalone service process currently owns the execution session.",
-                        "The local executor is a transitional runtime until extracted trading services replace it.",
+                        _LIMITATION_NOTE,
+                        _NO_TRADING_NOTE,
+                        _DESKTOP_RUNTIME_NOTE,
                     ),
                 )
                 self._runtime.set_runtime_state(
                     active=True,
                     active_engine_count=current_jobs,
-                    source="service-local-executor",
+                    source=_SOURCE,
+                    status_message="Runtime lifecycle heartbeat active.",
                 )
                 return {
                     "accepted": False,
-                    "message": f"Local service executor is already running with {current_jobs} engine(s).",
+                    "message": (
+                        "Local service lifecycle heartbeat is already running for "
+                        f"{current_jobs} requested loop(s); no trading engines are running."
+                    ),
                 }
             stop_event = threading.Event()
             worker = threading.Thread(
@@ -122,39 +141,48 @@ class LocalServiceExecutionAdapter:
             worker.start()
 
         self._runtime.set_execution_snapshot(
-            executor_kind="local-service-executor",
-            owner="service-process",
+            executor_kind=_EXECUTOR_KIND,
+            owner=_OWNER,
             state="running",
-            workload_kind="service-runtime-session",
+            workload_kind=_WORKLOAD_KIND,
             session_id=self._current_session_id,
             requested_job_count=requested_jobs,
             active_engine_count=requested_jobs,
-            progress_label="Open-ended standalone service session.",
+            progress_label="Standalone lifecycle heartbeat session.",
             progress_percent=None,
             heartbeat_at=self._current_started_at,
             tick_count=0,
             last_action="start",
-            last_message=f"Local service executor started with {requested_jobs} engine(s).",
+            last_message=(
+                "Local service lifecycle heartbeat started for "
+                f"{requested_jobs} requested loop(s); no trading engines were launched."
+            ),
             started_at=self._current_started_at,
-            source="service-local-executor",
+            source=_SOURCE,
             notes=(
-                "Standalone service process currently owns the execution session.",
-                "The local executor is a transitional runtime until extracted trading services replace it.",
+                _LIMITATION_NOTE,
+                _NO_TRADING_NOTE,
+                _DESKTOP_RUNTIME_NOTE,
             ),
         )
         self._runtime.record_log_event(
-            f"Local service executor started with {requested_jobs} engine(s).",
-            source="service-local-executor",
+            "Local service lifecycle heartbeat started for "
+            f"{requested_jobs} requested loop(s); no trading engines were launched.",
+            source=_SOURCE,
             level="info",
         )
         self._runtime.set_runtime_state(
             active=True,
             active_engine_count=requested_jobs,
-            source="service-local-executor",
+            source=_SOURCE,
+            status_message="Runtime lifecycle heartbeat active.",
         )
         return {
             "accepted": True,
-            "message": f"Local service executor started with {requested_jobs} engine(s).",
+            "message": (
+                "Local service lifecycle heartbeat started for "
+                f"{requested_jobs} requested loop(s); no trading engines were launched."
+            ),
         }
 
     def _stop_local_session(self, request: BotControlRequest) -> dict[str, object]:
@@ -182,71 +210,75 @@ class LocalServiceExecutionAdapter:
 
         if not running:
             self._runtime.set_execution_snapshot(
-                executor_kind="local-service-executor",
-                owner="service-process",
+                executor_kind=_EXECUTOR_KIND,
+                owner=_OWNER,
                 state="idle",
-                workload_kind="service-runtime-session",
+                workload_kind=_WORKLOAD_KIND,
                 session_id=session_id,
                 requested_job_count=0,
                 active_engine_count=0,
-                progress_label="No active standalone service session.",
+                progress_label="No active standalone lifecycle heartbeat session.",
                 progress_percent=None,
                 heartbeat_at=self._utc_now_iso(),
                 tick_count=tick_count,
                 last_action="stop-rejected",
-                last_message="Local service executor is already idle.",
+                last_message="Local service lifecycle heartbeat is already idle.",
                 started_at=started_at,
-                source="service-local-executor",
+                source=_SOURCE,
                 notes=(
-                    "Standalone service process currently owns the execution session.",
+                    _LIMITATION_NOTE,
+                    _NO_TRADING_NOTE,
                     "No active local session is running.",
                 ),
             )
             self._runtime.set_runtime_state(
                 active=False,
                 active_engine_count=0,
-                source="service-local-executor",
+                source=_SOURCE,
+                status_message="Runtime lifecycle heartbeat idle.",
             )
             return {
                 "accepted": False,
-                "message": "Local service executor is already idle.",
+                "message": "Local service lifecycle heartbeat is already idle.",
             }
 
         suffix = " with close-positions intent." if request.close_positions else "."
         self._runtime.set_execution_snapshot(
-            executor_kind="local-service-executor",
-            owner="service-process",
+            executor_kind=_EXECUTOR_KIND,
+            owner=_OWNER,
             state="idle",
-            workload_kind="service-runtime-session",
+            workload_kind=_WORKLOAD_KIND,
             session_id=session_id,
             requested_job_count=active_jobs,
             active_engine_count=0,
-            progress_label="Latest standalone service session completed.",
+            progress_label="Latest standalone lifecycle heartbeat session completed.",
             progress_percent=100.0,
             heartbeat_at=self._utc_now_iso(),
             tick_count=tick_count,
             last_action="stop",
-            last_message=f"Local service executor stopped after {active_jobs} engine(s){suffix}",
+            last_message=f"Local service lifecycle heartbeat stopped after {active_jobs} requested loop(s){suffix}",
             started_at=started_at,
-            source="service-local-executor",
+            source=_SOURCE,
             notes=(
-                "Standalone service process currently owns the execution session.",
+                _LIMITATION_NOTE,
+                _NO_TRADING_NOTE,
                 "The most recent local execution session has stopped.",
             ),
         )
         self._runtime.record_log_event(
-            f"Local service executor stopped after {active_jobs} engine(s){suffix}",
-            source="service-local-executor",
+            f"Local service lifecycle heartbeat stopped after {active_jobs} requested loop(s){suffix}",
+            source=_SOURCE,
             level="info",
         )
         self._runtime.set_runtime_state(
             active=False,
             active_engine_count=0,
-            source="service-local-executor",
+            source=_SOURCE,
+            status_message="Runtime lifecycle heartbeat idle.",
         )
         return {
             "accepted": True,
-            "message": f"Local service executor stopped after {active_jobs} engine(s){suffix}",
+            "message": f"Local service lifecycle heartbeat stopped after {active_jobs} requested loop(s){suffix}",
         }
 
     def handle_control_request(self, request: BotControlRequest) -> dict[str, object]:

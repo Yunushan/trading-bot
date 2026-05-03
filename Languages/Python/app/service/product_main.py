@@ -59,6 +59,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the current sanitized config summary.",
     )
+    parser.add_argument(
+        "--config-persistence",
+        action="store_true",
+        help="Print durable service config file status.",
+    )
     parser.add_argument("--account-snapshot", action="store_true", help="Print the current account snapshot.")
     parser.add_argument(
         "--portfolio-snapshot",
@@ -82,6 +87,21 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         help="Run one controlled service terminal command, for example: --terminal \"status\".",
     )
     parser.add_argument("--config-patch", help="Patch local service config with a JSON object before printing output.")
+    parser.add_argument(
+        "--config-path",
+        default="",
+        help="Durable service config JSON path. Defaults to ~/.trading-bot/service-config.json.",
+    )
+    parser.add_argument(
+        "--load-config",
+        action="store_true",
+        help="Load durable service config before serving or applying local CLI patches.",
+    )
+    parser.add_argument(
+        "--save-config",
+        action="store_true",
+        help="Persist the current local service config after applying CLI or terminal changes.",
+    )
     parser.add_argument("--llm-providers", action="store_true", help="Print supported cloud/local LLM providers.")
     parser.add_argument("--llm-config", action="store_true", help="Print sanitized LLM configuration.")
     control_group.add_argument(
@@ -130,7 +150,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.serve:
-        run_service_api_server(host=args.host, port=args.port, api_token=args.api_token)
+        try:
+            run_service_api_server(
+                host=args.host,
+                port=args.port,
+                api_token=args.api_token,
+                config_path=args.config_path or None,
+                load_persisted_config=args.load_config,
+            )
+        except (ConfigValidationError, FileNotFoundError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         return 0
 
     if args.base_url and args.terminal:
@@ -150,7 +180,14 @@ def main(argv: list[str] | None = None) -> int:
             print(str((remote_result or {}).get("output") or ""))
         return int((remote_result or {}).get("exit_code") or 0)
 
-    service = TradingBotService()
+    try:
+        service = TradingBotService(
+            config_path=args.config_path or None,
+            load_persisted_config=args.load_config,
+        )
+    except (ConfigValidationError, FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     service.enable_local_executor()
     if args.config_patch:
         try:
@@ -183,20 +220,31 @@ def main(argv: list[str] | None = None) -> int:
             make_start_request(requested_job_count=args.jobs, source="service-cli")
         )
         status = service.get_status()
+        execution_snapshot = service.get_execution_snapshot()
     elif args.request_stop:
         control_result = service.request_stop(
             make_stop_request(close_positions=args.close_positions, source="service-cli")
         )
         status = service.get_status()
+        execution_snapshot = service.get_execution_snapshot()
     if args.logs:
         logs = [item.to_dict() for item in service.get_recent_logs(limit=50)]
     terminal_result = None
     if args.terminal:
         terminal_result = service.run_terminal_command(args.terminal, source="service-cli-terminal")
+    config_persistence_result = None
+    if args.save_config:
+        try:
+            config_persistence_result = service.save_config(source="service-cli")
+        except (ConfigValidationError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    config_summary = service.get_config_summary()
     if args.json:
         payload = {
             "account_snapshot": account_snapshot.to_dict(),
             "config_summary": config_summary.to_dict(),
+            "config_persistence": service.get_config_persistence_status(),
             "control_result": control_result.to_dict() if control_result else None,
             "execution_snapshot": execution_snapshot.to_dict(),
             "log_event": log_event.to_dict() if log_event else None,
@@ -225,6 +273,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.config_summary:
         print(json.dumps(config_summary.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if args.config_persistence or (args.save_config and config_persistence_result is not None):
+        print(
+            json.dumps(
+                config_persistence_result or service.get_config_persistence_status(),
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if args.account_snapshot:
         print(json.dumps(account_snapshot.to_dict(), indent=2, sort_keys=True))
@@ -255,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Docker optional: {descriptor.capabilities.docker_optional}")
     print(f"Control mode: {descriptor.control_plane.mode}")
     print(f"Control owner: {descriptor.control_plane.owner}")
+    print(f"Execution scope: {descriptor.control_plane.execution_scope}")
+    print(f"Trading execution supported: {descriptor.control_plane.trading_execution_supported}")
     print(f"Current mode: {status.mode}")
     print(f"Account type: {status.account_type}")
     print(f"Exchange: {status.selected_exchange}")
@@ -262,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Enabled indicators: {config_summary.enabled_indicator_count}")
     print("Remote API: available via --serve")
     print("Web dashboard: /ui/ when the API server is running")
+    print("Standalone start/stop: lifecycle heartbeat only; no trading engines are launched.")
+    print("Trading runtime: use desktop-hosted API mode until a headless trading executor is implemented.")
     print(
         "Backtest API: "
         f"{service_api_route('backtest')} plus "

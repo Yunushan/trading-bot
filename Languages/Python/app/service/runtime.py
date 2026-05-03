@@ -18,6 +18,13 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_PYTHON_ROOT))
     from app.service.runners.bot_runtime import BotRuntimeCoordinator
     from app.service.runners.local_executor import LocalServiceExecutionAdapter
+    from app.service.config_store import (
+        load_service_config_file,
+        merge_service_config,
+        resolve_service_config_path,
+        service_config_file_status,
+        write_service_config_file,
+    )
     from app.service.schemas.account import ServiceAccountSnapshot
     from app.service.schemas.backtest import ServiceBacktestCommandResult, ServiceBacktestSnapshot
     from app.service.schemas.config import ServiceConfigSummary, ServiceEditableConfig
@@ -30,13 +37,19 @@ if __package__ in (None, ""):
     from app.service.terminal import ServiceTerminalCommandResult, run_service_terminal_command
     from app.integrations.llm import (
         build_llm_config_payload,
-        call_llm,
         list_llm_provider_specs,
         update_llm_config,
     )
 else:
     from .runners.bot_runtime import BotRuntimeCoordinator
     from .runners.local_executor import LocalServiceExecutionAdapter
+    from .config_store import (
+        load_service_config_file,
+        merge_service_config,
+        resolve_service_config_path,
+        service_config_file_status,
+        write_service_config_file,
+    )
     from .schemas.account import ServiceAccountSnapshot
     from .schemas.backtest import ServiceBacktestCommandResult, ServiceBacktestSnapshot
     from .schemas.config import ServiceConfigSummary, ServiceEditableConfig
@@ -49,7 +62,6 @@ else:
     from .terminal import ServiceTerminalCommandResult, run_service_terminal_command
     from ..integrations.llm import (
         build_llm_config_payload,
-        call_llm,
         list_llm_provider_specs,
         update_llm_config,
     )
@@ -70,8 +82,29 @@ class TradingBotService:
     without pushing new orchestration into the PyQt window layer.
     """
 
-    def __init__(self, config: dict | None = None) -> None:
-        self._runtime = BotRuntimeCoordinator(config=config)
+    def __init__(
+        self,
+        config: dict | None = None,
+        *,
+        config_path: str | Path | None = None,
+        load_persisted_config: bool = False,
+    ) -> None:
+        self._config_persistence_path = resolve_service_config_path(config_path)
+        self._config_persistence_loaded_at = ""
+        self._config_persistence_saved_at = ""
+        self._config_persistence_dirty = bool(config)
+        runtime_config = config
+        if load_persisted_config:
+            loaded_config, metadata = load_service_config_file(self._config_persistence_path)
+            self._config_persistence_loaded_at = str(metadata.get("loaded_at") or "")
+            self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
+            runtime_config = loaded_config
+            if isinstance(config, dict):
+                runtime_config = merge_service_config(loaded_config, config)
+                self._config_persistence_dirty = True
+            else:
+                self._config_persistence_dirty = False
+        self._runtime = BotRuntimeCoordinator(config=runtime_config)
         self._local_execution_adapter: LocalServiceExecutionAdapter | None = None
         self._backtest_execution_adapter: ServiceBacktestExecutionAdapter | None = None
 
@@ -81,6 +114,7 @@ class TradingBotService:
 
     def replace_config(self, config: dict | None) -> None:
         self._runtime.replace_config(config)
+        self._config_persistence_dirty = True
 
     def get_config_summary(self) -> ServiceConfigSummary:
         return self._runtime.get_config_summary()
@@ -89,7 +123,63 @@ class TradingBotService:
         return self._runtime.get_config_payload()
 
     def update_config(self, config_patch: dict | None) -> ServiceEditableConfig:
-        return self._runtime.update_config(config_patch)
+        payload = self._runtime.update_config(config_patch)
+        if isinstance(config_patch, dict) and config_patch:
+            self._config_persistence_dirty = True
+        return payload
+
+    def get_config_persistence_status(self) -> dict[str, object]:
+        status = service_config_file_status(self._config_persistence_path)
+        status.update(
+            {
+                "loaded": bool(self._config_persistence_loaded_at),
+                "dirty": bool(self._config_persistence_dirty),
+                "last_loaded_at": self._config_persistence_loaded_at,
+                "last_saved_at": self._config_persistence_saved_at,
+            }
+        )
+        return status
+
+    def save_config(
+        self,
+        path: str | Path | None = None,
+        *,
+        source: str = "service",
+    ) -> dict[str, object]:
+        metadata = write_service_config_file(self.config, path or self._config_persistence_path)
+        self._config_persistence_path = resolve_service_config_path(metadata["path"])
+        self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
+        self._config_persistence_dirty = False
+        self.record_log_event(
+            f"Service config persisted to {self._config_persistence_path}.",
+            source=source,
+            level="info",
+        )
+        status = self.get_config_persistence_status()
+        status.update(metadata)
+        return status
+
+    def load_config(
+        self,
+        path: str | Path | None = None,
+        *,
+        source: str = "service",
+    ) -> dict[str, object]:
+        config, metadata = load_service_config_file(path or self._config_persistence_path)
+        self._runtime.replace_config(config)
+        self._config_persistence_path = resolve_service_config_path(metadata["path"])
+        self._config_persistence_loaded_at = str(metadata.get("loaded_at") or "")
+        self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
+        self._config_persistence_dirty = False
+        self.record_log_event(
+            f"Service config loaded from {self._config_persistence_path}.",
+            source=source,
+            level="info",
+        )
+        return {
+            "config": self.get_config_payload().to_dict(),
+            "persistence": self.get_config_persistence_status(),
+        }
 
     def get_llm_provider_catalog(self) -> list[dict[str, object]]:
         return list_llm_provider_specs()
@@ -110,7 +200,12 @@ class TradingBotService:
         dry_run: bool = True,
         source: str = "service",
     ) -> dict[str, object]:
-        result = call_llm(
+        if __package__ in (None, ""):
+            from app.integrations.llm.clients import call_llm as _call_llm
+        else:
+            from ..integrations.llm.clients import call_llm as _call_llm
+
+        result = _call_llm(
             self.config,
             prompt=prompt,
             system_prompt=system_prompt
@@ -231,11 +326,13 @@ class TradingBotService:
         active: bool,
         active_engine_count: int = 0,
         source: str = "service",
+        status_message: str = "",
     ) -> BotControlResult:
         return self._runtime.set_runtime_state(
             active=active,
             active_engine_count=active_engine_count,
             source=source,
+            status_message=status_message,
         )
 
     def set_control_request_handler(self, handler=None, **kwargs) -> None:
@@ -252,29 +349,34 @@ class TradingBotService:
             owner="service-process",
             start_supported=True,
             stop_supported=True,
+            execution_scope="service-lifecycle-heartbeat",
+            trading_execution_supported=False,
             notes=(
-                "Start and stop are owned by the standalone service process.",
-                "This adapter manages service-local runtime transitions until the full bot engine is extracted.",
+                "Start and stop are owned by the standalone service process as lifecycle transitions.",
+                "This adapter only maintains a service lifecycle heartbeat.",
+                "It does not run trading strategies, market-data loops, or exchange order execution.",
+                "Use desktop-hosted API mode for desktop-owned live/demo trading runtime state.",
             ),
         )
         self._runtime.set_execution_snapshot(
             executor_kind="local-service-executor",
             owner="service-process",
             state="idle",
-            workload_kind="service-runtime-session",
+            workload_kind="service-lifecycle-heartbeat",
             session_id="",
             requested_job_count=0,
             active_engine_count=0,
-            progress_label="Ready for a standalone service session.",
+            progress_label="Ready for a standalone lifecycle heartbeat session.",
             progress_percent=None,
             heartbeat_at="",
             tick_count=0,
             last_action="attach",
-            last_message="Local service executor attached and ready.",
+            last_message="Local service lifecycle executor attached; no trading engines are running.",
             started_at="",
             source="service-local-executor",
             notes=(
-                "Standalone service process currently owns the execution session.",
+                "Standalone service process currently owns lifecycle heartbeat state only.",
+                "No strategy loop, market-data loop, or exchange order executor is attached.",
                 "No active local session is running.",
             ),
         )
@@ -321,4 +423,6 @@ class TradingBotService:
         return dict(preflight) if isinstance(preflight, dict) else {}
 
     def get_dashboard_snapshot(self, *, log_limit: int = 30) -> dict[str, object]:
-        return self._runtime.get_dashboard_snapshot(log_limit=log_limit)
+        payload = self._runtime.get_dashboard_snapshot(log_limit=log_limit)
+        payload["config_persistence"] = self.get_config_persistence_status()
+        return payload

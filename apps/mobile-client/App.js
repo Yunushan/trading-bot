@@ -10,206 +10,36 @@ import {
   View,
 } from "react-native";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
-const API_BASE_PATH = "/api/v1";
+const { serviceApiRoute } = require("./service-contract");
+const {
+  DEFAULT_BASE_URL,
+  configPersistenceTone,
+  controlPlaneLifecycleSummary,
+  currentPreflight,
+  formatConfigPersistenceState,
+  formatNumber,
+  formatPreflightGate,
+  formatPreflightMode,
+  formatTimestamp,
+  hydrateLlmPatch,
+  isPreflightStartBlocked,
+  normalizeBaseUrl,
+  preflightCriticalLabels,
+  preflightFreshnessAges,
+  preflightFreshnessRemediations,
+  preflightGateReason,
+  preflightStartGateLabel,
+  preflightTone,
+  providerByKey,
+  titleizeLabel,
+} = require("./app-logic");
+
 const LLM_USE_FOR_OPTIONS = [
   { label: "Advisory", value: "advisory" },
   { label: "Signals", value: "signal_confirmation" },
   { label: "Risk", value: "risk_review" },
   { label: "Backtest", value: "backtest_explanation" },
 ];
-
-function apiPath(path) {
-  return `${API_BASE_PATH}/${String(path || "").replace(/^\/+/, "")}`;
-}
-
-function normalizeBaseUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw) {
-    return DEFAULT_BASE_URL;
-  }
-  return raw.replace(/\/+$/, "");
-}
-
-function formatTimestamp(value) {
-  if (!value) {
-    return "-";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return String(value);
-  }
-  return parsed.toLocaleString();
-}
-
-function formatNumber(value) {
-  if (value === null || value === undefined || value === "") {
-    return "-";
-  }
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return String(value);
-  }
-  return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 });
-}
-
-function titleizeLabel(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return "Unknown";
-  }
-  return text
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function preflightTone(value) {
-  const state = String(value || "").toLowerCase();
-  if (state === "blocked" || state === "error") {
-    return "error";
-  }
-  if (state === "ok" || state === "ready") {
-    return "ok";
-  }
-  if (state === "warning") {
-    return "warning";
-  }
-  return "muted";
-}
-
-function currentPreflight(dashboard) {
-  return dashboard?.operational?.preflight || dashboard?.status?.operational?.preflight || null;
-}
-
-function isPreflightStartBlocked(preflight) {
-  return Boolean(preflight?.start && typeof preflight.start === "object" && preflight.start.allowed === false);
-}
-
-function preflightStartGateLabel(preflight) {
-  if (!preflight) {
-    return "Preflight Unknown";
-  }
-  return isPreflightStartBlocked(preflight)
-    ? "Preflight Blocked"
-    : `Preflight ${titleizeLabel(preflight.state || "ready")}`;
-}
-
-function formatPreflightGate(gate) {
-  if (!gate || typeof gate !== "object") {
-    return "-";
-  }
-  const allowed = gate.allowed === false ? "Blocked" : "Allowed";
-  const state = titleizeLabel(gate.state || (gate.allowed === false ? "blocked" : "ok"));
-  const gateState = gate.gate_enabled === false ? "Gate Off" : "Gate On";
-  return `${allowed} / ${state} / ${gateState}`;
-}
-
-function formatPreflightMode(preflight) {
-  if (!preflight || typeof preflight !== "object") {
-    return "-";
-  }
-  return `${preflight.live_mode ? "Live" : "Demo/Test"} / ${preflight.mode || "-"}`;
-}
-
-function preflightGateReason(gate) {
-  const reasons = Array.isArray(gate?.reasons) ? gate.reasons : [];
-  return reasons.map((reason) => String(reason || "").trim()).filter(Boolean).join("; ");
-}
-
-function preflightCriticalLabels(preflight) {
-  const critical = preflight?.critical_stale && typeof preflight.critical_stale === "object"
-    ? preflight.critical_stale
-    : {};
-  const labels = [];
-  for (const key of ["start", "orders"]) {
-    const items = Array.isArray(critical[key]) ? critical[key] : [];
-    for (const item of items) {
-      const label = String(item || "").trim();
-      if (label && !labels.includes(label)) {
-        labels.push(label);
-      }
-    }
-  }
-  return labels;
-}
-
-const PREFLIGHT_FRESHNESS_LABELS = [
-  ["exchange_connector", "Exchange"],
-  ["execution", "Execution"],
-  ["account", "Account"],
-  ["portfolio", "Portfolio"],
-];
-
-function formatFreshnessAge(item) {
-  const maxAge = Number(item?.max_age_seconds);
-  const maxText = Number.isFinite(maxAge) ? `${Math.round(maxAge)}s` : "-";
-  const age = Number(item?.age_seconds);
-  const ageText = Number.isFinite(age) ? `${Math.round(age)}s` : "missing";
-  return `${ageText}/${maxText} ${item?.stale ? "stale" : "fresh"}`;
-}
-
-function preflightFreshnessAges(preflight) {
-  const freshness = preflight?.freshness && typeof preflight.freshness === "object" ? preflight.freshness : {};
-  const ages = PREFLIGHT_FRESHNESS_LABELS.map(([key, label]) => {
-    const item = freshness[key];
-    return item && typeof item === "object" ? `${label} ${formatFreshnessAge(item)}` : "";
-  }).filter(Boolean);
-  return ages.length ? ages.join("; ") : "-";
-}
-
-const PREFLIGHT_REMEDIATION_LABELS = {
-  exchange_connector: {
-    label: "Exchange connector",
-    action: "Check connector health, credentials, network, and rate-limit state.",
-  },
-  execution: {
-    label: "Execution heartbeat",
-    action: "Check the execution runner heartbeat before starting live trading.",
-  },
-  account: {
-    label: "Account snapshot",
-    action: "Refresh account balances from the service or exchange connector.",
-  },
-  portfolio: {
-    label: "Portfolio snapshot",
-    action: "Refresh open and closed position state before live actions.",
-  },
-};
-
-function preflightFreshnessRemediations(preflight) {
-  const freshness = preflight?.freshness && typeof preflight.freshness === "object" ? preflight.freshness : {};
-  return Object.entries(PREFLIGHT_REMEDIATION_LABELS)
-    .filter(([key]) => Boolean(freshness[key]?.stale))
-    .map(([key, detail]) => {
-      const item = freshness[key];
-      const maxAge = Number(item?.max_age_seconds);
-      const age = Number(item?.age_seconds);
-      const maxText = Number.isFinite(maxAge) ? `${Math.round(maxAge)}s max` : "unknown max age";
-      const ageText = Number.isFinite(age) ? `${Math.round(age)}s old` : "missing";
-      return `${detail.label}: ${ageText}, ${maxText}. ${detail.action}`;
-    });
-}
-
-function hydrateLlmPatch(config) {
-  const payload = config || {};
-  return {
-    llm_enabled: Boolean(payload.enabled),
-    llm_provider: payload.provider || "openai",
-    llm_model: payload.model || "",
-    llm_base_url: payload.base_url || "",
-    llm_api_key_env: payload.api_key_env || "",
-    llm_api_key: "",
-    llm_use_for: payload.use_for || "advisory",
-    llm_allow_public_network: Boolean(payload.allow_public_network),
-    llm_reasoning_effort: payload.reasoning_effort || "default",
-  };
-}
-
-function providerByKey(providers, key) {
-  const providerKey = String(key || "openai");
-  return providers.find((item) => item.key === providerKey) || providers[0] || null;
-}
 
 function StatusChip({ label, tone = "muted" }) {
   return (
@@ -265,6 +95,7 @@ export default function App() {
   const [llmPatch, setLlmPatch] = useState(hydrateLlmPatch(null));
   const [llmPrompt, setLlmPrompt] = useState("Summarize the current trading bot risk.");
   const [llmResult, setLlmResult] = useState(null);
+  const [configPersistence, setConfigPersistence] = useState(null);
 
   const requestJson = async (path, { method = "GET", body = null } = {}) => {
     const headers = { Accept: "application/json" };
@@ -290,11 +121,12 @@ export default function App() {
     try {
       const nextHealth = await requestJson("/health");
       setHealth(nextHealth);
-      const nextDashboard = await requestJson(`${apiPath("dashboard")}?log_limit=10`);
+      const nextDashboard = await requestJson(`${serviceApiRoute("dashboard")}?log_limit=10`);
       setDashboard(nextDashboard);
-      const nextProviders = await requestJson(apiPath("llm/providers"));
+      setConfigPersistence(nextDashboard?.config_persistence || null);
+      const nextProviders = await requestJson(serviceApiRoute("llm_providers"));
       setLlmProviders(Array.isArray(nextProviders) ? nextProviders : []);
-      const nextLlmConfig = await requestJson(apiPath("llm/config"));
+      const nextLlmConfig = await requestJson(serviceApiRoute("llm_config"));
       setLlmConfig(nextLlmConfig);
       setLlmPatch(hydrateLlmPatch(nextLlmConfig));
       setMessage(`Connected to ${normalizeBaseUrl(baseUrl)}.`);
@@ -308,7 +140,7 @@ export default function App() {
   const recheckPreflight = async () => {
     setLoading(true);
     try {
-      const nextPreflight = await requestJson(apiPath("runtime/operational-preflight"));
+      const nextPreflight = await requestJson(serviceApiRoute("operational_preflight"));
       setDashboard((current) => {
         const payload = current && typeof current === "object" ? current : {};
         const operational = payload.operational && typeof payload.operational === "object" ? payload.operational : {};
@@ -337,13 +169,13 @@ export default function App() {
     }
     setLoading(true);
     try {
-      const path = action === "start" ? apiPath("control/start") : apiPath("control/stop");
+      const path = action === "start" ? serviceApiRoute("control_start") : serviceApiRoute("control_stop");
       const body =
         action === "start"
           ? { requested_job_count: 1, source: "mobile-client" }
           : { close_positions: false, source: "mobile-client" };
       const result = await requestJson(path, { method: "POST", body });
-      setMessage(result.status_message || `${action} request sent.`);
+      setMessage(result.status_message || `Lifecycle ${action} request sent.`);
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -354,7 +186,7 @@ export default function App() {
   const runBacktest = async () => {
     setLoading(true);
     try {
-      const result = await requestJson(apiPath("backtest/run"), {
+      const result = await requestJson(serviceApiRoute("backtest_run"), {
         method: "POST",
         body: { request: {}, source: "mobile-client" },
       });
@@ -374,7 +206,7 @@ export default function App() {
     }
     setLoading(true);
     try {
-      const result = await requestJson(apiPath("terminal/run"), {
+      const result = await requestJson(serviceApiRoute("terminal_run"), {
         method: "POST",
         body: { command, source: "mobile-terminal" },
       });
@@ -389,6 +221,19 @@ export default function App() {
 
   const updateLlmPatch = (patch) => {
     setLlmPatch((current) => ({ ...current, ...patch }));
+  };
+
+  const applyConfigPersistence = (persistence) => {
+    setConfigPersistence(persistence || null);
+    setDashboard((current) => {
+      if (!current || typeof current !== "object") {
+        return current;
+      }
+      return {
+        ...current,
+        config_persistence: persistence || null,
+      };
+    });
   };
 
   const llmProviderDefaultsPatch = (provider) => {
@@ -445,14 +290,59 @@ export default function App() {
       if (!String(payload.llm_api_key || "").trim()) {
         delete payload.llm_api_key;
       }
-      const result = await requestJson(apiPath("llm/config"), {
+      const result = await requestJson(serviceApiRoute("llm_config"), {
         method: "PATCH",
         body: { config: payload },
       });
       setLlmConfig(result);
       setLlmPatch(hydrateLlmPatch(result));
-      setMessage("LLM settings saved.");
       await refresh();
+      setMessage("LLM settings saved to runtime. Save Config File to persist.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      setLoading(false);
+    }
+  };
+
+  const refreshConfigPersistence = async () => {
+    setLoading(true);
+    try {
+      const persistence = await requestJson(serviceApiRoute("config_persistence"));
+      applyConfigPersistence(persistence);
+      setMessage("Config persistence refreshed.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveConfigFile = async () => {
+    setLoading(true);
+    try {
+      const persistence = await requestJson(serviceApiRoute("config_save"), {
+        method: "POST",
+        body: { source: "mobile-client" },
+      });
+      applyConfigPersistence(persistence);
+      setMessage("Current runtime config saved to the service config file.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadConfigFile = async () => {
+    setLoading(true);
+    try {
+      const result = await requestJson(serviceApiRoute("config_load"), {
+        method: "POST",
+        body: { source: "mobile-client" },
+      });
+      applyConfigPersistence(result?.persistence || null);
+      await refresh();
+      setMessage("Service config file loaded into the runtime.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
       setLoading(false);
@@ -467,7 +357,7 @@ export default function App() {
     }
     setLoading(true);
     try {
-      const result = await requestJson(apiPath("llm/prompt"), {
+      const result = await requestJson(serviceApiRoute("llm_prompt"), {
         method: "POST",
         body: {
           prompt,
@@ -535,6 +425,19 @@ export default function App() {
     label: preflightStartGateLabel(preflight),
     tone: preflightTone(preflightStartBlocked ? "blocked" : preflightState),
   };
+  const controlPlane = runtime.control_plane && typeof runtime.control_plane === "object"
+    ? runtime.control_plane
+    : {};
+  const lifecycleModeInfo = controlPlaneLifecycleSummary(controlPlane);
+  const configPersistenceInfo = configPersistence || dashboard?.config_persistence || null;
+  const configPersistenceToneInfo = {
+    label: configPersistenceInfo?.dirty
+      ? "Unsaved"
+      : configPersistenceInfo?.exists
+        ? "Synced"
+        : "Runtime Only",
+    tone: configPersistenceTone(configPersistenceInfo),
+  };
 
   return (
     <SafeAreaView style={styles.root}>
@@ -543,7 +446,7 @@ export default function App() {
         <Text style={styles.title}>Trading Bot Mobile</Text>
         <Text style={styles.lede}>
           Android and iOS starter over the existing service API. This client is intentionally thin:
-          inspect runtime, request lifecycle changes, and trigger the extracted backtest runner.
+          inspect runtime, request lifecycle heartbeat changes, and trigger the extracted backtest runner.
         </Text>
 
         <Card title="Connection">
@@ -616,8 +519,17 @@ export default function App() {
           </View>
         </Card>
 
-        <Card title="Controls" tone={startGateToneInfo}>
-          <StatRow label="Start Gate" value={preflightStartGateLabel(preflight)} />
+        <Card title="Lifecycle Controls" tone={lifecycleModeInfo}>
+          <StatRow label="Lifecycle Mode" value={lifecycleModeInfo.label} />
+          <StatRow label="Control Mode" value={controlPlane.mode || "-"} />
+          <StatRow label="Owner" value={controlPlane.owner || "-"} />
+          <StatRow label="Scope" value={controlPlane.execution_scope || "-"} />
+          <StatRow
+            label="Trading Execution"
+            value={controlPlane.trading_execution_supported ? "Supported" : "Not supported"}
+          />
+          <StatRow label="Preflight Start Gate" value={preflightStartGateLabel(preflight)} />
+          <Text style={styles.message}>{lifecycleModeInfo.summary}</Text>
           <View style={styles.buttonRow}>
             <Pressable
               style={[styles.button, preflightStartBlocked ? styles.disabledButton : null]}
@@ -625,10 +537,10 @@ export default function App() {
               accessibilityState={{ disabled: preflightStartBlocked }}
               onPress={() => sendLifecycle("start")}
             >
-              <Text style={styles.buttonText}>Request Start</Text>
+              <Text style={styles.buttonText}>Request Lifecycle Start</Text>
             </Pressable>
             <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => sendLifecycle("stop")}>
-              <Text style={styles.buttonText}>Request Stop</Text>
+              <Text style={styles.buttonText}>Request Lifecycle Stop</Text>
             </Pressable>
           </View>
         </Card>
@@ -798,6 +710,29 @@ export default function App() {
           {llmResult ? (
             <Text style={styles.terminalOutput}>{JSON.stringify(llmResult, null, 2)}</Text>
           ) : null}
+        </Card>
+
+        <Card title="Config File" tone={configPersistenceToneInfo}>
+          <StatRow label="State" value={formatConfigPersistenceState(configPersistenceInfo)} />
+          <StatRow label="Path" value={configPersistenceInfo?.path || "-"} />
+          <StatRow label="File" value={configPersistenceInfo?.exists ? "Exists" : "Missing"} />
+          <StatRow label="Last Saved" value={formatTimestamp(configPersistenceInfo?.last_saved_at || configPersistenceInfo?.saved_at)} />
+          <StatRow label="Last Loaded" value={formatTimestamp(configPersistenceInfo?.last_loaded_at || configPersistenceInfo?.loaded_at)} />
+          <StatRow label="Modified" value={formatTimestamp(configPersistenceInfo?.modified_at)} />
+          <Text style={styles.message}>
+            Runtime changes are not durable until Save File completes.
+          </Text>
+          <View style={styles.buttonRow}>
+            <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => refreshConfigPersistence()}>
+              <Text style={styles.buttonText}>Refresh Status</Text>
+            </Pressable>
+            <Pressable style={styles.button} onPress={() => saveConfigFile()}>
+              <Text style={styles.buttonText}>Save File</Text>
+            </Pressable>
+            <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => loadConfigFile()}>
+              <Text style={styles.buttonText}>Load File</Text>
+            </Pressable>
+          </View>
         </Card>
 
         <Card title="Terminal">

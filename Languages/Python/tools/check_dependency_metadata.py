@@ -34,6 +34,7 @@ WINDOWS_ARM64_ALLOWLIST = {
 }
 
 DEV_DEPENDENCY_NAMES = {
+    "httpx",
     "mypy",
     "pre-commit",
     "pytest",

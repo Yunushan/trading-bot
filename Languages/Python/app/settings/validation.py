@@ -5,16 +5,19 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 from .backtest import MDD_LOGIC_OPTIONS
-from .risk import coerce_bool, normalize_stop_loss_dict
+from .exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+from .risk import normalize_stop_loss_dict
 
 
-BINANCE_MAX_FUTURES_LEVERAGE = 125
 MAX_LOOKBACK_BARS = 1_000_000
 MAX_GTD_MINUTES = 7 * 24 * 60
 MAX_SCAN_TOP_N = 10_000
 MAX_OPERATIONAL_FRESHNESS_SECONDS = 24 * 60 * 60
+MAX_CONFIG_COUNT = 1_000_000
+MAX_POLICY_SECONDS = 365 * 24 * 60 * 60
 
 _CONTROL_TEXT_RE = re.compile(r"[\x00-\x1f\x7f]")
 _INTERVAL_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$")
@@ -70,6 +73,200 @@ _SIDE_CHOICES = {"both": "BOTH", "buy": "BUY", "sell": "SELL"}
 _ORDER_TYPE_CHOICES = {"market": "MARKET", "limit": "LIMIT"}
 _TIF_CHOICES = {"gtc": "GTC", "ioc": "IOC", "fok": "FOK", "gtd": "GTD"}
 _LOGIC_CHOICES = {"and": "AND", "or": "OR"}
+_LLM_PROVIDER_CHOICES = {
+    "alibaba": "qwen",
+    "alibaba-qwen": "qwen",
+    "anthropic": "anthropic",
+    "anthropic-claude": "anthropic",
+    "chatgpt": "openai",
+    "claude": "anthropic",
+    "custom": "local",
+    "dashscope": "qwen",
+    "deepseek": "deepseek",
+    "gemini": "gemini",
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "grok": "grok",
+    "local": "local",
+    "local-openai": "local",
+    "local-openai-compatible": "local",
+    "ollama": "local",
+    "openai": "openai",
+    "openai-chatgpt": "openai",
+    "qwen": "qwen",
+    "xai": "grok",
+    "xai-grok": "grok",
+}
+_LLM_USE_FOR_CHOICES = {
+    "advisory": "advisory",
+    "backtest_explanation": "backtest_explanation",
+    "risk_review": "risk_review",
+    "signal_confirmation": "signal_confirmation",
+}
+_LLM_REASONING_EFFORT_CHOICES = {
+    "default": "default",
+    "disabled": "disabled",
+    "enabled": "enabled",
+    "extra-high": "xhigh",
+    "extra_high": "xhigh",
+    "high": "high",
+    "low": "low",
+    "max": "max",
+    "medium": "medium",
+    "minimal": "minimal",
+    "none": "none",
+    "xhigh": "xhigh",
+}
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+_NULL_BOOL_VALUES = {"", "none", "null"}
+_ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
+    {
+        "account_mode",
+        "account_type",
+        "allow_close_ignoring_hold",
+        "allow_indicator_close_without_signal",
+        "allow_multi_indicator_close",
+        "allow_opposite_positions",
+        "api_key",
+        "api_secret",
+        "assets_mode",
+        "auto_bump_percent_multiplier",
+        "auto_flip_on_close",
+        "backtest",
+        "backtest_symbol_interval_pairs",
+        "close_on_exit",
+        "code_language",
+        "connector_backend",
+        "connector_order_block_circuit_breaker_enabled",
+        "connector_order_block_pause_threshold",
+        "connector_order_block_window_seconds",
+        "connector_order_circuit_incident_log_backup_count",
+        "connector_order_circuit_incident_log_max_bytes",
+        "connector_order_circuit_incident_log_path",
+        "futures_flat_purge_grace_seconds",
+        "futures_flat_purge_miss_threshold",
+        "gtd_minutes",
+        "hedge_preserve_opposites",
+        "indicator_flip_confirmation_bars",
+        "indicator_flip_cooldown_bars",
+        "indicator_flip_cooldown_seconds",
+        "indicator_min_position_hold_bars",
+        "indicator_min_position_hold_seconds",
+        "indicator_reentry_cooldown_bars",
+        "indicator_reentry_cooldown_seconds",
+        "indicator_reentry_requires_signal_reset",
+        "indicator_source",
+        "indicator_use_live_values",
+        "indicators",
+        "intervals",
+        "lead_trader_enabled",
+        "lead_trader_profile",
+        "leverage",
+        "live_trading_acknowledgement",
+        "live_trading_enabled",
+        "live_trading_max_leverage",
+        "live_trading_max_position_pct",
+        "llm_allow_public_network",
+        "llm_api_key",
+        "llm_api_key_env",
+        "llm_base_url",
+        "llm_enabled",
+        "llm_model",
+        "llm_provider",
+        "llm_reasoning_effort",
+        "llm_use_for",
+        "lookback",
+        "loop_interval_override",
+        "margin_mode",
+        "max_auto_bump_percent",
+        "mode",
+        "operational_account_snapshot_stale_seconds",
+        "operational_connector_snapshot_stale_seconds",
+        "operational_execution_heartbeat_stale_seconds",
+        "operational_live_order_gate_enabled",
+        "operational_live_start_gate_enabled",
+        "operational_portfolio_snapshot_stale_seconds",
+        "order_audit_backup_count",
+        "order_audit_enabled",
+        "order_audit_log_path",
+        "order_audit_max_bytes",
+        "order_type",
+        "position_mode",
+        "position_pct",
+        "positions_missing_autoclose",
+        "positions_missing_grace_seconds",
+        "positions_missing_threshold",
+        "require_indicator_flip_signal",
+        "runtime_symbol_interval_pairs",
+        "selected_exchange",
+        "selected_forex_broker",
+        "selected_rust_framework",
+        "side",
+        "stop_loss",
+        "strict_indicator_flip_enforcement",
+        "symbols",
+        "theme",
+        "tif",
+    }
+)
+_ALLOWED_BACKTEST_CONFIG_KEYS = frozenset(
+    {
+        "account_mode",
+        "assets_mode",
+        "capital",
+        "connector_backend",
+        "end_date",
+        "indicators",
+        "intervals",
+        "leverage",
+        "logic",
+        "margin_mode",
+        "mdd_logic",
+        "position_mode",
+        "position_pct",
+        "scan_auto_apply",
+        "scan_mdd_limit",
+        "scan_top_n",
+        "side",
+        "start_date",
+        "stop_loss",
+        "symbol_source",
+        "symbols",
+        "template",
+    }
+)
+_RISK_BOOL_KEYS = (
+    "indicator_use_live_values",
+    "require_indicator_flip_signal",
+    "strict_indicator_flip_enforcement",
+    "indicator_reentry_requires_signal_reset",
+    "auto_flip_on_close",
+    "allow_close_ignoring_hold",
+    "allow_multi_indicator_close",
+    "allow_indicator_close_without_signal",
+    "close_on_exit",
+    "positions_missing_autoclose",
+    "allow_opposite_positions",
+    "hedge_preserve_opposites",
+)
+_RISK_INT_RANGES = {
+    "indicator_flip_cooldown_bars": (0, MAX_CONFIG_COUNT),
+    "indicator_min_position_hold_bars": (0, MAX_CONFIG_COUNT),
+    "indicator_reentry_cooldown_bars": (0, MAX_CONFIG_COUNT),
+    "indicator_flip_confirmation_bars": (1, MAX_CONFIG_COUNT),
+    "positions_missing_threshold": (1, MAX_CONFIG_COUNT),
+    "futures_flat_purge_miss_threshold": (1, MAX_CONFIG_COUNT),
+}
+_RISK_FLOAT_RANGES = {
+    "indicator_flip_cooldown_seconds": (0.0, MAX_POLICY_SECONDS),
+    "indicator_min_position_hold_seconds": (0.0, MAX_POLICY_SECONDS),
+    "indicator_reentry_cooldown_seconds": (0.0, MAX_POLICY_SECONDS),
+    "positions_missing_grace_seconds": (0.0, MAX_POLICY_SECONDS),
+    "futures_flat_purge_grace_seconds": (0.0, MAX_POLICY_SECONDS),
+    "max_auto_bump_percent": (0.0, 100.0),
+    "auto_bump_percent_multiplier": (0.0, 1_000.0),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +298,18 @@ def format_config_validation_issues(issues: tuple[ConfigValidationIssue, ...]) -
 
 def _field(prefix: str, key: str) -> str:
     return f"{prefix}.{key}" if prefix else key
+
+
+def _validate_allowed_keys(
+    cfg: Mapping[object, object],
+    allowed_keys: frozenset[str],
+    issues: list[ConfigValidationIssue],
+    *,
+    prefix: str = "",
+) -> None:
+    for key in sorted(cfg, key=lambda item: str(item)):
+        if not isinstance(key, str) or key not in allowed_keys:
+            issues.append(ConfigValidationIssue(_field(prefix, str(key)), "is not a supported config key"))
 
 
 def _format_amount(value: float) -> str:
@@ -140,9 +349,72 @@ def _validate_text(
         return
     value = _string_value(cfg.get(key), allow_empty=allow_empty)
     if value is None:
-        issues.append(ConfigValidationIssue(_field(prefix, key), "must be a non-empty text value"))
+        message = "must be text without control characters" if allow_empty else "must be a non-empty text value"
+        issues.append(ConfigValidationIssue(_field(prefix, key), message))
         return
     cfg[key] = value
+
+
+def _validate_nullable_text(
+    cfg: dict[str, object],
+    key: str,
+    issues: list[ConfigValidationIssue],
+    *,
+    prefix: str = "",
+    allow_empty: bool = False,
+) -> None:
+    if key not in cfg:
+        return
+    value = cfg.get(key)
+    if value is None:
+        return
+    text = str(value).strip()
+    if not text and not allow_empty:
+        issues.append(ConfigValidationIssue(_field(prefix, key), "must be a non-empty text value"))
+        return
+    if _CONTROL_TEXT_RE.search(text):
+        issues.append(ConfigValidationIssue(_field(prefix, key), "must be text without control characters"))
+        return
+    cfg[key] = text
+
+
+def _validate_datetime_text(
+    cfg: dict[str, object],
+    key: str,
+    issues: list[ConfigValidationIssue],
+    *,
+    prefix: str = "",
+) -> None:
+    if key not in cfg:
+        return
+    value = cfg.get(key)
+    if value is None:
+        return
+    if isinstance(value, datetime):
+        cfg[key] = value.isoformat()
+        return
+    text = str(value).strip()
+    if not text:
+        cfg[key] = ""
+        return
+    if _CONTROL_TEXT_RE.search(text):
+        issues.append(ConfigValidationIssue(_field(prefix, key), "must be text without control characters"))
+        return
+    candidate = f"{text[:-1]}+00:00" if text.endswith("Z") else text
+    parsed = None
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except Exception:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except Exception:
+                continue
+    if parsed is None:
+        issues.append(ConfigValidationIssue(_field(prefix, key), "must be an ISO date or datetime"))
+        return
+    cfg[key] = text
 
 
 def _validate_choice(
@@ -295,9 +567,40 @@ def _validate_interval_list(
     cfg[key] = intervals
 
 
-def _validate_bool(cfg: dict[str, object], key: str, *, default: bool = False) -> None:
-    if key in cfg:
-        cfg[key] = coerce_bool(cfg.get(key), default)
+def _validate_bool(
+    cfg: dict[str, object],
+    key: str,
+    issues: list[ConfigValidationIssue],
+    *,
+    prefix: str = "",
+    default: bool = False,
+) -> None:
+    if key not in cfg:
+        return
+    value = cfg.get(key)
+    if isinstance(value, bool):
+        cfg[key] = value
+        return
+    if value is None:
+        cfg[key] = bool(default)
+        return
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUE_VALUES:
+            cfg[key] = True
+            return
+        if text in _FALSE_VALUES:
+            cfg[key] = False
+            return
+        if text in _NULL_BOOL_VALUES:
+            cfg[key] = bool(default)
+            return
+        issues.append(ConfigValidationIssue(_field(prefix, key), "must be a boolean"))
+        return
+    if isinstance(value, int) and value in (0, 1):
+        cfg[key] = bool(value)
+        return
+    issues.append(ConfigValidationIssue(_field(prefix, key), "must be a boolean"))
 
 
 def _validate_stop_loss(
@@ -398,11 +701,14 @@ def _validate_backtest_config(cfg: dict[str, object], issues: list[ConfigValidat
         issues.append(ConfigValidationIssue("backtest", "must be an object"))
         return
     backtest_cfg = copy.deepcopy(dict(value))
+    _validate_allowed_keys(backtest_cfg, _ALLOWED_BACKTEST_CONFIG_KEYS, issues, prefix="backtest")
     _validate_symbol_list(backtest_cfg, "symbols", issues, prefix="backtest")
     _validate_interval_list(backtest_cfg, "intervals", issues, prefix="backtest")
     _validate_float_range(backtest_cfg, "capital", issues, min_value=0.0, max_value=1_000_000_000_000.0, prefix="backtest", exclusive_min=True)
     _validate_choice(backtest_cfg, "logic", _LOGIC_CHOICES, issues, prefix="backtest")
     _validate_text(backtest_cfg, "symbol_source", issues, prefix="backtest")
+    _validate_datetime_text(backtest_cfg, "start_date", issues, prefix="backtest")
+    _validate_datetime_text(backtest_cfg, "end_date", issues, prefix="backtest")
     _validate_float_range(backtest_cfg, "position_pct", issues, min_value=0.0, max_value=100.0, prefix="backtest", exclusive_min=True)
     _validate_choice(backtest_cfg, "side", _SIDE_CHOICES, issues, prefix="backtest")
     _validate_choice(backtest_cfg, "margin_mode", _MARGIN_MODE_CHOICES, issues, prefix="backtest")
@@ -423,7 +729,7 @@ def _validate_backtest_config(cfg: dict[str, object], issues: list[ConfigValidat
         _validate_choice(backtest_cfg, "mdd_logic", mdd_choices, issues, prefix="backtest")
     _validate_int_range(backtest_cfg, "scan_top_n", issues, min_value=1, max_value=MAX_SCAN_TOP_N, prefix="backtest")
     _validate_float_range(backtest_cfg, "scan_mdd_limit", issues, min_value=0.0, max_value=100.0, prefix="backtest")
-    _validate_bool(backtest_cfg, "scan_auto_apply")
+    _validate_bool(backtest_cfg, "scan_auto_apply", issues, prefix="backtest")
     _validate_mapping(backtest_cfg, "template", issues, prefix="backtest")
     _validate_mapping(backtest_cfg, "indicators", issues, prefix="backtest")
     _validate_stop_loss(backtest_cfg, "stop_loss", issues, prefix="backtest")
@@ -437,6 +743,9 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     issues: list[ConfigValidationIssue] = []
     cfg = copy.deepcopy(dict(config))
 
+    _validate_allowed_keys(cfg, _ALLOWED_RUNTIME_CONFIG_KEYS, issues)
+    _validate_text(cfg, "api_key", issues, allow_empty=True)
+    _validate_text(cfg, "api_secret", issues, allow_empty=True)
     _validate_text(cfg, "mode", issues)
     _validate_choice(cfg, "account_type", _ACCOUNT_TYPE_CHOICES, issues)
     _validate_choice(cfg, "margin_mode", _MARGIN_MODE_CHOICES, issues)
@@ -449,6 +758,8 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     _validate_choice(cfg, "position_mode", _POSITION_MODE_CHOICES, issues)
     _validate_choice(cfg, "assets_mode", _ASSETS_MODE_CHOICES, issues)
     _validate_choice(cfg, "account_mode", _ACCOUNT_MODE_CHOICES, issues)
+    _validate_bool(cfg, "lead_trader_enabled", issues)
+    _validate_nullable_text(cfg, "lead_trader_profile", issues, allow_empty=True)
     _validate_text(cfg, "loop_interval_override", issues, allow_empty=True)
     if cfg.get("loop_interval_override"):
         loop_interval = _normalize_interval(cfg.get("loop_interval_override"))
@@ -461,7 +772,7 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     _validate_choice(cfg, "side", _SIDE_CHOICES, issues)
     _validate_float_range(cfg, "position_pct", issues, min_value=0.0, max_value=100.0, exclusive_min=True)
     _validate_choice(cfg, "order_type", _ORDER_TYPE_CHOICES, issues)
-    _validate_bool(cfg, "live_trading_enabled")
+    _validate_bool(cfg, "live_trading_enabled", issues)
     _validate_text(cfg, "live_trading_acknowledgement", issues, allow_empty=True)
     _validate_int_range(
         cfg,
@@ -478,7 +789,7 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
         max_value=100.0,
         exclusive_min=True,
     )
-    _validate_bool(cfg, "order_audit_enabled", default=True)
+    _validate_bool(cfg, "order_audit_enabled", issues, default=True)
     _validate_text(cfg, "order_audit_log_path", issues, allow_empty=True)
     _validate_int_range(cfg, "order_audit_max_bytes", issues, min_value=1, max_value=1_000_000_000)
     _validate_int_range(cfg, "order_audit_backup_count", issues, min_value=0, max_value=100)
@@ -525,13 +836,39 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
         min_value=1.0,
         max_value=MAX_OPERATIONAL_FRESHNESS_SECONDS,
     )
-    _validate_bool(cfg, "operational_live_start_gate_enabled", default=True)
-    _validate_bool(cfg, "operational_live_order_gate_enabled", default=True)
+    _validate_bool(cfg, "operational_live_start_gate_enabled", issues, default=True)
+    _validate_bool(cfg, "operational_live_order_gate_enabled", issues, default=True)
+    _validate_bool(cfg, "connector_order_block_circuit_breaker_enabled", issues, default=True)
+    _validate_int_range(cfg, "connector_order_block_pause_threshold", issues, min_value=1, max_value=MAX_CONFIG_COUNT)
+    _validate_float_range(
+        cfg,
+        "connector_order_block_window_seconds",
+        issues,
+        min_value=1.0,
+        max_value=MAX_OPERATIONAL_FRESHNESS_SECONDS,
+    )
+    for key in _RISK_BOOL_KEYS:
+        _validate_bool(cfg, key, issues)
+    for key, (min_value, max_value) in _RISK_INT_RANGES.items():
+        _validate_int_range(cfg, key, issues, min_value=min_value, max_value=max_value)
+    for key, (min_value, max_value) in _RISK_FLOAT_RANGES.items():
+        _validate_float_range(cfg, key, issues, min_value=min_value, max_value=max_value)
     _validate_text(cfg, "connector_backend", issues)
     _validate_text(cfg, "indicator_source", issues)
     _validate_text(cfg, "code_language", issues)
+    _validate_text(cfg, "theme", issues, allow_empty=True)
+    _validate_text(cfg, "selected_rust_framework", issues, allow_empty=True)
     _validate_text(cfg, "selected_exchange", issues)
     _validate_text(cfg, "selected_forex_broker", issues, allow_empty=True)
+    _validate_bool(cfg, "llm_enabled", issues)
+    _validate_choice(cfg, "llm_provider", _LLM_PROVIDER_CHOICES, issues)
+    _validate_text(cfg, "llm_model", issues, allow_empty=True)
+    _validate_text(cfg, "llm_base_url", issues, allow_empty=True)
+    _validate_text(cfg, "llm_api_key", issues, allow_empty=True)
+    _validate_text(cfg, "llm_api_key_env", issues, allow_empty=True)
+    _validate_choice(cfg, "llm_use_for", _LLM_USE_FOR_CHOICES, issues)
+    _validate_bool(cfg, "llm_allow_public_network", issues)
+    _validate_choice(cfg, "llm_reasoning_effort", _LLM_REASONING_EFFORT_CHOICES, issues)
     _validate_stop_loss(cfg, "stop_loss", issues)
     _validate_mapping(cfg, "indicators", issues)
     _validate_backtest_config(cfg, issues)

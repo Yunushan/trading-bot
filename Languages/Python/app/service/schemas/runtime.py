@@ -21,6 +21,10 @@ class ServiceCapabilityFlags:
     docker_optional: bool = True
     web_client: bool = True
     mobile_clients: bool = False
+    service_owned_backtests: bool = True
+    standalone_lifecycle_sessions: bool = True
+    standalone_trading_execution: bool = False
+    desktop_trading_execution: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +33,8 @@ class ServiceControlPlaneDescriptor:
     owner: str = "service-runtime"
     start_supported: bool = False
     stop_supported: bool = False
+    execution_scope: str = "intent-only"
+    trading_execution_supported: bool = False
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -87,5 +93,10 @@ def build_runtime_descriptor(
             "Bearer-token auth is required for non-loopback API hosts via BOT_SERVICE_API_TOKEN or --api-token.",
             "A thin same-origin web dashboard is available at '/ui/' when the service API is running.",
             f"The dashboard can follow live service updates over the SSE stream at '{SERVICE_API_STREAM_DASHBOARD_PATH}'.",
+            (
+                "Standalone service start/stop manages a lifecycle heartbeat only; "
+                "it does not run strategy loops or submit exchange orders."
+            ),
+            "Use the desktop-hosted API to observe desktop-owned live/demo trading runtime state.",
         ),
     )

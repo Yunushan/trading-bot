@@ -8,6 +8,7 @@ from app.config import DEFAULT_CONFIG, build_default_config, build_default_setti
 from app.gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
 from app.settings import (
     BACKTEST_TEMPLATE_DEFAULT,
+    BINANCE_MAX_FUTURES_LEVERAGE,
     LIVE_TRADING_ACKNOWLEDGEMENT,
     STOP_LOSS_DEFAULT,
     ConfigValidationError,
@@ -58,13 +59,29 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertTrue(config["operational_live_order_gate_enabled"])
 
     def test_default_config_passes_runtime_validation(self):
-        validated = validate_runtime_config(build_default_config())
+        config = build_default_config()
+        validated = validate_runtime_config(config)
 
+        self.assertEqual(set(config), set(validated))
+        self.assertEqual(set(config["backtest"]), set(validated["backtest"]))
         self.assertEqual("Demo/Testnet", validated["mode"])
         self.assertEqual(["BTCUSDT"], validated["symbols"])
         self.assertEqual(["1m"], validated["intervals"])
         self.assertEqual(1, validated["leverage"])
         self.assertEqual(2.0, validated["position_pct"])
+        self.assertIsNone(validated["lead_trader_profile"])
+
+    def test_runtime_validation_rejects_unknown_config_keys(self):
+        config = build_default_config()
+        config["leverege"] = 3
+        config["backtest"]["capital_usdt"] = 1000
+
+        with self.assertRaises(ConfigValidationError) as caught:
+            validate_runtime_config(config)
+
+        fields = {issue.field for issue in caught.exception.issues}
+        self.assertIn("leverege", fields)
+        self.assertIn("backtest.capital_usdt", fields)
 
     def test_runtime_validation_rejects_unsafe_numeric_values(self):
         config = build_default_config()
@@ -78,8 +95,16 @@ class SettingsDefaultsTests(unittest.TestCase):
                 "operational_execution_heartbeat_stale_seconds": 0,
                 "operational_account_snapshot_stale_seconds": 0,
                 "operational_portfolio_snapshot_stale_seconds": 0,
+                "connector_order_block_pause_threshold": 0,
+                "connector_order_block_window_seconds": 0,
+                "indicator_flip_confirmation_bars": 0,
+                "positions_missing_threshold": 0,
+                "futures_flat_purge_miss_threshold": 0,
+                "max_auto_bump_percent": 101,
+                "auto_bump_percent_multiplier": -1,
             }
         )
+        config["backtest"]["start_date"] = "not-a-date"
 
         with self.assertRaises(ConfigValidationError) as caught:
             validate_runtime_config(config)
@@ -93,6 +118,60 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("operational_execution_heartbeat_stale_seconds", fields)
         self.assertIn("operational_account_snapshot_stale_seconds", fields)
         self.assertIn("operational_portfolio_snapshot_stale_seconds", fields)
+        self.assertIn("connector_order_block_pause_threshold", fields)
+        self.assertIn("connector_order_block_window_seconds", fields)
+        self.assertIn("indicator_flip_confirmation_bars", fields)
+        self.assertIn("positions_missing_threshold", fields)
+        self.assertIn("futures_flat_purge_miss_threshold", fields)
+        self.assertIn("max_auto_bump_percent", fields)
+        self.assertIn("auto_bump_percent_multiplier", fields)
+        self.assertIn("backtest.start_date", fields)
+
+    def test_runtime_validation_rejects_invalid_booleans_and_llm_choices(self):
+        config = build_default_config()
+        config.update(
+            {
+                "live_trading_enabled": "sometimes",
+                "lead_trader_enabled": 2,
+                "llm_enabled": "maybe",
+                "llm_allow_public_network": "later",
+                "llm_provider": "unknown-ai",
+                "llm_use_for": "auto_trade",
+                "llm_reasoning_effort": "turbo",
+            }
+        )
+
+        with self.assertRaises(ConfigValidationError) as caught:
+            validate_runtime_config(config)
+
+        fields = {issue.field for issue in caught.exception.issues}
+        self.assertIn("live_trading_enabled", fields)
+        self.assertIn("lead_trader_enabled", fields)
+        self.assertIn("llm_enabled", fields)
+        self.assertIn("llm_allow_public_network", fields)
+        self.assertIn("llm_provider", fields)
+        self.assertIn("llm_use_for", fields)
+        self.assertIn("llm_reasoning_effort", fields)
+
+    def test_runtime_validation_rejects_leverage_above_shared_binance_limit(self):
+        config = build_default_config()
+        config["leverage"] = BINANCE_MAX_FUTURES_LEVERAGE + 1
+        config["live_trading_max_leverage"] = BINANCE_MAX_FUTURES_LEVERAGE + 1
+        config["runtime_symbol_interval_pairs"] = [
+            {
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "strategy_controls": {"leverage": BINANCE_MAX_FUTURES_LEVERAGE + 1},
+            }
+        ]
+
+        with self.assertRaises(ConfigValidationError) as caught:
+            validate_runtime_config(config)
+
+        fields = {issue.field for issue in caught.exception.issues}
+        self.assertIn("leverage", fields)
+        self.assertIn("live_trading_max_leverage", fields)
+        self.assertIn("runtime_symbol_interval_pairs[0].strategy_controls.leverage", fields)
 
     def test_runtime_validation_normalizes_symbols_intervals_and_stop_loss(self):
         config = build_default_config()
@@ -185,6 +264,28 @@ class SettingsDefaultsTests(unittest.TestCase):
                 leverage=1,
                 position_pct=2.0,
                 config=safe_config,
+                env={},
+            )
+
+        too_high_cap_config = {
+            "live_trading_enabled": True,
+            "live_trading_acknowledgement": LIVE_TRADING_ACKNOWLEDGEMENT,
+            "live_trading_max_leverage": BINANCE_MAX_FUTURES_LEVERAGE + 1,
+            "live_trading_max_position_pct": 3.0,
+        }
+
+        with self.assertRaisesRegex(
+            LiveTradingSafetyError,
+            f"live_trading_max_leverage must be between 1 and {BINANCE_MAX_FUTURES_LEVERAGE}",
+        ):
+            validate_live_trading_safety(
+                mode="Live",
+                api_key="live-api-key",
+                api_secret="live-api-secret",
+                account_type="Futures",
+                leverage=1,
+                position_pct=2.0,
+                config=too_high_cap_config,
                 env={},
             )
 

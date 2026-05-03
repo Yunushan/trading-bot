@@ -74,8 +74,11 @@ def _help_text() -> str:
             "  backtest run",
             "  backtest stop",
             "  config get",
+            "  config persistence",
             "  config set key=value [key=value...]",
             "  config patch {json-object}",
+            "  config save [path]",
+            "  config load [path]",
             "  llm providers",
             "  llm config",
             "  llm set key=value [key=value...]",
@@ -178,6 +181,8 @@ def run_service_terminal_command(
             action = str(args[0] if args else "get").lower()
             if action == "get":
                 result = service.get_config_payload().to_dict()
+            elif action == "persistence":
+                result = service.get_config_persistence_status()
             elif action == "set":
                 patch = _parse_pairs(args[1:])
                 result = service.update_config(patch).to_dict()
@@ -187,11 +192,18 @@ def run_service_terminal_command(
                 if not isinstance(patch, dict):
                     raise ValueError("config patch expects a JSON object.")
                 result = service.update_config(patch).to_dict()
+            elif action == "save":
+                result = service.save_config(path=args[1] if len(args) > 1 else None, source=source)
+            elif action == "load":
+                result = service.load_config(path=args[1] if len(args) > 1 else None, source=source)
             else:
                 return _result(
                     accepted=False,
                     command=command,
-                    output="Unknown config command. Use: config get, config set, or config patch.",
+                    output=(
+                        "Unknown config command. Use: config get, config persistence, "
+                        "config set, config patch, config save, or config load."
+                    ),
                     source=source,
                     exit_code=2,
                 )

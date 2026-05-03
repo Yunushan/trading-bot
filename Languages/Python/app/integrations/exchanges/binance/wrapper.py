@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from decimal import getcontext
 
 from binance.client import Client
+from ....settings.exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
 from ....settings.live_safety import validate_live_trading_safety
 from .account import bind_binance_account_data
 from .clients import (
@@ -46,7 +47,7 @@ class NetworkConnectivityError(RuntimeError):
     """Raised when outbound HTTP connectivity to the exchange is unavailable."""
     pass
 
-MAX_FUTURES_LEVERAGE = 150
+MAX_FUTURES_LEVERAGE = BINANCE_MAX_FUTURES_LEVERAGE
 
 def _is_testnet_mode(mode: str | None) -> bool:
     text = str(mode or "").lower()

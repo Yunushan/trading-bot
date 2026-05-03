@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from ...integrations.llm import build_llm_config_payload, list_llm_provider_specs
+from ...integrations.llm.providers import build_llm_config_payload, list_llm_provider_specs
 
 _USE_FOR_OPTIONS = (
     ("Advisory", "advisory"),
