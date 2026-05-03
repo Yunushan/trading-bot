@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+import shutil
+import subprocess
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+
+
+OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,7 +20,16 @@ class LocalModelStatus:
     server_kind: str
     installed: bool
     can_download: bool
+    can_start: bool = False
     available_models: tuple[str, ...] = ()
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class LocalModelServerStartResult:
+    started: bool
+    server_kind: str
+    executable: str = ""
     error: str = ""
 
 
@@ -67,16 +82,22 @@ def _model_installed(model: str, available_models: tuple[str, ...]) -> bool:
     return False
 
 
+def ollama_executable_path(command_finder: Callable[[str], str | None] = shutil.which) -> str:
+    return str(command_finder("ollama") or "").strip()
+
+
 def get_local_model_status(
     base_url: str,
     model: str,
     *,
     timeout: float = 3.0,
     request_get: Callable[..., Any] = requests.get,
+    command_finder: Callable[[str], str | None] = shutil.which,
 ) -> LocalModelStatus:
     clean_base_url = str(base_url or "").strip()
     clean_model = str(model or "").strip()
     kind = _server_kind(clean_base_url)
+    can_start = kind == "ollama" and bool(ollama_executable_path(command_finder))
     try:
         response = request_get(_join_url(clean_base_url, "models"), timeout=max(1.0, float(timeout or 3.0)))
         if hasattr(response, "raise_for_status"):
@@ -89,6 +110,7 @@ def get_local_model_status(
             server_kind=kind,
             installed=_model_installed(clean_model, available_models),
             can_download=kind == "ollama",
+            can_start=can_start,
             available_models=available_models,
         )
     except Exception as exc:
@@ -97,9 +119,51 @@ def get_local_model_status(
             base_url=clean_base_url,
             server_kind=kind,
             installed=False,
-            can_download=False,
+            can_download=kind == "ollama",
+            can_start=can_start,
             error=str(exc),
         )
+
+
+def start_ollama_server(
+    base_url: str,
+    *,
+    command_finder: Callable[[str], str | None] = shutil.which,
+    popen: Callable[..., Any] = subprocess.Popen,
+) -> LocalModelServerStartResult:
+    kind = _server_kind(base_url)
+    if kind != "ollama":
+        return LocalModelServerStartResult(
+            started=False,
+            server_kind=kind,
+            error="Automatic local model server startup is only supported for Ollama on localhost:11434.",
+        )
+
+    executable = ollama_executable_path(command_finder)
+    if not executable:
+        return LocalModelServerStartResult(
+            started=False,
+            server_kind=kind,
+            error="Ollama is not installed or the ollama command is not on PATH.",
+        )
+
+    kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        kwargs["startupinfo"] = startupinfo
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+
+    try:
+        popen([executable, "serve"], **kwargs)
+    except Exception as exc:
+        return LocalModelServerStartResult(started=False, server_kind=kind, executable=executable, error=str(exc))
+
+    return LocalModelServerStartResult(started=True, server_kind=kind, executable=executable)
 
 
 def pull_ollama_model(

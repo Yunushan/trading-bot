@@ -4,7 +4,12 @@ from collections.abc import Callable
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from ...integrations.llm.local_models import get_local_model_status, pull_ollama_model
+from ...integrations.llm.local_models import (
+    OLLAMA_DOWNLOAD_URL,
+    get_local_model_status,
+    pull_ollama_model,
+    start_ollama_server,
+)
 from ...integrations.llm.providers import build_llm_config_payload, list_llm_provider_specs
 
 _USE_FOR_OPTIONS = (
@@ -61,6 +66,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self.allow_public_network_check.setChecked(allow_public_network)
             self._sync_provider_access(allow_public_network)
             self.provider_combo.setCurrentIndex(provider_idx)
+            self._sync_local_model_action_visibility(provider_key)
             self.enabled_check.setChecked(bool(payload.get("enabled")))
             self._refresh_models_for_provider(provider_key, str(payload.get("model") or ""))
             self._refresh_reasoning_for_provider(provider_key, str(payload.get("reasoning_effort") or ""))
@@ -89,6 +95,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             enabled=enabled,
             base_url=base_url or str(provider.get("default_base_url") or ""),
             model=model or str(provider.get("default_model") or ""),
+            show_installed_message=False,
         ):
             return
 
@@ -113,6 +120,12 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
     def _pull_local_model(self, base_url: str, model: str) -> None:
         pull_ollama_model(base_url, model)
 
+    def _start_local_model_server(self, base_url: str):
+        return start_ollama_server(base_url)
+
+    def _open_ollama_download(self) -> None:
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(OLLAMA_DOWNLOAD_URL))
+
     def _ensure_local_model_available(
         self,
         *,
@@ -120,6 +133,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         enabled: bool,
         base_url: str,
         model: str,
+        show_installed_message: bool,
     ) -> bool:
         if provider_key != "local" or not enabled:
             return True
@@ -129,18 +143,46 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
 
         status = self._local_model_status(base_url, clean_model)
         if status.installed:
+            if show_installed_message:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Local model ready",
+                    f"The local model '{clean_model}' is already installed and ready.",
+                )
             return True
         if status.error:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Local model unavailable",
-                (
-                    f"Could not check the local model server at {base_url}.\n\n"
-                    "Start Ollama or your local OpenAI-compatible server, then apply these settings again.\n\n"
-                    f"Error: {status.error}"
-                ),
-            )
-            return False
+            if not self._handle_unreachable_local_model_server(base_url, clean_model, status):
+                return False
+            status = self._wait_for_local_model_server(base_url, clean_model)
+            if status.installed:
+                if show_installed_message:
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "Local model ready",
+                        f"The local model '{clean_model}' is already installed and ready.",
+                    )
+                return True
+            if status.error:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Local model unavailable",
+                    (
+                        f"Could not reach the local model server at {base_url}.\n\n"
+                        "Start Ollama or your local OpenAI-compatible server, then try again.\n\n"
+                        f"Error: {status.error}"
+                    ),
+                )
+                return False
+            if not status.can_download:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Local model not found",
+                    (
+                        f"The selected model '{clean_model}' is not available on the local server at {base_url}.\n\n"
+                        "Install or load the model in your local model manager, then try again."
+                    ),
+                )
+                return False
         if not status.can_download:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -153,6 +195,75 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             )
             return False
 
+        return self._download_local_model(base_url, clean_model)
+
+    def _handle_unreachable_local_model_server(self, base_url: str, model: str, status) -> bool:
+        if status.server_kind != "ollama":
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Local model unavailable",
+                (
+                    f"Could not check the local model server at {base_url}.\n\n"
+                    "Start your local OpenAI-compatible server, then apply these settings again.\n\n"
+                    f"Error: {status.error}"
+                ),
+            )
+            return False
+
+        if not status.can_start:
+            choice = QtWidgets.QMessageBox.question(
+                self,
+                "Install Ollama?",
+                (
+                    "Ollama is not running, and the app could not find the ollama command on this PC.\n\n"
+                    "Open the Ollama download page now? After installing Ollama, return here and use "
+                    "Check / Download Local Model."
+                ),
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.Yes,
+            )
+            if choice == QtWidgets.QMessageBox.StandardButton.Yes:
+                self._open_ollama_download()
+            self.status_label.setText("Install Ollama, then download the selected local model.")
+            return False
+
+        choice = QtWidgets.QMessageBox.question(
+            self,
+            "Start Ollama?",
+            (
+                "Ollama is installed but not running.\n\n"
+                f"Start Ollama now, then download or use '{model}' on this PC?"
+            ),
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if choice != QtWidgets.QMessageBox.StandardButton.Yes:
+            self.status_label.setText("Ollama is not running.")
+            return False
+
+        self.status_label.setText("Starting Ollama local model server...")
+        QtWidgets.QApplication.processEvents()
+        result = self._start_local_model_server(base_url)
+        if not result.started:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Ollama startup failed",
+                f"Could not start Ollama automatically.\n\nError: {result.error}",
+            )
+            return False
+        return True
+
+    def _wait_for_local_model_server(self, base_url: str, model: str):
+        status = self._local_model_status(base_url, model)
+        for _ in range(10):
+            if not status.error:
+                return status
+            QtWidgets.QApplication.processEvents()
+            QtCore.QThread.msleep(500)
+            status = self._local_model_status(base_url, model)
+        return status
+
+    def _download_local_model(self, base_url: str, clean_model: str) -> bool:
         choice = QtWidgets.QMessageBox.question(
             self,
             "Download local model?",
@@ -191,6 +302,26 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
 
         self.status_label.setText(f"Local model '{clean_model}' is installed and ready.")
         return True
+
+    def _on_local_model_action_clicked(self) -> None:
+        provider_key = str(self.provider_combo.currentData() or "openai")
+        provider = self._provider_by_key.get(provider_key) or {}
+        model = str(self.model_combo.currentText() or provider.get("default_model") or "").strip()
+        base_url = str(self.base_url_edit.text() or provider.get("default_base_url") or "").strip()
+        if provider_key != "local":
+            QtWidgets.QMessageBox.information(
+                self,
+                "Cloud provider selected",
+                "Local model downloads are only available for the Local / Custom OpenAI-Compatible provider.",
+            )
+            return
+        self._ensure_local_model_available(
+            provider_key=provider_key,
+            enabled=True,
+            base_url=base_url,
+            model=model,
+            show_installed_message=True,
+        )
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QGridLayout(self)
@@ -257,6 +388,8 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
 
         self.apply_btn = QtWidgets.QPushButton("Apply LLM Settings", self)
         layout.addWidget(self.apply_btn, 5, 2)
+        self.local_model_btn = QtWidgets.QPushButton("Check / Download Local Model", self)
+        layout.addWidget(self.local_model_btn, 5, 1)
 
         self.status_label = QtWidgets.QLabel("", self)
         self.status_label.setWordWrap(True)
@@ -282,6 +415,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self.use_for_combo,
             self.reasoning_label,
             self.reasoning_combo,
+            self.local_model_btn,
         ]
 
         self.enabled_check.toggled.connect(self._on_enabled_toggled)
@@ -289,6 +423,8 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.reasoning_combo.currentIndexChanged.connect(self._on_reasoning_changed)
         self.apply_btn.clicked.connect(self.apply_to_config)
+        self.local_model_btn.clicked.connect(self._on_local_model_action_clicked)
+        self._sync_local_model_action_visibility("openai")
 
     def _on_enabled_toggled(self, checked: bool) -> None:
         self._set_dependent_controls_enabled(bool(checked))
@@ -326,6 +462,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             return
         self._refresh_models_for_provider(provider_key, "")
         self._refresh_reasoning_for_provider(provider_key, "")
+        self._sync_local_model_action_visibility(provider_key)
         provider = self._provider_by_key.get(provider_key) or {}
         self.base_url_edit.setText(str(provider.get("default_base_url") or ""))
         self.api_key_env_edit.setText(str(provider.get("api_key_env") or ""))
@@ -361,6 +498,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
                 self.provider_combo.setCurrentIndex(idx)
         else:
             self.provider_combo.setCurrentIndex(idx)
+        self._sync_local_model_action_visibility(str(self.provider_combo.itemData(idx) or ""))
 
     def _sync_provider_access(self, allow_public_network: bool) -> None:
         model = self.provider_combo.model()
@@ -375,6 +513,11 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         current_key = str(self.provider_combo.currentData() or "")
         if current_key and not self._provider_allowed(current_key, allow_public_network):
             self._select_provider_key(self._fallback_provider_key(), block_signals=self._refreshing)
+
+    def _sync_local_model_action_visibility(self, provider_key: str) -> None:
+        btn = getattr(self, "local_model_btn", None)
+        if btn is not None:
+            btn.setVisible(str(provider_key or "") == "local")
 
     def _refresh_models_for_provider(self, provider_key: str, current_model: str) -> None:
         provider = self._provider_by_key.get(provider_key) or {}

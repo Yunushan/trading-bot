@@ -79,7 +79,7 @@ py-modules = ["main"]
 include = ["app*", "trading_core*"]
 
 [tool.setuptools.package-data]
-app = ["assets/*.js"]
+app = ["assets/*.js", "assets/*.svg"]
 trading_core = ["py.typed"]
 
 [tool.pytest.ini_options]

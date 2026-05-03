@@ -8,7 +8,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.gui.runtime.ui import theme_runtime  # noqa: E402
-from app.gui.runtime.ui.theme_styles import DARK_THEME, LIGHT_THEME  # noqa: E402
+from app.gui.runtime.ui.theme_styles import CHECKBOX_CHECK_IMAGE, CHECKBOX_X_IMAGE, DARK_THEME, LIGHT_THEME  # noqa: E402
 
 
 class _FakeWindow:
@@ -43,6 +43,16 @@ class ThemeAccentCoverageTests(unittest.TestCase):
 
         self.assertIn("background-color: #fbbf24;", styles)
         self.assertIn("selection-background-color: #fbbf24;", styles)
+        self.assertIn(f"image: {CHECKBOX_CHECK_IMAGE};", styles)
+        self.assertIn(f"image: {CHECKBOX_X_IMAGE};", styles)
+
+    def test_base_themes_use_packaged_checkbox_icons(self):
+        for theme in (LIGHT_THEME, DARK_THEME):
+            with self.subTest(theme=theme[:20]):
+                self.assertIn("checkbox_checked.svg", theme)
+                self.assertIn("checkbox_unchecked.svg", theme)
+                self.assertIn(f"image: {CHECKBOX_CHECK_IMAGE};", theme)
+                self.assertIn(f"image: {CHECKBOX_X_IMAGE};", theme)
 
     def test_apply_accent_theme_overrides_dark_base_surfaces(self):
         window = _FakeWindow()

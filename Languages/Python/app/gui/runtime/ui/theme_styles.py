@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+_ASSET_DIR = Path(__file__).resolve().parents[3] / "assets"
+CHECKBOX_CHECK_IMAGE = f'url("{(_ASSET_DIR / "checkbox_checked.svg").as_posix()}")'
+CHECKBOX_X_IMAGE = f'url("{(_ASSET_DIR / "checkbox_unchecked.svg").as_posix()}")'
+
 LIGHT_THEME = """
 QWidget { background-color: #FFFFFF; color: #000000; font-family: Arial; }
 QGroupBox { border: 1px solid #C0C0C0; margin-top: 6px; }
@@ -24,12 +30,12 @@ QCheckBox::indicator {
     background-color: #FFFFFF;
 }
 QCheckBox::indicator:unchecked {
-    image: none;
+    image: {checkbox_x_image};
 }
 QCheckBox::indicator:checked {
     background-color: #0A84FF;
     border-color: #0A84FF;
-    image: url(:/qt-project.org/styles/commonstyle/images/checkboxchecked.png);
+    image: {checkbox_check_image};
 }
 QCheckBox::indicator:hover {
     border-color: #0A84FF;
@@ -38,7 +44,7 @@ QComboBox { background-color: #FFFFFF; color: #000000; }
 QListWidget { background-color: #FFFFFF; color: #000000; }
 QLabel { color: #000000; }
 QLabel:disabled { color: #7A7A7A; }
-"""
+""".replace("{checkbox_check_image}", CHECKBOX_CHECK_IMAGE).replace("{checkbox_x_image}", CHECKBOX_X_IMAGE)
 
 DARK_THEME = """
 QWidget { background-color: #121212; color: #E0E0E0; font-family: Arial; }
@@ -64,12 +70,12 @@ QCheckBox::indicator {
     background-color: #1A1A1A;
 }
 QCheckBox::indicator:unchecked {
-    image: none;
+    image: {checkbox_x_image};
 }
 QCheckBox::indicator:checked {
     background-color: #3FB950;
     border-color: #3FB950;
-    image: url(:/qt-project.org/styles/commonstyle/images/checkboxchecked.png);
+    image: {checkbox_check_image};
 }
 QCheckBox::indicator:hover {
     border-color: #3FB950;
@@ -78,4 +84,4 @@ QComboBox { background-color: #1E1E1E; color: #E0E0E0; }
 QListWidget { background-color: #0E0E0E; color: #E0E0E0; }
 QLabel { color: #E0E0E0; }
 QLabel:disabled { color: #6F6F6F; }
-"""
+""".replace("{checkbox_check_image}", CHECKBOX_CHECK_IMAGE).replace("{checkbox_x_image}", CHECKBOX_X_IMAGE)
