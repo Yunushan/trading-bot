@@ -1135,6 +1135,100 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
         self.assertEqual(window.desktop_service_preflight_recheck_btn.text, "Recheck Preflight")
         self.assertTrue(window.desktop_service_preflight_recheck_btn.enabled)
 
+    def test_desktop_service_api_host_controls_fade_until_enabled(self):
+        class _Widget:
+            def __init__(self, text=""):
+                self.enabled = True
+                self.text = text
+                self.tooltip = ""
+                self.stylesheet = ""
+                self.properties = {}
+                self.graphics_effect = object()
+
+            def setEnabled(self, enabled):
+                self.enabled = bool(enabled)
+
+            def setText(self, text):
+                self.text = str(text)
+
+            def setToolTip(self, text):
+                self.tooltip = str(text)
+
+            def setStyleSheet(self, text):
+                self.stylesheet = str(text)
+
+            def setProperty(self, name, value):
+                self.properties[str(name)] = value
+
+            def setGraphicsEffect(self, effect):
+                self.graphics_effect = effect
+
+        class _DesktopServiceApiWindow:
+            def __init__(self):
+                self._desktop_service_api_enabled_pref = False
+                self._desktop_service_api_host_pref = "127.0.0.1"
+                self._desktop_service_api_port_pref = 8000
+                self._desktop_service_api_token_pref = ""
+                self.desktop_service_api_host_label = _Widget("Host:")
+                self.desktop_service_api_host_edit = _Widget("127.0.0.1")
+                self.desktop_service_api_host_edit.text = lambda: "127.0.0.1"
+                self.desktop_service_api_port_label = _Widget("Port:")
+                self.desktop_service_api_port_spin = _Widget("8000")
+                self.desktop_service_api_port_spin.value = lambda: 8000
+                self.desktop_service_api_token_label = _Widget("Token:")
+                self.desktop_service_api_token_edit = _Widget("")
+                self.desktop_service_api_token_edit.text = lambda: ""
+                self.desktop_service_api_apply_btn = _Widget("Start API")
+                self.desktop_service_api_open_btn = _Widget("Open Dashboard")
+                self.desktop_service_api_status_label = _Widget("Service API: off")
+                self.desktop_service_preflight_label = _Widget("Preflight: unknown")
+                self.desktop_service_preflight_recheck_btn = _Widget("Recheck Preflight")
+                self._desktop_service_api_host_dependent_widgets = [
+                    self.desktop_service_api_host_label,
+                    self.desktop_service_api_host_edit,
+                    self.desktop_service_api_port_label,
+                    self.desktop_service_api_port_spin,
+                    self.desktop_service_api_token_label,
+                    self.desktop_service_api_token_edit,
+                    self.desktop_service_api_apply_btn,
+                    self.desktop_service_api_open_btn,
+                    self.desktop_service_api_status_label,
+                    self.desktop_service_preflight_label,
+                    self.desktop_service_preflight_recheck_btn,
+                ]
+
+            def _get_desktop_service_api_host_status(self):
+                return {"running": False}
+
+            def _get_service_operational_preflight(self):
+                return {"state": "ok", "start": {"allowed": True}, "orders": {"allowed": True}}
+
+        new_bind_service_api(_DesktopServiceApiWindow, save_app_state_file=lambda _path, _data: None)
+
+        window = _DesktopServiceApiWindow()
+        window._refresh_desktop_service_api_ui(status={"running": False})
+
+        for widget in window._desktop_service_api_host_dependent_widgets:
+            self.assertFalse(widget.enabled)
+            self.assertTrue(widget.properties["desktopServiceApiFaded"])
+        self.assertEqual(window.desktop_service_api_apply_btn.text, "Start API")
+        self.assertEqual(
+            window.desktop_service_preflight_recheck_btn.tooltip,
+            "Enable the Desktop Service API host to recheck preflight.",
+        )
+
+        window._desktop_service_api_enabled_pref = True
+        window._refresh_desktop_service_api_ui(status={"running": False})
+
+        for widget in window._desktop_service_api_host_dependent_widgets:
+            if widget is window.desktop_service_api_open_btn:
+                self.assertFalse(widget.enabled)
+            else:
+                self.assertTrue(widget.enabled)
+            self.assertFalse(widget.properties["desktopServiceApiFaded"])
+        self.assertEqual(window.desktop_service_api_apply_btn.text, "Start API")
+        self.assertTrue(window.desktop_service_preflight_recheck_btn.enabled)
+
     def test_positions_runtime_surfaces_expose_record_build_helpers(self):
         helpers = [
             positions_build_runtime._copy_allocations_for_key,

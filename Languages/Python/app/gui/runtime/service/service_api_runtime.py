@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from PyQt6 import QtCore, QtGui
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 _MISSING = object()
@@ -20,6 +20,9 @@ def bind_main_window_service_api_runtime(main_window_cls, *, save_app_state_file
     main_window_cls._persist_desktop_service_api_preferences = _persist_desktop_service_api_preferences
     main_window_cls._read_desktop_service_api_ui_settings = _read_desktop_service_api_ui_settings
     main_window_cls._refresh_desktop_service_api_ui = _refresh_desktop_service_api_ui
+    main_window_cls._set_desktop_service_api_host_controls_enabled = (
+        _set_desktop_service_api_host_controls_enabled
+    )
     main_window_cls._apply_desktop_service_start_gate = _apply_desktop_service_start_gate
     main_window_cls._recheck_desktop_service_preflight = _recheck_desktop_service_preflight
     main_window_cls._on_desktop_service_api_enabled_toggled = _on_desktop_service_api_enabled_toggled
@@ -186,6 +189,37 @@ def _desktop_service_preflight_start_detail(preflight: dict | None) -> str:
     )
 
 
+def _set_widget_faded(widget, faded: bool) -> None:  # noqa: ANN001
+    try:
+        widget.setProperty("desktopServiceApiFaded", bool(faded))
+    except Exception:
+        pass
+    try:
+        if not faded:
+            widget.setGraphicsEffect(None)
+            return
+        effect = QtWidgets.QGraphicsOpacityEffect(widget)
+        effect.setOpacity(0.42)
+        widget.setGraphicsEffect(effect)
+    except Exception:
+        pass
+
+
+def _set_desktop_service_api_host_controls_enabled(self, enabled: bool) -> None:
+    tooltip = "" if enabled else "Enable the Desktop Service API host to edit or use these controls."
+    widgets = list(getattr(self, "_desktop_service_api_host_dependent_widgets", []) or [])
+    for widget in widgets:
+        try:
+            widget.setEnabled(bool(enabled))
+        except Exception:
+            pass
+        _set_widget_faded(widget, not bool(enabled))
+        try:
+            widget.setToolTip(tooltip if not enabled else "")
+        except Exception:
+            pass
+
+
 def _apply_desktop_service_start_gate(
     self,
     *,
@@ -243,6 +277,7 @@ def _refresh_desktop_service_api_ui(self, status: dict | None = None) -> None:
     auth_enabled = bool(isinstance(status, dict) and status.get("auth_enabled"))
     url = str((status or {}).get("url") or settings.get("url") or "").strip()
     startup_error = str((status or {}).get("startup_error") or "").strip()
+    host_controls_enabled = bool(enabled or running)
 
     apply_btn = getattr(self, "desktop_service_api_apply_btn", None)
     open_btn = getattr(self, "desktop_service_api_open_btn", None)
@@ -251,13 +286,19 @@ def _refresh_desktop_service_api_ui(self, status: dict | None = None) -> None:
     preflight_btn = getattr(self, "desktop_service_preflight_recheck_btn", None)
     start_btn = getattr(self, "start_btn", None)
 
+    _set_desktop_service_api_host_controls_enabled(self, host_controls_enabled)
+
     if apply_btn is not None:
         if enabled and running:
             apply_btn.setText("Restart API")
-        elif enabled:
-            apply_btn.setText("Start API")
-        else:
+        elif running:
             apply_btn.setText("Stop API")
+        else:
+            apply_btn.setText("Start API")
+        try:
+            apply_btn.setEnabled(host_controls_enabled)
+        except Exception:
+            pass
 
     if open_btn is not None:
         open_btn.setEnabled(bool(running and url))
@@ -289,9 +330,12 @@ def _refresh_desktop_service_api_ui(self, status: dict | None = None) -> None:
         preflight_label.setStyleSheet(f"font-weight: 600; color: {color};")
 
     if preflight_btn is not None:
-        can_recheck = callable(getattr(self, "_get_service_operational_preflight", None))
+        can_recheck = host_controls_enabled and callable(getattr(self, "_get_service_operational_preflight", None))
         preflight_btn.setEnabled(can_recheck)
-        preflight_btn.setToolTip("" if can_recheck else "Operational preflight is unavailable.")
+        if not host_controls_enabled:
+            preflight_btn.setToolTip("Enable the Desktop Service API host to recheck preflight.")
+        else:
+            preflight_btn.setToolTip("" if can_recheck else "Operational preflight is unavailable.")
 
     _apply_desktop_service_start_gate(self, preflight=preflight)
 

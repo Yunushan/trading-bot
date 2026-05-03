@@ -32,20 +32,23 @@ def _create_dashboard_action_section(self, scroll_layout):
     self.desktop_service_api_enable_cb.toggled.connect(self._on_desktop_service_api_enabled_toggled)
     service_layout.addWidget(self.desktop_service_api_enable_cb, 0, 0)
 
-    service_layout.addWidget(QtWidgets.QLabel("Host:"), 0, 1)
+    self.desktop_service_api_host_label = QtWidgets.QLabel("Host:")
+    service_layout.addWidget(self.desktop_service_api_host_label, 0, 1)
     self.desktop_service_api_host_edit = QtWidgets.QLineEdit(
         str(getattr(self, "_desktop_service_api_host_pref", "127.0.0.1") or "127.0.0.1")
     )
     self.desktop_service_api_host_edit.setPlaceholderText("127.0.0.1")
     service_layout.addWidget(self.desktop_service_api_host_edit, 0, 2)
 
-    service_layout.addWidget(QtWidgets.QLabel("Port:"), 0, 3)
+    self.desktop_service_api_port_label = QtWidgets.QLabel("Port:")
+    service_layout.addWidget(self.desktop_service_api_port_label, 0, 3)
     self.desktop_service_api_port_spin = QtWidgets.QSpinBox()
     self.desktop_service_api_port_spin.setRange(1, 65535)
     self.desktop_service_api_port_spin.setValue(int(getattr(self, "_desktop_service_api_port_pref", 8000) or 8000))
     service_layout.addWidget(self.desktop_service_api_port_spin, 0, 4)
 
-    service_layout.addWidget(QtWidgets.QLabel("Token:"), 0, 5)
+    self.desktop_service_api_token_label = QtWidgets.QLabel("Token:")
+    service_layout.addWidget(self.desktop_service_api_token_label, 0, 5)
     self.desktop_service_api_token_edit = QtWidgets.QLineEdit(
         str(getattr(self, "_desktop_service_api_token_pref", "") or "")
     )
@@ -69,6 +72,19 @@ def _create_dashboard_action_section(self, scroll_layout):
     self.desktop_service_preflight_recheck_btn = QtWidgets.QPushButton("Recheck Preflight")
     self.desktop_service_preflight_recheck_btn.clicked.connect(self._recheck_desktop_service_preflight)
     service_layout.addWidget(self.desktop_service_preflight_recheck_btn, 2, 8)
+    self._desktop_service_api_host_dependent_widgets = [
+        self.desktop_service_api_host_label,
+        self.desktop_service_api_host_edit,
+        self.desktop_service_api_port_label,
+        self.desktop_service_api_port_spin,
+        self.desktop_service_api_token_label,
+        self.desktop_service_api_token_edit,
+        self.desktop_service_api_apply_btn,
+        self.desktop_service_api_open_btn,
+        self.desktop_service_api_status_label,
+        self.desktop_service_preflight_label,
+        self.desktop_service_preflight_recheck_btn,
+    ]
     scroll_layout.addWidget(service_box)
     try:
         self._refresh_desktop_service_api_ui()
