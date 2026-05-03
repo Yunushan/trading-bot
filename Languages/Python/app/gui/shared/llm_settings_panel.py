@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from ...integrations.llm.local_models import get_local_model_status, pull_ollama_model
 from ...integrations.llm.providers import build_llm_config_payload, list_llm_provider_specs
 
 _USE_FOR_OPTIONS = (
@@ -82,7 +83,16 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         api_key_env = str(self.api_key_env_edit.text() or "").strip()
         api_key = str(self.api_key_edit.text() or "").strip()
 
-        self._config["llm_enabled"] = bool(self.enabled_check.isChecked())
+        enabled = bool(self.enabled_check.isChecked())
+        if not self._ensure_local_model_available(
+            provider_key=provider_key,
+            enabled=enabled,
+            base_url=base_url or str(provider.get("default_base_url") or ""),
+            model=model or str(provider.get("default_model") or ""),
+        ):
+            return
+
+        self._config["llm_enabled"] = enabled
         self._config["llm_provider"] = provider_key
         self._config["llm_model"] = model or str(provider.get("default_model") or "")
         self._config["llm_base_url"] = base_url or str(provider.get("default_base_url") or "")
@@ -96,6 +106,91 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.refresh_from_config()
         if callable(self._on_apply):
             self._on_apply(self)
+
+    def _local_model_status(self, base_url: str, model: str):
+        return get_local_model_status(base_url, model)
+
+    def _pull_local_model(self, base_url: str, model: str) -> None:
+        pull_ollama_model(base_url, model)
+
+    def _ensure_local_model_available(
+        self,
+        *,
+        provider_key: str,
+        enabled: bool,
+        base_url: str,
+        model: str,
+    ) -> bool:
+        if provider_key != "local" or not enabled:
+            return True
+        clean_model = str(model or "").strip()
+        if not clean_model or clean_model == "custom-model":
+            return True
+
+        status = self._local_model_status(base_url, clean_model)
+        if status.installed:
+            return True
+        if status.error:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Local model unavailable",
+                (
+                    f"Could not check the local model server at {base_url}.\n\n"
+                    "Start Ollama or your local OpenAI-compatible server, then apply these settings again.\n\n"
+                    f"Error: {status.error}"
+                ),
+            )
+            return False
+        if not status.can_download:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Local model not found",
+                (
+                    f"The selected model '{clean_model}' is not available on the local server at {base_url}.\n\n"
+                    "This server does not support automatic downloads from this app. Install or load the model in "
+                    "your local model manager, then apply these settings again."
+                ),
+            )
+            return False
+
+        choice = QtWidgets.QMessageBox.question(
+            self,
+            "Download local model?",
+            (
+                f"The local model '{clean_model}' is not installed on this PC.\n\n"
+                "The app can ask Ollama to download it now and then use it locally on your computer. "
+                "This may download several gigabytes and can take several minutes.\n\n"
+                "Download now?"
+            ),
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if choice != QtWidgets.QMessageBox.StandardButton.Yes:
+            self.status_label.setText(f"Local model '{clean_model}' is not installed.")
+            return False
+
+        previous_enabled = self.apply_btn.isEnabled()
+        try:
+            self.apply_btn.setEnabled(False)
+            self.status_label.setText(f"Downloading local model '{clean_model}' with Ollama...")
+            QtWidgets.QApplication.processEvents()
+            self._pull_local_model(base_url, clean_model)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Local model download failed",
+                (
+                    f"Ollama could not download '{clean_model}'.\n\n"
+                    "Make sure Ollama is installed and running, then try again.\n\n"
+                    f"Error: {exc}"
+                ),
+            )
+            return False
+        finally:
+            self.apply_btn.setEnabled(previous_enabled)
+
+        self.status_label.setText(f"Local model '{clean_model}' is installed and ready.")
+        return True
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QGridLayout(self)

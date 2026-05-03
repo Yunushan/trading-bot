@@ -156,7 +156,7 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_base_url="http://127.0.0.1:11434/v1",
         default_model="llama3.3",
         api_key_env="LOCAL_LLM_API_KEY",
-        model_suggestions=("llama3.3", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"),
+        model_suggestions=("llama3.3", "qwen3:8b", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"),
         reasoning_efforts=("default", "none", "low", "medium", "high", "xhigh"),
         notes=("Use this for local LLM servers or private/public IP endpoints.",),
     ),

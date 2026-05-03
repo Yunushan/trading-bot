@@ -108,6 +108,7 @@ print("ok")
         self.assertIn("deepseek-v4-flash", provider_by_key["deepseek"]["model_suggestions"])
         self.assertIn("max", provider_by_key["deepseek"]["reasoning_efforts"])
         self.assertEqual("http://127.0.0.1:11434/v1", provider_by_key["local"]["default_base_url"])
+        self.assertIn("qwen3:8b", provider_by_key["local"]["model_suggestions"])
 
         status_result = service.run_terminal_command("status", source="test-terminal").to_dict()
         self.assertTrue(status_result["accepted"])
