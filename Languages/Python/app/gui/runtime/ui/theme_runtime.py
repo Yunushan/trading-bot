@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6 import QtGui
 
-from app.gui.runtime.ui.theme_styles import CHECKBOX_CHECK_IMAGE, CHECKBOX_X_IMAGE
+from app.gui.runtime.ui.theme_styles import CHECKBOX_CHECK_IMAGE
 
 
 def bind_main_window_theme_runtime(main_window_cls) -> None:
@@ -168,7 +168,7 @@ def _accent_theme_styles(accent: str) -> str:
         border: 1px solid {outline};
     }}
     QCheckBox::indicator:unchecked {{
-        image: {CHECKBOX_X_IMAGE};
+        image: none;
     }}
     QCheckBox::indicator:checked {{
         background-color: {accent};
