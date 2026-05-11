@@ -16,6 +16,7 @@ const {
   configPersistenceTone,
   controlPlaneLifecycleSummary,
   currentPreflight,
+  formatConnectorSupport,
   formatConfigPersistenceState,
   formatNumber,
   formatPreflightGate,
@@ -383,6 +384,11 @@ export default function App() {
 
   const runtime = dashboard?.runtime || {};
   const status = dashboard?.status || {};
+  const exchangeConnector = dashboard?.operational?.exchange_connector || {};
+  const connectorSupportText = formatConnectorSupport(exchangeConnector.support);
+  const connectorAttention = Array.isArray(exchangeConnector.attention)
+    ? exchangeConnector.attention.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
   const backtest = dashboard?.backtest || {};
   const topRun = backtest.top_run || null;
   const logs = Array.isArray(dashboard?.logs) ? dashboard.logs.slice(0, 5) : [];
@@ -488,6 +494,10 @@ export default function App() {
           <StatRow label="Status" value={status.status_message || "-"} />
           <StatRow label="Mode / Account" value={`${status.mode || "-"} / ${status.account_type || "-"}`} />
           <StatRow label="Exchange" value={status.selected_exchange || "-"} />
+          <StatRow label="Exchange Support" value={connectorSupportText} />
+          {connectorAttention.length ? (
+            <Text style={styles.attentionItem}>{connectorAttention[0]}</Text>
+          ) : null}
         </Card>
 
         <Card title="Preflight" tone={preflightToneInfo}>

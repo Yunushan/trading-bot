@@ -47,6 +47,25 @@ def build_release_steps(
 ) -> list[ReleaseStep]:
     steps = [
         ReleaseStep(
+            name="check runtime tool versions",
+            cwd=REPO_ROOT,
+            command=[
+                python_executable,
+                "tools/check_local_tool_versions.py",
+                "--strict",
+            ],
+        ),
+        ReleaseStep(
+            name="check client dependency locks",
+            cwd=REPO_ROOT,
+            command=[
+                python_executable,
+                "tools/check_client_dependency_locks.py",
+                "--json",
+                "--strict",
+            ],
+        ),
+        ReleaseStep(
             name="compile Python sources",
             cwd=REPO_ROOT,
             command=[

@@ -168,6 +168,7 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "live_allow_auto_bump_to_min_order",
         "live_trading_max_leverage",
         "live_trading_max_position_pct",
+        "live_trading_max_session_orders",
         "llm_allow_public_network",
         "llm_api_key",
         "llm_api_key_env",
@@ -791,6 +792,7 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
         max_value=100.0,
         exclusive_min=True,
     )
+    _validate_int_range(cfg, "live_trading_max_session_orders", issues, min_value=1, max_value=100_000)
     _validate_bool(cfg, "order_audit_enabled", issues, default=True)
     _validate_text(cfg, "order_audit_log_path", issues, allow_empty=True)
     _validate_int_range(cfg, "order_audit_max_bytes", issues, min_value=1, max_value=1_000_000_000)

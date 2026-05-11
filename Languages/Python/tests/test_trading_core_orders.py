@@ -49,6 +49,30 @@ class TradingCoreOrderIntentTests(unittest.TestCase):
 
         self.assertIn("limit order price must be > 0", validate_order_submit_intent(intent))
 
+    def test_order_intent_validation_rejects_unsupported_order_surface(self):
+        intent = order_submit_intent_from_params(
+            "margin",
+            {"symbol": "BTCUSDT", "side": "BUY", "type": "STOP_MARKET", "quantity": "0.1"},
+        )
+
+        errors = validate_order_submit_intent(intent)
+
+        self.assertIn("order market must be futures or spot", errors)
+        self.assertIn("order type must be LIMIT or MARKET", errors)
+
+    def test_order_intent_validation_checks_position_side(self):
+        spot_intent = order_submit_intent_from_params(
+            "spot",
+            {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1", "positionSide": "LONG"},
+        )
+        futures_intent = order_submit_intent_from_params(
+            "futures",
+            {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1", "positionSide": "SIDEWAYS"},
+        )
+
+        self.assertIn("positionSide is only supported for futures", validate_order_submit_intent(spot_intent))
+        self.assertIn("positionSide must be BOTH, LONG, or SHORT", validate_order_submit_intent(futures_intent))
+
 
 if __name__ == "__main__":
     unittest.main()

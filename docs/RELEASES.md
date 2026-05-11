@@ -32,7 +32,11 @@ Run the local release smoke before creating a tag:
 python tools/release_smoke.py
 ```
 
-That command compiles canonical entrypoints and tool scripts, runs Ruff, checks dependency metadata and requirement shims, runs the configured mypy targets, checks the service launcher healthcheck, runs the desktop/service manual smoke, and runs the Python test suite.
+That command checks the declared Python/Node toolchain, verifies web/mobile
+client lockfile metadata, compiles canonical entrypoints and tool scripts, runs
+Ruff, checks dependency metadata and requirement shims, runs the configured mypy
+targets, checks the service launcher healthcheck, runs the desktop/service
+manual smoke, and runs the Python test suite.
 
 For a faster local pass when the full test suite already ran separately:
 

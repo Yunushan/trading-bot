@@ -27,6 +27,7 @@ from app.integrations.llm.local_models import (
 class _Response:
     def __init__(self, payload=None):
         self.payload = payload if payload is not None else {}
+        self.closed = False
 
     def json(self):
         return self.payload
@@ -37,6 +38,9 @@ class _Response:
     def iter_lines(self):
         for item in self.payload.get("lines", []):
             yield item
+
+    def close(self):
+        self.closed = True
 
 
 class LocalLLMModelTests(unittest.TestCase):
@@ -140,6 +144,33 @@ class LocalLLMModelTests(unittest.TestCase):
         self.assertEqual("pulling manifest", progress[0]["status"])
         self.assertEqual(5, progress[1]["completed"])
 
+    def test_ollama_pull_can_be_cancelled_between_progress_events(self):
+        progress = []
+        response = _Response(
+            {
+                "lines": [
+                    json.dumps({"status": "downloading", "completed": 5, "total": 10}),
+                    json.dumps({"status": "verifying"}),
+                ]
+            }
+        )
+
+        def fake_post(url, **kwargs):  # noqa: ARG001
+            return response
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            pull_ollama_model(
+                "http://127.0.0.1:11434/v1",
+                "qwen3:8b",
+                request_post=fake_post,
+                progress_callback=progress.append,
+                cancel_callback=lambda: len(progress) >= 1,
+            )
+
+        self.assertEqual(1, len(progress))
+        self.assertEqual("downloading", progress[0]["status"])
+        self.assertTrue(response.closed)
+
     def test_ollama_pull_falls_back_for_request_adapters_without_stream_keyword(self):
         calls = []
 
@@ -209,6 +240,8 @@ class LocalLLMModelTests(unittest.TestCase):
         self.assertTrue(ollama_model_storage_paths()[0])
         self.assertIn("5 GB", estimate_ollama_model_size_label("qwen3:8b"))
         self.assertEqual(5.0, estimate_ollama_model_size_gb("qwen3:8b"))
+        self.assertIn("2 GB", estimate_ollama_model_size_label("qwen3:1.7b"))
+        self.assertEqual(20.0, estimate_ollama_model_size_gb("qwen3:32b"))
         self.assertIn("varies", estimate_ollama_model_size_label("custom-local-model"))
 
     def test_ollama_storage_path_honors_ollama_models_env(self):

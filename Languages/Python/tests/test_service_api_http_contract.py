@@ -304,11 +304,31 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"BOT_SERVICE_API_MAX_REQUEST_BYTES": "64"}, clear=False):
             app = create_service_api_app(service=TradingBotService(), api_token="token-123")
             client = _create_test_client(app)
-            response = client.post(
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                response = client.post(
+                    f"{SERVICE_API_BASE_PATH}/logs",
+                    headers={"Authorization": "Bearer token-123"},
+                    json={"message": "x" * 200},
+                )
+
+        self.assertEqual(413, response.status_code)
+        self.assertIn("too large", response.json()["detail"])
+        self.assertFalse(any("HTTP_413_REQUEST_ENTITY_TOO_LARGE" in str(item.message) for item in caught))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_rejects_oversized_request_bodies_without_content_length(self):
+        with mock.patch.dict("os.environ", {"BOT_SERVICE_API_MAX_REQUEST_BYTES": "64"}, clear=False):
+            app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+            client = _create_test_client(app)
+            request = client.build_request(
+                "POST",
                 f"{SERVICE_API_BASE_PATH}/logs",
-                headers={"Authorization": "Bearer token-123"},
-                json={"message": "x" * 200},
+                headers={"Authorization": "Bearer token-123", "content-type": "application/json"},
+                content=b'{"message":"' + (b"x" * 200) + b'"}',
             )
+            request.headers.pop("content-length", None)
+            response = client.send(request)
 
         self.assertEqual(413, response.status_code)
         self.assertIn("too large", response.json()["detail"])

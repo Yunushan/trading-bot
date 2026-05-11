@@ -128,6 +128,7 @@ files = [
     "trading_core/__init__.py",
     "trading_core/backtest.py",
     "trading_core/indicators.py",
+    "trading_core/orders.py",
     "trading_core/positions.py",
     "trading_core/strategy.py",
 ]

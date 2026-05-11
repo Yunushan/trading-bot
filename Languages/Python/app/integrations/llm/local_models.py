@@ -17,9 +17,13 @@ OLLAMA_MODEL_STORAGE_HINT = (
 )
 OLLAMA_MODELS_ENV = "OLLAMA_MODELS"
 _OLLAMA_SIZE_HINTS = {
+    "qwen3:0.6b": "about 1 GB",
+    "qwen3:1.7b": "about 2 GB",
     "qwen3:4b": "about 3 GB",
     "qwen3:8b": "about 5 GB",
     "qwen3:14b": "about 9 GB",
+    "qwen3:30b-a3b": "about 19 GB",
+    "qwen3:32b": "about 20 GB",
     "llama3.1:8b": "about 5 GB",
     "llama3.2:3b": "about 2 GB",
     "llama3.2:1b": "about 1 GB",
@@ -28,9 +32,13 @@ _OLLAMA_SIZE_HINTS = {
     "gpt-oss:20b": "about 13 GB",
 }
 _OLLAMA_SIZE_GB_HINTS = {
+    "qwen3:0.6b": 1.0,
+    "qwen3:1.7b": 2.0,
     "qwen3:4b": 3.0,
     "qwen3:8b": 5.0,
     "qwen3:14b": 9.0,
+    "qwen3:30b-a3b": 19.0,
+    "qwen3:32b": 20.0,
     "llama3.1:8b": 5.0,
     "llama3.2:3b": 2.0,
     "llama3.2:1b": 1.0,
@@ -156,7 +164,7 @@ def _disk_space_status(model: str) -> tuple[float | None, float | None, str]:
     try:
         usage = shutil.disk_usage(os.path.expanduser("~"))
         free_gb = usage.free / (1024 ** 3)
-    except Exception:
+    except OSError:
         free_gb = None
     warning = ""
     if recommended is not None and free_gb is not None and free_gb < recommended:
@@ -270,13 +278,19 @@ def pull_ollama_model(
     timeout: float = 1800.0,
     request_post: Callable[..., Any] = requests.post,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> None:
+    def _raise_if_cancelled() -> None:
+        if callable(cancel_callback) and bool(cancel_callback()):
+            raise RuntimeError("Ollama model download cancelled.")
+
     clean_model = str(model or "").strip()
     if not clean_model:
         raise ValueError("Local model name cannot be empty.")
     if _server_kind(base_url) != "ollama":
         raise ValueError("Automatic local model downloads are only supported for Ollama on localhost:11434.")
-    stream = progress_callback is not None
+    _raise_if_cancelled()
+    stream = progress_callback is not None or cancel_callback is not None
     request_kwargs = {
         "json": {"model": clean_model, "stream": stream},
         "timeout": max(1.0, float(timeout or 1800.0)),
@@ -299,16 +313,22 @@ def pull_ollama_model(
         return
     import json
 
-    for raw_line in iter_lines():
-        if not raw_line:
-            continue
-        try:
-            text = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else str(raw_line)
-            payload = json.loads(text)
-        except Exception:
-            payload = {"status": str(raw_line)}
-        if isinstance(payload, dict):
-            progress_callback(payload)
+    try:
+        for raw_line in iter_lines():
+            _raise_if_cancelled()
+            if not raw_line:
+                continue
+            try:
+                text = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else str(raw_line)
+                payload = json.loads(text)
+            except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                payload = {"status": str(raw_line)}
+            if isinstance(payload, dict) and progress_callback is not None:
+                progress_callback(payload)
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 def delete_ollama_model(

@@ -96,6 +96,33 @@ class _DirectFallbackWrapper(_GhostWrapper):
         return {"amount": params.get("amount"), "code": 200, "msg": "ok", "type": params.get("type")}
 
 
+class _DelayedCloseClient(_GhostClient):
+    def __init__(self, *, close_after_orders=2):
+        super().__init__()
+        self.close_after_orders = int(close_after_orders)
+        self.orders = []
+
+    def futures_position_information(self):
+        if len(self.orders) >= self.close_after_orders:
+            return []
+        return [
+            {
+                "symbol": "ETHUSDT",
+                "positionAmt": "0.2",
+                "positionSide": "BOTH",
+            }
+        ]
+
+    def futures_create_order(self, **params):
+        self.orders.append(dict(params))
+        return {"orderId": len(self.orders), "status": "NEW"}
+
+
+class _DelayedCloseWrapper(_GhostWrapper):
+    def __init__(self, *, close_after_orders=2):
+        super().__init__(mode="Live", client=_DelayedCloseClient(close_after_orders=close_after_orders))
+
+
 class BinanceGhostPositionCloseAllTests(unittest.TestCase):
     def test_demo_stop_clears_zero_qty_negative_isolated_margin(self):
         wrapper = _GhostWrapper()
@@ -139,6 +166,28 @@ class BinanceGhostPositionCloseAllTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_fast_close_retries_when_successful_order_leaves_position_open(self):
+        wrapper = _DelayedCloseWrapper(close_after_orders=2)
+
+        results = close_all_futures_positions(wrapper, fast=True, max_workers=1)
+
+        self.assertEqual(2, len(wrapper.client.orders))
+        self.assertEqual(1, len(results))
+        self.assertTrue(results[0]["ok"])
+        self.assertEqual("closePosition", results[0]["method"])
+        self.assertEqual({"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "closePosition": True}, wrapper.client.orders[-1])
+
+    def test_fast_close_reports_position_that_remains_open_after_retries(self):
+        wrapper = _DelayedCloseWrapper(close_after_orders=99)
+
+        results = close_all_futures_positions(wrapper, fast=True, max_workers=1)
+
+        self.assertEqual(3, len(wrapper.client.orders))
+        self.assertEqual(1, len(results))
+        self.assertFalse(results[0]["ok"])
+        self.assertEqual("verification", results[0]["method"])
+        self.assertIn("position remained open", results[0]["error"])
 
 
 if __name__ == "__main__":

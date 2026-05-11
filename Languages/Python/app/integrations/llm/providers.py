@@ -134,6 +134,24 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         notes=("DeepSeek documents an OpenAI-compatible chat completions surface.",),
     ),
     LLMProviderSpec(
+        key="mistral",
+        label="Mistral AI",
+        mode="cloud",
+        protocol=OPENAI_COMPATIBLE_PROTOCOL,
+        default_base_url="https://api.mistral.ai/v1",
+        default_model="mistral-small-latest",
+        api_key_env="MISTRAL_API_KEY",
+        model_suggestions=(
+            "mistral-large-latest",
+            "mistral-medium-latest",
+            "mistral-small-latest",
+            "codestral-latest",
+            "open-mistral-nemo",
+        ),
+        reasoning_efforts=("default", "low", "medium", "high"),
+        notes=("Mistral exposes an OpenAI-compatible chat completions API.",),
+    ),
+    LLMProviderSpec(
         key="grok",
         label="xAI Grok",
         mode="cloud",
@@ -192,9 +210,13 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="qwen3:8b",
         api_key_env="LOCAL_LLM_API_KEY",
         model_suggestions=(
-            "qwen3:8b",
+            "qwen3:0.6b",
+            "qwen3:1.7b",
             "qwen3:4b",
+            "qwen3:8b",
             "qwen3:14b",
+            "qwen3:30b-a3b",
+            "qwen3:32b",
             "qwen3",
             "gpt-oss:20b",
             "gpt-oss:latest",
@@ -221,6 +243,7 @@ _PROVIDER_ALIASES = {
     "anthropic-claude": "anthropic",
     "google": "gemini",
     "google-gemini": "gemini",
+    "mistral-ai": "mistral",
     "xai": "grok",
     "xai-grok": "grok",
     "dashscope": "qwen",
@@ -294,7 +317,7 @@ def _file_model_suggestions(provider_key: str) -> tuple[str, ...]:
         return ()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return ()
     if not isinstance(payload, dict):
         return ()

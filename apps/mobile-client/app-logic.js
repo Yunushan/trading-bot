@@ -115,6 +115,19 @@ function formatPreflightMode(preflight) {
   return `${preflight.live_mode ? "Live" : "Demo/Test"} / ${preflight.mode || "-"}`;
 }
 
+function formatConnectorSupport(support) {
+  const payload = support && typeof support === "object" ? support : {};
+  if (payload.trading_supported === true) {
+    return "Trading Supported";
+  }
+  if (payload.trading_supported === false) {
+    const reasons = Array.isArray(payload.unsupported_reasons) ? payload.unsupported_reasons : [];
+    const reason = reasons.map((item) => String(item || "").trim()).find(Boolean);
+    return reason ? `Unsupported: ${reason}` : "Unsupported";
+  }
+  return "-";
+}
+
 function preflightGateReason(gate) {
   const reasons = Array.isArray(gate?.reasons) ? gate.reasons : [];
   return reasons.map((reason) => String(reason || "").trim()).filter(Boolean).join("; ");
@@ -275,6 +288,7 @@ module.exports = {
   configPersistenceTone,
   controlPlaneLifecycleSummary,
   currentPreflight,
+  formatConnectorSupport,
   formatConfigPersistenceState,
   formatFreshnessAge,
   formatNumber,

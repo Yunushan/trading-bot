@@ -10,7 +10,8 @@ This runbook is the short checklist for running the project safely.
 4. Confirm order audit logging is writable.
 5. Keep `live_allow_auto_bump_to_min_order` off unless you intentionally accept exchange-minimum auto-bumped orders.
 6. Confirm stop-loss and take-profit behavior is deterministic strategy/runtime behavior, not LLM output.
-7. Use small live size first and verify order, close, reduce-only, and emergency-close behavior.
+7. Set `live_trading_max_session_orders` or `BOT_LIVE_MAX_SESSION_ORDERS` low for first live sessions.
+8. Use small live size first and verify order, close, reduce-only, and emergency-close behavior.
 
 ## LLM Usage
 
@@ -24,22 +25,26 @@ For local models, Ollama stores model files outside this repository, commonly:
 - Custom Ollama cache: `OLLAMA_MODELS`
 
 The project repository does not store downloaded model weights and Git should never track them.
-Use the desktop LLM panel to check/download or remove Ollama models after reading the shown size and storage-path warning.
+Use the desktop LLM panel to check/download, cancel an in-progress download, or remove Ollama models after reading the shown size and storage-path warning.
 
 ## Service API Safety
 
-Use a bearer token for any exposed or write-capable API session. These flags are development-only escape hatches and are now exposed in service API metadata when active:
+Use a bearer token for any exposed or write-capable API session. These flags are development-only escape hatches and are exposed in service API metadata when active:
 
 - `BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES`
 - `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS`
 - `BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH`
+
+If any unsafe write/config escape hatch is active, treat the service as unsafe
+for normal operation.
+
+These values are operational exposure limits, not unsafe bypasses:
+
 - `BOT_SERVICE_API_MAX_REQUEST_BYTES`
 - `BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE`
 
-If any unsafe write/config escape hatch is active, treat the service as unsafe
-for normal operation. Request-size and write-rate-limit values are operational
-limits, not unsafe flags, but they should still be reviewed before exposing the
-service beyond loopback.
+Review request-size and write-rate-limit values before exposing the service
+beyond loopback.
 
 ## Release Smoke
 
@@ -47,6 +52,7 @@ Before packaging or tagging:
 
 ```bash
 python tools/check_local_tool_versions.py --json
+python tools/check_client_dependency_locks.py --json --strict
 python tools/summarize_worktree_changes.py
 python tools/audit_workspace_hygiene.py
 python tools/audit_risky_patterns.py

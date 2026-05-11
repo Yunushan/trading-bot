@@ -358,7 +358,15 @@ def _recheck_desktop_service_preflight(self) -> dict | None:
         if preflight_btn is not None:
             try:
                 preflight_btn.setText("Recheck Preflight")
-                preflight_btn.setEnabled(can_recheck)
+                settings = self._read_desktop_service_api_ui_settings()
+                status = self._get_desktop_service_api_host_status()
+                running = bool(isinstance(status, dict) and status.get("running"))
+                host_controls_enabled = bool(settings.get("enabled") or running)
+                preflight_btn.setEnabled(bool(can_recheck and host_controls_enabled))
+                if not host_controls_enabled:
+                    preflight_btn.setToolTip("Enable the Desktop Service API host to recheck preflight.")
+                else:
+                    preflight_btn.setToolTip("" if can_recheck else "Operational preflight is unavailable.")
             except Exception:
                 pass
 

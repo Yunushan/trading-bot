@@ -130,7 +130,7 @@ def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
         detail = ""
         try:
             detail = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
+        except (OSError, UnicodeError):
             detail = ""
         message = f"GitHub API request failed with HTTP {exc.code}."
         if detail:

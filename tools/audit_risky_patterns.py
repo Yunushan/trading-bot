@@ -114,29 +114,51 @@ def audit_risky_patterns() -> dict[str, object]:
                         }
                     )
     counts: dict[str, int] = {}
+    severity_counts: dict[str, int] = {}
+    path_counts: dict[str, int] = {}
     for finding in findings:
         key = str(finding["key"])
         counts[key] = counts.get(key, 0) + 1
+        severity = str(finding["severity"])
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        path = str(finding["path"])
+        path_counts[path] = path_counts.get(path, 0) + 1
+    top_paths = [
+        {"path": path, "count": count}
+        for path, count in sorted(path_counts.items(), key=lambda item: (-item[1], item[0]))[:20]
+    ]
     return {
         "finding_count": len(findings),
         "counts": counts,
+        "severity_counts": severity_counts,
+        "top_paths": top_paths,
         "findings": findings,
     }
+
+
+def _summary_report(report: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in report.items() if key != "findings"}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Report broad exception and unsafe-pattern hotspots.")
     parser.add_argument("--json", action="store_true", help="Print the report as JSON.")
+    parser.add_argument("--summary", action="store_true", help="Omit per-line findings from JSON output.")
     parser.add_argument("--fail-on-high", action="store_true", help="Exit non-zero if high-severity findings exist.")
     args = parser.parse_args(argv)
 
     report = audit_risky_patterns()
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        payload = _summary_report(report) if args.summary else report
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(f"Risky pattern findings: {report['finding_count']}")
         for key, count in sorted(report["counts"].items()):
             print(f"  - {key}: {count}")
+        if report["top_paths"]:
+            print("Top risky-pattern paths:")
+            for item in report["top_paths"][:10]:
+                print(f"  - {item['path']}: {item['count']}")
         for finding in report["findings"][:30]:
             print(f"{finding['severity']} {finding['path']}:{finding['line']} {finding['key']}")
     has_high = any(item["severity"] == "high" for item in report["findings"])

@@ -34,11 +34,13 @@ from .indicators import (
 from .live_safety import (
     DEFAULT_LIVE_MAX_LEVERAGE,
     DEFAULT_LIVE_MAX_POSITION_PCT,
+    DEFAULT_LIVE_MAX_SESSION_ORDERS,
     LIVE_TRADING_ACKNOWLEDGEMENT,
     LIVE_TRADING_ACK_ENV,
     LIVE_TRADING_ENABLED_ENV,
     LiveTradingSafetyError,
     is_live_trading_mode,
+    resolve_live_session_order_cap,
     validate_live_trading_safety,
 )
 from .models import (
@@ -86,6 +88,7 @@ __all__ = [
     "DEFAULT_INDICATOR_SOURCE",
     "DEFAULT_LIVE_MAX_LEVERAGE",
     "DEFAULT_LIVE_MAX_POSITION_PCT",
+    "DEFAULT_LIVE_MAX_SESSION_ORDERS",
     "DEFAULT_SELECTED_EXCHANGE",
     "DEFAULT_SETTINGS",
     "ExecutionSettings",
@@ -117,6 +120,7 @@ __all__ = [
     "coerce_bool",
     "format_config_validation_issues",
     "is_live_trading_mode",
+    "resolve_live_session_order_cap",
     "normalize_stop_loss_dict",
     "validate_runtime_config",
     "validate_live_trading_safety",

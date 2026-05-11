@@ -32,6 +32,7 @@ class _LocalModelDownloadWorker(QtCore.QObject):
         self._base_url = base_url
         self._model = model
         self._puller = puller
+        self._cancel_requested = False
 
     def _emit_progress(self, payload: dict[str, object]) -> None:
         status = str(payload.get("status") or "").strip()
@@ -44,15 +45,29 @@ class _LocalModelDownloadWorker(QtCore.QObject):
             if total_float > 0:
                 percent = max(0.0, min(100.0, completed_float / total_float * 100.0))
                 detail = f"{detail} ({percent:.0f}%)"
-        except Exception:
+        except (TypeError, ValueError):
             pass
         self.progress.emit(f"Downloading local model '{self._model}' with Ollama: {detail}")
+
+    @QtCore.pyqtSlot()
+    def cancel(self) -> None:
+        self._cancel_requested = True
+        self.progress.emit(f"Cancelling local model '{self._model}' download...")
+
+    def _is_cancelled(self) -> bool:
+        return bool(getattr(self, "_cancel_requested", False))
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
         error = ""
         try:
-            self._puller(self._base_url, self._model, progress_callback=self._emit_progress)
+            self._cancel_requested = False
+            self._puller(
+                self._base_url,
+                self._model,
+                progress_callback=self._emit_progress,
+                cancel_callback=self._is_cancelled,
+            )
         except Exception as exc:
             error = str(exc)
         self.finished.emit(self._model, error)
@@ -158,8 +173,8 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
     def _local_model_status(self, base_url: str, model: str):
         return get_local_model_status(base_url, model)
 
-    def _pull_local_model(self, base_url: str, model: str, *, progress_callback=None) -> None:
-        pull_ollama_model(base_url, model, progress_callback=progress_callback)
+    def _pull_local_model(self, base_url: str, model: str, *, progress_callback=None, cancel_callback=None) -> None:
+        pull_ollama_model(base_url, model, progress_callback=progress_callback, cancel_callback=cancel_callback)
 
     def _delete_local_model(self, base_url: str, model: str) -> None:
         delete_ollama_model(base_url, model)
@@ -341,7 +356,8 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             return
         self._local_model_download_restore_apply_enabled = self.apply_btn.isEnabled()
         self.apply_btn.setEnabled(False)
-        self.local_model_btn.setEnabled(False)
+        self.local_model_btn.setText("Cancel Download")
+        self.local_model_btn.setEnabled(True)
         remove_btn = getattr(self, "remove_local_model_btn", None)
         if remove_btn is not None:
             remove_btn.setEnabled(False)
@@ -368,6 +384,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         try:
             self.apply_btn.setEnabled(bool(self._local_model_download_restore_apply_enabled))
             self.local_model_btn.setEnabled(True)
+            self.local_model_btn.setText("Check / Download Local Model")
             remove_btn = getattr(self, "remove_local_model_btn", None)
             if remove_btn is not None:
                 remove_btn.setEnabled(True)
@@ -376,6 +393,9 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self._local_model_download_thread = None
         self._local_model_download_worker = None
         if error:
+            if "cancelled" in str(error).lower():
+                self.status_label.setText(f"Local model '{clean_model}' download cancelled.")
+                return
             QtWidgets.QMessageBox.warning(
                 self,
                 "Local model download failed",
@@ -391,6 +411,14 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.status_label.setText(f"Local model '{clean_model}' is installed and ready.")
 
     def _on_local_model_action_clicked(self) -> None:
+        thread = self._local_model_download_thread
+        worker = self._local_model_download_worker
+        if thread is not None and thread.isRunning() and worker is not None:
+            worker.cancel()
+            self.local_model_btn.setEnabled(False)
+            self.local_model_btn.setText("Cancelling Download...")
+            return
+
         provider_key = str(self.provider_combo.currentData() or "openai")
         provider = self._provider_by_key.get(provider_key) or {}
         model = str(self.model_combo.currentText() or provider.get("default_model") or "").strip()

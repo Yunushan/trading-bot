@@ -5,6 +5,7 @@ const {
   configPersistenceTone,
   controlPlaneLifecycleSummary,
   currentPreflight,
+  formatConnectorSupport,
   formatConfigPersistenceState,
   formatPreflightGate,
   formatPreflightMode,
@@ -90,6 +91,19 @@ async function main() {
       "Exchange connector: 65s old, 30s max. Check connector health, credentials, network, and rate-limit state.",
       "Account snapshot: missing, 300s max. Refresh account balances from the service or exchange connector.",
     ]);
+  });
+
+  await test("connector support helper surfaces unsupported runtime reasons", async () => {
+    assert.equal(formatConnectorSupport({ trading_supported: true }), "Trading Supported");
+    assert.equal(
+      formatConnectorSupport({
+        trading_supported: false,
+        unsupported_reasons: ["Exchange 'Kraken' is not implemented by this runtime."],
+      }),
+      "Unsupported: Exchange 'Kraken' is not implemented by this runtime.",
+    );
+    assert.equal(formatConnectorSupport({ trading_supported: false }), "Unsupported");
+    assert.equal(formatConnectorSupport(null), "-");
   });
 
   await test("config persistence helpers distinguish runtime-only, dirty, and synced states", async () => {

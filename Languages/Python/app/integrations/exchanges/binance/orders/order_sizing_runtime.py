@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from .order_audit_runtime import audit_order_method
 
 
@@ -54,7 +56,28 @@ def place_spot_market_order(
         if qamt <= 0:
             return {"ok": False, "error": "quote_amount<=0"}
         qty = qamt / px
-    filters = self.get_spot_symbol_filters(sym)
+    try:
+        filters = self.get_spot_symbol_filters(sym) or {}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"spot symbol filters unavailable for {sym}: {exc}",
+            "computed": {
+                "qty": qty,
+                "price": px,
+                "filters": {},
+            },
+        }
+    if not isinstance(filters, Mapping):
+        return {
+            "ok": False,
+            "error": f"spot symbol filters invalid for {sym}",
+            "computed": {
+                "qty": qty,
+                "price": px,
+                "filters": {},
+            },
+        }
     step = float(filters.get("stepSize", 0.0) or 0.0)
     min_qty = float(filters.get("minQty", 0.0) or 0.0)
     min_notional = float(filters.get("minNotional", 0.0) or 0.0)

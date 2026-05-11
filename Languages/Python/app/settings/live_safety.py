@@ -12,8 +12,11 @@ LIVE_TRADING_ACK_ENV = "BOT_LIVE_TRADING_ACKNOWLEDGEMENT"
 LIVE_TRADING_ACK_ENV_LEGACY = "BOT_LIVE_TRADING_ACK"
 LIVE_TRADING_MAX_LEVERAGE_ENV = "BOT_LIVE_MAX_LEVERAGE"
 LIVE_TRADING_MAX_POSITION_PCT_ENV = "BOT_LIVE_MAX_POSITION_PCT"
+LIVE_TRADING_MAX_SESSION_ORDERS_ENV = "BOT_LIVE_MAX_SESSION_ORDERS"
 DEFAULT_LIVE_MAX_LEVERAGE = 20
 DEFAULT_LIVE_MAX_POSITION_PCT = 10.0
+DEFAULT_LIVE_MAX_SESSION_ORDERS = 100
+MAX_LIVE_MAX_SESSION_ORDERS = 100_000
 
 _NON_LIVE_MODE_TOKENS = ("demo", "test", "sandbox", "paper")
 _PLACEHOLDER_CREDENTIALS = {
@@ -55,21 +58,21 @@ def _env_value(env: Mapping[str, str] | None, key: str) -> str:
     source = env if env is not None else os.environ
     try:
         return str(source.get(key, "") or "").strip()
-    except Exception:
+    except AttributeError:
         return ""
 
 
 def _float_value(value: object, default: float) -> float:
     try:
         return float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return float(default)
 
 
 def _int_value(value: object, default: int) -> int:
     try:
         return int(float(value))
-    except Exception:
+    except (TypeError, ValueError):
         return int(default)
 
 
@@ -103,6 +106,20 @@ def _configured_cap(
     if env_raw:
         return _float_value(env_raw, default)
     return _float_value(config.get(config_key, default), default)
+
+
+def resolve_live_session_order_cap(config: Mapping[str, object] | None, env: Mapping[str, str] | None = None) -> int:
+    cfg = _mapping(config)
+    return _int_value(
+        _configured_cap(
+            cfg,
+            env,
+            config_key="live_trading_max_session_orders",
+            env_key=LIVE_TRADING_MAX_SESSION_ORDERS_ENV,
+            default=DEFAULT_LIVE_MAX_SESSION_ORDERS,
+        ),
+        DEFAULT_LIVE_MAX_SESSION_ORDERS,
+    )
 
 
 def validate_live_trading_safety(
@@ -156,6 +173,10 @@ def validate_live_trading_safety(
     )
     if max_position_pct <= 0.0 or max_position_pct > 100.0:
         errors.append("live_trading_max_position_pct must be > 0 and <= 100")
+
+    max_session_orders = resolve_live_session_order_cap(cfg, env)
+    if max_session_orders < 1 or max_session_orders > MAX_LIVE_MAX_SESSION_ORDERS:
+        errors.append(f"live_trading_max_session_orders must be between 1 and {MAX_LIVE_MAX_SESSION_ORDERS}")
 
     pct_value = position_pct
     if pct_value is None:

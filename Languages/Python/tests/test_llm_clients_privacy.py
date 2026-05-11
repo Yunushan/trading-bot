@@ -89,12 +89,28 @@ class LLMClientPrivacyTests(unittest.TestCase):
             llm_output_policy_violations('{"action": "place_order", "symbol": "BTCUSDT"}'),
         )
         self.assertIn(
+            "direct_order_action",
+            llm_output_policy_violations('```json\n{"tool": "submit_order", "symbol": "ETHUSDT"}\n```'),
+        )
+        self.assertIn(
             "order_execution_claim",
             llm_output_policy_violations("Order executed successfully."),
         )
         self.assertIn(
             "risk_override",
             llm_output_policy_violations("Disable stop loss and override risk checks."),
+        )
+        self.assertIn(
+            "risk_override",
+            llm_output_policy_violations('{"risk_controls": {"disable_stop_loss": true}}'),
+        )
+
+    def test_llm_output_policy_allows_structured_advice(self):
+        self.assertEqual(
+            (),
+            llm_output_policy_violations(
+                '{"action": "advise", "recommendation": "wait", "risk": "keep stop loss enabled"}'
+            ),
         )
 
     def test_llm_call_blocks_output_that_tries_to_execute_orders(self):

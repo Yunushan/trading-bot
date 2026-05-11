@@ -153,6 +153,12 @@ jobs:
           set -euo pipefail
           python apps/service-api/main.py --healthcheck
 
+      - name: Dry-run release smoke plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/release_smoke.py --dry-run --skip-full-tests --manual-smoke-mode skip
+
       - name: Run manual desktop/service smoke
         shell: bash
         working-directory: Languages/Python

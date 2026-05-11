@@ -19,7 +19,7 @@ Live exchange mode is fail-closed. A runtime that would talk to live endpoints i
 - `live_trading_enabled: true`
 - `live_trading_acknowledgement: "I_UNDERSTAND_LIVE_TRADING_RISK"`
 - non-placeholder Binance API credentials
-- valid caps: `live_trading_max_leverage` and `live_trading_max_position_pct`
+- valid caps: `live_trading_max_leverage`, `live_trading_max_position_pct`, and `live_trading_max_session_orders`
 
 Environment alternative:
 
@@ -28,6 +28,7 @@ export BOT_ENABLE_LIVE_TRADING=true
 export BOT_LIVE_TRADING_ACKNOWLEDGEMENT=I_UNDERSTAND_LIVE_TRADING_RISK
 export BOT_LIVE_MAX_LEVERAGE=5
 export BOT_LIVE_MAX_POSITION_PCT=2
+export BOT_LIVE_MAX_SESSION_ORDERS=25
 ```
 
 ## Order audit log

@@ -13,6 +13,7 @@ class OrderSubmitIntent:
     order_type: str
     quantity: float | None = None
     price: float | None = None
+    position_side: str = ""
     close_position: bool = False
     reduce_only: bool = False
 
@@ -25,8 +26,8 @@ def _float_param(value: object) -> float | None:
     try:
         if value in (None, ""):
             return None
-        return float(value)
-    except Exception:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
         return None
 
 
@@ -39,6 +40,7 @@ def order_submit_intent_from_params(market: str, params: Mapping[str, Any] | Non
         order_type=str(payload.get("type") or "").strip().upper(),
         quantity=_float_param(payload.get("quantity")),
         price=_float_param(payload.get("price")),
+        position_side=str(payload.get("positionSide") or payload.get("position_side") or "").strip().upper(),
         close_position=_bool_param(payload.get("closePosition") or payload.get("close_position")),
         reduce_only=_bool_param(payload.get("reduceOnly") or payload.get("reduce_only")),
     )
@@ -46,12 +48,20 @@ def order_submit_intent_from_params(market: str, params: Mapping[str, Any] | Non
 
 def validate_order_submit_intent(intent: OrderSubmitIntent) -> tuple[str, ...]:
     errors: list[str] = []
+    if intent.market not in {"futures", "spot"}:
+        errors.append("order market must be futures or spot")
     if not intent.symbol:
         errors.append("order symbol is required")
     if intent.side not in {"BUY", "SELL"}:
         errors.append("order side must be BUY or SELL")
     if not intent.order_type:
         errors.append("order type is required")
+    elif intent.order_type not in {"LIMIT", "MARKET"}:
+        errors.append("order type must be LIMIT or MARKET")
+    if intent.position_side and intent.position_side not in {"BOTH", "LONG", "SHORT"}:
+        errors.append("positionSide must be BOTH, LONG, or SHORT")
+    if intent.position_side and intent.market != "futures":
+        errors.append("positionSide is only supported for futures")
     if intent.close_position and intent.market != "futures":
         errors.append("closePosition orders are only supported for futures")
     if intent.reduce_only and intent.market != "futures":

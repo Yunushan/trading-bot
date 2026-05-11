@@ -4,7 +4,6 @@ import concurrent.futures
 import copy
 import json
 import re
-import ssl
 import sys
 import time
 import urllib.request
@@ -381,30 +380,8 @@ def _latest_version_from_pypi(package: str, timeout: float = 8.0) -> str | None:
 
     if latest is None:
         try:
-            import requests  # type: ignore
-
-            resp = requests.get(
-                url,
-                timeout=timeout_val,
-                headers={"User-Agent": "trading-bot-starter/1.0"},
-                verify=False,  # noqa: S501
-            )
-            if resp.status_code == 200:
-                payload = resp.json()
-                latest = payload.get("info", {}).get("version")
-        except Exception:
-            pass
-
-    if latest is None:
-        try:
             req = urllib.request.Request(url, headers={"User-Agent": "trading-bot-starter/1.0"})
-            ctx = ssl.create_default_context()
-            try:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-            except Exception:
-                pass
-            with urllib.request.urlopen(req, timeout=timeout_val, context=ctx) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_val) as resp:
                 payload = json.load(resp)
                 latest = payload.get("info", {}).get("version")
         except Exception:

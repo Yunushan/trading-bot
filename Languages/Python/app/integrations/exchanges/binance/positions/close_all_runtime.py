@@ -501,6 +501,32 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     except Exception as e:
                         results.append({"ok": False, "symbol": "?", "error": str(e)})
 
+        result_index: dict[tuple[str, str], int] = {}
+
+        def _result_key(res: dict) -> tuple[str, str] | None:
+            sym = str(res.get("symbol") or "").upper()
+            if not sym:
+                return None
+            side = _normalize_position_side(res.get("positionSide"))
+            return (sym, side)
+
+        for idx, res in enumerate(results):
+            key = _result_key(res)
+            if key is not None:
+                result_index[key] = idx
+
+        def _upsert_result(res: dict) -> None:
+            key = _result_key(res)
+            if key is None:
+                results.append(res)
+                return
+            idx = result_index.get(key)
+            if idx is None:
+                result_index[key] = len(results)
+                results.append(res)
+            else:
+                results[idx] = res
+
         failures = [r for r in results if not r.get("ok")]
         if failures and use_close_position:
             for r in failures:
@@ -522,16 +548,17 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                         params["quantity"] = str(qty_str)
                     try:
                         od = _submit_futures_order(binance, params)
-                        results.append(
+                        _upsert_result(
                             {
                                 "ok": True,
                                 "symbol": sym,
                                 "positionSide": r.get("positionSide"),
                                 "info": od,
+                                "method": "reduceOnly",
                             }
                         )
                     except Exception as e:
-                        results.append(
+                        _upsert_result(
                             {
                                 "ok": False,
                                 "symbol": sym,
@@ -541,7 +568,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                             }
                         )
                 except Exception as e:
-                    results.append(
+                    _upsert_result(
                         {
                             "ok": False,
                             "symbol": sym,
@@ -550,33 +577,7 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                         }
                     )
         failures = [r for r in results if not r.get("ok")]
-        if failures:
-            result_index: dict[tuple[str, str], int] = {}
-
-            def _result_key(res: dict) -> tuple[str, str] | None:
-                sym = str(res.get("symbol") or "").upper()
-                if not sym:
-                    return None
-                side = _normalize_position_side(res.get("positionSide"))
-                return (sym, side)
-
-            for idx, res in enumerate(results):
-                key = _result_key(res)
-                if key is not None:
-                    result_index[key] = idx
-
-            def _upsert_result(res: dict) -> None:
-                key = _result_key(res)
-                if key is None:
-                    results.append(res)
-                    return
-                idx = result_index.get(key)
-                if idx is None:
-                    result_index[key] = len(results)
-                    results.append(res)
-                else:
-                    results[idx] = res
-
+        if results:
             if any(_is_unknown_execution_error(r.get("error")) for r in failures):
                 time.sleep(0.35)
             for _ in range(2):
@@ -603,6 +604,26 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
                     if sym and sym not in open_symbols:
                         r["ok"] = True
                         r["reconciled"] = True
+                for p in remaining:
+                    key = _result_key(
+                        {
+                            "symbol": p.get("symbol"),
+                            "positionSide": p.get("positionSide"),
+                        }
+                    )
+                    if key is None:
+                        continue
+                    idx = result_index.get(key)
+                    stale = {
+                        "ok": False,
+                        "symbol": key[0],
+                        "positionSide": key[1],
+                        "error": "position remained open after close attempts",
+                        "positionAmt": p.get("positionAmt"),
+                        "method": "verification",
+                    }
+                    if idx is None or results[idx].get("ok"):
+                        _upsert_result(stale)
         results.extend(_cleanup_zero_qty_negative_margin_positions(binance, dual))
         return results
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from urllib.parse import quote, urlencode
 
@@ -275,10 +276,99 @@ def _extract_response_text(protocol: str, payload: object) -> str:
     return ""
 
 
+_OUTPUT_POLICY_VIOLATION_ORDER = (
+    "order_execution_claim",
+    "direct_order_action",
+    "risk_override",
+)
+
+
+def _ordered_policy_violations(violations: set[str]) -> tuple[str, ...]:
+    return tuple(label for label in _OUTPUT_POLICY_VIOLATION_ORDER if label in violations)
+
+
+def _json_candidates_from_text(text: str) -> tuple[object, ...]:
+    raw = str(text or "").strip()
+    if not raw:
+        return ()
+    candidates = [raw]
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+            candidates.append("\n".join(lines[1:-1]).strip())
+    first = raw.find("{")
+    last = raw.rfind("}")
+    if first >= 0 and last > first:
+        candidates.append(raw[first : last + 1])
+    first = raw.find("[")
+    last = raw.rfind("]")
+    if first >= 0 and last > first:
+        candidates.append(raw[first : last + 1])
+
+    parsed = []
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed.append(json.loads(candidate))
+        except (TypeError, ValueError):
+            continue
+    return tuple(parsed)
+
+
+def _scan_structured_policy_value(value: object, violations: set[str]) -> None:
+    direct_order_actions = {
+        "cancel_order",
+        "change_leverage",
+        "close_position",
+        "create_order",
+        "execute_order",
+        "market_buy",
+        "market_sell",
+        "open_position",
+        "place_order",
+        "set_leverage",
+        "submit_order",
+    }
+    risk_override_actions = {
+        "change_leverage",
+        "disable_stop_loss",
+        "override_risk",
+        "set_leverage",
+    }
+    executed_states = {"executed", "filled", "order_executed", "placed", "submitted"}
+
+    if isinstance(value, dict):
+        for raw_key, raw_item in value.items():
+            key = str(raw_key or "").strip().lower()
+            item = str(raw_item or "").strip().lower()
+            if key in {"action", "command", "intent", "operation", "tool"}:
+                if item in direct_order_actions:
+                    violations.add("direct_order_action")
+                if item in risk_override_actions:
+                    violations.add("risk_override")
+            if key in {"execution_status", "order_status", "status"} and item in executed_states:
+                violations.add("order_execution_claim")
+            if key in {"disable_stop_loss", "risk_override", "override_risk"} and item in {"1", "true", "yes", "on"}:
+                violations.add("risk_override")
+            if key == "stop_loss_enabled" and item in {"0", "false", "no", "off"}:
+                violations.add("risk_override")
+            _scan_structured_policy_value(raw_item, violations)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _scan_structured_policy_value(item, violations)
+
+
 def llm_output_policy_violations(text: str) -> tuple[str, ...]:
     lower = str(text or "").strip().lower()
     if not lower:
         return ()
+    violations: set[str] = set()
+    for candidate in _json_candidates_from_text(text):
+        _scan_structured_policy_value(candidate, violations)
     checks = (
         (
             "order_execution_claim",
@@ -314,11 +404,10 @@ def llm_output_policy_violations(text: str) -> tuple[str, ...]:
             ),
         ),
     )
-    violations = []
     for label, phrases in checks:
         if any(phrase in lower for phrase in phrases):
-            violations.append(label)
-    return tuple(violations)
+            violations.add(label)
+    return _ordered_policy_violations(violations)
 
 
 def call_llm(

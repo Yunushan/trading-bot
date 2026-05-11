@@ -44,6 +44,7 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual("", config["live_trading_acknowledgement"])
         self.assertEqual(20, config["live_trading_max_leverage"])
         self.assertEqual(10.0, config["live_trading_max_position_pct"])
+        self.assertEqual(100, config["live_trading_max_session_orders"])
         self.assertFalse(config["live_allow_auto_bump_to_min_order"])
         self.assertTrue(config["order_audit_enabled"])
         self.assertEqual("", config["order_audit_log_path"])
@@ -101,6 +102,7 @@ class SettingsDefaultsTests(unittest.TestCase):
                 "position_pct": 250,
                 "lookback": 0,
                 "live_trading_max_position_pct": 0,
+                "live_trading_max_session_orders": 0,
                 "operational_connector_snapshot_stale_seconds": 0,
                 "operational_execution_heartbeat_stale_seconds": 0,
                 "operational_account_snapshot_stale_seconds": 0,
@@ -124,6 +126,7 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("position_pct", fields)
         self.assertIn("lookback", fields)
         self.assertIn("live_trading_max_position_pct", fields)
+        self.assertIn("live_trading_max_session_orders", fields)
         self.assertIn("operational_connector_snapshot_stale_seconds", fields)
         self.assertIn("operational_execution_heartbeat_stale_seconds", fields)
         self.assertIn("operational_account_snapshot_stale_seconds", fields)
@@ -301,6 +304,26 @@ class SettingsDefaultsTests(unittest.TestCase):
                 env={},
             )
 
+        invalid_session_cap_config = {
+            "live_trading_enabled": True,
+            "live_trading_acknowledgement": LIVE_TRADING_ACKNOWLEDGEMENT,
+            "live_trading_max_leverage": 5,
+            "live_trading_max_position_pct": 3.0,
+            "live_trading_max_session_orders": 0,
+        }
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "live_trading_max_session_orders must be between"):
+            validate_live_trading_safety(
+                mode="Live",
+                api_key="live-api-key",
+                api_secret="live-api-secret",
+                account_type="Futures",
+                leverage=1,
+                position_pct=2.0,
+                config=invalid_session_cap_config,
+                env={},
+            )
+
         with self.assertRaisesRegex(LiveTradingSafetyError, "leverage 10 exceeds live cap 5"):
             validate_live_trading_safety(
                 mode="Live",
@@ -338,6 +361,7 @@ class SettingsDefaultsTests(unittest.TestCase):
                 "BOT_LIVE_TRADING_ACKNOWLEDGEMENT": LIVE_TRADING_ACKNOWLEDGEMENT,
                 "BOT_LIVE_MAX_LEVERAGE": "4",
                 "BOT_LIVE_MAX_POSITION_PCT": "2.5",
+                "BOT_LIVE_MAX_SESSION_ORDERS": "7",
             },
         )
 

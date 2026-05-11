@@ -1061,6 +1061,7 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
                 self.stop_btn = _Button("Stop")
                 self.config = {}
                 self.strategy_engines = {}
+                self._desktop_service_api_enabled_pref = True
                 self.preflight = {
                     "state": "blocked",
                     "start": {
@@ -1212,6 +1213,15 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             self.assertFalse(widget.enabled)
             self.assertTrue(widget.properties["desktopServiceApiFaded"])
         self.assertEqual(window.desktop_service_api_apply_btn.text, "Start API")
+        self.assertEqual(
+            window.desktop_service_preflight_recheck_btn.tooltip,
+            "Enable the Desktop Service API host to recheck preflight.",
+        )
+        self.assertEqual(
+            window._recheck_desktop_service_preflight(),
+            {"state": "ok", "start": {"allowed": True}, "orders": {"allowed": True}},
+        )
+        self.assertFalse(window.desktop_service_preflight_recheck_btn.enabled)
         self.assertEqual(
             window.desktop_service_preflight_recheck_btn.tooltip,
             "Enable the Desktop Service API host to recheck preflight.",

@@ -78,6 +78,9 @@ except Exception as exc:  # pragma: no cover - handled via runtime check
 _HTTP_422_UNPROCESSABLE_CONTENT = (
     getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422) if FASTAPI_AVAILABLE else 422
 )
+_HTTP_413_CONTENT_TOO_LARGE = (
+    getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413) if FASTAPI_AVAILABLE else 413
+)
 SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV = "BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES"
 SERVICE_API_MAX_REQUEST_BYTES_ENV = "BOT_SERVICE_API_MAX_REQUEST_BYTES"
 SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE"
@@ -355,24 +358,52 @@ def create_service_api_app(
     def _write_method(method: str) -> bool:
         return str(method or "").upper() in {"POST", "PUT", "PATCH", "DELETE"}
 
+    def _request_too_large_response(*, request_bytes: int, max_request_bytes: int) -> JSONResponse:
+        return JSONResponse(
+            status_code=_HTTP_413_CONTENT_TOO_LARGE,
+            content={
+                "detail": (
+                    f"Request body is too large ({request_bytes} bytes). "
+                    f"Maximum allowed is {max_request_bytes} bytes."
+                )
+            },
+        )
+
+    async def _cache_limited_request_body(request: Request, *, max_request_bytes: int) -> int:
+        total = 0
+        chunks: list[bytes] = []
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_request_bytes:
+                return total
+            chunks.append(chunk)
+        setattr(request, "_body", b"".join(chunks))
+        return total
+
     @app.middleware("http")
     async def _enforce_request_limits(request: Request, call_next):
         max_request_bytes = _max_request_bytes()
         content_length = request.headers.get("content-length")
+        request_bytes = 0
         if content_length not in (None, ""):
             try:
                 request_bytes = int(content_length)
             except Exception:
-                request_bytes = 0
+                request_bytes = max_request_bytes + 1
             if request_bytes > max_request_bytes:
-                return JSONResponse(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    content={
-                        "detail": (
-                            f"Request body is too large ({request_bytes} bytes). "
-                            f"Maximum allowed is {max_request_bytes} bytes."
-                        )
-                    },
+                return _request_too_large_response(
+                    request_bytes=request_bytes,
+                    max_request_bytes=max_request_bytes,
+                )
+
+        if _write_method(request.method) or request_bytes:
+            measured_bytes = await _cache_limited_request_body(request, max_request_bytes=max_request_bytes)
+            if measured_bytes > max_request_bytes:
+                return _request_too_large_response(
+                    request_bytes=measured_bytes,
+                    max_request_bytes=max_request_bytes,
                 )
 
         rate_limit = _write_rate_limit_per_minute()

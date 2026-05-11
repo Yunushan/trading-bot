@@ -190,7 +190,7 @@ class _FuturesAuditWrapper:
 
 
 class _GuardedFuturesAuditWrapper(_FuturesAuditWrapper):
-    def __init__(self, *, fail=False, live_safety_config=None):
+    def __init__(self, *, fail=False, live_safety_config=None, price=100.0, filters=None):
         super().__init__(fail=fail)
         self.api_key = "unit-live-api-key"
         self.api_secret = "unit-live-api-secret"
@@ -198,6 +198,22 @@ class _GuardedFuturesAuditWrapper(_FuturesAuditWrapper):
         self.futures_leverage = 1
         self._default_margin_mode = "ISOLATED"
         self._live_safety_config = dict(live_safety_config or {})
+        self._price = float(price)
+        self._filters = dict(
+            filters
+            or {
+                "stepSize": 0.001,
+                "minQty": 0.001,
+                "tickSize": 0.01,
+                "minNotional": 5.0,
+            }
+        )
+
+    def get_last_price(self, _symbol):
+        return self._price
+
+    def get_futures_symbol_filters(self, _symbol):
+        return dict(self._filters)
 
 
 class _FakeDirectHttpResponse:
@@ -533,6 +549,120 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             self.assertEqual(99, order["orderId"])
             self.assertEqual([{"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}], wrapper.client.orders)
 
+    def test_live_futures_submit_guard_blocks_after_session_order_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "guarded-futures-session-cap.jsonl"
+            wrapper = _GuardedFuturesAuditWrapper(
+                live_safety_config=_live_ack_config(live_trading_max_session_orders=1)
+            )
+            wrapper._configure_order_audit(path=audit_path)
+
+            first, via = wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
+            )
+            with self.assertRaisesRegex(LiveTradingSafetyError, "live session order cap 1 reached"):
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"}
+                )
+
+            self.assertEqual("primary", via)
+            self.assertEqual(99, first["orderId"])
+            self.assertEqual([{"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}], wrapper.client.orders)
+            rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(
+                [
+                    "exchange_order_request",
+                    "exchange_order_response",
+                    "exchange_order_request",
+                    "live_order_blocked",
+                    "exchange_order_error",
+                ],
+                [row["event"] for row in rows],
+            )
+
+    def test_live_futures_submit_guard_blocks_filter_invalid_order(self):
+        wrapper = _GuardedFuturesAuditWrapper(
+            live_safety_config=_live_ack_config(),
+            price=100.0,
+            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 20.0},
+        )
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "minNotional"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.10"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_blocks_step_misaligned_order(self):
+        wrapper = _GuardedFuturesAuditWrapper(
+            live_safety_config=_live_ack_config(),
+            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 5.0},
+        )
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "stepSize"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.105"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_blocks_limit_price_tick_misalignment(self):
+        wrapper = _GuardedFuturesAuditWrapper(
+            live_safety_config=_live_ack_config(),
+            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 5.0},
+        )
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "tickSize"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "LIMIT", "quantity": "0.10", "price": "100.005"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_blocks_malformed_order_intent(self):
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "order symbol is required"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "", "side": "HOLD", "type": "STOP_MARKET", "quantity": "0.10"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_blocks_unavailable_symbol_filters(self):
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
+
+        def fail_filters(_symbol):
+            raise RuntimeError("metadata offline")
+
+        wrapper.get_futures_symbol_filters = fail_filters
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "symbol filters unavailable"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.10"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_allows_reduce_only_below_entry_notional(self):
+        wrapper = _GuardedFuturesAuditWrapper(
+            live_safety_config=_live_ack_config(),
+            price=100.0,
+            filters={"stepSize": 0.01, "minQty": 0.01, "tickSize": 0.01, "minNotional": 20.0},
+        )
+
+        order, via = wrapper._futures_create_order_with_fallback(
+            {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.10", "reduceOnly": True}
+        )
+
+        self.assertEqual("primary", via)
+        self.assertEqual(99, order["orderId"])
+        self.assertEqual(
+            [{"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.10", "reduceOnly": True}],
+            wrapper.client.orders,
+        )
+
     def test_live_spot_submit_guard_blocks_disabled_audit_before_client_call(self):
         wrapper = _GuardedSpotSizingWrapper(live_safety_config=_live_ack_config())
         wrapper._configure_order_audit(enabled=False)
@@ -541,6 +671,20 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("order audit is disabled", result["error"])
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_spot_order_returns_error_when_filters_unavailable(self):
+        wrapper = _GuardedSpotSizingWrapper(live_safety_config=_live_ack_config())
+
+        def fail_filters(_symbol):
+            raise RuntimeError("metadata offline")
+
+        wrapper.get_spot_symbol_filters = fail_filters
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=0.1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("spot symbol filters unavailable", result["error"])
         self.assertEqual([], wrapper.client.orders)
 
     def test_live_futures_flex_sizer_requires_explicit_auto_bump_opt_in(self):

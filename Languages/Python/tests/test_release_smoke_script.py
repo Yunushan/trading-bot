@@ -39,6 +39,10 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
         )
 
         self.assertEqual(0, result.returncode, f"stdout={result.stdout}\nstderr={result.stderr}")
+        self.assertIn("check runtime tool versions", result.stdout)
+        self.assertIn("tools/check_local_tool_versions.py --strict", result.stdout)
+        self.assertIn("check client dependency locks", result.stdout)
+        self.assertIn("tools/check_client_dependency_locks.py --json --strict", result.stdout)
         self.assertIn("compile Python sources", result.stdout)
         self.assertIn("Languages/Python/tools", result.stdout)
         self.assertIn("python -m ruff check", result.stdout)

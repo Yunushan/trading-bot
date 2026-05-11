@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from trading_core.orders import order_submit_intent_from_params, validate_order_submit_intent
@@ -8,6 +9,7 @@ from trading_core.orders import order_submit_intent_from_params, validate_order_
 from app.settings.live_safety import (
     LiveTradingSafetyError,
     is_live_trading_mode,
+    resolve_live_session_order_cap,
     validate_live_trading_safety,
 )
 
@@ -15,13 +17,48 @@ from app.settings.live_safety import (
 def _int_value(value: object, default: int = 1) -> int:
     try:
         return int(float(value))
-    except Exception:
+    except (TypeError, ValueError):
         return int(default)
+
+
+def _decimal_value(value: object) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _positive_filter(value: object) -> Decimal:
+    parsed = _decimal_value(value)
+    return parsed if parsed is not None and parsed > 0 else Decimal("0")
+
+
+def _aligned_to_step(value: Decimal, step: Decimal) -> bool:
+    if step <= 0:
+        return True
+    try:
+        return value.remainder_near(step) == 0 or value % step == 0
+    except (InvalidOperation, ZeroDivisionError):
+        return False
+
+
+def _truthy_param(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _guard_config(self) -> Mapping[str, object]:
     config = getattr(self, "_live_safety_config", None)
     return config if isinstance(config, Mapping) else {}
+
+
+def _live_submit_attempt_count(self) -> int:
+    return max(0, _int_value(getattr(self, "_live_order_submit_attempt_count", 0), 0))
 
 
 def _order_health_errors(self) -> list[str]:
@@ -41,6 +78,64 @@ def _order_health_errors(self) -> list[str]:
     if health and health not in {"ok", "unknown"}:
         return [f"connector health is {health}"]
     return []
+
+
+def _order_filter_errors(self, market_text: str, order_params: Mapping[str, Any]) -> list[str]:
+    symbol = str(order_params.get("symbol") or "").strip().upper()
+    if not symbol:
+        return []
+
+    if market_text == "spot":
+        getter = getattr(self, "get_spot_symbol_filters", None)
+    elif market_text == "futures":
+        getter = getattr(self, "get_futures_symbol_filters", None)
+    else:
+        return []
+    if not callable(getter):
+        return [f"{market_text} symbol filters unavailable for {symbol}"]
+
+    try:
+        filters = getter(symbol) or {}
+    except Exception as exc:
+        return [f"{market_text} symbol filters unavailable for {symbol}: {exc}"]
+    if not isinstance(filters, Mapping):
+        return [f"{market_text} symbol filters invalid for {symbol}"]
+
+    quantity = _decimal_value(order_params.get("quantity"))
+    if quantity is None:
+        return []
+
+    errors: list[str] = []
+    step_size = _positive_filter(filters.get("stepSize"))
+    min_qty = _positive_filter(filters.get("minQty"))
+    min_notional = _positive_filter(filters.get("minNotional"))
+    tick_size = _positive_filter(filters.get("tickSize"))
+    is_risk_reducing_exit = market_text == "futures" and (
+        _truthy_param(order_params.get("reduceOnly")) or _truthy_param(order_params.get("closePosition"))
+    )
+
+    if min_qty > 0 and quantity < min_qty and not is_risk_reducing_exit:
+        errors.append(f"order quantity {quantity} is below {symbol} minQty {min_qty}")
+    if step_size > 0 and not _aligned_to_step(quantity, step_size):
+        errors.append(f"order quantity {quantity} is not aligned to {symbol} stepSize {step_size}")
+
+    price = _decimal_value(order_params.get("price"))
+    if price is None:
+        last_price = getattr(self, "get_last_price", None)
+        if callable(last_price):
+            try:
+                price = _decimal_value(last_price(symbol))
+            except Exception:
+                price = None
+    if tick_size > 0 and price is not None and price > 0 and not _aligned_to_step(price, tick_size):
+        errors.append(f"order price {price} is not aligned to {symbol} tickSize {tick_size}")
+    if min_notional > 0 and not is_risk_reducing_exit:
+        if price is None or price <= 0:
+            errors.append(f"last price unavailable for {symbol} minNotional validation")
+        elif quantity * price < min_notional:
+            errors.append(f"order notional {quantity * price} is below {symbol} minNotional {min_notional}")
+
+    return errors
 
 
 def _guard_live_order_submit(
@@ -100,8 +195,14 @@ def _guard_live_order_submit(
     errors.extend(_order_health_errors(self))
     intent = order_submit_intent_from_params(market_text, order_params)
     errors.extend(validate_order_submit_intent(intent))
+    errors.extend(_order_filter_errors(self, market_text, order_params))
+    max_session_orders = resolve_live_session_order_cap(cfg)
+    submit_attempt_count = _live_submit_attempt_count(self)
+    if submit_attempt_count >= max_session_orders:
+        errors.append(f"live session order cap {max_session_orders} reached")
 
     if not errors:
+        setattr(self, "_live_order_submit_attempt_count", submit_attempt_count + 1)
         return
 
     audit = getattr(self, "_audit_order_event", None)
