@@ -58,6 +58,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
 
         self.assertIn('$PSStyle.OutputRendering = "PlainText"', script)
+        self.assertIn("function Assert-QtKitInstalled", script)
+        self.assertIn("Qt6WebEngineWidgetsConfig.cmake", script)
+        self.assertIn("Qt6WebSocketsConfig.cmake", script)
         self.assertIn(
             'Invoke-Checked -Label "Bootstrapping vcpkg" -Command @((Join-Path $localVcpkg "bootstrap-vcpkg.bat"), "-disableMetrics")',
             script,

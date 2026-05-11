@@ -14,10 +14,12 @@ if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
 
 try:
     from app.gui.code import dependency_versions_usage_runtime as dependency_versions_runtime  # noqa: E402
+    from app.gui.code import dependency_versions_ui  # noqa: E402
 
     DEPENDENCY_RUNTIME_IMPORT_ERROR = ""
 except Exception as exc:  # pragma: no cover - depends on optional desktop imports
     dependency_versions_runtime = None
+    dependency_versions_ui = None
     DEPENDENCY_RUNTIME_IMPORT_ERROR = str(exc)
 
 
@@ -53,6 +55,56 @@ class DependencyVersionRequirementTests(unittest.TestCase):
         self.assertNotIn(".", labels)
         self.assertIn("python-binance", labels)
         self.assertIn("PyQt6", labels)
+
+    def test_cpp_qt_update_verification_fails_when_installer_does_not_reach_latest(self):
+        class _Runtime:
+            @staticmethod
+            def _installed_version_for_dependency_target(_target):
+                return "6.10.3"
+
+            @staticmethod
+            def _normalize_installed_version_text(value):
+                return str(value or "").strip()
+
+            @staticmethod
+            def _extract_semver_from_text(value):
+                return str(value or "").strip()
+
+            @staticmethod
+            def _version_sort_key(value):
+                return tuple(int(part) for part in str(value or "0").split(".") if part.isdigit())
+
+        failures = dependency_versions_ui._cpp_qt_update_verification_failures(
+            _Runtime(),
+            [{"label": "Qt6 (C++)", "custom": "cpp_qt", "_latest_version": "6.11.0"}],
+        )
+
+        self.assertEqual(["Qt6 (C++): expected 6.11.0, found 6.10.3."], failures)
+
+    def test_cpp_qt_update_verification_accepts_installed_latest(self):
+        class _Runtime:
+            @staticmethod
+            def _installed_version_for_dependency_target(_target):
+                return "6.11.0"
+
+            @staticmethod
+            def _normalize_installed_version_text(value):
+                return str(value or "").strip()
+
+            @staticmethod
+            def _extract_semver_from_text(value):
+                return str(value or "").strip()
+
+            @staticmethod
+            def _version_sort_key(value):
+                return tuple(int(part) for part in str(value or "0").split(".") if part.isdigit())
+
+        failures = dependency_versions_ui._cpp_qt_update_verification_failures(
+            _Runtime(),
+            [{"label": "Qt6 (C++)", "custom": "cpp_qt", "_latest_version": "6.11.0"}],
+        )
+
+        self.assertEqual([], failures)
 
 
 if __name__ == "__main__":

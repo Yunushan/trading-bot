@@ -300,6 +300,29 @@ def _version_text_is_installable(version_text: str | None) -> bool:
     return bool(re.match(r"^\d+(?:[A-Za-z0-9.+_!-]*\d)?$", value))
 
 
+def _cpp_qt_update_verification_failures(runtime, targets: list[dict[str, str]]) -> list[str]:
+    failures: list[str] = []
+    for target in targets:
+        custom = str(target.get("custom") or "").strip().lower()
+        if custom not in {"cpp_qt", "cpp_qt_network", "cpp_qt_webengine", "cpp_qt_websockets"}:
+            continue
+        expected = str(target.get("_latest_version") or target.get("latest") or "").strip()
+        if not _version_text_is_installable(expected):
+            continue
+        label = _dependency_target_label(target) or custom
+        try:
+            resolved = runtime._installed_version_for_dependency_target(target)
+            installed = runtime._normalize_installed_version_text(resolved) or str(resolved or "").strip()
+        except Exception as exc:
+            failures.append(f"{label}: expected {expected}, but installed version could not be checked ({exc}).")
+            continue
+        expected_semver = runtime._extract_semver_from_text(expected) or expected
+        installed_semver = runtime._extract_semver_from_text(installed) or installed
+        if not installed_semver or runtime._version_sort_key(installed_semver) < runtime._version_sort_key(expected_semver):
+            failures.append(f"{label}: expected {expected}, found {installed or 'not installed'}.")
+    return failures
+
+
 def _python_install_spec_for_target(package_name: str, target: dict[str, str]) -> str:
     latest_version = str(target.get("_latest_version") or target.get("latest") or "").strip()
     if _version_text_is_installable(latest_version):
@@ -446,6 +469,18 @@ def _run_dependency_update_worker(
         )
         ok, output = self._run_command_capture_hidden(command, cwd=cwd)
         runtime._reset_cpp_dependency_caches()
+        verification_failures = _cpp_qt_update_verification_failures(runtime, targets) if ok else []
+        if verification_failures:
+            ok = False
+            output = "\n".join(
+                line
+                for line in (
+                    output,
+                    "Verification failed after C++ installer:",
+                    "\n".join(f"- {failure}" for failure in verification_failures),
+                )
+                if line
+            )
         _emit_dependency_update_progress(
             self,
             {
