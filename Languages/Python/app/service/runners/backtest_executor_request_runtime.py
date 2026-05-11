@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from ...config import coerce_bool, normalize_stop_loss_dict
 from ...core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
 from ...core.backtest.models import BacktestRequest, IndicatorDefinition, PairOverride
+from ...settings.exchange_support import build_exchange_support_payload
 
 
 def utc_now_iso() -> str:
@@ -204,7 +205,9 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
     if start_dt >= end_dt:
         raise ValueError("Backtest start must be earlier than backtest end.")
 
-    stop_loss_cfg = normalize_stop_loss_dict(patch.get("stop_loss", backtest_cfg.get("stop_loss")))
+    stop_loss_cfg = normalize_stop_loss_dict(
+        patch.get("stop_loss", backtest_cfg.get("stop_loss", config.get("stop_loss")))
+    )
     leverage = max(1.0, coerce_number(patch.get("leverage", backtest_cfg.get("leverage", config.get("leverage", 1))), 1.0))
     margin_mode = clean_text(
         patch.get("margin_mode", backtest_cfg.get("margin_mode", config.get("margin_mode", "Isolated"))),
@@ -287,5 +290,23 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         "symbol_source": symbol_source,
         "capital": capital,
         "estimated_run_count": estimate_run_count(symbols, intervals, len(indicators), logic, pair_overrides),
+        "live_parity": {
+            "mode": mode,
+            "account_type": account_type,
+            "margin_mode": margin_mode,
+            "position_mode": position_mode,
+            "side": side,
+            "leverage": leverage,
+            "position_pct": position_pct,
+            "stop_loss_enabled": bool(request.stop_loss_enabled),
+            "exchange_support": build_exchange_support_payload(
+                config={
+                    **config,
+                    "connector_backend": connector_backend or config.get("connector_backend"),
+                    "account_type": account_type,
+                    "mode": mode,
+                }
+            ),
+        },
     }
     return request, wrapper_kwargs, summary

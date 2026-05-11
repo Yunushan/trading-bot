@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ...security.redaction import redact_text, redact_value
+from ...settings.exchange_support import build_exchange_support_payload
 
 
 DEFAULT_ORDER_AUDIT_DISPLAY_PATH = "~/.trading-bot/order_audit.jsonl"
@@ -61,6 +62,7 @@ def build_exchange_connector_snapshot(
     network_raw = _mapping_or_empty(raw.get("network"))
     last_error_raw = _mapping_or_empty(raw.get("last_error"))
     order_audit_raw = _mapping_or_empty(raw.get("order_audit"))
+    support = build_exchange_support_payload(config=cfg, snapshot=raw)
 
     seconds_until_unban = _safe_float(
         rate_limit_raw.get("seconds_until_unban", raw.get("seconds_until_unban"))
@@ -105,6 +107,14 @@ def build_exchange_connector_snapshot(
             state = state or last_error_category or "exchange_error"
     elif not state:
         state = "ready" if health == "ok" else "unknown"
+    if not support["trading_supported"]:
+        health = "error"
+        if not support["exchange_supported"]:
+            state = "unsupported_exchange"
+        elif not support["connector_backend_supported"]:
+            state = "unsupported_connector_backend"
+        elif not support["broker_supported"]:
+            state = "unsupported_broker"
 
     order_audit_error = _mapping_or_empty(order_audit_raw.get("last_write_error"))
     if order_audit_error and health != "error":
@@ -123,16 +133,19 @@ def build_exchange_connector_snapshot(
     if order_audit_error:
         message = str(order_audit_error.get("message") or "unknown write error").strip()
         attention.append(f"Order audit write failed: {message}")
+    attention.extend(str(reason) for reason in support["unsupported_reasons"])
 
     payload = {
         "health": health,
         "state": state,
         "generated_at": str(raw.get("generated_at") or _utc_now_iso()),
         "source": redact_text(raw.get("source") or source or "service"),
-        "selected_exchange": str(raw.get("selected_exchange") or cfg.get("selected_exchange") or "Unknown"),
-        "connector_backend": str(raw.get("connector_backend") or cfg.get("connector_backend") or "Unknown"),
+        "selected_exchange": str(support["selected_exchange"]),
+        "connector_backend": str(support["connector_backend"]),
+        "selected_forex_broker": str(support["selected_forex_broker"]),
         "account_type": str(raw.get("account_type") or cfg.get("account_type") or "Unknown"),
         "mode": str(raw.get("mode") or cfg.get("mode") or "Unknown"),
+        "support": support,
         "rate_limit": {
             "active": rate_limit_active,
             "seconds_until_unban": seconds_until_unban,

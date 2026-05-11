@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,8 @@ class LLMProviderSpec:
 OPENAI_COMPATIBLE_PROTOCOL = "openai-chat-completions"
 ANTHROPIC_MESSAGES_PROTOCOL = "anthropic-messages"
 GEMINI_GENERATE_CONTENT_PROTOCOL = "gemini-generate-content"
+LLM_PROVIDER_CATALOG_REVISION = "2026-05-11"
+LLM_MODEL_CATALOG_PATH_ENV = "BOT_LLM_MODEL_CATALOG_PATH"
 
 _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
     LLMProviderSpec(
@@ -264,8 +268,74 @@ def llm_provider_spec_for_key(value: str | None) -> LLMProviderSpec:
     return _PROVIDER_BY_KEY[normalize_llm_provider_key(value)]
 
 
+def _extra_model_suggestions(provider_key: str) -> tuple[str, ...]:
+    env_name = f"BOT_LLM_EXTRA_MODELS_{str(provider_key or '').upper().replace('-', '_')}"
+    raw = str(os.environ.get(env_name) or "").strip()
+    if not raw:
+        return ()
+    values = []
+    for item in raw.replace(";", ",").split(","):
+        text = item.strip()
+        if text and text not in values:
+            values.append(text)
+    return tuple(values)
+
+
+def _catalog_path() -> Path:
+    raw = str(os.environ.get(LLM_MODEL_CATALOG_PATH_ENV) or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path("~/.trading-bot/llm-models.json").expanduser()
+
+
+def _file_model_suggestions(provider_key: str) -> tuple[str, ...]:
+    path = _catalog_path()
+    if not path.is_file():
+        return ()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    raw_models = payload.get(provider_key)
+    if raw_models is None:
+        raw_models = payload.get("providers", {}).get(provider_key) if isinstance(payload.get("providers"), dict) else None
+    if not isinstance(raw_models, list):
+        return ()
+    values: list[str] = []
+    for item in raw_models:
+        text = str(item or "").strip()
+        if text and text not in values:
+            values.append(text)
+    return tuple(values)
+
+
+def _model_suggestions_for_provider(provider: LLMProviderSpec) -> list[str]:
+    suggestions = list(provider.model_suggestions)
+    for model in _extra_model_suggestions(provider.key):
+        if model not in suggestions:
+            suggestions.append(model)
+    for model in _file_model_suggestions(provider.key):
+        if model not in suggestions:
+            suggestions.append(model)
+    return suggestions
+
+
 def list_llm_provider_specs() -> list[dict[str, object]]:
-    return [provider.to_dict() for provider in _PROVIDER_SPECS]
+    specs: list[dict[str, object]] = []
+    for provider in _PROVIDER_SPECS:
+        payload = provider.to_dict()
+        payload["model_suggestions"] = _model_suggestions_for_provider(provider)
+        payload["catalog_revision"] = LLM_PROVIDER_CATALOG_REVISION
+        payload["custom_models_env"] = f"BOT_LLM_EXTRA_MODELS_{provider.key.upper().replace('-', '_')}"
+        payload["custom_models_path_env"] = LLM_MODEL_CATALOG_PATH_ENV
+        payload["catalog_path"] = str(_catalog_path())
+        payload["catalog_note"] = (
+            "Static defaults can drift; add local overrides with custom_models_env or custom_models_path_env."
+        )
+        specs.append(payload)
+    return specs
 
 
 def _masked_key_present(config: dict[str, object], env_name: str) -> bool:
@@ -306,6 +376,10 @@ def build_llm_config_payload(config: dict | None) -> dict[str, object]:
         "provider_label": provider.label,
         "mode": provider.mode,
         "protocol": provider.protocol,
+        "catalog_revision": LLM_PROVIDER_CATALOG_REVISION,
+        "catalog_path": str(_catalog_path()),
+        "custom_models_env": f"BOT_LLM_EXTRA_MODELS_{provider.key.upper().replace('-', '_')}",
+        "custom_models_path_env": LLM_MODEL_CATALOG_PATH_ENV,
         "model": model,
         "base_url": base_url,
         "api_key_env": api_key_env,
@@ -315,8 +389,13 @@ def build_llm_config_payload(config: dict | None) -> dict[str, object]:
         "reasoning_effort": reasoning_effort,
         "default_reasoning_effort": provider.default_reasoning_effort,
         "reasoning_efforts": list(provider.reasoning_efforts),
-        "model_suggestions": list(provider.model_suggestions),
+        "model_suggestions": _model_suggestions_for_provider(provider),
         "notes": list(provider.notes),
+        "execution_policy": {
+            "advisory_only": True,
+            "can_execute_orders": False,
+            "owner": "strategy_and_risk_runtime",
+        },
     }
 
 

@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
@@ -32,6 +33,7 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
                 "connector_order_circuit_incident_log_backup_count": 4,
                 "operational_live_start_gate_enabled": False,
                 "operational_live_order_gate_enabled": False,
+                "live_allow_auto_bump_to_min_order": True,
             }
         ).to_dict()
         self.assertEqual(payload["mode"], "Demo/Testnet")
@@ -46,6 +48,7 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["connector_order_circuit_incident_log_backup_count"], 4)
         self.assertFalse(payload["operational_live_start_gate_enabled"])
         self.assertFalse(payload["operational_live_order_gate_enabled"])
+        self.assertTrue(payload["live_allow_auto_bump_to_min_order"])
 
         summary = service.get_config_summary().to_dict()
         self.assertEqual(summary["symbol_count"], 2)
@@ -114,6 +117,7 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
             saved_file = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual("trading-bot-service-config", saved_file["kind"])
             self.assertEqual(1, saved_file["format_version"])
+            self.assertFalse(saved_file["contains_secrets"])
             self.assertEqual(["ETHUSDT"], saved_file["config"]["symbols"])
             self.assertEqual(["15m"], saved_file["config"]["intervals"])
 
@@ -146,3 +150,103 @@ class ServiceConfigRuntimeTests(unittest.TestCase):
                 service.load_config()
 
             self.assertEqual(previous, service.get_config_payload().to_dict())
+
+    def test_service_config_load_migrates_older_known_format_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "kind": "trading-bot-service-config",
+                        "format_version": 0,
+                        "config": {"symbols": ["ETHUSDT"], "intervals": ["5m"]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            service = TradingBotService(config_path=path, load_persisted_config=True)
+            status = service.get_config_persistence_status()
+
+            self.assertEqual(["ETHUSDT"], service.get_config_payload().to_dict()["symbols"])
+            self.assertEqual(1, status["format_version"])
+            self.assertEqual(0, status["migrated_from_format_version"])
+
+    def test_service_config_load_rejects_future_format_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "kind": "trading-bot-service-config",
+                        "format_version": 999,
+                        "config": {"symbols": ["ETHUSDT"]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unsupported format_version"):
+                TradingBotService(config_path=path, load_persisted_config=True)
+
+    def test_service_config_persistence_marks_secret_bearing_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            service = TradingBotService(config_path=path)
+            service.update_config(
+                {
+                    "api_key": "exchange-key",
+                    "api_secret": "exchange-secret",
+                    "llm_api_key": "llm-secret",
+                }
+            )
+
+            saved = service.save_config(source="unit-test")
+            saved_file = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertTrue(saved["contains_secrets"])
+            self.assertTrue(saved_file["contains_secrets"])
+            self.assertEqual("plain-json-on-disk", saved_file["secret_storage"])
+            self.assertIn("api_key", saved_file["secret_fields"])
+            self.assertIn("api_secret", saved_file["secret_fields"])
+            self.assertIn("llm_api_key", saved_file["secret_fields"])
+            self.assertFalse(saved["inline_secrets_persisted"])
+            self.assertFalse(saved_file["inline_secrets_persisted"])
+            self.assertEqual("", saved_file["config"]["api_key"])
+            self.assertEqual("", saved_file["config"]["api_secret"])
+            self.assertEqual("", saved_file["config"]["llm_api_key"])
+            self.assertIn("plain JSON", saved_file["secret_storage_warning"])
+
+    def test_service_config_persistence_can_explicitly_allow_inline_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            service = TradingBotService(config_path=path)
+            service.update_config({"api_key": "exchange-key", "api_secret": "exchange-secret"})
+
+            with mock.patch.dict("os.environ", {"BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS": "1"}, clear=False):
+                saved = service.save_config(source="unit-test")
+            saved_file = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertTrue(saved["inline_secrets_persisted"])
+            self.assertTrue(saved_file["inline_secrets_persisted"])
+            self.assertEqual("exchange-key", saved_file["config"]["api_key"])
+            self.assertEqual("exchange-secret", saved_file["config"]["api_secret"])
+
+    def test_explicit_service_config_paths_require_trusted_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service-config.json"
+            service = TradingBotService()
+            service.update_config({"symbols": ["ETHUSDT"]})
+
+            with self.assertRaises(PermissionError):
+                service.save_config(path=path, source="unit-test")
+
+            saved = service.save_config(path=path, source="unit-test", allow_unsafe_path=True)
+            self.assertEqual(str(path.resolve()), saved["path"])
+
+            reloader = TradingBotService()
+            with self.assertRaises(PermissionError):
+                reloader.load_config(path=path, source="unit-test")
+
+            loaded = reloader.load_config(path=path, source="unit-test", allow_unsafe_path=True)
+            self.assertEqual(["ETHUSDT"], loaded["config"]["symbols"])

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from app.settings.live_safety import is_live_trading_mode
+from app.settings.risk import coerce_bool
+
 from .order_audit_runtime import audit_order_method
 
 
@@ -394,7 +397,38 @@ def _place_futures_market_order_FLEX(
             cushion = 1.01
             within_margin = (required_margin <= avail * cushion) and (not reduce_only)
             percent_ok = (allowed_percent == float("inf")) or (required_percent <= (allowed_percent + 1e-9))
+            live_auto_bump_allowed = True
+            if is_live_trading_mode(getattr(self, "mode", "")):
+                cfg = getattr(self, "_live_safety_config", None)
+                cfg = cfg if isinstance(cfg, dict) else {}
+                live_auto_bump_allowed = bool(
+                    coerce_bool(cfg.get("live_allow_auto_bump_to_min_order"), False)
+                    or coerce_bool(kwargs.get("allow_live_auto_bump_to_min_order"), False)
+                )
             if within_margin and percent_ok:
+                if not live_auto_bump_allowed:
+                    return {
+                        "ok": False,
+                        "symbol": sym,
+                        "error": (
+                            "live auto-bump to exchange minimum is disabled; increase position percent "
+                            "or enable live_allow_auto_bump_to_min_order explicitly"
+                        ),
+                        "computed": {
+                            "px": px,
+                            "step": step,
+                            "minQty": min_qty,
+                            "minNotional": min_notional,
+                            "need_qty": _ceil_to_step_local(required_notional / px, step),
+                            "need_notional": required_notional,
+                            "lev": lev,
+                            "avail": avail,
+                            "margin_budget": margin_budget,
+                            "requested_percent": pct,
+                        },
+                        "required_percent": required_percent,
+                        "mode": "percent(strict)",
+                    }
                 qty = _ceil_to_step_local(required_notional / px, step)
                 mode = "percent(bumped_to_min)"
             else:

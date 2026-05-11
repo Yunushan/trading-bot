@@ -51,9 +51,9 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 | Venue / connector group | Current status | Notes |
 | --- | --- | --- |
 | Binance | Official | Current primary live/demo connector |
-| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Experimental | Listed in the exchange catalog, but not shipped as completed live connectors yet |
-| HTX / Crypto.com Exchange / Kraken / Bitfinex | Experimental | Catalog presence only today |
-| OANDA / FXCM / IG | Experimental | Broker placeholders exist; no shipped production connector yet |
+| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Experimental | Catalog/UI direction only; service connector snapshots mark these unsupported until implemented |
+| HTX / Crypto.com Exchange / Kraken / Bitfinex | Experimental | Catalog/UI direction only today; not shipped as live connectors |
+| OANDA / FXCM / IG | Experimental | Broker placeholders exist; service support metadata reports them unsupported until production connectors ship |
 | Unlisted venues | Not supported today | Requires new connector work |
 
 ## Practical interpretation
@@ -64,6 +64,7 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 
 ## Current automation notes
 
+- Main CI now includes a lightweight Windows/macOS/Linux service/runtime smoke in addition to the full Ubuntu quality jobs.
 - FreeBSD is the only BSD target with a dedicated GitHub workflow today, and it still depends on a matching self-hosted runner.
 - Other BSD variants and Solaris/illumos are currently `manual / best-effort` targets.
 - Android and iOS currently start from the Expo app in `apps/mobile-client/`.

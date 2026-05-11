@@ -165,6 +165,7 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "leverage",
         "live_trading_acknowledgement",
         "live_trading_enabled",
+        "live_allow_auto_bump_to_min_order",
         "live_trading_max_leverage",
         "live_trading_max_position_pct",
         "llm_allow_public_network",
@@ -774,6 +775,7 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     _validate_choice(cfg, "order_type", _ORDER_TYPE_CHOICES, issues)
     _validate_bool(cfg, "live_trading_enabled", issues)
     _validate_text(cfg, "live_trading_acknowledgement", issues, allow_empty=True)
+    _validate_bool(cfg, "live_allow_auto_bump_to_min_order", issues, default=False)
     _validate_int_range(
         cfg,
         "live_trading_max_leverage",

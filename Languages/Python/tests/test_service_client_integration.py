@@ -1,8 +1,11 @@
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
@@ -122,6 +125,31 @@ print("ok")
         self.assertEqual("qwen3:8b", provider_by_key["local"]["default_model"])
         self.assertIn("qwen3:8b", provider_by_key["local"]["model_suggestions"])
         self.assertIn("qwen3:4b", provider_by_key["local"]["model_suggestions"])
+        self.assertEqual("BOT_LLM_EXTRA_MODELS_LOCAL", provider_by_key["local"]["custom_models_env"])
+        self.assertEqual("BOT_LLM_MODEL_CATALOG_PATH", provider_by_key["local"]["custom_models_path_env"])
+        self.assertIn("catalog_revision", provider_by_key["local"])
+
+        with mock.patch.dict(os.environ, {"BOT_LLM_EXTRA_MODELS_LOCAL": "qwen3:32b,my-local-model"}, clear=False):
+            override_catalog = service.get_llm_provider_catalog()
+        override_local = {str(item["key"]): item for item in override_catalog}["local"]
+        self.assertIn("qwen3:32b", override_local["model_suggestions"])
+        self.assertIn("my-local-model", override_local["model_suggestions"])
+        self.assertTrue(service.get_llm_config_payload()["execution_policy"]["advisory_only"])
+        self.assertFalse(service.get_llm_config_payload()["execution_policy"]["can_execute_orders"])
+        self.assertIn("catalog_revision", service.get_llm_config_payload())
+        self.assertEqual("BOT_LLM_MODEL_CATALOG_PATH", service.get_llm_config_payload()["custom_models_path_env"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path = Path(tmp) / "llm-models.json"
+            catalog_path.write_text(
+                json.dumps({"providers": {"local": ["qwen3:32b"], "openai": ["gpt-custom"]}}),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"BOT_LLM_MODEL_CATALOG_PATH": str(catalog_path)}, clear=False):
+                file_catalog = service.get_llm_provider_catalog()
+        file_provider_by_key = {str(item["key"]): item for item in file_catalog}
+        self.assertIn("qwen3:32b", file_provider_by_key["local"]["model_suggestions"])
+        self.assertIn("gpt-custom", file_provider_by_key["openai"]["model_suggestions"])
 
         status_result = service.run_terminal_command("status", source="test-terminal").to_dict()
         self.assertTrue(status_result["accepted"])

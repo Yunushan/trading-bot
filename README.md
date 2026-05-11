@@ -61,7 +61,8 @@ A desktop-first trading workspace centered on the **PyQt6 Python app** in `Langu
 
 ## System requirements
 
-- **Python**: 3.10 – 3.14 (3.11+ recommended).
+- **Python**: 3.10 – 3.14 (3.12 is the pinned local development version in `.python-version`).
+- **Node.js**: 24 for the thin web dashboard tests, pinned in `.node-version`.
 - **pip**: bundled with Python, used to install dependencies.
 - **Internet access**: required for supported exchange/broker REST or WebSocket APIs. Binance is the primary current live path.
 - **Operating system**:
@@ -84,6 +85,11 @@ Status legend:
 - `Experimental`: best-effort/manual path, not continuously release-validated.
 - `Not supported today`: not shipped as a working connector/runtime in the current repo.
 - `Not targeted`: no current packaging or support target.
+
+Validation note: the always-on CI workflow validates the full Python,
+web-dashboard, and Rust smoke surfaces on Ubuntu 24.04, plus a lightweight
+service/runtime smoke on Windows, macOS, and Ubuntu. Release workflows still
+provide the stronger packaging signal for platform-specific desktop binaries.
 
 | Area | Target | Status | Notes |
 | --- | --- | --- | --- |
@@ -112,16 +118,16 @@ Status legend:
 | --- | --- | --- |
 | Crypto spot trading | Supported now | Current live path is Binance-led |
 | Crypto futures trading | Supported now | Current primary live/demo path |
-| Multi-exchange crypto expansion | Active development | UI/service/catalog support exists for more venues |
-| FX / broker integrations | Active development | Architecture and UI placeholders exist; production live connectors are not shipped yet |
+| Multi-exchange crypto expansion | Active development | UI placeholders and explicit service support metadata exist; completed live connector parity is not shipped yet |
+| FX / broker integrations | Active development | Architecture/UI placeholders exist; runtime marks broker selections unsupported until real connectors ship |
 | Unlisted markets outside the current crypto/FX scope | Not supported today | Would require new connector work and testing |
 
 | Venue / integration | Status | Notes |
 | --- | --- | --- |
 | Binance | Supported now | Current primary live/demo connector |
-| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Active development | Listed in the exchange catalog; live connectors are not fully shipped yet |
-| HTX / Crypto.com Exchange / Kraken / Bitfinex | Active development | Present in the exchange catalog, but not wired as completed live paths yet |
-| OANDA / FXCM / IG | Active development | Broker placeholders exist; live integrations are not shipped yet |
+| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Active development | Catalog/UI direction only; the service connector snapshot reports unsupported until implemented |
+| HTX / Crypto.com Exchange / Kraken / Bitfinex | Active development | Catalog/UI direction only; not wired as completed live paths yet |
+| OANDA / FXCM / IG | Active development | Broker placeholders exist; service support metadata reports them unsupported until live integrations ship |
 | Venues not listed in the repo | Not supported today | Requires a new connector and validation work |
 
 For the fuller breakdown, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
@@ -135,6 +141,10 @@ assets/
 docs/
   DEVELOPMENT.md          # contributor notes and maintenance guidance
   OPERATIONAL_PREFLIGHT_RUNBOOK.md
+  OPERATOR_RUNBOOK.md
+  ARCHITECTURE_BOUNDARIES.md
+  DEPENDENCY_REPRODUCIBILITY.md
+  WORKTREE_REVIEW_PLAN.md
   PLATFORM_EXPANSION_PLAN.md
   PROJECT_STRUCTURE.md    # repo/source/output layout
   RELEASES.md             # GitHub release workflow and asset guide
@@ -171,6 +181,13 @@ The desktop GUI and Python service/backend still live under `Languages/Python`, 
 Reusable trading-domain imports are now exposed through the Python package `trading_core` inside `Languages/Python/`, while `app.core` remains the in-repo compatibility namespace for the current monolith runtime.
 
 Generated local artifacts such as `build/`, `dist_enduser/`, `.venv/`, and root-level `Trading-Bot-*.exe` files are not canonical source and are ignored by Git.
+Use `python tools/audit_workspace_hygiene.py` from the repository root to list
+large ignored artifacts that can pollute local searches and audits. CI uses
+`python tools/audit_workspace_hygiene.py --fail-on-noisy` to keep generated
+workspace output out of the source tree.
+Use `python tools/summarize_worktree_changes.py` to group a large dirty tree
+into reviewable slices, and `python tools/verify_all.py` for the combined local
+verification gate.
 
 ---
 
@@ -183,6 +200,10 @@ Contributor-facing structure and maintenance docs now live here:
 - `docs/PLATFORM_EXPANSION_PLAN.md`
 - `docs/SERVICE_API.md`
 - `docs/OPERATIONAL_PREFLIGHT_RUNBOOK.md`
+- `docs/OPERATOR_RUNBOOK.md`
+- `docs/ARCHITECTURE_BOUNDARIES.md`
+- `docs/DEPENDENCY_REPRODUCIBILITY.md`
+- `docs/WORKTREE_REVIEW_PLAN.md`
 
 ## Contributing and security
 

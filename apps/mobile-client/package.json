@@ -2,6 +2,10 @@
   "name": "trading-bot-mobile-client",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "test": "node tests/service-contract.test.cjs && node tests/app-logic.test.cjs",

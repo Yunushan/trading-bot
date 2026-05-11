@@ -6,7 +6,10 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ...integrations.llm.local_models import (
     OLLAMA_DOWNLOAD_URL,
+    delete_ollama_model,
+    estimate_ollama_model_size_label,
     get_local_model_status,
+    ollama_model_storage_hint,
     pull_ollama_model,
     start_ollama_server,
 )
@@ -18,6 +21,41 @@ _USE_FOR_OPTIONS = (
     ("Risk review", "risk_review"),
     ("Backtest explanation", "backtest_explanation"),
 )
+
+
+class _LocalModelDownloadWorker(QtCore.QObject):
+    progress = QtCore.pyqtSignal(str)
+    finished = QtCore.pyqtSignal(str, str)
+
+    def __init__(self, base_url: str, model: str, puller: Callable[..., None]) -> None:
+        super().__init__()
+        self._base_url = base_url
+        self._model = model
+        self._puller = puller
+
+    def _emit_progress(self, payload: dict[str, object]) -> None:
+        status = str(payload.get("status") or "").strip()
+        completed = payload.get("completed")
+        total = payload.get("total")
+        detail = status or "downloading"
+        try:
+            completed_float = float(completed)
+            total_float = float(total)
+            if total_float > 0:
+                percent = max(0.0, min(100.0, completed_float / total_float * 100.0))
+                detail = f"{detail} ({percent:.0f}%)"
+        except Exception:
+            pass
+        self.progress.emit(f"Downloading local model '{self._model}' with Ollama: {detail}")
+
+    @QtCore.pyqtSlot()
+    def run(self) -> None:
+        error = ""
+        try:
+            self._puller(self._base_url, self._model, progress_callback=self._emit_progress)
+        except Exception as exc:
+            error = str(exc)
+        self.finished.emit(self._model, error)
 
 
 class LLMSettingsPanel(QtWidgets.QGroupBox):
@@ -37,6 +75,9 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             str(item.get("key") or ""): item for item in self._provider_specs
         }
         self._refreshing = False
+        self._local_model_download_thread: QtCore.QThread | None = None
+        self._local_model_download_worker: _LocalModelDownloadWorker | None = None
+        self._local_model_download_restore_apply_enabled = True
         self._build_ui()
         self.refresh_from_config()
 
@@ -117,8 +158,11 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
     def _local_model_status(self, base_url: str, model: str):
         return get_local_model_status(base_url, model)
 
-    def _pull_local_model(self, base_url: str, model: str) -> None:
-        pull_ollama_model(base_url, model)
+    def _pull_local_model(self, base_url: str, model: str, *, progress_callback=None) -> None:
+        pull_ollama_model(base_url, model, progress_callback=progress_callback)
+
+    def _delete_local_model(self, base_url: str, model: str) -> None:
+        delete_ollama_model(base_url, model)
 
     def _start_local_model_server(self, base_url: str):
         return start_ollama_server(base_url)
@@ -195,7 +239,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             )
             return False
 
-        return self._download_local_model(base_url, clean_model)
+        return self._download_local_model(base_url, clean_model, status=status)
 
     def _handle_unreachable_local_model_server(self, base_url: str, model: str, status) -> bool:
         if status.server_kind != "ollama":
@@ -263,14 +307,21 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             status = self._local_model_status(base_url, model)
         return status
 
-    def _download_local_model(self, base_url: str, clean_model: str) -> bool:
+    def _download_local_model(self, base_url: str, clean_model: str, *, status=None) -> bool:
+        disk_warning = str(getattr(status, "disk_space_warning", "") or "").strip()
+        disk_text = f"\nWarning: {disk_warning}" if disk_warning else ""
+        storage_paths = tuple(getattr(status, "storage_paths", ()) or ())
+        storage_text = "; ".join(storage_paths) if storage_paths else ollama_model_storage_hint()
+        free_disk = getattr(status, "free_disk_gb", None)
+        free_disk_text = f"\nFree disk near model cache: {free_disk:.1f} GB." if isinstance(free_disk, float) else ""
         choice = QtWidgets.QMessageBox.question(
             self,
             "Download local model?",
             (
                 f"The local model '{clean_model}' is not installed on this PC.\n\n"
                 "The app can ask Ollama to download it now and then use it locally on your computer. "
-                "This may download several gigabytes and can take several minutes.\n\n"
+                f"Estimated size: {estimate_ollama_model_size_label(clean_model)}.\n"
+                f"Storage path: {storage_text}{free_disk_text}{disk_text}\n\n"
                 "Download now?"
             ),
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
@@ -280,28 +331,64 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self.status_label.setText(f"Local model '{clean_model}' is not installed.")
             return False
 
-        previous_enabled = self.apply_btn.isEnabled()
+        self._start_local_model_download(base_url, clean_model)
+        return False
+
+    def _start_local_model_download(self, base_url: str, clean_model: str) -> None:
+        thread = self._local_model_download_thread
+        if thread is not None and thread.isRunning():
+            self.status_label.setText("Local model download is already running.")
+            return
+        self._local_model_download_restore_apply_enabled = self.apply_btn.isEnabled()
+        self.apply_btn.setEnabled(False)
+        self.local_model_btn.setEnabled(False)
+        remove_btn = getattr(self, "remove_local_model_btn", None)
+        if remove_btn is not None:
+            remove_btn.setEnabled(False)
+        self.status_label.setText(
+            f"Downloading local model '{clean_model}' with Ollama in the background..."
+        )
+        worker = _LocalModelDownloadWorker(base_url, clean_model, self._pull_local_model)
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_local_model_download_progress)
+        worker.finished.connect(self._on_local_model_download_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._local_model_download_thread = thread
+        self._local_model_download_worker = worker
+        thread.start()
+
+    def _on_local_model_download_progress(self, message: str) -> None:
+        self.status_label.setText(str(message or "").strip() or "Downloading local model with Ollama...")
+
+    def _on_local_model_download_finished(self, clean_model: str, error: str) -> None:
         try:
-            self.apply_btn.setEnabled(False)
-            self.status_label.setText(f"Downloading local model '{clean_model}' with Ollama...")
-            QtWidgets.QApplication.processEvents()
-            self._pull_local_model(base_url, clean_model)
-        except Exception as exc:
+            self.apply_btn.setEnabled(bool(self._local_model_download_restore_apply_enabled))
+            self.local_model_btn.setEnabled(True)
+            remove_btn = getattr(self, "remove_local_model_btn", None)
+            if remove_btn is not None:
+                remove_btn.setEnabled(True)
+        except Exception:
+            pass
+        self._local_model_download_thread = None
+        self._local_model_download_worker = None
+        if error:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Local model download failed",
                 (
                     f"Ollama could not download '{clean_model}'.\n\n"
                     "Make sure Ollama is installed and running, then try again.\n\n"
-                    f"Error: {exc}"
+                    f"Error: {error}"
                 ),
             )
-            return False
-        finally:
-            self.apply_btn.setEnabled(previous_enabled)
+            self.status_label.setText(f"Local model '{clean_model}' download failed.")
+            return
 
         self.status_label.setText(f"Local model '{clean_model}' is installed and ready.")
-        return True
 
     def _on_local_model_action_clicked(self) -> None:
         provider_key = str(self.provider_combo.currentData() or "openai")
@@ -322,6 +409,86 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             model=model,
             show_installed_message=True,
         )
+
+    def _on_remove_local_model_clicked(self) -> None:
+        provider_key = str(self.provider_combo.currentData() or "openai")
+        provider = self._provider_by_key.get(provider_key) or {}
+        model = str(self.model_combo.currentText() or provider.get("default_model") or "").strip()
+        base_url = str(self.base_url_edit.text() or provider.get("default_base_url") or "").strip()
+        if provider_key != "local":
+            QtWidgets.QMessageBox.information(
+                self,
+                "Cloud provider selected",
+                "Local model removal is only available for the Local / Custom OpenAI-Compatible provider.",
+            )
+            return
+        if not model or model == "custom-model":
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No removable local model selected",
+                "Select a concrete Ollama model before removing it from this PC.",
+            )
+            return
+
+        status = self._local_model_status(base_url, model)
+        if status.error:
+            if not self._handle_unreachable_local_model_server(base_url, model, status):
+                return
+            status = self._wait_for_local_model_server(base_url, model)
+            if status.error:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Local model unavailable",
+                    (
+                        f"Could not reach the local model server at {base_url}.\n\n"
+                        "Start Ollama, then try removing the model again.\n\n"
+                        f"Error: {status.error}"
+                    ),
+                )
+                return
+        if status.server_kind != "ollama":
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Cannot remove local model automatically",
+                "Automatic local model removal is only supported for Ollama on localhost:11434.",
+            )
+            return
+        if not status.installed:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Local model not installed",
+                f"The local model '{model}' is not installed in Ollama on this PC.",
+            )
+            return
+
+        storage_paths = tuple(getattr(status, "storage_paths", ()) or ())
+        storage_text = "; ".join(storage_paths) if storage_paths else ollama_model_storage_hint()
+        choice = QtWidgets.QMessageBox.question(
+            self,
+            "Remove local model?",
+            (
+                f"Remove '{model}' from this PC's Ollama model cache?\n\n"
+                f"Storage path: {storage_text}\n\n"
+                "This only removes the local downloaded model files. It does not change project files."
+            ),
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if choice != QtWidgets.QMessageBox.StandardButton.Yes:
+            self.status_label.setText(f"Local model '{model}' was not removed.")
+            return
+
+        try:
+            self._delete_local_model(base_url, model)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Local model removal failed",
+                f"Ollama could not remove '{model}'.\n\nError: {exc}",
+            )
+            self.status_label.setText(f"Local model '{model}' removal failed.")
+            return
+        self.status_label.setText(f"Local model '{model}' was removed from this PC.")
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QGridLayout(self)
@@ -390,11 +557,13 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         layout.addWidget(self.apply_btn, 5, 2)
         self.local_model_btn = QtWidgets.QPushButton("Check / Download Local Model", self)
         layout.addWidget(self.local_model_btn, 5, 1)
+        self.remove_local_model_btn = QtWidgets.QPushButton("Remove Local Model", self)
+        layout.addWidget(self.remove_local_model_btn, 6, 1)
 
         self.status_label = QtWidgets.QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet("color: #94a3b8; font-weight: 600;")
-        layout.addWidget(self.status_label, 5, 3)
+        layout.addWidget(self.status_label, 5, 3, 2, 1)
 
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 2)
@@ -416,6 +585,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self.reasoning_label,
             self.reasoning_combo,
             self.local_model_btn,
+            self.remove_local_model_btn,
         ]
 
         self.enabled_check.toggled.connect(self._on_enabled_toggled)
@@ -424,6 +594,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.reasoning_combo.currentIndexChanged.connect(self._on_reasoning_changed)
         self.apply_btn.clicked.connect(self.apply_to_config)
         self.local_model_btn.clicked.connect(self._on_local_model_action_clicked)
+        self.remove_local_model_btn.clicked.connect(self._on_remove_local_model_clicked)
         self._sync_local_model_action_visibility("openai")
 
     def _on_enabled_toggled(self, checked: bool) -> None:
@@ -515,9 +686,11 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self._select_provider_key(self._fallback_provider_key(), block_signals=self._refreshing)
 
     def _sync_local_model_action_visibility(self, provider_key: str) -> None:
-        btn = getattr(self, "local_model_btn", None)
-        if btn is not None:
-            btn.setVisible(str(provider_key or "") == "local")
+        local = str(provider_key or "") == "local"
+        for name in ("local_model_btn", "remove_local_model_btn"):
+            btn = getattr(self, name, None)
+            if btn is not None:
+                btn.setVisible(local)
 
     def _refresh_models_for_provider(self, provider_key: str, current_model: str) -> None:
         provider = self._provider_by_key.get(provider_key) or {}
@@ -577,7 +750,12 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             return
         provider_label = str(payload.get("provider_label") or payload.get("provider") or "LLM")
         mode = str(payload.get("mode") or "")
-        token_text = "token ready" if payload.get("api_key_present") else "token missing"
+        if payload.get("api_key_present"):
+            token_text = "token ready"
+        elif mode == "local":
+            token_text = "token optional"
+        else:
+            token_text = "token missing"
         reasoning = str(payload.get("reasoning_effort") or "default")
         self.status_label.setText(f"{provider_label} ({mode}) - {token_text} - reasoning: {reasoning}")
 

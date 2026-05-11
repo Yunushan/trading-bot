@@ -106,12 +106,29 @@
 
       <section class="card">
         <div class="card-head">
+          <h2>LLM Boundary</h2>
+          <span id="llm-enabled" class="pill muted">Disabled</span>
+        </div>
+        <dl class="stats">
+          <div><dt>Provider</dt><dd id="llm-provider">-</dd></div>
+          <div><dt>Model</dt><dd id="llm-model">-</dd></div>
+          <div><dt>Mode</dt><dd id="llm-mode">-</dd></div>
+          <div><dt>Reasoning</dt><dd id="llm-reasoning">-</dd></div>
+          <div><dt>Execution</dt><dd id="llm-execution" class="pill muted">Advisory Only</dd></div>
+          <div><dt>Catalog</dt><dd id="llm-catalog">-</dd></div>
+        </dl>
+        <p id="llm-message" class="hint compact-hint">LLM advice cannot submit orders or override deterministic risk logic.</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
           <h2>Exchange Connector</h2>
           <span id="connector-health" class="pill muted">Unknown</span>
         </div>
         <dl class="stats">
           <div><dt>State</dt><dd id="connector-state">-</dd></div>
           <div><dt>Backend</dt><dd id="connector-backend">-</dd></div>
+          <div><dt>Support</dt><dd id="connector-support">-</dd></div>
           <div><dt>Rate Limit</dt><dd id="connector-rate-limit">-</dd></div>
           <div><dt>Network</dt><dd id="connector-network">-</dd></div>
           <div><dt>Order Circuit</dt><dd id="connector-order-circuit">-</dd></div>
@@ -377,6 +394,10 @@
           <label class="check-row field-span">
             <input id="config-live-order-gate-enabled" type="checkbox">
             <span>Live order safety gate</span>
+          </label>
+          <label class="check-row field-span">
+            <input id="config-live-auto-bump-enabled" type="checkbox">
+            <span>Allow live auto-bump to exchange minimum order</span>
           </label>
           <label class="field field-span">
             <span>Symbols</span>

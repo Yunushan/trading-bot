@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from binance.client import Client
+from app.settings.live_safety import LiveTradingSafetyError
 
 from ..clients.connector_clients import _normalize_connector_choice
 from ..transport.helpers import _is_binance_error_payload, _requests_timeout
@@ -49,6 +50,7 @@ def _testnet_order_fallback_client(self):
 def _futures_create_order_with_fallback(self, params: dict):
     order_via = "primary"
     audit = getattr(self, "_audit_order_event", None)
+    guard = getattr(self, "_guard_live_order_submit", None)
 
     def _audit(event: str, *, order_params: dict, result=None, error=None, via: str | None = None) -> None:
         if not callable(audit):
@@ -64,6 +66,10 @@ def _futures_create_order_with_fallback(self, params: dict):
             via=via,
             source="_futures_create_order_with_fallback",
         )
+
+    def _guard_order_submit(*, via: str) -> None:
+        if callable(guard):
+            guard(market="futures", params=params, source=f"_futures_create_order_with_fallback:{via}")
 
     def _order_has_id(order_obj: dict) -> bool:
         return any(
@@ -128,17 +134,21 @@ def _futures_create_order_with_fallback(self, params: dict):
 
     try:
         _audit("exchange_order_request", order_params=params, via=order_via)
+        _guard_order_submit(via=order_via)
         order = self.client.futures_create_order(**params)
         _raise_if_error_payload(order)
         _audit("exchange_order_response", order_params=params, result=order, via=order_via)
         return order, order_via
     except Exception as primary_err:
         _audit("exchange_order_error", order_params=params, error=primary_err, via=order_via)
+        if isinstance(primary_err, LiveTradingSafetyError):
+            raise
         fb_client = self._testnet_order_fallback_client()
         fb_err = None
         if fb_client is not None:
             try:
                 _audit("exchange_order_request", order_params=params, via="fallback-pybinance")
+                _guard_order_submit(via="fallback-pybinance")
                 order = fb_client.futures_create_order(**params)
                 _raise_if_error_payload(order)
                 order_via = "fallback-pybinance"
@@ -153,6 +163,7 @@ def _futures_create_order_with_fallback(self, params: dict):
             try:
                 self._clear_futures_http_error()
                 _audit("exchange_order_request", order_params=params, via="fallback-rest")
+                _guard_order_submit(via="fallback-rest")
                 order = self._http_signed_futures_request(
                     "POST",
                     "/v1/order",
@@ -176,6 +187,7 @@ def _futures_create_order_with_fallback(self, params: dict):
                     try:
                         self._clear_futures_http_error()
                         _audit("exchange_order_request", order_params=params, via="fallback-rest-alt")
+                        _guard_order_submit(via="fallback-rest-alt")
                         order = self._http_signed_futures_request(
                             "POST",
                             "/v1/order",

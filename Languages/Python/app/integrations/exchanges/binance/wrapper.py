@@ -19,6 +19,7 @@ from .orders import (
     bind_binance_futures_orders,
     bind_binance_order_fallback_runtime,
     bind_binance_order_sizing_runtime,
+    bind_binance_order_submit_guard_runtime,
 )
 from .runtime import (
     bind_binance_futures_mode_runtime,
@@ -54,6 +55,36 @@ def _is_testnet_mode(mode: str | None) -> bool:
     return any(tag in text for tag in ("demo", "test", "sandbox"))
 
 
+def _configure_python_binance_urls(mode: str | None) -> None:
+    is_testnet = _is_testnet_mode(mode)
+    spot_rest = "https://testnet.binance.vision/api" if is_testnet else "https://api.binance.com/api"
+    futures_rest = "https://testnet.binancefuture.com/fapi" if is_testnet else "https://fapi.binance.com/fapi"
+    try:
+        Client.API_URL = spot_rest
+        if hasattr(Client, "API_TESTNET_URL") and is_testnet:
+            Client.API_TESTNET_URL = spot_rest  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        Client.FUTURES_URL = futures_rest
+        if hasattr(Client, "FUTURES_TESTNET_URL") and is_testnet:
+            Client.FUTURES_TESTNET_URL = futures_rest  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        futures_data_rest = (
+            "https://testnet.binancefuture.com/futures/data"
+            if is_testnet
+            else "https://fapi.binance.com/futures/data"
+        )
+        if hasattr(Client, "FUTURES_DATA_URL"):
+            Client.FUTURES_DATA_URL = futures_data_rest  # type: ignore[attr-defined]
+        if hasattr(Client, "FUTURES_DATA_TESTNET_URL") and is_testnet:
+            Client.FUTURES_DATA_TESTNET_URL = futures_data_rest  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
 DEFAULT_CONNECTOR_BACKEND = "binance-sdk-derivatives-trading-usds-futures"
 
 class BinanceWrapper:
@@ -62,6 +93,7 @@ class BinanceWrapper:
     _limiter_pool = {}
     _ban_state_lock = threading.Lock()
     _ban_until_epoch = {}
+    _client_url_lock = threading.Lock()
 
     def _log(self, msg: str, lvl: str = "info"):
         """
@@ -154,6 +186,7 @@ class BinanceWrapper:
         self.api_key = (api_key or "").strip()
         self.api_secret = (api_secret or "").strip()
         self.mode = (mode or "Demo/Testnet").strip()
+        self._live_safety_config = dict(live_safety_config or {})
         initial_leverage = int(default_leverage) if (default_leverage is not None) else 1
         if initial_leverage < 1:
             initial_leverage = 1
@@ -175,7 +208,7 @@ class BinanceWrapper:
             account_type=self.account_type,
             leverage=initial_leverage,
             margin_mode=self._default_margin_mode,
-            config=live_safety_config,
+            config=self._live_safety_config,
         )
         if self.account_type.startswith("FUT"):
             self.indicator_source = "Binance futures"
@@ -214,38 +247,11 @@ class BinanceWrapper:
         self._futures_settings_cache_lock = threading.Lock()
         self._fast_positions_cache_ttl = _env_float("BINANCE_FAST_POSITIONS_CACHE_TTL", 1.2)
 
-        # Set base URLs BEFORE creating Client (supports older python-binance builds too).
-        # Note: python-binance will prefer *_TESTNET_URL when `testnet=True`, but we set both
-        # families explicitly for consistency across versions and modes.
-        is_testnet = _is_testnet_mode(self.mode)
-        spot_rest = "https://testnet.binance.vision/api" if is_testnet else "https://api.binance.com/api"
-        futures_rest = "https://testnet.binancefuture.com/fapi" if is_testnet else "https://fapi.binance.com/fapi"
-        try:
-            Client.API_URL = spot_rest
-            if hasattr(Client, "API_TESTNET_URL") and is_testnet:
-                Client.API_TESTNET_URL = spot_rest  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        try:
-            Client.FUTURES_URL = futures_rest
-            if hasattr(Client, "FUTURES_TESTNET_URL") and is_testnet:
-                Client.FUTURES_TESTNET_URL = futures_rest  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        try:
-            futures_data_rest = (
-                "https://testnet.binancefuture.com/futures/data"
-                if is_testnet
-                else "https://fapi.binance.com/futures/data"
-            )
-            if hasattr(Client, "FUTURES_DATA_URL"):
-                Client.FUTURES_DATA_URL = futures_data_rest  # type: ignore[attr-defined]
-            if hasattr(Client, "FUTURES_DATA_TESTNET_URL") and is_testnet:
-                Client.FUTURES_DATA_TESTNET_URL = futures_data_rest  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-        self.client = self._build_client()
+        # python-binance keeps endpoint URLs on global Client attributes. Guard
+        # URL mutation and client construction so live/test wrappers cannot race.
+        with self._client_url_lock:
+            _configure_python_binance_urls(self.mode)
+            self.client = self._build_client()
         try:
             if hasattr(self.client, "_bw_throttled"):
                 setattr(self.client, "_bw_throttle", self._throttle_request)
@@ -295,6 +301,7 @@ class BinanceWrapper:
 
 bind_binance_order_audit_runtime(BinanceWrapper)
 bind_binance_http_runtime(BinanceWrapper)
+bind_binance_order_submit_guard_runtime(BinanceWrapper)
 bind_binance_order_fallback_runtime(BinanceWrapper)
 bind_binance_order_sizing_runtime(BinanceWrapper)
 bind_binance_operational_runtime(BinanceWrapper)

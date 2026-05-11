@@ -7,6 +7,8 @@ name: CI
   pull_request:
     branches:
       - main
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -99,6 +101,18 @@ jobs:
           set -euo pipefail
           python -m compileall apps/desktop-pyqt/main.py apps/service-api/main.py Languages/Python/app Languages/Python/trading_core Languages/Python/main.py Languages/Python/tools tools
 
+      - name: Check runtime tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_local_tool_versions.py --strict --skip-node
+
+      - name: Check workspace artifact hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/audit_workspace_hygiene.py --fail-on-noisy
+
       - name: Lint Python workspace
         shell: bash
         run: |
@@ -174,12 +188,74 @@ jobs:
           node --check modules/state.js
           node --check tests/render-preflight.test.mjs
 
+      - name: Check Node.js version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_local_tool_versions.py --strict --skip-python
+
       - name: Run dashboard behavior tests
         shell: bash
         working-directory: apps/web-dashboard
         run: |
           set -euo pipefail
           npm test
+
+  mobile-client-quality:
+    name: Mobile Client Quality
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Check Node.js version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_local_tool_versions.py --strict --skip-python
+
+      - name: Run mobile client contract tests
+        shell: bash
+        working-directory: apps/mobile-client
+        run: |
+          set -euo pipefail
+          npm test
+
+  cross-platform-support-smoke:
+    name: Cross-Platform Support Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Compile core service support surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall apps/service-api/main.py Languages/Python/app/service Languages/Python/app/settings Languages/Python/trading_core
+
+      - name: Smoke-check canonical service launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          python apps/service-api/main.py --healthcheck
 
   rust-smoke:
     name: Rust Smoke

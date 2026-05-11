@@ -77,19 +77,19 @@ def _cancel_all(binance, sym: str):
 
 def _submit_futures_order(binance, params: dict) -> dict:
     """Place a futures order using wrapper fallback path when available."""
-    try:
-        submit = getattr(binance, "_futures_create_order_with_fallback", None)
-        if callable(submit):
-            order, _via = submit(dict(params))
-            try:
-                invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
-                if callable(invalidate):
-                    invalidate()
-            except Exception:
-                pass
-            return order or {}
-    except Exception:
-        pass
+    submit = getattr(binance, "_futures_create_order_with_fallback", None)
+    if callable(submit):
+        order, _via = submit(dict(params))
+        try:
+            invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
+            if callable(invalidate):
+                invalidate()
+        except Exception:
+            pass
+        return order or {}
+    guard = getattr(binance, "_guard_live_order_submit", None)
+    if callable(guard):
+        guard(market="futures", params=params, source="close_all_futures_positions")
     order = binance.client.futures_create_order(**params)
     try:
         invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)

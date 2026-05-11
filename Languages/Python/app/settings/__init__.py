@@ -16,6 +16,12 @@ from .connectors import (
 )
 from .execution import ExecutionSettings
 from .exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
+from .exchange_support import (
+    SUPPORTED_CONNECTOR_BACKENDS,
+    SUPPORTED_EXCHANGES,
+    SUPPORTED_FOREX_BROKERS,
+    build_exchange_support_payload,
+)
 from .indicators import (
     AVAILABLE_INDICATORS,
     INDICATOR_CATALOG,
@@ -96,6 +102,9 @@ __all__ = [
     "STOP_LOSS_DEFAULT",
     "STOP_LOSS_MODE_ORDER",
     "STOP_LOSS_SCOPE_OPTIONS",
+    "SUPPORTED_CONNECTOR_BACKENDS",
+    "SUPPORTED_EXCHANGES",
+    "SUPPORTED_FOREX_BROKERS",
     "StopLossSettings",
     "UserInterfaceSettings",
     "build_available_indicators",
@@ -103,6 +112,7 @@ __all__ = [
     "build_default_backtest_config",
     "build_default_config",
     "build_default_settings",
+    "build_exchange_support_payload",
     "build_runtime_indicator_defaults",
     "coerce_bool",
     "format_config_validation_issues",

@@ -61,7 +61,7 @@ Runtime config updates are validated before the service stores them. Invalid sym
 
 ## Requirements
 
-- Python 3.10 to 3.14
+- Python 3.10 to 3.14 (`.python-version` pins local development to 3.12)
 - `pip`
 - Internet access for supported exchange or broker APIs
 - API credentials for a supported venue if you want live/demo connectivity
@@ -167,7 +167,7 @@ Exact OS package names for Python, `pip`, `venv`, and Qt vary by platform, so th
 4. Press `Start`.
 5. Use the `Positions`, `Chart`, and `Backtest` tabs to monitor and analyze activity.
 
-The current primary live/demo connector path is Binance, but the workspace is structured for broader venue support.
+The current shipped live/demo connector path is Binance. Other exchange and broker selections are allowed in config for planning/UI work, but the service connector snapshot marks them unsupported until a real connector is implemented.
 
 ## Optional service API
 
@@ -183,7 +183,7 @@ python ../../apps/service-api/main.py --serve --host 127.0.0.1 --port 8000
 Use that guide for:
 
 - standalone API startup
-- bearer-token protection, which is required for non-loopback hosts
+- bearer-token protection for write/control routes and non-loopback hosts
 - built-in `/ui/` dashboard usage
 - desktop-hosted API mode
 - current endpoint coverage

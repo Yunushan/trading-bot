@@ -78,6 +78,7 @@ function collectConfigPatch() {
     operational_portfolio_snapshot_stale_seconds: readNumber(elements.configPortfolioStaleSeconds, 300),
     operational_live_start_gate_enabled: Boolean(elements.configLiveStartGateEnabled.checked),
     operational_live_order_gate_enabled: Boolean(elements.configLiveOrderGateEnabled.checked),
+    live_allow_auto_bump_to_min_order: Boolean(elements.configLiveAutoBumpEnabled.checked),
     symbols: splitList(elements.configSymbols.value),
     intervals: splitList(elements.configIntervals.value),
   };

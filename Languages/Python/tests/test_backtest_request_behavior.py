@@ -87,6 +87,49 @@ class BacktestRequestBehaviorTests(unittest.TestCase):
 
         self.assertEqual("Demo/Testnet", wrapper_kwargs["mode"])
 
+    def test_build_request_inherits_runtime_risk_settings_for_live_parity(self):
+        runtime = _build_runtime()
+        runtime.config["leverage"] = 7
+        runtime.config["margin_mode"] = "Cross"
+        runtime.config["position_mode"] = "One-Way"
+        runtime.config["position_pct"] = 3.5
+        runtime.config["stop_loss"] = {
+            "enabled": True,
+            "mode": "percent",
+            "percent": 2.5,
+            "scope": "per_trade",
+        }
+        for key in ("leverage", "margin_mode", "position_mode", "position_pct", "stop_loss"):
+            runtime.config["backtest"].pop(key, None)
+
+        request, wrapper_kwargs, summary = build_request(
+            runtime,
+            {
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1h"],
+                "capital": 1000.0,
+                "start": "2025-01-01T00:00:00",
+                "end": "2025-01-02T00:00:00",
+                "indicators": {
+                    "ema": {"enabled": True, "length": 20},
+                },
+            },
+        )
+
+        self.assertEqual(7.0, request.leverage)
+        self.assertEqual("Cross", request.margin_mode)
+        self.assertEqual("One-Way", request.position_mode)
+        self.assertEqual(3.5, request.position_pct)
+        self.assertTrue(request.stop_loss_enabled)
+        self.assertEqual("percent", request.stop_loss_mode)
+        self.assertEqual(2.5, request.stop_loss_percent)
+        self.assertEqual("per_trade", request.stop_loss_scope)
+        self.assertEqual(7, wrapper_kwargs["default_leverage"])
+        self.assertEqual("Cross", wrapper_kwargs["default_margin_mode"])
+        self.assertEqual(7.0, summary["live_parity"]["leverage"])
+        self.assertTrue(summary["live_parity"]["stop_loss_enabled"])
+        self.assertTrue(summary["live_parity"]["exchange_support"]["trading_supported"])
+
     def test_build_request_canonicalizes_interval_aliases_and_pair_overrides(self):
         runtime = _build_runtime()
         runtime.config["backtest_symbol_interval_pairs"] = [

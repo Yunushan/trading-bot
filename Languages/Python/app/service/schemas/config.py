@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from ...core.backtest.intervals import normalize_backtest_intervals
 from ...config import coerce_bool
 from ...integrations.llm.providers import build_llm_config_payload
+from ...settings.exchange_support import build_exchange_support_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +35,12 @@ class ServiceEditableConfig:
     operational_portfolio_snapshot_stale_seconds: float
     operational_live_start_gate_enabled: bool
     operational_live_order_gate_enabled: bool
+    live_allow_auto_bump_to_min_order: bool
     symbols: tuple[str, ...]
     intervals: tuple[str, ...]
     api_credentials_present: bool
     llm: dict[str, object]
+    exchange_support: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -143,10 +146,12 @@ def build_editable_config(config: dict | None) -> ServiceEditableConfig:
         ),
         operational_live_start_gate_enabled=coerce_bool(cfg.get("operational_live_start_gate_enabled"), True),
         operational_live_order_gate_enabled=coerce_bool(cfg.get("operational_live_order_gate_enabled"), True),
+        live_allow_auto_bump_to_min_order=coerce_bool(cfg.get("live_allow_auto_bump_to_min_order"), False),
         symbols=_string_list(cfg.get("symbols")),
         intervals=_interval_tuple(cfg.get("intervals")),
         api_credentials_present=bool(api_key and api_secret),
         llm=build_llm_config_payload(cfg),
+        exchange_support=build_exchange_support_payload(config=cfg),
     )
 
 

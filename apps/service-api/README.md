@@ -65,6 +65,10 @@ Runtime config changes are transient until explicitly persisted. Use
 `--config-path` to choose the durable JSON file, `--load-config` to load it at
 startup, `--save-config` or terminal `config save [path]` to write the current
 runtime config, and terminal `config load [path]` to validate and load it.
+HTTP write/control routes require a bearer token unless the local development
+escape hatch `BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES=1` is set. Service
+config saves redact inline secret values by default; opt into plain-JSON secret
+persistence only with `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS=1`.
 
 ## Contract Samples
 

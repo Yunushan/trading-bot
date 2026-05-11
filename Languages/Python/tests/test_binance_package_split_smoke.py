@@ -53,6 +53,9 @@ from app.integrations.exchanges.binance.orders.order_fallback_runtime import (
 from app.integrations.exchanges.binance.orders.order_sizing_runtime import (
     bind_binance_order_sizing_runtime as new_bind_order_sizing,
 )
+from app.integrations.exchanges.binance.orders.order_submit_guard_runtime import (
+    bind_binance_order_submit_guard_runtime as new_bind_order_submit_guard,
+)
 from app.integrations.exchanges.binance.positions.futures_positions import (
     close_all_futures_positions as new_close_all_futures_positions,
     bind_binance_futures_positions as new_bind_positions,
@@ -186,6 +189,17 @@ class _FuturesAuditWrapper:
         return None
 
 
+class _GuardedFuturesAuditWrapper(_FuturesAuditWrapper):
+    def __init__(self, *, fail=False, live_safety_config=None):
+        super().__init__(fail=fail)
+        self.api_key = "unit-live-api-key"
+        self.api_secret = "unit-live-api-secret"
+        self._default_leverage = 1
+        self.futures_leverage = 1
+        self._default_margin_mode = "ISOLATED"
+        self._live_safety_config = dict(live_safety_config or {})
+
+
 class _FakeDirectHttpResponse:
     def __init__(self, status_code=200, payload=None, text="", headers=None):
         self.status_code = status_code
@@ -237,10 +251,76 @@ class _DirectFuturesHttpWrapper:
         self.recovered += 1
 
 
+class _GuardedSpotSizingWrapper(_SpotSizingWrapper):
+    def __init__(self, *, price=100.0, filters=None, live_safety_config=None):
+        super().__init__(price=price, filters=filters)
+        self.mode = "Live"
+        self.api_key = "unit-live-api-key"
+        self.api_secret = "unit-live-api-secret"
+        self._connector_backend = "unit-test"
+        self._live_safety_config = dict(live_safety_config or {})
+
+
+class _FlexFuturesOrderWrapper:
+    def __init__(self, *, mode="Demo/Testnet", live_safety_config=None):
+        self.mode = mode
+        self.account_type = "FUTURES"
+        self._connector_backend = "unit-test"
+        self._live_safety_config = dict(live_safety_config or {})
+        self._default_leverage = 1
+        self._futures_leverage = 1
+        self._default_margin_mode = "ISOLATED"
+        self.submit_calls = []
+
+    def get_last_price(self, _symbol):
+        return 100.0
+
+    def clamp_futures_leverage(self, _symbol, requested):
+        return int(requested or 1)
+
+    def _ensure_margin_and_leverage_or_block(self, *_args, **_kwargs):
+        return None
+
+    def get_futures_symbol_filters(self, _symbol):
+        return {"stepSize": 0.001, "minQty": 0.001, "minNotional": 5.0}
+
+    def get_futures_dual_side(self):
+        return False
+
+    def get_futures_balance_usdt(self):
+        return 10.0
+
+    def _format_quantity_for_order(self, qty, _step):
+        return f"{float(qty):.3f}"
+
+    def _futures_create_order_with_fallback(self, params):
+        self.submit_calls.append(dict(params))
+        return {"orderId": 123, **params}, "primary"
+
+    def _invalidate_futures_positions_cache(self):
+        return None
+
+
+def _live_ack_config(**overrides):
+    config = {
+        "live_trading_enabled": True,
+        "live_trading_acknowledgement": live_safety_module.LIVE_TRADING_ACKNOWLEDGEMENT,
+        "position_pct": 2.0,
+        "live_trading_max_leverage": 20,
+        "live_trading_max_position_pct": 10.0,
+        "order_audit_enabled": True,
+    }
+    config.update(overrides)
+    return config
+
+
 new_bind_order_audit(_SpotSizingWrapper)
 new_bind_order_sizing(_SpotSizingWrapper)
 new_bind_order_audit(_FuturesAuditWrapper)
 new_bind_order_fallback(_FuturesAuditWrapper)
+new_bind_order_submit_guard(_GuardedSpotSizingWrapper)
+new_bind_order_submit_guard(_GuardedFuturesAuditWrapper)
+new_bind_futures_orders(_FlexFuturesOrderWrapper)
 new_bind_order_audit(_DirectFuturesHttpWrapper)
 new_bind_http(_DirectFuturesHttpWrapper)
 new_bind_rate_limit(_DirectFuturesHttpWrapper)
@@ -387,6 +467,112 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(["exchange_order_request", "exchange_order_error"], [row["event"] for row in rows])
             self.assertIn("exchange rejected", rows[1]["error"])
+
+    def test_live_futures_submit_guard_blocks_unconfirmed_submit_before_client_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "guarded-futures.jsonl"
+            wrapper = _GuardedFuturesAuditWrapper(live_safety_config={})
+            wrapper._configure_order_audit(path=audit_path)
+
+            with self.assertRaisesRegex(LiveTradingSafetyError, "Live order submit blocked"):
+                wrapper._futures_create_order_with_fallback(
+                    {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"}
+                )
+
+            self.assertEqual([], wrapper.client.orders)
+            rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(["exchange_order_request", "live_order_blocked", "exchange_order_error"], [r["event"] for r in rows])
+
+    def test_close_all_submit_path_keeps_live_order_guard_before_client_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "close-all-guarded-futures.jsonl"
+            wrapper = _GuardedFuturesAuditWrapper(live_safety_config={})
+            wrapper._configure_order_audit(path=audit_path)
+
+            with self.assertRaisesRegex(LiveTradingSafetyError, "Live order submit blocked"):
+                close_all_runtime_module._submit_futures_order(
+                    wrapper,
+                    {"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"},
+                )
+
+            self.assertEqual([], wrapper.client.orders)
+            rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(
+                ["exchange_order_request", "live_order_blocked", "exchange_order_error"],
+                [row["event"] for row in rows],
+            )
+
+    def test_live_order_block_audit_failure_is_logged(self):
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config={})
+
+        def fail_audit(*_args, **_kwargs):
+            raise OSError("audit disk full")
+
+        wrapper._audit_order_event = fail_audit
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "Live order submit blocked"):
+            wrapper._guard_live_order_submit(
+                market="futures",
+                params={"symbol": "ETHUSDT", "side": "SELL", "type": "MARKET", "quantity": "0.1"},
+                source="unit-test",
+            )
+
+        self.assertTrue(any("audit disk full" in message for _level, message in wrapper.warned))
+
+    def test_live_futures_submit_guard_allows_confirmed_submit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "guarded-futures-ok.jsonl"
+            wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
+            wrapper._configure_order_audit(path=audit_path)
+
+            order, via = wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}
+            )
+
+            self.assertEqual("primary", via)
+            self.assertEqual(99, order["orderId"])
+            self.assertEqual([{"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}], wrapper.client.orders)
+
+    def test_live_spot_submit_guard_blocks_disabled_audit_before_client_call(self):
+        wrapper = _GuardedSpotSizingWrapper(live_safety_config=_live_ack_config())
+        wrapper._configure_order_audit(enabled=False)
+
+        result = wrapper.place_spot_market_order("BTCUSDT", "BUY", quantity=0.1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("order audit is disabled", result["error"])
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_flex_sizer_requires_explicit_auto_bump_opt_in(self):
+        wrapper = _FlexFuturesOrderWrapper(mode="Live", live_safety_config=_live_ack_config())
+
+        result = wrapper.place_futures_market_order(
+            "BTCUSDT",
+            "BUY",
+            percent_balance=0.01,
+            max_auto_bump_percent=100.0,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("live auto-bump", result["error"])
+        self.assertEqual([], wrapper.submit_calls)
+
+    def test_live_futures_flex_sizer_allows_auto_bump_when_explicitly_enabled(self):
+        wrapper = _FlexFuturesOrderWrapper(
+            mode="Live",
+            live_safety_config=_live_ack_config(live_allow_auto_bump_to_min_order=True),
+        )
+
+        result = wrapper.place_futures_market_order(
+            "BTCUSDT",
+            "BUY",
+            percent_balance=0.01,
+            max_auto_bump_percent=100.0,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("percent(bumped_to_min)", result["mode"])
+        self.assertEqual(1, len(wrapper.submit_calls))
 
     def test_order_audit_redacts_nested_secret_values_and_error_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -675,6 +861,7 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             new_bind_order_audit,
             new_bind_order_fallback,
             new_bind_order_sizing,
+            new_bind_order_submit_guard,
             new_bind_positions,
             new_bind_market,
             new_bind_metadata,

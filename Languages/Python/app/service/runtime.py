@@ -19,6 +19,7 @@ if __package__ in (None, ""):
     from app.service.runners.bot_runtime import BotRuntimeCoordinator
     from app.service.runners.local_executor import LocalServiceExecutionAdapter
     from app.service.config_store import (
+        ensure_service_config_path_allowed,
         load_service_config_file,
         merge_service_config,
         resolve_service_config_path,
@@ -44,6 +45,7 @@ else:
     from .runners.bot_runtime import BotRuntimeCoordinator
     from .runners.local_executor import LocalServiceExecutionAdapter
     from .config_store import (
+        ensure_service_config_path_allowed,
         load_service_config_file,
         merge_service_config,
         resolve_service_config_path,
@@ -90,14 +92,19 @@ class TradingBotService:
         load_persisted_config: bool = False,
     ) -> None:
         self._config_persistence_path = resolve_service_config_path(config_path)
+        self._config_persistence_trusted_path = config_path is not None
         self._config_persistence_loaded_at = ""
         self._config_persistence_saved_at = ""
+        self._config_persistence_migrated_from_format_version = None
         self._config_persistence_dirty = bool(config)
         runtime_config = config
         if load_persisted_config:
+            if not self._config_persistence_trusted_path:
+                ensure_service_config_path_allowed(self._config_persistence_path, allow_unsafe_path=False)
             loaded_config, metadata = load_service_config_file(self._config_persistence_path)
             self._config_persistence_loaded_at = str(metadata.get("loaded_at") or "")
             self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
+            self._config_persistence_migrated_from_format_version = metadata.get("migrated_from_format_version")
             runtime_config = loaded_config
             if isinstance(config, dict):
                 runtime_config = merge_service_config(loaded_config, config)
@@ -136,6 +143,7 @@ class TradingBotService:
                 "dirty": bool(self._config_persistence_dirty),
                 "last_loaded_at": self._config_persistence_loaded_at,
                 "last_saved_at": self._config_persistence_saved_at,
+                "migrated_from_format_version": self._config_persistence_migrated_from_format_version,
             }
         )
         return status
@@ -145,10 +153,18 @@ class TradingBotService:
         path: str | Path | None = None,
         *,
         source: str = "service",
+        allow_unsafe_path: bool = False,
     ) -> dict[str, object]:
-        metadata = write_service_config_file(self.config, path or self._config_persistence_path)
+        explicit_path = path not in (None, "")
+        metadata = write_service_config_file(
+            self.config,
+            path or self._config_persistence_path,
+            allow_unsafe_path=bool(allow_unsafe_path or (not explicit_path and self._config_persistence_trusted_path)),
+        )
         self._config_persistence_path = resolve_service_config_path(metadata["path"])
+        self._config_persistence_trusted_path = True
         self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
+        self._config_persistence_migrated_from_format_version = None
         self._config_persistence_dirty = False
         self.record_log_event(
             f"Service config persisted to {self._config_persistence_path}.",
@@ -164,12 +180,17 @@ class TradingBotService:
         path: str | Path | None = None,
         *,
         source: str = "service",
+        allow_unsafe_path: bool = False,
     ) -> dict[str, object]:
+        if path not in (None, "") and not allow_unsafe_path:
+            ensure_service_config_path_allowed(path, allow_unsafe_path=False)
         config, metadata = load_service_config_file(path or self._config_persistence_path)
         self._runtime.replace_config(config)
         self._config_persistence_path = resolve_service_config_path(metadata["path"])
+        self._config_persistence_trusted_path = True
         self._config_persistence_loaded_at = str(metadata.get("loaded_at") or "")
         self._config_persistence_saved_at = str(metadata.get("saved_at") or "")
+        self._config_persistence_migrated_from_format_version = metadata.get("migrated_from_format_version")
         self._config_persistence_dirty = False
         self.record_log_event(
             f"Service config loaded from {self._config_persistence_path}.",

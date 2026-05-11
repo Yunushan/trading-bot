@@ -458,6 +458,41 @@ function renderConnectorError(lastError) {
   return message ? `${category}: ${message}` : category;
 }
 
+function renderConnectorSupport(support) {
+  const payload = support && typeof support === "object" ? support : {};
+  if (payload.trading_supported === true) {
+    return "Trading Supported";
+  }
+  if (payload.trading_supported === false) {
+    const reasons = Array.isArray(payload.unsupported_reasons) ? payload.unsupported_reasons : [];
+    return reasons.length ? `Unsupported: ${reasons[0]}` : "Unsupported";
+  }
+  return "-";
+}
+
+function renderLLM(llm) {
+  const payload = llm && typeof llm === "object" ? llm : {};
+  const enabled = Boolean(payload.enabled);
+  const executionPolicy =
+    payload.execution_policy && typeof payload.execution_policy === "object"
+      ? payload.execution_policy
+      : {};
+  const advisoryOnly = executionPolicy.advisory_only !== false && executionPolicy.can_execute_orders !== true;
+  elements.llmEnabled.textContent = enabled ? "Enabled" : "Disabled";
+  elements.llmEnabled.className = `pill ${enabled ? "ok" : "muted"}`;
+  elements.llmProvider.textContent = payload.provider_label || payload.provider || "-";
+  elements.llmModel.textContent = payload.model || "-";
+  elements.llmMode.textContent = titleizeLabel(payload.mode || "-");
+  elements.llmReasoning.textContent = payload.reasoning_effort || "default";
+  elements.llmExecution.textContent = advisoryOnly ? "Advisory Only" : "Can Execute";
+  elements.llmExecution.className = `pill ${advisoryOnly ? "ok" : "error"}`;
+  elements.llmCatalog.textContent = payload.catalog_revision || "-";
+  elements.llmCatalog.title = payload.catalog_path || payload.custom_models_path_env || "";
+  elements.llmMessage.textContent = advisoryOnly
+    ? "LLM advice cannot submit orders or override deterministic risk logic."
+    : "LLM execution policy is not advisory-only; review runtime configuration before using this service.";
+}
+
 function renderOrderCircuit(orderCircuit) {
   const payload = orderCircuit && typeof orderCircuit === "object" ? orderCircuit : {};
   if (payload.active) {
@@ -572,8 +607,9 @@ function renderExchangeConnector(connector, status = {}, orderCircuit = {}, inci
   const backend = payload.connector_backend || "-";
   elements.connectorHealth.textContent = titleizeLabel(health);
   elements.connectorHealth.className = `pill ${healthTone(health)}`;
-  elements.connectorState.textContent = titleizeLabel(payload.state || "-");
+  elements.connectorState.textContent = titleizeLabel(String(payload.state || "-").replaceAll("_", "-"));
   elements.connectorBackend.textContent = `${exchange} / ${backend}`;
+  elements.connectorSupport.textContent = renderConnectorSupport(payload.support);
   elements.connectorRateLimit.textContent = renderRateLimit(payload.rate_limit);
   elements.connectorNetwork.textContent = renderNetwork(payload.network);
   elements.connectorOrderCircuit.textContent = renderOrderCircuit(circuit);
@@ -668,10 +704,12 @@ export function renderConfig(config) {
     config.operational_portfolio_snapshot_stale_seconds ?? 300;
   elements.configLiveStartGateEnabled.checked = config.operational_live_start_gate_enabled ?? true;
   elements.configLiveOrderGateEnabled.checked = config.operational_live_order_gate_enabled ?? true;
+  elements.configLiveAutoBumpEnabled.checked = config.live_allow_auto_bump_to_min_order ?? false;
   elements.configSymbols.value = Array.isArray(config.symbols) ? config.symbols.join(", ") : "";
   elements.configIntervals.value = Array.isArray(config.intervals) ? config.intervals.join(", ") : "";
   elements.configCredentials.textContent = config.api_credentials_present ? "Keys Present" : "No Keys";
   elements.configCredentials.className = `pill ${config.api_credentials_present ? "ok" : "muted"}`;
+  renderLLM(config.llm);
 }
 
 export function renderConfigPersistence(persistence) {

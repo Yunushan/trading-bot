@@ -30,6 +30,7 @@ class ExecutionSettings:
     live_trading_acknowledgement: str = ""
     live_trading_max_leverage: int = 20
     live_trading_max_position_pct: float = 10.0
+    live_allow_auto_bump_to_min_order: bool = False
     order_audit_enabled: bool = True
     order_audit_log_path: str = ""
     order_audit_max_bytes: int = 10 * 1024 * 1024
@@ -73,6 +74,7 @@ class ExecutionSettings:
             "live_trading_acknowledgement": self.live_trading_acknowledgement,
             "live_trading_max_leverage": self.live_trading_max_leverage,
             "live_trading_max_position_pct": self.live_trading_max_position_pct,
+            "live_allow_auto_bump_to_min_order": self.live_allow_auto_bump_to_min_order,
             "order_audit_enabled": self.order_audit_enabled,
             "order_audit_log_path": self.order_audit_log_path,
             "order_audit_max_bytes": self.order_audit_max_bytes,

@@ -11,6 +11,33 @@ import requests
 
 
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
+OLLAMA_MODEL_STORAGE_HINT = (
+    "Ollama stores downloaded models outside this project in its own model cache "
+    "(commonly ~/.ollama/models on Linux/macOS and %USERPROFILE%\\.ollama\\models on Windows)."
+)
+OLLAMA_MODELS_ENV = "OLLAMA_MODELS"
+_OLLAMA_SIZE_HINTS = {
+    "qwen3:4b": "about 3 GB",
+    "qwen3:8b": "about 5 GB",
+    "qwen3:14b": "about 9 GB",
+    "llama3.1:8b": "about 5 GB",
+    "llama3.2:3b": "about 2 GB",
+    "llama3.2:1b": "about 1 GB",
+    "deepseek-r1:8b": "about 5 GB",
+    "gemma3:4b": "about 3 GB",
+    "gpt-oss:20b": "about 13 GB",
+}
+_OLLAMA_SIZE_GB_HINTS = {
+    "qwen3:4b": 3.0,
+    "qwen3:8b": 5.0,
+    "qwen3:14b": 9.0,
+    "llama3.1:8b": 5.0,
+    "llama3.2:3b": 2.0,
+    "llama3.2:1b": 1.0,
+    "deepseek-r1:8b": 5.0,
+    "gemma3:4b": 3.0,
+    "gpt-oss:20b": 13.0,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +50,12 @@ class LocalModelStatus:
     can_start: bool = False
     available_models: tuple[str, ...] = ()
     error: str = ""
+    storage_hint: str = ""
+    storage_paths: tuple[str, ...] = ()
+    estimated_size_label: str = ""
+    free_disk_gb: float | None = None
+    recommended_free_disk_gb: float | None = None
+    disk_space_warning: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +115,55 @@ def _model_installed(model: str, available_models: tuple[str, ...]) -> bool:
     return False
 
 
+def ollama_model_storage_hint() -> str:
+    return OLLAMA_MODEL_STORAGE_HINT
+
+
+def ollama_model_storage_paths() -> tuple[str, ...]:
+    env_path = str(os.environ.get(OLLAMA_MODELS_ENV) or "").strip()
+    if env_path:
+        return (os.path.abspath(os.path.expanduser(env_path)),)
+    return (os.path.abspath(os.path.expanduser("~/.ollama/models")),)
+
+
+def estimate_ollama_model_size_label(model: str) -> str:
+    clean = str(model or "").strip().lower()
+    if not clean:
+        return "unknown size"
+    if clean in _OLLAMA_SIZE_HINTS:
+        return _OLLAMA_SIZE_HINTS[clean]
+    if ":" not in clean:
+        tagged = f"{clean}:latest"
+        if tagged in _OLLAMA_SIZE_HINTS:
+            return _OLLAMA_SIZE_HINTS[tagged]
+    return "size varies by model and quantization"
+
+
+def estimate_ollama_model_size_gb(model: str) -> float | None:
+    clean = str(model or "").strip().lower()
+    if not clean:
+        return None
+    if clean in _OLLAMA_SIZE_GB_HINTS:
+        return _OLLAMA_SIZE_GB_HINTS[clean]
+    if ":" not in clean:
+        return _OLLAMA_SIZE_GB_HINTS.get(f"{clean}:latest")
+    return None
+
+
+def _disk_space_status(model: str) -> tuple[float | None, float | None, str]:
+    estimated = estimate_ollama_model_size_gb(model)
+    recommended = None if estimated is None else max(2.0, estimated * 1.25)
+    try:
+        usage = shutil.disk_usage(os.path.expanduser("~"))
+        free_gb = usage.free / (1024 ** 3)
+    except Exception:
+        free_gb = None
+    warning = ""
+    if recommended is not None and free_gb is not None and free_gb < recommended:
+        warning = f"Low disk space: about {recommended:.1f} GB free is recommended for this model."
+    return free_gb, recommended, warning
+
+
 def ollama_executable_path(command_finder: Callable[[str], str | None] = shutil.which) -> str:
     return str(command_finder("ollama") or "").strip()
 
@@ -98,6 +180,9 @@ def get_local_model_status(
     clean_model = str(model or "").strip()
     kind = _server_kind(clean_base_url)
     can_start = kind == "ollama" and bool(ollama_executable_path(command_finder))
+    free_disk_gb, recommended_free_disk_gb, disk_space_warning = (
+        _disk_space_status(clean_model) if kind == "ollama" else (None, None, "")
+    )
     try:
         response = request_get(_join_url(clean_base_url, "models"), timeout=max(1.0, float(timeout or 3.0)))
         if hasattr(response, "raise_for_status"):
@@ -112,6 +197,12 @@ def get_local_model_status(
             can_download=kind == "ollama",
             can_start=can_start,
             available_models=available_models,
+            storage_hint=OLLAMA_MODEL_STORAGE_HINT if kind == "ollama" else "",
+            storage_paths=ollama_model_storage_paths() if kind == "ollama" else (),
+            estimated_size_label=estimate_ollama_model_size_label(clean_model) if kind == "ollama" else "",
+            free_disk_gb=free_disk_gb,
+            recommended_free_disk_gb=recommended_free_disk_gb,
+            disk_space_warning=disk_space_warning,
         )
     except Exception as exc:
         return LocalModelStatus(
@@ -122,6 +213,12 @@ def get_local_model_status(
             can_download=kind == "ollama",
             can_start=can_start,
             error=str(exc),
+            storage_hint=OLLAMA_MODEL_STORAGE_HINT if kind == "ollama" else "",
+            storage_paths=ollama_model_storage_paths() if kind == "ollama" else (),
+            estimated_size_label=estimate_ollama_model_size_label(clean_model) if kind == "ollama" else "",
+            free_disk_gb=free_disk_gb,
+            recommended_free_disk_gb=recommended_free_disk_gb,
+            disk_space_warning=disk_space_warning,
         )
 
 
@@ -172,16 +269,64 @@ def pull_ollama_model(
     *,
     timeout: float = 1800.0,
     request_post: Callable[..., Any] = requests.post,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     clean_model = str(model or "").strip()
     if not clean_model:
         raise ValueError("Local model name cannot be empty.")
     if _server_kind(base_url) != "ollama":
         raise ValueError("Automatic local model downloads are only supported for Ollama on localhost:11434.")
-    response = request_post(
-        _join_url(_ollama_base_url(base_url), "api/pull"),
-        json={"model": clean_model, "stream": False},
-        timeout=max(1.0, float(timeout or 1800.0)),
+    stream = progress_callback is not None
+    request_kwargs = {
+        "json": {"model": clean_model, "stream": stream},
+        "timeout": max(1.0, float(timeout or 1800.0)),
+        "stream": stream,
+    }
+    url = _join_url(_ollama_base_url(base_url), "api/pull")
+    try:
+        response = request_post(url, **request_kwargs)
+    except TypeError as exc:
+        if "stream" not in str(exc):
+            raise
+        request_kwargs.pop("stream", None)
+        response = request_post(url, **request_kwargs)
+    if hasattr(response, "raise_for_status"):
+        response.raise_for_status()
+    if not stream:
+        return
+    iter_lines = getattr(response, "iter_lines", None)
+    if not callable(iter_lines):
+        return
+    import json
+
+    for raw_line in iter_lines():
+        if not raw_line:
+            continue
+        try:
+            text = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else str(raw_line)
+            payload = json.loads(text)
+        except Exception:
+            payload = {"status": str(raw_line)}
+        if isinstance(payload, dict):
+            progress_callback(payload)
+
+
+def delete_ollama_model(
+    base_url: str,
+    model: str,
+    *,
+    timeout: float = 60.0,
+    request_delete: Callable[..., Any] = requests.delete,
+) -> None:
+    clean_model = str(model or "").strip()
+    if not clean_model:
+        raise ValueError("Local model name cannot be empty.")
+    if _server_kind(base_url) != "ollama":
+        raise ValueError("Automatic local model removal is only supported for Ollama on localhost:11434.")
+    response = request_delete(
+        _join_url(_ollama_base_url(base_url), "api/delete"),
+        json={"model": clean_model},
+        timeout=max(1.0, float(timeout or 60.0)),
     )
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()

@@ -181,7 +181,25 @@ When bearer auth is enabled:
 - REST requests use `Authorization: Bearer ...`
 - the browser dashboard stores the token in tab-scoped session storage, not long-lived local storage
 - dashboard live updates use a `fetch`-based event stream with `Authorization: Bearer ...`
-- the SSE endpoint still accepts `?token=...` for raw `EventSource` clients, but dashboard code avoids putting bearer tokens in stream URLs
+- the SSE endpoint does not accept bearer tokens in query strings; use the
+  `Authorization` header or polling from clients that cannot set stream headers
+- write endpoints require a bearer token in both standalone and desktop-hosted
+  API modes. If no token is configured, read routes stay available but
+  mutation/control routes return `403`. `BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES=1`
+  is a local development escape hatch only.
+- `/health`, `/api/v1/dashboard`, and service API metadata include
+  `service_api.unsafe_flags_active` plus `service_api.security.warnings` when
+  unsafe write/config escape hatches are active.
+
+Request safety limits:
+
+- `BOT_SERVICE_API_MAX_REQUEST_BYTES` caps incoming request bodies. The default
+  is 1 MiB. Oversized requests return `413`.
+- `BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE` optionally rate-limits write
+  methods per client. Leave it unset or `0` for no local rate limit; positive
+  values return `429` with `Retry-After` once exceeded.
+- Both limits are reported in `service_api.limits` metadata so browser/mobile
+  clients can display the active policy.
 
 ## Built-in web dashboard
 
@@ -205,6 +223,8 @@ Current dashboard capabilities:
 
 Operational preflight blocks and warnings are handled with the
 [Operational Preflight Runbook](OPERATIONAL_PREFLIGHT_RUNBOOK.md).
+For live-trading and LLM safety checks, use the
+[Operator Runbook](OPERATOR_RUNBOOK.md).
 
 ## Desktop-hosted API mode
 
@@ -290,9 +310,14 @@ write a file unless you explicitly save.
 
 The durable service config file defaults to `~/.trading-bot/service-config.json`.
 Override it with `BOT_SERVICE_CONFIG_PATH`, `--config-path`, or the optional
-`path` field on the save/load API request body. The file contains the full
-validated runtime config and can include API credentials, so store it with the
-same care as any other secret-bearing config file.
+`path` field on the save/load API request body. Explicit save/load API paths are
+blocked outside the safe config directory unless the trusted local caller sends
+`allow_unsafe_path: true` or sets `BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH=1`.
+Save responses include `contains_secrets`, `secret_fields`, and
+`secret_storage_warning` metadata so clients can warn before persisting
+plain-JSON credentials. Inline secret values are redacted from saved config
+files by default; set `BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS=1` only when you
+explicitly want plain-JSON secret persistence.
 
 - `GET /api/v1/config/persistence` returns the configured file path, whether it
   exists, last load/save timestamps, and whether runtime changes are dirty.
@@ -300,6 +325,24 @@ same care as any other secret-bearing config file.
   configured file.
 - `POST /api/v1/config/load` validates the configured file and replaces the
   current runtime config only if validation succeeds.
+
+## LLM provider and local model notes
+
+LLM calls are advisory-only. The API returns `execution_policy.advisory_only`
+and request builders prepend an execution-boundary instruction; strategy,
+risk, take-profit, stop-loss, and exchange-order execution remain owned by the
+deterministic runtime.
+LLM responses are also inspected before returning to the app. Output that tries
+to submit orders, claims execution, or overrides risk controls is marked
+`ok: false` with `output_policy.blocked: true`.
+
+Local Ollama models are downloaded by Ollama into its own model cache, commonly
+`~/.ollama/models` on Linux/macOS and `%USERPROFILE%\.ollama\models` on Windows.
+They are outside this repository and are not part of Git. The desktop LLM panel
+can ask Ollama to download or remove a selected local model after an explicit
+operator confirmation. Add provider model overrides with
+`BOT_LLM_EXTRA_MODELS_<PROVIDER>` or a JSON catalog pointed to by
+`BOT_LLM_MODEL_CATALOG_PATH`.
 
 ## Docker path
 

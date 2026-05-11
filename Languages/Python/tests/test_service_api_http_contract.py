@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
@@ -156,13 +157,14 @@ class ServiceApiHttpContractTests(unittest.TestCase):
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_config_validation_errors_are_client_errors(self):
-        app = create_service_api_app(service=TradingBotService())
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
         client = _create_test_client(app)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", DeprecationWarning)
             response = client.patch(
                 f"{SERVICE_API_BASE_PATH}/config",
+                headers={"Authorization": "Bearer token-123"},
                 json={"config": {"leverage": 0, "position_pct": 0}},
             )
 
@@ -178,11 +180,13 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "service-config.json"
             service = TradingBotService(config_path=path)
-            app = create_service_api_app(service=service)
+            app = create_service_api_app(service=service, api_token="token-123")
             client = _create_test_client(app)
+            headers = {"Authorization": "Bearer token-123"}
 
             patch_response = client.patch(
                 f"{SERVICE_API_BASE_PATH}/config",
+                headers=headers,
                 json={"config": {"symbols": ["ETHUSDT"], "intervals": ["5m"], "theme": "Dark"}},
             )
             self.assertEqual(200, patch_response.status_code)
@@ -194,18 +198,28 @@ class ServiceApiHttpContractTests(unittest.TestCase):
 
             save_response = client.post(
                 f"{SERVICE_API_BASE_PATH}/config/save",
+                headers=headers,
                 json={"source": "api-smoke"},
             )
             self.assertEqual(200, save_response.status_code)
             self.assertTrue(path.is_file())
             self.assertFalse(save_response.json()["dirty"])
 
+            unsafe_path_response = client.post(
+                f"{SERVICE_API_BASE_PATH}/config/save",
+                headers=headers,
+                json={"path": str(Path(tmp) / "manual-service-config.json"), "source": "api-smoke"},
+            )
+            self.assertEqual(403, unsafe_path_response.status_code)
+
             client.patch(
                 f"{SERVICE_API_BASE_PATH}/config",
+                headers=headers,
                 json={"config": {"theme": "Light"}},
             )
             load_response = client.post(
                 f"{SERVICE_API_BASE_PATH}/config/load",
+                headers=headers,
                 json={"source": "api-smoke"},
             )
 
@@ -215,12 +229,143 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             self.assertFalse(payload["persistence"]["dirty"])
 
     @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_desktop_embedded_service_api_write_routes_require_token(self):
+        app = create_service_api_app(
+            service=TradingBotService(),
+            host_context="desktop-embedded",
+            host_owner="desktop-gui",
+            api_token="",
+        )
+        client = _create_test_client(app)
+
+        read_response = client.get(f"{SERVICE_API_BASE_PATH}/dashboard")
+        self.assertEqual(200, read_response.status_code)
+        self.assertTrue(read_response.json()["service_api"]["write_auth_required"])
+
+        write_response = client.patch(
+            f"{SERVICE_API_BASE_PATH}/config",
+            json={"config": {"theme": "Dark"}},
+        )
+        self.assertEqual(403, write_response.status_code)
+        self.assertIn("Write endpoints require", write_response.json()["detail"])
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_standalone_service_api_write_routes_require_token(self):
+        app = create_service_api_app(
+            service=TradingBotService(),
+            host_context="standalone-service",
+            host_owner="service-process",
+            api_token="",
+        )
+        client = _create_test_client(app)
+
+        read_response = client.get(f"{SERVICE_API_BASE_PATH}/dashboard")
+        self.assertEqual(200, read_response.status_code)
+        self.assertTrue(read_response.json()["service_api"]["write_auth_required"])
+
+        write_response = client.post(
+            f"{SERVICE_API_BASE_PATH}/logs",
+            json={"message": "write attempt"},
+        )
+        self.assertEqual(403, write_response.status_code)
+        self.assertIn("Write endpoints require", write_response.json()["detail"])
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_reports_unsafe_escape_hatches_in_metadata(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES": "1",
+                "BOT_SERVICE_CONFIG_ALLOW_INLINE_SECRETS": "1",
+                "BOT_SERVICE_CONFIG_ALLOW_UNSAFE_PATH": "1",
+            },
+            clear=False,
+        ):
+            app = create_service_api_app(service=TradingBotService(), api_token="")
+            client = _create_test_client(app)
+            response = client.get("/health")
+
+        self.assertEqual(200, response.status_code)
+        service_api = response.json()["service_api"]
+        security = service_api["security"]
+        self.assertTrue(service_api["unsafe_flags_active"])
+        self.assertFalse(service_api["write_auth_required"])
+        self.assertTrue(security["unauthenticated_writes_allowed"])
+        self.assertTrue(security["inline_config_secrets_allowed"])
+        self.assertTrue(security["unsafe_config_paths_allowed"])
+        self.assertIn("BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES", " ".join(security["warnings"]))
+        self.assertEqual("BOT_SERVICE_API_MAX_REQUEST_BYTES", service_api["limits"]["env_vars"]["max_request_bytes"])
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_rejects_oversized_request_bodies(self):
+        with mock.patch.dict("os.environ", {"BOT_SERVICE_API_MAX_REQUEST_BYTES": "64"}, clear=False):
+            app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+            client = _create_test_client(app)
+            response = client.post(
+                f"{SERVICE_API_BASE_PATH}/logs",
+                headers={"Authorization": "Bearer token-123"},
+                json={"message": "x" * 200},
+            )
+
+        self.assertEqual(413, response.status_code)
+        self.assertIn("too large", response.json()["detail"])
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_service_api_can_rate_limit_write_routes(self):
+        with mock.patch.dict("os.environ", {"BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE": "1"}, clear=False):
+            app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+            client = _create_test_client(app)
+            headers = {"Authorization": "Bearer token-123"}
+
+            first = client.post(
+                f"{SERVICE_API_BASE_PATH}/logs",
+                headers=headers,
+                json={"message": "first"},
+            )
+            second = client.post(
+                f"{SERVICE_API_BASE_PATH}/logs",
+                headers=headers,
+                json={"message": "second"},
+            )
+
+        self.assertEqual(200, first.status_code)
+        self.assertEqual(429, second.status_code)
+        self.assertEqual("60", second.headers.get("retry-after"))
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
+    def test_desktop_embedded_service_api_write_routes_accept_bearer_token(self):
+        app = create_service_api_app(
+            service=TradingBotService(),
+            host_context="desktop-embedded",
+            host_owner="desktop-gui",
+            api_token="token-123",
+        )
+        client = _create_test_client(app)
+
+        unauthorized = client.patch(
+            f"{SERVICE_API_BASE_PATH}/config",
+            json={"config": {"theme": "Dark"}},
+        )
+        self.assertEqual(401, unauthorized.status_code)
+
+        authorized = client.patch(
+            f"{SERVICE_API_BASE_PATH}/config",
+            headers={"Authorization": "Bearer token-123"},
+            json={"config": {"theme": "Dark"}},
+        )
+        self.assertEqual(200, authorized.status_code)
+        self.assertEqual("Dark", authorized.json()["theme"])
+
+    @unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI optional dependencies are not installed")
     def test_service_api_stream_accepts_authorization_header(self):
         app = create_service_api_app(service=TradingBotService(), api_token="token-123")
         client = _create_test_client(app)
 
         unauthorized = client.get(f"{SERVICE_API_BASE_PATH}/stream/dashboard")
         self.assertEqual(401, unauthorized.status_code)
+
+        query_token = client.get(f"{SERVICE_API_BASE_PATH}/stream/dashboard?token=token-123&max_events=1")
+        self.assertEqual(401, query_token.status_code)
 
         with client.stream(
             "GET",

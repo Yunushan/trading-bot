@@ -69,8 +69,12 @@ def place_spot_market_order(
         if step > 0:
             needed = self._ceil_to_step(needed, step)
         qty = max(needed, min_qty)
+    params = dict(symbol=sym, side=side.upper(), type="MARKET", quantity=str(qty))
     try:
-        res = self.client.create_order(symbol=sym, side=side.upper(), type="MARKET", quantity=str(qty))
+        guard = getattr(self, "_guard_live_order_submit", None)
+        if callable(guard):
+            guard(market="spot", params=params, source="place_spot_market_order")
+        res = self.client.create_order(**params)
         return {
             "ok": True,
             "info": res,

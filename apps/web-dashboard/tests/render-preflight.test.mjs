@@ -318,3 +318,65 @@ test("control-plane lifecycle summaries distinguish desktop, heartbeat-only, and
   assert.match(element("control-mode-hint").textContent, /recorded until a real execution adapter/);
   assert.equal(element("mark-running-button").style.display, "");
 });
+
+test("exchange connector render surfaces unsupported exchange state", () => {
+  renderDashboardSnapshot({
+    status: {
+      connector_health: "error",
+      selected_exchange: "Kraken",
+    },
+    operational: {
+      exchange_connector: {
+        health: "error",
+        state: "unsupported_exchange",
+        selected_exchange: "Kraken",
+        connector_backend: "kraken-rest",
+        generated_at: "2026-05-11T00:00:00+00:00",
+        support: {
+          trading_supported: false,
+          unsupported_reasons: ["Exchange 'Kraken' is not implemented by this runtime."],
+        },
+        attention: ["Exchange 'Kraken' is not implemented by this runtime."],
+      },
+    },
+  });
+
+  assert.equal(element("connector-health").textContent, "Error");
+  assert.equal(element("connector-state").textContent, "Unsupported Exchange");
+  assert.equal(element("connector-backend").textContent, "Kraken / kraken-rest");
+  assert.match(element("connector-support").textContent, /Unsupported: Exchange 'Kraken'/);
+  assert.match(element("connector-message").textContent, /Kraken/);
+});
+
+test("config render surfaces advisory-only LLM execution boundary", () => {
+  renderDashboardSnapshot({
+    config: {
+      mode: "Demo/Testnet",
+      account_type: "Futures",
+      symbols: ["BTCUSDT"],
+      intervals: ["1h"],
+      api_credentials_present: false,
+      llm: {
+        enabled: true,
+        provider_label: "Local / Custom OpenAI-Compatible",
+        model: "qwen3:8b",
+        mode: "local",
+        reasoning_effort: "default",
+        catalog_revision: "2026-05-11",
+        catalog_path: "~/.trading-bot/llm-models.json",
+        execution_policy: {
+          advisory_only: true,
+          can_execute_orders: false,
+        },
+      },
+    },
+  });
+
+  assert.equal(element("llm-enabled").textContent, "Enabled");
+  assert.match(element("llm-enabled").className, /\bok\b/);
+  assert.equal(element("llm-provider").textContent, "Local / Custom OpenAI-Compatible");
+  assert.equal(element("llm-model").textContent, "qwen3:8b");
+  assert.equal(element("llm-execution").textContent, "Advisory Only");
+  assert.match(element("llm-message").textContent, /cannot submit orders/);
+  assert.equal(element("llm-catalog").textContent, "2026-05-11");
+});

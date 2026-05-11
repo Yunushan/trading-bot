@@ -44,6 +44,7 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual("", config["live_trading_acknowledgement"])
         self.assertEqual(20, config["live_trading_max_leverage"])
         self.assertEqual(10.0, config["live_trading_max_position_pct"])
+        self.assertFalse(config["live_allow_auto_bump_to_min_order"])
         self.assertTrue(config["order_audit_enabled"])
         self.assertEqual("", config["order_audit_log_path"])
         self.assertEqual(10 * 1024 * 1024, config["order_audit_max_bytes"])
@@ -69,7 +70,16 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual(["1m"], validated["intervals"])
         self.assertEqual(1, validated["leverage"])
         self.assertEqual(2.0, validated["position_pct"])
+        self.assertFalse(validated["live_allow_auto_bump_to_min_order"])
         self.assertIsNone(validated["lead_trader_profile"])
+
+    def test_runtime_validation_accepts_live_auto_bump_opt_in(self):
+        config = build_default_config()
+        config["live_allow_auto_bump_to_min_order"] = True
+
+        validated = validate_runtime_config(config)
+
+        self.assertTrue(validated["live_allow_auto_bump_to_min_order"])
 
     def test_runtime_validation_rejects_unknown_config_keys(self):
         config = build_default_config()
@@ -132,6 +142,7 @@ class SettingsDefaultsTests(unittest.TestCase):
         config.update(
             {
                 "live_trading_enabled": "sometimes",
+                "live_allow_auto_bump_to_min_order": "sometimes",
                 "lead_trader_enabled": 2,
                 "llm_enabled": "maybe",
                 "llm_allow_public_network": "later",
@@ -146,6 +157,7 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         fields = {issue.field for issue in caught.exception.issues}
         self.assertIn("live_trading_enabled", fields)
+        self.assertIn("live_allow_auto_bump_to_min_order", fields)
         self.assertIn("lead_trader_enabled", fields)
         self.assertIn("llm_enabled", fields)
         self.assertIn("llm_allow_public_network", fields)

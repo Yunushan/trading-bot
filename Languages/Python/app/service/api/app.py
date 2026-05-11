@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -29,6 +31,10 @@ if __package__ in (None, ""):
         validate_bearer_token,
         validate_service_api_exposure,
     )
+    from app.service.config_store import (
+        SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV,
+        SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
+    )
     from app.service.runtime import TradingBotService
     from app.settings import ConfigValidationError
 else:
@@ -48,12 +54,16 @@ else:
         validate_bearer_token,
         validate_service_api_exposure,
     )
+    from ..config_store import (
+        SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV,
+        SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
+    )
     from ..runtime import TradingBotService
     from ...settings import ConfigValidationError
 
 try:
-    from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, status
-    from fastapi.responses import RedirectResponse, StreamingResponse
+    from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
+    from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 
@@ -68,6 +78,10 @@ except Exception as exc:  # pragma: no cover - handled via runtime check
 _HTTP_422_UNPROCESSABLE_CONTENT = (
     getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422) if FASTAPI_AVAILABLE else 422
 )
+SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV = "BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES"
+SERVICE_API_MAX_REQUEST_BYTES_ENV = "BOT_SERVICE_API_MAX_REQUEST_BYTES"
+SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV = "BOT_SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE"
+DEFAULT_SERVICE_API_MAX_REQUEST_BYTES = 1_048_576
 
 
 def _require_fastapi() -> None:
@@ -120,6 +134,7 @@ if FASTAPI_AVAILABLE:
     class ConfigPersistenceRequest(BaseModel):
         path: str | None = None
         source: str = "api"
+        allow_unsafe_path: bool = False
 
 
     class LogEventRequest(BaseModel):
@@ -200,8 +215,15 @@ def create_service_api_app(
     if enable_local_executor:
         try:
             service_instance.enable_local_executor()
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                service_instance.record_log_event(
+                    f"Local service executor attach failed: {exc}",
+                    source="service-api",
+                    level="warning",
+                )
+            except Exception:
+                raise RuntimeError(f"Local service executor attach failed: {exc}") from exc
     app = FastAPI(
         title=SERVICE_API_TITLE,
         version=SERVICE_API_VERSION,
@@ -218,6 +240,7 @@ def create_service_api_app(
     app.state.service_api_base_path = SERVICE_API_BASE_PATH
     app.state.service_api_legacy_base_path = SERVICE_API_LEGACY_BASE_PATH
     app.state.service_api_stream_path = SERVICE_API_STREAM_DASHBOARD_PATH
+    app.state.service_api_rate_limit_windows = {}
 
     def _service() -> TradingBotService:
         return app.state.service
@@ -227,6 +250,7 @@ def create_service_api_app(
         control_plane = descriptor.get("control_plane") if isinstance(descriptor, dict) else {}
         if not isinstance(control_plane, dict):
             control_plane = {}
+        security = _unsafe_runtime_flags()
         return {
             "version": app.state.service_api_version,
             "api_base_path": app.state.service_api_base_path,
@@ -235,10 +259,14 @@ def create_service_api_app(
             "host_context": app.state.service_api_host_context,
             "host_owner": app.state.service_api_host_owner,
             "auth_required": auth_required(app.state.api_token),
+            "write_auth_required": _write_auth_required(),
             "web_ui_available": app.state.web_ui_available,
             "sse_available": bool(app.state.service_api_streaming),
             "execution_scope": control_plane.get("execution_scope", ""),
             "trading_execution_supported": bool(control_plane.get("trading_execution_supported", False)),
+            "unsafe_flags_active": bool(security["unsafe_flags_active"]),
+            "security": security,
+            "limits": _service_api_limits(),
         }
 
     def _health_payload() -> dict[str, object]:
@@ -273,12 +301,151 @@ def create_service_api_app(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    def _require_stream_auth(token: str | None = None, authorization: str | None = None) -> None:
+    def _require_stream_auth(authorization: str | None = None) -> None:
         if not auth_required(app.state.api_token):
             return
         if validate_bearer_token(authorization, app.state.api_token):
             return
-        if validate_bearer_token(f"Bearer {token}" if token else None, app.state.api_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    def _env_flag(name: str, default: bool = False) -> bool:
+        raw = os.environ.get(name)
+        if raw in (None, ""):
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int = 1_000_000_000) -> int:
+        try:
+            value = int(float(str(os.environ.get(name) or "").strip()))
+        except Exception:
+            value = int(default)
+        return max(minimum, min(maximum, value))
+
+    def _max_request_bytes() -> int:
+        return _env_int(
+            SERVICE_API_MAX_REQUEST_BYTES_ENV,
+            DEFAULT_SERVICE_API_MAX_REQUEST_BYTES,
+            minimum=1,
+            maximum=100 * 1024 * 1024,
+        )
+
+    def _write_rate_limit_per_minute() -> int:
+        return _env_int(
+            SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV,
+            0,
+            minimum=0,
+            maximum=100_000,
+        )
+
+    def _service_api_limits() -> dict[str, object]:
+        return {
+            "max_request_bytes": _max_request_bytes(),
+            "write_rate_limit_per_minute": _write_rate_limit_per_minute(),
+            "env_vars": {
+                "max_request_bytes": SERVICE_API_MAX_REQUEST_BYTES_ENV,
+                "write_rate_limit_per_minute": SERVICE_API_WRITE_RATE_LIMIT_PER_MINUTE_ENV,
+            },
+            "cors_allowed_origins": [],
+        }
+
+    def _write_method(method: str) -> bool:
+        return str(method or "").upper() in {"POST", "PUT", "PATCH", "DELETE"}
+
+    @app.middleware("http")
+    async def _enforce_request_limits(request: Request, call_next):
+        max_request_bytes = _max_request_bytes()
+        content_length = request.headers.get("content-length")
+        if content_length not in (None, ""):
+            try:
+                request_bytes = int(content_length)
+            except Exception:
+                request_bytes = 0
+            if request_bytes > max_request_bytes:
+                return JSONResponse(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    content={
+                        "detail": (
+                            f"Request body is too large ({request_bytes} bytes). "
+                            f"Maximum allowed is {max_request_bytes} bytes."
+                        )
+                    },
+                )
+
+        rate_limit = _write_rate_limit_per_minute()
+        if rate_limit > 0 and _write_method(request.method):
+            client = request.client.host if request.client else "unknown"
+            key = f"{client}:{request.method}"
+            now = time.monotonic()
+            window = app.state.service_api_rate_limit_windows.get(key)
+            if not isinstance(window, dict) or now - float(window.get("started_at", 0.0) or 0.0) >= 60.0:
+                window = {"started_at": now, "count": 0}
+            window["count"] = int(window.get("count", 0) or 0) + 1
+            app.state.service_api_rate_limit_windows[key] = window
+            if int(window["count"]) > rate_limit:
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={
+                        "detail": (
+                            f"Write request rate limit exceeded. "
+                            f"Maximum is {rate_limit} write request(s) per minute."
+                        )
+                    },
+                    headers={"Retry-After": "60"},
+                )
+
+        return await call_next(request)
+
+    def _unsafe_runtime_flags() -> dict[str, object]:
+        unauthenticated_writes = _env_flag(SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV, False)
+        inline_config_secrets = _env_flag(SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV, False)
+        unsafe_config_paths = _env_flag(SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV, False)
+        warnings = []
+        if unauthenticated_writes:
+            warnings.append(
+                f"{SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV}=1 allows mutation routes without a bearer token."
+            )
+        if inline_config_secrets:
+            warnings.append(
+                f"{SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV}=1 allows plain-JSON secret persistence."
+            )
+        if unsafe_config_paths:
+            warnings.append(
+                f"{SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV}=1 allows config save/load outside the safe config directory."
+            )
+        return {
+            "unsafe_flags_active": bool(warnings),
+            "unauthenticated_writes_allowed": unauthenticated_writes,
+            "inline_config_secrets_allowed": inline_config_secrets,
+            "unsafe_config_paths_allowed": unsafe_config_paths,
+            "env_vars": {
+                "allow_unauthenticated_writes": SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV,
+                "allow_inline_config_secrets": SERVICE_CONFIG_ALLOW_INLINE_SECRETS_ENV,
+                "allow_unsafe_config_paths": SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
+            },
+            "warnings": warnings,
+        }
+
+    def _write_auth_required() -> bool:
+        if _env_flag(SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES_ENV, False):
+            return False
+        return True
+
+    def _require_write_api_auth(authorization: str | None = Header(default=None)):
+        if not _write_auth_required():
+            return
+        if not auth_required(app.state.api_token):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Write endpoints require BOT_SERVICE_API_TOKEN or --api-token. "
+                    "Set BOT_SERVICE_API_ALLOW_UNAUTHENTICATED_WRITES=1 only for trusted local development."
+                ),
+            )
+        if validate_bearer_token(authorization, app.state.api_token):
             return
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -340,7 +507,7 @@ def create_service_api_app(
     def get_config():
         return _service().get_config_payload().to_dict()
 
-    @api_router.put("/config")
+    @api_router.put("/config", dependencies=[Depends(_require_write_api_auth)])
     def replace_config(payload: ConfigReplaceRequest):
         try:
             _service().replace_config(payload.config)
@@ -348,7 +515,7 @@ def create_service_api_app(
             _raise_config_validation_error(exc)
         return _service().get_config_payload().to_dict()
 
-    @api_router.patch("/config")
+    @api_router.patch("/config", dependencies=[Depends(_require_write_api_auth)])
     def update_config(payload: ConfigReplaceRequest):
         try:
             return _service().update_config(payload.config).to_dict()
@@ -359,24 +526,36 @@ def create_service_api_app(
     def get_config_persistence():
         return _service().get_config_persistence_status()
 
-    @api_router.post("/config/save")
+    @api_router.post("/config/save", dependencies=[Depends(_require_write_api_auth)])
     def save_config(payload: ConfigPersistenceRequest):
         try:
-            return _service().save_config(path=payload.path, source=payload.source)
+            return _service().save_config(
+                path=payload.path,
+                source=payload.source,
+                allow_unsafe_path=payload.allow_unsafe_path,
+            )
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(exc),
             ) from exc
 
-    @api_router.post("/config/load")
+    @api_router.post("/config/load", dependencies=[Depends(_require_write_api_auth)])
     def load_config(payload: ConfigPersistenceRequest):
         try:
-            return _service().load_config(path=payload.path, source=payload.source)
+            return _service().load_config(
+                path=payload.path,
+                source=payload.source,
+                allow_unsafe_path=payload.allow_unsafe_path,
+            )
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except (json.JSONDecodeError, ValueError) as exc:
@@ -385,7 +564,7 @@ def create_service_api_app(
                 detail=str(exc),
             ) from exc
 
-    @api_router.put("/runtime/state")
+    @api_router.put("/runtime/state", dependencies=[Depends(_require_write_api_auth)])
     def set_runtime_state(payload: RuntimeStateRequest):
         result = _service().set_runtime_state(
             active=payload.active,
@@ -398,7 +577,7 @@ def create_service_api_app(
     def get_operational_preflight():
         return _service().get_operational_preflight()
 
-    @api_router.post("/control/start")
+    @api_router.post("/control/start", dependencies=[Depends(_require_write_api_auth)])
     def request_start(payload: StartControlRequest):
         result = _service().request_start(
             requested_job_count=payload.requested_job_count,
@@ -406,7 +585,7 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @api_router.post("/control/stop")
+    @api_router.post("/control/stop", dependencies=[Depends(_require_write_api_auth)])
     def request_stop(payload: StopControlRequest):
         result = _service().request_stop(
             close_positions=payload.close_positions,
@@ -414,7 +593,7 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @api_router.post("/backtest/run")
+    @api_router.post("/backtest/run", dependencies=[Depends(_require_write_api_auth)])
     def run_backtest(payload: BacktestRunRequest):
         result = _service().submit_backtest(
             payload.request if isinstance(payload.request, dict) else None,
@@ -422,12 +601,12 @@ def create_service_api_app(
         )
         return result.to_dict()
 
-    @api_router.post("/backtest/stop")
+    @api_router.post("/backtest/stop", dependencies=[Depends(_require_write_api_auth)])
     def stop_backtest(payload: BacktestStopRequest):
         result = _service().stop_backtest(source=payload.source)
         return result.to_dict()
 
-    @api_router.post("/control/start-failed")
+    @api_router.post("/control/start-failed", dependencies=[Depends(_require_write_api_auth)])
     def mark_start_failed(payload: StartFailureRequest):
         result = _service().mark_start_failed(
             reason=payload.reason,
@@ -439,7 +618,7 @@ def create_service_api_app(
     def get_account_snapshot():
         return _service().get_account_snapshot().to_dict()
 
-    @api_router.put("/account")
+    @api_router.put("/account", dependencies=[Depends(_require_write_api_auth)])
     def set_account_snapshot(payload: AccountSnapshotRequest):
         snapshot = _service().set_account_snapshot(
             total_balance=payload.total_balance,
@@ -452,7 +631,7 @@ def create_service_api_app(
     def get_portfolio_snapshot():
         return _service().get_portfolio_snapshot().to_dict()
 
-    @api_router.put("/portfolio")
+    @api_router.put("/portfolio", dependencies=[Depends(_require_write_api_auth)])
     def set_portfolio_snapshot(payload: PortfolioSnapshotRequest):
         snapshot = _service().set_portfolio_snapshot(
             open_position_records=payload.open_position_records,
@@ -472,7 +651,7 @@ def create_service_api_app(
     def get_exchange_connector_snapshot():
         return _service().get_exchange_connector_snapshot()
 
-    @api_router.put("/exchange/connector")
+    @api_router.put("/exchange/connector", dependencies=[Depends(_require_write_api_auth)])
     def set_exchange_connector_snapshot(payload: ExchangeConnectorSnapshotRequest):
         return _service().set_exchange_connector_snapshot(
             payload.snapshot if isinstance(payload.snapshot, dict) else {},
@@ -483,14 +662,14 @@ def create_service_api_app(
     def get_connector_order_circuit_breaker_snapshot():
         return _service().get_connector_order_circuit_breaker_snapshot()
 
-    @api_router.put("/runtime/connector-order-circuit-breaker")
+    @api_router.put("/runtime/connector-order-circuit-breaker", dependencies=[Depends(_require_write_api_auth)])
     def set_connector_order_circuit_breaker_snapshot(payload: ConnectorOrderCircuitBreakerSnapshotRequest):
         return _service().set_connector_order_circuit_breaker_snapshot(
             payload.snapshot if isinstance(payload.snapshot, dict) else {},
             source=payload.source,
         )
 
-    @api_router.post("/runtime/connector-order-circuit-breaker/reset")
+    @api_router.post("/runtime/connector-order-circuit-breaker/reset", dependencies=[Depends(_require_write_api_auth)])
     def reset_connector_order_circuit_breaker(payload: ConnectorOrderCircuitBreakerSnapshotRequest):
         return _service().reset_connector_order_circuit_breaker(
             source=payload.source,
@@ -505,7 +684,7 @@ def create_service_api_app(
     def get_recent_logs(limit: int = 100):
         return [item.to_dict() for item in _service().get_recent_logs(limit=limit)]
 
-    @api_router.post("/logs")
+    @api_router.post("/logs", dependencies=[Depends(_require_write_api_auth)])
     def record_log_event(payload: LogEventRequest):
         event = _service().record_log_event(
             payload.message,
@@ -514,7 +693,7 @@ def create_service_api_app(
         )
         return event.to_dict()
 
-    @api_router.post("/terminal/run")
+    @api_router.post("/terminal/run", dependencies=[Depends(_require_write_api_auth)])
     def run_terminal_command(payload: TerminalCommandRequest):
         result = _service().run_terminal_command(payload.command, source=payload.source)
         return result.to_dict()
@@ -527,14 +706,14 @@ def create_service_api_app(
     def get_llm_config():
         return _service().get_llm_config_payload()
 
-    @api_router.patch("/llm/config")
+    @api_router.patch("/llm/config", dependencies=[Depends(_require_write_api_auth)])
     def update_llm_config(payload: LLMConfigPatchRequest):
         try:
             return _service().update_llm_config(payload.config)
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
 
-    @api_router.post("/llm/prompt")
+    @api_router.post("/llm/prompt", dependencies=[Depends(_require_write_api_auth)])
     def run_llm_prompt(payload: LLMPromptRequest):
         return _service().call_llm(
             prompt=payload.prompt,
@@ -546,14 +725,13 @@ def create_service_api_app(
     @stream_router.get("/stream/dashboard")
     async def stream_dashboard(
         request: Request,
-        token: str | None = Query(default=None),
         authorization: str | None = Header(default=None),
         log_limit: int = 30,
         incident_limit: int = 20,
         interval_ms: int = 1000,
         max_events: int | None = None,
     ):
-        _require_stream_auth(token, authorization)
+        _require_stream_auth(authorization)
         stream_interval = max(250, int(interval_ms)) / 1000.0
         event_limit = None if max_events is None else max(1, int(max_events))
 

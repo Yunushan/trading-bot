@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "test": "node tests/render-preflight.test.mjs && node tests/auth-storage-stream.test.mjs && node tests/service-contract.test.mjs"
   }

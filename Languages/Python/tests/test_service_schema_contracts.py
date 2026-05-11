@@ -189,6 +189,8 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertIn("qwen3-max", editable["llm"]["model_suggestions"])
         self.assertEqual("high", editable["llm"]["reasoning_effort"])
         self.assertIn("medium", editable["llm"]["reasoning_efforts"])
+        self.assertTrue(editable["exchange_support"]["trading_supported"])
+        self.assertIn("Binance", editable["exchange_support"]["supported_exchanges"])
         self.assertEqual(2, summary["symbol_count"])
         self.assertEqual(1, summary["interval_count"])
         self.assertEqual(2, summary["enabled_indicator_count"])
@@ -226,6 +228,29 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertEqual("auth_error", snapshot["state"])
         self.assertEqual("Binance", snapshot["selected_exchange"])
         self.assertEqual("python-binance", snapshot["connector_backend"])
+        self.assertTrue(snapshot["support"]["trading_supported"])
         self.assertIn("<redacted>", snapshot["last_error"]["message"])
         self.assertNotIn("exchange-secret", snapshot["last_error"]["message"])
         self.assertNotIn("order-signature", snapshot["last_error"]["message"])
+
+    def test_exchange_connector_snapshot_marks_unsupported_exchange_and_broker(self):
+        snapshot = build_exchange_connector_snapshot(
+            config={
+                "selected_exchange": "Kraken",
+                "connector_backend": "kraken-rest",
+                "selected_forex_broker": "MetaTrader",
+                "account_type": "Futures",
+                "mode": "Demo/Testnet",
+            },
+            snapshot={"health": "ok", "state": "ready"},
+            source="unit-test",
+        )
+
+        self.assertEqual("error", snapshot["health"])
+        self.assertEqual("unsupported_exchange", snapshot["state"])
+        self.assertFalse(snapshot["support"]["exchange_supported"])
+        self.assertFalse(snapshot["support"]["connector_backend_supported"])
+        self.assertFalse(snapshot["support"]["broker_supported"])
+        self.assertFalse(snapshot["support"]["trading_supported"])
+        self.assertIn("Exchange 'Kraken' is not implemented", snapshot["attention"][0])
+        self.assertIn("Binance", snapshot["support"]["supported_exchanges"])
