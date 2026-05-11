@@ -192,7 +192,10 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             self.assertEqual(200, patch_response.status_code)
             self.assertFalse(path.exists())
 
-            status_response = client.get(f"{SERVICE_API_BASE_PATH}/config/persistence")
+            status_response = client.get(
+                f"{SERVICE_API_BASE_PATH}/config/persistence",
+                headers=headers,
+            )
             self.assertEqual(200, status_response.status_code)
             self.assertTrue(status_response.json()["dirty"])
 
