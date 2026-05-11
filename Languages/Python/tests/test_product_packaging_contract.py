@@ -52,6 +52,18 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('$env:BOT_DISABLE_PUBLIC_SHELL_SHORTCUT_LAUNCH = "1"', script)
         self.assertIn("PyInstaller failed with exit code", script)
 
+    def test_windows_cpp_dependency_installer_passes_bootstrap_args_separately(self):
+        script = (REPO_ROOT / "experiments" / "native-cpp" / "tools" / "install_cpp_dependencies.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('$PSStyle.OutputRendering = "PlainText"', script)
+        self.assertIn(
+            'Invoke-Checked -Label "Bootstrapping vcpkg" -Command @((Join-Path $localVcpkg "bootstrap-vcpkg.bat"), "-disableMetrics")',
+            script,
+        )
+        self.assertNotIn('Join-Path $localVcpkg "bootstrap-vcpkg.bat", "-disableMetrics"', script)
+
     def test_unix_build_script_targets_canonical_desktop_wrapper(self):
         script = (REPO_ROOT / "Languages" / "Python" / "tools" / "build_binary.sh").read_text(encoding="utf-8")
         self.assertIn('DESKTOP_ENTRY_SCRIPT="${REPO_ROOT}/apps/desktop-pyqt/main.py"', script)

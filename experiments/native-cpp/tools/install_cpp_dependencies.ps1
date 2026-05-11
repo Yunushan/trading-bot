@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($null -ne (Get-Variable -Name PSStyle -ValueOnly -ErrorAction SilentlyContinue)) {
+  $PSStyle.OutputRendering = "PlainText"
+}
 
 function Invoke-Checked {
   param(
@@ -154,7 +157,7 @@ Invoke-Checked -Label "Checking out pinned vcpkg ref $VcpkgRef" -Command @("git"
 Write-Host "Using pinned vcpkg ref: $VcpkgRef"
 Pop-Location
 
-Invoke-Checked -Label "Bootstrapping vcpkg" -Command @(Join-Path $localVcpkg "bootstrap-vcpkg.bat", "-disableMetrics")
+Invoke-Checked -Label "Bootstrapping vcpkg" -Command @((Join-Path $localVcpkg "bootstrap-vcpkg.bat"), "-disableMetrics")
 
 $vcpkgExe = Join-Path $localVcpkg "vcpkg.exe"
 $ports = @(
