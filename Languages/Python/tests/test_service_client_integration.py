@@ -55,11 +55,13 @@ sys.meta_path.insert(0, BlockOptionalClients())
 
 from app.core.backtest import normalize_backtest_interval
 from app.integrations.llm import build_llm_config_payload
+from app.service.api.app import create_service_api_app
 from app.service.runtime import TradingBotService
 from app.service.schemas.backtest import build_backtest_snapshot
 
 service = TradingBotService()
 assert service.get_config_summary().mode == "Demo/Testnet"
+assert create_service_api_app is not None
 assert normalize_backtest_interval("1 minute") == "1m"
 assert build_llm_config_payload({})["provider"] == "openai"
 assert build_backtest_snapshot(intervals=["1 minute"]).to_dict()["intervals"] == ["1m"]

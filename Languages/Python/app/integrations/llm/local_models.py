@@ -7,7 +7,10 @@ import subprocess
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-import requests
+try:
+    import requests as _requests
+except ImportError:  # pragma: no cover - exercised by lean CI smoke environments
+    _requests = None
 
 
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
@@ -76,6 +79,28 @@ class LocalModelServerStartResult:
 
 def _join_url(base_url: str, path: str) -> str:
     return f"{str(base_url or '').rstrip('/')}/{str(path or '').lstrip('/')}"
+
+
+def _requests_dependency_error(action: str) -> RuntimeError:
+    return RuntimeError(f"requests is not installed; install the Python service dependencies to {action}.")
+
+
+def _default_request_get(*args: Any, **kwargs: Any) -> Any:
+    if _requests is None:
+        raise _requests_dependency_error("check local LLM model status")
+    return _requests.get(*args, **kwargs)
+
+
+def _default_request_post(*args: Any, **kwargs: Any) -> Any:
+    if _requests is None:
+        raise _requests_dependency_error("download local LLM models")
+    return _requests.post(*args, **kwargs)
+
+
+def _default_request_delete(*args: Any, **kwargs: Any) -> Any:
+    if _requests is None:
+        raise _requests_dependency_error("remove local LLM models")
+    return _requests.delete(*args, **kwargs)
 
 
 def _server_kind(base_url: str) -> str:
@@ -181,7 +206,7 @@ def get_local_model_status(
     model: str,
     *,
     timeout: float = 3.0,
-    request_get: Callable[..., Any] = requests.get,
+    request_get: Callable[..., Any] = _default_request_get,
     command_finder: Callable[[str], str | None] = shutil.which,
 ) -> LocalModelStatus:
     clean_base_url = str(base_url or "").strip()
@@ -276,7 +301,7 @@ def pull_ollama_model(
     model: str,
     *,
     timeout: float = 1800.0,
-    request_post: Callable[..., Any] = requests.post,
+    request_post: Callable[..., Any] = _default_request_post,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     cancel_callback: Callable[[], bool] | None = None,
 ) -> None:
@@ -336,7 +361,7 @@ def delete_ollama_model(
     model: str,
     *,
     timeout: float = 60.0,
-    request_delete: Callable[..., Any] = requests.delete,
+    request_delete: Callable[..., Any] = _default_request_delete,
 ) -> None:
     clean_model = str(model or "").strip()
     if not clean_model:
