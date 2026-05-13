@@ -38,6 +38,10 @@
     "llm_providers": "/llm/providers",
     "llm_config": "/llm/config",
     "llm_prompt": "/llm/prompt",
+    "llm_local_model_status": "/llm/local-model/status",
+    "llm_local_model_start": "/llm/local-model/start",
+    "llm_local_model_pull": "/llm/local-model/pull",
+    "llm_local_model_delete": "/llm/local-model/delete",
     "stream_dashboard": "/stream/dashboard"
   },
   "route_paths": {
@@ -69,6 +73,10 @@
     "llm_providers": "/api/v1/llm/providers",
     "llm_config": "/api/v1/llm/config",
     "llm_prompt": "/api/v1/llm/prompt",
+    "llm_local_model_status": "/api/v1/llm/local-model/status",
+    "llm_local_model_start": "/api/v1/llm/local-model/start",
+    "llm_local_model_pull": "/api/v1/llm/local-model/pull",
+    "llm_local_model_delete": "/api/v1/llm/local-model/delete",
     "stream_dashboard": "/api/v1/stream/dashboard"
   },
   "legacy_route_paths": {
@@ -100,38 +108,120 @@
     "llm_providers": "/api/llm/providers",
     "llm_config": "/api/llm/config",
     "llm_prompt": "/api/llm/prompt",
+    "llm_local_model_status": "/api/llm/local-model/status",
+    "llm_local_model_start": "/api/llm/local-model/start",
+    "llm_local_model_pull": "/api/llm/local-model/pull",
+    "llm_local_model_delete": "/api/llm/local-model/delete",
     "stream_dashboard": "/api/stream/dashboard"
   },
   "route_methods": {
-    "runtime": ["GET"],
-    "dashboard": ["GET"],
-    "status": ["GET"],
-    "execution": ["GET"],
-    "backtest": ["GET"],
-    "config_summary": ["GET"],
-    "config": ["GET", "PUT", "PATCH"],
-    "config_persistence": ["GET"],
-    "config_save": ["POST"],
-    "config_load": ["POST"],
-    "runtime_state": ["PUT"],
-    "operational_preflight": ["GET"],
-    "control_start": ["POST"],
-    "control_stop": ["POST"],
-    "control_start_failed": ["POST"],
-    "connector_order_circuit_breaker": ["GET", "PUT"],
-    "connector_order_circuit_breaker_reset": ["POST"],
-    "connector_order_circuit_incidents": ["GET"],
-    "backtest_run": ["POST"],
-    "backtest_stop": ["POST"],
-    "account": ["GET", "PUT"],
-    "portfolio": ["GET", "PUT"],
-    "exchange_connector": ["GET", "PUT"],
-    "logs": ["GET", "POST"],
-    "terminal_run": ["POST"],
-    "llm_providers": ["GET"],
-    "llm_config": ["GET", "PATCH"],
-    "llm_prompt": ["POST"],
-    "stream_dashboard": ["GET"]
+    "runtime": [
+      "GET"
+    ],
+    "dashboard": [
+      "GET"
+    ],
+    "status": [
+      "GET"
+    ],
+    "execution": [
+      "GET"
+    ],
+    "backtest": [
+      "GET"
+    ],
+    "config_summary": [
+      "GET"
+    ],
+    "config": [
+      "GET",
+      "PUT",
+      "PATCH"
+    ],
+    "config_persistence": [
+      "GET"
+    ],
+    "config_save": [
+      "POST"
+    ],
+    "config_load": [
+      "POST"
+    ],
+    "runtime_state": [
+      "PUT"
+    ],
+    "operational_preflight": [
+      "GET"
+    ],
+    "control_start": [
+      "POST"
+    ],
+    "control_stop": [
+      "POST"
+    ],
+    "control_start_failed": [
+      "POST"
+    ],
+    "connector_order_circuit_breaker": [
+      "GET",
+      "PUT"
+    ],
+    "connector_order_circuit_breaker_reset": [
+      "POST"
+    ],
+    "connector_order_circuit_incidents": [
+      "GET"
+    ],
+    "backtest_run": [
+      "POST"
+    ],
+    "backtest_stop": [
+      "POST"
+    ],
+    "account": [
+      "GET",
+      "PUT"
+    ],
+    "portfolio": [
+      "GET",
+      "PUT"
+    ],
+    "exchange_connector": [
+      "GET",
+      "PUT"
+    ],
+    "logs": [
+      "GET",
+      "POST"
+    ],
+    "terminal_run": [
+      "POST"
+    ],
+    "llm_providers": [
+      "GET"
+    ],
+    "llm_config": [
+      "GET",
+      "PATCH"
+    ],
+    "llm_prompt": [
+      "POST"
+    ],
+    "llm_local_model_status": [
+      "GET"
+    ],
+    "llm_local_model_start": [
+      "POST"
+    ],
+    "llm_local_model_pull": [
+      "POST"
+    ],
+    "llm_local_model_delete": [
+      "POST"
+    ],
+    "stream_dashboard": [
+      "GET"
+    ]
   },
   "dashboard_required_routes": [
     "dashboard",

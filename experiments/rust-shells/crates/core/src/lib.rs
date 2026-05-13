@@ -52,9 +52,28 @@ pub struct RustExecutionMode {
     pub trading_execution_supported: bool,
 }
 
+pub struct RustShellFrameworkParity {
+    pub framework: &'static str,
+    pub status: &'static str,
+    pub detail: &'static str,
+}
+
+pub struct RustNativeRuntimeCapability {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub cpp_status: &'static str,
+    pub rust_status: &'static str,
+    pub required_before_enable: &'static str,
+    pub trading_execution_supported: bool,
+}
+
 pub const SERVICE_API_BASE_PATH: &str = "/api/v1";
 
 pub fn rust_trading_execution_supported() -> bool {
+    false
+}
+
+pub fn rust_native_trading_runtime_ready() -> bool {
     false
 }
 
@@ -81,6 +100,89 @@ pub fn rust_execution_modes() -> &'static [RustExecutionMode] {
     ]
 }
 
+pub fn rust_shell_framework_parity() -> &'static [RustShellFrameworkParity] {
+    &[
+        RustShellFrameworkParity {
+            framework: "Tauri",
+            status: "Full interactive Rust desktop client",
+            detail: "Runs the operational HTML shell with live Service API start/stop, dashboard/config hydration, backtest scanner, dashboard import, logs, and local LLM model lifecycle controls.",
+        },
+        RustShellFrameworkParity {
+            framework: "Slint",
+            status: "Native parity surface",
+            detail: "Mirrors the Python/C++ tab, control, table, route, framework, and execution-boundary map for native UI evaluation; trading execution still goes through the Python Service API.",
+        },
+        RustShellFrameworkParity {
+            framework: "egui",
+            status: "Shared-catalog parity surface",
+            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core.",
+        },
+        RustShellFrameworkParity {
+            framework: "Iced",
+            status: "Shared-catalog parity surface",
+            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core.",
+        },
+        RustShellFrameworkParity {
+            framework: "Dioxus Desktop",
+            status: "Shared-catalog parity surface",
+            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core.",
+        },
+    ]
+}
+
+pub fn rust_native_runtime_capabilities() -> &'static [RustNativeRuntimeCapability] {
+    &[
+        RustNativeRuntimeCapability {
+            key: "market_data_rest",
+            title: "REST market data",
+            cpp_status: "C++ has BinanceRestClient fetchUsdtSymbols, fetchKlines, and fetchTickerPrice.",
+            rust_status: "Rust shells do not have a native exchange REST client; they request market data through the Python Service API.",
+            required_before_enable: "Add typed Rust exchange REST clients, timeout/error contracts, symbol filtering, interval mapping, and parity tests against Python/C++ behavior.",
+            trading_execution_supported: false,
+        },
+        RustNativeRuntimeCapability {
+            key: "market_data_websocket",
+            title: "WebSocket market stream",
+            cpp_status: "C++ has BinanceWsClient connectBookTicker/connectKline plus dashboardRuntimeSignalSockets and candle caches.",
+            rust_status: "Rust has no native book ticker or kline WebSocket runtime.",
+            required_before_enable: "Add supervised Rust stream clients, reconnect/backoff, candle cache reconciliation, and stale-feed guards before live signal evaluation.",
+            trading_execution_supported: false,
+        },
+        RustNativeRuntimeCapability {
+            key: "account_positions",
+            title: "Account, balance, and positions",
+            cpp_status: "C++ can fetch USDT balance and open futures positions and reconcile them into the positions table.",
+            rust_status: "Rust positions UI is a Service API/client surface with no native account snapshot path.",
+            required_before_enable: "Add signed account clients, balance/position DTOs, hedge and one-way mode handling, and live/simulated reconciliation tests.",
+            trading_execution_supported: false,
+        },
+        RustNativeRuntimeCapability {
+            key: "order_submission",
+            title: "Order submission",
+            cpp_status: "C++ has placeFuturesMarketOrder/placeFuturesLimitOrder and dashboard open/close fallback helpers.",
+            rust_status: "Rust intentionally exposes no native order submit path.",
+            required_before_enable: "Implement order intent validation, reduce-only/close-position rules, precision filters, signed request fallback, dry-run mode, and audit logs.",
+            trading_execution_supported: false,
+        },
+        RustNativeRuntimeCapability {
+            key: "runtime_lifecycle",
+            title: "Runtime lifecycle loop",
+            cpp_status: "C++ has startDashboardRuntime, runDashboardRuntimeCycle, stopDashboardRuntime, timer state, retry windows, and open-position tracking.",
+            rust_status: "Rust has desktop shell lifecycle only; Tauri may start/stop the Python Service API but not a Rust trading loop.",
+            required_before_enable: "Add an owned Rust runtime state machine with start/stop gates, idempotent shutdown, recovery after partial failures, and deterministic tests.",
+            trading_execution_supported: false,
+        },
+        RustNativeRuntimeCapability {
+            key: "risk_and_shutdown_guards",
+            title: "Risk and shutdown guards",
+            cpp_status: "C++ tracks stop-loss settings, quantity caps, retry-after windows, close-on-stop behavior, connector warnings, and forced close fallbacks.",
+            rust_status: "Rust mirrors the controls but has no native risk engine or close-all execution path.",
+            required_before_enable: "Port risk gates, stop-loss scopes, max exposure checks, close-all semantics, connector incident handling, and regression tests before enabling native trading.",
+            trading_execution_supported: false,
+        },
+    ]
+}
+
 pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
     &[
         ServiceApiCapability {
@@ -96,8 +198,20 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
             detail: "Tauri refreshes dashboard/config snapshots and hydrates visible runtime, account, stop-loss, LLM, symbol, interval, strategy, and backtest controls.",
         },
         ServiceApiCapability {
+            title: "Backtest Scanner & Dashboard Import",
+            detail: "Tauri can submit scanner backtests, poll until idle, select the best max-drawdown candidate, and import selected or all backtest rows into dashboard symbol/interval overrides.",
+        },
+        ServiceApiCapability {
+            title: "Local LLM Lifecycle",
+            detail: "Tauri checks local model status and can request Ollama start, model pull, and model delete through llm_local_model_status/start/pull/delete routes after user confirmation.",
+        },
+        ServiceApiCapability {
             title: "Execution Boundary",
             detail: "Python service/desktop runtime remains the trading execution owner; Rust shells are clients and must not bypass strategy, risk, or exchange guards.",
+        },
+        ServiceApiCapability {
+            title: "Native Runtime Gap",
+            detail: "C++ already has Binance REST/WebSocket and dashboard runtime experiments; Rust remains blocked from native trading until rust_native_runtime_capabilities are implemented and tested.",
         },
     ]
 }
@@ -179,6 +293,26 @@ pub fn service_api_routes() -> &'static [ServiceApiRoute] {
             path: "/api/v1/llm/providers",
             methods: &["GET"],
         },
+        ServiceApiRoute {
+            name: "llm_local_model_status",
+            path: "/api/v1/llm/local-model/status",
+            methods: &["GET"],
+        },
+        ServiceApiRoute {
+            name: "llm_local_model_start",
+            path: "/api/v1/llm/local-model/start",
+            methods: &["POST"],
+        },
+        ServiceApiRoute {
+            name: "llm_local_model_pull",
+            path: "/api/v1/llm/local-model/pull",
+            methods: &["POST"],
+        },
+        ServiceApiRoute {
+            name: "llm_local_model_delete",
+            path: "/api/v1/llm/local-model/delete",
+            methods: &["POST"],
+        },
     ]
 }
 
@@ -227,16 +361,17 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     items: &[
                         "Enable LLM assistance",
                         "Allow public network endpoint",
-                        "Provider:",
-                        "Model:",
+                        "Provider: OpenAI / ChatGPT, Anthropic Claude, Google Gemini, xAI Grok, Mistral AI, DeepSeek, Local / Custom OpenAI-Compatible",
+                        "Model: gpt-5.5, gpt-5.4, claude-sonnet, gemini, grok, mistral, deepseek, qwen3:8b, llama3.3, gemma3:4b",
                         "Base URL / IP:",
                         "API key env:",
                         "API token:",
                         "Use for: Advisory, Signal confirmation, Risk review, Backtest explanation",
                         "Reasoning / Thinking:",
                         "Apply LLM Settings",
-                        "Check / Download Local Model",
-                        "Remove Local Model",
+                        "Local model status",
+                        "Check / Download Local Model: starts Ollama when confirmed and pulls the selected local model when missing",
+                        "Remove Local Model: deletes the selected local model when confirmed",
                     ],
                 },
                 TradingAppSection {
@@ -301,7 +436,8 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Host: 127.0.0.1",
                         "Port: 8000",
                         "Token: Session only; not saved to app state",
-                        "Start API",
+                        "Start / Connect API",
+                        "Stop API",
                         "Open Dashboard",
                         "Service API: off",
                         "Preflight: unknown",
@@ -468,6 +604,9 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Leverage (Futures):",
                         "Template: Enable",
                         "Max MDD Scanner: Top N, Max MDD %, Scan Symbols",
+                        "Scanner status text",
+                        "Scanner best candidate summary",
+                        "Pair overrides: symbol, interval, indicators, strategy, connector, leverage, and stop-loss",
                     ],
                 },
                 TradingAppSection {
@@ -497,6 +636,8 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Stop",
                         "Add Selected to Dashboard",
                         "Add All to Dashboard",
+                        "Scanner submits request, polls until backtest idle, renders runs, and selects the best row under Max MDD %",
+                        "Dashboard import merges selected or all result rows into dashboard overrides without duplicates",
                         "Total PNL Active Positions: --",
                         "Total PNL Closed Positions: --",
                         "Bot Status: OFF",
@@ -602,11 +743,20 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                 TradingAppSection {
                     title: "Choose your Rust framework",
                     items: &[
-                        "Tauri - Desktop shell with web UI",
-                        "Slint - Native declarative desktop UI",
-                        "egui - Fast trader dashboard UI",
-                        "Iced - Pure Rust reactive desktop UI",
-                        "Dioxus Desktop - Rust component UI with desktop renderer",
+                        "Tauri - Full interactive Rust desktop client with managed local Service API",
+                        "Slint - Native parity surface for the same tab/control/route map",
+                        "egui - Shared-catalog parity surface from trading-bot-core",
+                        "Iced - Shared-catalog parity surface from trading-bot-core",
+                        "Dioxus Desktop - Shared-catalog parity surface from trading-bot-core",
+                    ],
+                },
+                TradingAppSection {
+                    title: "Native Rust Runtime Gap",
+                    items: &[
+                        "Native Rust trading runtime ready: false",
+                        "C++ has BinanceRestClient, BinanceWsClient, dashboard runtime lifecycle, positions sync, futures order submission, and risk/shutdown experiments",
+                        "Rust currently has Service API clients, tab/catalog parity, LLM/provider catalogs, and desktop shells",
+                        "Before enabling Rust native trading: add REST market data, WebSocket streams, signed account/position snapshots, order submission, runtime lifecycle, and risk/shutdown guards",
                     ],
                 },
                 TradingAppSection {
@@ -640,6 +790,7 @@ pub struct LlmProviderOption {
     pub label: &'static str,
     pub mode: &'static str,
     pub default_base_url: &'static str,
+    pub default_model: &'static str,
     pub api_key_env: &'static str,
     pub model_suggestions: &'static [&'static str],
     pub reasoning_efforts: &'static [&'static str],
@@ -652,12 +803,21 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             label: "OpenAI / ChatGPT",
             mode: "cloud",
             default_base_url: "https://api.openai.com/v1",
+            default_model: "gpt-5.5",
             api_key_env: "OPENAI_API_KEY",
             model_suggestions: &[
                 "gpt-5.5",
+                "gpt-5.5-2026-04-23",
+                "gpt-5.5-pro",
+                "gpt-5.5-pro-2026-04-23",
                 "gpt-5.4",
+                "gpt-5.4-2026-03-05",
+                "gpt-5.4-pro",
+                "gpt-5.4-pro-2026-03-05",
                 "gpt-5.4-mini",
+                "gpt-5.4-mini-2026-03-17",
                 "gpt-5.4-nano",
+                "gpt-5.4-nano-2026-03-17",
                 "gpt-5.3-chat-latest",
                 "gpt-5.3-codex",
                 "gpt-5.2",
@@ -668,6 +828,9 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
                 "gpt-5-codex",
                 "gpt-5-mini",
                 "gpt-5-nano",
+                "gpt-4.1",
+                "gpt-4.1-mini",
+                "gpt-4.1-nano",
             ],
             reasoning_efforts: &[
                 "default", "none", "minimal", "low", "medium", "high", "xhigh",
@@ -678,15 +841,18 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             label: "Anthropic Claude",
             mode: "cloud",
             default_base_url: "https://api.anthropic.com",
+            default_model: "claude-sonnet-4-5-20250929",
             api_key_env: "ANTHROPIC_API_KEY",
             model_suggestions: &[
                 "claude-sonnet-4-5-20250929",
                 "claude-haiku-4-5-20251001",
+                "claude-opus-4-5-20251101",
                 "claude-opus-4-1-20250805",
                 "claude-opus-4-20250514",
                 "claude-sonnet-4-20250514",
                 "claude-sonnet-4-5",
                 "claude-haiku-4-5",
+                "claude-opus-4-5",
                 "claude-opus-4-1",
                 "claude-opus-4-0",
                 "claude-sonnet-4-0",
@@ -698,13 +864,18 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             label: "Google Gemini",
             mode: "cloud",
             default_base_url: "https://generativelanguage.googleapis.com/v1beta",
+            default_model: "gemini-3-flash-preview",
             api_key_env: "GEMINI_API_KEY",
             model_suggestions: &[
+                "gemini-3.1-pro-preview",
+                "gemini-3.1-pro-preview-customtools",
                 "gemini-3-flash-preview",
-                "gemini-3-pro-preview",
+                "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-pro",
                 "gemini-2.5-flash",
+                "gemini-2.5-flash-preview-09-2025",
                 "gemini-2.5-flash-lite",
+                "gemini-2.5-flash-lite-preview-09-2025",
             ],
             reasoning_efforts: &["default", "minimal", "low", "medium", "high"],
         },
@@ -713,6 +884,7 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             label: "DeepSeek",
             mode: "cloud",
             default_base_url: "https://api.deepseek.com",
+            default_model: "deepseek-v4-flash",
             api_key_env: "DEEPSEEK_API_KEY",
             model_suggestions: &[
                 "deepseek-v4-flash",
@@ -723,12 +895,31 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             reasoning_efforts: &["default", "disabled", "enabled", "high", "max"],
         },
         LlmProviderOption {
+            key: "mistral",
+            label: "Mistral AI",
+            mode: "cloud",
+            default_base_url: "https://api.mistral.ai/v1",
+            default_model: "mistral-small-latest",
+            api_key_env: "MISTRAL_API_KEY",
+            model_suggestions: &[
+                "mistral-large-latest",
+                "mistral-medium-latest",
+                "mistral-small-latest",
+                "codestral-latest",
+                "open-mistral-nemo",
+            ],
+            reasoning_efforts: &["default", "low", "medium", "high"],
+        },
+        LlmProviderOption {
             key: "grok",
             label: "xAI Grok",
             mode: "cloud",
             default_base_url: "https://api.x.ai/v1",
+            default_model: "grok-4.3",
             api_key_env: "XAI_API_KEY",
             model_suggestions: &[
+                "grok-4.3",
+                "grok-4.3-latest",
                 "grok-4.20",
                 "grok-4.20-reasoning",
                 "grok-4.20-non-reasoning",
@@ -742,13 +933,26 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             label: "Alibaba Qwen / DashScope",
             mode: "cloud",
             default_base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            default_model: "qwen3.6-plus",
             api_key_env: "DASHSCOPE_API_KEY",
             model_suggestions: &[
+                "qwen3.6-max-preview",
+                "qwen3.6-plus",
+                "qwen3.6-plus-2026-04-02",
+                "qwen3.6-flash",
+                "qwen3.6-flash-2026-04-16",
                 "qwen3-max",
                 "qwen3-max-2026-01-23",
+                "qwen3-max-2025-09-23",
                 "qwen3-max-preview",
                 "qwen3.5-plus",
+                "qwen3.5-plus-2026-02-15",
                 "qwen3.5-flash",
+                "qwen3.5-flash-2026-02-23",
+                "qwen3-coder-plus",
+                "qwen3-coder-flash",
+                "qwen-plus-us",
+                "qwen-flash-us",
             ],
             reasoning_efforts: &["default", "low", "medium", "high"],
         },
@@ -757,13 +961,26 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             label: "Local / Custom OpenAI-Compatible",
             mode: "local",
             default_base_url: "http://127.0.0.1:11434/v1",
+            default_model: "qwen3:8b",
             api_key_env: "LOCAL_LLM_API_KEY",
             model_suggestions: &[
-                "llama3.3",
+                "qwen3:0.6b",
+                "qwen3:1.7b",
+                "qwen3:4b",
                 "qwen3:8b",
+                "qwen3:14b",
+                "qwen3:30b-a3b",
+                "qwen3:32b",
                 "qwen3",
-                "mistral-small3.2",
                 "gpt-oss:20b",
+                "gpt-oss:latest",
+                "llama3.3",
+                "llama3.1:8b",
+                "llama3.2:3b",
+                "llama3.2:1b",
+                "mistral-small3.2",
+                "deepseek-r1:8b",
+                "gemma3:4b",
                 "custom-model",
             ],
             reasoning_efforts: &["default", "none", "low", "medium", "high", "xhigh"],

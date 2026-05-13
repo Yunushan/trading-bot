@@ -31,6 +31,10 @@ export const SERVICE_API_ROUTE_SUFFIXES = Object.freeze({
   llm_providers: "/llm/providers",
   llm_config: "/llm/config",
   llm_prompt: "/llm/prompt",
+  llm_local_model_status: "/llm/local-model/status",
+  llm_local_model_start: "/llm/local-model/start",
+  llm_local_model_pull: "/llm/local-model/pull",
+  llm_local_model_delete: "/llm/local-model/delete",
   stream_dashboard: "/stream/dashboard",
 });
 

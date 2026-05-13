@@ -73,6 +73,12 @@ _SIDE_CHOICES = {"both": "BOTH", "buy": "BUY", "sell": "SELL"}
 _ORDER_TYPE_CHOICES = {"market": "MARKET", "limit": "LIMIT"}
 _TIF_CHOICES = {"gtc": "GTC", "ioc": "IOC", "fok": "FOK", "gtd": "GTD"}
 _LOGIC_CHOICES = {"and": "AND", "or": "OR"}
+_CHART_VIEW_MODE_CHOICES = {
+    "tradingview": "tradingview",
+    "original": "original",
+    "lightweight": "lightweight",
+    "tradingview lightweight": "lightweight",
+}
 _LLM_PROVIDER_CHOICES = {
     "alibaba": "qwen",
     "alibaba-qwen": "qwen",
@@ -124,6 +130,7 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
     {
         "account_mode",
         "account_type",
+        "add_only",
         "allow_close_ignoring_hold",
         "allow_indicator_close_without_signal",
         "allow_multi_indicator_close",
@@ -135,6 +142,7 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "auto_flip_on_close",
         "backtest",
         "backtest_symbol_interval_pairs",
+        "chart",
         "close_on_exit",
         "code_language",
         "connector_backend",
@@ -197,6 +205,8 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "position_mode",
         "position_pct",
         "positions_missing_autoclose",
+        "positions_auto_resize_columns",
+        "positions_auto_resize_rows",
         "positions_missing_grace_seconds",
         "positions_missing_threshold",
         "require_indicator_flip_signal",
@@ -210,6 +220,15 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "symbols",
         "theme",
         "tif",
+    }
+)
+_ALLOWED_CHART_CONFIG_KEYS = frozenset(
+    {
+        "auto_follow",
+        "interval",
+        "market",
+        "symbol",
+        "view_mode",
     }
 )
 _ALLOWED_BACKTEST_CONFIG_KEYS = frozenset(
@@ -239,6 +258,7 @@ _ALLOWED_BACKTEST_CONFIG_KEYS = frozenset(
     }
 )
 _RISK_BOOL_KEYS = (
+    "add_only",
     "indicator_use_live_values",
     "require_indicator_flip_signal",
     "strict_indicator_flip_enforcement",
@@ -695,6 +715,33 @@ def _validate_mapping(cfg: dict[str, object], key: str, issues: list[ConfigValid
         issues.append(ConfigValidationIssue(_field(prefix, key), "must be an object"))
 
 
+def _validate_chart_config(cfg: dict[str, object], issues: list[ConfigValidationIssue]) -> None:
+    if "chart" not in cfg:
+        return
+    value = cfg.get("chart")
+    if not isinstance(value, Mapping):
+        issues.append(ConfigValidationIssue("chart", "must be an object"))
+        return
+    chart_cfg = copy.deepcopy(dict(value))
+    _validate_allowed_keys(chart_cfg, _ALLOWED_CHART_CONFIG_KEYS, issues, prefix="chart")
+    _validate_choice(chart_cfg, "market", _ACCOUNT_TYPE_CHOICES, issues, prefix="chart")
+    _validate_choice(chart_cfg, "view_mode", _CHART_VIEW_MODE_CHOICES, issues, prefix="chart")
+    _validate_bool(chart_cfg, "auto_follow", issues, prefix="chart", default=True)
+    if "symbol" in chart_cfg:
+        symbol = _string_value(chart_cfg.get("symbol"))
+        if symbol is None or any(part.isspace() for part in symbol):
+            issues.append(ConfigValidationIssue("chart.symbol", "must be a non-empty symbol"))
+        else:
+            chart_cfg["symbol"] = symbol.upper()
+    if "interval" in chart_cfg:
+        interval = _normalize_interval(chart_cfg.get("interval"))
+        if not interval:
+            issues.append(ConfigValidationIssue("chart.interval", "must be a valid interval"))
+        else:
+            chart_cfg["interval"] = interval
+    cfg["chart"] = chart_cfg
+
+
 def _validate_backtest_config(cfg: dict[str, object], issues: list[ConfigValidationIssue]) -> None:
     if "backtest" not in cfg:
         return
@@ -794,6 +841,8 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     )
     _validate_int_range(cfg, "live_trading_max_session_orders", issues, min_value=1, max_value=100_000)
     _validate_bool(cfg, "order_audit_enabled", issues, default=True)
+    _validate_bool(cfg, "positions_auto_resize_rows", issues, default=True)
+    _validate_bool(cfg, "positions_auto_resize_columns", issues, default=True)
     _validate_text(cfg, "order_audit_log_path", issues, allow_empty=True)
     _validate_int_range(cfg, "order_audit_max_bytes", issues, min_value=1, max_value=1_000_000_000)
     _validate_int_range(cfg, "order_audit_backup_count", issues, min_value=0, max_value=100)
@@ -875,6 +924,7 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     _validate_choice(cfg, "llm_reasoning_effort", _LLM_REASONING_EFFORT_CHOICES, issues)
     _validate_stop_loss(cfg, "stop_loss", issues)
     _validate_mapping(cfg, "indicators", issues)
+    _validate_chart_config(cfg, issues)
     _validate_backtest_config(cfg, issues)
 
     if issues:

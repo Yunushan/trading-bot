@@ -2,8 +2,10 @@
 
 use dioxus::prelude::*;
 use trading_bot_core::{
-    TradingAppTab, app_banner, rust_execution_modes, rust_trading_execution_supported,
-    service_api_capabilities, service_api_routes, trading_app_tabs,
+    TradingAppTab, app_banner, rust_execution_modes, rust_native_runtime_capabilities,
+    rust_native_trading_runtime_ready, rust_shell_framework_parity,
+    rust_trading_execution_supported, service_api_capabilities, service_api_routes,
+    trading_app_tabs,
 };
 
 const APP_STYLE: &str = r#"
@@ -127,6 +129,7 @@ fn app() -> Element {
     let selected_key = selected_tab_key();
     let tab = active_tab(selected_key);
     let rust_exec_supported = rust_trading_execution_supported();
+    let rust_native_ready = rust_native_trading_runtime_ready();
 
     rsx! {
         style { "{APP_STYLE}" }
@@ -210,6 +213,19 @@ fn app() -> Element {
                         ul {
                             for mode in rust_execution_modes() {
                                 li { "{mode.title}: {mode.detail} | trading_execution_supported={mode.trading_execution_supported}" }
+                            }
+                        }
+                        h3 { "Framework Parity" }
+                        ul {
+                            for parity in rust_shell_framework_parity() {
+                                li { "{parity.framework} - {parity.status}: {parity.detail}" }
+                            }
+                        }
+                        h3 { "Native Runtime Gap" }
+                        p { "Native Rust trading runtime ready: {rust_native_ready}" }
+                        ul {
+                            for capability in rust_native_runtime_capabilities() {
+                                li { "{capability.key} - {capability.title} | C++: {capability.cpp_status} | Rust: {capability.rust_status} | Required before enable: {capability.required_before_enable} | trading_execution_supported={capability.trading_execution_supported}" }
                             }
                         }
                         h3 { "Canonical Routes" }

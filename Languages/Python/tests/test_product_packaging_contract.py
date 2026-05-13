@@ -103,13 +103,32 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("pub fn service_api_routes", core)
         self.assertIn("pub fn service_api_capabilities", core)
         self.assertIn("pub fn rust_execution_modes", core)
+        self.assertIn("pub fn rust_shell_framework_parity", core)
+        self.assertIn("pub fn rust_native_runtime_capabilities", core)
+        self.assertIn("pub fn rust_native_trading_runtime_ready", core)
         self.assertIn("pub fn rust_trading_execution_supported", core)
         self.assertIn("Native Rust trading engine", core)
         self.assertIn("trading_execution_supported: false", core)
+        self.assertIn("Native Runtime Gap", core)
+        self.assertIn("REST market data", core)
+        self.assertIn("WebSocket market stream", core)
+        self.assertIn("Account, balance, and positions", core)
+        self.assertIn("Order submission", core)
+        self.assertIn("Runtime lifecycle loop", core)
+        self.assertIn("Risk and shutdown guards", core)
+        self.assertIn("BinanceRestClient", core)
+        self.assertIn("BinanceWsClient", core)
         self.assertIn('name: "control_start"', core)
         self.assertIn('path: "/api/v1/control/start"', core)
+        self.assertIn('name: "llm_local_model_pull"', core)
+        self.assertIn('path: "/api/v1/llm/local-model/pull"', core)
         self.assertIn("Managed Local Service API", core)
+        self.assertIn("Backtest Scanner & Dashboard Import", core)
+        self.assertIn("Local LLM Lifecycle", core)
+        self.assertIn("Full interactive Rust desktop client", core)
+        self.assertIn("Shared-catalog parity surface", core)
         self.assertIn("Execution Boundary", core)
+        self.assertIn("default_model", core)
         self.assertIn("qwen3:8b", core)
         for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
             self.assertIn(label, core)
@@ -118,11 +137,55 @@ class ProductPackagingContractTests(unittest.TestCase):
         tauri_main = (rust_root / "apps" / "tauri-desktop" / "src" / "main.rs").read_text(encoding="utf-8")
         tauri_config = tomllib.loads((rust_root / "apps" / "tauri-desktop" / "Cargo.toml").read_text(encoding="utf-8"))
         tauri_app_config = json.loads((rust_root / "apps" / "tauri-desktop" / "tauri.conf.json").read_text(encoding="utf-8"))
+        tauri_behavior = (
+            rust_root / "apps" / "tauri-desktop" / "ui" / "tauri-ui-behavior.js"
+        ).read_text(encoding="utf-8")
+        tauri_behavior_test = (
+            rust_root / "apps" / "tauri-desktop" / "ui" / "tauri-ui-behavior.test.cjs"
+        ).read_text(encoding="utf-8")
         slint_ui = (rust_root / "apps" / "slint-desktop" / "ui" / "main.slint").read_text(encoding="utf-8")
+        rust_cli = (rust_root / "src" / "main.rs").read_text(encoding="utf-8")
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("defaultModels", tauri_html)
+        self.assertIn('src="tauri-ui-behavior.js"', tauri_html)
+        self.assertIn("const tauriUiBehavior = window.TauriUiBehavior", tauri_html)
+        self.assertIn("tauriUiBehavior.importBacktestRowsToDashboard", tauri_html)
+        self.assertIn("tauriUiBehavior.selectBacktestScanBest", tauri_html)
+        self.assertIn("tauriUiBehavior.describeLocalModelStatus", tauri_html)
+        self.assertIn("tauriUiBehavior.mergeUniqueLines", tauri_html)
+        for behavior_hook in (
+            "selectBacktestScanBest",
+            "importBacktestRowsToDashboard",
+            "backtestRunsFromPayload",
+            "describeLocalModelStatus",
+            "overrideImportKey",
+        ):
+            self.assertIn(behavior_hook, tauri_behavior)
+            self.assertIn(behavior_hook, tauri_behavior_test)
+        self.assertIn("node experiments/rust-shells/apps/tauri-desktop/ui/tauri-ui-behavior.test.cjs", workflow)
+        for llm_text in (
+            "Mistral AI",
+            "gpt-5.5-pro-2026-04-23",
+            "gpt-4.1-nano",
+            "claude-opus-4-5-20251101",
+            "gemini-3.1-pro-preview",
+            "grok-4.3",
+            "qwen3.6-plus",
+            "qwen3-coder-plus",
+            "qwen3:0.6b",
+            "deepseek-r1:8b",
+            "gemma3:4b",
+        ):
+            self.assertIn(llm_text, core)
+            self.assertIn(llm_text, tauri_html)
         for source in (tauri_html, slint_ui):
             for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
                 self.assertIn(label, source)
             self.assertIn("Bot Status", source)
+            self.assertIn("Native Rust Runtime Gap", source)
+            self.assertIn("Native Rust trading runtime ready: false", source)
+            self.assertIn("BinanceRestClient", source)
+            self.assertIn("BinanceWsClient", source)
         self.assertTrue(tauri_app_config["app"]["withGlobalTauri"])
         self.assertIn("reqwest", tauri_config["dependencies"])
         self.assertIn("service_api_request", tauri_main)
@@ -174,6 +237,37 @@ class ProductPackagingContractTests(unittest.TestCase):
             "allow-opposite-positions",
             "stop-without-closing-positions",
             "close-on-window-close",
+            "chart-refresh-btn",
+            "chart-open-browser-btn",
+            "chart-market-select",
+            "chart-symbol-select",
+            "chart-interval-select",
+            "chart-view-select",
+            "chart-tradingview-state",
+            "chart-original-state",
+            "chart-lightweight-state",
+            "chart-status-text",
+            "chart-open-url-text",
+            "market-close-all-positions-btn",
+            "positions-view-select",
+            "positions-auto-row-height",
+            "positions-auto-column-width",
+            "positions-total-balance",
+            "positions-available-balance",
+            "positions-bot-status",
+            "positions-active-time",
+            "positions-clear-selected-btn",
+            "positions-clear-all-btn",
+            "runtime-overrides-table",
+            "runtime-override-add-selected-btn",
+            "runtime-override-remove-selected-btn",
+            "runtime-override-clear-btn",
+            "backtest-overrides-table",
+            "backtest-override-add-selected-btn",
+            "backtest-override-remove-selected-btn",
+            "backtest-override-clear-btn",
+            "backtest-add-selected-dashboard-btn",
+            "backtest-add-all-dashboard-btn",
             "backtest-refresh-symbols-btn",
             "backtest-custom-interval-input",
             "backtest-add-custom-interval-btn",
@@ -182,6 +276,11 @@ class ProductPackagingContractTests(unittest.TestCase):
             "backtest-mdd-logic",
             "backtest-position-pct",
             "backtest-loop-interval",
+            "backtest-stop-loss-enabled",
+            "backtest-stop-loss-mode",
+            "backtest-stop-loss-scope",
+            "backtest-stop-loss-usdt",
+            "backtest-stop-loss-percent",
             "backtest-side",
             "backtest-margin-mode",
             "backtest-position-mode",
@@ -194,6 +293,10 @@ class ProductPackagingContractTests(unittest.TestCase):
             "backtest-scan-top-n",
             "backtest-scan-mdd-limit",
             "backtest-scan-symbols-btn",
+            "backtest-scan-status-text",
+            "backtest-scan-best-text",
+            "local-model-status-text",
+            "rust-native-runtime-gap",
         ):
             self.assertIn(f'id="{element_id}"', tauri_html)
         for tauri_command in (
@@ -209,6 +312,15 @@ class ProductPackagingContractTests(unittest.TestCase):
             "hydrateFromDashboard",
             "llm_reasoning_effort",
             "llm_allow_public_network",
+            "llm_local_model_status",
+            "llm_local_model_start",
+            "llm_local_model_pull",
+            "llm_local_model_delete",
+            "checkOrDownloadLocalModel",
+            "removeLocalModel",
+            "refreshLocalModelStatus",
+            "ensureLocalModelServer",
+            "localModelStorageText",
             "account_mode",
             "tif",
             "gtd_minutes",
@@ -217,7 +329,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "lead_trader_enabled",
             "lead_trader_profile",
             "indicator_use_live_values",
-            "hedge_preserve_opposites",
+            "add_only",
             "allow_opposite_positions",
             "close_on_exit",
             "close_positions: !Boolean",
@@ -226,9 +338,52 @@ class ProductPackagingContractTests(unittest.TestCase):
             "mdd_logic",
             "scan_top_n",
             "scan_mdd_limit",
+            "scan: true",
+            "stop_loss",
             "template",
+            "indicatorCatalog",
+            "indicatorKeyByName",
+            "data-indicator-key",
+            "selectedIndicatorKeysForKind",
+            "selectedIndicatorsConfigForKind",
+            "overrideRowsForRequest",
+            "hydrateChartControls",
+            "renderChartState",
+            "buildChartConfigPatch",
+            "chartUrl",
+            "chartDefaultSymbols",
+            "chartDefaultIntervals",
+            "chartIntervalMap",
+            "renderPositionsTableRows",
+            "normalizePositionRows",
+            "collapsePositionRows",
+            "syncPositionsTableOptions",
+            "positions_auto_resize_rows",
+            "positions_auto_resize_columns",
+            "runtime_symbol_interval_pairs",
+            "backtest_symbol_interval_pairs",
+            "pair_overrides",
+            "renderOverrideRows",
+            "addSymbolIntervalOverrides",
+            "removeSelectedOverrides",
+            "clearOverrides",
+            "strategyControlsForKind",
+            "lastBacktestRows",
+            "backtestRunsFromPayload",
+            "renderBacktestResultsTable",
+            "backtestResultToDashboardOverride",
+            "addBacktestRowsToDashboard",
+            "buildBacktestScanRequest",
+            "selectBacktestScanBest",
+            "selectBacktestResultRow",
+            "pollBacktestUntilIdle",
+            "runBacktestScan",
+            "mergeTextareaLines",
+            "overrideImportKey",
         ):
             self.assertIn(hydration_hook, tauri_html)
+        for chart_text in ("DOGEUSDT", "AVAXUSDT", "1month", "2y", "BINANCE:BTCUSDT.P"):
+            self.assertIn(chart_text, tauri_html)
 
         rust_app_sources = {
             "egui": rust_root / "apps" / "egui-desktop" / "src" / "main.rs",
@@ -240,14 +395,28 @@ class ProductPackagingContractTests(unittest.TestCase):
             self.assertIn("trading_app_tabs", source, shell)
             self.assertIn("rust_execution_modes", source, shell)
             self.assertIn("rust_trading_execution_supported", source, shell)
+            self.assertIn("rust_shell_framework_parity", source, shell)
+            self.assertIn("rust_native_runtime_capabilities", source, shell)
+            self.assertIn("rust_native_trading_runtime_ready", source, shell)
             self.assertIn("service_api_capabilities", source, shell)
             self.assertIn("service_api_routes", source, shell)
             self.assertIn("Service API Integration", source, shell)
+            self.assertIn("Framework Parity", source, shell)
+            self.assertIn("Native Runtime Gap", source, shell)
             self.assertIn("Standalone Rust trading execution supported", source, shell)
             self.assertIn("Bot Status: OFF", source, shell)
             self.assertIn("Total PNL Active Positions", source, shell)
             self.assertNotIn("Shared Rust core scaffold wired", source, shell)
+        self.assertIn("rust_native_runtime_capabilities", rust_cli)
+        self.assertIn("rust_native_trading_runtime_ready", rust_cli)
         self.assertIn("Service API Integration", slint_ui)
+        self.assertIn("Framework Parity", slint_ui)
+        self.assertIn("Native Rust Runtime Gap", slint_ui)
+        self.assertIn("Local model status", slint_ui)
+        self.assertIn("llm_local_model_status", slint_ui)
+        self.assertIn("llm_local_model_pull", slint_ui)
+        self.assertIn("Scanner best candidate summary", slint_ui)
+        self.assertIn("duplicate-safe dashboard import", slint_ui)
         self.assertIn("Python service/desktop runtime remains the trading execution owner", slint_ui)
         self.assertIn("standalone Rust trading execution supported: false", slint_ui)
 

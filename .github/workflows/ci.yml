@@ -291,6 +291,11 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -303,3 +308,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo check --workspace
+
+      - name: Run Tauri UI behavior tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node experiments/rust-shells/apps/tauri-desktop/ui/tauri-ui-behavior.test.cjs

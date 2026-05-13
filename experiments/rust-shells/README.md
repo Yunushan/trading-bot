@@ -33,6 +33,30 @@ endpoints with model, base URL/IP, API env var, token, and use-mode fields.
 
 The `Tauri` recommendation is an engineering recommendation based on the current repo shape, not a statement that the other shells are removed or unsupported.
 
+## Native trading runtime boundary
+
+Rust native trading execution is currently disabled. The Rust workspace is a
+Service API client, tab/catalog parity layer, and desktop-framework evaluation
+path. It must not be treated as a standalone trading engine until the native
+runtime capability gaps are implemented and tested.
+
+The C++ experiment already contains native runtime pieces that Rust does not:
+
+- `BinanceRestClient.*`: balance, symbols, klines, ticker price, open futures
+  positions, symbol filters, and market/limit futures orders.
+- `BinanceWsClient.*`: book ticker and kline WebSocket stream scaffolding.
+- `TradingBotWindow.dashboard_runtime*.cpp`: dashboard runtime lifecycle,
+  polling, signal candle caches, retry windows, open-position tracking, order
+  fallback helpers, and shutdown handling.
+- `TradingBotWindow.positions.cpp`: live futures position/balance refresh and
+  local table reconciliation.
+
+Before native Rust trading can be enabled, `trading-bot-core` needs equivalent
+REST market data, WebSocket streams, signed account/position snapshots, order
+submission, runtime lifecycle, and risk/shutdown guards with regression tests.
+The source-level guard for this is `rust_native_trading_runtime_ready() == false`
+and the capability matrix exposed by `rust_native_runtime_capabilities()`.
+
 ## Build examples
 
 From `experiments/rust-shells`:

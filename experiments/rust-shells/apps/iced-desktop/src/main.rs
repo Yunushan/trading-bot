@@ -5,8 +5,10 @@ use iced::{
     widget::{button, column, container, row, scrollable, text},
 };
 use trading_bot_core::{
-    TradingAppTab, app_banner, rust_execution_modes, rust_trading_execution_supported,
-    service_api_capabilities, service_api_routes, trading_app_tabs,
+    TradingAppTab, app_banner, rust_execution_modes, rust_native_runtime_capabilities,
+    rust_native_trading_runtime_ready, rust_shell_framework_parity,
+    rust_trading_execution_supported, service_api_capabilities, service_api_routes,
+    trading_app_tabs,
 };
 
 struct TradingBotIced {
@@ -86,6 +88,29 @@ fn service_api_panel() -> Element<'static, Message> {
         body = body.push(text(format!(
             "{} | trading_execution_supported={}",
             mode.detail, mode.trading_execution_supported
+        )));
+    }
+    body = body.push(text("Framework Parity"));
+    for parity in rust_shell_framework_parity() {
+        body = body.push(text(format!(
+            "{} - {}: {}",
+            parity.framework, parity.status, parity.detail
+        )));
+    }
+    body = body.push(text(format!(
+        "Native Rust trading runtime ready: {}",
+        rust_native_trading_runtime_ready()
+    )));
+    body = body.push(text("Native Runtime Gap"));
+    for capability in rust_native_runtime_capabilities() {
+        body = body.push(text(format!(
+            "{} - {} | C++: {} | Rust: {} | Required before enable: {} | trading_execution_supported={}",
+            capability.key,
+            capability.title,
+            capability.cpp_status,
+            capability.rust_status,
+            capability.required_before_enable,
+            capability.trading_execution_supported
         )));
     }
     body = body.push(text("Canonical routes"));

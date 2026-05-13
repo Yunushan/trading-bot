@@ -338,8 +338,13 @@ async fn service_api_request(
             Err(exc) => return response_error(&route_name, "", 0, exc),
         };
     let method = method.trim().to_uppercase();
+    let timeout_secs = match route_name.as_str() {
+        "llm_local_model_pull" => 3_600,
+        "llm_local_model_delete" | "llm_local_model_start" => 120,
+        _ => 8,
+    };
     let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()
     {
         Ok(value) => value,

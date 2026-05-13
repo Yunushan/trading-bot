@@ -5,6 +5,7 @@ FastAPI application for the service layer.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import json
 import os
 import sys
@@ -36,6 +37,12 @@ if __package__ in (None, ""):
         SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
     )
     from app.service.runtime import TradingBotService
+    from app.integrations.llm.local_models import (
+        delete_ollama_model,
+        get_local_model_status,
+        pull_ollama_model,
+        start_ollama_server,
+    )
     from app.settings import ConfigValidationError
 else:
     from ..api_contract import (
@@ -59,6 +66,12 @@ else:
         SERVICE_CONFIG_ALLOW_UNSAFE_PATH_ENV,
     )
     from ..runtime import TradingBotService
+    from ...integrations.llm.local_models import (
+        delete_ollama_model,
+        get_local_model_status,
+        pull_ollama_model,
+        start_ollama_server,
+    )
     from ...settings import ConfigValidationError
 
 try:
@@ -157,6 +170,11 @@ if FASTAPI_AVAILABLE:
         system_prompt: str = ""
         dry_run: bool = True
         source: str = "api-llm"
+
+    class LLMLocalModelRequest(BaseModel):
+        base_url: str = "http://127.0.0.1:11434/v1"
+        model: str = ""
+        source: str = "api-llm-local-model"
 
 
     class AccountSnapshotRequest(BaseModel):
@@ -743,6 +761,43 @@ def create_service_api_app(
             return _service().update_llm_config(payload.config)
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
+
+    @api_router.get("/llm/local-model/status")
+    def get_llm_local_model_status(base_url: str = "http://127.0.0.1:11434/v1", model: str = ""):
+        return asdict(get_local_model_status(base_url, model))
+
+    @api_router.post("/llm/local-model/start", dependencies=[Depends(_require_write_api_auth)])
+    def start_llm_local_model_server(payload: LLMLocalModelRequest):
+        result = asdict(start_ollama_server(payload.base_url))
+        if not result.get("started"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Could not start local model server.")
+        return result
+
+    @api_router.post("/llm/local-model/pull", dependencies=[Depends(_require_write_api_auth)])
+    def pull_llm_local_model(payload: LLMLocalModelRequest):
+        try:
+            pull_ollama_model(payload.base_url, payload.model)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "action": "pull",
+            "model": str(payload.model or "").strip(),
+            "status": asdict(get_local_model_status(payload.base_url, payload.model)),
+        }
+
+    @api_router.post("/llm/local-model/delete", dependencies=[Depends(_require_write_api_auth)])
+    def delete_llm_local_model(payload: LLMLocalModelRequest):
+        try:
+            delete_ollama_model(payload.base_url, payload.model)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "action": "delete",
+            "model": str(payload.model or "").strip(),
+            "status": asdict(get_local_model_status(payload.base_url, payload.model)),
+        }
 
     @api_router.post("/llm/prompt", dependencies=[Depends(_require_write_api_auth)])
     def run_llm_prompt(payload: LLMPromptRequest):

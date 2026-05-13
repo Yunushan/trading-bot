@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sys
 import tempfile
@@ -31,8 +32,13 @@ from app.service.auth import (  # noqa: E402
     validate_bearer_token,
 )
 from app.service.runtime import TradingBotService  # noqa: E402
+from app.integrations.llm.local_models import (  # noqa: E402
+    LocalModelServerStartResult,
+    LocalModelStatus,
+)
 
 REPO_ROOT = PYTHON_ROOT.parents[1]
+FASTAPI_TESTCLIENT_AVAILABLE = FASTAPI_AVAILABLE and importlib.util.find_spec("httpx") is not None
 
 
 def _shape(value: object) -> object:
@@ -96,6 +102,10 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "llm_providers",
             "llm_config",
             "llm_prompt",
+            "llm_local_model_status",
+            "llm_local_model_start",
+            "llm_local_model_pull",
+            "llm_local_model_delete",
             "execution",
             "backtest",
             "runtime_state",
@@ -137,6 +147,72 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertFalse(
             app.state.service.describe_runtime().to_dict()["control_plane"]["trading_execution_supported"]
         )
+
+    @unittest.skipUnless(
+        FASTAPI_TESTCLIENT_AVAILABLE,
+        "FastAPI TestClient optional dependencies are not installed",
+    )
+    def test_service_api_exposes_local_llm_model_management_routes(self):
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        client = _create_test_client(app)
+        headers = {"Authorization": "Bearer token-123"}
+        status_payload = LocalModelStatus(
+            model="qwen3:8b",
+            base_url="http://127.0.0.1:11434/v1",
+            server_kind="ollama",
+            installed=False,
+            can_download=True,
+            can_start=True,
+            storage_hint="outside this project",
+            storage_paths=("C:/Users/Test/.ollama/models",),
+            estimated_size_label="about 5 GB",
+        )
+
+        with (
+            mock.patch("app.service.api.app.get_local_model_status", return_value=status_payload) as status_mock,
+            mock.patch(
+                "app.service.api.app.start_ollama_server",
+                return_value=LocalModelServerStartResult(started=True, server_kind="ollama", executable="ollama"),
+            ) as start_mock,
+            mock.patch("app.service.api.app.pull_ollama_model") as pull_mock,
+            mock.patch("app.service.api.app.delete_ollama_model") as delete_mock,
+        ):
+            status_response = client.get(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_status"],
+                params={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+            self.assertEqual(200, status_response.status_code)
+            self.assertEqual("ollama", status_response.json()["server_kind"])
+            self.assertIn(".ollama", status_response.json()["storage_paths"][0])
+
+            start_response = client.post(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_start"],
+                headers=headers,
+                json={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+            self.assertEqual(200, start_response.status_code)
+            self.assertTrue(start_response.json()["started"])
+
+            pull_response = client.post(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_pull"],
+                headers=headers,
+                json={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+            self.assertEqual(200, pull_response.status_code)
+            self.assertEqual("pull", pull_response.json()["action"])
+
+            delete_response = client.post(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_delete"],
+                headers=headers,
+                json={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+            self.assertEqual(200, delete_response.status_code)
+            self.assertEqual("delete", delete_response.json()["action"])
+
+        status_mock.assert_called()
+        start_mock.assert_called_once()
+        pull_mock.assert_called_once_with("http://127.0.0.1:11434/v1", "qwen3:8b")
+        delete_mock.assert_called_once_with("http://127.0.0.1:11434/v1", "qwen3:8b")
 
     def test_service_api_auth_helpers(self):
         self.assertFalse(auth_required(""))

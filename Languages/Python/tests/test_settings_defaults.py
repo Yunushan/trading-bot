@@ -82,6 +82,47 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         self.assertTrue(validated["live_allow_auto_bump_to_min_order"])
 
+    def test_runtime_validation_accepts_add_only_strategy_control(self):
+        config = build_default_config()
+        config["add_only"] = "true"
+
+        validated = validate_runtime_config(config)
+
+        self.assertIs(validated["add_only"], True)
+
+    def test_runtime_validation_accepts_chart_config(self):
+        config = build_default_config()
+        config["chart"] = {
+            "market": "spot",
+            "symbol": "ethusdt",
+            "interval": "60",
+            "view_mode": "TradingView Lightweight",
+            "auto_follow": "false",
+        }
+
+        validated = validate_runtime_config(config)
+
+        self.assertEqual(
+            {
+                "market": "Spot",
+                "symbol": "ETHUSDT",
+                "interval": "60m",
+                "view_mode": "lightweight",
+                "auto_follow": False,
+            },
+            validated["chart"],
+        )
+
+    def test_runtime_validation_accepts_positions_resize_settings(self):
+        config = build_default_config()
+        config["positions_auto_resize_rows"] = "false"
+        config["positions_auto_resize_columns"] = "true"
+
+        validated = validate_runtime_config(config)
+
+        self.assertIs(validated["positions_auto_resize_rows"], False)
+        self.assertIs(validated["positions_auto_resize_columns"], True)
+
     def test_runtime_validation_rejects_unknown_config_keys(self):
         config = build_default_config()
         config["leverege"] = 3
@@ -152,6 +193,9 @@ class SettingsDefaultsTests(unittest.TestCase):
                 "llm_provider": "unknown-ai",
                 "llm_use_for": "auto_trade",
                 "llm_reasoning_effort": "turbo",
+                "chart": {"market": "margin", "interval": "bad", "view_mode": "external"},
+                "positions_auto_resize_rows": "sometimes",
+                "positions_auto_resize_columns": "later",
             }
         )
 
@@ -167,6 +211,11 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("llm_provider", fields)
         self.assertIn("llm_use_for", fields)
         self.assertIn("llm_reasoning_effort", fields)
+        self.assertIn("chart.market", fields)
+        self.assertIn("chart.interval", fields)
+        self.assertIn("chart.view_mode", fields)
+        self.assertIn("positions_auto_resize_rows", fields)
+        self.assertIn("positions_auto_resize_columns", fields)
 
     def test_runtime_validation_rejects_leverage_above_shared_binance_limit(self):
         config = build_default_config()

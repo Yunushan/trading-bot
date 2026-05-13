@@ -211,6 +211,16 @@
       background: var(--panel-strong);
     }
     .table-wrap { overflow-x: auto; }
+    #positions-table tbody tr[data-position-index] { cursor: pointer; }
+    #positions-table tbody tr.selected td { background: rgba(56, 189, 248, 0.14); }
+    #positions-table.wrap-rows td { white-space: normal; min-width: 140px; }
+    #positions-table.fixed-columns table { table-layout: fixed; }
+    #runtime-overrides-table tbody tr[data-override-index],
+    #backtest-overrides-table tbody tr[data-override-index],
+    #backtest-output-table tbody tr[data-backtest-index] { cursor: pointer; }
+    #runtime-overrides-table tbody tr.selected td,
+    #backtest-overrides-table tbody tr.selected td,
+    #backtest-output-table tbody tr.selected td { background: rgba(56, 189, 248, 0.14); }
     .good { color: var(--good); }
     .bad { color: var(--bad); }
     .log-output {
@@ -327,6 +337,7 @@
                 <button class="action" id="check-local-model-btn" type="button">Check / Download Local Model</button>
                 <button class="action" id="remove-local-model-btn" type="button">Remove Local Model</button>
               </div>
+              <p class="muted" id="local-model-status-text">Local model status: not checked.</p>
             </fieldset>
           </section>
         </div>
@@ -379,8 +390,8 @@
         </section>
         <section class="panel">
           <h3>Symbol / Interval Overrides</h3>
-          <div class="table-wrap" data-columns="Symbol|Interval|Indicators|Loop|Leverage|Connector|Strategy Controls|Stop-Loss"></div>
-          <div class="actions"><button class="action" type="button">Add Selected</button><button class="action" type="button">Remove Selected</button><button class="action" type="button">Clear All</button></div>
+          <div class="table-wrap" id="runtime-overrides-table" data-columns="Symbol|Interval|Indicators|Loop|Leverage|Connector|Strategy Controls|Stop-Loss"></div>
+          <div class="actions"><button class="action" id="runtime-override-add-selected-btn" type="button">Add Selected</button><button class="action" id="runtime-override-remove-selected-btn" type="button">Remove Selected</button><button class="action" id="runtime-override-clear-btn" type="button">Clear All</button></div>
         </section>
         <section class="panel">
           <h3>Desktop Service API</h3>
@@ -411,42 +422,42 @@
       <article class="tab-panel" id="chart" aria-label="Chart">
         <div class="section-head">
           <div><h2>Chart</h2><p class="muted">Chart controls mirrored from Python and C++.</p></div>
-          <div class="actions"><button class="action" type="button">Refresh</button><button class="action" type="button">Open In Browser</button></div>
+          <div class="actions"><button class="action" id="chart-refresh-btn" type="button">Refresh</button><button class="action" id="chart-open-browser-btn" type="button">Open In Browser</button></div>
         </div>
         <section class="panel">
           <div class="grid-3">
-            <label>Market:<select><option>Futures</option><option>Spot</option></select></label>
-            <label>Symbol:<select><option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option><option>SOLUSDT</option></select></label>
-            <label>Interval:<select><option>1m</option><option>3m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option><option>1d</option></select></label>
-            <label>View:<select><option>TradingView</option><option>Original</option><option>TradingView Lightweight</option></select></label>
+            <label>Market:<select id="chart-market-select"><option value="Futures">Futures</option><option value="Spot">Spot</option></select></label>
+            <label>Symbol:<select id="chart-symbol-select"><option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option><option>SOLUSDT</option><option>XRPUSDT</option><option>ADAUSDT</option><option>DOGEUSDT</option><option>AVAXUSDT</option><option>LINKUSDT</option><option>TRXUSDT</option></select></label>
+            <label>Interval:<select id="chart-interval-select"><option>1m</option><option>3m</option><option>5m</option><option>10m</option><option>15m</option><option>20m</option><option>30m</option><option>1h</option><option>2h</option><option>3h</option><option>4h</option><option>5h</option><option>6h</option><option>7h</option><option>8h</option><option>9h</option><option>10h</option><option>11h</option><option>12h</option><option>1d</option><option>2d</option><option>3d</option><option>4d</option><option>5d</option><option>6d</option><option>1w</option><option>2w</option><option>3w</option><option>1month</option><option>2months</option><option>3months</option><option>6months</option><option>1mo</option><option>2mo</option><option>3mo</option><option>6mo</option><option>1y</option><option>2y</option></select></label>
+            <label>View:<select id="chart-view-select"><option value="tradingview">TradingView</option><option value="original">Original</option><option value="lightweight">TradingView Lightweight</option></select></label>
           </div>
         </section>
-        <section class="panel"><h3>Chart View Stack</h3><div class="metrics"><div class="metric"><span class="muted">TradingView</span><strong>Ready</strong></div><div class="metric"><span class="muted">Original</span><strong>Ready</strong></div><div class="metric"><span class="muted">TradingView Lightweight</span><strong>Ready</strong></div><div class="metric"><span class="muted">Status</span><strong>Chart ready.</strong></div></div></section>
+        <section class="panel"><h3>Chart View Stack</h3><div class="metrics"><div class="metric"><span class="muted">TradingView</span><strong id="chart-tradingview-state">Active</strong></div><div class="metric"><span class="muted">Original</span><strong id="chart-original-state">Ready</strong></div><div class="metric"><span class="muted">TradingView Lightweight</span><strong id="chart-lightweight-state">Ready</strong></div><div class="metric"><span class="muted">Status</span><strong id="chart-status-text">TradingView: Futures BTCUSDT 1m</strong></div></div><p class="muted" id="chart-open-url-text">https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT.P&amp;interval=1</p></section>
       </article>
 
       <article class="tab-panel" id="positions" aria-label="Positions">
         <div class="section-head">
           <div><h2>Positions</h2><p class="muted">Position controls and table columns mirrored from Python and C++.</p></div>
-          <div class="actions"><button class="action" id="refresh-positions-btn" type="button">Refresh Positions</button><button class="action danger" type="button">Market Close ALL Positions</button></div>
+          <div class="actions"><button class="action" id="refresh-positions-btn" type="button">Refresh Positions</button><button class="action danger" id="market-close-all-positions-btn" type="button">Market Close ALL Positions</button></div>
         </div>
         <section class="panel">
           <div class="grid-3">
-            <label>Positions View:<select><option>Cumulative View</option><option>Per Trade View</option></select></label>
-            <label class="checks"><input type="checkbox" checked> Auto Row Height</label>
-            <label class="checks"><input type="checkbox" checked> Auto Column Width</label>
+            <label>Positions View:<select id="positions-view-select"><option value="cumulative">Cumulative View</option><option value="per_trade">Per Trade View</option></select></label>
+            <label class="checks"><input id="positions-auto-row-height" type="checkbox" checked> Auto Row Height</label>
+            <label class="checks"><input id="positions-auto-column-width" type="checkbox" checked> Auto Column Width</label>
           </div>
-          <div class="metrics"><div class="metric"><span class="muted">Total Balance</span><strong>--</strong></div><div class="metric"><span class="muted">Available Balance</span><strong>--</strong></div><div class="metric"><span class="muted">Bot Status</span><strong>OFF</strong></div><div class="metric"><span class="muted">Bot Active Time</span><strong>--</strong></div></div>
+          <div class="metrics"><div class="metric"><span class="muted">Total Balance</span><strong id="positions-total-balance">--</strong></div><div class="metric"><span class="muted">Available Balance</span><strong id="positions-available-balance">--</strong></div><div class="metric"><span class="muted">Bot Status</span><strong id="positions-bot-status">OFF</strong></div><div class="metric"><span class="muted">Bot Active Time</span><strong id="positions-active-time">--</strong></div></div>
         </section>
         <section class="panel">
           <div class="table-wrap" id="positions-table" data-columns="Symbol|Size (USDT)|Last Price (USDT)|Margin Ratio|Liq Price (USDT)|Margin (USDT)|Quantity (Qty)|PNL (ROI%)|Interval|Indicator|Triggered Indicator Value|Current Indicator Value|Side|Open Time|Close Time|Stop-Loss|Status|Close"></div>
-          <div class="actions"><button class="action" type="button">Clear Selected</button><button class="action" type="button">Clear All</button></div>
+          <div class="actions"><button class="action" id="positions-clear-selected-btn" type="button">Clear Selected</button><button class="action" id="positions-clear-all-btn" type="button">Clear All</button></div>
         </section>
       </article>
 
       <article class="tab-panel" id="backtest" aria-label="Backtest">
         <div class="section-head">
           <div><h2>Backtest</h2><p class="muted">Backtest markets, parameters, indicators, output, scanner, and results mirrored from Python and C++.</p></div>
-          <div class="actions"><button class="action primary" id="run-backtest-btn" type="button">Run Backtest</button><button class="action" id="stop-backtest-btn" type="button">Stop</button><button class="action" type="button">Add Selected to Dashboard</button><button class="action" type="button">Add All to Dashboard</button></div>
+          <div class="actions"><button class="action primary" id="run-backtest-btn" type="button">Run Backtest</button><button class="action" id="stop-backtest-btn" type="button">Stop</button><button class="action" id="backtest-add-selected-dashboard-btn" type="button">Add Selected to Dashboard</button><button class="action" id="backtest-add-all-dashboard-btn" type="button">Add All to Dashboard</button></div>
         </div>
         <div class="grid-3">
           <section class="panel">
@@ -468,6 +479,11 @@
               <label>Margin Capital:<input id="backtest-capital" type="number" min="1" value="1000"></label>
               <label>Position % of Balance:<input id="backtest-position-pct" type="number" min="0.01" max="100" step="0.01" value="2.00"></label>
               <label>Loop Interval Override:<select id="backtest-loop-interval"><option value="30s">30 seconds</option><option value="45s">45 seconds</option><option value="1m">1 minute</option><option value="5m">5 minutes</option><option value="1h">1 hour</option></select></label>
+              <label>Stop Loss:<span class="checks"><label><input id="backtest-stop-loss-enabled" type="checkbox"> Enable</label></span></label>
+              <label>Stop Loss Mode:<select id="backtest-stop-loss-mode"><option value="usdt">USDT Based Stop Loss</option><option value="percent">Percentage Based Stop Loss</option><option value="both">Both Stop Loss (USDT & Percentage)</option></select></label>
+              <label>Stop Loss Scope:<select id="backtest-stop-loss-scope"><option value="per_trade">Per Trade Stop Loss</option><option value="cumulative">Cumulative Stop Loss</option><option value="entire_account">Entire Account Stop Loss</option></select></label>
+              <label>Stop Loss USDT:<input id="backtest-stop-loss-usdt" type="number" min="0" step="1" value="0"></label>
+              <label>Stop Loss %:<input id="backtest-stop-loss-percent" type="number" min="0" max="100" step="0.5" value="0"></label>
               <label>Side:<select id="backtest-side"><option value="BUY">Buy (Long)</option><option value="SELL">Sell (Short)</option><option value="BOTH">Both (Long/Short)</option></select></label>
               <label>Margin Mode (Futures):<select id="backtest-margin-mode"><option>Isolated</option><option>Cross</option></select></label>
               <label>Position Mode:<select id="backtest-position-mode"><option>Hedge</option><option>One-way</option></select></label>
@@ -487,11 +503,15 @@
         </div>
         <section class="panel">
           <h3>Symbol / Interval Overrides</h3>
-          <div class="table-wrap" data-columns="Symbol|Interval|Indicators|Loop|Leverage|Connector|Strategy Controls|Stop-Loss"></div>
-          <div class="actions"><button class="action" type="button">Add Selected</button><button class="action" type="button">Remove Selected</button><button class="action" type="button">Clear All</button></div>
+          <div class="table-wrap" id="backtest-overrides-table" data-columns="Symbol|Interval|Indicators|Loop|Leverage|Connector|Strategy Controls|Stop-Loss"></div>
+          <div class="actions"><button class="action" id="backtest-override-add-selected-btn" type="button">Add Selected</button><button class="action" id="backtest-override-remove-selected-btn" type="button">Remove Selected</button><button class="action" id="backtest-override-clear-btn" type="button">Clear All</button></div>
         </section>
         <section class="panel">
           <h3>Backtest Output</h3>
+          <div class="metrics">
+            <div class="metric"><span class="muted">Scanner Status</span><strong id="backtest-scan-status-text">Idle</strong></div>
+            <div class="metric"><span class="muted">Best Candidate</span><strong id="backtest-scan-best-text">--</strong></div>
+          </div>
           <div class="table-wrap" id="backtest-output-table" data-columns="Symbol|Interval|Logic|Indicators|Trades|Loop Interval|Start Date|End Date|Position % Of Balance|Stop-Loss Options|Margin Mode (Futures)|Position Mode|Assets Mode|Account Mode|Leverage (Futures)|ROI (USDT)|ROI (%)|Max Drawdown During Position (USDT)|Max Drawdown During Position (%)|Max Drawdown Results (USDT)|Max Drawdown Results (%)"></div>
         </section>
       </article>
@@ -517,7 +537,24 @@
         </section>
         <section class="panel">
           <h3>Choose your Rust framework</h3>
-          <div class="cards"><div class="metric"><span class="pill">Desktop</span><strong>Tauri</strong><span>Desktop shell with web UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>Slint</strong><span>Native declarative desktop UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>egui</strong><span>Fast trader dashboard UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>Iced</strong><span>Pure Rust reactive desktop UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>Dioxus Desktop</strong><span>Rust component UI with desktop renderer</span></div></div>
+          <div class="cards"><div class="metric"><span class="pill">Desktop</span><strong>Tauri</strong><span>Full interactive Rust desktop client with managed local Service API</span></div><div class="metric"><span class="pill">Desktop</span><strong>Slint</strong><span>Native parity surface for the same tab/control/route map</span></div><div class="metric"><span class="pill">Desktop</span><strong>egui</strong><span>Shared-catalog parity surface from trading-bot-core</span></div><div class="metric"><span class="pill">Desktop</span><strong>Iced</strong><span>Shared-catalog parity surface from trading-bot-core</span></div><div class="metric"><span class="pill">Desktop</span><strong>Dioxus Desktop</strong><span>Shared-catalog parity surface from trading-bot-core</span></div></div>
+        </section>
+        <section class="panel" id="rust-native-runtime-gap">
+          <h3>Native Rust Runtime Gap</h3>
+          <p class="muted">Native Rust trading runtime ready: false. C++ already has Binance REST/WebSocket and dashboard runtime experiments; Rust remains blocked from native trading until these gaps are implemented and tested.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Capability</th><th>C++ status</th><th>Rust status</th><th>Required before enable</th></tr></thead>
+              <tbody>
+                <tr><td>REST market data</td><td>BinanceRestClient fetchUsdtSymbols/fetchKlines/fetchTickerPrice</td><td>Service API client only</td><td>Typed Rust exchange REST clients, timeout/error contracts, symbol filtering, interval mapping, parity tests</td></tr>
+                <tr><td>WebSocket market stream</td><td>BinanceWsClient connectBookTicker/connectKline</td><td>No native stream runtime</td><td>Supervised streams, reconnect/backoff, candle cache reconciliation, stale-feed guards</td></tr>
+                <tr><td>Account, balance, and positions</td><td>fetchUsdtBalance and fetchOpenFuturesPositions</td><td>No native account snapshot path</td><td>Signed account clients, balance/position DTOs, hedge and one-way handling</td></tr>
+                <tr><td>Order submission</td><td>placeFuturesMarketOrder/placeFuturesLimitOrder and open/close fallback helpers</td><td>No native order submit path</td><td>Order intent validation, precision filters, dry-run mode, signed fallback, audit logs</td></tr>
+                <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Tauri can start/stop Python Service API, not a Rust trading loop</td><td>Owned Rust runtime state machine, idempotent shutdown, recovery tests</td></tr>
+                <tr><td>Risk and shutdown guards</td><td>Stop-loss settings, quantity caps, retry windows, close-on-stop behavior</td><td>Controls mirrored but no native risk engine</td><td>Risk gates, stop-loss scopes, max exposure checks, close-all semantics, incident handling</td></tr>
+              </tbody>
+            </table>
+          </div>
         </section>
         <section class="panel">
           <h3>Environment Versions</h3>
@@ -535,31 +572,37 @@
     </footer>
   </main>
 
+  <script src="tauri-ui-behavior.js"></script>
   <script>
-    const indicatorNames = [
-      "Moving Average (MA)",
-      "Donchian Channels (DC)",
-      "Parabolic SAR (PSAR)",
-      "Bollinger Bands (BB)",
-      "Relative Strength Index (RSI)",
-      "Volume",
-      "Stochastic RSI (SRSI)",
-      "Williams %R",
-      "Moving Average Convergence/Divergence (MACD)",
-      "Ultimate Oscillator (UO)",
-      "Average Directional Index (ADX)",
-      "Directional Movement Index (DMI)",
-      "SuperTrend (ST)",
-      "Exponential Moving Average (EMA)",
-      "Stochastic Oscillator"
+    const tauriUiBehavior = window.TauriUiBehavior || {};
+    const indicatorCatalog = [
+      { key: "ma", name: "Moving Average (MA)" },
+      { key: "donchian", name: "Donchian Channels (DC)" },
+      { key: "psar", name: "Parabolic SAR (PSAR)" },
+      { key: "bb", name: "Bollinger Bands (BB)" },
+      { key: "rsi", name: "Relative Strength Index (RSI)", defaultEnabled: true },
+      { key: "volume", name: "Volume" },
+      { key: "stoch_rsi", name: "Stochastic RSI (SRSI)" },
+      { key: "willr", name: "Williams %R" },
+      { key: "macd", name: "Moving Average Convergence/Divergence (MACD)" },
+      { key: "uo", name: "Ultimate Oscillator (UO)" },
+      { key: "adx", name: "Average Directional Index (ADX)" },
+      { key: "dmi", name: "Directional Movement Index (DMI)" },
+      { key: "supertrend", name: "SuperTrend (ST)" },
+      { key: "ema", name: "Exponential Moving Average (EMA)" },
+      { key: "stochastic", name: "Stochastic Oscillator" }
     ];
+    const indicatorNames = indicatorCatalog.map((item) => item.name);
+    const indicatorKeyByName = Object.fromEntries(indicatorCatalog.map((item) => [item.name, item.key]));
+    const indicatorNameByKey = Object.fromEntries(indicatorCatalog.map((item) => [item.key, item.name]));
     for (const target of [document.getElementById("dashboard-indicators"), document.getElementById("backtest-indicators")]) {
       if (!target) continue;
       target.className = "grid-2";
-      target.replaceChildren(...indicatorNames.map((name) => {
+      const scope = target.id === "backtest-indicators" ? "backtest" : "runtime";
+      target.replaceChildren(...indicatorCatalog.map((indicator, index) => {
         const row = document.createElement("div");
         row.className = "checks";
-        row.innerHTML = `<label><input type="checkbox"> ${name}</label><button class="action" type="button">Buy-Sell Values</button>`;
+        row.innerHTML = `<label><input id="${scope}-indicator-${index}" data-indicator-name="${indicator.name}" data-indicator-key="${indicator.key}" type="checkbox" ${indicator.defaultEnabled ? "checked" : ""}> ${indicator.name}</label><button class="action" type="button">Buy-Sell Values</button>`;
         return row;
       }));
     }
@@ -581,14 +624,14 @@
     }
 
     const modelSuggestions = {
-      openai: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-chat-latest", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.1", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano"],
-      anthropic: ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-1-20250805", "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1", "claude-opus-4-0", "claude-sonnet-4-0"],
-      gemini: ["gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+      openai: ["gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23", "gpt-5.4", "gpt-5.4-2026-03-05", "gpt-5.4-pro", "gpt-5.4-pro-2026-03-05", "gpt-5.4-mini", "gpt-5.4-mini-2026-03-17", "gpt-5.4-nano", "gpt-5.4-nano-2026-03-17", "gpt-5.3-chat-latest", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.1", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"],
+      anthropic: ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101", "claude-opus-4-1-20250805", "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-1", "claude-opus-4-0", "claude-sonnet-4-0"],
+      gemini: ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite", "gemini-2.5-flash-lite-preview-09-2025"],
       deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
       mistral: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest", "open-mistral-nemo"],
-      grok: ["grok-4.20", "grok-4.20-reasoning", "grok-4.20-non-reasoning", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"],
-      qwen: ["qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-flash"],
-      local: ["llama3.3", "qwen3:8b", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"]
+      grok: ["grok-4.3", "grok-4.3-latest", "grok-4.20", "grok-4.20-reasoning", "grok-4.20-non-reasoning", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"],
+      qwen: ["qwen3.6-max-preview", "qwen3.6-plus", "qwen3.6-plus-2026-04-02", "qwen3.6-flash", "qwen3.6-flash-2026-04-16", "qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-2025-09-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-plus-2026-02-15", "qwen3.5-flash", "qwen3.5-flash-2026-02-23", "qwen3-coder-plus", "qwen3-coder-flash", "qwen-plus-us", "qwen-flash-us"],
+      local: ["qwen3:0.6b", "qwen3:1.7b", "qwen3:4b", "qwen3:8b", "qwen3:14b", "qwen3:30b-a3b", "qwen3:32b", "qwen3", "gpt-oss:20b", "gpt-oss:latest", "llama3.3", "llama3.1:8b", "llama3.2:3b", "llama3.2:1b", "mistral-small3.2", "deepseek-r1:8b", "gemma3:4b", "custom-model"]
     };
     const reasoningSuggestions = {
       openai: ["default", "none", "minimal", "low", "medium", "high", "xhigh"],
@@ -600,6 +643,16 @@
       qwen: ["default", "low", "medium", "high"],
       local: ["default", "none", "low", "medium", "high", "xhigh"]
     };
+    const defaultModels = {
+      openai: "gpt-5.5",
+      anthropic: "claude-sonnet-4-5-20250929",
+      gemini: "gemini-3-flash-preview",
+      deepseek: "deepseek-v4-flash",
+      mistral: "mistral-small-latest",
+      grok: "grok-4.3",
+      qwen: "qwen3.6-plus",
+      local: "qwen3:8b"
+    };
     const llmEnabled = document.getElementById("llm-enabled");
     const llmControls = document.getElementById("llm-controls");
     const llmPublic = document.getElementById("llm-public");
@@ -608,6 +661,7 @@
     const reasoning = document.getElementById("llm-reasoning");
     const syncEnabledState = () => { llmControls.disabled = !llmEnabled.checked; };
     const syncModelOptions = () => {
+      const previous = model.value;
       const suggestions = modelSuggestions[provider.value] || [];
       model.replaceChildren(...suggestions.map((name) => {
         const option = document.createElement("option");
@@ -615,6 +669,8 @@
         option.textContent = name;
         return option;
       }));
+      const preferred = suggestions.includes(previous) ? previous : defaultModels[provider.value];
+      if (preferred && suggestions.includes(preferred)) model.value = preferred;
     };
     const syncReasoningOptions = () => {
       const suggestions = reasoningSuggestions[provider.value] || ["default"];
@@ -674,7 +730,11 @@
       backtest_stop: "/api/v1/backtest/stop",
       logs: "/api/v1/logs",
       llm_config: "/api/v1/llm/config",
-      llm_providers: "/api/v1/llm/providers"
+      llm_providers: "/api/v1/llm/providers",
+      llm_local_model_status: "/api/v1/llm/local-model/status",
+      llm_local_model_start: "/api/v1/llm/local-model/start",
+      llm_local_model_pull: "/api/v1/llm/local-model/pull",
+      llm_local_model_delete: "/api/v1/llm/local-model/delete"
     };
     const linesFrom = (value) => String(value || "").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
     const numberFrom = (id, fallback = 0) => {
@@ -688,6 +748,27 @@
     const setValue = (id, value) => {
       const el = $(id);
       if (el && value !== undefined && value !== null) el.value = value;
+    };
+    const setText = (id, value) => {
+      const el = $(id);
+      if (el && value !== undefined && value !== null) el.textContent = String(value);
+    };
+    const escapeHtml = (value) => String(value ?? "--").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#39;"
+    })[char]);
+    const formatNumber = (value, digits = 4) => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return value === 0 ? "0" : "--";
+      return number.toLocaleString(undefined, { maximumFractionDigits: digits });
+    };
+    const formatMoney = (value) => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return value === 0 ? "0.00 USDT" : "--";
+      return `${number.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`;
     };
     const optionMatches = (option, value) => {
       const wanted = String(value ?? "").trim().toLowerCase();
@@ -719,6 +800,695 @@
     const selectedValue = (id) => {
       const el = $(id);
       return el?.value || selectedText(id);
+    };
+    const chartDefaultSymbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"];
+    const chartDefaultIntervals = ["1m", "3m", "5m", "10m", "15m", "20m", "30m", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h", "1d", "2d", "3d", "4d", "5d", "6d", "1w", "2w", "3w", "1month", "2months", "3months", "6months", "1mo", "2mo", "3mo", "6mo", "1y", "2y"];
+    const chartIntervalMap = {
+      "1m": "1", "3m": "3", "5m": "5", "10m": "10", "15m": "15", "20m": "20", "30m": "30",
+      "45m": "45", "1h": "60", "2h": "120", "3h": "180", "4h": "240", "5h": "300", "6h": "360",
+      "7h": "420", "8h": "480", "9h": "540", "10h": "600", "11h": "660", "12h": "720",
+      "1d": "1D", "2d": "2D", "3d": "3D", "4d": "4D", "5d": "5D", "6d": "6D",
+      "1w": "1W", "2w": "2W", "3w": "3W", "1mo": "1M", "2mo": "2M", "3mo": "3M", "6mo": "6M",
+      "1month": "1M", "2months": "2M", "3months": "3M", "6months": "6M", "1y": "12M", "2y": "24M"
+    };
+    const uniqueValues = (...groups) => {
+      const seen = new Set();
+      const result = [];
+      for (const group of groups.flat()) {
+        const value = String(group ?? "").trim();
+        if (!value || seen.has(value.toUpperCase())) continue;
+        seen.add(value.toUpperCase());
+        result.push(value);
+      }
+      return result;
+    };
+    const replaceSelectOptions = (id, values, selected) => {
+      const el = $(id);
+      if (!el) return;
+      const normalized = uniqueValues(values);
+      el.replaceChildren(...normalized.map((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        return option;
+      }));
+      setSelect(id, selected || normalized[0], true);
+    };
+    const chartIntervalCode = (interval) => {
+      const raw = String(interval || "").trim();
+      if (!raw) return "60";
+      if (/^\d+(?:\.\d+)?$/.test(raw)) return String(Math.max(1, Math.round(Number(raw))));
+      const key = raw.toLowerCase();
+      if (chartIntervalMap[key]) return chartIntervalMap[key];
+      const number = Number.parseFloat(key);
+      if (!Number.isFinite(number) || number <= 0) return "60";
+      if (key.endsWith("mo") || key.endsWith("month") || key.endsWith("months")) return `${Math.round(number)}M`;
+      if (key.endsWith("y") || key.endsWith("year") || key.endsWith("years")) return `${Math.round(number * 12)}M`;
+      if (key.endsWith("w")) return `${Math.round(number)}W`;
+      if (key.endsWith("d")) return `${Math.round(number)}D`;
+      if (key.endsWith("h")) return String(Math.round(number * 60));
+      if (key.endsWith("m")) return String(Math.round(number));
+      return "60";
+    };
+    const chartTradingViewSymbol = () => {
+      let symbol = String(selectedValue("chart-symbol-select") || "BTCUSDT").trim().toUpperCase().replace("/", "");
+      if (symbol.includes(":")) return symbol;
+      if (selectedValue("chart-market-select") === "Futures" && symbol.endsWith("USDT") && !symbol.endsWith(".P")) {
+        symbol = `${symbol}.P`;
+      }
+      return `BINANCE:${symbol}`;
+    };
+    const chartUrl = () => {
+      const encode = (value) => encodeURIComponent(value).replace(/%3A/g, ":");
+      return `https://www.tradingview.com/chart/?symbol=${encode(chartTradingViewSymbol())}&interval=${encode(chartIntervalCode(selectedValue("chart-interval-select")))}`;
+    };
+    const chartViewLabel = (view) => ({
+      tradingview: "TradingView",
+      original: "Original",
+      lightweight: "TradingView Lightweight"
+    })[view] || "TradingView";
+    const buildChartConfigPatch = () => ({
+      market: selectedValue("chart-market-select") || "Futures",
+      symbol: selectedValue("chart-symbol-select") || "BTCUSDT",
+      interval: selectedValue("chart-interval-select") || "1m",
+      view_mode: selectedValue("chart-view-select") || "tradingview",
+      auto_follow: selectedValue("chart-market-select") === "Futures"
+    });
+    let runtimeOverrideRows = [];
+    let backtestOverrideRows = [];
+    let lastBacktestRows = [];
+    const overrideRowsForKind = (kind) => kind === "backtest" ? backtestOverrideRows : runtimeOverrideRows;
+    const setOverrideRowsForKind = (kind, rows) => {
+      if (kind === "backtest") backtestOverrideRows = rows;
+      else runtimeOverrideRows = rows;
+    };
+    const textareaSelectionLines = (id) => {
+      const el = $(id);
+      if (!el) return [];
+      const hasSelection = Number.isInteger(el.selectionStart) && Number.isInteger(el.selectionEnd) && el.selectionEnd > el.selectionStart;
+      return linesFrom(hasSelection ? el.value.slice(el.selectionStart, el.selectionEnd) : el.value);
+    };
+    const mergeTextareaLines = (id, additions) => {
+      const el = $(id);
+      if (!el) return [];
+      const merged = tauriUiBehavior.mergeUniqueLines
+        ? tauriUiBehavior.mergeUniqueLines(el.value, additions)
+        : uniqueValues(linesFrom(el.value), additions);
+      el.value = merged.join("\n");
+      return merged;
+    };
+    const selectedIndicatorsForKind = (kind) => {
+      const prefix = kind === "backtest" ? "backtest" : "runtime";
+      return [...document.querySelectorAll(`#${prefix === "backtest" ? "backtest" : "dashboard"}-indicators input[data-indicator-name]:checked`)]
+        .map((item) => item.dataset.indicatorName)
+        .filter(Boolean);
+    };
+    const indicatorKeyFor = (value) => {
+      const raw = String(value || "").trim();
+      return indicatorKeyByName[raw] || raw;
+    };
+    const indicatorDisplayNameFor = (value) => {
+      const key = indicatorKeyFor(value);
+      return indicatorNameByKey[key] || String(value || "").trim();
+    };
+    const selectedIndicatorKeysForKind = (kind) => {
+      const prefix = kind === "backtest" ? "backtest" : "runtime";
+      return [...document.querySelectorAll(`#${prefix === "backtest" ? "backtest" : "dashboard"}-indicators input[data-indicator-key]:checked`)]
+        .map((item) => item.dataset.indicatorKey || indicatorKeyFor(item.dataset.indicatorName))
+        .filter(Boolean);
+    };
+    const selectedIndicatorsConfigForKind = (kind) => {
+      const config = {};
+      for (const key of selectedIndicatorKeysForKind(kind)) {
+        config[key] = { enabled: true };
+      }
+      return config;
+    };
+    const stopLossPatchForKind = (kind) => {
+      const prefix = kind === "backtest" ? "backtest-" : "";
+      return {
+        enabled: Boolean($(`${prefix}stop-loss-enabled`)?.checked),
+        mode: $(`${prefix}stop-loss-mode`)?.value || "usdt",
+        scope: $(`${prefix}stop-loss-scope`)?.value || "per_trade",
+        usdt: numberFrom(`${prefix}stop-loss-usdt`, 0),
+        percent: numberFrom(`${prefix}stop-loss-percent`, 0)
+      };
+    };
+    const strategyControlsForKind = (kind) => {
+      if (kind === "backtest") {
+        return {
+          side: selectedValue("backtest-side") || "BOTH",
+          leverage: numberFrom("backtest-leverage", 1),
+          loop_interval_override: selectedValue("backtest-loop-interval"),
+          connector_backend: selectedValue("backtest-connector"),
+          margin_mode: selectedText("backtest-margin-mode"),
+          position_mode: selectedText("backtest-position-mode"),
+          assets_mode: selectedText("backtest-assets-mode"),
+          account_mode: selectedText("backtest-account-mode"),
+          stop_loss: stopLossPatchForKind("backtest")
+        };
+      }
+      return {
+        side: selectedValue("strategy-side") || "BOTH",
+        leverage: numberFrom("config-leverage", 1),
+        loop_interval_override: selectedValue("loop-interval-select"),
+        connector_backend: selectedValue("config-connector"),
+        add_only: Boolean($("add-only-net-direction")?.checked),
+        allow_opposite_positions: Boolean($("allow-opposite-positions")?.checked),
+        stop_loss: stopLossPatchForKind("runtime")
+      };
+    };
+    const normalizeIndicatorList = (value) => {
+      if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+      return linesFrom(String(value || ""));
+    };
+    const indicatorKeysForRequest = (value) => normalizeIndicatorList(value).map(indicatorKeyFor).filter(Boolean);
+    const overrideRowsForRequest = (kind) => overrideRowsForKind(kind).map((row) => ({
+      ...row,
+      indicators: indicatorKeysForRequest(row.indicators)
+    }));
+    const normalizeOverrideRow = (row) => {
+      const controls = row?.strategy_controls && typeof row.strategy_controls === "object" ? { ...row.strategy_controls } : {};
+      if (row?.leverage !== undefined && controls.leverage === undefined) controls.leverage = row.leverage;
+      if (row?.loop_interval_override !== undefined && controls.loop_interval_override === undefined) controls.loop_interval_override = row.loop_interval_override;
+      if (row?.stop_loss && typeof row.stop_loss === "object" && controls.stop_loss === undefined) controls.stop_loss = row.stop_loss;
+      return {
+        symbol: String(row?.symbol || "").trim().toUpperCase(),
+        interval: String(row?.interval || "").trim(),
+        indicators: normalizeIndicatorList(row?.indicators ?? row?.indicator_keys ?? row?.indicator),
+        strategy_controls: controls
+      };
+    };
+    const overrideImportKey = (row) => tauriUiBehavior.overrideImportKey
+      ? tauriUiBehavior.overrideImportKey(row, normalizeOverrideRow)
+      : (() => {
+        const normalized = normalizeOverrideRow(row);
+        const controls = normalized.strategy_controls || {};
+        return [
+          normalized.symbol,
+          normalized.interval,
+          normalizeIndicatorList(normalized.indicators).join(","),
+          controls.leverage ?? ""
+        ].join("|");
+      })();
+    const overrideSummary = (controls) => {
+      const parts = [];
+      if (controls?.side) parts.push(`Side ${controls.side}`);
+      if (controls?.add_only) parts.push("Add-only");
+      if (controls?.allow_opposite_positions === false) parts.push("No opposite");
+      if (controls?.margin_mode) parts.push(controls.margin_mode);
+      if (controls?.position_mode) parts.push(controls.position_mode);
+      return parts.join(", ") || "--";
+    };
+    const renderOverrideRows = (kind) => {
+      const tableId = kind === "backtest" ? "backtest-overrides-table" : "runtime-overrides-table";
+      const wrap = $(tableId);
+      const body = wrap?.querySelector("tbody");
+      if (!body) return;
+      const columns = wrap.dataset.columns.split("|");
+      const rows = overrideRowsForKind(kind);
+      if (!rows.length) {
+        body.innerHTML = `<tr>${columns.map(() => "<td>--</td>").join("")}</tr>`;
+        return;
+      }
+      body.innerHTML = rows.map((row, index) => {
+        const controls = row.strategy_controls || {};
+        const stopLoss = controls.stop_loss?.enabled ? `${controls.stop_loss.mode || "stop"} ${controls.stop_loss.scope || ""}`.trim() : "--";
+        const values = [
+          row.symbol,
+          row.interval,
+          Array.isArray(row.indicators) && row.indicators.length ? row.indicators.map(indicatorDisplayNameFor).join(", ") : "--",
+          controls.loop_interval_override || "--",
+          controls.leverage || "--",
+          controls.connector_backend || "--",
+          overrideSummary(controls),
+          stopLoss
+        ];
+        return `<tr data-override-kind="${kind}" data-override-index="${index}">${values.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`;
+      }).join("");
+    };
+    const addSymbolIntervalOverrides = (kind) => {
+      const isBacktest = kind === "backtest";
+      const symbols = textareaSelectionLines(isBacktest ? "backtest-symbols-input" : "symbols-input");
+      const intervals = textareaSelectionLines(isBacktest ? "backtest-intervals-input" : "intervals-input");
+      if (!symbols.length || !intervals.length) {
+        appendLog(`[overrides] ${isBacktest ? "Backtest" : "Runtime"} add skipped: symbols and intervals are required.`);
+        return;
+      }
+      const rows = [...overrideRowsForKind(kind)];
+      const controls = strategyControlsForKind(kind);
+      const indicators = selectedIndicatorsForKind(kind);
+      let changed = 0;
+      for (const symbol of symbols) {
+        for (const interval of intervals) {
+          const next = normalizeOverrideRow({ symbol, interval, indicators, strategy_controls: controls });
+          if (!next.symbol || !next.interval) continue;
+          const existing = rows.find((row) => row.symbol === next.symbol && row.interval === next.interval);
+          if (existing) Object.assign(existing, next);
+          else rows.push(next);
+          changed += 1;
+        }
+      }
+      setOverrideRowsForKind(kind, rows);
+      renderOverrideRows(kind);
+      appendLog(`[overrides] ${isBacktest ? "Backtest" : "Runtime"} updated ${changed} symbol/interval override(s).`);
+    };
+    const removeSelectedOverrides = (kind) => {
+      const tableId = kind === "backtest" ? "backtest-overrides-table" : "runtime-overrides-table";
+      const selected = [...($(tableId)?.querySelectorAll("tbody tr.selected[data-override-index]") || [])].map((row) => Number(row.dataset.overrideIndex));
+      if (!selected.length) {
+        appendLog(`[overrides] ${kind === "backtest" ? "Backtest" : "Runtime"} remove skipped: no selected rows.`);
+        return;
+      }
+      const selectedSet = new Set(selected);
+      const rows = overrideRowsForKind(kind).filter((_, index) => !selectedSet.has(index));
+      setOverrideRowsForKind(kind, rows);
+      renderOverrideRows(kind);
+      appendLog(`[overrides] Removed ${selected.length} ${kind === "backtest" ? "backtest" : "runtime"} override row(s).`);
+    };
+    const clearOverrides = (kind) => {
+      setOverrideRowsForKind(kind, []);
+      renderOverrideRows(kind);
+      appendLog(`[overrides] Cleared ${kind === "backtest" ? "backtest" : "runtime"} overrides.`);
+    };
+    const stopLossSummary = (value) => {
+      const stopLoss = value?.stop_loss && typeof value.stop_loss === "object" ? value.stop_loss : value;
+      if (!stopLoss || typeof stopLoss !== "object" || !stopLoss.enabled) return "--";
+      const amount = stopLoss.mode === "both"
+        ? `${formatNumber(stopLoss.usdt, 2)} USDT / ${formatNumber(stopLoss.percent, 2)}%`
+        : stopLoss.mode === "percent"
+          ? `${formatNumber(stopLoss.percent, 2)}%`
+          : `${formatNumber(stopLoss.usdt, 2)} USDT`;
+      return `${stopLoss.mode || "stop"} / ${stopLoss.scope || "per_trade"} / ${amount}`;
+    };
+    const backtestRunsFromPayload = tauriUiBehavior.backtestRunsFromPayload || ((payload) => {
+      if (Array.isArray(payload?.top_runs)) return payload.top_runs;
+      if (Array.isArray(payload?.results)) return payload.results;
+      if (Array.isArray(payload?.runs)) return payload.runs;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    });
+    const renderBacktestResultsTable = (rows) => {
+      lastBacktestRows = Array.isArray(rows) ? rows : [];
+      const wrap = $("backtest-output-table");
+      const body = wrap?.querySelector("tbody");
+      if (!body) return;
+      const columns = wrap.dataset.columns.split("|");
+      if (!lastBacktestRows.length) {
+        body.innerHTML = `<tr>${columns.map(() => "<td>--</td>").join("")}</tr>`;
+        return;
+      }
+      body.innerHTML = lastBacktestRows.map((row, index) => {
+        const controls = row?.strategy_controls && typeof row.strategy_controls === "object" ? row.strategy_controls : {};
+        const indicators = normalizeIndicatorList(row?.indicator_keys ?? row?.indicators ?? row?.indicator);
+        const values = [
+          row?.symbol,
+          row?.interval,
+          row?.logic || selectedText("backtest-logic"),
+          indicators.join(", ") || "--",
+          row?.trades,
+          row?.loop_interval_override || controls.loop_interval_override,
+          row?.start || row?.start_date,
+          row?.end || row?.end_date,
+          row?.position_pct || controls.position_pct || numberFrom("backtest-position-pct", 2),
+          stopLossSummary(controls.stop_loss || row?.stop_loss),
+          row?.margin_mode || controls.margin_mode,
+          row?.position_mode || controls.position_mode,
+          row?.assets_mode || controls.assets_mode,
+          row?.account_mode || controls.account_mode,
+          row?.leverage || controls.leverage,
+          row?.roi_value,
+          row?.roi_percent,
+          row?.max_drawdown_value,
+          row?.max_drawdown_percent,
+          row?.max_drawdown_value,
+          row?.max_drawdown_percent
+        ];
+        return `<tr data-backtest-index="${index}">${columns.map((_, columnIndex) => `<td>${escapeHtml(values[columnIndex] ?? "--")}</td>`).join("")}</tr>`;
+      }).join("");
+    };
+    const backtestResultToDashboardOverride = (row) => {
+      const controls = {
+        ...(row?.strategy_controls && typeof row.strategy_controls === "object" ? row.strategy_controls : {}),
+        ...strategyControlsForKind("backtest")
+      };
+      if (row?.loop_interval_override && !controls.loop_interval_override) controls.loop_interval_override = row.loop_interval_override;
+      if (row?.leverage !== undefined && controls.leverage === undefined) controls.leverage = row.leverage;
+      return normalizeOverrideRow({
+        symbol: row?.symbol,
+        interval: row?.interval,
+        indicators: normalizeIndicatorList(row?.indicator_keys ?? row?.indicators ?? row?.indicator),
+        strategy_controls: controls
+      });
+    };
+    const selectedBacktestResultIndexes = () => [...($("backtest-output-table")?.querySelectorAll("tbody tr.selected[data-backtest-index]") || [])]
+      .map((row) => Number(row.dataset.backtestIndex))
+      .filter((index) => Number.isInteger(index));
+    const addBacktestRowsToDashboard = (mode) => {
+      const indexes = mode === "all" ? lastBacktestRows.map((_, index) => index) : selectedBacktestResultIndexes();
+      if (!lastBacktestRows.length) {
+        appendLog("[backtest] No backtest results available to add to dashboard.");
+        return;
+      }
+      if (!indexes.length) {
+        appendLog("[backtest] Select one or more backtest result rows to add.");
+        return;
+      }
+      const imported = tauriUiBehavior.importBacktestRowsToDashboard
+        ? tauriUiBehavior.importBacktestRowsToDashboard({
+          runtimeRows: runtimeOverrideRows,
+          resultRows: lastBacktestRows,
+          indexes,
+          rowToOverride: backtestResultToDashboardOverride,
+          overrideKey: overrideImportKey
+        })
+        : (() => {
+          const rows = [...runtimeOverrideRows];
+          const existing = new Set(rows.map(overrideImportKey));
+          const importedSymbols = [];
+          const importedIntervals = [];
+          let added = 0;
+          let skipped = 0;
+          for (const index of indexes) {
+            const next = backtestResultToDashboardOverride(lastBacktestRows[index]);
+            if (!next.symbol || !next.interval) {
+              skipped += 1;
+              continue;
+            }
+            const key = overrideImportKey(next);
+            if (existing.has(key)) {
+              skipped += 1;
+              continue;
+            }
+            rows.push(next);
+            existing.add(key);
+            importedSymbols.push(next.symbol);
+            importedIntervals.push(next.interval);
+            added += 1;
+          }
+          return { rows, importedSymbols, importedIntervals, added, skipped };
+        })();
+      const { rows, importedSymbols, importedIntervals, added, skipped } = imported;
+      if (added) {
+        setOverrideRowsForKind("runtime", rows);
+        renderOverrideRows("runtime");
+        mergeTextareaLines("symbols-input", importedSymbols);
+        mergeTextareaLines("intervals-input", importedIntervals);
+        hydrateChartControls(buildRuntimeConfigPatch());
+      }
+      appendLog(`[backtest] Added ${added} result row(s) to dashboard overrides${skipped ? `; skipped ${skipped}` : ""}.`);
+    };
+    const numericRunValue = (row, key, fallback = 0) => {
+      const value = Number(row?.[key] ?? row?.data?.[key]);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    const indicatorSetKey = (value) => indicatorKeysForRequest(value).sort().join("|");
+    const selectBacktestScanBest = (runs, mddLimit) => tauriUiBehavior.selectBacktestScanBest
+      ? tauriUiBehavior.selectBacktestScanBest(runs, mddLimit, indicatorKeysForRequest)
+      : (() => {
+        let best = null;
+        let bestScore = null;
+        const limit = Number.isFinite(Number(mddLimit)) ? Number(mddLimit) : 0;
+        for (const row of runs || []) {
+          const trades = Math.trunc(numericRunValue(row, "trades", 0));
+          if (trades <= 0) continue;
+          const mdd = numericRunValue(row, "max_drawdown_percent", 0);
+          if (mdd > limit) continue;
+          const symbol = String(row?.symbol || "").trim().toUpperCase();
+          const interval = String(row?.interval || "").trim();
+          if (!symbol || !interval) continue;
+          const roiPercent = numericRunValue(row, "roi_percent", 0);
+          const roiValue = numericRunValue(row, "roi_value", 0);
+          const score = [roiPercent, roiValue, -mdd];
+          if (!bestScore || score[0] > bestScore[0] || (score[0] === bestScore[0] && score[1] > bestScore[1]) || (score[0] === bestScore[0] && score[1] === bestScore[1] && score[2] > bestScore[2])) {
+            bestScore = score;
+            best = {
+              symbol,
+              interval,
+              indicator_keys: indicatorKeysForRequest(row?.indicator_keys ?? row?.indicators ?? row?.indicator),
+              roi_percent: roiPercent,
+              roi_value: roiValue,
+              max_drawdown_percent: mdd,
+              trades
+            };
+          }
+        }
+        return best;
+      })();
+    const selectBacktestResultRow = (target) => {
+      const rows = [...($("backtest-output-table")?.querySelectorAll("tbody tr[data-backtest-index]") || [])];
+      rows.forEach((row) => row.classList.remove("selected"));
+      const targetSymbols = String(target?.symbol || "").trim().toUpperCase();
+      const targetInterval = String(target?.interval || "").trim();
+      const targetIndicators = indicatorSetKey(target?.indicator_keys ?? target?.indicators);
+      for (const row of rows) {
+        const index = Number(row.dataset.backtestIndex);
+        const data = lastBacktestRows[index] || {};
+        const rowIndicators = indicatorSetKey(data?.indicator_keys ?? data?.indicators ?? data?.indicator);
+        const indicatorsMatch = !targetIndicators || !rowIndicators || targetIndicators === rowIndicators;
+        if (String(data?.symbol || "").trim().toUpperCase() === targetSymbols && String(data?.interval || "").trim() === targetInterval && indicatorsMatch) {
+          row.classList.add("selected");
+          row.scrollIntoView?.({ block: "nearest" });
+          return index;
+        }
+      }
+      return -1;
+    };
+    const setBacktestScanBestSummary = (best, mddLimit) => {
+      if (!best) {
+        setText("backtest-scan-status-text", `No run met MDD <= ${formatNumber(mddLimit, 2)}%`);
+        setText("backtest-scan-best-text", "--");
+        return;
+      }
+      setText("backtest-scan-status-text", "Complete");
+      setText(
+        "backtest-scan-best-text",
+        `${best.symbol}@${best.interval} ROI ${formatNumber(best.roi_percent, 2)}% | MDD ${formatNumber(best.max_drawdown_percent, 2)}% | trades ${best.trades}`
+      );
+    };
+    const buildBacktestScanRequest = () => {
+      const request = buildBacktestRequest();
+      const allSymbols = uniqueValues((request.symbols || []).map((symbol) => String(symbol).toUpperCase()));
+      const topN = Math.max(1, Math.trunc(numberFrom("backtest-scan-top-n", 200)));
+      const mddLimit = Math.max(0, Math.min(100, numberFrom("backtest-scan-mdd-limit", 10)));
+      const indicators = selectedIndicatorKeysForKind("backtest");
+      if (!allSymbols.length) throw new Error("Load or enter at least one backtest symbol before scanning.");
+      if (!request.intervals.length) throw new Error("Select at least one interval before scanning.");
+      if (!indicators.length) throw new Error("Enable at least one backtest indicator before scanning.");
+      return {
+        request: {
+          ...request,
+          symbols: allSymbols.slice(0, Math.min(topN, allSymbols.length)),
+          indicators: selectedIndicatorsConfigForKind("backtest"),
+          pair_overrides: [],
+          scan: true,
+          scan_top_n: topN,
+          scan_mdd_limit: mddLimit
+        },
+        requestedTopN: topN,
+        availableSymbolCount: allSymbols.length
+      };
+    };
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const isBacktestSnapshotActive = (payload) => {
+      const state = String(payload?.state || "").toLowerCase();
+      return ["accepted", "pending", "preparing", "running", "starting"].includes(state);
+    };
+    const pollBacktestUntilIdle = async (label, maxAttempts = 60) => {
+      let latest = null;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        latest = await serviceRequest("backtest", "GET");
+        if (!latest.ok) {
+          setServiceStatus(`Service API: ${latest.error || `HTTP ${latest.status}`}`, false);
+          appendLog(`[api] ${label}: failed - ${latest.error || `HTTP ${latest.status}`}`);
+          return latest;
+        }
+        setServiceStatus(`Service API: connected (${latest.status})`, true);
+        const payload = latest.payload || {};
+        const runs = backtestRunsFromPayload(payload);
+        if (runs.length) renderBacktestResultsTable(runs);
+        const progress = Number(payload.progress_percent);
+        setText("backtest-scan-status-text", isBacktestSnapshotActive(payload) ? `Running${Number.isFinite(progress) ? ` ${formatNumber(progress, 1)}%` : ""}` : String(payload.status_message || payload.state || "Complete"));
+        if (!isBacktestSnapshotActive(payload)) return latest;
+        await sleep(1000);
+      }
+      appendLog(`[api] ${label}: scan still running after timeout; refresh backtest later for final results.`);
+      return latest;
+    };
+    const runBacktestScan = async () => {
+      let scanConfig;
+      try {
+        scanConfig = buildBacktestScanRequest();
+      } catch (error) {
+        setBacktestScanBestSummary(null, numberFrom("backtest-scan-mdd-limit", 10));
+        appendLog(`[backtest] Scan skipped: ${error.message || error}`);
+        return;
+      }
+      if (scanConfig.availableSymbolCount < scanConfig.requestedTopN) {
+        appendLog(`[backtest] Only ${scanConfig.availableSymbolCount} symbol(s) are loaded; scanning available symbols instead of requested top ${scanConfig.requestedTopN}.`);
+      }
+      if (!(await ensureServiceApi())) return;
+      const scanButton = $("backtest-scan-symbols-btn");
+      const runButton = $("run-backtest-btn");
+      scanButton.disabled = true;
+      runButton.disabled = true;
+      setText("backtest-scan-status-text", `Starting scan for ${scanConfig.request.symbols.length} symbol(s)...`);
+      setText("backtest-scan-best-text", "--");
+      try {
+        const submit = await requestAndReport("Scan symbols", "backtest_run", "POST", { request: scanConfig.request, source: "tauri-desktop-scan" });
+        if (!submit.ok || submit.payload?.accepted === false) {
+          setText("backtest-scan-status-text", submit.payload?.status_message || submit.error || "Scan rejected.");
+          return;
+        }
+        const snapshot = await pollBacktestUntilIdle("Scan symbols");
+        const runs = backtestRunsFromPayload(snapshot?.payload);
+        renderBacktestResultsTable(runs);
+        const best = selectBacktestScanBest(runs, scanConfig.request.scan_mdd_limit);
+        setBacktestScanBestSummary(best, scanConfig.request.scan_mdd_limit);
+        if (best) {
+          selectBacktestResultRow(best);
+          appendLog(`[backtest] Scan best: ${best.symbol}@${best.interval} ROI ${formatNumber(best.roi_percent, 2)}% | MDD ${formatNumber(best.max_drawdown_percent, 2)}% | trades ${best.trades}.`);
+        } else {
+          appendLog(`[backtest] Scan complete, but no runs met MDD <= ${formatNumber(scanConfig.request.scan_mdd_limit, 2)}% with trades.`);
+        }
+      } finally {
+        scanButton.disabled = false;
+        runButton.disabled = false;
+      }
+    };
+    let lastPositionRows = [];
+    const positionsViewMode = () => selectedValue("positions-view-select") || "cumulative";
+    const syncPositionsTableOptions = () => {
+      const wrap = $("positions-table");
+      if (!wrap) return;
+      wrap.classList.toggle("wrap-rows", Boolean($("positions-auto-row-height")?.checked));
+      wrap.classList.toggle("fixed-columns", !Boolean($("positions-auto-column-width")?.checked));
+    };
+    const normalizePositionRow = (row) => {
+      const data = row?.data && typeof row.data === "object" ? row.data : {};
+      return {
+        symbol: row?.symbol || data.symbol || "Unknown",
+        size_usdt: row?.size_usdt ?? row?.notional ?? data.size_usdt ?? data.value,
+        mark_price: row?.mark_price ?? row?.last_price ?? data.mark,
+        margin_ratio: row?.margin_ratio ?? data.margin_ratio,
+        liquidation_price: row?.liquidation_price ?? data.liquidation_price,
+        margin_usdt: row?.margin_usdt ?? row?.margin ?? data.margin_usdt,
+        quantity: row?.quantity ?? data.qty,
+        pnl_value: row?.pnl_value ?? row?.pnl ?? data.pnl_value,
+        roi_percent: row?.roi_percent ?? row?.roi ?? data.roi_percent,
+        interval: row?.interval ?? row?.entry_tf ?? data.interval_display ?? data.interval,
+        indicator: row?.indicator ?? (Array.isArray(row?.indicators) ? row.indicators.join(", ") : ""),
+        triggered_indicator_value: row?.triggered_indicator_value ?? data.triggered_indicator_value,
+        current_indicator_value: row?.current_indicator_value ?? data.current_indicator_value,
+        side: row?.side_label ?? row?.side ?? row?.side_key ?? data.side_key,
+        open_time: row?.open_time ?? data.open_time,
+        close_time: row?.close_time ?? data.close_time,
+        stop_loss: row?.stop_loss ?? (row?.stop_loss_enabled ? "Enabled" : "--"),
+        status: row?.status ?? "Active"
+      };
+    };
+    const normalizePositionRows = (portfolio) => {
+      if (Array.isArray(portfolio?.positions) && portfolio.positions.length) {
+        return portfolio.positions.map(normalizePositionRow);
+      }
+      if (portfolio?.open_position_records && typeof portfolio.open_position_records === "object") {
+        return Object.values(portfolio.open_position_records).map(normalizePositionRow);
+      }
+      return [];
+    };
+    const collapsePositionRows = (rows) => {
+      const buckets = new Map();
+      for (const row of rows) {
+        const key = `${row.symbol || "Unknown"}|${row.side || ""}`;
+        const item = buckets.get(key) || { ...row, size_usdt: 0, margin_usdt: 0, quantity: 0, pnl_value: 0, intervals: new Set(), indicators: new Set() };
+        item.size_usdt = Number(item.size_usdt || 0) + Number(row.size_usdt || 0);
+        item.margin_usdt = Number(item.margin_usdt || 0) + Number(row.margin_usdt || 0);
+        item.quantity = Number(item.quantity || 0) + Number(row.quantity || 0);
+        item.pnl_value = Number(item.pnl_value || 0) + Number(row.pnl_value || 0);
+        if (row.interval) item.intervals.add(row.interval);
+        if (row.indicator) item.indicators.add(row.indicator);
+        item.mark_price = row.mark_price ?? item.mark_price;
+        item.margin_ratio = row.margin_ratio ?? item.margin_ratio;
+        item.liquidation_price = row.liquidation_price ?? item.liquidation_price;
+        item.status = row.status ?? item.status;
+        buckets.set(key, item);
+      }
+      return [...buckets.values()].map((row) => ({
+        ...row,
+        interval: [...row.intervals].join(", ") || row.interval,
+        indicator: [...row.indicators].join(", ") || row.indicator
+      }));
+    };
+    const renderPositionsTableRows = (rows = lastPositionRows) => {
+      syncPositionsTableOptions();
+      const wrap = $("positions-table");
+      const body = wrap?.querySelector("tbody");
+      if (!body) return;
+      const sourceRows = Array.isArray(rows) ? rows : [];
+      const displayRows = positionsViewMode() === "cumulative" ? collapsePositionRows(sourceRows) : sourceRows;
+      if (!displayRows.length) {
+        const columns = wrap.dataset.columns.split("|");
+        body.innerHTML = `<tr>${columns.map(() => "<td>--</td>").join("")}</tr>`;
+        return;
+      }
+      body.innerHTML = displayRows.map((row, index) => {
+        const pnl = row.pnl_value !== undefined && row.pnl_value !== null
+          ? `${formatNumber(row.pnl_value, 2)} (${formatNumber(row.roi_percent, 2)}%)`
+          : "--";
+        const values = [
+          row.symbol,
+          formatNumber(row.size_usdt, 2),
+          formatNumber(row.mark_price, 6),
+          formatNumber(row.margin_ratio, 4),
+          formatNumber(row.liquidation_price, 6),
+          formatNumber(row.margin_usdt, 2),
+          formatNumber(row.quantity, 8),
+          pnl,
+          row.interval || "--",
+          row.indicator || "--",
+          row.triggered_indicator_value ?? "--",
+          row.current_indicator_value ?? "--",
+          row.side || "--",
+          row.open_time || "--",
+          row.close_time || "--",
+          row.stop_loss || "--",
+          row.status || "--",
+          `<button class="action danger position-close-row-btn" data-symbol="${escapeHtml(row.symbol)}" type="button">Close</button>`
+        ];
+        return `<tr data-position-index="${index}">${values.map((value, col) => `<td>${col === 17 ? value : escapeHtml(value)}</td>`).join("")}</tr>`;
+      }).join("");
+    };
+    const renderChartState = () => {
+      const view = selectedValue("chart-view-select") || "tradingview";
+      const states = {
+        "chart-tradingview-state": view === "tradingview" ? "Active" : "Ready",
+        "chart-original-state": view === "original" ? "Active" : "Ready",
+        "chart-lightweight-state": view === "lightweight" ? "Active" : "Ready"
+      };
+      for (const [id, label] of Object.entries(states)) setText(id, label);
+      const market = selectedValue("chart-market-select") || "Futures";
+      const symbol = selectedValue("chart-symbol-select") || "BTCUSDT";
+      const interval = selectedValue("chart-interval-select") || "1m";
+      setText("chart-status-text", `${chartViewLabel(view)}: ${market} ${symbol} ${interval}`);
+      setText("chart-open-url-text", chartUrl());
+    };
+    const hydrateChartControls = (config) => {
+      const chart = config?.chart && typeof config.chart === "object" ? config.chart : {};
+      const symbols = uniqueValues(
+        Array.isArray(config?.symbols) ? config.symbols : [],
+        chart.symbol ? [chart.symbol] : [],
+        chartDefaultSymbols
+      );
+      const intervals = uniqueValues(
+        Array.isArray(config?.intervals) ? config.intervals : [],
+        chart.interval ? [chart.interval] : [],
+        chartDefaultIntervals
+      );
+      replaceSelectOptions("chart-symbol-select", symbols, chart.symbol || symbols[0] || "BTCUSDT");
+      replaceSelectOptions("chart-interval-select", intervals, chart.interval || intervals[0] || "1m");
+      setSelect("chart-market-select", chart.market || config?.account_type || "Futures");
+      setSelect("chart-view-select", chart.view_mode || "tradingview", true);
+      renderChartState();
     };
     const serviceBaseUrl = () => {
       const host = $("service-host")?.value?.trim() || "127.0.0.1";
@@ -848,6 +1618,10 @@
       $("closed-pnl-text").textContent = typeof closedPnl === "number" ? `${closedPnl.toFixed(2)} USDT` : String(closedPnl);
       $("bot-active-time-text").textContent = status.active_duration || status.active_time || "--";
       setValue("account-total-balance", typeof totalBalance === "number" ? `${totalBalance.toFixed(2)} USDT` : totalBalance);
+      setText("positions-total-balance", formatMoney(totalBalance));
+      setText("positions-available-balance", formatMoney(portfolio.available_balance ?? portfolio.availableBalance));
+      setText("positions-bot-status", active ? "ON" : "OFF");
+      setText("positions-active-time", status.active_duration || status.active_time || "--");
     };
     const hydrateLlmControls = (llm) => {
       if (!llm || typeof llm !== "object") return;
@@ -907,9 +1681,20 @@
       setChecked("lead-trader-enabled", config.lead_trader_enabled);
       setSelect("lead-trader-profile", config.lead_trader_profile);
       setChecked("indicator-live-values", config.indicator_use_live_values);
-      setChecked("add-only-net-direction", config.hedge_preserve_opposites);
+      setChecked("add-only-net-direction", config.add_only);
       setChecked("allow-opposite-positions", config.allow_opposite_positions);
       setChecked("close-on-window-close", config.close_on_exit);
+      setChecked("positions-auto-row-height", config.positions_auto_resize_rows ?? true);
+      setChecked("positions-auto-column-width", config.positions_auto_resize_columns ?? true);
+      syncPositionsTableOptions();
+      if (Array.isArray(config.runtime_symbol_interval_pairs)) {
+        runtimeOverrideRows = config.runtime_symbol_interval_pairs.map(normalizeOverrideRow).filter((row) => row.symbol && row.interval);
+        renderOverrideRows("runtime");
+      }
+      if (Array.isArray(config.backtest_symbol_interval_pairs)) {
+        backtestOverrideRows = config.backtest_symbol_interval_pairs.map(normalizeOverrideRow).filter((row) => row.symbol && row.interval);
+        renderOverrideRows("backtest");
+      }
       if (config.api_key_present || config.credentials_present) $("api-key-input").placeholder = "Configured in service config";
       if (config.api_secret_present || config.credentials_present) $("api-secret-input").placeholder = "Configured in service config";
       if (config.stop_loss && typeof config.stop_loss === "object") {
@@ -920,6 +1705,7 @@
         setValue("stop-loss-percent", config.stop_loss.percent);
       }
       hydrateLlmControls(config.llm);
+      hydrateChartControls(config);
     };
     const hydrateBacktestControls = (backtest) => {
       if (!backtest || typeof backtest !== "object") return;
@@ -932,6 +1718,13 @@
       setSelect("backtest-mdd-logic", backtest.mdd_logic);
       setValue("backtest-position-pct", backtest.position_pct);
       setSelect("backtest-loop-interval", backtest.loop_interval_override);
+      if (backtest.stop_loss && typeof backtest.stop_loss === "object") {
+        setChecked("backtest-stop-loss-enabled", backtest.stop_loss.enabled);
+        setSelect("backtest-stop-loss-mode", backtest.stop_loss.mode);
+        setSelect("backtest-stop-loss-scope", backtest.stop_loss.scope);
+        setValue("backtest-stop-loss-usdt", backtest.stop_loss.usdt);
+        setValue("backtest-stop-loss-percent", backtest.stop_loss.percent);
+      }
       setSelect("backtest-side", backtest.side);
       setSelect("backtest-margin-mode", backtest.margin_mode);
       setSelect("backtest-position-mode", backtest.position_mode);
@@ -944,6 +1737,10 @@
       if (backtest.template && typeof backtest.template === "object") {
         setChecked("backtest-template-enabled", backtest.template.enabled);
         setSelect("backtest-template-name", backtest.template.name);
+      }
+      if (Array.isArray(backtest.pair_overrides)) {
+        backtestOverrideRows = backtest.pair_overrides.map(normalizeOverrideRow).filter((row) => row.symbol && row.interval);
+        renderOverrideRows("backtest");
       }
     };
     const hydrateFromDashboard = (payload) => {
@@ -984,28 +1781,8 @@
       if (!result.ok) return result;
       setStatusSnapshot(result.payload);
       const portfolio = result.payload?.portfolio || {};
-      const records = Object.values(portfolio.open_position_records || {});
-      const columns = $("positions-table").dataset.columns.split("|");
-      renderTableRows("positions-table", records, columns, (row) => [
-        row.symbol,
-        row.size_usdt || row.notional,
-        row.last_price,
-        row.margin_ratio,
-        row.liquidation_price,
-        row.margin,
-        row.quantity,
-        row.pnl_roi || row.pnl,
-        row.interval,
-        row.indicator,
-        row.triggered_indicator_value,
-        row.current_indicator_value,
-        row.side,
-        row.open_time,
-        row.close_time,
-        row.stop_loss,
-        row.status,
-        ""
-      ]);
+      lastPositionRows = normalizePositionRows(portfolio);
+      renderPositionsTableRows(lastPositionRows);
       return result;
     };
     const buildRuntimeConfigPatch = () => {
@@ -1023,13 +1800,19 @@
         tif: selectedValue("config-time-in-force"),
         gtd_minutes: numberFrom("config-gtd-minutes", 30),
         indicator_source: selectedText("config-indicator-source"),
+        indicators: selectedIndicatorsConfigForKind("runtime"),
+        chart: buildChartConfigPatch(),
+        positions_auto_resize_rows: Boolean($("positions-auto-row-height")?.checked),
+        positions_auto_resize_columns: Boolean($("positions-auto-column-width")?.checked),
+        runtime_symbol_interval_pairs: runtimeOverrideRows,
+        backtest_symbol_interval_pairs: backtestOverrideRows,
         position_pct: numberFrom("position-pct-input", 2),
         side: selectedValue("strategy-side") || "BOTH",
         loop_interval_override: selectedValue("loop-interval-select"),
         lead_trader_enabled: Boolean($("lead-trader-enabled")?.checked),
         lead_trader_profile: selectedValue("lead-trader-profile"),
         indicator_use_live_values: Boolean($("indicator-live-values")?.checked),
-        hedge_preserve_opposites: Boolean($("add-only-net-direction")?.checked),
+        add_only: Boolean($("add-only-net-direction")?.checked),
         allow_opposite_positions: Boolean($("allow-opposite-positions")?.checked),
         close_on_exit: Boolean($("close-on-window-close")?.checked),
         symbols: linesFrom($("symbols-input")?.value),
@@ -1059,10 +1842,121 @@
       llm_allow_public_network: Boolean(llmPublic.checked),
       llm_reasoning_effort: reasoning.value || "default"
     });
+    const localModelPayload = () => ({
+      base_url: $("llm-base-url")?.value || "http://127.0.0.1:11434/v1",
+      model: model.value || "",
+      source: "tauri-desktop-llm"
+    });
+    const selectedLlmProviderMode = () => provider.selectedOptions?.[0]?.dataset?.mode || provider.value;
+    const isLocalLlmProvider = () => selectedLlmProviderMode() === "local" || provider.value === "local";
+    const localModelStorageText = (status) => tauriUiBehavior.localModelStorageText
+      ? tauriUiBehavior.localModelStorageText(status)
+      : (Array.isArray(status?.storage_paths) && status.storage_paths.length
+        ? status.storage_paths.join("; ")
+        : (status?.storage_hint || "Ollama model cache outside this project."));
+    const describeLocalModelStatus = (status) => tauriUiBehavior.describeLocalModelStatus
+      ? tauriUiBehavior.describeLocalModelStatus(status, model.value)
+      : (() => {
+        if (!status || typeof status !== "object") return "Local model status: unavailable.";
+        const installed = status.installed ? "installed" : "not installed";
+        const size = status.estimated_size_label ? `, estimated ${status.estimated_size_label}` : "";
+        const warning = status.disk_space_warning ? ` ${status.disk_space_warning}` : "";
+        const error = status.error ? ` Server check: ${status.error}` : "";
+        return `Local model '${status.model || model.value}' is ${installed} on ${status.server_kind || "local server"}${size}. Storage: ${localModelStorageText(status)}.${warning}${error}`;
+      })();
+    const setLocalModelStatus = (statusOrText) => {
+      const text = typeof statusOrText === "string" ? statusOrText : describeLocalModelStatus(statusOrText);
+      setText("local-model-status-text", text);
+      appendLog(`[llm] ${text}`);
+    };
+    const refreshLocalModelStatus = async () => {
+      const payload = localModelPayload();
+      if (!payload.model.trim()) {
+        setLocalModelStatus("Select a concrete local model first.");
+        return null;
+      }
+      const result = await requestAndReport("Check local model", "llm_local_model_status", "GET", null, {
+        base_url: payload.base_url,
+        model: payload.model
+      });
+      if (!result.ok) return null;
+      setLocalModelStatus(result.payload);
+      return result.payload;
+    };
+    const ensureLocalModelServer = async (status) => {
+      if (!status?.error || !status?.can_start) return status;
+      if (!window.confirm(`Ollama is installed but not running.\n\nStart Ollama now for '${status.model}'?`)) return status;
+      const start = await requestAndReport("Start Ollama", "llm_local_model_start", "POST", localModelPayload());
+      if (!start.ok) return status;
+      return await refreshLocalModelStatus();
+    };
+    const checkOrDownloadLocalModel = async () => {
+      if (!isLocalLlmProvider()) {
+        setLocalModelStatus("Local model download is only available for the Local / Custom OpenAI-Compatible provider.");
+        return;
+      }
+      if (!(await ensureServiceApi())) return;
+      let status = await refreshLocalModelStatus();
+      status = await ensureLocalModelServer(status);
+      if (!status) return;
+      if (status.installed) {
+        setLocalModelStatus(status);
+        return;
+      }
+      if (!status.can_download || status.server_kind !== "ollama") {
+        setLocalModelStatus("Automatic local model download is only supported for Ollama at localhost:11434.");
+        return;
+      }
+      const confirmText = `Download '${status.model}' now with Ollama and use it locally on this PC?\n\nEstimated size: ${status.estimated_size_label || "unknown"}.\nStorage: ${localModelStorageText(status)}.\n\nThis can take a while.`;
+      if (!window.confirm(confirmText)) {
+        setLocalModelStatus(`Download cancelled for '${status.model}'.`);
+        return;
+      }
+      const button = $("check-local-model-btn");
+      button.disabled = true;
+      setLocalModelStatus(`Downloading local model '${status.model}' with Ollama...`);
+      try {
+        const result = await requestAndReport("Download local model", "llm_local_model_pull", "POST", localModelPayload());
+        if (result.ok) setLocalModelStatus(result.payload?.status || `Downloaded '${status.model}'.`);
+      } finally {
+        button.disabled = false;
+      }
+    };
+    const removeLocalModel = async () => {
+      if (!isLocalLlmProvider()) {
+        setLocalModelStatus("Local model removal is only available for the Local / Custom OpenAI-Compatible provider.");
+        return;
+      }
+      if (!(await ensureServiceApi())) return;
+      let status = await refreshLocalModelStatus();
+      status = await ensureLocalModelServer(status);
+      if (!status) return;
+      if (!status.installed) {
+        setLocalModelStatus(`Local model '${status.model || model.value}' is not installed in Ollama on this PC.`);
+        return;
+      }
+      if (status.server_kind !== "ollama") {
+        setLocalModelStatus("Automatic local model removal is only supported for Ollama at localhost:11434.");
+        return;
+      }
+      if (!window.confirm(`Remove '${status.model}' from this PC's Ollama model cache?\n\nStorage: ${localModelStorageText(status)}.`)) {
+        setLocalModelStatus(`Removal cancelled for '${status.model}'.`);
+        return;
+      }
+      const button = $("remove-local-model-btn");
+      button.disabled = true;
+      try {
+        const result = await requestAndReport("Remove local model", "llm_local_model_delete", "POST", localModelPayload());
+        if (result.ok) setLocalModelStatus(result.payload?.status || `Removed '${status.model}'.`);
+      } finally {
+        button.disabled = false;
+      }
+    };
     const buildBacktestRequest = () => {
       const request = {
         symbols: linesFrom($("backtest-symbols-input")?.value),
         intervals: linesFrom($("backtest-intervals-input")?.value),
+        indicators: selectedIndicatorsConfigForKind("backtest"),
         logic: selectedValue("backtest-logic") || "AND",
         symbol_source: selectedValue("backtest-symbol-source") || "Futures",
         capital: numberFrom("backtest-capital", 1000),
@@ -1080,6 +1974,14 @@
         mdd_logic: selectedValue("backtest-mdd-logic"),
         scan_top_n: numberFrom("backtest-scan-top-n", 200),
         scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", 10),
+        pair_overrides: overrideRowsForRequest("backtest"),
+        stop_loss: {
+          enabled: Boolean($("backtest-stop-loss-enabled")?.checked),
+          mode: $("backtest-stop-loss-mode")?.value || "usdt",
+          scope: $("backtest-stop-loss-scope")?.value || "per_trade",
+          usdt: numberFrom("backtest-stop-loss-usdt", 0),
+          percent: numberFrom("backtest-stop-loss-percent", 0)
+        },
         template: {
           enabled: Boolean($("backtest-template-enabled")?.checked),
           name: selectedText("backtest-template-name") || null
@@ -1095,7 +1997,9 @@
       if (!input || !target) return;
       const additions = linesFrom(input.value);
       if (!additions.length) return;
-      const merged = [...new Set([...linesFrom(target.value), ...additions])];
+      const merged = tauriUiBehavior.mergeUniqueLines
+        ? tauriUiBehavior.mergeUniqueLines(target.value, additions)
+        : [...new Set([...linesFrom(target.value), ...additions])];
       target.value = merged.join("\n");
       input.value = "";
       appendLog(`[ui] Added custom intervals: ${additions.join(", ")}`);
@@ -1132,23 +2036,40 @@
     });
     $("add-custom-interval-btn")?.addEventListener("click", () => addCustomIntervals("custom-interval-input", "intervals-input"));
     $("backtest-add-custom-interval-btn")?.addEventListener("click", () => addCustomIntervals("backtest-custom-interval-input", "backtest-intervals-input"));
+    for (const chartControlId of ["chart-market-select", "chart-symbol-select", "chart-interval-select", "chart-view-select"]) {
+      $(chartControlId)?.addEventListener("change", renderChartState);
+    }
+    $("chart-refresh-btn")?.addEventListener("click", () => {
+      renderChartState();
+      appendLog(`[chart] Refreshed ${selectedValue("chart-market-select")} ${selectedValue("chart-symbol-select")} ${selectedValue("chart-interval-select")}`);
+    });
+    $("chart-open-browser-btn")?.addEventListener("click", () => {
+      const url = chartUrl();
+      window.open(url, "_blank");
+      appendLog(`[chart] Opened ${url}`);
+    });
+    for (const kind of ["runtime", "backtest"]) {
+      const tableId = kind === "backtest" ? "backtest-overrides-table" : "runtime-overrides-table";
+      $(tableId)?.addEventListener("click", (event) => {
+        const row = event.target.closest("tbody tr[data-override-index]");
+        if (row) row.classList.toggle("selected");
+      });
+      $(`${kind}-override-add-selected-btn`)?.addEventListener("click", () => addSymbolIntervalOverrides(kind));
+      $(`${kind}-override-remove-selected-btn`)?.addEventListener("click", () => removeSelectedOverrides(kind));
+      $(`${kind}-override-clear-btn`)?.addEventListener("click", () => clearOverrides(kind));
+    }
     $("backtest-refresh-symbols-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
       await refreshDashboard();
     });
     $("backtest-scan-symbols-btn")?.addEventListener("click", async () => {
-      if (!(await ensureServiceApi())) return;
-      appendLog("[api] Max MDD scanner is configured in the backtest request; use Run Backtest to submit it through /api/v1/backtest/run.");
+      await runBacktestScan();
     });
     $("check-local-model-btn")?.addEventListener("click", async () => {
-      if (!(await ensureServiceApi())) return;
-      await requestAndReport("Refresh LLM providers", "llm_providers");
-      appendLog("[llm] Local model download/removal is handled by the Python LLM panel until the Service API exposes Ollama pull/delete routes.");
+      await checkOrDownloadLocalModel();
     });
     $("remove-local-model-btn")?.addEventListener("click", async () => {
-      if (!(await ensureServiceApi())) return;
-      await requestAndReport("Refresh LLM providers", "llm_providers");
-      appendLog("[llm] Local model removal is handled by the Python LLM panel until the Service API exposes Ollama delete routes.");
+      await removeLocalModel();
     });
     $("start-bot-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
@@ -1181,41 +2102,61 @@
       if (!(await ensureServiceApi())) return;
       await refreshPositions();
     });
+    $("market-close-all-positions-btn")?.addEventListener("click", async () => {
+      if (!window.confirm("Market close all active positions?")) return;
+      if (!(await ensureServiceApi())) return;
+      const result = await requestAndReport("Market close all positions", "control_stop", "POST", { close_positions: true, source: "tauri-desktop-positions" });
+      if (result.ok) await refreshDashboard();
+    });
+    $("positions-view-select")?.addEventListener("change", () => {
+      renderPositionsTableRows(lastPositionRows);
+      appendLog(`[positions] View mode: ${selectedText("positions-view-select")}`);
+    });
+    for (const positionsOptionId of ["positions-auto-row-height", "positions-auto-column-width"]) {
+      $(positionsOptionId)?.addEventListener("change", syncPositionsTableOptions);
+    }
+    $("positions-table")?.addEventListener("click", (event) => {
+      const closeButton = event.target.closest(".position-close-row-btn");
+      if (closeButton) {
+        event.stopPropagation();
+        appendLog(`[positions] Per-row close for ${closeButton.dataset.symbol || "position"} needs a dedicated Service API route; use Market Close ALL Positions in this shell.`);
+        return;
+      }
+      const row = event.target.closest("tbody tr[data-position-index]");
+      if (row) row.classList.toggle("selected");
+    });
+    $("positions-clear-selected-btn")?.addEventListener("click", () => {
+      const selected = [...($("positions-table")?.querySelectorAll("tbody tr.selected") || [])];
+      for (const row of selected) row.remove();
+      appendLog(`[positions] Cleared ${selected.length} selected displayed row(s).`);
+    });
+    $("positions-clear-all-btn")?.addEventListener("click", () => {
+      lastPositionRows = [];
+      renderPositionsTableRows(lastPositionRows);
+      appendLog("[positions] Cleared displayed positions table.");
+    });
+    $("backtest-output-table")?.addEventListener("click", (event) => {
+      const row = event.target.closest("tbody tr[data-backtest-index]");
+      if (row) row.classList.toggle("selected");
+    });
+    $("backtest-add-selected-dashboard-btn")?.addEventListener("click", () => addBacktestRowsToDashboard("selected"));
+    $("backtest-add-all-dashboard-btn")?.addEventListener("click", () => addBacktestRowsToDashboard("all"));
     $("run-backtest-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Run backtest", "backtest_run", "POST", { request: buildBacktestRequest(), source: "tauri-desktop" });
       if (!result.ok) return;
       const snapshot = await requestAndReport("Refresh backtest", "backtest");
-      const runs = snapshot.payload?.top_runs || [];
-      const columns = $("backtest-output-table").dataset.columns.split("|");
-      renderTableRows("backtest-output-table", runs, columns, (row) => [
-        row.symbol,
-        row.interval,
-        row.logic,
-        (row.indicator_keys || []).join(", "),
-        row.trades,
-        "--",
-        row.start,
-        row.end,
-        "--",
-        "--",
-        "--",
-        "--",
-        "--",
-        "--",
-        row.leverage,
-        row.roi_value,
-        row.roi_percent,
-        row.max_drawdown_value,
-        row.max_drawdown_percent,
-        row.max_drawdown_value,
-        row.max_drawdown_percent
-      ]);
+      const runs = backtestRunsFromPayload(snapshot.payload);
+      renderBacktestResultsTable(runs);
     });
     $("stop-backtest-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
       await requestAndReport("Stop backtest", "backtest_stop", "POST", { source: "tauri-desktop" });
     });
+    syncPositionsTableOptions();
+    renderOverrideRows("runtime");
+    renderOverrideRows("backtest");
+    renderChartState();
   </script>
 </body>
 </html>

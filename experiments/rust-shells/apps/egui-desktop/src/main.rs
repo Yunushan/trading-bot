@@ -2,8 +2,10 @@
 
 use eframe::egui;
 use trading_bot_core::{
-    TradingAppTab, app_banner, rust_execution_modes, rust_trading_execution_supported,
-    service_api_capabilities, service_api_routes, trading_app_tabs,
+    TradingAppTab, app_banner, rust_execution_modes, rust_native_runtime_capabilities,
+    rust_native_trading_runtime_ready, rust_shell_framework_parity,
+    rust_trading_execution_supported, service_api_capabilities, service_api_routes,
+    trading_app_tabs,
 };
 
 struct EguiShell {
@@ -112,6 +114,27 @@ impl EguiShell {
                 ui.label(format!(
                     "{} | trading_execution_supported={}",
                     mode.detail, mode.trading_execution_supported
+                ));
+                ui.add_space(4.0);
+            }
+            ui.label("Framework Parity:");
+            for parity in rust_shell_framework_parity() {
+                ui.strong(format!("{} - {}", parity.framework, parity.status));
+                ui.label(parity.detail);
+                ui.add_space(4.0);
+            }
+            ui.label(format!(
+                "Native Rust trading runtime ready: {}",
+                rust_native_trading_runtime_ready()
+            ));
+            ui.label("Native Runtime Gap:");
+            for capability in rust_native_runtime_capabilities() {
+                ui.strong(format!("{} - {}", capability.key, capability.title));
+                ui.label(format!("C++: {}", capability.cpp_status));
+                ui.label(format!("Rust: {}", capability.rust_status));
+                ui.label(format!(
+                    "Required before enable: {} | trading_execution_supported={}",
+                    capability.required_before_enable, capability.trading_execution_supported
                 ));
                 ui.add_space(4.0);
             }
