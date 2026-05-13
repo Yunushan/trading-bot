@@ -185,6 +185,12 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             self.assertEqual("ollama", status_response.json()["server_kind"])
             self.assertIn(".ollama", status_response.json()["storage_paths"][0])
 
+            unauthorized_start_response = client.post(
+                SERVICE_API_ROUTE_PATHS["llm_local_model_start"],
+                json={"base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b"},
+            )
+            self.assertEqual(401, unauthorized_start_response.status_code)
+
             start_response = client.post(
                 SERVICE_API_ROUTE_PATHS["llm_local_model_start"],
                 headers=headers,

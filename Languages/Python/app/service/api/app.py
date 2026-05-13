@@ -511,6 +511,7 @@ def create_service_api_app(
     if web_ui_available:
         app.mount(SERVICE_API_UI_PATH, StaticFiles(directory=str(web_client_dir), html=True), name="web-ui")
 
+    public_api_router = APIRouter()
     api_router = APIRouter(dependencies=[Depends(_require_api_auth)])
     stream_router = APIRouter()
 
@@ -762,7 +763,7 @@ def create_service_api_app(
         except ConfigValidationError as exc:
             _raise_config_validation_error(exc)
 
-    @api_router.get("/llm/local-model/status")
+    @public_api_router.get("/llm/local-model/status")
     def get_llm_local_model_status(base_url: str = "http://127.0.0.1:11434/v1", model: str = ""):
         return asdict(get_local_model_status(base_url, model))
 
@@ -842,9 +843,11 @@ def create_service_api_app(
             },
         )
 
+    app.include_router(public_api_router, prefix=SERVICE_API_BASE_PATH)
     app.include_router(api_router, prefix=SERVICE_API_BASE_PATH)
     app.include_router(stream_router, prefix=SERVICE_API_BASE_PATH)
     if SERVICE_API_LEGACY_BASE_PATH != SERVICE_API_BASE_PATH:
+        app.include_router(public_api_router, prefix=SERVICE_API_LEGACY_BASE_PATH, include_in_schema=False)
         app.include_router(api_router, prefix=SERVICE_API_LEGACY_BASE_PATH, include_in_schema=False)
         app.include_router(stream_router, prefix=SERVICE_API_LEGACY_BASE_PATH, include_in_schema=False)
 
