@@ -5,174 +5,608 @@
   <title>Trading Bot Tauri</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080d16;
+      --panel: #101827;
+      --panel-strong: #162235;
+      --line: #273449;
+      --line-strong: #3c4c66;
+      --text: #f4f7fb;
+      --muted: #9ca9bd;
+      --accent: #38bdf8;
+      --good: #22c55e;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+    }
+    * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      display: grid;
       min-height: 100vh;
-      place-items: center;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
     }
-    main {
-      width: min(960px, calc(100vw - 40px));
-      padding: 32px;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      background: #111827;
+    button, input, select, textarea { font: inherit; }
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
     }
-    h1 {
-      margin-top: 0;
+    .topbar, .bottombar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 18px;
+      background: #0b1220;
+      border-bottom: 1px solid var(--line);
     }
-    section {
+    .bottombar {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      font-size: 13px;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 22px; line-height: 1.2; }
+    h2 { font-size: 20px; }
+    h3 { font-size: 15px; }
+    .muted, .subtitle { color: var(--muted); font-size: 13px; }
+    .status-strip {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .pill {
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #0f1828;
+      color: #d7e3f3;
+      font-size: 13px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--bad);
+    }
+    .tabs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #0d1524;
+    }
+    .tab-button {
+      min-width: max-content;
+      min-height: 34px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 7px 12px;
+      background: transparent;
+      color: #b8c5d8;
+      cursor: pointer;
+    }
+    .tab-button.active {
+      border-color: #0284c7;
+      background: #0c4a6e;
+      color: #f0f9ff;
+    }
+    .workspace {
+      padding: 18px;
+      min-width: 0;
+      overflow: auto;
+    }
+    .tab-panel { display: none; gap: 16px; }
+    .tab-panel.active { display: grid; }
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .action {
+      min-height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      padding: 7px 11px;
+      background: #111c2e;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .action.primary { border-color: #0369a1; background: #075985; }
+    .action.danger { border-color: #7f1d1d; background: #3f1119; }
+    .metrics, .grid-2, .grid-3, .cards {
       display: grid;
       gap: 12px;
-      margin-top: 20px;
     }
-    label {
+    .metrics { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric, .panel, .table-wrap, .log-output {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .metric {
+      min-height: 74px;
+      padding: 12px;
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+    .metric strong { font-size: 17px; line-height: 1.2; }
+    .panel {
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+    label, .field {
       display: grid;
       gap: 6px;
       color: #cbd5e1;
       font-size: 13px;
       font-weight: 600;
     }
-    .row {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    input,
-    select {
-      min-height: 36px;
-      border: 1px solid #334155;
+    input, select, textarea {
+      min-height: 34px;
+      border: 1px solid var(--line);
       border-radius: 6px;
-      background: #020617;
+      background: #070d18;
       color: #f8fafc;
-      padding: 8px 10px;
+      padding: 7px 9px;
+      min-width: 0;
     }
+    textarea { min-height: 72px; resize: vertical; }
     .checks {
       display: flex;
       flex-wrap: wrap;
-      gap: 16px;
+      gap: 10px 16px;
     }
     .checks label {
       display: flex;
       align-items: center;
       gap: 8px;
+      min-height: 30px;
     }
     fieldset {
       border: 0;
-      display: grid;
-      gap: 12px;
       margin: 0;
       padding: 0;
+      display: grid;
+      gap: 12px;
       transition: opacity 160ms ease;
     }
-    fieldset:disabled {
-      opacity: 0.38;
+    fieldset:disabled { opacity: 0.38; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 920px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    th {
+      color: #dbeafe;
+      background: var(--panel-strong);
+    }
+    .table-wrap { overflow-x: auto; }
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+    .log-output {
+      min-height: 160px;
+      padding: 12px;
+      font-family: Consolas, "Courier New", monospace;
+      color: #a7f3d0;
+      white-space: pre-wrap;
+    }
+    .subtabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .subtab {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 10px;
+      background: #0d1524;
+      color: #dbeafe;
+    }
+    @media (max-width: 980px) {
+      .section-head { display: grid; }
+      .actions { justify-content: flex-start; }
+      .metrics, .grid-2, .grid-3, .cards { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Trading Bot Tauri Shell</h1>
-    <p>This is the Rust Tauri scaffold for the trading bot workspace.</p>
-    <section aria-label="AI LLM Settings">
-      <h2>AI / LLM Settings</h2>
-      <div class="checks">
-        <label><input type="checkbox" id="llm-enabled"> Enable LLM assistance</label>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Trading Bot Tauri Shell</h1>
+        <p class="subtitle">Rust desktop shell mirroring the Python and C++ tab surface.</p>
       </div>
-      <fieldset id="llm-controls" disabled>
-        <div class="checks">
-          <label><input type="checkbox" id="llm-public"> Allow public network endpoint</label>
+      <div class="status-strip">
+        <span class="pill"><span class="dot" id="bot-status-dot"></span> Bot Status: <span id="bot-status-text">OFF</span></span>
+        <span class="pill">Total PNL Active Positions: <span id="active-pnl-text">--</span></span>
+        <span class="pill">Total PNL Closed Positions: <span id="closed-pnl-text">--</span></span>
+        <span class="pill">Bot Active Time: <span id="bot-active-time-text">--</span></span>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Trading Bot main tabs">
+      <button class="tab-button active" data-tab="dashboard" type="button">Dashboard</button>
+      <button class="tab-button" data-tab="chart" type="button">Chart</button>
+      <button class="tab-button" data-tab="positions" type="button">Positions</button>
+      <button class="tab-button" data-tab="backtest" type="button">Backtest</button>
+      <button class="tab-button" data-tab="liquidation-heatmap" type="button">Liquidation Heatmap</button>
+      <button class="tab-button" data-tab="code-languages" type="button">Code Languages</button>
+    </nav>
+
+    <section class="workspace">
+      <article class="tab-panel active" id="dashboard" aria-label="Dashboard">
+        <div class="section-head">
+          <div>
+            <h2>Dashboard</h2>
+            <p class="muted">Main desktop trading controls mirrored from Python and C++.</p>
+          </div>
+          <div class="actions">
+            <button class="action primary" id="start-bot-btn" type="button">Start</button>
+            <button class="action danger" id="stop-bot-btn" type="button">Stop</button>
+            <button class="action" id="save-config-btn" type="button">Save Config</button>
+            <button class="action" id="load-config-btn" type="button">Load Config</button>
+          </div>
         </div>
-        <div class="row">
-          <label>
-            Provider
-            <select id="llm-provider">
-              <option value="openai" data-mode="cloud" data-base="https://api.openai.com/v1" data-env="OPENAI_API_KEY">OpenAI / ChatGPT</option>
-              <option value="anthropic" data-mode="cloud" data-base="https://api.anthropic.com" data-env="ANTHROPIC_API_KEY">Anthropic Claude</option>
-              <option value="gemini" data-mode="cloud" data-base="https://generativelanguage.googleapis.com/v1beta" data-env="GEMINI_API_KEY">Google Gemini</option>
-              <option value="deepseek" data-mode="cloud" data-base="https://api.deepseek.com" data-env="DEEPSEEK_API_KEY">DeepSeek</option>
-              <option value="grok" data-mode="cloud" data-base="https://api.x.ai/v1" data-env="XAI_API_KEY">xAI Grok</option>
-              <option value="qwen" data-mode="cloud" data-base="https://dashscope-intl.aliyuncs.com/compatible-mode/v1" data-env="DASHSCOPE_API_KEY">Alibaba Qwen / DashScope</option>
-              <option value="local" data-mode="local" data-base="http://127.0.0.1:11434/v1" data-env="LOCAL_LLM_API_KEY">Local / Custom OpenAI-Compatible</option>
-            </select>
-          </label>
-          <label>
-            Model
-            <select id="llm-model"></select>
-          </label>
+        <div class="grid-2">
+          <section class="panel">
+            <h3>Account & Status</h3>
+            <div class="grid-3">
+              <label>API Key:<input id="api-key-input" autocomplete="off"></label>
+              <label>API Secret Key:<input id="api-secret-input" type="password" autocomplete="off"></label>
+              <label>Mode:<select id="config-mode"><option>Live</option><option selected>Demo</option><option>Testnet</option></select></label>
+              <label>Theme:<select id="config-theme"><option>Light</option><option selected>Dark</option><option>Blue</option><option>Yellow</option><option>Green</option><option>Red</option></select></label>
+              <label>Account Type:<select id="config-account-type"><option>Spot</option><option selected>Futures</option></select></label>
+              <label>Account Mode:<select id="config-account-mode"><option selected>Classic Trading</option><option>Portfolio Margin</option></select></label>
+              <label>Connector:<select id="config-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures (Official Recommended)</option><option value="binance-sdk-derivatives-trading-coin-futures">Binance SDK Derivatives Trading COIN-M Futures</option><option value="binance-sdk-spot">Binance SDK Spot (Official Recommended)</option><option value="binance-connector-python">Binance Connector Python</option><option value="ccxt">CCXT (Unified)</option><option value="python-binance">python-binance (Community)</option></select></label>
+              <label>Total USDT balance:<input id="account-total-balance" value="N/A" readonly></label>
+              <label>Position Mode:<input id="account-position-mode" value="N/A" readonly></label>
+              <label>Leverage (Futures):<input id="config-leverage" type="number" min="1" max="150" value="1"></label>
+              <label>Margin Mode (Futures):<select id="config-margin-mode"><option>Cross</option><option selected>Isolated</option></select></label>
+              <label>Position Mode:<select id="config-position-mode"><option>One-way</option><option selected>Hedge</option></select></label>
+              <label>Assets Mode:<select id="config-assets-mode"><option>Single-Asset Mode</option><option>Multi-Assets Mode</option></select></label>
+              <label>Time-in-Force:<select id="config-time-in-force"><option selected>GTC</option><option>IOC</option><option>FOK</option><option>GTD</option></select></label>
+              <label>GTD minutes:<input id="config-gtd-minutes" type="number" min="1" max="1440" value="30"></label>
+              <label>Indicator Source:<select id="config-indicator-source"><option>Binance spot</option><option selected>Binance futures</option><option>TradingView</option><option>Bybit</option><option>Coinbase</option><option>OKX</option><option>Gate</option><option>Bitget</option><option>Mexc</option><option>Kucoin</option><option>HTX</option><option>Kraken</option></select></label>
+            </div>
+            <div class="actions"><button class="action" id="refresh-balance-btn" type="button">Refresh Balance</button></div>
+          </section>
+          <section class="panel">
+            <h3>AI / LLM Settings (Python Dashboard / C++ GUI)</h3>
+            <div class="checks">
+              <label><input type="checkbox" id="llm-enabled"> Enable LLM assistance</label>
+            </div>
+            <fieldset id="llm-controls" disabled>
+              <div class="checks">
+                <label><input type="checkbox" id="llm-public"> Allow public network endpoint</label>
+              </div>
+              <div class="grid-2">
+                <label>Provider:<select id="llm-provider"><option value="openai" data-mode="cloud" data-base="https://api.openai.com/v1" data-env="OPENAI_API_KEY">OpenAI / ChatGPT</option><option value="anthropic" data-mode="cloud" data-base="https://api.anthropic.com" data-env="ANTHROPIC_API_KEY">Anthropic Claude</option><option value="gemini" data-mode="cloud" data-base="https://generativelanguage.googleapis.com/v1beta" data-env="GEMINI_API_KEY">Google Gemini</option><option value="deepseek" data-mode="cloud" data-base="https://api.deepseek.com" data-env="DEEPSEEK_API_KEY">DeepSeek</option><option value="mistral" data-mode="cloud" data-base="https://api.mistral.ai/v1" data-env="MISTRAL_API_KEY">Mistral AI</option><option value="grok" data-mode="cloud" data-base="https://api.x.ai/v1" data-env="XAI_API_KEY">xAI Grok</option><option value="qwen" data-mode="cloud" data-base="https://dashscope-intl.aliyuncs.com/compatible-mode/v1" data-env="DASHSCOPE_API_KEY">Alibaba Qwen / DashScope</option><option value="local" data-mode="local" data-base="http://127.0.0.1:11434/v1" data-env="LOCAL_LLM_API_KEY">Local / Custom OpenAI-Compatible</option></select></label>
+                <label>Model:<select id="llm-model"></select></label>
+              </div>
+              <label>Base URL / IP:<input id="llm-base-url" value="https://api.openai.com/v1"></label>
+              <div class="grid-2">
+                <label>API key env:<input id="llm-api-env" value="OPENAI_API_KEY"></label>
+                <label>API token:<input id="llm-api-token" type="password" placeholder="Optional; env var is preferred"></label>
+              </div>
+              <div class="grid-2">
+                <label>Use for:<select id="llm-use-for"><option>Advisory</option><option>Signal confirmation</option><option>Risk review</option><option>Backtest explanation</option></select></label>
+                <label>Reasoning / Thinking:<select id="llm-reasoning"></select></label>
+              </div>
+              <div class="actions">
+                <button class="action primary" id="apply-llm-btn" type="button">Apply LLM Settings</button>
+                <button class="action" id="check-local-model-btn" type="button">Check / Download Local Model</button>
+                <button class="action" id="remove-local-model-btn" type="button">Remove Local Model</button>
+              </div>
+            </fieldset>
+          </section>
         </div>
-        <label>
-          Reasoning / Thinking
-          <select id="llm-reasoning"></select>
-        </label>
-        <label>
-          Base URL / Local or Private IP
-          <input id="llm-base-url" value="https://api.openai.com/v1">
-        </label>
-        <div class="row">
-          <label>
-            API key env
-            <input id="llm-api-env" value="OPENAI_API_KEY">
-          </label>
-          <label>
-            API token
-            <input id="llm-api-token" type="password" placeholder="Optional; env var is preferred">
-          </label>
+        <div class="grid-2">
+          <section class="panel">
+            <h3>Exchange</h3>
+            <label>Select exchange<select id="exchange-select"><option selected>Binance</option><option disabled>Bybit (coming soon)</option><option disabled>OKX (coming soon)</option><option disabled>Gate (coming soon)</option><option disabled>Bitget (coming soon)</option><option disabled>MEXC (coming soon)</option><option disabled>KuCoin (coming soon)</option></select></label>
+          </section>
+          <section class="panel">
+            <h3>Markets & Intervals</h3>
+            <div class="grid-2">
+              <label>Symbols (select 1 or more):<textarea id="symbols-input">BTCUSDT&#10;ETHUSDT&#10;BNBUSDT&#10;SOLUSDT&#10;XRPUSDT</textarea></label>
+              <label>Intervals (select 1 or more):<textarea id="intervals-input">1m&#10;3m&#10;5m&#10;10m&#10;15m&#10;30m&#10;1h&#10;4h&#10;1d</textarea></label>
+            </div>
+            <div class="grid-2">
+              <input id="custom-interval-input" placeholder="e.g., 45s or 7m or 90m, comma-separated">
+              <button class="action" id="add-custom-interval-btn" type="button">Add Custom Interval(s)</button>
+            </div>
+            <div class="actions"><button class="action" id="refresh-symbols-btn" type="button">Refresh Symbols</button></div>
+          </section>
         </div>
-        <label>
-          Use for
-          <select id="llm-use-for">
-            <option value="advisory">Advisory</option>
-            <option value="signal_confirmation">Signal confirmation</option>
-            <option value="risk_review">Risk review</option>
-            <option value="backtest_explanation">Backtest explanation</option>
-          </select>
-        </label>
-      </fieldset>
+        <section class="panel">
+          <h3>Strategy Controls</h3>
+          <div class="grid-3">
+            <label>Side:<select id="strategy-side"><option value="BUY">Buy (Long)</option><option value="SELL">Sell (Short)</option><option value="BOTH" selected>Both (Long/Short)</option></select></label>
+            <label>Position % of Balance:<input id="position-pct-input" type="number" min="0.01" max="100" step="0.01" value="2.00"></label>
+            <label>Loop Interval Override:<select id="loop-interval-select"><option value="30s">30 seconds</option><option value="45s">45 seconds</option><option value="1m" selected>1 minute</option><option value="2m">2 minutes</option><option value="3m">3 minutes</option><option value="5m">5 minutes</option><option value="10m">10 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option><option value="2h">2 hours</option></select></label>
+          </div>
+          <div class="checks">
+            <label><input id="lead-trader-enabled" type="checkbox"> Enable Lead Trader</label>
+            <label><select id="lead-trader-profile"><option value="futures_public">Futures Public Lead Trader</option><option value="futures_private">Futures Private Lead Trader</option><option value="spot_public">Spot Public Lead Trader</option><option value="spot_private">Spot Private Lead Trader</option></select></label>
+            <label><input id="indicator-live-values" type="checkbox"> Use live candle values for signals (repaints)</label>
+            <label><input id="add-only-net-direction" type="checkbox"> Add-only in current net direction (one-way)</label>
+            <label><input id="allow-opposite-positions" type="checkbox" checked> Allow simultaneous long & short positions (hedge stacking)</label>
+            <label><input id="stop-without-closing-positions" type="checkbox"> Stop Bot Without Closing Active Positions</label>
+            <label><input id="close-on-window-close" type="checkbox" disabled> Market Close All Active Positions On Window Close (Working in progress)</label>
+          </div>
+          <div class="grid-3">
+            <label>Stop Loss:<span class="checks"><label><input id="stop-loss-enabled" type="checkbox"> Enable</label></span></label>
+            <label>Stop Loss Mode:<select id="stop-loss-mode"><option value="usdt">USDT Based Stop Loss</option><option value="percent">Percentage Based Stop Loss</option><option value="both">Both Stop Loss (USDT & Percentage)</option></select></label>
+            <label>Stop Loss Scope:<select id="stop-loss-scope"><option value="per_trade">Per Trade Stop Loss</option><option value="cumulative">Cumulative Stop Loss</option><option value="entire_account">Entire Account Stop Loss</option></select></label>
+            <label>Stop Loss USDT:<input id="stop-loss-usdt" type="number" min="0" step="1" value="0"></label>
+            <label>Stop Loss %:<input id="stop-loss-percent" type="number" min="0" max="100" step="0.5" value="0"></label>
+            <label>Template:<select id="strategy-template"><option>No Template</option><option>Top 10 %2 per trade 1x Isolated</option><option>Top 50 %2 per trade 1x</option><option>Top 100 %1 per trade 1x</option></select></label>
+          </div>
+        </section>
+        <section class="panel">
+          <h3>Indicators</h3>
+          <div class="grid-3" id="dashboard-indicators"></div>
+        </section>
+        <section class="panel">
+          <h3>Symbol / Interval Overrides</h3>
+          <div class="table-wrap" data-columns="Symbol|Interval|Indicators|Loop|Leverage|Connector|Strategy Controls|Stop-Loss"></div>
+          <div class="actions"><button class="action" type="button">Add Selected</button><button class="action" type="button">Remove Selected</button><button class="action" type="button">Clear All</button></div>
+        </section>
+        <section class="panel">
+          <h3>Desktop Service API</h3>
+          <div class="checks"><label><input type="checkbox" id="service-enabled"> Enable</label></div>
+          <fieldset id="service-controls" disabled>
+            <div class="grid-3">
+              <label>Host:<input id="service-host" value="127.0.0.1"></label>
+              <label>Port:<input id="service-port" type="number" min="1" max="65535" value="8000"></label>
+              <label>Token:<input id="service-token" type="password" placeholder="Session only; not saved to app state"></label>
+            </div>
+            <div class="actions"><button class="action primary" id="service-connect-btn" type="button">Start / Connect API</button><button class="action danger" id="service-stop-btn" type="button">Stop API</button><button class="action" id="open-service-dashboard-btn" type="button">Open Dashboard</button></div>
+            <p class="muted" id="service-status-text">Service API: off</p>
+            <p class="muted" id="service-preflight-text">Preflight: unknown</p>
+            <div class="actions"><button class="action" id="service-preflight-btn" type="button">Recheck Preflight</button></div>
+          </fieldset>
+        </section>
+        <section class="panel">
+          <h3>Logs</h3>
+          <div class="subtabs"><span class="subtab">All Logs</span><span class="subtab">Position Trigger Logs</span><span class="subtab">Waiting Positions (Queue)</span></div>
+          <pre class="log-output" id="log-output">[system] Tauri shell initialized
+[bot] Status: OFF
+[api] Service API: off
+[llm] Assistance: disabled</pre>
+          <div class="table-wrap" data-columns="Symbol|Interval|Side|Context|State|Age (s)"></div>
+        </section>
+      </article>
+
+      <article class="tab-panel" id="chart" aria-label="Chart">
+        <div class="section-head">
+          <div><h2>Chart</h2><p class="muted">Chart controls mirrored from Python and C++.</p></div>
+          <div class="actions"><button class="action" type="button">Refresh</button><button class="action" type="button">Open In Browser</button></div>
+        </div>
+        <section class="panel">
+          <div class="grid-3">
+            <label>Market:<select><option>Futures</option><option>Spot</option></select></label>
+            <label>Symbol:<select><option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option><option>SOLUSDT</option></select></label>
+            <label>Interval:<select><option>1m</option><option>3m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option><option>1d</option></select></label>
+            <label>View:<select><option>TradingView</option><option>Original</option><option>TradingView Lightweight</option></select></label>
+          </div>
+        </section>
+        <section class="panel"><h3>Chart View Stack</h3><div class="metrics"><div class="metric"><span class="muted">TradingView</span><strong>Ready</strong></div><div class="metric"><span class="muted">Original</span><strong>Ready</strong></div><div class="metric"><span class="muted">TradingView Lightweight</span><strong>Ready</strong></div><div class="metric"><span class="muted">Status</span><strong>Chart ready.</strong></div></div></section>
+      </article>
+
+      <article class="tab-panel" id="positions" aria-label="Positions">
+        <div class="section-head">
+          <div><h2>Positions</h2><p class="muted">Position controls and table columns mirrored from Python and C++.</p></div>
+          <div class="actions"><button class="action" id="refresh-positions-btn" type="button">Refresh Positions</button><button class="action danger" type="button">Market Close ALL Positions</button></div>
+        </div>
+        <section class="panel">
+          <div class="grid-3">
+            <label>Positions View:<select><option>Cumulative View</option><option>Per Trade View</option></select></label>
+            <label class="checks"><input type="checkbox" checked> Auto Row Height</label>
+            <label class="checks"><input type="checkbox" checked> Auto Column Width</label>
+          </div>
+          <div class="metrics"><div class="metric"><span class="muted">Total Balance</span><strong>--</strong></div><div class="metric"><span class="muted">Available Balance</span><strong>--</strong></div><div class="metric"><span class="muted">Bot Status</span><strong>OFF</strong></div><div class="metric"><span class="muted">Bot Active Time</span><strong>--</strong></div></div>
+        </section>
+        <section class="panel">
+          <div class="table-wrap" id="positions-table" data-columns="Symbol|Size (USDT)|Last Price (USDT)|Margin Ratio|Liq Price (USDT)|Margin (USDT)|Quantity (Qty)|PNL (ROI%)|Interval|Indicator|Triggered Indicator Value|Current Indicator Value|Side|Open Time|Close Time|Stop-Loss|Status|Close"></div>
+          <div class="actions"><button class="action" type="button">Clear Selected</button><button class="action" type="button">Clear All</button></div>
+        </section>
+      </article>
+
+      <article class="tab-panel" id="backtest" aria-label="Backtest">
+        <div class="section-head">
+          <div><h2>Backtest</h2><p class="muted">Backtest markets, parameters, indicators, output, scanner, and results mirrored from Python and C++.</p></div>
+          <div class="actions"><button class="action primary" id="run-backtest-btn" type="button">Run Backtest</button><button class="action" id="stop-backtest-btn" type="button">Stop</button><button class="action" type="button">Add Selected to Dashboard</button><button class="action" type="button">Add All to Dashboard</button></div>
+        </div>
+        <div class="grid-3">
+          <section class="panel">
+            <h3>Markets</h3>
+              <label>Symbol Source:<select id="backtest-symbol-source"><option>Futures</option><option>Spot</option></select></label>
+            <button class="action" id="backtest-refresh-symbols-btn" type="button">Refresh</button>
+            <label>Symbols (select 1 or more):<textarea id="backtest-symbols-input">BTCUSDT&#10;ETHUSDT&#10;BNBUSDT</textarea></label>
+            <label>Intervals (select 1 or more):<textarea id="backtest-intervals-input">1m&#10;5m&#10;15m&#10;1h</textarea></label>
+            <input id="backtest-custom-interval-input" placeholder="e.g., 45s or 7m or 90m, comma-separated">
+            <button class="action" id="backtest-add-custom-interval-btn" type="button">Add Custom Interval(s)</button>
+          </section>
+          <section class="panel">
+            <h3>Backtest Parameters</h3>
+            <div class="grid-2">
+              <label>Start Date/Time:<input id="backtest-start-date" type="datetime-local"></label>
+              <label>End Date/Time:<input id="backtest-end-date" type="datetime-local"></label>
+              <label>Signal Logic:<select id="backtest-logic"><option>AND</option><option>OR</option><option>SEPARATE</option></select></label>
+              <label>MDD Logic:<select id="backtest-mdd-logic"><option value="per_trade">Per Trade MDD</option><option value="cumulative">Cumulative MDD</option><option value="entire_account">Entire Account MDD</option></select></label>
+              <label>Margin Capital:<input id="backtest-capital" type="number" min="1" value="1000"></label>
+              <label>Position % of Balance:<input id="backtest-position-pct" type="number" min="0.01" max="100" step="0.01" value="2.00"></label>
+              <label>Loop Interval Override:<select id="backtest-loop-interval"><option value="30s">30 seconds</option><option value="45s">45 seconds</option><option value="1m">1 minute</option><option value="5m">5 minutes</option><option value="1h">1 hour</option></select></label>
+              <label>Side:<select id="backtest-side"><option value="BUY">Buy (Long)</option><option value="SELL">Sell (Short)</option><option value="BOTH">Both (Long/Short)</option></select></label>
+              <label>Margin Mode (Futures):<select id="backtest-margin-mode"><option>Isolated</option><option>Cross</option></select></label>
+              <label>Position Mode:<select id="backtest-position-mode"><option>Hedge</option><option>One-way</option></select></label>
+              <label>Assets Mode:<select id="backtest-assets-mode"><option>Single-Asset Mode</option><option>Multi-Assets Mode</option></select></label>
+              <label>Account Mode:<select id="backtest-account-mode"><option>Classic Trading</option><option>Portfolio Margin</option></select></label>
+              <label>Connector:<select id="backtest-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures</option><option value="ccxt">CCXT</option><option value="python-binance">python-binance</option></select></label>
+              <label>Leverage (Futures):<input id="backtest-leverage" type="number" min="1" max="150" value="1"></label>
+              <label>Template:<span class="checks"><label><input id="backtest-template-enabled" type="checkbox"> Enable</label></span><select id="backtest-template-name"><option>Top 10 %2 per trade 1x Isolated</option><option>Top 50 %2 per trade 1x</option><option>Top 100 %1 per trade 1x</option></select></label>
+              <label>Max MDD Scanner:<span class="grid-2"><input id="backtest-scan-top-n" type="number" value="200"><input id="backtest-scan-mdd-limit" type="number" value="10.00"></span></label>
+            </div>
+            <button class="action" id="backtest-scan-symbols-btn" type="button">Scan Symbols</button>
+          </section>
+          <section class="panel">
+            <h3>Indicators</h3>
+            <div id="backtest-indicators"></div>
+          </section>
+        </div>
+        <section class="panel">
+          <h3>Symbol / Interval Overrides</h3>
+          <div class="table-wrap" data-columns="Symbol|Interval|Indicators|Loop|Leverage|Connector|Strategy Controls|Stop-Loss"></div>
+          <div class="actions"><button class="action" type="button">Add Selected</button><button class="action" type="button">Remove Selected</button><button class="action" type="button">Clear All</button></div>
+        </section>
+        <section class="panel">
+          <h3>Backtest Output</h3>
+          <div class="table-wrap" id="backtest-output-table" data-columns="Symbol|Interval|Logic|Indicators|Trades|Loop Interval|Start Date|End Date|Position % Of Balance|Stop-Loss Options|Margin Mode (Futures)|Position Mode|Assets Mode|Account Mode|Leverage (Futures)|ROI (USDT)|ROI (%)|Max Drawdown During Position (USDT)|Max Drawdown During Position (%)|Max Drawdown Results (USDT)|Max Drawdown Results (%)"></div>
+        </section>
+      </article>
+
+      <article class="tab-panel" id="liquidation-heatmap" aria-label="Liquidation Heatmap">
+        <div class="section-head"><div><h2>Liquidation Heatmap</h2><p class="muted">Provider tabs mirrored from Python and C++.</p></div></div>
+        <section class="panel">
+          <p>Liquidation heatmaps from multiple providers. If a heatmap does not load, use Open in Browser.</p>
+          <div class="subtabs"><span class="subtab">Coinglass Heatmap</span><span class="subtab">Coinank</span><span class="subtab">Bitcoin Counterflow</span><span class="subtab">Hyblock Capital</span><span class="subtab">Coinglass Map</span><span class="subtab">Hyperliquid Map</span></div>
+          <div class="subtabs"><span class="subtab">Model 1</span><span class="subtab">Model 2</span><span class="subtab">Model 3</span></div>
+          <div class="grid-2">
+            <label>URL:<input value="https://www.coinglass.com/pro/futures/LiquidationHeatMap"></label>
+            <div class="actions"><button class="action" type="button">Go</button><button class="action" type="button">Reload</button><button class="action" type="button">Open in Browser</button></div>
+          </div>
+        </section>
+      </article>
+
+      <article class="tab-panel" id="code-languages" aria-label="Code Languages">
+        <div class="section-head"><div><h2>Code Languages</h2><p class="muted">Select your preferred code language. Folders for each language are created automatically inside the project so you can keep related assets organized.</p></div></div>
+        <section class="panel">
+          <h3>Choose your language</h3>
+          <div class="cards"><div class="metric"><span class="pill">Recommended</span><strong>Python</strong><span>Fast to build - Huge ecosystem</span></div><div class="metric"><span class="pill">Experiment</span><strong>C++</strong><span>Qt native desktop experiment</span></div><div class="metric"><span class="pill">Experiment</span><strong>Rust</strong><span>Shared core with desktop shell experiments</span></div></div>
+        </section>
+        <section class="panel">
+          <h3>Choose your Rust framework</h3>
+          <div class="cards"><div class="metric"><span class="pill">Desktop</span><strong>Tauri</strong><span>Desktop shell with web UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>Slint</strong><span>Native declarative desktop UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>egui</strong><span>Fast trader dashboard UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>Iced</strong><span>Pure Rust reactive desktop UI</span></div><div class="metric"><span class="pill">Desktop</span><strong>Dioxus Desktop</strong><span>Rust component UI with desktop renderer</span></div></div>
+        </section>
+        <section class="panel">
+          <h3>Environment Versions</h3>
+          <div class="section-head"><span class="muted">0 selected</span><div class="actions"><button class="action" type="button">Update Selected</button><button class="action" type="button">Update All</button><button class="action" type="button">Check Versions</button><button class="action" type="button">Refresh Env Versions</button></div></div>
+          <div class="table-wrap" data-columns="Select|Dependency|Installed|Latest|Usage|Usage Change Counter"></div>
+        </section>
+      </article>
     </section>
+
+    <footer class="bottombar">
+      <span>Total PNL Active Positions: --</span>
+      <span>Total PNL Closed Positions: --</span>
+      <span class="bad">Bot Status: OFF</span>
+      <span>Bot Active Time: --</span>
+    </footer>
   </main>
+
   <script>
+    const indicatorNames = [
+      "Moving Average (MA)",
+      "Donchian Channels (DC)",
+      "Parabolic SAR (PSAR)",
+      "Bollinger Bands (BB)",
+      "Relative Strength Index (RSI)",
+      "Volume",
+      "Stochastic RSI (SRSI)",
+      "Williams %R",
+      "Moving Average Convergence/Divergence (MACD)",
+      "Ultimate Oscillator (UO)",
+      "Average Directional Index (ADX)",
+      "Directional Movement Index (DMI)",
+      "SuperTrend (ST)",
+      "Exponential Moving Average (EMA)",
+      "Stochastic Oscillator"
+    ];
+    for (const target of [document.getElementById("dashboard-indicators"), document.getElementById("backtest-indicators")]) {
+      if (!target) continue;
+      target.className = "grid-2";
+      target.replaceChildren(...indicatorNames.map((name) => {
+        const row = document.createElement("div");
+        row.className = "checks";
+        row.innerHTML = `<label><input type="checkbox"> ${name}</label><button class="action" type="button">Buy-Sell Values</button>`;
+        return row;
+      }));
+    }
+    for (const wrap of document.querySelectorAll(".table-wrap[data-columns]")) {
+      const columns = wrap.dataset.columns.split("|");
+      const table = document.createElement("table");
+      table.innerHTML = `<thead><tr>${columns.map((column) => `<th>${column}</th>`).join("")}</tr></thead><tbody><tr>${columns.map(() => "<td>--</td>").join("")}</tr></tbody>`;
+      wrap.append(table);
+    }
+
+    const tabButtons = [...document.querySelectorAll(".tab-button")];
+    const tabPanels = [...document.querySelectorAll(".tab-panel")];
+    for (const button of tabButtons) {
+      button.addEventListener("click", () => {
+        const nextTab = button.dataset.tab;
+        for (const item of tabButtons) item.classList.toggle("active", item === button);
+        for (const panel of tabPanels) panel.classList.toggle("active", panel.id === nextTab);
+      });
+    }
+
     const modelSuggestions = {
       openai: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-chat-latest", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.1", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano"],
-      anthropic: [
-        "claude-sonnet-4-5-20250929",
-        "claude-haiku-4-5-20251001",
-        "claude-opus-4-1-20250805",
-        "claude-opus-4-20250514",
-        "claude-sonnet-4-20250514",
-        "claude-sonnet-4-5",
-        "claude-haiku-4-5",
-        "claude-opus-4-1",
-        "claude-opus-4-0",
-        "claude-sonnet-4-0"
-      ],
+      anthropic: ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-1-20250805", "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1", "claude-opus-4-0", "claude-sonnet-4-0"],
       gemini: ["gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
       deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
+      mistral: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest", "open-mistral-nemo"],
       grok: ["grok-4.20", "grok-4.20-reasoning", "grok-4.20-non-reasoning", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"],
       qwen: ["qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-flash"],
-      local: ["llama3.3", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"]
+      local: ["llama3.3", "qwen3:8b", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"]
     };
     const reasoningSuggestions = {
       openai: ["default", "none", "minimal", "low", "medium", "high", "xhigh"],
       anthropic: ["default", "disabled", "enabled", "low", "medium", "high"],
       gemini: ["default", "minimal", "low", "medium", "high"],
       deepseek: ["default", "disabled", "enabled", "high", "max"],
+      mistral: ["default", "low", "medium", "high"],
       grok: ["default", "low", "medium", "high"],
       qwen: ["default", "low", "medium", "high"],
       local: ["default", "none", "low", "medium", "high", "xhigh"]
     };
-    const enabled = document.getElementById("llm-enabled");
-    const controls = document.getElementById("llm-controls");
-    const allowPublic = document.getElementById("llm-public");
+    const llmEnabled = document.getElementById("llm-enabled");
+    const llmControls = document.getElementById("llm-controls");
+    const llmPublic = document.getElementById("llm-public");
     const provider = document.getElementById("llm-provider");
     const model = document.getElementById("llm-model");
     const reasoning = document.getElementById("llm-reasoning");
-    const syncEnabledState = () => {
-      controls.disabled = !enabled.checked;
-    };
+    const syncEnabledState = () => { llmControls.disabled = !llmEnabled.checked; };
     const syncModelOptions = () => {
       const suggestions = modelSuggestions[provider.value] || [];
       model.replaceChildren(...suggestions.map((name) => {
@@ -200,23 +634,588 @@
     };
     const syncProviderAccess = () => {
       for (const option of provider.options) {
-        option.disabled = option.dataset.mode === "cloud" && !allowPublic.checked;
+        option.disabled = option.dataset.mode === "cloud" && !llmPublic.checked;
       }
       if (provider.selectedOptions[0]?.disabled) {
         provider.value = "local";
         syncProviderDefaults();
       }
     };
-    enabled.addEventListener("change", syncEnabledState);
-    allowPublic.addEventListener("change", syncProviderAccess);
+    llmEnabled.addEventListener("change", syncEnabledState);
+    llmPublic.addEventListener("change", syncProviderAccess);
     provider.addEventListener("change", () => {
-      allowPublic.checked = provider.selectedOptions[0]?.dataset.mode === "cloud";
+      llmPublic.checked = provider.selectedOptions[0]?.dataset.mode === "cloud";
       syncProviderAccess();
       syncProviderDefaults();
     });
     syncProviderAccess();
     syncProviderDefaults();
     syncEnabledState();
+
+    const serviceEnabled = document.getElementById("service-enabled");
+    const serviceControls = document.getElementById("service-controls");
+    serviceEnabled.addEventListener("change", () => {
+      serviceControls.disabled = !serviceEnabled.checked;
+    });
+    const $ = (id) => document.getElementById(id);
+    const invoke = window.__TAURI__?.core?.invoke;
+    const routePaths = {
+      dashboard: "/api/v1/dashboard",
+      status: "/api/v1/status",
+      execution: "/api/v1/execution",
+      backtest: "/api/v1/backtest",
+      config: "/api/v1/config",
+      config_save: "/api/v1/config/save",
+      config_load: "/api/v1/config/load",
+      operational_preflight: "/api/v1/runtime/operational-preflight",
+      control_start: "/api/v1/control/start",
+      control_stop: "/api/v1/control/stop",
+      backtest_run: "/api/v1/backtest/run",
+      backtest_stop: "/api/v1/backtest/stop",
+      logs: "/api/v1/logs",
+      llm_config: "/api/v1/llm/config",
+      llm_providers: "/api/v1/llm/providers"
+    };
+    const linesFrom = (value) => String(value || "").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+    const numberFrom = (id, fallback = 0) => {
+      const value = Number($(id)?.value);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    const setChecked = (id, value) => {
+      const el = $(id);
+      if (el) el.checked = Boolean(value);
+    };
+    const setValue = (id, value) => {
+      const el = $(id);
+      if (el && value !== undefined && value !== null) el.value = value;
+    };
+    const optionMatches = (option, value) => {
+      const wanted = String(value ?? "").trim().toLowerCase();
+      if (!wanted) return false;
+      const optionValue = String(option.value || "").trim().toLowerCase();
+      const optionText = String(option.textContent || "").trim().toLowerCase();
+      return optionValue === wanted || optionText === wanted || optionText.includes(wanted) || wanted.includes(optionText);
+    };
+    const setSelect = (id, value, addIfMissing = false) => {
+      const el = $(id);
+      if (!el || value === undefined || value === null) return;
+      const match = [...el.options].find((option) => optionMatches(option, value));
+      if (match) {
+        el.value = match.value;
+        return;
+      }
+      if (addIfMissing) {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = String(value);
+        el.append(option);
+        el.value = option.value;
+      }
+    };
+    const selectedText = (id) => {
+      const el = $(id);
+      return el?.selectedOptions?.[0]?.textContent?.trim() || el?.value || "";
+    };
+    const selectedValue = (id) => {
+      const el = $(id);
+      return el?.value || selectedText(id);
+    };
+    const serviceBaseUrl = () => {
+      const host = $("service-host")?.value?.trim() || "127.0.0.1";
+      const port = $("service-port")?.value || "8000";
+      if (/^https?:\/\//i.test(host)) return host.replace(/\/+$/, "");
+      return `http://${host}:${port}`;
+    };
+    const serviceApiUrl = (routeName) => `${serviceBaseUrl()}${routePaths[routeName] || ""}`;
+    const appendLog = (message) => {
+      const output = $("log-output");
+      if (!output) return;
+      output.textContent = `${output.textContent.trimEnd()}\n${message}`;
+      output.scrollTop = output.scrollHeight;
+    };
+    const setServiceStatus = (message, ok = false) => {
+      const target = $("service-status-text");
+      if (!target) return;
+      target.textContent = message;
+      target.classList.toggle("good", ok);
+      target.classList.toggle("bad", !ok && /failed|blocked|error|off|unavailable/i.test(message));
+    };
+    const serviceRequest = async (routeName, method = "GET", payload = null, query = null) => {
+      if (!invoke) {
+        return {
+          ok: false,
+          status: 0,
+          route_name: routeName,
+          path: routePaths[routeName] || "",
+          payload: {},
+          error: "Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell."
+        };
+      }
+      try {
+        return await invoke("service_api_request", {
+          baseUrl: serviceBaseUrl(),
+          apiToken: $("service-token")?.value || "",
+          routeName,
+          method,
+          payload,
+          query,
+          allowPublicNetworkEndpoint: false
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          status: 0,
+          route_name: routeName,
+          path: routePaths[routeName] || "",
+          payload: {},
+          error: String(error)
+        };
+      }
+    };
+    const servicePort = () => Math.max(1, Math.min(65535, Number($("service-port")?.value || 8000)));
+    const startServiceApi = async () => {
+      if (!invoke) {
+        const error = "Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell.";
+        setServiceStatus(`Service API: ${error}`, false);
+        appendLog(`[api] Start API failed - ${error}`);
+        return { ok: false, healthy: false, error };
+      }
+      serviceEnabled.checked = true;
+      serviceControls.disabled = false;
+      setServiceStatus("Service API: starting", true);
+      try {
+        const result = await invoke("start_service_api", {
+          host: $("service-host")?.value || "127.0.0.1",
+          port: servicePort(),
+          apiToken: $("service-token")?.value || "",
+          loadConfig: true
+        });
+        if (result.ok || result.healthy) {
+          setServiceStatus(`${result.message || "Service API is reachable."} ${result.pid ? `(pid ${result.pid})` : ""}`.trim(), true);
+          appendLog(`[api] ${result.message || "Service API is reachable."}`);
+        } else {
+          setServiceStatus(`Service API: ${result.error || "start failed"}`, false);
+          appendLog(`[api] Start API failed - ${result.error || "unknown error"}`);
+        }
+        return result;
+      } catch (error) {
+        setServiceStatus(`Service API: ${error}`, false);
+        appendLog(`[api] Start API failed - ${error}`);
+        return { ok: false, healthy: false, error: String(error) };
+      }
+    };
+    const ensureServiceApi = async () => {
+      const result = await startServiceApi();
+      return Boolean(result.ok || result.healthy);
+    };
+    const stopServiceApi = async () => {
+      if (!invoke) return;
+      try {
+        const result = await invoke("stop_service_api", {
+          host: $("service-host")?.value || "127.0.0.1",
+          port: servicePort()
+        });
+        setServiceStatus(result.message || result.error || "Service API stopped.", Boolean(result.ok));
+        appendLog(`[api] ${result.message || result.error || "Stop API finished."}`);
+      } catch (error) {
+        setServiceStatus(`Service API: ${error}`, false);
+        appendLog(`[api] Stop API failed - ${error}`);
+      }
+    };
+    const requestAndReport = async (label, routeName, method = "GET", payload = null, query = null) => {
+      setServiceStatus(`${label}: pending`, true);
+      const result = await serviceRequest(routeName, method, payload, query);
+      if (result.ok) {
+        setServiceStatus(`Service API: connected (${result.status})`, true);
+        appendLog(`[api] ${label}: ok (${result.status})`);
+      } else {
+        setServiceStatus(`Service API: ${result.error || `HTTP ${result.status}`}`, false);
+        appendLog(`[api] ${label}: failed - ${result.error || `HTTP ${result.status}`}`);
+      }
+      return result;
+    };
+    const setStatusSnapshot = (payload) => {
+      const status = payload?.status || payload || {};
+      const portfolio = payload?.portfolio || {};
+      const execution = payload?.execution || {};
+      const active = Boolean(status.runtime_active || status.active || execution.runtime_active);
+      $("bot-status-text").textContent = active ? "ON" : "OFF";
+      $("bot-status-dot").style.background = active ? "var(--good)" : "var(--bad)";
+      const activePnl = portfolio.active_pnl ?? portfolio.active_pnl_value ?? "--";
+      const closedPnl = portfolio.closed_pnl ?? portfolio.closed_pnl_value ?? "--";
+      const totalBalance = portfolio.total_balance ?? portfolio.wallet_balance ?? portfolio.available_balance ?? portfolio.balance ?? "N/A";
+      $("active-pnl-text").textContent = typeof activePnl === "number" ? `${activePnl.toFixed(2)} USDT` : String(activePnl);
+      $("closed-pnl-text").textContent = typeof closedPnl === "number" ? `${closedPnl.toFixed(2)} USDT` : String(closedPnl);
+      $("bot-active-time-text").textContent = status.active_duration || status.active_time || "--";
+      setValue("account-total-balance", typeof totalBalance === "number" ? `${totalBalance.toFixed(2)} USDT` : totalBalance);
+    };
+    const hydrateLlmControls = (llm) => {
+      if (!llm || typeof llm !== "object") return;
+      setChecked("llm-enabled", llm.enabled);
+      syncEnabledState();
+      setChecked("llm-public", llm.allow_public_network);
+      setSelect("llm-provider", llm.provider);
+      if (Array.isArray(llm.model_suggestions) && llm.model_suggestions.length) {
+        model.replaceChildren(...llm.model_suggestions.map((name) => {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          return option;
+        }));
+      } else {
+        syncModelOptions();
+      }
+      if (Array.isArray(llm.reasoning_efforts) && llm.reasoning_efforts.length) {
+        reasoning.replaceChildren(...llm.reasoning_efforts.map((name) => {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          return option;
+        }));
+      } else {
+        syncReasoningOptions();
+      }
+      setSelect("llm-model", llm.model, true);
+      setValue("llm-base-url", llm.base_url);
+      setValue("llm-api-env", llm.api_key_env);
+      setSelect("llm-use-for", llm.use_for);
+      setSelect("llm-reasoning", llm.reasoning_effort, true);
+      syncProviderAccess();
+      syncEnabledState();
+    };
+    const hydrateConfigControls = (config) => {
+      if (!config || typeof config !== "object") return;
+      setSelect("config-mode", config.mode);
+      setSelect("config-theme", config.theme);
+      setSelect("config-account-type", config.account_type);
+      setSelect("config-account-mode", config.account_mode);
+      setSelect("config-connector", config.connector_backend);
+      setSelect("exchange-select", config.selected_exchange);
+      setValue("config-leverage", config.leverage);
+      setSelect("config-margin-mode", config.margin_mode);
+      setSelect("config-position-mode", config.position_mode);
+      setValue("account-position-mode", config.position_mode || "N/A");
+      setSelect("config-assets-mode", config.assets_mode);
+      setSelect("config-time-in-force", config.tif);
+      setValue("config-gtd-minutes", config.gtd_minutes);
+      setSelect("config-indicator-source", config.indicator_source);
+      setValue("symbols-input", Array.isArray(config.symbols) ? config.symbols.join("\n") : "");
+      setValue("intervals-input", Array.isArray(config.intervals) ? config.intervals.join("\n") : "");
+      setValue("position-pct-input", config.position_pct);
+      setSelect("strategy-side", config.side);
+      setSelect("loop-interval-select", config.loop_interval_override);
+      setChecked("lead-trader-enabled", config.lead_trader_enabled);
+      setSelect("lead-trader-profile", config.lead_trader_profile);
+      setChecked("indicator-live-values", config.indicator_use_live_values);
+      setChecked("add-only-net-direction", config.hedge_preserve_opposites);
+      setChecked("allow-opposite-positions", config.allow_opposite_positions);
+      setChecked("close-on-window-close", config.close_on_exit);
+      if (config.api_key_present || config.credentials_present) $("api-key-input").placeholder = "Configured in service config";
+      if (config.api_secret_present || config.credentials_present) $("api-secret-input").placeholder = "Configured in service config";
+      if (config.stop_loss && typeof config.stop_loss === "object") {
+        setChecked("stop-loss-enabled", config.stop_loss.enabled);
+        setSelect("stop-loss-mode", config.stop_loss.mode);
+        setSelect("stop-loss-scope", config.stop_loss.scope);
+        setValue("stop-loss-usdt", config.stop_loss.usdt);
+        setValue("stop-loss-percent", config.stop_loss.percent);
+      }
+      hydrateLlmControls(config.llm);
+    };
+    const hydrateBacktestControls = (backtest) => {
+      if (!backtest || typeof backtest !== "object") return;
+      setValue("backtest-symbols-input", Array.isArray(backtest.symbols) ? backtest.symbols.join("\n") : "");
+      setValue("backtest-intervals-input", Array.isArray(backtest.intervals) ? backtest.intervals.join("\n") : "");
+      setSelect("backtest-logic", backtest.logic);
+      setValue("backtest-capital", backtest.capital);
+      setValue("backtest-start-date", backtest.start_date);
+      setValue("backtest-end-date", backtest.end_date);
+      setSelect("backtest-mdd-logic", backtest.mdd_logic);
+      setValue("backtest-position-pct", backtest.position_pct);
+      setSelect("backtest-loop-interval", backtest.loop_interval_override);
+      setSelect("backtest-side", backtest.side);
+      setSelect("backtest-margin-mode", backtest.margin_mode);
+      setSelect("backtest-position-mode", backtest.position_mode);
+      setSelect("backtest-assets-mode", backtest.assets_mode);
+      setSelect("backtest-account-mode", backtest.account_mode);
+      setSelect("backtest-connector", backtest.connector_backend);
+      setValue("backtest-leverage", backtest.leverage);
+      setValue("backtest-scan-top-n", backtest.scan_top_n);
+      setValue("backtest-scan-mdd-limit", backtest.scan_mdd_limit);
+      if (backtest.template && typeof backtest.template === "object") {
+        setChecked("backtest-template-enabled", backtest.template.enabled);
+        setSelect("backtest-template-name", backtest.template.name);
+      }
+    };
+    const hydrateFromDashboard = (payload) => {
+      hydrateConfigControls(payload?.config);
+      hydrateBacktestControls(payload?.backtest);
+      const serviceApi = payload?.service_api;
+      if (serviceApi && typeof serviceApi === "object") {
+        const mode = serviceApi.trading_execution_supported ? "desktop trading execution" : serviceApi.execution_scope;
+        appendLog(`[api] Service mode: ${mode || "unknown"}`);
+      }
+    };
+    const renderTableRows = (wrapId, rows, columns, mapper) => {
+      const body = $(`${wrapId}`)?.querySelector("tbody");
+      if (!body) return;
+      const normalizedRows = Array.isArray(rows) && rows.length ? rows : [];
+      if (!normalizedRows.length) {
+        body.innerHTML = `<tr>${columns.map(() => "<td>--</td>").join("")}</tr>`;
+        return;
+      }
+      body.innerHTML = normalizedRows.map((row) => {
+        const values = mapper(row);
+        return `<tr>${columns.map((_, index) => `<td>${values[index] ?? "--"}</td>`).join("")}</tr>`;
+      }).join("");
+    };
+    const refreshDashboard = async () => {
+      const result = await requestAndReport("Refresh dashboard", "dashboard", "GET", null, { log_limit: "30", incident_limit: "20" });
+      if (!result.ok) return result;
+      setStatusSnapshot(result.payload);
+      hydrateFromDashboard(result.payload);
+      const logs = Array.isArray(result.payload?.logs) ? result.payload.logs : result.payload?.logs?.items;
+      if (Array.isArray(logs) && logs.length) {
+        $("log-output").textContent = logs.map((item) => `[${item.level || "info"}] ${item.message || ""}`).join("\n");
+      }
+      return result;
+    };
+    const refreshPositions = async () => {
+      const result = await requestAndReport("Refresh positions", "dashboard", "GET", null, { log_limit: "10", incident_limit: "10" });
+      if (!result.ok) return result;
+      setStatusSnapshot(result.payload);
+      const portfolio = result.payload?.portfolio || {};
+      const records = Object.values(portfolio.open_position_records || {});
+      const columns = $("positions-table").dataset.columns.split("|");
+      renderTableRows("positions-table", records, columns, (row) => [
+        row.symbol,
+        row.size_usdt || row.notional,
+        row.last_price,
+        row.margin_ratio,
+        row.liquidation_price,
+        row.margin,
+        row.quantity,
+        row.pnl_roi || row.pnl,
+        row.interval,
+        row.indicator,
+        row.triggered_indicator_value,
+        row.current_indicator_value,
+        row.side,
+        row.open_time,
+        row.close_time,
+        row.stop_loss,
+        row.status,
+        ""
+      ]);
+      return result;
+    };
+    const buildRuntimeConfigPatch = () => {
+      const patch = {
+        mode: selectedText("config-mode"),
+        account_type: selectedText("config-account-type"),
+        account_mode: selectedText("config-account-mode"),
+        margin_mode: selectedText("config-margin-mode"),
+        position_mode: selectedText("config-position-mode"),
+        assets_mode: selectedText("config-assets-mode"),
+        connector_backend: selectedValue("config-connector"),
+        selected_exchange: selectedText("exchange-select"),
+        theme: selectedText("config-theme"),
+        leverage: numberFrom("config-leverage", 1),
+        tif: selectedValue("config-time-in-force"),
+        gtd_minutes: numberFrom("config-gtd-minutes", 30),
+        indicator_source: selectedText("config-indicator-source"),
+        position_pct: numberFrom("position-pct-input", 2),
+        side: selectedValue("strategy-side") || "BOTH",
+        loop_interval_override: selectedValue("loop-interval-select"),
+        lead_trader_enabled: Boolean($("lead-trader-enabled")?.checked),
+        lead_trader_profile: selectedValue("lead-trader-profile"),
+        indicator_use_live_values: Boolean($("indicator-live-values")?.checked),
+        hedge_preserve_opposites: Boolean($("add-only-net-direction")?.checked),
+        allow_opposite_positions: Boolean($("allow-opposite-positions")?.checked),
+        close_on_exit: Boolean($("close-on-window-close")?.checked),
+        symbols: linesFrom($("symbols-input")?.value),
+        intervals: linesFrom($("intervals-input")?.value),
+        stop_loss: {
+          enabled: Boolean($("stop-loss-enabled")?.checked),
+          mode: $("stop-loss-mode")?.value || "usdt",
+          scope: $("stop-loss-scope")?.value || "per_trade",
+          usdt: numberFrom("stop-loss-usdt", 0),
+          percent: numberFrom("stop-loss-percent", 0)
+        }
+      };
+      const apiKey = $("api-key-input")?.value?.trim();
+      const apiSecret = $("api-secret-input")?.value?.trim();
+      if (apiKey) patch.api_key = apiKey;
+      if (apiSecret) patch.api_secret = apiSecret;
+      return patch;
+    };
+    const buildLlmConfigPatch = () => ({
+      llm_enabled: Boolean(llmEnabled.checked),
+      llm_provider: provider.value,
+      llm_model: model.value,
+      llm_base_url: $("llm-base-url")?.value || "",
+      llm_api_key_env: $("llm-api-env")?.value || "",
+      llm_api_key: $("llm-api-token")?.value || "",
+      llm_use_for: $("llm-use-for")?.value || "Advisory",
+      llm_allow_public_network: Boolean(llmPublic.checked),
+      llm_reasoning_effort: reasoning.value || "default"
+    });
+    const buildBacktestRequest = () => {
+      const request = {
+        symbols: linesFrom($("backtest-symbols-input")?.value),
+        intervals: linesFrom($("backtest-intervals-input")?.value),
+        logic: selectedValue("backtest-logic") || "AND",
+        symbol_source: selectedValue("backtest-symbol-source") || "Futures",
+        capital: numberFrom("backtest-capital", 1000),
+        start_date: $("backtest-start-date")?.value || null,
+        end_date: $("backtest-end-date")?.value || null,
+        position_pct: numberFrom("backtest-position-pct", 2),
+        loop_interval_override: selectedValue("backtest-loop-interval"),
+        side: selectedValue("backtest-side") || "BOTH",
+        margin_mode: selectedText("backtest-margin-mode"),
+        position_mode: selectedText("backtest-position-mode"),
+        assets_mode: selectedText("backtest-assets-mode"),
+        account_mode: selectedText("backtest-account-mode"),
+        connector_backend: selectedValue("backtest-connector"),
+        leverage: numberFrom("backtest-leverage", 1),
+        mdd_logic: selectedValue("backtest-mdd-logic"),
+        scan_top_n: numberFrom("backtest-scan-top-n", 200),
+        scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", 10),
+        template: {
+          enabled: Boolean($("backtest-template-enabled")?.checked),
+          name: selectedText("backtest-template-name") || null
+        }
+      };
+      if (!request.start_date) request.start_date = null;
+      if (!request.end_date) request.end_date = null;
+      return request;
+    };
+    const addCustomIntervals = (inputId, targetId) => {
+      const input = $(inputId);
+      const target = $(targetId);
+      if (!input || !target) return;
+      const additions = linesFrom(input.value);
+      if (!additions.length) return;
+      const merged = [...new Set([...linesFrom(target.value), ...additions])];
+      target.value = merged.join("\n");
+      input.value = "";
+      appendLog(`[ui] Added custom intervals: ${additions.join(", ")}`);
+    };
+    $("service-connect-btn")?.addEventListener("click", async () => {
+      const started = await ensureServiceApi();
+      if (started) await refreshDashboard();
+    });
+    $("service-stop-btn")?.addEventListener("click", stopServiceApi);
+    $("service-preflight-btn")?.addEventListener("click", async () => {
+      const result = await requestAndReport("Recheck preflight", "operational_preflight");
+      const target = $("service-preflight-text");
+      if (!target) return;
+      if (result.ok) {
+        const blocked = result.payload?.start_blocked || result.payload?.blocked;
+        target.textContent = blocked ? "Preflight: start blocked" : "Preflight: ok";
+        target.classList.toggle("bad", Boolean(blocked));
+        target.classList.toggle("good", !blocked);
+      } else {
+        target.textContent = `Preflight: ${result.error || "unavailable"}`;
+        target.classList.add("bad");
+      }
+    });
+    $("open-service-dashboard-btn")?.addEventListener("click", () => {
+      window.open(`${serviceBaseUrl()}/ui/`, "_blank");
+    });
+    $("refresh-balance-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await refreshDashboard();
+    });
+    $("refresh-symbols-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await refreshDashboard();
+    });
+    $("add-custom-interval-btn")?.addEventListener("click", () => addCustomIntervals("custom-interval-input", "intervals-input"));
+    $("backtest-add-custom-interval-btn")?.addEventListener("click", () => addCustomIntervals("backtest-custom-interval-input", "backtest-intervals-input"));
+    $("backtest-refresh-symbols-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await refreshDashboard();
+    });
+    $("backtest-scan-symbols-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      appendLog("[api] Max MDD scanner is configured in the backtest request; use Run Backtest to submit it through /api/v1/backtest/run.");
+    });
+    $("check-local-model-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await requestAndReport("Refresh LLM providers", "llm_providers");
+      appendLog("[llm] Local model download/removal is handled by the Python LLM panel until the Service API exposes Ollama pull/delete routes.");
+    });
+    $("remove-local-model-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await requestAndReport("Refresh LLM providers", "llm_providers");
+      appendLog("[llm] Local model removal is handled by the Python LLM panel until the Service API exposes Ollama delete routes.");
+    });
+    $("start-bot-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      const configResult = await requestAndReport("Apply runtime config", "config", "PATCH", { config: buildRuntimeConfigPatch() });
+      if (!configResult.ok) return;
+      const result = await requestAndReport("Start bot", "control_start", "POST", { requested_job_count: 0, source: "tauri-desktop" });
+      if (result.ok) await refreshDashboard();
+    });
+    $("stop-bot-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      const result = await requestAndReport("Stop bot", "control_stop", "POST", { close_positions: !Boolean($("stop-without-closing-positions")?.checked), source: "tauri-desktop" });
+      if (result.ok) await refreshDashboard();
+    });
+    $("save-config-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      const configResult = await requestAndReport("Apply runtime config", "config", "PATCH", { config: buildRuntimeConfigPatch() });
+      if (!configResult.ok) return;
+      await requestAndReport("Save config", "config_save", "POST", { source: "tauri-desktop" });
+    });
+    $("load-config-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      const result = await requestAndReport("Load config", "config_load", "POST", { source: "tauri-desktop" });
+      if (result.ok) await refreshDashboard();
+    });
+    $("apply-llm-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await requestAndReport("Apply LLM settings", "llm_config", "PATCH", { config: buildLlmConfigPatch() });
+    });
+    $("refresh-positions-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await refreshPositions();
+    });
+    $("run-backtest-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      const result = await requestAndReport("Run backtest", "backtest_run", "POST", { request: buildBacktestRequest(), source: "tauri-desktop" });
+      if (!result.ok) return;
+      const snapshot = await requestAndReport("Refresh backtest", "backtest");
+      const runs = snapshot.payload?.top_runs || [];
+      const columns = $("backtest-output-table").dataset.columns.split("|");
+      renderTableRows("backtest-output-table", runs, columns, (row) => [
+        row.symbol,
+        row.interval,
+        row.logic,
+        (row.indicator_keys || []).join(", "),
+        row.trades,
+        "--",
+        row.start,
+        row.end,
+        "--",
+        "--",
+        "--",
+        "--",
+        "--",
+        "--",
+        row.leverage,
+        row.roi_value,
+        row.roi_percent,
+        row.max_drawdown_value,
+        row.max_drawdown_percent,
+        row.max_drawdown_value,
+        row.max_drawdown_percent
+      ]);
+    });
+    $("stop-backtest-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await requestAndReport("Stop backtest", "backtest_stop", "POST", { source: "tauri-desktop" });
+    });
   </script>
 </body>
 </html>

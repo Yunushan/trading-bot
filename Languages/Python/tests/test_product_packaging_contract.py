@@ -67,6 +67,190 @@ class ProductPackagingContractTests(unittest.TestCase):
         )
         self.assertNotIn('Join-Path $localVcpkg "bootstrap-vcpkg.bat", "-disableMetrics"', script)
 
+    def test_rust_desktop_shells_surface_full_trading_tabs(self):
+        rust_root = REPO_ROOT / "experiments" / "rust-shells"
+        core = (rust_root / "crates" / "core" / "src" / "lib.rs").read_text(encoding="utf-8")
+        tab_labels = (
+            "Dashboard",
+            "Chart",
+            "Positions",
+            "Backtest",
+            "Liquidation Heatmap",
+            "Code Languages",
+        )
+        mirrored_dashboard_controls = (
+            "Account & Status",
+            "AI / LLM Settings",
+            "Exchange",
+            "Markets & Intervals",
+            "Strategy Controls",
+            "Indicators",
+            "Symbol / Interval Overrides",
+            "Desktop Service API",
+            "All Logs",
+            "Position Trigger Logs",
+            "Waiting Positions (Queue)",
+        )
+        mirrored_table_columns = (
+            "Triggered Indicator Value",
+            "Current Indicator Value",
+            "Stop-Loss Options",
+            "Max Drawdown During Position (USDT)",
+            "Usage Change Counter",
+        )
+
+        self.assertIn("pub fn trading_app_tabs", core)
+        self.assertIn("pub fn service_api_routes", core)
+        self.assertIn("pub fn service_api_capabilities", core)
+        self.assertIn("pub fn rust_execution_modes", core)
+        self.assertIn("pub fn rust_trading_execution_supported", core)
+        self.assertIn("Native Rust trading engine", core)
+        self.assertIn("trading_execution_supported: false", core)
+        self.assertIn('name: "control_start"', core)
+        self.assertIn('path: "/api/v1/control/start"', core)
+        self.assertIn("Managed Local Service API", core)
+        self.assertIn("Execution Boundary", core)
+        self.assertIn("qwen3:8b", core)
+        for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
+            self.assertIn(label, core)
+
+        tauri_html = (rust_root / "apps" / "tauri-desktop" / "ui" / "index.html").read_text(encoding="utf-8")
+        tauri_main = (rust_root / "apps" / "tauri-desktop" / "src" / "main.rs").read_text(encoding="utf-8")
+        tauri_config = tomllib.loads((rust_root / "apps" / "tauri-desktop" / "Cargo.toml").read_text(encoding="utf-8"))
+        tauri_app_config = json.loads((rust_root / "apps" / "tauri-desktop" / "tauri.conf.json").read_text(encoding="utf-8"))
+        slint_ui = (rust_root / "apps" / "slint-desktop" / "ui" / "main.slint").read_text(encoding="utf-8")
+        for source in (tauri_html, slint_ui):
+            for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
+                self.assertIn(label, source)
+            self.assertIn("Bot Status", source)
+        self.assertTrue(tauri_app_config["app"]["withGlobalTauri"])
+        self.assertIn("reqwest", tauri_config["dependencies"])
+        self.assertIn("service_api_request", tauri_main)
+        self.assertIn("start_service_api", tauri_main)
+        self.assertIn("stop_service_api", tauri_main)
+        self.assertIn("service_process_status", tauri_main)
+        self.assertIn("ServiceProcessState", tauri_main)
+        self.assertIn('join("apps").join("service-api").join("main.py")', tauri_main)
+        self.assertIn('arg("--serve")', tauri_main)
+        self.assertIn('arg("--load-config")', tauri_main)
+        self.assertIn("service_api_route_path", tauri_main)
+        for route_name in (
+            "dashboard",
+            "control_start",
+            "control_stop",
+            "config_save",
+            "config_load",
+            "backtest_run",
+            "backtest_stop",
+            "llm_config",
+            "operational_preflight",
+        ):
+            self.assertIn(f'"{route_name}"', tauri_html)
+        for element_id in (
+            "start-bot-btn",
+            "stop-bot-btn",
+            "save-config-btn",
+            "load-config-btn",
+            "service-connect-btn",
+            "service-stop-btn",
+            "service-preflight-btn",
+            "apply-llm-btn",
+            "run-backtest-btn",
+            "refresh-positions-btn",
+            "api-key-input",
+            "api-secret-input",
+            "config-account-mode",
+            "config-gtd-minutes",
+            "refresh-balance-btn",
+            "check-local-model-btn",
+            "remove-local-model-btn",
+            "custom-interval-input",
+            "add-custom-interval-btn",
+            "refresh-symbols-btn",
+            "lead-trader-enabled",
+            "lead-trader-profile",
+            "indicator-live-values",
+            "add-only-net-direction",
+            "allow-opposite-positions",
+            "stop-without-closing-positions",
+            "close-on-window-close",
+            "backtest-refresh-symbols-btn",
+            "backtest-custom-interval-input",
+            "backtest-add-custom-interval-btn",
+            "backtest-start-date",
+            "backtest-end-date",
+            "backtest-mdd-logic",
+            "backtest-position-pct",
+            "backtest-loop-interval",
+            "backtest-side",
+            "backtest-margin-mode",
+            "backtest-position-mode",
+            "backtest-assets-mode",
+            "backtest-account-mode",
+            "backtest-connector",
+            "backtest-leverage",
+            "backtest-template-enabled",
+            "backtest-template-name",
+            "backtest-scan-top-n",
+            "backtest-scan-mdd-limit",
+            "backtest-scan-symbols-btn",
+        ):
+            self.assertIn(f'id="{element_id}"', tauri_html)
+        for tauri_command in (
+            'invoke("start_service_api"',
+            'invoke("stop_service_api"',
+            'invoke("service_api_request"',
+        ):
+            self.assertIn(tauri_command, tauri_html)
+        for hydration_hook in (
+            "hydrateConfigControls",
+            "hydrateLlmControls",
+            "hydrateBacktestControls",
+            "hydrateFromDashboard",
+            "llm_reasoning_effort",
+            "llm_allow_public_network",
+            "account_mode",
+            "tif",
+            "gtd_minutes",
+            "indicator_source",
+            "loop_interval_override",
+            "lead_trader_enabled",
+            "lead_trader_profile",
+            "indicator_use_live_values",
+            "hedge_preserve_opposites",
+            "allow_opposite_positions",
+            "close_on_exit",
+            "close_positions: !Boolean",
+            "start_date",
+            "end_date",
+            "mdd_logic",
+            "scan_top_n",
+            "scan_mdd_limit",
+            "template",
+        ):
+            self.assertIn(hydration_hook, tauri_html)
+
+        rust_app_sources = {
+            "egui": rust_root / "apps" / "egui-desktop" / "src" / "main.rs",
+            "Iced": rust_root / "apps" / "iced-desktop" / "src" / "main.rs",
+            "Dioxus Desktop": rust_root / "apps" / "dioxus-desktop" / "src" / "main.rs",
+        }
+        for shell, path in rust_app_sources.items():
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("trading_app_tabs", source, shell)
+            self.assertIn("rust_execution_modes", source, shell)
+            self.assertIn("rust_trading_execution_supported", source, shell)
+            self.assertIn("service_api_capabilities", source, shell)
+            self.assertIn("service_api_routes", source, shell)
+            self.assertIn("Service API Integration", source, shell)
+            self.assertIn("Standalone Rust trading execution supported", source, shell)
+            self.assertIn("Bot Status: OFF", source, shell)
+            self.assertIn("Total PNL Active Positions", source, shell)
+            self.assertNotIn("Shared Rust core scaffold wired", source, shell)
+        self.assertIn("Service API Integration", slint_ui)
+        self.assertIn("Python service/desktop runtime remains the trading execution owner", slint_ui)
+        self.assertIn("standalone Rust trading execution supported: false", slint_ui)
+
     def test_unix_build_script_targets_canonical_desktop_wrapper(self):
         script = (REPO_ROOT / "Languages" / "Python" / "tools" / "build_binary.sh").read_text(encoding="utf-8")
         self.assertIn('DESKTOP_ENTRY_SCRIPT="${REPO_ROOT}/apps/desktop-pyqt/main.py"', script)
