@@ -1,7 +1,7 @@
 use trading_bot_contracts::AppIdentity;
 
 pub fn app_banner(shell: &str) -> String {
-    format!("Trading Bot Rust scaffold -> {shell}")
+    format!("Trading Bot Rust UI scaffold -> {shell}")
 }
 
 pub fn default_identity(shell: &str) -> AppIdentity {
@@ -104,28 +104,28 @@ pub fn rust_shell_framework_parity() -> &'static [RustShellFrameworkParity] {
     &[
         RustShellFrameworkParity {
             framework: "Tauri",
-            status: "Full interactive Rust desktop client",
-            detail: "Runs the operational HTML shell with live Service API start/stop, dashboard/config hydration, backtest scanner, dashboard import, logs, and local LLM model lifecycle controls.",
+            status: "Operational Service API client",
+            detail: "Runs the operational HTML shell with live Python Service API start/stop, dashboard/config hydration, backtest scanner, dashboard import, logs, LLM advisory prompts, and local LLM model lifecycle controls; trading execution still belongs to Python.",
         },
         RustShellFrameworkParity {
             framework: "Slint",
-            status: "Native parity surface",
-            detail: "Mirrors the Python/C++ tab, control, table, route, framework, and execution-boundary map for native UI evaluation; trading execution still goes through the Python Service API.",
+            status: "Non-operational native UI evaluation",
+            detail: "Mirrors the Python/C++ tab, control, table, route, framework, and execution-boundary map for native UI evaluation, but does not manage the Service API or control the bot.",
         },
         RustShellFrameworkParity {
             framework: "egui",
-            status: "Shared-catalog parity surface",
-            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core.",
+            status: "Non-operational comparison renderer",
+            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core for renderer comparison only; it does not manage the Service API or control the bot.",
         },
         RustShellFrameworkParity {
             framework: "Iced",
-            status: "Shared-catalog parity surface",
-            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core.",
+            status: "Non-operational comparison renderer",
+            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core for renderer comparison only; it does not manage the Service API or control the bot.",
         },
         RustShellFrameworkParity {
             framework: "Dioxus Desktop",
-            status: "Shared-catalog parity surface",
-            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core.",
+            status: "Non-operational comparison renderer",
+            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core for renderer comparison only; it does not manage the Service API or control the bot.",
         },
     ]
 }
@@ -187,23 +187,27 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
     &[
         ServiceApiCapability {
             title: "Managed Local Service API",
-            detail: "Tauri can launch apps/service-api/main.py --serve on 127.0.0.1 and stop only the process it started.",
+            detail: "Only Tauri can launch apps/service-api/main.py --serve on 127.0.0.1 and stop only the process it started; the other Rust shells are non-operational evaluation renderers.",
         },
         ServiceApiCapability {
             title: "Canonical /api/v1 Contract",
-            detail: "Rust shells use the same dashboard, config, start/stop, backtest, logs, LLM, and preflight routes as Python, web, and mobile clients.",
+            detail: "Rust shells expose the full canonical Python Service API route catalog, including runtime, dashboard, status, stream, config persistence, control, connector circuit, account, portfolio, terminal, LLM, logs, and backtest routes.",
         },
         ServiceApiCapability {
             title: "Config Hydration",
-            detail: "Tauri refreshes dashboard/config snapshots and hydrates visible runtime, account, stop-loss, LLM, symbol, interval, strategy, and backtest controls.",
+            detail: "Tauri refreshes dashboard/config snapshots and direct account, portfolio, exchange connector, and service logs snapshots, then hydrates visible runtime, account, config persistence state/path, stop-loss, LLM, symbol, interval, strategy, backtest, and logs controls.",
+        },
+        ServiceApiCapability {
+            title: "Operational Preflight Start Gate",
+            detail: "Tauri formats the operational_preflight payload, shows start/orders/mode/critical/age details, blocks Start Bot when start.allowed is false, and surfaces connector order circuit breaker state with reset control.",
         },
         ServiceApiCapability {
             title: "Backtest Scanner & Dashboard Import",
             detail: "Tauri can submit scanner backtests, poll until idle, select the best max-drawdown candidate, and import selected or all backtest rows into dashboard symbol/interval overrides.",
         },
         ServiceApiCapability {
-            title: "Local LLM Lifecycle",
-            detail: "Tauri checks local model status and can request Ollama start, model pull, and model delete through llm_local_model_status/start/pull/delete routes after user confirmation.",
+            title: "LLM Advisory & Local Lifecycle",
+            detail: "Tauri applies LLM settings, prepares dry-run advisory prompt requests, can send confirmed advisory prompts through llm_prompt, and checks/starts/pulls/deletes local Ollama models through llm_local_model_status/start/pull/delete routes after user confirmation.",
         },
         ServiceApiCapability {
             title: "Execution Boundary",
@@ -218,6 +222,11 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
 
 pub fn service_api_routes() -> &'static [ServiceApiRoute] {
     &[
+        ServiceApiRoute {
+            name: "runtime",
+            path: "/api/v1/runtime",
+            methods: &["GET"],
+        },
         ServiceApiRoute {
             name: "dashboard",
             path: "/api/v1/dashboard",
@@ -239,9 +248,19 @@ pub fn service_api_routes() -> &'static [ServiceApiRoute] {
             methods: &["GET"],
         },
         ServiceApiRoute {
+            name: "config_summary",
+            path: "/api/v1/config-summary",
+            methods: &["GET"],
+        },
+        ServiceApiRoute {
             name: "config",
             path: "/api/v1/config",
             methods: &["GET", "PUT", "PATCH"],
+        },
+        ServiceApiRoute {
+            name: "config_persistence",
+            path: "/api/v1/config/persistence",
+            methods: &["GET"],
         },
         ServiceApiRoute {
             name: "config_save",
@@ -252,6 +271,11 @@ pub fn service_api_routes() -> &'static [ServiceApiRoute] {
             name: "config_load",
             path: "/api/v1/config/load",
             methods: &["POST"],
+        },
+        ServiceApiRoute {
+            name: "runtime_state",
+            path: "/api/v1/runtime/state",
+            methods: &["PUT"],
         },
         ServiceApiRoute {
             name: "operational_preflight",
@@ -269,6 +293,26 @@ pub fn service_api_routes() -> &'static [ServiceApiRoute] {
             methods: &["POST"],
         },
         ServiceApiRoute {
+            name: "control_start_failed",
+            path: "/api/v1/control/start-failed",
+            methods: &["POST"],
+        },
+        ServiceApiRoute {
+            name: "connector_order_circuit_breaker",
+            path: "/api/v1/runtime/connector-order-circuit-breaker",
+            methods: &["GET", "PUT"],
+        },
+        ServiceApiRoute {
+            name: "connector_order_circuit_breaker_reset",
+            path: "/api/v1/runtime/connector-order-circuit-breaker/reset",
+            methods: &["POST"],
+        },
+        ServiceApiRoute {
+            name: "connector_order_circuit_incidents",
+            path: "/api/v1/runtime/connector-order-circuit-breaker/incidents",
+            methods: &["GET"],
+        },
+        ServiceApiRoute {
             name: "backtest_run",
             path: "/api/v1/backtest/run",
             methods: &["POST"],
@@ -279,9 +323,34 @@ pub fn service_api_routes() -> &'static [ServiceApiRoute] {
             methods: &["POST"],
         },
         ServiceApiRoute {
+            name: "account",
+            path: "/api/v1/account",
+            methods: &["GET", "PUT"],
+        },
+        ServiceApiRoute {
+            name: "portfolio",
+            path: "/api/v1/portfolio",
+            methods: &["GET", "PUT"],
+        },
+        ServiceApiRoute {
+            name: "exchange_connector",
+            path: "/api/v1/exchange/connector",
+            methods: &["GET", "PUT"],
+        },
+        ServiceApiRoute {
             name: "logs",
             path: "/api/v1/logs",
             methods: &["GET", "POST"],
+        },
+        ServiceApiRoute {
+            name: "terminal_run",
+            path: "/api/v1/terminal/run",
+            methods: &["POST"],
+        },
+        ServiceApiRoute {
+            name: "llm_providers",
+            path: "/api/v1/llm/providers",
+            methods: &["GET"],
         },
         ServiceApiRoute {
             name: "llm_config",
@@ -289,9 +358,9 @@ pub fn service_api_routes() -> &'static [ServiceApiRoute] {
             methods: &["GET", "PATCH"],
         },
         ServiceApiRoute {
-            name: "llm_providers",
-            path: "/api/v1/llm/providers",
-            methods: &["GET"],
+            name: "llm_prompt",
+            path: "/api/v1/llm/prompt",
+            methods: &["POST"],
         },
         ServiceApiRoute {
             name: "llm_local_model_status",
@@ -312,6 +381,11 @@ pub fn service_api_routes() -> &'static [ServiceApiRoute] {
             name: "llm_local_model_delete",
             path: "/api/v1/llm/local-model/delete",
             methods: &["POST"],
+        },
+        ServiceApiRoute {
+            name: "stream_dashboard",
+            path: "/api/v1/stream/dashboard",
+            methods: &["GET"],
         },
     ]
 }
@@ -361,7 +435,7 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     items: &[
                         "Enable LLM assistance",
                         "Allow public network endpoint",
-                        "Provider: OpenAI / ChatGPT, Anthropic Claude, Google Gemini, xAI Grok, Mistral AI, DeepSeek, Local / Custom OpenAI-Compatible",
+                        "Provider: OpenAI / ChatGPT, Anthropic Claude, Google Gemini, xAI Grok, Mistral AI, DeepSeek, Alibaba Qwen / DashScope, Local / Custom OpenAI-Compatible",
                         "Model: gpt-5.5, gpt-5.4, claude-sonnet, gemini, grok, mistral, deepseek, qwen3:8b, llama3.3, gemma3:4b",
                         "Base URL / IP:",
                         "API key env:",
@@ -372,18 +446,34 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Local model status",
                         "Check / Download Local Model: starts Ollama when confirmed and pulls the selected local model when missing",
                         "Remove Local Model: deletes the selected local model when confirmed",
+                        "Advisory Prompt",
+                        "System Prompt",
+                        "Prepare Advisory Request",
+                        "Run Advisory",
+                        "LLM advisory result",
                     ],
                 },
                 TradingAppSection {
                     title: "Exchange",
-                    items: &["Select exchange", "Binance"],
+                    items: &[
+                        "Select exchange",
+                        "Binance",
+                        "Bybit (coming soon)",
+                        "OKX (coming soon)",
+                        "Gate (coming soon)",
+                        "Bitget (coming soon)",
+                        "MEXC (coming soon)",
+                        "KuCoin (coming soon)",
+                    ],
                 },
                 TradingAppSection {
                     title: "Markets & Intervals",
                     items: &[
                         "Symbols (select 1 or more):",
+                        "Default symbols: BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT",
                         "Refresh Symbols",
                         "Intervals (select 1 or more):",
+                        "Default intervals: 1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d",
                         "Custom interval input: e.g., 45s or 7m or 90m, comma-separated",
                         "Add Custom Interval(s)",
                     ],
@@ -430,6 +520,15 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     ],
                 },
                 TradingAppSection {
+                    title: "Symbol / Interval Overrides",
+                    items: &[
+                        "Columns: Symbol, Interval, Indicators, Loop, Leverage, Connector, Strategy Controls, Stop-Loss",
+                        "Add Selected",
+                        "Remove Selected",
+                        "Clear All",
+                    ],
+                },
+                TradingAppSection {
                     title: "Desktop Service API",
                     items: &[
                         "Enable",
@@ -450,6 +549,7 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "All Logs",
                         "Position Trigger Logs",
                         "Waiting Positions (Queue)",
+                        "Refresh Logs",
                     ],
                 },
             ],
@@ -486,8 +586,8 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     title: "Chart Controls",
                     items: &[
                         "Market: Futures, Spot",
-                        "Symbol:",
-                        "Interval:",
+                        "Symbol: BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, AVAXUSDT, LINKUSDT, TRXUSDT",
+                        "Interval: 1m, 3m, 5m, 10m, 15m, 20m, 30m, 1h, 2h, 3h, 4h, 5h, 6h, 7h, 8h, 9h, 10h, 11h, 12h, 1d, 2d, 3d, 4d, 5d, 6d, 1w, 2w, 3w, 1month, 2months, 3months, 6months, 1mo, 2mo, 3mo, 6mo, 1y, 2y",
                         "View: TradingView, Original, TradingView Lightweight",
                         "Total PNL Active Positions: --",
                         "Total PNL Closed Positions: --",
@@ -502,6 +602,7 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Original",
                         "TradingView Lightweight",
                         "Chart ready.",
+                        "Open In Browser URL: https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT.P&interval=1",
                     ],
                 },
             ],
@@ -579,7 +680,9 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Symbol Source: Futures, Spot",
                         "Refresh",
                         "Symbols (select 1 or more):",
+                        "Default symbols: BTCUSDT, ETHUSDT, BNBUSDT",
                         "Intervals (select 1 or more):",
+                        "Default intervals: 1m, 5m, 15m, 1h",
                         "Custom interval input: e.g., 45s or 7m or 90m, comma-separated",
                         "Add Custom Interval(s)",
                     ],
@@ -593,7 +696,7 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "MDD Logic: Per Trade MDD, Cumulative MDD, Entire Account MDD",
                         "Margin Capital:",
                         "Position % of Balance:",
-                        "Loop Interval Override:",
+                        "Loop Interval Override: 30 seconds, 45 seconds, 1 minute, 5 minutes, 1 hour",
                         "Stop Loss: Enable, mode, Scope, USDT, %",
                         "Side: Buy (Long), Sell (Short), Both (Long/Short)",
                         "Margin Mode (Futures): Isolated, Cross",
@@ -603,7 +706,9 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Connector:",
                         "Leverage (Futures):",
                         "Template: Enable",
-                        "Max MDD Scanner: Top N, Max MDD %, Scan Symbols",
+                        "Max MDD Scanner Top N:",
+                        "Max MDD Scanner Max MDD %:",
+                        "Scan Symbols",
                         "Scanner status text",
                         "Scanner best candidate summary",
                         "Pair overrides: symbol, interval, indicators, strategy, connector, leverage, and stop-loss",
@@ -627,6 +732,15 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "SuperTrend (ST) + Buy-Sell Values",
                         "Exponential Moving Average (EMA) + Buy-Sell Values",
                         "Stochastic Oscillator + Buy-Sell Values",
+                    ],
+                },
+                TradingAppSection {
+                    title: "Symbol / Interval Overrides",
+                    items: &[
+                        "Columns: Symbol, Interval, Indicators, Loop, Leverage, Connector, Strategy Controls, Stop-Loss",
+                        "Add Selected",
+                        "Remove Selected",
+                        "Clear All",
                     ],
                 },
                 TradingAppSection {
@@ -700,6 +814,7 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     title: "Coinglass Heatmap",
                     items: &[
                         "Use the on-page controls for Model 1/2/3, pair, symbol, and time selection.",
+                        "Coinglass model tabs: Model 1, Model 2, Model 3",
                         "Model 1: https://www.coinglass.com/pro/futures/LiquidationHeatMap",
                         "Model 2: https://www.coinglass.com/pro/futures/LiquidationHeatMapNew",
                         "Model 3: https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3",
@@ -708,6 +823,10 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                 TradingAppSection {
                     title: "Providers",
                     items: &[
+                        "URL:",
+                        "Go",
+                        "Reload",
+                        "Open in Browser",
                         "Coinank: https://coinank.com/chart/derivatives/liq-heat-map",
                         "Bitcoin Counterflow: https://www.bitcoincounterflow.com/liquidation-heatmap/",
                         "Hyblock Capital: https://hyblockcapital.com/",
@@ -737,17 +856,17 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     items: &[
                         "Python - Recommended - Fast to build - Huge ecosystem",
                         "C++ - Experiment - Qt native desktop experiment",
-                        "Rust - Experiment - Shared core with desktop shell experiments",
+                        "Rust - Experiment - Service API client and UI scaffold",
                     ],
                 },
                 TradingAppSection {
                     title: "Choose your Rust framework",
                     items: &[
-                        "Tauri - Full interactive Rust desktop client with managed local Service API",
-                        "Slint - Native parity surface for the same tab/control/route map",
-                        "egui - Shared-catalog parity surface from trading-bot-core",
-                        "Iced - Shared-catalog parity surface from trading-bot-core",
-                        "Dioxus Desktop - Shared-catalog parity surface from trading-bot-core",
+                        "Tauri - Operational Service API client with interactive managed Python Service API behavior",
+                        "Slint - Non-operational native UI evaluation for the same tab/control/route map",
+                        "egui - Non-operational comparison renderer from trading-bot-core",
+                        "Iced - Non-operational comparison renderer from trading-bot-core",
+                        "Dioxus Desktop - Non-operational comparison renderer from trading-bot-core",
                     ],
                 },
                 TradingAppSection {

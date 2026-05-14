@@ -12,6 +12,17 @@
     .map((item) => item.trim())
     .filter(Boolean);
 
+  const titleizeLabel = (value) => {
+    const text = String(value || "").trim().replace(/[_-]+/g, " ");
+    if (!text) return "-";
+    return text.replace(/\b\w/g, (char) => char.toUpperCase());
+  };
+
+  const compactNumber = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "-";
+  };
+
   const uniqueValues = (...groups) => {
     const seen = new Set();
     const result = [];
@@ -163,9 +174,257 @@
     return `Local model '${status.model || fallbackModel}' is ${installed} on ${status.server_kind || "local server"}${size}. Storage: ${localModelStorageText(status)}.${warning}${error}`;
   };
 
+  const compactTimestamp = (value) => String(value || "").trim();
+
+  const describeConfigPersistence = (persistence) => {
+    const payload = persistence && typeof persistence === "object" ? persistence : {};
+    const dirty = Boolean(payload.dirty);
+    const exists = Boolean(payload.exists);
+    const savedAt = compactTimestamp(payload.last_saved_at || payload.saved_at);
+    const loadedAt = compactTimestamp(payload.last_loaded_at || payload.loaded_at);
+    let stateText = "Runtime only";
+    let tone = "neutral";
+    if (dirty) {
+      stateText = "Unsaved runtime changes";
+      tone = "warn";
+    } else if (exists) {
+      stateText = "Config file in sync";
+      tone = "good";
+    }
+    const detail = [];
+    if (savedAt) detail.push(`saved ${savedAt}`);
+    if (loadedAt) detail.push(`loaded ${loadedAt}`);
+    return {
+      stateText: detail.length ? `${stateText} - ${detail.join(" - ")}` : stateText,
+      pathText: String(payload.path || "-"),
+      tone
+    };
+  };
+
+  const preflightDetail = (value) => {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item || "").trim()).filter(Boolean).join("; ");
+    }
+    return String(value || "").trim();
+  };
+
+  const preflightStartBlocked = (preflight) => {
+    if (!preflight || typeof preflight !== "object") return false;
+    const start = preflight.start && typeof preflight.start === "object" ? preflight.start : null;
+    if (start?.allowed === false || start?.state === "blocked") return true;
+    return Boolean((!start && preflight.blocked === true) || preflight.start_blocked === true);
+  };
+
+  const preflightStartDetail = (preflight) => {
+    if (!preflight || typeof preflight !== "object") return "";
+    const start = preflight.start && typeof preflight.start === "object" ? preflight.start : {};
+    return preflightDetail(start.reasons)
+      || preflightDetail(preflight.reasons)
+      || preflightDetail(preflight.message)
+      || "operational preflight is blocked";
+  };
+
+  const preflightGateText = (gate) => {
+    const payload = gate && typeof gate === "object" ? gate : {};
+    const stateLabel = titleizeLabel(payload.state || (payload.allowed === false ? "blocked" : "unknown"));
+    const enabledLabel = payload.gate_enabled === false ? "Gate disabled" : "Gate enabled";
+    const allowedLabel = payload.allowed === false ? "blocked" : payload.allowed === true ? "allowed" : "unknown";
+    const reasons = Array.isArray(payload.reasons) ? payload.reasons.filter(Boolean) : [];
+    const reason = reasons.length ? ` - ${reasons[0]}` : "";
+    return `${stateLabel} (${enabledLabel}, ${allowedLabel})${reason}`;
+  };
+
+  const preflightCriticalLabels = (preflight) => {
+    const payload = preflight && typeof preflight === "object" ? preflight : {};
+    const critical = payload.critical_stale;
+    const labels = [];
+    const addLabel = (label) => {
+      const text = String(label || "").trim();
+      if (text && !labels.includes(text)) labels.push(text);
+    };
+    if (Array.isArray(critical)) {
+      critical.forEach(addLabel);
+    } else if (critical && typeof critical === "object") {
+      Object.values(critical).forEach((items) => {
+        if (Array.isArray(items)) items.forEach(addLabel);
+      });
+    }
+    return labels;
+  };
+
+  const preflightFreshnessAges = (preflight) => {
+    const payload = preflight && typeof preflight === "object" ? preflight : {};
+    const freshness = payload.freshness && typeof payload.freshness === "object" ? payload.freshness : {};
+    const inputs = [
+      ["exchange_connector", "Exchange"],
+      ["execution", "Execution"],
+      ["account", "Account"],
+      ["portfolio", "Portfolio"]
+    ];
+    const items = inputs.map(([key, label]) => {
+      const item = freshness[key] && typeof freshness[key] === "object" ? freshness[key] : null;
+      if (!item) return "";
+      const age = Number(item.age_seconds);
+      const maxAge = Number(item.max_age_seconds);
+      const ageText = Number.isFinite(age) ? compactNumber(age) : "-";
+      const maxText = Number.isFinite(maxAge) ? compactNumber(maxAge) : "-";
+      return `${label} ${ageText}s/${maxText}s ${item.stale ? "stale" : "fresh"}`;
+    }).filter(Boolean);
+    return items.length ? items.join(" | ") : "-";
+  };
+
+  const describeOperationalPreflight = (preflight) => {
+    const payload = preflight && typeof preflight === "object" ? preflight : {};
+    const state = String(payload.state || "unknown").toLowerCase();
+    const critical = preflightCriticalLabels(payload);
+    const reasons = Array.isArray(payload.reasons) ? payload.reasons.filter(Boolean) : [];
+    const message = String(payload.message || "").trim();
+    const reasonText = reasons.length ? ` Reasons: ${reasons.join(" ")}` : "";
+    return {
+      stateText: titleizeLabel(state),
+      startText: preflightGateText(payload.start),
+      ordersText: preflightGateText(payload.orders),
+      modeText: `${payload.live_mode ? "Live" : "Demo/Test"} / ${payload.mode || "-"}`,
+      criticalText: critical.length ? critical.join(", ") : "Fresh",
+      agesText: preflightFreshnessAges(payload),
+      messageText: `${message || "No preflight snapshot received yet."}${reasonText}`,
+      tone: state === "ok" ? "good" : state === "warning" || state === "disabled" ? "warn" : state === "blocked" || state === "error" ? "bad" : "neutral"
+    };
+  };
+
+  const formatPreflightLabel = (preflight) => {
+    if (!preflight || typeof preflight !== "object") {
+      return { text: "Preflight: unknown", tone: "neutral" };
+    }
+    const state = String(preflight.state || "unknown").trim().toLowerCase();
+    const start = preflight.start && typeof preflight.start === "object" ? preflight.start : {};
+    const orders = preflight.orders && typeof preflight.orders === "object" ? preflight.orders : {};
+    const startDetail = preflightDetail(start.reasons) || preflightDetail(preflight.reasons);
+    const orderDetail = preflightDetail(orders.reasons);
+
+    if (preflightStartBlocked(preflight)) {
+      const detail = preflightStartDetail(preflight);
+      return { text: `Preflight: start blocked (${detail})`, tone: "bad" };
+    }
+    if (orders.allowed === false || orders.state === "blocked") {
+      const detail = orderDetail || state;
+      return { text: `Preflight: orders blocked (${detail})`, tone: "warn" };
+    }
+    if (state === "ok") return { text: "Preflight: ok, start allowed", tone: "good" };
+    if (state === "warning") {
+      const detail = startDetail || orderDetail;
+      const suffix = detail ? ` (${detail})` : "";
+      return { text: `Preflight: warning, start allowed${suffix}`, tone: "warn" };
+    }
+    if (state === "blocked") return { text: "Preflight: blocked", tone: "bad" };
+    return { text: `Preflight: ${state || "unknown"}`, tone: "neutral" };
+  };
+
+  const describeOrderCircuit = (circuit) => {
+    const payload = circuit && typeof circuit === "object" ? circuit : {};
+    if (payload.active) {
+      if (payload.reset_blocked_reason) return `Open - reset blocked: ${payload.reset_blocked_reason}`;
+      const blockCount = compactNumber(payload.block_count || 0);
+      const threshold = compactNumber(payload.block_threshold || 0);
+      return `Open (${blockCount}/${threshold} blocks)`;
+    }
+    if (payload.cleared_at) return `Closed ${payload.cleared_at}`;
+    return titleizeLabel(payload.state || "closed");
+  };
+
+  const lastIncidentFrom = (incidentLog, incidents) => {
+    const log = incidentLog && typeof incidentLog === "object" ? incidentLog : {};
+    const list = incidents && typeof incidents === "object" ? incidents : {};
+    return (log.last_event && typeof log.last_event === "object" ? log.last_event : null)
+      || (list.last_event && typeof list.last_event === "object" ? list.last_event : null)
+      || (Array.isArray(list.events) && list.events.length ? list.events[list.events.length - 1] : null);
+  };
+
+  const describeLastCircuitIncident = (incidentLog, incidents) => {
+    const event = lastIncidentFrom(incidentLog, incidents);
+    if (!event) return "No persisted incident";
+    const action = titleizeLabel(String(event.action || event.event || "incident").replace(/^connector_order_circuit_/, ""));
+    const timestamp = String(event.ts || event.created_at || event.generated_at || "").trim();
+    return timestamp ? `${action} @ ${timestamp}` : action;
+  };
+
+  const describeCircuitIncidentCount = (incidents) => {
+    const payload = incidents && typeof incidents === "object" ? incidents : {};
+    if (Number.isFinite(Number(payload.count))) return compactNumber(payload.count);
+    if (Array.isArray(payload.events)) return compactNumber(payload.events.length);
+    return "0";
+  };
+
+  const serviceLogItemsFromPayload = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== "object") return [];
+    if (Array.isArray(payload.items)) return payload.items;
+    if (Array.isArray(payload.logs)) return payload.logs;
+    if (Array.isArray(payload.events)) return payload.events;
+    return [];
+  };
+
+  const formatServiceLogLine = (item) => {
+    if (typeof item === "string") return item;
+    const payload = item && typeof item === "object" ? item : {};
+    const level = String(payload.level || "info").trim().toUpperCase() || "INFO";
+    const timestamp = String(payload.generated_at || payload.created_at || payload.ts || "").trim();
+    const source = String(payload.source || "service").trim() || "service";
+    const sequence = Number.isFinite(Number(payload.sequence_id)) ? `#${Number(payload.sequence_id)} ` : "";
+    const message = String(payload.message || payload.detail || "").trim();
+    const stamp = timestamp ? ` ${timestamp}` : "";
+    const suffix = message ? `: ${message}` : "";
+    return `[${level}] ${sequence}${source}${stamp}${suffix}`;
+  };
+
+  const formatServiceLogs = (payload, emptyText = "No service logs returned.") => {
+    const items = serviceLogItemsFromPayload(payload);
+    return items.length ? items.map(formatServiceLogLine).join("\n") : emptyText;
+  };
+
+  const formatJsonBlock = (value) => {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (error) {
+      return String(value || "");
+    }
+  };
+
+  const formatLlmPromptResult = (result) => {
+    const payload = result && typeof result === "object" ? result : {};
+    const dryRun = Boolean(payload.dry_run);
+    const state = payload.ok ? "ok" : "failed";
+    const provider = String(payload.provider || payload.request?.provider || payload.request?.mode || "selected provider");
+    const policy = payload.output_policy && typeof payload.output_policy === "object" ? payload.output_policy : {};
+    const violations = Array.isArray(policy.violations) ? policy.violations.filter(Boolean) : [];
+    const policyLine = policy.blocked
+      ? `Output policy: blocked (${violations.join(", ") || "policy violation"})`
+      : "Output policy: advisory only";
+    const lines = [`LLM advisory ${dryRun ? "dry run" : "request"} ${state}.`, `Provider: ${provider}`, policyLine];
+    if (payload.error) {
+      lines.push("", "Error:", typeof payload.error === "string" ? payload.error : formatJsonBlock(payload.error));
+    }
+    if (payload.text) {
+      lines.push("", "Advisory response:", String(payload.text));
+    }
+    if (dryRun && payload.request) {
+      lines.push("", "Prepared request:", formatJsonBlock(payload.request));
+    }
+    if (!payload.error && !payload.text && !payload.request) {
+      lines.push("", "No response body returned.");
+    }
+    return lines.join("\n");
+  };
+
   return {
     backtestRunsFromPayload,
+    describeCircuitIncidentCount,
+    describeConfigPersistence,
+    describeLastCircuitIncident,
     describeLocalModelStatus,
+    describeOperationalPreflight,
+    describeOrderCircuit,
+    formatPreflightLabel,
     importBacktestRowsToDashboard,
     linesFromText,
     localModelStorageText,
@@ -174,7 +433,18 @@
     normalizeOverrideRow,
     numericRunValue,
     overrideImportKey,
+    formatServiceLogLine,
+    formatServiceLogs,
+    formatLlmPromptResult,
+    preflightCriticalLabels,
+    preflightDetail,
+    preflightFreshnessAges,
+    preflightGateText,
+    serviceLogItemsFromPayload,
+    preflightStartBlocked,
+    preflightStartDetail,
     selectBacktestScanBest,
+    titleizeLabel,
     uniqueValues
   };
 });

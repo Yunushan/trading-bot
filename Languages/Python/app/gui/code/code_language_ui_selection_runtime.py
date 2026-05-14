@@ -10,6 +10,8 @@ from .code_language_catalog import (
     LANGUAGE_PATHS,
     RUST_CODE_LANGUAGE_KEY,
     RUST_FRAMEWORK_PATHS,
+    _rust_framework_is_operational,
+    _rust_framework_launch_note,
 )
 
 
@@ -205,7 +207,15 @@ def _perform_code_tab_select_rust_framework(self, framework_key: str, *, launch_
         f"Switch to Rust {framework_key}?",
         (
             "This will close the current Python trading bot window completely "
-            f"and open the Rust {framework_key} trading bot instead.\n\n"
+            f"and open the Rust {framework_key} desktop shell.\n\n"
+            + (
+                "This is the only Rust shell with interactive Service API client behavior today."
+                if _rust_framework_is_operational(framework_key)
+                else "This shell is evaluation-only and will not manage the Service API or control the bot."
+            )
+            + "\n\n"
+            + _rust_framework_launch_note(framework_key)
+            + "\n\n"
             "Do you want to continue?"
         ),
         on_accept=lambda: _apply_code_tab_select_rust_framework(

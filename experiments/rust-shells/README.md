@@ -2,7 +2,7 @@
 
 This directory is a Rust workspace for shared contracts/core logic plus multiple desktop-shell experiments.
 
-It is not a single finished application. The Rust side is currently a scaffold and expansion path intended to share logic across several UI frameworks while the Python app remains the primary end-user implementation.
+It is not a single finished application. The Rust side is currently a Service API client and UI parity scaffold, not a native trading runtime. Python remains the primary end-user implementation and the only active strategy, risk, and exchange execution owner.
 
 ## Workspace layout
 
@@ -15,9 +15,10 @@ It is not a single finished application. The Rust side is currently a scaffold a
 - `apps/dioxus-desktop`: Dioxus Desktop shell
 
 The shared Rust core exposes the same LLM provider catalog used by the Python
-service API. The egui and Tauri shells include starter controls for OpenAI,
-Claude, Gemini, DeepSeek, Grok, Qwen, and local/private OpenAI-compatible
-endpoints with model, base URL/IP, API env var, token, and use-mode fields.
+service API. The Rust shells may mirror Python/C++ tabs, controls, route names,
+and model options, but mirrored UI does not mean native trading execution. All
+live strategy, risk, account, order, and exchange behavior must continue through
+the Python Service API until the native Rust runtime gaps below are closed.
 
 ## Status overview
 
@@ -25,11 +26,17 @@ endpoints with model, base URL/IP, API env var, token, and use-mode fields.
 | --- | --- | --- |
 | Shared contracts crate | Active foundation | Common types and workspace contracts |
 | Shared core crate | Active foundation | Intended home for reusable Rust-side business logic |
-| Tauri desktop shell | Recommended first shell | Most packaging-oriented scaffold in the current tree |
-| Slint desktop shell | Experimental scaffold | Native declarative desktop direction |
-| egui desktop shell | Experimental scaffold | Fast dashboard-oriented UI path |
-| Iced desktop shell | Experimental scaffold | Pure Rust reactive desktop path |
-| Dioxus Desktop shell | Experimental scaffold | Component-style desktop shell |
+| Tauri desktop shell | Operational Service API client | Most complete Rust UI; can manage/connect to the Python Service API, but does not own trading execution |
+| Slint desktop shell | Non-operational native UI evaluation | Native declarative desktop direction; surfaces the same option map but does not manage the Service API |
+| egui desktop shell | Non-operational comparison renderer | Fast dashboard-oriented UI path; renders catalog/status data from `trading-bot-core` |
+| Iced desktop shell | Non-operational comparison renderer | Pure Rust reactive desktop path; renders catalog/status data from `trading-bot-core` |
+| Dioxus Desktop shell | Non-operational comparison renderer | Component-style desktop shell; renders catalog/status data from `trading-bot-core` |
+
+Recommended order for this project:
+
+1. Use `Tauri` for serious Rust desktop work because it is the only Rust shell with an interactive Service API client and managed local Python Service API flow.
+2. Keep `Slint` only as a non-operational native-widget evaluation path until it gains the same live client behavior.
+3. Keep `egui`, `Iced`, and `Dioxus Desktop` as non-operational comparison renderers, not as product-grade candidates yet.
 
 The `Tauri` recommendation is an engineering recommendation based on the current repo shape, not a statement that the other shells are removed or unsupported.
 

@@ -35,7 +35,7 @@ def launch_rust_from_code_tab(
     existing = getattr(window, "_rust_code_tab_process", None)
     try:
         if existing is not None and existing.poll() is None:
-            window.log("Rust bot is already running.")
+            window.log("Rust desktop shell is already running.")
             QtCore.QTimer.singleShot(0, lambda: shutdown_after_handoff(window))
             return True
     except Exception:
@@ -157,7 +157,7 @@ def launch_rust_from_code_tab(
         }
         apply_windows_startupinfo(popen_kwargs)
 
-        _progress(f"Launching Rust {framework_title} bot...")
+        _progress(f"Launching Rust {framework_title} shell...")
         try:
             process = subprocess.Popen([str(exe_path)], **popen_kwargs)
         except Exception as exc:
@@ -176,7 +176,7 @@ def launch_rust_from_code_tab(
                 window,
                 "Rust launch failed",
                 (
-                    f"Rust {framework_title} bot exited immediately (code {exit_text}).\n"
+                    f"Rust {framework_title} shell exited immediately (code {exit_text}).\n"
                     "Check the cargo build output and desktop framework prerequisites."
                 ),
             )
@@ -187,7 +187,7 @@ def launch_rust_from_code_tab(
             window._ensure_rust_process_watchdog()
         except Exception:
             pass
-        window.log(f"Launched Rust bot ({framework_title}, {trigger}): {exe_path}")
+        window.log(f"Launched Rust desktop shell ({framework_title}, {trigger}): {exe_path}")
         if toolchain_installed:
             QtCore.QTimer.singleShot(0, lambda: refresh_code_language_card_release_labels(window))
             QtCore.QTimer.singleShot(0, window._refresh_dependency_versions)

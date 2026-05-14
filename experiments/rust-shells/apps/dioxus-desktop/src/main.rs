@@ -137,7 +137,7 @@ fn app() -> Element {
             header { class: "topbar",
                 div {
                     h1 { "{banner}" }
-                    p { class: "label", "Rust desktop shell mirroring Python and C++ tabs." }
+                    p { class: "label", "Non-operational Rust comparison renderer; Tauri is the interactive Service API client." }
                 }
                 div { class: "status-strip",
                     span { class: "pill", "Total PNL Active Positions: --" }

@@ -290,7 +290,7 @@ def _run_callable_with_ui_pump(
 
 
 def _create_rust_launch_progress_dialog(parent: QtWidgets.QWidget | None) -> _LanguageSwitchSplash | None:
-    return code_language_launch.create_launch_progress_dialog("Preparing Rust bot...", parent)
+    return code_language_launch.create_launch_progress_dialog("Preparing Rust desktop shell...", parent)
 
 
 def _hide_python_window_for_rust_launch(self, progress_dialog: _LanguageSwitchSplash | None) -> bool:

@@ -185,6 +185,18 @@
       gap: 8px;
       min-height: 30px;
     }
+    output {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      overflow-wrap: anywhere;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #070d18;
+      color: #f8fafc;
+      padding: 7px 9px;
+      font-weight: 500;
+    }
     fieldset {
       border: 0;
       margin: 0;
@@ -222,7 +234,12 @@
     #backtest-overrides-table tbody tr.selected td,
     #backtest-output-table tbody tr.selected td { background: rgba(56, 189, 248, 0.14); }
     .good { color: var(--good); }
+    .warn { color: var(--warn); }
     .bad { color: var(--bad); }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     .log-output {
       min-height: 160px;
       padding: 12px;
@@ -254,7 +271,7 @@
     <header class="topbar">
       <div>
         <h1>Trading Bot Tauri Shell</h1>
-        <p class="subtitle">Rust desktop shell mirroring the Python and C++ tab surface.</p>
+        <p class="subtitle">Rust Service API client shell mirroring the Python and C++ tab surface; Python remains the trading execution owner.</p>
       </div>
       <div class="status-strip">
         <span class="pill"><span class="dot" id="bot-status-dot"></span> Bot Status: <span id="bot-status-text">OFF</span></span>
@@ -299,7 +316,13 @@
               <label>Account Mode:<select id="config-account-mode"><option selected>Classic Trading</option><option>Portfolio Margin</option></select></label>
               <label>Connector:<select id="config-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures (Official Recommended)</option><option value="binance-sdk-derivatives-trading-coin-futures">Binance SDK Derivatives Trading COIN-M Futures</option><option value="binance-sdk-spot">Binance SDK Spot (Official Recommended)</option><option value="binance-connector-python">Binance Connector Python</option><option value="ccxt">CCXT (Unified)</option><option value="python-binance">python-binance (Community)</option></select></label>
               <label>Total USDT balance:<input id="account-total-balance" value="N/A" readonly></label>
+              <label>Available Balance:<output id="account-available-balance">-</output></label>
               <label>Position Mode:<input id="account-position-mode" value="N/A" readonly></label>
+              <label>Account Source:<output id="account-source">-</output></label>
+              <label>Account Updated:<output id="account-updated">-</output></label>
+              <label>Portfolio Source:<output id="portfolio-source">-</output></label>
+              <label>Open Positions:<output id="portfolio-open">-</output></label>
+              <label>Closed Trades:<output id="portfolio-closed">-</output></label>
               <label>Leverage (Futures):<input id="config-leverage" type="number" min="1" max="150" value="1"></label>
               <label>Margin Mode (Futures):<select id="config-margin-mode"><option>Cross</option><option selected>Isolated</option></select></label>
               <label>Position Mode:<select id="config-position-mode"><option>One-way</option><option selected>Hedge</option></select></label>
@@ -307,6 +330,10 @@
               <label>Time-in-Force:<select id="config-time-in-force"><option selected>GTC</option><option>IOC</option><option>FOK</option><option>GTD</option></select></label>
               <label>GTD minutes:<input id="config-gtd-minutes" type="number" min="1" max="1440" value="30"></label>
               <label>Indicator Source:<select id="config-indicator-source"><option>Binance spot</option><option selected>Binance futures</option><option>TradingView</option><option>Bybit</option><option>Coinbase</option><option>OKX</option><option>Gate</option><option>Bitget</option><option>Mexc</option><option>Kucoin</option><option>HTX</option><option>Kraken</option></select></label>
+            </div>
+            <div class="grid-2">
+              <label>Config Persistence:<output id="config-persistence-state">Runtime only</output></label>
+              <label>Config File Path:<output id="config-persistence-path">-</output></label>
             </div>
             <div class="actions"><button class="action" id="refresh-balance-btn" type="button">Refresh Balance</button></div>
           </section>
@@ -338,6 +365,14 @@
                 <button class="action" id="remove-local-model-btn" type="button">Remove Local Model</button>
               </div>
               <p class="muted" id="local-model-status-text">Local model status: not checked.</p>
+              <label>Advisory Prompt:<textarea id="llm-prompt-input">Summarize the current trading bot risk.</textarea></label>
+              <label>System Prompt:<textarea id="llm-system-prompt-input" placeholder="Optional advisory system prompt"></textarea></label>
+              <div class="actions">
+                <button class="action" id="run-llm-dry-run-btn" type="button">Prepare Advisory Request</button>
+                <button class="action primary" id="send-llm-advisory-btn" type="button">Run Advisory</button>
+              </div>
+              <p class="muted" id="llm-result-status">LLM advisory: not run.</p>
+              <pre class="log-output" id="llm-result-output">No LLM advisory result yet.</pre>
             </fieldset>
           </section>
         </div>
@@ -345,6 +380,12 @@
           <section class="panel">
             <h3>Exchange</h3>
             <label>Select exchange<select id="exchange-select"><option selected>Binance</option><option disabled>Bybit (coming soon)</option><option disabled>OKX (coming soon)</option><option disabled>Gate (coming soon)</option><option disabled>Bitget (coming soon)</option><option disabled>MEXC (coming soon)</option><option disabled>KuCoin (coming soon)</option></select></label>
+            <div class="grid-2">
+              <label>Connector Health:<output id="exchange-connector-health">-</output></label>
+              <label>Connector State:<output id="exchange-connector-state">-</output></label>
+              <label>Connector Backend:<output id="exchange-connector-backend">-</output></label>
+              <label>Connector Updated:<output id="exchange-connector-updated">-</output></label>
+            </div>
           </section>
           <section class="panel">
             <h3>Markets & Intervals</h3>
@@ -405,12 +446,26 @@
             <div class="actions"><button class="action primary" id="service-connect-btn" type="button">Start / Connect API</button><button class="action danger" id="service-stop-btn" type="button">Stop API</button><button class="action" id="open-service-dashboard-btn" type="button">Open Dashboard</button></div>
             <p class="muted" id="service-status-text">Service API: off</p>
             <p class="muted" id="service-preflight-text">Preflight: unknown</p>
+            <div class="grid-3">
+              <label>Preflight Start:<output id="service-preflight-start">-</output></label>
+              <label>Preflight Orders:<output id="service-preflight-orders">-</output></label>
+              <label>Preflight Mode:<output id="service-preflight-mode">-</output></label>
+              <label>Preflight Critical:<output id="service-preflight-critical">-</output></label>
+              <label>Preflight Ages:<output id="service-preflight-ages">-</output></label>
+              <label>Order Circuit:<output id="connector-order-circuit">-</output></label>
+              <label>Circuit Incidents:<output id="connector-incidents-count">0</output></label>
+              <label>Last Circuit Incident:<output id="connector-last-incident">No persisted incident</output></label>
+            </div>
+            <p class="muted" id="service-preflight-message">No preflight snapshot received yet.</p>
+            <p class="muted" id="connector-message">No connector circuit snapshot received yet.</p>
             <div class="actions"><button class="action" id="service-preflight-btn" type="button">Recheck Preflight</button></div>
+            <div class="actions"><button class="action" id="reset-connector-circuit-btn" type="button" disabled>Reset Order Circuit</button></div>
           </fieldset>
         </section>
         <section class="panel">
           <h3>Logs</h3>
           <div class="subtabs"><span class="subtab">All Logs</span><span class="subtab">Position Trigger Logs</span><span class="subtab">Waiting Positions (Queue)</span></div>
+          <div class="actions"><button class="action" id="refresh-logs-btn" type="button">Refresh Logs</button></div>
           <pre class="log-output" id="log-output">[system] Tauri shell initialized
 [bot] Status: OFF
 [api] Service API: off
@@ -533,11 +588,12 @@
         <div class="section-head"><div><h2>Code Languages</h2><p class="muted">Select your preferred code language. Folders for each language are created automatically inside the project so you can keep related assets organized.</p></div></div>
         <section class="panel">
           <h3>Choose your language</h3>
-          <div class="cards"><div class="metric"><span class="pill">Recommended</span><strong>Python</strong><span>Fast to build - Huge ecosystem</span></div><div class="metric"><span class="pill">Experiment</span><strong>C++</strong><span>Qt native desktop experiment</span></div><div class="metric"><span class="pill">Experiment</span><strong>Rust</strong><span>Shared core with desktop shell experiments</span></div></div>
+          <div class="cards"><div class="metric"><span class="pill">Recommended</span><strong>Python</strong><span>Fast to build - Huge ecosystem</span></div><div class="metric"><span class="pill">Experiment</span><strong>C++</strong><span>Qt native desktop experiment</span></div><div class="metric"><span class="pill">Experiment</span><strong>Rust</strong><span>Service API client and UI scaffold</span></div></div>
         </section>
         <section class="panel">
           <h3>Choose your Rust framework</h3>
-          <div class="cards"><div class="metric"><span class="pill">Desktop</span><strong>Tauri</strong><span>Full interactive Rust desktop client with managed local Service API</span></div><div class="metric"><span class="pill">Desktop</span><strong>Slint</strong><span>Native parity surface for the same tab/control/route map</span></div><div class="metric"><span class="pill">Desktop</span><strong>egui</strong><span>Shared-catalog parity surface from trading-bot-core</span></div><div class="metric"><span class="pill">Desktop</span><strong>Iced</strong><span>Shared-catalog parity surface from trading-bot-core</span></div><div class="metric"><span class="pill">Desktop</span><strong>Dioxus Desktop</strong><span>Shared-catalog parity surface from trading-bot-core</span></div></div>
+          <p class="muted">Recommended order: Tauri first; Slint only for non-operational native UI evaluation; egui, Iced, and Dioxus Desktop for non-operational renderer comparison.</p>
+          <div class="cards"><div class="metric"><span class="pill">Operational</span><strong>Tauri</strong><span>Interactive managed Python Service API client shell</span></div><div class="metric"><span class="pill">Evaluation</span><strong>Slint</strong><span>Non-operational native UI evaluation for the same tab/control/route map</span></div><div class="metric"><span class="pill">Evaluation</span><strong>egui</strong><span>Non-operational comparison renderer from trading-bot-core</span></div><div class="metric"><span class="pill">Evaluation</span><strong>Iced</strong><span>Non-operational comparison renderer from trading-bot-core</span></div><div class="metric"><span class="pill">Evaluation</span><strong>Dioxus Desktop</strong><span>Non-operational comparison renderer from trading-bot-core</span></div></div>
         </section>
         <section class="panel" id="rust-native-runtime-gap">
           <h3>Native Rust Runtime Gap</h3>
@@ -716,25 +772,39 @@
     const $ = (id) => document.getElementById(id);
     const invoke = window.__TAURI__?.core?.invoke;
     const routePaths = {
+      runtime: "/api/v1/runtime",
       dashboard: "/api/v1/dashboard",
       status: "/api/v1/status",
       execution: "/api/v1/execution",
       backtest: "/api/v1/backtest",
+      config_summary: "/api/v1/config-summary",
       config: "/api/v1/config",
+      config_persistence: "/api/v1/config/persistence",
       config_save: "/api/v1/config/save",
       config_load: "/api/v1/config/load",
+      runtime_state: "/api/v1/runtime/state",
       operational_preflight: "/api/v1/runtime/operational-preflight",
       control_start: "/api/v1/control/start",
       control_stop: "/api/v1/control/stop",
+      control_start_failed: "/api/v1/control/start-failed",
+      connector_order_circuit_breaker: "/api/v1/runtime/connector-order-circuit-breaker",
+      connector_order_circuit_breaker_reset: "/api/v1/runtime/connector-order-circuit-breaker/reset",
+      connector_order_circuit_incidents: "/api/v1/runtime/connector-order-circuit-breaker/incidents",
       backtest_run: "/api/v1/backtest/run",
       backtest_stop: "/api/v1/backtest/stop",
+      account: "/api/v1/account",
+      portfolio: "/api/v1/portfolio",
+      exchange_connector: "/api/v1/exchange/connector",
       logs: "/api/v1/logs",
-      llm_config: "/api/v1/llm/config",
+      terminal_run: "/api/v1/terminal/run",
       llm_providers: "/api/v1/llm/providers",
+      llm_config: "/api/v1/llm/config",
+      llm_prompt: "/api/v1/llm/prompt",
       llm_local_model_status: "/api/v1/llm/local-model/status",
       llm_local_model_start: "/api/v1/llm/local-model/start",
       llm_local_model_pull: "/api/v1/llm/local-model/pull",
-      llm_local_model_delete: "/api/v1/llm/local-model/delete"
+      llm_local_model_delete: "/api/v1/llm/local-model/delete",
+      stream_dashboard: "/api/v1/stream/dashboard"
     };
     const linesFrom = (value) => String(value || "").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
     const numberFrom = (id, fallback = 0) => {
@@ -770,6 +840,7 @@
       if (!Number.isFinite(number)) return value === 0 ? "0.00 USDT" : "--";
       return `${number.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`;
     };
+    const formatTimestamp = (value) => String(value || "-");
     const optionMatches = (option, value) => {
       const wanted = String(value ?? "").trim().toLowerCase();
       if (!wanted) return false;
@@ -1503,12 +1574,126 @@
       output.textContent = `${output.textContent.trimEnd()}\n${message}`;
       output.scrollTop = output.scrollHeight;
     };
+    const renderServiceLogs = (payload) => {
+      const output = $("log-output");
+      if (!output) return;
+      output.textContent = tauriUiBehavior.formatServiceLogs
+        ? tauriUiBehavior.formatServiceLogs(payload)
+        : (Array.isArray(payload) ? payload : []).map((item) => `[${item.level || "info"}] ${item.message || ""}`).join("\n");
+      output.scrollTop = output.scrollHeight;
+    };
     const setServiceStatus = (message, ok = false) => {
       const target = $("service-status-text");
       if (!target) return;
       target.textContent = message;
       target.classList.toggle("good", ok);
       target.classList.toggle("bad", !ok && /failed|blocked|error|off|unavailable/i.test(message));
+    };
+    let latestOperationalPreflight = null;
+    const applyTone = (target, tone) => {
+      if (!target) return;
+      target.classList.toggle("good", tone === "good");
+      target.classList.toggle("warn", tone === "warn");
+      target.classList.toggle("bad", tone === "bad");
+    };
+    const formatPreflightLabel = (preflight) => tauriUiBehavior.formatPreflightLabel
+      ? tauriUiBehavior.formatPreflightLabel(preflight)
+      : { text: "Preflight: unknown", tone: "neutral" };
+    const preflightStartBlocked = (preflight) => tauriUiBehavior.preflightStartBlocked
+      ? tauriUiBehavior.preflightStartBlocked(preflight)
+      : false;
+    const preflightStartDetail = (preflight) => tauriUiBehavior.preflightStartDetail
+      ? tauriUiBehavior.preflightStartDetail(preflight)
+      : "operational preflight is blocked";
+    const describeOperationalPreflight = (preflight) => tauriUiBehavior.describeOperationalPreflight
+      ? tauriUiBehavior.describeOperationalPreflight(preflight)
+      : {
+        stateText: "Unknown",
+        startText: "-",
+        ordersText: "-",
+        modeText: "-",
+        criticalText: "-",
+        agesText: "-",
+        messageText: "No preflight snapshot received yet.",
+        tone: "neutral"
+      };
+    const renderPreflightDetails = (preflight) => {
+      const detail = describeOperationalPreflight(preflight);
+      setText("service-preflight-start", detail.startText);
+      setText("service-preflight-orders", detail.ordersText);
+      setText("service-preflight-mode", detail.modeText);
+      setText("service-preflight-critical", detail.criticalText);
+      setText("service-preflight-ages", detail.agesText);
+      setText("service-preflight-message", detail.messageText);
+      applyTone($("service-preflight-start"), preflightStartBlocked(preflight) ? "bad" : detail.tone);
+      applyTone($("service-preflight-orders"), detail.ordersText.toLowerCase().includes("blocked") ? "warn" : detail.tone);
+      applyTone($("service-preflight-critical"), detail.criticalText === "Fresh" ? "good" : "warn");
+      return detail;
+    };
+    const updateStartButtonFromPreflight = (preflight) => {
+      const button = $("start-bot-btn");
+      if (!button) return;
+      const blocked = preflightStartBlocked(preflight);
+      button.disabled = blocked;
+      button.textContent = blocked ? "Start Blocked" : "Start Bot";
+      button.title = blocked ? `Start blocked by operational preflight: ${preflightStartDetail(preflight)}` : "";
+    };
+    const setPreflightSnapshot = (preflight) => {
+      latestOperationalPreflight = preflight && typeof preflight === "object" ? preflight : null;
+      const label = formatPreflightLabel(latestOperationalPreflight);
+      const target = $("service-preflight-text");
+      if (target) {
+        target.textContent = label.text;
+        applyTone(target, label.tone);
+      }
+      renderPreflightDetails(latestOperationalPreflight);
+      updateStartButtonFromPreflight(latestOperationalPreflight);
+      return label;
+    };
+    const setPreflightError = (message) => {
+      latestOperationalPreflight = null;
+      const target = $("service-preflight-text");
+      if (target) {
+        target.textContent = `Preflight: ${message || "unavailable"}`;
+        applyTone(target, "bad");
+      }
+      renderPreflightDetails(null);
+      updateStartButtonFromPreflight(null);
+    };
+    const renderConnectorCircuit = ({ orderCircuit = null, incidentLog = null, incidents = null } = {}) => {
+      const circuitText = tauriUiBehavior.describeOrderCircuit
+        ? tauriUiBehavior.describeOrderCircuit(orderCircuit)
+        : "-";
+      const incidentText = tauriUiBehavior.describeLastCircuitIncident
+        ? tauriUiBehavior.describeLastCircuitIncident(incidentLog, incidents)
+        : "No persisted incident";
+      const incidentCount = tauriUiBehavior.describeCircuitIncidentCount
+        ? tauriUiBehavior.describeCircuitIncidentCount(incidents)
+        : "0";
+      setText("connector-order-circuit", circuitText);
+      setText("connector-last-incident", incidentText);
+      setText("connector-incidents-count", incidentCount);
+      setText(
+        "connector-message",
+        orderCircuit?.reset_blocked_reason || orderCircuit?.message || incidentLog?.last_write_error?.message || "Connector circuit snapshot loaded."
+      );
+      applyTone($("connector-order-circuit"), orderCircuit?.active ? "bad" : "good");
+      applyTone($("connector-incidents-count"), incidentCount === "0" ? "good" : "warn");
+      const resetButton = $("reset-connector-circuit-btn");
+      if (resetButton) resetButton.disabled = !Boolean(orderCircuit?.active);
+    };
+    const renderConfigPersistence = (persistence) => {
+      const summary = tauriUiBehavior.describeConfigPersistence
+        ? tauriUiBehavior.describeConfigPersistence(persistence)
+        : { stateText: "Runtime only", pathText: "-", tone: "neutral" };
+      const state = $("config-persistence-state");
+      const path = $("config-persistence-path");
+      if (state) {
+        state.textContent = summary.stateText;
+        applyTone(state, summary.tone);
+      }
+      if (path) path.textContent = summary.pathText;
+      return summary;
     };
     const serviceRequest = async (routeName, method = "GET", payload = null, query = null) => {
       if (!invoke) {
@@ -1604,22 +1789,86 @@
       }
       return result;
     };
+    const refreshOperationalPreflight = async () => {
+      const result = await requestAndReport("Recheck preflight", "operational_preflight");
+      if (result.ok) {
+        setPreflightSnapshot(result.payload);
+      } else {
+        setPreflightError(result.error || `HTTP ${result.status}`);
+      }
+      return result;
+    };
+    const refreshConfigPersistence = async () => {
+      const result = await requestAndReport("Refresh config persistence", "config_persistence");
+      if (result.ok) renderConfigPersistence(result.payload);
+      return result;
+    };
+    const refreshConnectorCircuit = async () => {
+      const circuitResult = await requestAndReport("Refresh order circuit", "connector_order_circuit_breaker");
+      const incidentsResult = await requestAndReport("Refresh circuit incidents", "connector_order_circuit_incidents", "GET", null, { limit: "20" });
+      renderConnectorCircuit({
+        orderCircuit: circuitResult.ok ? circuitResult.payload : null,
+        incidents: incidentsResult.ok ? incidentsResult.payload : null
+      });
+      return circuitResult;
+    };
+    const renderAccountSnapshot = (account) => {
+      const payload = account && typeof account === "object" ? account : {};
+      const total = payload.total_balance ?? payload.wallet_balance ?? payload.balance ?? "N/A";
+      const available = payload.available_balance ?? payload.availableBalance ?? payload.available ?? "--";
+      setValue("account-total-balance", typeof total === "number" ? `${total.toFixed(2)} USDT` : total);
+      setText("account-available-balance", formatMoney(available));
+      setText("account-source", payload.source || "-");
+      setText("account-updated", formatTimestamp(payload.updated_at || payload.generated_at));
+    };
+    const renderPortfolioSnapshot = (portfolio) => {
+      const payload = portfolio && typeof portfolio === "object" ? portfolio : {};
+      const activePnl = payload.active_pnl_total ?? payload.active_pnl ?? payload.active_pnl_value ?? "--";
+      const closedPnl = payload.closed_pnl_total ?? payload.closed_pnl ?? payload.closed_pnl_value ?? "--";
+      setText("active-pnl-text", typeof activePnl === "number" ? `${activePnl.toFixed(2)} USDT` : String(activePnl));
+      setText("closed-pnl-text", typeof closedPnl === "number" ? `${closedPnl.toFixed(2)} USDT` : String(closedPnl));
+      setText("positions-total-balance", formatMoney(payload.total_balance ?? payload.wallet_balance ?? payload.balance));
+      setText("positions-available-balance", formatMoney(payload.available_balance ?? payload.availableBalance));
+      setText("portfolio-source", payload.source || "-");
+      setText("portfolio-open", payload.open_position_count ?? payload.open_positions_count ?? "--");
+      setText("portfolio-closed", payload.closed_position_count ?? payload.closed_trades_count ?? "--");
+    };
+    const renderExchangeConnectorSnapshot = (connector, status = {}) => {
+      const payload = connector && typeof connector === "object" ? connector : {};
+      const health = String(payload.health || status.connector_health || "unknown").toLowerCase();
+      const exchange = payload.selected_exchange || status.selected_exchange || selectedText("exchange-select") || "-";
+      const backend = payload.connector_backend || selectedValue("config-connector") || "-";
+      setText("exchange-connector-health", health.replace(/^\w/, (char) => char.toUpperCase()));
+      setText("exchange-connector-state", String(payload.state || "-").replaceAll("_", " "));
+      setText("exchange-connector-backend", `${exchange} / ${backend}`);
+      setText("exchange-connector-updated", formatTimestamp(payload.generated_at || payload.updated_at));
+      applyTone($("exchange-connector-health"), health === "ok" ? "good" : health === "warning" ? "warn" : health === "error" ? "bad" : "neutral");
+    };
+    const refreshOperationalSnapshots = async () => {
+      const accountResult = await requestAndReport("Refresh account", "account");
+      if (accountResult.ok) renderAccountSnapshot(accountResult.payload);
+      const portfolioResult = await requestAndReport("Refresh portfolio", "portfolio");
+      if (portfolioResult.ok) {
+        renderPortfolioSnapshot(portfolioResult.payload);
+        lastPositionRows = normalizePositionRows(portfolioResult.payload);
+        renderPositionsTableRows(lastPositionRows);
+      }
+      const connectorResult = await requestAndReport("Refresh exchange connector", "exchange_connector");
+      if (connectorResult.ok) renderExchangeConnectorSnapshot(connectorResult.payload);
+      await refreshOperationalPreflight();
+      return { accountResult, portfolioResult, connectorResult };
+    };
     const setStatusSnapshot = (payload) => {
       const status = payload?.status || payload || {};
+      const account = payload?.account || {};
       const portfolio = payload?.portfolio || {};
       const execution = payload?.execution || {};
       const active = Boolean(status.runtime_active || status.active || execution.runtime_active);
       $("bot-status-text").textContent = active ? "ON" : "OFF";
       $("bot-status-dot").style.background = active ? "var(--good)" : "var(--bad)";
-      const activePnl = portfolio.active_pnl ?? portfolio.active_pnl_value ?? "--";
-      const closedPnl = portfolio.closed_pnl ?? portfolio.closed_pnl_value ?? "--";
-      const totalBalance = portfolio.total_balance ?? portfolio.wallet_balance ?? portfolio.available_balance ?? portfolio.balance ?? "N/A";
-      $("active-pnl-text").textContent = typeof activePnl === "number" ? `${activePnl.toFixed(2)} USDT` : String(activePnl);
-      $("closed-pnl-text").textContent = typeof closedPnl === "number" ? `${closedPnl.toFixed(2)} USDT` : String(closedPnl);
       $("bot-active-time-text").textContent = status.active_duration || status.active_time || "--";
-      setValue("account-total-balance", typeof totalBalance === "number" ? `${totalBalance.toFixed(2)} USDT` : totalBalance);
-      setText("positions-total-balance", formatMoney(totalBalance));
-      setText("positions-available-balance", formatMoney(portfolio.available_balance ?? portfolio.availableBalance));
+      if (payload?.account) renderAccountSnapshot(account);
+      if (payload?.portfolio) renderPortfolioSnapshot(portfolio);
       setText("positions-bot-status", active ? "ON" : "OFF");
       setText("positions-active-time", status.active_duration || status.active_time || "--");
     };
@@ -1746,6 +1995,20 @@
     const hydrateFromDashboard = (payload) => {
       hydrateConfigControls(payload?.config);
       hydrateBacktestControls(payload?.backtest);
+      if (payload?.config_persistence) renderConfigPersistence(payload.config_persistence);
+      if (payload?.account) renderAccountSnapshot(payload.account);
+      if (payload?.portfolio) renderPortfolioSnapshot(payload.portfolio);
+      renderExchangeConnectorSnapshot(
+        payload?.operational?.exchange_connector || payload?.status?.exchange_connector,
+        payload?.status || {}
+      );
+      const preflight = payload?.operational?.preflight || payload?.preflight;
+      if (preflight && typeof preflight === "object") setPreflightSnapshot(preflight);
+      renderConnectorCircuit({
+        orderCircuit: payload?.operational?.connector_order_circuit_breaker || payload?.status?.operational?.connector_order_circuit_breaker,
+        incidentLog: payload?.operational?.connector_order_circuit_incident_log || payload?.status?.operational?.connector_order_circuit_incident_log,
+        incidents: payload?.connector_order_circuit_incidents || payload?.operational?.connector_order_circuit_incidents
+      });
       const serviceApi = payload?.service_api;
       if (serviceApi && typeof serviceApi === "object") {
         const mode = serviceApi.trading_execution_supported ? "desktop trading execution" : serviceApi.execution_scope;
@@ -1772,17 +2035,22 @@
       hydrateFromDashboard(result.payload);
       const logs = Array.isArray(result.payload?.logs) ? result.payload.logs : result.payload?.logs?.items;
       if (Array.isArray(logs) && logs.length) {
-        $("log-output").textContent = logs.map((item) => `[${item.level || "info"}] ${item.message || ""}`).join("\n");
+        renderServiceLogs(logs);
       }
       return result;
     };
+    const refreshServiceLogs = async () => {
+      const result = await requestAndReport("Refresh logs", "logs", "GET", null, { limit: "100" });
+      if (result.ok) renderServiceLogs(result.payload);
+      return result;
+    };
     const refreshPositions = async () => {
-      const result = await requestAndReport("Refresh positions", "dashboard", "GET", null, { log_limit: "10", incident_limit: "10" });
+      const result = await requestAndReport("Refresh positions", "portfolio");
       if (!result.ok) return result;
-      setStatusSnapshot(result.payload);
-      const portfolio = result.payload?.portfolio || {};
-      lastPositionRows = normalizePositionRows(portfolio);
+      renderPortfolioSnapshot(result.payload);
+      lastPositionRows = normalizePositionRows(result.payload);
       renderPositionsTableRows(lastPositionRows);
+      await refreshOperationalPreflight();
       return result;
     };
     const buildRuntimeConfigPatch = () => {
@@ -1842,6 +2110,21 @@
       llm_allow_public_network: Boolean(llmPublic.checked),
       llm_reasoning_effort: reasoning.value || "default"
     });
+    const buildLlmPromptPayload = (dryRun = true) => ({
+      prompt: String($("llm-prompt-input")?.value || "").trim(),
+      system_prompt: String($("llm-system-prompt-input")?.value || "").trim(),
+      dry_run: Boolean(dryRun),
+      source: dryRun ? "tauri-desktop-llm-dry-run" : "tauri-desktop-llm-advisory"
+    });
+    const renderLlmPromptResult = (payload) => {
+      const text = tauriUiBehavior.formatLlmPromptResult
+        ? tauriUiBehavior.formatLlmPromptResult(payload)
+        : JSON.stringify(payload, null, 2);
+      setText("llm-result-output", text);
+      setText("llm-result-status", payload?.ok ? "LLM advisory: ok" : "LLM advisory: failed");
+      applyTone($("llm-result-status"), payload?.ok ? "good" : "bad");
+      return text;
+    };
     const localModelPayload = () => ({
       base_url: $("llm-base-url")?.value || "http://127.0.0.1:11434/v1",
       model: model.value || "",
@@ -1952,6 +2235,37 @@
         button.disabled = false;
       }
     };
+    const runLlmPrompt = async (dryRun = true) => {
+      if (!(await ensureServiceApi())) return null;
+      const payload = buildLlmPromptPayload(dryRun);
+      if (!payload.prompt) {
+        setText("llm-result-status", "LLM advisory: enter a prompt first.");
+        applyTone($("llm-result-status"), "warn");
+        appendLog("[llm] Enter an advisory prompt before running LLM.");
+        return null;
+      }
+      const configResult = await requestAndReport("Apply LLM settings", "llm_config", "PATCH", { config: buildLlmConfigPatch() });
+      if (!configResult.ok) return configResult;
+      if (!dryRun && !window.confirm("Send this advisory prompt to the selected LLM provider? The LLM remains advisory-only and cannot execute trades.")) {
+        setText("llm-result-status", "LLM advisory: send cancelled.");
+        appendLog("[llm] Advisory send cancelled.");
+        return null;
+      }
+      const label = dryRun ? "Prepare LLM advisory" : "Run LLM advisory";
+      const result = await requestAndReport(label, "llm_prompt", "POST", payload);
+      if (result.ok) {
+        renderLlmPromptResult(result.payload);
+        await refreshServiceLogs();
+      } else {
+        renderLlmPromptResult({
+          ok: false,
+          dry_run: dryRun,
+          provider: provider.value,
+          error: result.error || `HTTP ${result.status}`
+        });
+      }
+      return result;
+    };
     const buildBacktestRequest = () => {
       const request = {
         symbols: linesFrom($("backtest-symbols-input")?.value),
@@ -2010,17 +2324,19 @@
     });
     $("service-stop-btn")?.addEventListener("click", stopServiceApi);
     $("service-preflight-btn")?.addEventListener("click", async () => {
-      const result = await requestAndReport("Recheck preflight", "operational_preflight");
-      const target = $("service-preflight-text");
-      if (!target) return;
+      await refreshOperationalPreflight();
+      await refreshConnectorCircuit();
+    });
+    $("reset-connector-circuit-btn")?.addEventListener("click", async () => {
+      if (!window.confirm("Reset the connector order circuit breaker?")) return;
+      if (!(await ensureServiceApi())) return;
+      const result = await requestAndReport("Reset order circuit", "connector_order_circuit_breaker_reset", "POST", {
+        source: "tauri-desktop",
+        force: false
+      });
       if (result.ok) {
-        const blocked = result.payload?.start_blocked || result.payload?.blocked;
-        target.textContent = blocked ? "Preflight: start blocked" : "Preflight: ok";
-        target.classList.toggle("bad", Boolean(blocked));
-        target.classList.toggle("good", !blocked);
-      } else {
-        target.textContent = `Preflight: ${result.error || "unavailable"}`;
-        target.classList.add("bad");
+        renderConnectorCircuit({ orderCircuit: result.payload });
+        await refreshDashboard();
       }
     });
     $("open-service-dashboard-btn")?.addEventListener("click", () => {
@@ -2028,7 +2344,11 @@
     });
     $("refresh-balance-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
-      await refreshDashboard();
+      await refreshOperationalSnapshots();
+    });
+    $("refresh-logs-btn")?.addEventListener("click", async () => {
+      if (!(await ensureServiceApi())) return;
+      await refreshServiceLogs();
     });
     $("refresh-symbols-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
@@ -2075,28 +2395,64 @@
       if (!(await ensureServiceApi())) return;
       const configResult = await requestAndReport("Apply runtime config", "config", "PATCH", { config: buildRuntimeConfigPatch() });
       if (!configResult.ok) return;
+      const preflightResult = await refreshOperationalPreflight();
+      if (!preflightResult.ok) return;
+      if (preflightStartBlocked(preflightResult.payload)) {
+        const detail = preflightStartDetail(preflightResult.payload);
+        setServiceStatus(`Start blocked by preflight: ${detail}`, false);
+        appendLog(`[api] Start blocked by operational preflight - ${detail}`);
+        return;
+      }
       const result = await requestAndReport("Start bot", "control_start", "POST", { requested_job_count: 0, source: "tauri-desktop" });
+      if (result.ok && result.payload?.accepted === false) {
+        const detail = result.payload?.status_message || "service rejected the start request";
+        setStatusSnapshot(result.payload);
+        setServiceStatus(`Start blocked: ${detail}`, false);
+        appendLog(`[api] Start bot rejected - ${detail}`);
+        await refreshOperationalPreflight();
+        return;
+      }
       if (result.ok) await refreshDashboard();
     });
     $("stop-bot-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Stop bot", "control_stop", "POST", { close_positions: !Boolean($("stop-without-closing-positions")?.checked), source: "tauri-desktop" });
+      if (result.ok && result.payload?.accepted === false) {
+        const detail = result.payload?.status_message || "service rejected the stop request";
+        setStatusSnapshot(result.payload);
+        setServiceStatus(`Stop rejected: ${detail}`, false);
+        appendLog(`[api] Stop bot rejected - ${detail}`);
+        return;
+      }
       if (result.ok) await refreshDashboard();
     });
     $("save-config-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
       const configResult = await requestAndReport("Apply runtime config", "config", "PATCH", { config: buildRuntimeConfigPatch() });
+      if (configResult.ok) await refreshConfigPersistence();
       if (!configResult.ok) return;
-      await requestAndReport("Save config", "config_save", "POST", { source: "tauri-desktop" });
+      const saveResult = await requestAndReport("Save config", "config_save", "POST", { source: "tauri-desktop" });
+      if (saveResult.ok) renderConfigPersistence(saveResult.payload);
     });
     $("load-config-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
       const result = await requestAndReport("Load config", "config_load", "POST", { source: "tauri-desktop" });
-      if (result.ok) await refreshDashboard();
+      if (result.ok) {
+        if (result.payload?.config) hydrateConfigControls(result.payload.config);
+        if (result.payload?.persistence) renderConfigPersistence(result.payload.persistence);
+        await refreshDashboard();
+      }
     });
     $("apply-llm-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
-      await requestAndReport("Apply LLM settings", "llm_config", "PATCH", { config: buildLlmConfigPatch() });
+      const result = await requestAndReport("Apply LLM settings", "llm_config", "PATCH", { config: buildLlmConfigPatch() });
+      if (result.ok) await refreshConfigPersistence();
+    });
+    $("run-llm-dry-run-btn")?.addEventListener("click", async () => {
+      await runLlmPrompt(true);
+    });
+    $("send-llm-advisory-btn")?.addEventListener("click", async () => {
+      await runLlmPrompt(false);
     });
     $("refresh-positions-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;

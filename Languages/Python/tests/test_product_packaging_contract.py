@@ -3,7 +3,9 @@ import re
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from html.parser import HTMLParser
+from io import StringIO
 from pathlib import Path
 
 try:
@@ -19,6 +21,7 @@ if str(PYTHON_ROOT) not in sys.path:
 from app.service.api_contract import (  # noqa: E402
     SERVICE_API_DASHBOARD_ROUTE_NAMES,
     SERVICE_API_MOBILE_ROUTE_NAMES,
+    SERVICE_API_ROUTE_METHODS,
     SERVICE_API_ROUTE_SUFFIXES,
     service_api_contract_payload,
 )
@@ -40,6 +43,35 @@ def _html_ids(markup: str) -> set[str]:
     parser = _ElementIdParser()
     parser.feed(markup)
     return parser.ids
+
+
+def _run_service_api_contract_checker(checker_path: Path) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            [sys.executable, str(checker_path)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError as exc:
+        if sys.platform != "win32" or getattr(exc, "winerror", None) not in {6, 50}:
+            raise
+        # Some embedded Windows runners fail while duplicating subprocess capture
+        # handles. Keep this test covering the checker by invoking the same entry
+        # point in-process for that runner failure only.
+        from tools.check_service_api_contracts import main as check_service_api_contracts_main
+
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            returncode = check_service_api_contracts_main([])
+        return subprocess.CompletedProcess(
+            [sys.executable, str(checker_path)],
+            returncode,
+            stdout=stdout.getvalue(),
+            stderr=stderr.getvalue(),
+        )
 
 
 class ProductPackagingContractTests(unittest.TestCase):
@@ -90,6 +122,12 @@ class ProductPackagingContractTests(unittest.TestCase):
             "All Logs",
             "Position Trigger Logs",
             "Waiting Positions (Queue)",
+            "Refresh Logs",
+            "Advisory Prompt",
+            "System Prompt",
+            "Prepare Advisory Request",
+            "Run Advisory",
+            "LLM advisory result",
         )
         mirrored_table_columns = (
             "Triggered Indicator Value",
@@ -124,12 +162,22 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('path: "/api/v1/llm/local-model/pull"', core)
         self.assertIn("Managed Local Service API", core)
         self.assertIn("Backtest Scanner & Dashboard Import", core)
-        self.assertIn("Local LLM Lifecycle", core)
-        self.assertIn("Full interactive Rust desktop client", core)
-        self.assertIn("Shared-catalog parity surface", core)
+        self.assertIn("LLM Advisory & Local Lifecycle", core)
+        self.assertIn("Operational Service API client", core)
+        self.assertIn("Non-operational comparison renderer", core)
         self.assertIn("Execution Boundary", core)
         self.assertIn("default_model", core)
         self.assertIn("qwen3:8b", core)
+        for parity_text in (
+            "Alibaba Qwen / DashScope",
+            "Bybit (coming soon)",
+            "Default intervals: 1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d",
+            "Open In Browser URL",
+            "Max MDD Scanner Top N",
+            "Max MDD Scanner Max MDD %",
+            "Remove Selected",
+        ):
+            self.assertIn(parity_text, core)
         for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
             self.assertIn(label, core)
 
@@ -145,6 +193,15 @@ class ProductPackagingContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         slint_ui = (rust_root / "apps" / "slint-desktop" / "ui" / "main.slint").read_text(encoding="utf-8")
         rust_cli = (rust_root / "src" / "main.rs").read_text(encoding="utf-8")
+        code_catalog = (REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "code" / "code_language_catalog.py").read_text(
+            encoding="utf-8"
+        )
+        rust_selection = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "code" / "code_language_ui_selection_runtime.py"
+        ).read_text(encoding="utf-8")
+        rust_launcher = (
+            REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "code" / "code_language_rust_launcher_runtime.py"
+        ).read_text(encoding="utf-8")
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("defaultModels", tauri_html)
         self.assertIn('src="tauri-ui-behavior.js"', tauri_html)
@@ -153,12 +210,28 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("tauriUiBehavior.selectBacktestScanBest", tauri_html)
         self.assertIn("tauriUiBehavior.describeLocalModelStatus", tauri_html)
         self.assertIn("tauriUiBehavior.mergeUniqueLines", tauri_html)
+        self.assertIn("tauriUiBehavior.describeConfigPersistence", tauri_html)
+        self.assertIn("tauriUiBehavior.formatPreflightLabel", tauri_html)
+        self.assertIn("tauriUiBehavior.preflightStartBlocked", tauri_html)
         for behavior_hook in (
             "selectBacktestScanBest",
             "importBacktestRowsToDashboard",
             "backtestRunsFromPayload",
+            "describeConfigPersistence",
+            "describeOperationalPreflight",
+            "describeOrderCircuit",
+            "describeLastCircuitIncident",
+            "describeCircuitIncidentCount",
             "describeLocalModelStatus",
             "overrideImportKey",
+            "formatPreflightLabel",
+            "preflightFreshnessAges",
+            "preflightStartBlocked",
+            "preflightStartDetail",
+            "serviceLogItemsFromPayload",
+            "formatServiceLogLine",
+            "formatServiceLogs",
+            "formatLlmPromptResult",
         ):
             self.assertIn(behavior_hook, tauri_behavior)
             self.assertIn(behavior_hook, tauri_behavior_test)
@@ -186,6 +259,29 @@ class ProductPackagingContractTests(unittest.TestCase):
             self.assertIn("Native Rust trading runtime ready: false", source)
             self.assertIn("BinanceRestClient", source)
             self.assertIn("BinanceWsClient", source)
+        for tauri_parity_text in (
+            "Alibaba Qwen / DashScope",
+            "Bybit (coming soon)",
+            "Remove Selected",
+            "Max MDD Scanner",
+        ):
+            self.assertIn(tauri_parity_text, tauri_html)
+        for slint_parity_text in (
+            "Alibaba Qwen / DashScope",
+            "Add Selected, Remove Selected, Clear All",
+            "Max MDD Scanner Top N",
+            "long interval list",
+            "URL, Go, Reload, and Open in Browser",
+        ):
+            self.assertIn(slint_parity_text, slint_ui)
+        for operational_text in (
+            "Evaluation only - no live client",
+            "operational_status",
+            '"usage": "Active" if _rust_framework_is_operational(framework_key) else "Evaluation only"',
+        ):
+            self.assertIn(operational_text, code_catalog)
+        self.assertIn("This shell is evaluation-only and will not manage the Service API or control the bot", rust_selection)
+        self.assertIn("Rust desktop shell", rust_launcher)
         self.assertTrue(tauri_app_config["app"]["withGlobalTauri"])
         self.assertIn("reqwest", tauri_config["dependencies"])
         self.assertIn("service_api_request", tauri_main)
@@ -197,18 +293,16 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn('arg("--serve")', tauri_main)
         self.assertIn('arg("--load-config")', tauri_main)
         self.assertIn("service_api_route_path", tauri_main)
-        for route_name in (
-            "dashboard",
-            "control_start",
-            "control_stop",
-            "config_save",
-            "config_load",
-            "backtest_run",
-            "backtest_stop",
-            "llm_config",
-            "operational_preflight",
-        ):
-            self.assertIn(f'"{route_name}"', tauri_html)
+        for route_name, suffix in SERVICE_API_ROUTE_SUFFIXES.items():
+            route_path = f"/api/v1{suffix}"
+            self.assertIn(f'name: "{route_name}"', core)
+            self.assertIn(f'path: "{route_path}"', core)
+            self.assertIn(f'{route_name}: "{route_path}"', tauri_html)
+            methods = ", ".join(f'"{method}"' for method in SERVICE_API_ROUTE_METHODS[route_name])
+            self.assertRegex(
+                core,
+                rf'name: "{re.escape(route_name)}",\s*path: "{re.escape(route_path)}",\s*methods: &\[{re.escape(methods)}\]',
+            )
         for element_id in (
             "start-bot-btn",
             "stop-bot-btn",
@@ -217,11 +311,41 @@ class ProductPackagingContractTests(unittest.TestCase):
             "service-connect-btn",
             "service-stop-btn",
             "service-preflight-btn",
+            "service-preflight-start",
+            "service-preflight-orders",
+            "service-preflight-mode",
+            "service-preflight-critical",
+            "service-preflight-ages",
+            "service-preflight-message",
+            "connector-order-circuit",
+            "connector-incidents-count",
+            "connector-last-incident",
+            "connector-message",
+            "reset-connector-circuit-btn",
             "apply-llm-btn",
             "run-backtest-btn",
             "refresh-positions-btn",
             "api-key-input",
             "api-secret-input",
+            "config-persistence-state",
+            "config-persistence-path",
+            "account-available-balance",
+            "account-source",
+            "account-updated",
+            "portfolio-source",
+            "portfolio-open",
+            "portfolio-closed",
+            "exchange-connector-health",
+            "exchange-connector-state",
+            "exchange-connector-backend",
+            "exchange-connector-updated",
+            "refresh-logs-btn",
+            "llm-prompt-input",
+            "llm-system-prompt-input",
+            "run-llm-dry-run-btn",
+            "send-llm-advisory-btn",
+            "llm-result-status",
+            "llm-result-output",
             "config-account-mode",
             "config-gtd-minutes",
             "refresh-balance-btn",
@@ -321,6 +445,13 @@ class ProductPackagingContractTests(unittest.TestCase):
             "refreshLocalModelStatus",
             "ensureLocalModelServer",
             "localModelStorageText",
+            "buildLlmPromptPayload",
+            "renderLlmPromptResult",
+            "runLlmPrompt",
+            "llm_prompt",
+            "dry_run: Boolean",
+            "Prepare LLM advisory",
+            "Run LLM advisory",
             "account_mode",
             "tif",
             "gtd_minutes",
@@ -380,6 +511,29 @@ class ProductPackagingContractTests(unittest.TestCase):
             "runBacktestScan",
             "mergeTextareaLines",
             "overrideImportKey",
+            "refreshOperationalPreflight",
+            "setPreflightSnapshot",
+            "Start blocked by preflight",
+            "Start bot rejected",
+            "renderPreflightDetails",
+            "renderConnectorCircuit",
+            "refreshConnectorCircuit",
+            "renderAccountSnapshot",
+            "renderPortfolioSnapshot",
+            "renderExchangeConnectorSnapshot",
+            "refreshOperationalSnapshots",
+            "connector_order_circuit_breaker",
+            "connector_order_circuit_breaker_reset",
+            "connector_order_circuit_incidents",
+            "Refresh account",
+            "Refresh portfolio",
+            "Refresh exchange connector",
+            "renderServiceLogs",
+            "refreshServiceLogs",
+            "Refresh logs",
+            "renderConfigPersistence",
+            "refreshConfigPersistence",
+            "config_persistence",
         ):
             self.assertIn(hydration_hook, tauri_html)
         for chart_text in ("DOGEUSDT", "AVAXUSDT", "1month", "2y", "BINANCE:BTCUSDT.P"):
@@ -683,13 +837,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertFalse(runtime_sample["control_plane"]["trading_execution_supported"])
         self.assertFalse(runtime_sample["capabilities"]["standalone_trading_execution"])
         self.assertTrue(runtime_sample["capabilities"]["desktop_trading_execution"])
-        checker = subprocess.run(
-            [sys.executable, str(checker_path)],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        checker = _run_service_api_contract_checker(checker_path)
         self.assertEqual(0, checker.returncode, checker.stdout + checker.stderr)
         self.assertIn("service API contract artifacts checked", checker.stdout)
 

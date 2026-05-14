@@ -91,7 +91,7 @@ STARTER_LANGUAGE_OPTIONS = [
     {
         "config_key": RUST_CODE_LANGUAGE_KEY,
         "title": "Rust",
-        "subtitle": "Shared core with desktop shell experiments",
+        "subtitle": "Service API client and UI scaffold",
         "accent": "#fb923c",
         "badge": "Experiment",
     },
@@ -101,37 +101,52 @@ RUST_FRAMEWORK_OPTIONS = [
     {
         "key": "Tauri",
         "title": "Tauri",
-        "subtitle": "Desktop shell with web UI",
+        "subtitle": "Operational Service API client",
         "accent": "#f59e0b",
-        "badge": "Desktop",
+        "badge": "Primary",
+        "operational": True,
+        "operational_status": "Interactive Service API client",
+        "launch_note": "Tauri can manage/connect to the local Python Service API, but Python still owns strategy, risk, account, order, and exchange execution.",
     },
     {
         "key": "Slint",
         "title": "Slint",
-        "subtitle": "Native declarative desktop UI",
+        "subtitle": "Evaluation only - no live client",
         "accent": "#22c55e",
-        "badge": "Desktop",
+        "badge": "Evaluation",
+        "operational": False,
+        "operational_status": "Non-operational native UI evaluation",
+        "launch_note": "Slint is a native UI evaluation shell. It mirrors the option map but does not manage the Service API or control the bot.",
     },
     {
         "key": "egui",
         "title": "egui",
-        "subtitle": "Fast trader dashboard UI",
+        "subtitle": "Evaluation only - catalog renderer",
         "accent": "#38bdf8",
-        "badge": "Desktop",
+        "badge": "Evaluation",
+        "operational": False,
+        "operational_status": "Non-operational comparison renderer",
+        "launch_note": "egui renders shared catalog/status data for comparison only. It does not manage the Service API or control the bot.",
     },
     {
         "key": "Iced",
         "title": "Iced",
-        "subtitle": "Pure Rust reactive desktop UI",
+        "subtitle": "Evaluation only - catalog renderer",
         "accent": "#a78bfa",
-        "badge": "Desktop",
+        "badge": "Evaluation",
+        "operational": False,
+        "operational_status": "Non-operational comparison renderer",
+        "launch_note": "Iced renders shared catalog/status data for comparison only. It does not manage the Service API or control the bot.",
     },
     {
         "key": "Dioxus Desktop",
         "title": "Dioxus Desktop",
-        "subtitle": "Rust component UI with desktop renderer",
+        "subtitle": "Evaluation only - catalog renderer",
         "accent": "#ec4899",
-        "badge": "Desktop",
+        "badge": "Evaluation",
+        "operational": False,
+        "operational_status": "Non-operational comparison renderer",
+        "launch_note": "Dioxus Desktop renders shared catalog/status data for comparison only. It does not manage the Service API or control the bot.",
     },
 ]
 
@@ -319,6 +334,18 @@ def _rust_framework_title(config: dict | None = None) -> str:
     return str(_rust_framework_option(config).get("title") or _rust_framework_key(config) or "Rust").strip()
 
 
+def _rust_framework_is_operational(config_or_key: dict | str | None = None) -> bool:
+    return bool(_rust_framework_option(config_or_key).get("operational", False))
+
+
+def _rust_framework_operational_status(config_or_key: dict | str | None = None) -> str:
+    return str(_rust_framework_option(config_or_key).get("operational_status") or "").strip()
+
+
+def _rust_framework_launch_note(config_or_key: dict | str | None = None) -> str:
+    return str(_rust_framework_option(config_or_key).get("launch_note") or "").strip()
+
+
 def _rust_framework_path(config: dict | None = None) -> Path | None:
     relative_path = RUST_FRAMEWORK_PATHS.get(_rust_framework_key(config))
     if not relative_path:
@@ -338,7 +365,7 @@ def _rust_framework_dependency_target(config: dict | None = None) -> dict[str, s
         "label": f"{framework_key} ({badge})",
         "custom": "rust_file_version",
         "path": manifest_path,
-        "usage": "Active",
+        "usage": "Active" if _rust_framework_is_operational(framework_key) else "Evaluation only",
     }
 
 

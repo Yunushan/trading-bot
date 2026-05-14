@@ -3,11 +3,24 @@ const behavior = require("./tauri-ui-behavior.js");
 
 const {
   backtestRunsFromPayload,
+  describeCircuitIncidentCount,
+  describeConfigPersistence,
+  describeLastCircuitIncident,
   describeLocalModelStatus,
+  describeOperationalPreflight,
+  describeOrderCircuit,
+  formatLlmPromptResult,
+  formatServiceLogLine,
+  formatServiceLogs,
+  formatPreflightLabel,
   importBacktestRowsToDashboard,
   mergeUniqueLines,
   normalizeOverrideRow,
   overrideImportKey,
+  preflightFreshnessAges,
+  serviceLogItemsFromPayload,
+  preflightStartBlocked,
+  preflightStartDetail,
   selectBacktestScanBest
 } = behavior;
 
@@ -92,5 +105,135 @@ assert.match(statusText, /not installed on ollama/);
 assert.match(statusText, /5\.2 GB/);
 assert.match(statusText, /Low disk space/);
 assert.match(statusText, /connection refused/);
+
+assert.deepEqual(describeConfigPersistence(null), {
+  stateText: "Runtime only",
+  pathText: "-",
+  tone: "neutral"
+});
+assert.deepEqual(describeConfigPersistence({
+  exists: true,
+  dirty: false,
+  path: "C:\\Users\\demo\\config.json",
+  last_saved_at: "2026-05-14T10:00:00+00:00"
+}), {
+  stateText: "Config file in sync - saved 2026-05-14T10:00:00+00:00",
+  pathText: "C:\\Users\\demo\\config.json",
+  tone: "good"
+});
+assert.deepEqual(describeConfigPersistence({
+  exists: true,
+  dirty: true,
+  path: "C:\\Users\\demo\\config.json",
+  last_loaded_at: "2026-05-14T09:55:00+00:00"
+}), {
+  stateText: "Unsaved runtime changes - loaded 2026-05-14T09:55:00+00:00",
+  pathText: "C:\\Users\\demo\\config.json",
+  tone: "warn"
+});
+
+const blockedPreflight = {
+  state: "blocked",
+  mode: "Live",
+  live_mode: true,
+  message: "Live preflight blocked.",
+  start: { allowed: false, state: "blocked", reasons: ["account snapshot stale", "portfolio snapshot stale"] },
+  orders: { allowed: true, state: "ok", reasons: [] },
+  critical_stale: { start: ["account snapshot"], orders: [] },
+  freshness: {
+    account: { age_seconds: 900, max_age_seconds: 300, stale: true },
+    portfolio: { age_seconds: 30, max_age_seconds: 300, stale: false }
+  }
+};
+assert.equal(preflightStartBlocked(blockedPreflight), true);
+assert.equal(preflightStartDetail(blockedPreflight), "account snapshot stale; portfolio snapshot stale");
+assert.deepEqual(formatPreflightLabel(blockedPreflight), {
+  text: "Preflight: start blocked (account snapshot stale; portfolio snapshot stale)",
+  tone: "bad"
+});
+assert.match(preflightFreshnessAges(blockedPreflight), /Account 900s\/300s stale/);
+assert.deepEqual(describeOperationalPreflight(blockedPreflight), {
+  stateText: "Blocked",
+  startText: "Blocked (Gate enabled, blocked) - account snapshot stale",
+  ordersText: "Ok (Gate enabled, allowed)",
+  modeText: "Live / Live",
+  criticalText: "account snapshot",
+  agesText: "Account 900s/300s stale | Portfolio 30s/300s fresh",
+  messageText: "Live preflight blocked.",
+  tone: "bad"
+});
+
+const orderBlockedPreflight = {
+  state: "blocked",
+  start: { allowed: true, state: "ok", reasons: [] },
+  orders: { allowed: false, state: "blocked", reasons: ["connector stale"] }
+};
+assert.equal(preflightStartBlocked(orderBlockedPreflight), false);
+assert.deepEqual(formatPreflightLabel(orderBlockedPreflight), {
+  text: "Preflight: orders blocked (connector stale)",
+  tone: "warn"
+});
+
+assert.deepEqual(formatPreflightLabel({
+  state: "warning",
+  start: { allowed: true, state: "warning", reasons: ["demo mode"] },
+  orders: { allowed: true, state: "ok", reasons: [] }
+}), {
+  text: "Preflight: warning, start allowed (demo mode)",
+  tone: "warn"
+});
+
+assert.equal(describeOrderCircuit({ active: true, block_count: 2, block_threshold: 3 }), "Open (2/3 blocks)");
+assert.equal(
+  describeOrderCircuit({ active: true, reset_blocked_reason: "connector still error" }),
+  "Open - reset blocked: connector still error"
+);
+assert.equal(describeOrderCircuit({ active: false, state: "closed" }), "Closed");
+assert.equal(describeCircuitIncidentCount({ events: [{}, {}] }), "2");
+assert.equal(
+  describeLastCircuitIncident(
+    { last_event: { action: "connector_order_circuit_trip", ts: "2026-05-14T11:00:00+00:00" } },
+    null
+  ),
+  "Trip @ 2026-05-14T11:00:00+00:00"
+);
+assert.deepEqual(serviceLogItemsFromPayload({ logs: [{ message: "dashboard log" }] }), [{ message: "dashboard log" }]);
+assert.deepEqual(serviceLogItemsFromPayload({ items: [{ message: "direct log" }] }), [{ message: "direct log" }]);
+assert.equal(formatServiceLogLine({
+  sequence_id: 7,
+  level: "warning",
+  source: "runtime",
+  generated_at: "2026-05-14T11:30:00+00:00",
+  message: "preflight blocked"
+}), "[WARNING] #7 runtime 2026-05-14T11:30:00+00:00: preflight blocked");
+assert.equal(
+  formatServiceLogs(["raw line", { level: "info", source: "service", message: "ready" }]),
+  "raw line\n[INFO] service: ready"
+);
+assert.equal(formatServiceLogs({ items: [] }), "No service logs returned.");
+const llmDryRunResult = formatLlmPromptResult({
+  ok: true,
+  dry_run: true,
+  request: {
+    provider: "local",
+    url: "http://127.0.0.1:11434/v1/chat/completions",
+    headers: { Authorization: "********" }
+  },
+  output_policy: { advisory_only: true, violations: [], blocked: false },
+  text: ""
+});
+assert.match(llmDryRunResult, /LLM advisory dry run ok/);
+assert.match(llmDryRunResult, /Prepared request/);
+assert.match(llmDryRunResult, /advisory only/);
+const llmBlockedResult = formatLlmPromptResult({
+  ok: false,
+  dry_run: false,
+  provider: "openai",
+  output_policy: { advisory_only: true, violations: ["order_execution_claim"], blocked: true },
+  text: "order was executed"
+});
+assert.match(llmBlockedResult, /LLM advisory request failed/);
+assert.match(llmBlockedResult, /Output policy: blocked/);
+assert.match(llmBlockedResult, /order_execution_claim/);
 
 console.log("tauri-ui-behavior tests passed");
