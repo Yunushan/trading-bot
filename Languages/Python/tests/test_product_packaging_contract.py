@@ -1146,6 +1146,16 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("python apps/service-api/main.py --healthcheck", workflow)
         self.assertIn("python Languages/Python/tools/check_service_api_contracts.py", workflow)
         self.assertIn("Run focused service API tests", workflow)
+        self.assertIn("Clean generated Python install artifacts", workflow)
+        self.assertIn("python tools/clean_workspace_artifacts.py --apply", workflow)
+        self.assertLess(
+            workflow.index("Install Python dependencies"),
+            workflow.index("Clean generated Python install artifacts"),
+        )
+        self.assertLess(
+            workflow.index("Clean generated Python install artifacts"),
+            workflow.index("Check workspace artifact hygiene"),
+        )
         self.assertIn("python tools/run_service_tests.py --check-list", workflow)
         self.assertIn("python tools/run_service_tests.py --check-docs", workflow)
         self.assertIn("python tools/run_service_tests.py", workflow)

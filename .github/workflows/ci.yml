@@ -69,6 +69,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e "./Languages/Python[desktop,service,dev]"
 
+      - name: Clean generated Python install artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/clean_workspace_artifacts.py --apply
+
       - name: Install Linux Qt runtime dependencies
         shell: bash
         run: |
