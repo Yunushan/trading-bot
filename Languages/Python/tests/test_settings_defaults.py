@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest import mock
 
-from app.config import DEFAULT_CONFIG, build_default_config, build_default_settings
+from app.config import DEFAULT_CONFIG, INDICATOR_DISPLAY_NAMES, build_default_config, build_default_settings
 from app.gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
 from app.settings import (
     BACKTEST_TEMPLATE_DEFAULT,
@@ -59,6 +59,198 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual(300.0, config["operational_portfolio_snapshot_stale_seconds"])
         self.assertTrue(config["operational_live_start_gate_enabled"])
         self.assertTrue(config["operational_live_order_gate_enabled"])
+
+    def test_atr_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Average True Range (ATR)", INDICATOR_DISPLAY_NAMES["atr"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["indicators"]["atr"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["backtest"]["indicators"]["atr"])
+
+    def test_natr_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Normalized Average True Range (NATR)", INDICATOR_DISPLAY_NAMES["natr"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["indicators"]["natr"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": 2.0, "sell_value": 1.0}, config["backtest"]["indicators"]["natr"])
+
+    def test_obv_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("On-Balance Volume (OBV)", INDICATOR_DISPLAY_NAMES["obv"])
+        self.assertEqual({"enabled": False, "buy_value": None, "sell_value": None}, config["indicators"]["obv"])
+        self.assertEqual({"enabled": False, "buy_value": None, "sell_value": None}, config["backtest"]["indicators"]["obv"])
+
+    def test_rvol_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Relative Volume (RVOL)", INDICATOR_DISPLAY_NAMES["rvol"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": None, "sell_value": None}, config["indicators"]["rvol"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": 1.5, "sell_value": 0.75}, config["backtest"]["indicators"]["rvol"])
+
+    def test_cmf_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Chaikin Money Flow (CMF)", INDICATOR_DISPLAY_NAMES["cmf"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": None, "sell_value": None}, config["indicators"]["cmf"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": 0.05, "sell_value": -0.05}, config["backtest"]["indicators"]["cmf"])
+
+    def test_cci_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Commodity Channel Index (CCI)", INDICATOR_DISPLAY_NAMES["cci"])
+        self.assertEqual(
+            {"enabled": False, "length": 20, "constant": 0.015, "buy_value": None, "sell_value": None},
+            config["indicators"]["cci"],
+        )
+        self.assertEqual(
+            {"enabled": False, "length": 20, "constant": 0.015, "buy_value": -100, "sell_value": 100},
+            config["backtest"]["indicators"]["cci"],
+        )
+
+    def test_bbw_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Bollinger Band Width (BBW)", INDICATOR_DISPLAY_NAMES["bbw"])
+        self.assertEqual(
+            {"enabled": False, "length": 20, "std": 2, "buy_value": None, "sell_value": None},
+            config["indicators"]["bbw"],
+        )
+        self.assertEqual(
+            {"enabled": False, "length": 20, "std": 2, "buy_value": 5.0, "sell_value": 2.0},
+            config["backtest"]["indicators"]["bbw"],
+        )
+
+    def test_roc_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Rate of Change (ROC)", INDICATOR_DISPLAY_NAMES["roc"])
+        self.assertEqual({"enabled": False, "length": 12, "buy_value": None, "sell_value": None}, config["indicators"]["roc"])
+        self.assertEqual({"enabled": False, "length": 12, "buy_value": 0, "sell_value": 0}, config["backtest"]["indicators"]["roc"])
+
+    def test_trix_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Triple Exponential Average (TRIX)", INDICATOR_DISPLAY_NAMES["trix"])
+        self.assertEqual({"enabled": False, "length": 15, "buy_value": None, "sell_value": None}, config["indicators"]["trix"])
+        self.assertEqual({"enabled": False, "length": 15, "buy_value": 0, "sell_value": 0}, config["backtest"]["indicators"]["trix"])
+
+    def test_ppo_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+        expected = {
+            "enabled": False,
+            "fast": 12,
+            "slow": 26,
+            "signal": 9,
+            "buy_value": None,
+            "sell_value": None,
+        }
+        expected_backtest = dict(expected, buy_value=0, sell_value=0)
+
+        self.assertEqual("Percentage Price Oscillator (PPO)", INDICATOR_DISPLAY_NAMES["ppo"])
+        self.assertEqual(expected, config["indicators"]["ppo"])
+        self.assertEqual(expected_backtest, config["backtest"]["indicators"]["ppo"])
+
+    def test_ao_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Awesome Oscillator (AO)", INDICATOR_DISPLAY_NAMES["ao"])
+        self.assertEqual({"enabled": False, "fast": 5, "slow": 34, "buy_value": None, "sell_value": None}, config["indicators"]["ao"])
+        self.assertEqual({"enabled": False, "fast": 5, "slow": 34, "buy_value": 0, "sell_value": 0}, config["backtest"]["indicators"]["ao"])
+
+    def test_kst_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+        expected = {
+            "enabled": False,
+            "roc1": 10,
+            "roc2": 15,
+            "roc3": 20,
+            "roc4": 30,
+            "sma1": 10,
+            "sma2": 10,
+            "sma3": 10,
+            "sma4": 15,
+            "signal": 9,
+            "buy_value": None,
+            "sell_value": None,
+        }
+        expected_backtest = dict(expected, buy_value=0, sell_value=0)
+
+        self.assertEqual("Know Sure Thing (KST)", INDICATOR_DISPLAY_NAMES["kst"])
+        self.assertEqual(expected, config["indicators"]["kst"])
+        self.assertEqual(expected_backtest, config["backtest"]["indicators"]["kst"])
+
+    def test_aroon_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Aroon Oscillator (AROON)", INDICATOR_DISPLAY_NAMES["aroon"])
+        self.assertEqual({"enabled": False, "length": 25, "buy_value": None, "sell_value": None}, config["indicators"]["aroon"])
+        self.assertEqual({"enabled": False, "length": 25, "buy_value": 50, "sell_value": -50}, config["backtest"]["indicators"]["aroon"])
+
+    def test_chop_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Choppiness Index (CHOP)", INDICATOR_DISPLAY_NAMES["chop"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["indicators"]["chop"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": 38.2, "sell_value": 61.8}, config["backtest"]["indicators"]["chop"])
+
+    def test_vwap_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Volume Weighted Average Price (VWAP)", INDICATOR_DISPLAY_NAMES["vwap"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": None, "sell_value": None}, config["indicators"]["vwap"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": None, "sell_value": None}, config["backtest"]["indicators"]["vwap"])
+
+    def test_keltner_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+        expected = {
+            "enabled": False,
+            "length": 20,
+            "atr_length": 10,
+            "multiplier": 2.0,
+            "buy_value": None,
+            "sell_value": None,
+        }
+
+        self.assertEqual("Keltner Channels (KC)", INDICATOR_DISPLAY_NAMES["keltner"])
+        self.assertEqual(expected, config["indicators"]["keltner"])
+        self.assertEqual(expected, config["backtest"]["indicators"]["keltner"])
+
+    def test_ichimoku_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Ichimoku Cloud (IC)", INDICATOR_DISPLAY_NAMES["ichimoku"])
+        self.assertEqual(
+            {
+                "enabled": False,
+                "conversion_length": 9,
+                "base_length": 26,
+                "span_b_length": 52,
+                "displacement": 26,
+                "buy_value": None,
+                "sell_value": None,
+            },
+            config["indicators"]["ichimoku"],
+        )
+        self.assertEqual(
+            {
+                "enabled": False,
+                "conversion_length": 9,
+                "base_length": 26,
+                "span_b_length": 52,
+                "displacement": 26,
+                "buy_value": 0,
+                "sell_value": 0,
+            },
+            config["backtest"]["indicators"]["ichimoku"],
+        )
+
+    def test_mfi_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Money Flow Index (MFI)", INDICATOR_DISPLAY_NAMES["mfi"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["indicators"]["mfi"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": 20, "sell_value": 80}, config["backtest"]["indicators"]["mfi"])
 
     def test_default_config_passes_runtime_validation(self):
         config = build_default_config()

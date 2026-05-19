@@ -11,10 +11,28 @@ from PyQt6 import QtCore
 from app.integrations.exchanges.binance import BinanceWrapper
 from app.integrations.exchanges.binance.transport.helpers import _coerce_interval_seconds
 from app.core.indicators import (
+    atr as atr_indicator,
+    bollinger_band_width as bbw_indicator,
     ema as ema_indicator,
+    ichimoku_cloud as ichimoku_cloud_indicator,
+    keltner_channels as keltner_channels_indicator,
+    mfi as mfi_indicator,
+    natr as natr_indicator,
+    obv as obv_indicator,
+    relative_volume as rvol_indicator,
+    ppo as ppo_indicator,
+    choppiness_index as chop_indicator,
+    chaikin_money_flow as cmf_indicator,
+    cci as cci_indicator,
+    roc as roc_indicator,
+    trix as trix_indicator,
+    awesome_oscillator as ao_indicator,
+    kst as kst_indicator,
+    aroon as aroon_indicator,
     rsi as rsi_indicator,
     sma as sma_indicator,
     stoch_rsi as stoch_rsi_indicator,
+    vwap as vwap_indicator,
     williams_r as williams_r_indicator,
 )
 from app.gui.runtime.background_workers import CallWorker
@@ -186,6 +204,149 @@ def calc_indicator_value_from_df(df, indicator_key: str, indicator_cfg: dict, *,
             price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
             wr_series = williams_r_indicator(price_frame, length=length).dropna()
             return _pick(wr_series)
+        if key == "atr":
+            length = int(cfg.get("length") or 14)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
+            series = atr_indicator(price_frame, length=length).dropna()
+            return _pick(series)
+        if key == "natr":
+            length = int(cfg.get("length") or 14)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
+            series = natr_indicator(price_frame, length=length).dropna()
+            return _pick(series)
+        if key == "vwap":
+            length = int(cfg.get("length") or 20)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            volume = pd.to_numeric(df["volume"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close, "volume": volume})
+            series = vwap_indicator(price_frame, length=length).dropna()
+            return _pick(series)
+        if key == "mfi":
+            length = int(cfg.get("length") or 14)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            volume = pd.to_numeric(df["volume"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close, "volume": volume})
+            series = mfi_indicator(price_frame, length=length).dropna()
+            return _pick(series)
+        if key == "obv":
+            volume = pd.to_numeric(df["volume"], errors="coerce")
+            price_frame = pd.DataFrame({"close": close, "volume": volume})
+            series = obv_indicator(price_frame).dropna()
+            return _pick(series)
+        if key == "rvol":
+            length = int(cfg.get("length") or 20)
+            volume = pd.to_numeric(df["volume"], errors="coerce")
+            price_frame = pd.DataFrame({"volume": volume})
+            series = rvol_indicator(price_frame, length=length).dropna()
+            return _pick(series)
+        if key == "cmf":
+            length = int(cfg.get("length") or 20)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            volume = pd.to_numeric(df["volume"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close, "volume": volume})
+            series = cmf_indicator(price_frame, length=length).dropna()
+            return _pick(series)
+        if key == "cci":
+            length = int(cfg.get("length") or 20)
+            constant = float(cfg.get("constant") or 0.015)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
+            series = cci_indicator(price_frame, length=length, constant=constant).dropna()
+            return _pick(series)
+        if key == "bbw":
+            length = int(cfg.get("length") or 20)
+            std = float(cfg.get("std") or 2.0)
+            price_frame = pd.DataFrame({"close": close})
+            series = bbw_indicator(price_frame, length=length, std=std).dropna()
+            return _pick(series)
+        if key == "roc":
+            length = int(cfg.get("length") or 12)
+            series = roc_indicator(close, length=length).dropna()
+            return _pick(series)
+        if key == "trix":
+            length = int(cfg.get("length") or 15)
+            series = trix_indicator(close, length=length).dropna()
+            return _pick(series)
+        if key == "ppo":
+            fast = int(cfg.get("fast") or 12)
+            slow = int(cfg.get("slow") or 26)
+            signal = int(cfg.get("signal") or 9)
+            _ppo_line, _signal_line, hist = ppo_indicator(close, fast=fast, slow=slow, signal=signal)
+            return _pick(hist.dropna())
+        if key == "ao":
+            fast = int(cfg.get("fast") or 5)
+            slow = int(cfg.get("slow") or 34)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low})
+            series = ao_indicator(price_frame, fast=fast, slow=slow).dropna()
+            return _pick(series)
+        if key == "kst":
+            _kst_line, _signal_line, spread = kst_indicator(
+                close,
+                roc1=int(cfg.get("roc1") or 10),
+                roc2=int(cfg.get("roc2") or 15),
+                roc3=int(cfg.get("roc3") or 20),
+                roc4=int(cfg.get("roc4") or 30),
+                sma1=int(cfg.get("sma1") or 10),
+                sma2=int(cfg.get("sma2") or 10),
+                sma3=int(cfg.get("sma3") or 10),
+                sma4=int(cfg.get("sma4") or 15),
+                signal=int(cfg.get("signal") or 9),
+            )
+            return _pick(spread.dropna())
+        if key == "aroon":
+            length = int(cfg.get("length") or 25)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low})
+            _up, _down, oscillator = aroon_indicator(price_frame, length=length)
+            return _pick(oscillator.dropna())
+        if key == "chop":
+            length = int(cfg.get("length") or 14)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
+            series = chop_indicator(price_frame, length=length).dropna()
+            return _pick(series)
+        if key == "keltner":
+            length = int(cfg.get("length") or 20)
+            atr_length = int(cfg.get("atr_length") or 10)
+            multiplier = float(cfg.get("multiplier") or 2.0)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
+            _upper, mid, _lower = keltner_channels_indicator(
+                price_frame,
+                length=length,
+                atr_length=atr_length,
+                multiplier=multiplier,
+            )
+            return _pick(mid.dropna())
+        if key == "ichimoku":
+            conversion_length = int(cfg.get("conversion_length") or 9)
+            base_length = int(cfg.get("base_length") or 26)
+            span_b_length = int(cfg.get("span_b_length") or 52)
+            displacement = int(cfg.get("displacement") or 26)
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            price_frame = pd.DataFrame({"high": high, "low": low, "close": close})
+            tenkan, kijun, _span_a, _span_b, _chikou = ichimoku_cloud_indicator(
+                price_frame,
+                conversion_length=conversion_length,
+                base_length=base_length,
+                span_b_length=span_b_length,
+                displacement=displacement,
+            )
+            return _pick((tenkan - kijun).dropna())
         if key == "ma":
             length = int(cfg.get("length") or 20)
             kind = str(cfg.get("type") or "SMA").upper()
@@ -568,15 +729,69 @@ def collect_current_indicator_live_strings(
     except Exception:
         indicator_source = ""
     buy_thresholds = {
+        "mfi": float((indicators_cfg.get("mfi", {}).get("buy_value") or 20.0)),
+        "cci": float((indicators_cfg.get("cci", {}).get("buy_value") or -100.0)),
+        "roc": float((indicators_cfg.get("roc", {}).get("buy_value") or 0.0)),
+        "trix": float((indicators_cfg.get("trix", {}).get("buy_value") or 0.0)),
+        "ppo": float((indicators_cfg.get("ppo", {}).get("buy_value") or 0.0)),
+        "ao": float((indicators_cfg.get("ao", {}).get("buy_value") or 0.0)),
+        "kst": float((indicators_cfg.get("kst", {}).get("buy_value") or 0.0)),
+        "aroon": float((indicators_cfg.get("aroon", {}).get("buy_value") or 50.0)),
+        "chop": float((indicators_cfg.get("chop", {}).get("buy_value") or 38.2)),
         "stoch_rsi": float((indicators_cfg.get("stoch_rsi", {}).get("buy_value") or 20.0)),
         "willr": float((indicators_cfg.get("willr", {}).get("buy_value") or -80.0)),
         "rsi": float((indicators_cfg.get("rsi", {}).get("buy_value") or 30.0)),
     }
     sell_thresholds = {
+        "mfi": float((indicators_cfg.get("mfi", {}).get("sell_value") or 80.0)),
+        "cci": float((indicators_cfg.get("cci", {}).get("sell_value") or 100.0)),
+        "roc": float((indicators_cfg.get("roc", {}).get("sell_value") or 0.0)),
+        "trix": float((indicators_cfg.get("trix", {}).get("sell_value") or 0.0)),
+        "ppo": float((indicators_cfg.get("ppo", {}).get("sell_value") or 0.0)),
+        "ao": float((indicators_cfg.get("ao", {}).get("sell_value") or 0.0)),
+        "kst": float((indicators_cfg.get("kst", {}).get("sell_value") or 0.0)),
+        "aroon": float((indicators_cfg.get("aroon", {}).get("sell_value") or -50.0)),
+        "chop": float((indicators_cfg.get("chop", {}).get("sell_value") or 61.8)),
         "stoch_rsi": float((indicators_cfg.get("stoch_rsi", {}).get("sell_value") or 80.0)),
         "willr": float((indicators_cfg.get("willr", {}).get("sell_value") or -20.0)),
         "rsi": float((indicators_cfg.get("rsi", {}).get("sell_value") or 70.0)),
     }
+    ichimoku_cfg = indicators_cfg.get("ichimoku", {})
+    if isinstance(ichimoku_cfg, dict):
+        if ichimoku_cfg.get("buy_value") is not None:
+            buy_thresholds["ichimoku"] = float(ichimoku_cfg.get("buy_value") or 0.0)
+        if ichimoku_cfg.get("sell_value") is not None:
+            sell_thresholds["ichimoku"] = float(ichimoku_cfg.get("sell_value") or 0.0)
+    obv_cfg = indicators_cfg.get("obv", {})
+    if isinstance(obv_cfg, dict):
+        if obv_cfg.get("buy_value") is not None:
+            buy_thresholds["obv"] = float(obv_cfg.get("buy_value") or 0.0)
+        if obv_cfg.get("sell_value") is not None:
+            sell_thresholds["obv"] = float(obv_cfg.get("sell_value") or 0.0)
+    rvol_cfg = indicators_cfg.get("rvol", {})
+    if isinstance(rvol_cfg, dict):
+        if rvol_cfg.get("buy_value") is not None:
+            buy_thresholds["rvol"] = float(rvol_cfg.get("buy_value") or 0.0)
+        if rvol_cfg.get("sell_value") is not None:
+            sell_thresholds["rvol"] = float(rvol_cfg.get("sell_value") or 0.0)
+    cmf_cfg = indicators_cfg.get("cmf", {})
+    if isinstance(cmf_cfg, dict):
+        if cmf_cfg.get("buy_value") is not None:
+            buy_thresholds["cmf"] = float(cmf_cfg.get("buy_value") or 0.0)
+        if cmf_cfg.get("sell_value") is not None:
+            sell_thresholds["cmf"] = float(cmf_cfg.get("sell_value") or 0.0)
+    natr_cfg = indicators_cfg.get("natr", {})
+    if isinstance(natr_cfg, dict):
+        if natr_cfg.get("buy_value") is not None:
+            buy_thresholds["natr"] = float(natr_cfg.get("buy_value") or 0.0)
+        if natr_cfg.get("sell_value") is not None:
+            sell_thresholds["natr"] = float(natr_cfg.get("sell_value") or 0.0)
+    bbw_cfg = indicators_cfg.get("bbw", {})
+    if isinstance(bbw_cfg, dict):
+        if bbw_cfg.get("buy_value") is not None:
+            buy_thresholds["bbw"] = float(bbw_cfg.get("buy_value") or 0.0)
+        if bbw_cfg.get("sell_value") is not None:
+            sell_thresholds["bbw"] = float(bbw_cfg.get("sell_value") or 0.0)
     ttl = float(getattr(window, "_live_indicator_cache_ttl", 8.0) or 8.0)
     now_ts = time.monotonic()
     entries: list[str] = []
@@ -632,7 +847,7 @@ def collect_current_indicator_live_strings(
                 action = ""
                 buy = buy_thresholds.get(key)
                 sell = sell_thresholds.get(key)
-                if key == "stoch_rsi":
+                if key in {"mfi", "cci", "stoch_rsi"}:
                     if buy is not None and value <= buy:
                         action = "-Buy"
                     elif sell is not None and value >= sell:
@@ -643,6 +858,71 @@ def collect_current_indicator_live_strings(
                     elif sell is not None and value >= sell:
                         action = "-Sell"
                 elif key == "rsi":
+                    if buy is not None and value <= buy:
+                        action = "-Buy"
+                    elif sell is not None and value >= sell:
+                        action = "-Sell"
+                elif key == "ichimoku":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "obv":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "rvol":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "cmf":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "natr":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "bbw":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "roc":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "trix":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "ppo":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "ao":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "kst":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "aroon":
+                    if buy is not None and value >= buy:
+                        action = "-Buy"
+                    elif sell is not None and value <= sell:
+                        action = "-Sell"
+                elif key == "chop":
                     if buy is not None and value <= buy:
                         action = "-Buy"
                     elif sell is not None and value >= sell:

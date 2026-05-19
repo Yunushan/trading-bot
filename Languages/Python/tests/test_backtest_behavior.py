@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition  # noqa: E402
+from app.core.backtest.indicator_runtime import compute_indicator_series  # noqa: E402
 
 
 class _SyntheticBacktestEngine(BacktestEngine):
@@ -97,6 +98,246 @@ def _run_without_pandas4_warning(callback):
 
 @unittest.skipUnless(PANDAS_AVAILABLE, "pandas is required for backtest behavior tests")
 class BacktestBehaviorTests(unittest.TestCase):
+    def test_compute_atr_indicator_series(self):
+        df = _build_frame(
+            [10.0, 12.0, 13.0, 12.0],
+            highs=[11.0, 13.0, 14.0, 13.0],
+            lows=[9.0, 11.0, 12.0, 11.0],
+        )
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="atr", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(2.148148148, float(series.iloc[-1]), places=6)
+
+    def test_compute_vwap_indicator_series(self):
+        df = _build_frame(
+            [10.0, 12.0, 13.0, 12.0],
+            highs=[11.0, 13.0, 14.0, 13.0],
+            lows=[9.0, 11.0, 12.0, 11.0],
+        )
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="vwap", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(12.333333333, float(series.iloc[-1]), places=6)
+
+    def test_compute_keltner_indicator_series(self):
+        df = _build_frame(
+            [10.0, 12.0, 13.0, 12.0],
+            highs=[11.0, 13.0, 14.0, 13.0],
+            lows=[9.0, 11.0, 12.0, 11.0],
+        )
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(key="keltner", params={"length": 3, "atr_length": 3, "multiplier": 2.0}),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(12.0, float(series.iloc[-1]), places=6)
+
+    def test_compute_ichimoku_indicator_series(self):
+        df = _build_frame(
+            [10.0, 12.0, 13.0, 16.0],
+            highs=[11.0, 13.0, 14.0, 17.0],
+            lows=[9.0, 11.0, 12.0, 15.0],
+        )
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(
+                key="ichimoku",
+                params={
+                    "conversion_length": 2,
+                    "base_length": 3,
+                    "span_b_length": 4,
+                    "displacement": 1,
+                },
+            ),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(0.5, float(series.iloc[-1]), places=6)
+
+    def test_compute_mfi_indicator_series(self):
+        df = _build_frame(
+            [10.0, 11.0, 12.0, 11.0],
+            highs=[10.0, 11.0, 12.0, 11.0],
+            lows=[10.0, 11.0, 12.0, 11.0],
+        )
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="mfi", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(67.647058824, float(series.iloc[-1]), places=6)
+
+    def test_compute_obv_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 10.0, 12.0])
+        df["volume"] = [100.0, 200.0, 50.0, 300.0]
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="obv", params={}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertEqual([0.0, 200.0, 150.0, 450.0], [float(value) for value in series.tolist()])
+
+    def test_compute_cmf_indicator_series(self):
+        df = _build_frame(
+            [11.0, 11.5, 8.5, 12.5],
+            highs=[12.0, 12.0, 10.0, 13.0],
+            lows=[8.0, 10.0, 8.0, 11.0],
+        )
+        df["volume"] = [100.0, 200.0, 50.0, 300.0]
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="cmf", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(0.409090909, float(series.iloc[-1]), places=6)
+
+    def test_compute_rvol_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+        df["volume"] = [100.0, 200.0, 300.0, 600.0]
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="rvol", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(1.636363636, float(series.iloc[-1]), places=6)
+
+    def test_compute_cci_indicator_series(self):
+        df = _build_frame(
+            [10.0, 11.0, 12.0, 13.0],
+            highs=[10.0, 11.0, 12.0, 13.0],
+            lows=[10.0, 11.0, 12.0, 13.0],
+        )
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(key="cci", params={"length": 3, "constant": 0.015}),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(100.0, float(series.iloc[-1]), places=6)
+
+    def test_compute_bbw_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(key="bbw", params={"length": 3, "std": 2}),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(33.333333333, float(series.iloc[-1]), places=6)
+
+    def test_compute_roc_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 9.0])
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="roc", params={"length": 2}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(-18.181818182, float(series.iloc[-1]), places=6)
+
+    def test_compute_trix_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="trix", params={"length": 2}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(7.256235828, float(series.iloc[-1]), places=6)
+
+    def test_compute_ppo_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(key="ppo", params={"fast": 2, "slow": 3, "signal": 2}),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(0.360693309, float(series.iloc[-1]), places=6)
+
+    def test_compute_ao_indicator_series(self):
+        df = _build_frame(
+            [10.0, 11.0, 12.0, 13.0],
+            highs=[10.0, 11.0, 12.0, 13.0],
+            lows=[10.0, 11.0, 12.0, 13.0],
+        )
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="ao", params={"fast": 2, "slow": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(0.5, float(series.iloc[-1]), places=6)
+
+    def test_compute_kst_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0, 14.0])
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(
+                key="kst",
+                params={
+                    "roc1": 1,
+                    "roc2": 2,
+                    "roc3": 3,
+                    "roc4": 4,
+                    "sma1": 1,
+                    "sma2": 1,
+                    "sma3": 1,
+                    "sma4": 1,
+                    "signal": 2,
+                },
+            ),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(74.073426573, float(series.iloc[-1]), places=6)
+
+    def test_compute_aroon_indicator_series(self):
+        df = _build_frame(
+            [10.0, 11.0, 12.0, 13.0],
+            highs=[10.0, 11.0, 12.0, 13.0],
+            lows=[10.0, 9.0, 8.0, 9.0],
+        )
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="aroon", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(50.0, float(series.iloc[-1]), places=6)
+
+    def test_compute_chop_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="chop", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(36.907024643, float(series.iloc[-1]), places=6)
+
+    def test_compute_natr_indicator_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+
+        series = compute_indicator_series(df, IndicatorDefinition(key="natr", params={"length": 3}))
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(5.413105413, float(series.iloc[-1]), places=6)
+
     def test_simulate_signal_reversal_closes_and_reopens_on_same_bar(self):
         df = _build_frame([100.0, 110.0, 120.0])
         indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]

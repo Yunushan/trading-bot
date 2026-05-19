@@ -1,3 +1,4 @@
+import math
 
 import pandas as pd
 
@@ -20,6 +21,11 @@ def bollinger_bands(df, length=20, std=2):
     lower = ma - std * sd
     return upper, ma, lower
 
+def bollinger_band_width(df, length=20, std=2):
+    upper, mid, lower = bollinger_bands(df, length=length, std=std)
+    width = ((upper - lower) / mid.where(mid != 0)) * 100.0
+    return width.fillna(0.0)
+
 def rsi(series, length=14):
     """
     Wilder's RSI on CLOSE prices.
@@ -40,6 +46,14 @@ def macd(series, fast=12, slow=26, signal=9):
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
+
+def ppo(series, fast=12, slow=26, signal=9):
+    ema_fast = ema(series, fast)
+    ema_slow = ema(series, slow)
+    ppo_line = ((ema_fast - ema_slow) / ema_slow.where(ema_slow != 0)) * 100.0
+    signal_line = ppo_line.ewm(span=signal, adjust=False).mean()
+    hist = ppo_line - signal_line
+    return ppo_line.fillna(0.0), signal_line.fillna(0.0), hist.fillna(0.0)
 
 def williams_r(df, length=14):
     highest_high = df['high'].rolling(length).max()
@@ -104,6 +118,188 @@ def atr(df, length=14):
     ], axis=1)
     true_range = tr_components.max(axis=1)
     return true_range.ewm(alpha=1/float(length), adjust=False).mean()
+
+def natr(df, length=14):
+    atr_series = atr(df, length=length)
+    close = df['close']
+    return ((atr_series / close.where(close != 0)) * 100.0).fillna(0.0)
+
+def choppiness_index(df, length=14):
+    window = max(2, int(length or 14))
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    prev_close = close.shift(1)
+    tr_components = pd.concat([
+        (high - low).abs(),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1)
+    true_range = tr_components.max(axis=1)
+    tr_sum = true_range.rolling(window, min_periods=window).sum()
+    high_low_range = high.rolling(window, min_periods=window).max() - low.rolling(window, min_periods=window).min()
+    ratio = tr_sum / high_low_range.where(high_low_range != 0)
+    chop = 100.0 * ratio.apply(lambda value: math.log10(value) if value and value > 0 else float("nan"))
+    return (chop / math.log10(window)).fillna(0.0)
+
+def keltner_channels(df, length=20, atr_length=10, multiplier=2.0):
+    window = max(1, int(length or 20))
+    atr_window = max(1, int(atr_length or 10))
+    mult = float(multiplier or 2.0)
+    middle = ema(df['close'], window)
+    range_series = atr(df, length=atr_window)
+    upper = middle + (range_series * mult)
+    lower = middle - (range_series * mult)
+    return upper, middle, lower
+
+def ichimoku_cloud(df, conversion_length=9, base_length=26, span_b_length=52, displacement=26):
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    conversion_window = max(1, int(conversion_length or 9))
+    base_window = max(1, int(base_length or 26))
+    span_b_window = max(1, int(span_b_length or 52))
+    offset = max(0, int(displacement or 26))
+
+    conversion_line = (
+        high.rolling(conversion_window).max() + low.rolling(conversion_window).min()
+    ) / 2.0
+    base_line = (high.rolling(base_window).max() + low.rolling(base_window).min()) / 2.0
+    leading_span_a = ((conversion_line + base_line) / 2.0).shift(offset)
+    leading_span_b = (
+        (high.rolling(span_b_window).max() + low.rolling(span_b_window).min()) / 2.0
+    ).shift(offset)
+    lagging_span = close.shift(-offset) if offset else close
+    return conversion_line, base_line, leading_span_a, leading_span_b, lagging_span
+
+def vwap(df, length=20):
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    volume = df['volume']
+    typical_price = (high + low + close) / 3.0
+    weighted_price = typical_price * volume
+    window = max(1, int(length or 20))
+    volume_sum = volume.rolling(window, min_periods=1).sum()
+    weighted_sum = weighted_price.rolling(window, min_periods=1).sum()
+    return weighted_sum / volume_sum.where(volume_sum != 0)
+
+def relative_volume(df, length=20):
+    volume = df['volume']
+    window = max(1, int(length or 20))
+    average_volume = volume.rolling(window, min_periods=1).mean()
+    return (volume / average_volume.where(average_volume != 0)).fillna(0.0)
+
+def mfi(df, length=14):
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    volume = df['volume']
+    typical_price = (high + low + close) / 3.0
+    raw_money_flow = typical_price * volume
+    direction = typical_price.diff()
+    positive_flow = raw_money_flow.where(direction > 0, 0.0)
+    negative_flow = raw_money_flow.where(direction < 0, 0.0)
+    window = max(1, int(length or 14))
+    positive_sum = positive_flow.rolling(window, min_periods=1).sum()
+    negative_sum = negative_flow.rolling(window, min_periods=1).sum()
+    money_ratio = positive_sum / negative_sum.where(negative_sum != 0)
+    result = 100 - (100 / (1 + money_ratio))
+    result = result.where(negative_sum != 0, 100.0)
+    result = result.where(positive_sum != 0, 0.0)
+    result = result.where((positive_sum != 0) | (negative_sum != 0), 50.0)
+    return result.fillna(50.0)
+
+def obv(df):
+    close = df['close']
+    volume = df['volume']
+    direction = close.diff()
+    signed_volume = pd.Series(0.0, index=df.index)
+    signed_volume = signed_volume.mask(direction > 0, volume)
+    signed_volume = signed_volume.mask(direction < 0, -volume)
+    return signed_volume.fillna(0.0).cumsum()
+
+def chaikin_money_flow(df, length=20):
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    volume = df['volume']
+    price_range = high - low
+    money_flow_multiplier = ((close - low) - (high - close)) / price_range.where(price_range != 0)
+    money_flow_volume = money_flow_multiplier.fillna(0.0) * volume
+    window = max(1, int(length or 20))
+    volume_sum = volume.rolling(window, min_periods=1).sum()
+    money_flow_sum = money_flow_volume.rolling(window, min_periods=1).sum()
+    return (money_flow_sum / volume_sum.where(volume_sum != 0)).fillna(0.0)
+
+def cci(df, length=20, constant=0.015):
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    typical_price = (high + low + close) / 3.0
+    window = max(1, int(length or 20))
+    factor = float(constant or 0.015)
+    average = typical_price.rolling(window, min_periods=1).mean()
+    mean_deviation = typical_price.rolling(window, min_periods=1).apply(
+        lambda values: abs(values - values.mean()).mean(),
+        raw=True,
+    )
+    denominator = factor * mean_deviation.where(mean_deviation != 0)
+    return ((typical_price - average) / denominator).fillna(0.0)
+
+def roc(series, length=12):
+    window = max(1, int(length or 12))
+    prior = series.shift(window)
+    return (((series - prior) / prior.where(prior != 0)) * 100.0).fillna(0.0)
+
+def trix(series, length=15):
+    window = max(1, int(length or 15))
+    ema_one = ema(series, window)
+    ema_two = ema(ema_one, window)
+    ema_three = ema(ema_two, window)
+    return (ema_three.pct_change() * 100.0).fillna(0.0)
+
+def awesome_oscillator(df, fast=5, slow=34):
+    median_price = (df['high'] + df['low']) / 2.0
+    fast_window = max(1, int(fast or 5))
+    slow_window = max(1, int(slow or 34))
+    fast_sma = median_price.rolling(fast_window, min_periods=1).mean()
+    slow_sma = median_price.rolling(slow_window, min_periods=1).mean()
+    return (fast_sma - slow_sma).fillna(0.0)
+
+def kst(series, roc1=10, roc2=15, roc3=20, roc4=30, sma1=10, sma2=10, sma3=10, sma4=15, signal=9):
+    roc_1 = roc(series, length=roc1).rolling(max(1, int(sma1 or 10)), min_periods=1).mean()
+    roc_2 = roc(series, length=roc2).rolling(max(1, int(sma2 or 10)), min_periods=1).mean()
+    roc_3 = roc(series, length=roc3).rolling(max(1, int(sma3 or 10)), min_periods=1).mean()
+    roc_4 = roc(series, length=roc4).rolling(max(1, int(sma4 or 15)), min_periods=1).mean()
+    kst_line = roc_1 + (2.0 * roc_2) + (3.0 * roc_3) + (4.0 * roc_4)
+    signal_line = kst_line.rolling(max(1, int(signal or 9)), min_periods=1).mean()
+    spread = kst_line - signal_line
+    return kst_line.fillna(0.0), signal_line.fillna(0.0), spread.fillna(0.0)
+
+def aroon(df, length=25):
+    high = df['high']
+    low = df['low']
+    window = max(1, int(length or 25))
+
+    def _latest_extreme_position(values, *, find_high: bool):
+        if len(values) <= 1:
+            return 100.0
+        reversed_values = values[::-1]
+        reverse_index = reversed_values.argmax() if find_high else reversed_values.argmin()
+        index = len(values) - 1 - int(reverse_index)
+        return 100.0 * float(index) / float(len(values) - 1)
+
+    up = high.rolling(window, min_periods=1).apply(
+        lambda values: _latest_extreme_position(values, find_high=True),
+        raw=True,
+    )
+    down = low.rolling(window, min_periods=1).apply(
+        lambda values: _latest_extreme_position(values, find_high=False),
+        raw=True,
+    )
+    oscillator = up - down
+    return up.fillna(0.0), down.fillna(0.0), oscillator.fillna(0.0)
 
 def dmi(df, length=14):
     high = df['high']
