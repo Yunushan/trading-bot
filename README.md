@@ -230,7 +230,7 @@ python tools/update_loc_snapshot.py
 ## Quick start
 
 1. **Clone or download** this repository.
-2. **Install Python** (3.11 or 3.12 preferred). Remember to check “Add Python to PATH” on Windows.
+2. **Install Python 3.12** for local development and CI parity. Remember to check “Add Python to PATH” on Windows.
 3. **Install dependencies** using the instructions for your OS below.
 4. **Launch the GUI:**
    - Canonical product path: run `python apps/desktop-pyqt/main.py` from the repository root, **or**
@@ -252,8 +252,33 @@ For local development, CI parity, and the complete Python test surface, install
 the editable workspace with every reviewed optional group:
 
 ```bash
+python ../../tools/check_local_tool_versions.py --strict --skip-node
 python -m pip install -e ".[desktop,service,dev]"
-python -m unittest discover tests
+python tools/run_python_tests.py
+```
+
+If your shell `python` is not the declared runtime, point the checker at the
+target interpreter before installing:
+
+```powershell
+python ../../tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
+```
+
+From the repository root, contributors can use the bootstrap planner before
+installing both Python and client dependencies:
+
+```bash
+python tools/bootstrap_local_dev.py --dry-run
+python tools/bootstrap_local_dev.py
+```
+
+If `python` points at a different interpreter than `.python-version`, keep the
+script launcher you already have and tell the bootstrap which Python should
+receive the editable install:
+
+```powershell
+python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
+python tools/bootstrap_local_dev.py --python-command "py -3.12"
 ```
 
 The `dev` extra includes test-only tools such as the FastAPI `TestClient`

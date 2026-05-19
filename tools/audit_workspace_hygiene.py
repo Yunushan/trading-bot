@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 
 NOISY_IGNORED_PREFIXES = (
     ".venv/",
+    ".vcpkg/",
     ".tmp_showtests/",
     "build/",
     "dist/",
@@ -17,6 +18,25 @@ NOISY_IGNORED_PREFIXES = (
     "Languages/Python/build/",
     "Languages/Rust/target/",
     "experiments/rust-shells/target/",
+)
+
+NOISY_IGNORED_DIRECTORY_NAMES = (
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+)
+
+NOISY_IGNORED_FILENAMES = (
+    ".coverage",
+    "aqtinstall.log",
+    "coverage.xml",
+)
+
+NOISY_IGNORED_FILENAME_PATTERNS = (
+    ".coverage.*",
+    "*.pyc",
+    "*.pyo",
 )
 
 
@@ -35,16 +55,32 @@ def _git_lines(*args: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def is_noisy_ignored_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").strip()
+    normalized = normalized.rstrip("/")
+    if not normalized:
+        return False
+    directory_path = f"{normalized}/"
+    if any(directory_path.startswith(prefix) for prefix in NOISY_IGNORED_PREFIXES):
+        return True
+    parts = normalized.split("/")
+    if any(part in NOISY_IGNORED_DIRECTORY_NAMES for part in parts):
+        return True
+    if any(part.endswith(".egg-info") for part in parts):
+        return True
+    filename = parts[-1]
+    return filename in NOISY_IGNORED_FILENAMES or any(
+        fnmatch.fnmatchcase(filename, pattern) for pattern in NOISY_IGNORED_FILENAME_PATTERNS
+    )
+
+
 def ignored_artifact_summary() -> dict[str, object]:
     rows = _git_lines("status", "--ignored", "--short")
     ignored = [row[3:] for row in rows if row.startswith("!! ")]
-    noisy = [
-        path
-        for path in ignored
-        if any(path.replace("\\", "/").startswith(prefix) for prefix in NOISY_IGNORED_PREFIXES)
-    ]
+    noisy = [path for path in ignored if is_noisy_ignored_path(path)]
     return {
         "ignored_count": len(ignored),
+        "ok": len(noisy) == 0,
         "noisy_artifact_count": len(noisy),
         "noisy_artifacts": noisy,
         "tracked_count": len(_git_lines("ls-files")),

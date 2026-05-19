@@ -1151,7 +1151,20 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("python tools/run_service_tests.py", workflow)
         self.assertIn("apps/desktop-pyqt/main.py", workflow)
         self.assertIn("apps/service-api/main.py", workflow)
+        self.assertIn("python tools/check_python_sources_compile.py", workflow)
+        self.assertIn("python tools/run_python_tests.py --runner pytest", workflow)
         self.assertIn("python tools/release_smoke.py --dry-run --skip-full-tests --manual-smoke-mode skip", workflow)
+        self.assertIn("Install cross-platform Python service dependencies", workflow)
+        self.assertIn('python -m pip install -e "./Languages/Python[service]"', workflow)
+        self.assertIn(
+            "python tools/check_python_sources_compile.py apps/service-api/main.py "
+            "Languages/Python/app/service Languages/Python/app/settings Languages/Python/trading_core",
+            workflow,
+        )
+        self.assertNotIn(
+            "python -m compileall apps/service-api/main.py Languages/Python/app/service",
+            workflow,
+        )
         self.assertIn("Web Dashboard Quality", workflow)
         self.assertIn("actions/setup-node@v6", workflow)
         self.assertIn('node-version: "24"', workflow)

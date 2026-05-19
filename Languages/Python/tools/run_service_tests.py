@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
@@ -20,6 +21,48 @@ from tools.service_test_manifest import (  # noqa: E402
     module_list_errors,
     render_markdown_section,
 )
+
+
+SERVICE_TEST_DEPENDENCIES = ("fastapi", "httpx")
+
+
+def _read_declared_python_version() -> str:
+    try:
+        return (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "3.12"
+
+
+def _declared_python_command() -> str:
+    expected = _read_declared_python_version() or "3.12"
+    return f"py -{expected}" if sys.platform == "win32" else f"python{expected}"
+
+
+def service_dependency_install_hint() -> str:
+    selected_python = _declared_python_command()
+    return (
+        "Install them from the repository root with the declared-runtime bootstrap: "
+        f'python tools/bootstrap_local_dev.py --python-command "{selected_python}" --skip-client-deps\n'
+        "Or install the focused service test surface directly with: "
+        f'{selected_python} -m pip install -e "Languages/Python[service,dev]"'
+    )
+
+
+def missing_service_test_dependencies() -> list[str]:
+    return [name for name in SERVICE_TEST_DEPENDENCIES if importlib.util.find_spec(name) is None]
+
+
+def check_dependencies() -> int:
+    missing = missing_service_test_dependencies()
+    if not missing:
+        return 0
+    print(
+        "[FAIL] focused service tests require optional service/dev dependencies: "
+        + ", ".join(sorted(missing)),
+        file=sys.stderr,
+    )
+    print(service_dependency_install_hint(), file=sys.stderr)
+    return 1
 
 
 def build_suite() -> unittest.TestSuite:
@@ -79,6 +122,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_markdown:
         print(render_markdown_section())
         return 0
+
+    dependency_status = check_dependencies()
+    if dependency_status:
+        return dependency_status
 
     runner = unittest.TextTestRunner(
         stream=sys.stdout,

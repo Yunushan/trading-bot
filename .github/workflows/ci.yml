@@ -99,7 +99,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m compileall apps/desktop-pyqt/main.py apps/service-api/main.py Languages/Python/app Languages/Python/trading_core Languages/Python/main.py Languages/Python/tools tools
+          python tools/check_python_sources_compile.py apps/desktop-pyqt/main.py apps/service-api/main.py Languages/Python/app Languages/Python/trading_core Languages/Python/main.py Languages/Python/tools tools
 
       - name: Check runtime tool versions
         shell: bash
@@ -171,7 +171,7 @@ jobs:
         working-directory: Languages/Python
         run: |
           set -euo pipefail
-          python -m pytest
+          python tools/run_python_tests.py --runner pytest
 
   web-dashboard-quality:
     name: Web Dashboard Quality
@@ -250,12 +250,22 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Install cross-platform Python service dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python[service]"
 
       - name: Compile core service support surface
         shell: bash
         run: |
           set -euo pipefail
-          python -m compileall apps/service-api/main.py Languages/Python/app/service Languages/Python/app/settings Languages/Python/trading_core
+          python tools/check_python_sources_compile.py apps/service-api/main.py Languages/Python/app/service Languages/Python/app/settings Languages/Python/trading_core
 
       - name: Smoke-check canonical service launcher
         shell: bash

@@ -18,6 +18,7 @@ Run all commands from `Languages/Python/` unless a script says otherwise.
 | --- | --- |
 | `tools/check_dependency_metadata.py` | Verifies Python version metadata, dependency pin policy, requirement shim files, and CI install surface |
 | `tools/check_service_api_contracts.py` | Checks `apps/service-api/contracts/*` and can refresh the generated route contract with `--write` |
+| `tools/run_python_tests.py` | Runs the full Python test suite after checking desktop/service/dev dependencies |
 | `tools/run_service_tests.py` | Runs the focused service API/unit/integration test modules as one stable command |
 | `tools/import_policy.py` | Canonical-import registry and deprecated-wrapper policy used by architecture tests |
 | `tools/manual_smoke.py` | Local manual smoke check for desktop imports, service health/API auth/config validation, and a fake exchange order flow |
@@ -32,8 +33,16 @@ Run all commands from `Languages/Python/` unless a script says otherwise.
 Full local dev/test install:
 
 ```bash
+python ../../tools/bootstrap_local_dev.py --dry-run
 python -m pip install -e ".[desktop,service,dev]"
-python -m unittest discover tests
+python tools/run_python_tests.py
+```
+
+If the active shell Python is not the repository Python, pass the target command:
+
+```powershell
+python ../../tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
+python ../../tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
 ```
 
 Focused service suite:
@@ -43,6 +52,14 @@ python tools/run_service_tests.py
 python tools/run_service_tests.py --check-list
 python tools/run_service_tests.py --check-docs
 python tools/run_service_tests.py --print-markdown
+```
+
+Full Python suite:
+
+```bash
+python tools/run_python_tests.py
+python tools/run_python_tests.py --runner pytest
+python tools/run_python_tests.py --check-deps
 ```
 
 Focused service test map:

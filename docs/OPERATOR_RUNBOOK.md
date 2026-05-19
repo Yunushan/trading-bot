@@ -57,9 +57,16 @@ python tools/summarize_worktree_changes.py
 python tools/audit_workspace_hygiene.py
 python tools/audit_risky_patterns.py
 python tools/verify_all.py --skip-slow
-cd Languages/Python && python -m unittest discover tests
+cd Languages/Python && python tools/run_python_tests.py
 cd ../../apps/web-dashboard && npm test
 cd ../mobile-client && npm test
+```
+
+On Windows machines with multiple Python installs, validate the intended
+interpreter explicitly:
+
+```powershell
+python tools/check_local_tool_versions.py --json --skip-node --python-command "py -3.12"
 ```
 
 For the service API:
@@ -67,4 +74,17 @@ For the service API:
 ```bash
 python apps/service-api/main.py --healthcheck
 python Languages/Python/tools/check_service_api_contracts.py
+```
+
+For a fresh contributor machine, preview the complete local setup plan first:
+
+```bash
+python tools/bootstrap_local_dev.py --dry-run
+```
+
+If the default `python` command is not the declared Python, target the install
+interpreter explicitly:
+
+```powershell
+python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
 ```

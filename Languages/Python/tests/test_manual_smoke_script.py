@@ -1,40 +1,51 @@
 from __future__ import annotations
 
+import importlib.util
 import json
-import os
-import subprocess
 import sys
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 SMOKE_SCRIPT = PYTHON_ROOT / "tools" / "manual_smoke.py"
 
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+
+def _load_manual_smoke_module():
+    spec = importlib.util.spec_from_file_location("manual_smoke", SMOKE_SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_manual_smoke_with_mocked_healthcheck(*args: str) -> tuple[int, str, str]:
+    module = _load_manual_smoke_module()
+    stdout = StringIO()
+    stderr = StringIO()
+    with (
+        mock.patch.object(module, "_check_service_healthcheck", return_value="service launcher --healthcheck returned ok"),
+        redirect_stdout(stdout),
+        redirect_stderr(stderr),
+    ):
+        returncode = module.main(list(args))
+    return returncode, stdout.getvalue(), stderr.getvalue()
+
 
 class ManualSmokeScriptTests(unittest.TestCase):
     def test_manual_smoke_cli_runs_non_http_checks_as_json(self):
-        env = dict(os.environ)
-        for key in list(env):
-            if key.startswith("COV_CORE_") or key in {"COVERAGE_PROCESS_START", "PYTEST_CURRENT_TEST"}:
-                env.pop(key, None)
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SMOKE_SCRIPT),
-                "--skip-http",
-                "--json",
-            ],
-            cwd=PYTHON_ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
+        returncode, stdout, stderr = _run_manual_smoke_with_mocked_healthcheck("--skip-http", "--json")
 
-        self.assertEqual(0, result.returncode, f"stdout={result.stdout}\nstderr={result.stderr}")
-        payload = json.loads(result.stdout)
+        self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
+        payload = json.loads(stdout)
         self.assertTrue(payload["ok"])
         steps = {step["name"]: step for step in payload["steps"]}
         self.assertIn("desktop import", steps)

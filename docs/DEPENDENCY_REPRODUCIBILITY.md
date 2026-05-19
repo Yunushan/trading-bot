@@ -13,6 +13,43 @@ python tools/check_client_dependency_locks.py --json --strict
 python tools/verify_all.py --skip-slow
 ```
 
+For a hard local setup gate, use:
+
+```bash
+python tools/check_local_tool_versions.py --strict
+```
+
+When more than one Python version is installed, point the checker at the same
+interpreter you will use for the editable install:
+
+```powershell
+python tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
+```
+
+For a complete contributor environment after the declared runtimes are
+installed, preview and then run:
+
+```bash
+python tools/bootstrap_local_dev.py --dry-run
+python tools/bootstrap_local_dev.py
+```
+
+When the active shell `python` is not the declared Python, pass the target
+interpreter to the bootstrap. On Windows, this keeps installs in Python 3.12
+even if the script itself was launched by another Python:
+
+```powershell
+python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
+python tools/bootstrap_local_dev.py --python-command "py -3.12"
+```
+
+When a runtime is missing or mismatched, the checker prints a `fix:` line and
+emits machine-readable `remediation` fields in JSON output. Use those steps
+before debugging package or test failures. A Python mismatch usually means the
+editable development install was created under the wrong interpreter; recreate
+it with the Python version in `.python-version`. A Node mismatch means web and
+mobile client tests are not running under the same major Node release as CI.
+
 Use `--strict` in CI or release scripts. The Python CI job checks Python only,
 and the Node CI jobs check Node after `actions/setup-node` has selected the
 declared version.
@@ -27,3 +64,14 @@ versions.
 `tools/verify_all.py` also runs the worktree summary and workspace-hygiene
 advisory checks so dependency drift, missing client lockfiles, generated
 artifacts, and missing local tooling are visible in one report.
+
+Runtime version mismatches are reported as a blocking advisory in
+`tools/verify_all.py`: the tool still prints the downstream check results, but
+the overall report does not pass until Python and Node match the declared
+runtime files.
+
+The verification wrapper also disables common Python tool caches for its child
+processes, so running the local gate should not leave `.ruff_cache`,
+`.mypy_cache`, or `__pycache__` noise behind. Source compilation checks use
+`tools/check_python_sources_compile.py`, which compiles files in memory instead
+of using `compileall`.

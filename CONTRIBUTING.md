@@ -13,12 +13,41 @@ Use this document for contribution workflow, validation expectations, and change
 
 ## Local setup
 
+From the repository root, check the declared runtime versions and preview the
+full contributor bootstrap:
+
+```bash
+python tools/bootstrap_local_dev.py --dry-run
+```
+
 Primary Python workspace:
 
 ```bash
 cd Languages/Python
 python -m pip install --upgrade pip
 python -m pip install -e ".[desktop,service,dev]"
+```
+
+If `python` is not the declared interpreter, check the target command before
+installing into it:
+
+```powershell
+python tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
+```
+
+Or run the full contributor bootstrap from the repository root after Python
+and Node match `.python-version` and `.node-version`:
+
+```bash
+python tools/bootstrap_local_dev.py
+```
+
+When more than one Python version is installed, target the declared interpreter
+explicitly instead of relying on the active shell `python`:
+
+```powershell
+python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
+python tools/bootstrap_local_dev.py --python-command "py -3.12"
 ```
 
 Compatibility install commands still work:
@@ -44,14 +73,20 @@ cd Languages/Python
 python -m ruff check --config pyproject.toml .
 python tools/check_dependency_metadata.py
 python -m mypy --config-file pyproject.toml
-python -m pytest
-python -m compileall -q app trading_core main.py
+python tools/run_python_tests.py --runner pytest
+python ../../tools/check_python_sources_compile.py app trading_core main.py tools
 ```
 
 Release or packaging preflight from the repository root:
 
 ```bash
 python tools/release_smoke.py --skip-full-tests --manual-smoke-mode fast
+```
+
+When validating with a specific Python install:
+
+```powershell
+python tools/release_smoke.py --python-command "py -3.12" --skip-full-tests --manual-smoke-mode fast
 ```
 
 Rust:

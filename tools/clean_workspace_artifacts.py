@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
-from audit_workspace_hygiene import NOISY_IGNORED_PREFIXES
+from audit_workspace_hygiene import is_noisy_ignored_path
 
 
 def _repo_root() -> Path:
@@ -30,8 +32,7 @@ def _ignored_paths() -> list[str]:
 
 
 def _is_noisy_artifact(path: str) -> bool:
-    normalized = path.replace("\\", "/")
-    return any(normalized.startswith(prefix) for prefix in NOISY_IGNORED_PREFIXES)
+    return is_noisy_ignored_path(path)
 
 
 def _is_inside_repo(path: Path, root: Path) -> bool:
@@ -40,6 +41,11 @@ def _is_inside_repo(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _make_writable_and_retry(function, path: str, _exc_info) -> None:
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    function(path)
 
 
 def clean_workspace_artifacts(*, apply: bool = False) -> dict[str, object]:
@@ -67,8 +73,9 @@ def clean_workspace_artifacts(*, apply: bool = False) -> dict[str, object]:
             skipped.append({"path": path, "reason": "does not exist"})
             continue
         if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target)
+            shutil.rmtree(target, onerror=_make_writable_and_retry)
         else:
+            os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
             target.unlink()
         removed.append(path)
 

@@ -67,7 +67,7 @@ Runtime config updates are validated before the service stores them. Invalid sym
 - Internet access for supported exchange or broker APIs
 - API credentials for a supported venue if you want live/demo connectivity
 
-Python 3.11 or newer is recommended.
+Python 3.12 is recommended for local development and CI parity.
 
 ## Install
 
@@ -81,8 +81,9 @@ For local development, CI parity, and the complete Python test surface, install
 the editable workspace with all reviewed optional groups:
 
 ```bash
+python ../../tools/check_local_tool_versions.py --strict --skip-node
 python -m pip install -e ".[desktop,service,dev]"
-python -m unittest discover tests
+python tools/run_python_tests.py
 ```
 
 The `dev` extra includes test-only tools such as the FastAPI `TestClient`

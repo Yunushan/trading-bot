@@ -38,13 +38,25 @@ Ruff, checks dependency metadata and requirement shims, runs the configured mypy
 targets, checks the service launcher healthcheck, runs the desktop/service
 manual smoke, and runs the Python test suite.
 
+The source compilation phase uses `tools/check_python_sources_compile.py` so the
+preflight checks syntax in memory without writing `__pycache__` files.
+The full Python test phase uses `Languages/Python/tools/run_python_tests.py` so
+missing desktop/service/dev test dependencies fail with one setup hint before
+the suite starts.
+
 For a faster local pass when the full test suite already ran separately:
 
 ```bash
 python tools/release_smoke.py --skip-full-tests --manual-smoke-mode fast
 ```
 
-Use `--dry-run` to print the planned checks without executing them.
+Use `--dry-run` to print the planned checks without executing them. If the
+active shell `python` is not the declared release runtime, target the intended
+interpreter explicitly:
+
+```powershell
+python tools/release_smoke.py --python-command "py -3.12" --skip-full-tests --manual-smoke-mode fast
+```
 
 ## Release steps
 

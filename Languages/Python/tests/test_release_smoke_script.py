@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import unittest
+import importlib.util
+import sys
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 
@@ -11,69 +12,100 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 RELEASE_SMOKE_SCRIPT = REPO_ROOT / "tools" / "release_smoke.py"
 
 
-def _clean_subprocess_env() -> dict[str, str]:
-    env = dict(os.environ)
-    for key in list(env):
-        if key.startswith("COV_CORE_") or key in {"COVERAGE_PROCESS_START", "PYTEST_CURRENT_TEST"}:
-            env.pop(key, None)
-    return env
+def _load_release_smoke_module():
+    spec = importlib.util.spec_from_file_location("release_smoke", RELEASE_SMOKE_SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_release_smoke(*args: str) -> tuple[int, str, str]:
+    module = _load_release_smoke_module()
+    stdout = StringIO()
+    stderr = StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        returncode = module.main(list(args))
+    return returncode, stdout.getvalue(), stderr.getvalue()
 
 
 class ReleaseSmokeScriptTests(unittest.TestCase):
     def test_release_smoke_dry_run_lists_fast_preflight_without_full_tests(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(RELEASE_SMOKE_SCRIPT),
-                "--dry-run",
-                "--skip-full-tests",
-                "--manual-smoke-mode",
-                "fast",
-            ],
-            cwd=REPO_ROOT,
-            env=_clean_subprocess_env(),
-            text=True,
-            capture_output=True,
-            timeout=20,
-            check=False,
+        returncode, stdout, stderr = _run_release_smoke(
+            "--dry-run",
+            "--skip-full-tests",
+            "--manual-smoke-mode",
+            "fast",
         )
 
-        self.assertEqual(0, result.returncode, f"stdout={result.stdout}\nstderr={result.stderr}")
-        self.assertIn("check runtime tool versions", result.stdout)
-        self.assertIn("tools/check_local_tool_versions.py --strict", result.stdout)
-        self.assertIn("check client dependency locks", result.stdout)
-        self.assertIn("tools/check_client_dependency_locks.py --json --strict", result.stdout)
-        self.assertIn("compile Python sources", result.stdout)
-        self.assertIn("Languages/Python/tools", result.stdout)
-        self.assertIn("python -m ruff check", result.stdout)
-        self.assertIn("check Python dependency metadata", result.stdout)
-        self.assertIn("Languages/Python/tools/check_dependency_metadata.py", result.stdout)
-        self.assertIn("python -m mypy", result.stdout)
-        self.assertIn("manual desktop/service smoke", result.stdout)
-        self.assertIn("--skip-http", result.stdout)
-        self.assertNotIn("python -m pytest", result.stdout)
+        self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
+        self.assertIn("check runtime tool versions", stdout)
+        self.assertIn("tools/check_local_tool_versions.py --strict", stdout)
+        self.assertIn("check client dependency locks", stdout)
+        self.assertIn("tools/check_client_dependency_locks.py --json --strict", stdout)
+        self.assertIn("compile Python sources", stdout)
+        self.assertIn("tools/check_python_sources_compile.py", stdout)
+        self.assertNotIn("-m compileall", stdout)
+        self.assertIn("python -m ruff check --no-cache", stdout)
+        self.assertIn("check Python dependency metadata", stdout)
+        self.assertIn("Languages/Python/tools/check_dependency_metadata.py", stdout)
+        self.assertIn("python -m mypy --no-incremental --cache-dir", stdout)
+        self.assertIn("manual desktop/service smoke", stdout)
+        self.assertIn("--skip-http", stdout)
+        self.assertNotIn("python -m pytest", stdout)
+
+    def test_release_smoke_full_tests_use_preflight_runner(self):
+        returncode, stdout, stderr = _run_release_smoke(
+            "--dry-run",
+            "--manual-smoke-mode",
+            "skip",
+        )
+
+        self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
+        self.assertIn("run Python test suite", stdout)
+        self.assertIn("tools/run_python_tests.py --runner pytest", stdout)
+        self.assertNotIn("python -m pytest", stdout)
+
+    def test_release_smoke_dry_run_accepts_selected_python_command(self):
+        returncode, stdout, stderr = _run_release_smoke(
+            "--dry-run",
+            "--skip-full-tests",
+            "--manual-smoke-mode",
+            "skip",
+            "--python-command",
+            "py -3.12",
+        )
+
+        self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
+        self.assertIn('py -3.12 tools/check_local_tool_versions.py --strict --python-command "py -3.12"', stdout)
+        self.assertIn("py -3.12 -m ruff check --no-cache", stdout)
+        self.assertIn("py -3.12 -m mypy --no-incremental --cache-dir", stdout)
+
+    def test_release_smoke_rejects_conflicting_python_options(self):
+        returncode, stdout, stderr = _run_release_smoke(
+            "--dry-run",
+            "--python",
+            "python",
+            "--python-command",
+            "py -3.12",
+        )
+
+        self.assertEqual(2, returncode)
+        self.assertIn("Use either --python or --python-command", stderr)
 
     def test_release_smoke_dry_run_can_skip_manual_smoke(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(RELEASE_SMOKE_SCRIPT),
-                "--dry-run",
-                "--skip-full-tests",
-                "--manual-smoke-mode",
-                "skip",
-            ],
-            cwd=REPO_ROOT,
-            env=_clean_subprocess_env(),
-            text=True,
-            capture_output=True,
-            timeout=20,
-            check=False,
+        returncode, stdout, stderr = _run_release_smoke(
+            "--dry-run",
+            "--skip-full-tests",
+            "--manual-smoke-mode",
+            "skip",
         )
 
-        self.assertEqual(0, result.returncode, f"stdout={result.stdout}\nstderr={result.stderr}")
-        self.assertNotIn("manual desktop/service smoke", result.stdout)
-        self.assertNotIn("manual_smoke.py", result.stdout)
+        self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
+        self.assertNotIn("manual desktop/service smoke", stdout)
+        self.assertNotIn("manual_smoke.py", stdout)
 
 
 if __name__ == "__main__":
