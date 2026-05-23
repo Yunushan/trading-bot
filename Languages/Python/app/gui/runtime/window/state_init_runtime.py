@@ -329,6 +329,17 @@ def _initialize_backtest_state(self) -> None:
     )
     self.config.setdefault("backtest", {})["connector_backend"] = self.backtest_config["connector_backend"]
     self.backtest_config.setdefault("leverage", int(default_backtest.get("leverage", 5)))
+    for cfg_key in (
+        "scan_scope",
+        "scan_top_n",
+        "scan_mdd_limit",
+        "optimizer_mode",
+        "optimizer_metric",
+        "optimizer_combo_size",
+        "optimizer_min_trades",
+    ):
+        self.backtest_config.setdefault(cfg_key, default_backtest.get(cfg_key))
+        self.config.setdefault("backtest", {})[cfg_key] = self.backtest_config[cfg_key]
 
     mdd_logic_cfg = str(
         self.backtest_config.get("mdd_logic") or default_backtest.get("mdd_logic") or MDD_LOGIC_DEFAULT

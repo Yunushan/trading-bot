@@ -4,6 +4,7 @@ import copy
 
 from PyQt6 import QtCore, QtWidgets
 
+from . import backtest_optimizer_runtime
 from . import backtest_tab_context_runtime as tab_context_runtime
 
 
@@ -245,7 +246,7 @@ def build_backtest_params_group(self):
     scan_header_layout = QtWidgets.QHBoxLayout(scan_header)
     scan_header_layout.setContentsMargins(0, 0, 0, 0)
     scan_header_layout.setSpacing(8)
-    scan_title = QtWidgets.QLabel("Max MDD Scanner")
+    scan_title = QtWidgets.QLabel("ROI Optimizer / Max MDD Scanner")
     scan_title.setStyleSheet("font-weight: 600;")
     scan_header_layout.addWidget(scan_title)
     scan_divider = QtWidgets.QFrame()
@@ -253,6 +254,97 @@ def build_backtest_params_group(self):
     scan_divider.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
     scan_header_layout.addWidget(scan_divider, stretch=1)
     param_form.addRow(scan_header)
+
+    optimizer_row = QtWidgets.QWidget()
+    optimizer_layout = QtWidgets.QHBoxLayout(optimizer_row)
+    optimizer_layout.setContentsMargins(0, 0, 0, 0)
+    optimizer_layout.setSpacing(6)
+
+    optimizer_layout.addWidget(QtWidgets.QLabel("Scope:"))
+    self.backtest_scan_scope_combo = QtWidgets.QComboBox()
+    for label, value in backtest_optimizer_runtime.SCAN_SCOPE_OPTIONS:
+        self.backtest_scan_scope_combo.addItem(label, value)
+    scan_scope = backtest_optimizer_runtime.normalize_scan_scope(
+        self.backtest_config.get("scan_scope", "selected")
+    )
+    scope_idx = self.backtest_scan_scope_combo.findData(scan_scope)
+    if scope_idx < 0:
+        scope_idx = 0
+    self.backtest_scan_scope_combo.setCurrentIndex(scope_idx)
+    self.backtest_scan_scope_combo.currentIndexChanged.connect(
+        lambda idx: self._update_backtest_config(
+            "scan_scope",
+            self.backtest_scan_scope_combo.itemData(idx),
+        )
+    )
+    optimizer_layout.addWidget(self.backtest_scan_scope_combo)
+
+    optimizer_layout.addWidget(QtWidgets.QLabel("Mode:"))
+    self.backtest_optimizer_mode_combo = QtWidgets.QComboBox()
+    for label, value in backtest_optimizer_runtime.OPTIMIZER_MODE_OPTIONS:
+        self.backtest_optimizer_mode_combo.addItem(label, value)
+    optimizer_mode = backtest_optimizer_runtime.normalize_optimizer_mode(
+        self.backtest_config.get("optimizer_mode", "current")
+    )
+    optimizer_mode_idx = self.backtest_optimizer_mode_combo.findData(optimizer_mode)
+    if optimizer_mode_idx < 0:
+        optimizer_mode_idx = 0
+    self.backtest_optimizer_mode_combo.setCurrentIndex(optimizer_mode_idx)
+    self.backtest_optimizer_mode_combo.currentIndexChanged.connect(
+        lambda idx: self._update_backtest_config(
+            "optimizer_mode",
+            self.backtest_optimizer_mode_combo.itemData(idx),
+        )
+    )
+    optimizer_layout.addWidget(self.backtest_optimizer_mode_combo)
+
+    optimizer_layout.addWidget(QtWidgets.QLabel("Max Combo:"))
+    self.backtest_optimizer_combo_size_spin = QtWidgets.QSpinBox()
+    self.backtest_optimizer_combo_size_spin.setRange(1, 5)
+    optimizer_combo_size = int(self.backtest_config.get("optimizer_combo_size", 2) or 2)
+    self.backtest_optimizer_combo_size_spin.setValue(max(1, min(5, optimizer_combo_size)))
+    self.backtest_optimizer_combo_size_spin.valueChanged.connect(
+        lambda v: self._update_backtest_config("optimizer_combo_size", int(v))
+    )
+    optimizer_layout.addWidget(self.backtest_optimizer_combo_size_spin)
+    optimizer_layout.addStretch()
+    param_form.addRow("Optimizer:", optimizer_row)
+
+    optimizer_metric_row = QtWidgets.QWidget()
+    optimizer_metric_layout = QtWidgets.QHBoxLayout(optimizer_metric_row)
+    optimizer_metric_layout.setContentsMargins(0, 0, 0, 0)
+    optimizer_metric_layout.setSpacing(6)
+
+    optimizer_metric_layout.addWidget(QtWidgets.QLabel("Optimize For:"))
+    self.backtest_optimizer_metric_combo = QtWidgets.QComboBox()
+    for label, value in backtest_optimizer_runtime.OPTIMIZER_METRIC_OPTIONS:
+        self.backtest_optimizer_metric_combo.addItem(label, value)
+    optimizer_metric = backtest_optimizer_runtime.normalize_optimizer_metric(
+        self.backtest_config.get("optimizer_metric", "roi_percent")
+    )
+    optimizer_metric_idx = self.backtest_optimizer_metric_combo.findData(optimizer_metric)
+    if optimizer_metric_idx < 0:
+        optimizer_metric_idx = 0
+    self.backtest_optimizer_metric_combo.setCurrentIndex(optimizer_metric_idx)
+    self.backtest_optimizer_metric_combo.currentIndexChanged.connect(
+        lambda idx: self._update_backtest_config(
+            "optimizer_metric",
+            self.backtest_optimizer_metric_combo.itemData(idx),
+        )
+    )
+    optimizer_metric_layout.addWidget(self.backtest_optimizer_metric_combo)
+
+    optimizer_metric_layout.addWidget(QtWidgets.QLabel("Min Trades:"))
+    self.backtest_optimizer_min_trades_spin = QtWidgets.QSpinBox()
+    self.backtest_optimizer_min_trades_spin.setRange(0, 1_000_000)
+    optimizer_min_trades = int(self.backtest_config.get("optimizer_min_trades", 1) or 1)
+    self.backtest_optimizer_min_trades_spin.setValue(max(0, optimizer_min_trades))
+    self.backtest_optimizer_min_trades_spin.valueChanged.connect(
+        lambda v: self._update_backtest_config("optimizer_min_trades", int(v))
+    )
+    optimizer_metric_layout.addWidget(self.backtest_optimizer_min_trades_spin)
+    optimizer_metric_layout.addStretch()
+    param_form.addRow("Leaderboard:", optimizer_metric_row)
 
     scan_row = QtWidgets.QWidget()
     scan_layout = QtWidgets.QHBoxLayout(scan_row)
@@ -274,7 +366,7 @@ def build_backtest_params_group(self):
         lambda v: self._update_backtest_config("scan_top_n", int(v))
     )
     scan_layout.addWidget(self.backtest_scan_top_spin)
-    scan_layout.addWidget(QtWidgets.QLabel("Max MDD %:"))
+    scan_layout.addWidget(QtWidgets.QLabel("Max MDD % (0=off):"))
     self.backtest_scan_mdd_spin = QtWidgets.QDoubleSpinBox()
     self.backtest_scan_mdd_spin.setRange(0.0, 100.0)
     self.backtest_scan_mdd_spin.setDecimals(2)
@@ -287,11 +379,11 @@ def build_backtest_params_group(self):
         lambda v: self._update_backtest_config("scan_mdd_limit", float(v))
     )
     scan_layout.addWidget(self.backtest_scan_mdd_spin)
-    self.backtest_scan_btn = QtWidgets.QPushButton("Scan Symbols")
+    self.backtest_scan_btn = QtWidgets.QPushButton("Run Optimizer")
     self.backtest_scan_btn.clicked.connect(self._run_backtest_scan)
     scan_layout.addWidget(self.backtest_scan_btn)
     scan_layout.addStretch()
-    param_form.addRow("Max MDD Scanner:", scan_row)
+    param_form.addRow("Scanner Limits:", scan_row)
 
     self.backtest_template_enable_cb.toggled.connect(self._on_backtest_template_enabled)
     self.backtest_template_combo.currentIndexChanged.connect(self._on_backtest_template_selected)

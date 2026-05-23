@@ -1,39 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from . import backtest_optimizer_runtime
 
 
-def _select_backtest_scan_best(self, runs, mdd_limit: float):
+def _select_backtest_scan_best(
+    self,
+    runs,
+    mdd_limit: float,
+    metric: str = "roi_percent",
+    min_trades: int = 1,
+):
     best = None
     best_score = None
     for run in runs or []:
-        if is_dataclass(run):
-            data = asdict(run)
-        elif isinstance(run, dict):
-            data = dict(run)
-        else:
-            data = {
-                "symbol": getattr(run, "symbol", ""),
-                "interval": getattr(run, "interval", ""),
-                "indicator_keys": getattr(run, "indicator_keys", []),
-                "trades": getattr(run, "trades", 0),
-                "roi_percent": getattr(run, "roi_percent", 0.0),
-                "roi_value": getattr(run, "roi_value", 0.0),
-                "max_drawdown_percent": getattr(run, "max_drawdown_percent", 0.0),
-                "mdd_logic": getattr(run, "mdd_logic", None),
-            }
+        data = backtest_optimizer_runtime.run_to_mapping(run)
         try:
             trades = int(data.get("trades", 0) or 0)
         except Exception:
             trades = 0
-        if trades <= 0:
-            continue
         try:
             mdd = float(data.get("max_drawdown_percent", 0.0) or 0.0)
         except Exception:
             mdd = 0.0
-        if mdd > mdd_limit:
-            continue
         try:
             roi_pct = float(data.get("roi_percent", 0.0) or 0.0)
         except Exception:
@@ -46,7 +34,14 @@ def _select_backtest_scan_best(self, runs, mdd_limit: float):
         interval = str(data.get("interval") or "").strip()
         if not symbol or not interval:
             continue
-        score = (roi_pct, roi_val, -mdd)
+        score = backtest_optimizer_runtime.optimizer_score(
+            data,
+            metric=metric,
+            mdd_limit=mdd_limit,
+            min_trades=min_trades,
+        )
+        if score is None:
+            continue
         if best_score is None or score > best_score:
             best_score = score
             best = {
@@ -122,17 +117,39 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
         mdd_limit = float(getattr(self, "_backtest_scan_mdd_limit", 0.0) or 0.0)
     except Exception:
         mdd_limit = 0.0
-    best = self._select_backtest_scan_best(runs_raw, mdd_limit)
+    metric = backtest_optimizer_runtime.normalize_optimizer_metric(
+        getattr(self, "_backtest_scan_optimizer_metric", None)
+        or self.backtest_config.get("optimizer_metric", "roi_percent")
+    )
+    try:
+        min_trades = int(
+            getattr(self, "_backtest_scan_optimizer_min_trades", None)
+            if getattr(self, "_backtest_scan_optimizer_min_trades", None) is not None
+            else self.backtest_config.get("optimizer_min_trades", 1)
+        )
+    except Exception:
+        min_trades = 1
+    best = self._select_backtest_scan_best(
+        runs_raw,
+        mdd_limit,
+        metric=metric,
+        min_trades=min_trades,
+    )
     if not best:
+        mdd_text = f"MDD <= {mdd_limit:.2f}%" if mdd_limit > 0 else "no MDD limit"
         self.backtest_status_label.setText(
-            f"Scan complete, but no runs met MDD <= {mdd_limit:.2f}% with trades."
+            f"Scan complete, but no runs met {mdd_text} and min trades {min_trades}."
         )
         return
     auto_apply = False
     if auto_apply:
         self._apply_backtest_scan_best(best)
+    metric_label = backtest_optimizer_runtime.option_label(
+        backtest_optimizer_runtime.OPTIMIZER_METRIC_OPTIONS,
+        metric,
+    )
     summary = (
-        f"Scan best: {best['symbol']}@{best['interval']} "
+        f"Scan best by {metric_label}: {best['symbol']}@{best['interval']} "
         f"ROI {best['roi_percent']:+.2f}% | MDD {best['max_drawdown_percent']:.2f}% "
         f"| trades {best['trades']}"
     )

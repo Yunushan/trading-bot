@@ -45,9 +45,14 @@ class BacktestSettings:
     connector_backend: str = DEFAULT_CONNECTOR_BACKEND
     leverage: int = 20
     mdd_logic: str = MDD_LOGIC_DEFAULT
+    scan_scope: str = "selected"
     scan_top_n: int = 200
     scan_mdd_limit: float = 10.0
     scan_auto_apply: bool = False
+    optimizer_mode: str = "current"
+    optimizer_metric: str = "roi_percent"
+    optimizer_combo_size: int = 2
+    optimizer_min_trades: int = 1
     template: BacktestTemplateSettings = field(default_factory=BacktestTemplateSettings)
     indicators: dict[str, dict[str, object]] = field(default_factory=build_backtest_indicator_defaults)
     stop_loss: StopLossSettings = field(default_factory=StopLossSettings)
@@ -70,9 +75,14 @@ class BacktestSettings:
             "connector_backend": self.connector_backend,
             "leverage": self.leverage,
             "mdd_logic": self.mdd_logic,
+            "scan_scope": self.scan_scope,
             "scan_top_n": self.scan_top_n,
             "scan_mdd_limit": self.scan_mdd_limit,
             "scan_auto_apply": self.scan_auto_apply,
+            "optimizer_mode": self.optimizer_mode,
+            "optimizer_metric": self.optimizer_metric,
+            "optimizer_combo_size": self.optimizer_combo_size,
+            "optimizer_min_trades": self.optimizer_min_trades,
             "template": self.template.to_config_dict(),
             "indicators": copy.deepcopy(self.indicators),
             "stop_loss": self.stop_loss.to_config_dict(),

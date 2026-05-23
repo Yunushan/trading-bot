@@ -72,7 +72,30 @@ _ACCOUNT_MODE_CHOICES = {
 _SIDE_CHOICES = {"both": "BOTH", "buy": "BUY", "sell": "SELL"}
 _ORDER_TYPE_CHOICES = {"market": "MARKET", "limit": "LIMIT"}
 _TIF_CHOICES = {"gtc": "GTC", "ioc": "IOC", "fok": "FOK", "gtd": "GTD"}
-_LOGIC_CHOICES = {"and": "AND", "or": "OR"}
+_LOGIC_CHOICES = {"and": "AND", "or": "OR", "separate": "SEPARATE"}
+_SCAN_SCOPE_CHOICES = {
+    "selected": "selected",
+    "top_n": "top_n",
+    "top-n": "top_n",
+    "all_loaded": "all_loaded",
+    "all-loaded": "all_loaded",
+}
+_OPTIMIZER_MODE_CHOICES = {
+    "current": "current",
+    "single": "single",
+    "pairs": "pairs",
+    "combinations": "combinations",
+}
+_OPTIMIZER_METRIC_CHOICES = {
+    "roi_percent": "roi_percent",
+    "roi-percent": "roi_percent",
+    "roi_percent_mdd": "roi_percent_mdd",
+    "roi-percent-mdd": "roi_percent_mdd",
+    "roi_drawdown": "roi_drawdown",
+    "roi-drawdown": "roi_drawdown",
+    "roi_value": "roi_value",
+    "roi-value": "roi_value",
+}
 _CHART_VIEW_MODE_CHOICES = {
     "tradingview": "tradingview",
     "original": "original",
@@ -247,8 +270,13 @@ _ALLOWED_BACKTEST_CONFIG_KEYS = frozenset(
         "mdd_logic",
         "position_mode",
         "position_pct",
+        "optimizer_combo_size",
+        "optimizer_metric",
+        "optimizer_min_trades",
+        "optimizer_mode",
         "scan_auto_apply",
         "scan_mdd_limit",
+        "scan_scope",
         "scan_top_n",
         "side",
         "start_date",
@@ -777,9 +805,21 @@ def _validate_backtest_config(cfg: dict[str, object], issues: list[ConfigValidat
     if "mdd_logic" in backtest_cfg:
         mdd_choices = {item: item for item in MDD_LOGIC_OPTIONS}
         _validate_choice(backtest_cfg, "mdd_logic", mdd_choices, issues, prefix="backtest")
+    _validate_choice(backtest_cfg, "scan_scope", _SCAN_SCOPE_CHOICES, issues, prefix="backtest")
     _validate_int_range(backtest_cfg, "scan_top_n", issues, min_value=1, max_value=MAX_SCAN_TOP_N, prefix="backtest")
     _validate_float_range(backtest_cfg, "scan_mdd_limit", issues, min_value=0.0, max_value=100.0, prefix="backtest")
     _validate_bool(backtest_cfg, "scan_auto_apply", issues, prefix="backtest")
+    _validate_choice(backtest_cfg, "optimizer_mode", _OPTIMIZER_MODE_CHOICES, issues, prefix="backtest")
+    _validate_choice(backtest_cfg, "optimizer_metric", _OPTIMIZER_METRIC_CHOICES, issues, prefix="backtest")
+    _validate_int_range(backtest_cfg, "optimizer_combo_size", issues, min_value=1, max_value=5, prefix="backtest")
+    _validate_int_range(
+        backtest_cfg,
+        "optimizer_min_trades",
+        issues,
+        min_value=0,
+        max_value=MAX_CONFIG_COUNT,
+        prefix="backtest",
+    )
     _validate_mapping(backtest_cfg, "template", issues, prefix="backtest")
     _validate_mapping(backtest_cfg, "indicators", issues, prefix="backtest")
     _validate_stop_loss(backtest_cfg, "stop_loss", issues, prefix="backtest")

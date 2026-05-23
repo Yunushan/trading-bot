@@ -429,6 +429,33 @@ def _backtest_toggle_indicator(self, key: str, checked: bool):
         pass
 
 
+def _set_all_backtest_indicators(self, checked: bool):
+    try:
+        enabled = bool(checked)
+        indicators = self.backtest_config.setdefault("indicators", {})
+        widgets = getattr(self, "backtest_indicator_widgets", {}) or {}
+        for key in list(indicators.keys()):
+            params = indicators.setdefault(key, {})
+            params["enabled"] = enabled
+        cfg = self.config.setdefault("backtest", {}).setdefault("indicators", {})
+        for key, params in indicators.items():
+            cfg[key] = copy.deepcopy(params)
+        for key, (checkbox, _button) in widgets.items():
+            if key not in indicators:
+                indicators[key] = {"enabled": enabled}
+                cfg[key] = copy.deepcopy(indicators[key])
+            try:
+                with QtCore.QSignalBlocker(checkbox):
+                    checkbox.setChecked(enabled)
+            except Exception:
+                try:
+                    checkbox.setChecked(enabled)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _open_backtest_params(self, key: str):
     try:
         params = self.backtest_config.setdefault("indicators", {}).setdefault(key, {})
@@ -488,4 +515,5 @@ def bind_main_window_backtest_template_runtime(
     main_window_cls._apply_backtest_template = _apply_backtest_template
     main_window_cls._update_backtest_config = _update_backtest_config
     main_window_cls._backtest_toggle_indicator = _backtest_toggle_indicator
+    main_window_cls._set_all_backtest_indicators = _set_all_backtest_indicators
     main_window_cls._open_backtest_params = _open_backtest_params

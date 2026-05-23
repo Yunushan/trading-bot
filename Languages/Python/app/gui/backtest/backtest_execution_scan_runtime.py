@@ -5,11 +5,25 @@ import traceback
 
 from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition
 
+from . import backtest_optimizer_runtime
 from .backtest_execution_context_runtime import (
     get_backtest_worker_cls,
     get_symbol_fetch_top_n,
     normalize_backtest_stop_loss_dict,
 )
+
+
+def _selected_backtest_symbol_values(self) -> list[str]:
+    values = [str(item or "").strip().upper() for item in (self.backtest_config.get("symbols") or []) if str(item or "").strip()]
+    if values:
+        return values
+    symbol_list = getattr(self, "backtest_symbol_list", None)
+    if symbol_list is None:
+        return []
+    try:
+        return [str(item.text() or "").strip().upper() for item in symbol_list.selectedItems() if str(item.text() or "").strip()]
+    except Exception:
+        return []
 
 
 def run_backtest_scan(self):
@@ -25,7 +39,16 @@ def run_backtest_scan(self):
             return
 
         symbols_all = list(self.backtest_symbols_all or [])
-        if not symbols_all:
+        scope_value = getattr(self, "backtest_scan_scope_combo", None)
+        if scope_value is not None:
+            scan_scope = backtest_optimizer_runtime.normalize_scan_scope(scope_value.currentData())
+        else:
+            scan_scope = backtest_optimizer_runtime.normalize_scan_scope(
+                self.backtest_config.get("scan_scope", "selected")
+            )
+        self._update_backtest_config("scan_scope", scan_scope)
+
+        if scan_scope != "selected" and not symbols_all:
             self.backtest_status_label.setText(
                 "No symbols loaded. Click Refresh Symbols first."
             )
@@ -40,12 +63,26 @@ def run_backtest_scan(self):
         if top_n <= 0:
             self.backtest_status_label.setText("Scan Top N must be at least 1.")
             return
-        if len(symbols_all) < top_n:
+        if scan_scope == "top_n" and len(symbols_all) < top_n:
             self.backtest_status_label.setText(
                 f"Only {len(symbols_all)} symbols loaded; lower Scan Top N or refresh."
             )
             return
-        symbols = symbols_all[:top_n]
+        selected_symbols = _selected_backtest_symbol_values(self)
+        symbols = backtest_optimizer_runtime.resolve_scan_symbols(
+            symbols_all=symbols_all,
+            selected_symbols=selected_symbols,
+            scope=scan_scope,
+            top_n=top_n,
+        )
+        if not symbols:
+            if scan_scope == "selected":
+                self.backtest_status_label.setText(
+                    "Select at least one Backtest symbol or change optimizer scope."
+                )
+            else:
+                self.backtest_status_label.setText("No symbols available for optimizer scan.")
+            return
 
         intervals = [iv for iv in (self.backtest_config.get("intervals") or []) if iv]
         if not intervals:
@@ -115,9 +152,75 @@ def run_backtest_scan(self):
         self._update_backtest_config("account_mode", account_mode)
         self._update_backtest_config("leverage", leverage_value)
 
+        optimizer_mode_combo = getattr(self, "backtest_optimizer_mode_combo", None)
+        optimizer_metric_combo = getattr(self, "backtest_optimizer_metric_combo", None)
+        optimizer_mode = backtest_optimizer_runtime.normalize_optimizer_mode(
+            optimizer_mode_combo.currentData()
+            if optimizer_mode_combo is not None
+            else self.backtest_config.get("optimizer_mode", "current")
+        )
+        optimizer_metric = backtest_optimizer_runtime.normalize_optimizer_metric(
+            optimizer_metric_combo.currentData()
+            if optimizer_metric_combo is not None
+            else self.backtest_config.get("optimizer_metric", "roi_percent")
+        )
+        try:
+            optimizer_combo_size = int(self.backtest_optimizer_combo_size_spin.value())
+        except Exception:
+            optimizer_combo_size = int(self.backtest_config.get("optimizer_combo_size", 2) or 2)
+        try:
+            optimizer_min_trades = int(self.backtest_optimizer_min_trades_spin.value())
+        except Exception:
+            optimizer_min_trades = int(self.backtest_config.get("optimizer_min_trades", 1) or 1)
+        optimizer_combo_size = max(1, min(5, optimizer_combo_size))
+        optimizer_min_trades = max(0, optimizer_min_trades)
+        self._update_backtest_config("optimizer_mode", optimizer_mode)
+        self._update_backtest_config("optimizer_metric", optimizer_metric)
+        self._update_backtest_config("optimizer_combo_size", optimizer_combo_size)
+        self._update_backtest_config("optimizer_min_trades", optimizer_min_trades)
+
         indicator_keys_order = [ind.key for ind in indicators]
+        indicator_groups = backtest_optimizer_runtime.build_indicator_key_groups(
+            indicator_keys_order,
+            mode=optimizer_mode,
+            combo_size=optimizer_combo_size,
+        )
+        if optimizer_mode != "current" and not indicator_groups:
+            self.backtest_status_label.setText(
+                "Optimizer mode needs more enabled indicators for the selected combination type."
+            )
+            return
+        run_count = backtest_optimizer_runtime.estimate_scan_run_count(
+            symbols=symbols,
+            intervals=intervals,
+            indicator_count=len(indicators),
+            indicator_groups=indicator_groups,
+            mode=optimizer_mode,
+            logic=logic,
+        )
+        if run_count > backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_RUNS:
+            self.backtest_status_label.setText(
+                f"Optimizer would create {run_count} runs; reduce symbols, intervals, or combination size "
+                f"(limit {backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_RUNS})."
+            )
+            return
+
+        pair_overrides = None
+        request_logic = logic
+        if optimizer_mode != "current":
+            pair_overrides = backtest_optimizer_runtime.build_pair_overrides(
+                symbols=symbols,
+                intervals=intervals,
+                indicator_groups=indicator_groups,
+            )
+            if logic == "SEPARATE" and any(len(group) > 1 for group in indicator_groups):
+                request_logic = "AND"
+
         expected_runs = []
-        if logic == "SEPARATE":
+        if pair_overrides:
+            for override in pair_overrides:
+                expected_runs.append((override.symbol, override.interval, list(override.indicators or [])))
+        elif logic == "SEPARATE":
             for sym in symbols:
                 for iv in intervals:
                     for ind in indicators:
@@ -146,7 +249,7 @@ def run_backtest_scan(self):
             symbols=symbols,
             intervals=intervals,
             indicators=indicators,
-            logic=logic,
+            logic=request_logic,
             symbol_source=symbol_source,
             start=start_dt,
             end=end_dt,
@@ -165,6 +268,7 @@ def run_backtest_scan(self):
             stop_loss_usdt=float(stop_cfg.get("usdt", 0.0) or 0.0),
             stop_loss_percent=float(stop_cfg.get("percent", 0.0) or 0.0),
             stop_loss_scope=str(stop_cfg.get("scope") or "per_trade"),
+            pair_overrides=pair_overrides,
         )
 
         signature = (mode, api_key, api_secret)
@@ -206,7 +310,17 @@ def run_backtest_scan(self):
         self.backtest_scan_worker.progress.connect(self._on_backtest_progress)
         self.backtest_scan_worker.finished.connect(self._on_backtest_scan_finished)
         self.backtest_results_table.setRowCount(0)
-        self.backtest_status_label.setText(f"Scanning top {len(symbols)} symbols...")
+        scope_label = backtest_optimizer_runtime.option_label(
+            backtest_optimizer_runtime.SCAN_SCOPE_OPTIONS,
+            scan_scope,
+        )
+        mode_label = backtest_optimizer_runtime.option_label(
+            backtest_optimizer_runtime.OPTIMIZER_MODE_OPTIONS,
+            optimizer_mode,
+        )
+        self.backtest_status_label.setText(
+            f"Running optimizer: {run_count} run(s), {scope_label}, {mode_label}..."
+        )
         self.backtest_run_btn.setEnabled(False)
         try:
             self.backtest_scan_btn.setEnabled(False)
@@ -222,6 +336,9 @@ def run_backtest_scan(self):
             self._backtest_scan_mdd_limit = float(
                 self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0
             )
+        self._backtest_scan_optimizer_metric = optimizer_metric
+        self._backtest_scan_optimizer_min_trades = optimizer_min_trades
+        self._backtest_scan_optimizer_mode = optimizer_mode
         self.backtest_scan_worker.start()
     except Exception as exc:
         tb = traceback.format_exc()

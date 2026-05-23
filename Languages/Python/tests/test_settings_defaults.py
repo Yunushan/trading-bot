@@ -266,6 +266,33 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual(2.0, validated["position_pct"])
         self.assertFalse(validated["live_allow_auto_bump_to_min_order"])
         self.assertIsNone(validated["lead_trader_profile"])
+        self.assertEqual("selected", validated["backtest"]["scan_scope"])
+        self.assertEqual("current", validated["backtest"]["optimizer_mode"])
+        self.assertEqual("roi_percent", validated["backtest"]["optimizer_metric"])
+        self.assertEqual(2, validated["backtest"]["optimizer_combo_size"])
+        self.assertEqual(1, validated["backtest"]["optimizer_min_trades"])
+
+    def test_runtime_validation_accepts_backtest_optimizer_settings(self):
+        config = build_default_config()
+        config["backtest"].update(
+            {
+                "logic": "separate",
+                "scan_scope": "all-loaded",
+                "optimizer_mode": "combinations",
+                "optimizer_metric": "roi-drawdown",
+                "optimizer_combo_size": "3",
+                "optimizer_min_trades": "0",
+            }
+        )
+
+        validated = validate_runtime_config(config)
+
+        self.assertEqual("SEPARATE", validated["backtest"]["logic"])
+        self.assertEqual("all_loaded", validated["backtest"]["scan_scope"])
+        self.assertEqual("combinations", validated["backtest"]["optimizer_mode"])
+        self.assertEqual("roi_drawdown", validated["backtest"]["optimizer_metric"])
+        self.assertEqual(3, validated["backtest"]["optimizer_combo_size"])
+        self.assertEqual(0, validated["backtest"]["optimizer_min_trades"])
 
     def test_runtime_validation_accepts_live_auto_bump_opt_in(self):
         config = build_default_config()
@@ -351,6 +378,8 @@ class SettingsDefaultsTests(unittest.TestCase):
             }
         )
         config["backtest"]["start_date"] = "not-a-date"
+        config["backtest"]["optimizer_combo_size"] = 6
+        config["backtest"]["optimizer_min_trades"] = -1
 
         with self.assertRaises(ConfigValidationError) as caught:
             validate_runtime_config(config)
@@ -373,6 +402,8 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("max_auto_bump_percent", fields)
         self.assertIn("auto_bump_percent_multiplier", fields)
         self.assertIn("backtest.start_date", fields)
+        self.assertIn("backtest.optimizer_combo_size", fields)
+        self.assertIn("backtest.optimizer_min_trades", fields)
 
     def test_runtime_validation_rejects_invalid_booleans_and_llm_choices(self):
         config = build_default_config()
@@ -391,6 +422,9 @@ class SettingsDefaultsTests(unittest.TestCase):
                 "positions_auto_resize_columns": "later",
             }
         )
+        config["backtest"]["scan_scope"] = "everything"
+        config["backtest"]["optimizer_mode"] = "magic"
+        config["backtest"]["optimizer_metric"] = "moon"
 
         with self.assertRaises(ConfigValidationError) as caught:
             validate_runtime_config(config)
@@ -409,6 +443,9 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("chart.view_mode", fields)
         self.assertIn("positions_auto_resize_rows", fields)
         self.assertIn("positions_auto_resize_columns", fields)
+        self.assertIn("backtest.scan_scope", fields)
+        self.assertIn("backtest.optimizer_mode", fields)
+        self.assertIn("backtest.optimizer_metric", fields)
 
     def test_runtime_validation_rejects_leverage_above_shared_binance_limit(self):
         config = build_default_config()

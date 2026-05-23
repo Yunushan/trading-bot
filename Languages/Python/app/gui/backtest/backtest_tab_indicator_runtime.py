@@ -15,7 +15,21 @@ def build_backtest_indicator_group(self):
     )
     ind_layout = QtWidgets.QGridLayout(indicator_group)
     self.backtest_indicator_widgets.clear()
-    row = 0
+
+    controls = QtWidgets.QWidget()
+    controls_layout = QtWidgets.QHBoxLayout(controls)
+    controls_layout.setContentsMargins(0, 0, 0, 0)
+    controls_layout.setSpacing(6)
+    select_all_btn = QtWidgets.QPushButton("Select All")
+    select_all_btn.clicked.connect(lambda: self._set_all_backtest_indicators(True))
+    clear_all_btn = QtWidgets.QPushButton("Clear")
+    clear_all_btn.clicked.connect(lambda: self._set_all_backtest_indicators(False))
+    controls_layout.addWidget(select_all_btn)
+    controls_layout.addWidget(clear_all_btn)
+    controls_layout.addStretch()
+    ind_layout.addWidget(controls, 0, 0, 1, 2)
+
+    row = 1
     for key, params in self.backtest_config.get("indicators", {}).items():
         label = tab_context_runtime._INDICATOR_DISPLAY_NAMES.get(key, key)
         cb = QtWidgets.QCheckBox(label)
