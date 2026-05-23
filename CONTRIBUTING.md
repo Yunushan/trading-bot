@@ -32,7 +32,7 @@ If `python` is not the declared interpreter, check the target command before
 installing into it:
 
 ```powershell
-python tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
+python tools/check_local_tool_versions.py --strict --skip-node --python-command "python"
 ```
 
 Or run the full contributor bootstrap from the repository root after Python
@@ -46,8 +46,8 @@ When more than one Python version is installed, target the declared interpreter
 explicitly instead of relying on the active shell `python`:
 
 ```powershell
-python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
-python tools/bootstrap_local_dev.py --python-command "py -3.12"
+python tools/bootstrap_local_dev.py --python-command "python" --dry-run
+python tools/bootstrap_local_dev.py --python-command "python"
 ```
 
 Compatibility install commands still work:
@@ -86,7 +86,7 @@ python tools/release_smoke.py --skip-full-tests --manual-smoke-mode fast
 When validating with a specific Python install:
 
 ```powershell
-python tools/release_smoke.py --python-command "py -3.12" --skip-full-tests --manual-smoke-mode fast
+python tools/release_smoke.py --python-command "python" --skip-full-tests --manual-smoke-mode fast
 ```
 
 Rust:

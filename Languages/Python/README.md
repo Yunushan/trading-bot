@@ -62,12 +62,12 @@ Runtime config updates are validated before the service stores them. Invalid sym
 
 ## Requirements
 
-- Python 3.10 to 3.14 (`.python-version` pins local development to 3.12)
+- Python 3.10 to 3.14 (`.python-version` pins local development to 3.14)
 - `pip`
 - Internet access for supported exchange or broker APIs
 - API credentials for a supported venue if you want live/demo connectivity
 
-Python 3.12 is recommended for local development and CI parity.
+Python 3.14 is recommended for local development and CI parity.
 
 ## Install
 

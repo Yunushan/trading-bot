@@ -217,7 +217,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--python-command",
         default="",
-        help='Python command used for release checks, for example: "py -3.12" or python3.12.',
+        help='Python command used for release checks, for example: "python" or python3.14.',
     )
     parser.add_argument(
         "--skip-full-tests",

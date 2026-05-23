@@ -76,7 +76,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
             {
                 "ok": False,
                 "checks": {
-                    "python": {"expected": "3.12", "actual": "3.14.4", "ok": False},
+                    "python": {"expected": "3.14", "actual": "3.12.9", "ok": False},
                     "node": {"expected": "24", "actual": "24.0.0", "ok": True},
                 },
             }
@@ -85,7 +85,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         remediation = module._remediation_for(check, returncode=0, stdout=stdout, stderr="")
 
-        self.assertIn("python expected 3.12, actual 3.14.4", remediation)
+        self.assertIn("python expected 3.14, actual 3.12.9", remediation)
 
     def test_verify_all_marks_nested_json_failure_and_blocks_runtime_mismatch(self):
         module = _load_verify_all_module()
@@ -197,7 +197,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("httpx", module.DEV_DEPENDENCY_NAMES)
 
     def test_repo_declares_local_runtime_tool_versions(self):
-        self.assertEqual("3.12", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())
+        self.assertEqual("3.14", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())
         self.assertEqual("24", (REPO_ROOT / ".node-version").read_text(encoding="utf-8").strip())
         docs = (REPO_ROOT / "docs" / "DEPENDENCY_REPRODUCIBILITY.md").read_text(encoding="utf-8")
         self.assertIn("python tools/check_local_tool_versions.py --strict", docs)
@@ -206,10 +206,10 @@ class DependencyReproducibilityTests(unittest.TestCase):
     def test_runtime_tool_version_remediations_are_actionable(self):
         module = _load_tool_version_module()
 
-        python_fix = module._runtime_remediation("python", "3.12", "3.14.4")
+        python_fix = module._runtime_remediation("python", "3.14", "3.12.9")
         node_fix = module._runtime_remediation("node", "24", "20.10.0")
 
-        self.assertIn("Python 3.12", python_fix)
+        self.assertIn("Python 3.14", python_fix)
         self.assertIn("python tools/bootstrap_local_dev.py --python-command", python_fix)
         self.assertIn('Languages/Python[desktop,service,dev]', python_fix)
         self.assertIn("Node.js 24", node_fix)
@@ -262,23 +262,23 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("ok", payload)
         self.assertIn("remediations", payload)
         self.assertEqual({"python"}, set(payload["checks"]))
-        self.assertEqual("3.12", payload["checks"]["python"]["expected"])
+        self.assertEqual("3.14", payload["checks"]["python"]["expected"])
 
     def test_runtime_tool_version_checker_can_probe_selected_python_command(self):
         module = _load_tool_version_module()
         completed = module.subprocess.CompletedProcess(
-            ["py", "-3.12"],
+            ["python"],
             0,
-            stdout="3.12.5\n",
+            stdout="3.14.5\n",
             stderr="",
         )
 
         with mock.patch.object(module.subprocess, "run", return_value=completed):
-            payload = module.build_tool_version_report(skip_node=True, python_command=("py", "-3.12"))
+            payload = module.build_tool_version_report(skip_node=True, python_command=("python",))
 
         self.assertTrue(payload["checks"]["python"]["ok"])
-        self.assertEqual("3.12.5", payload["checks"]["python"]["actual"])
-        self.assertEqual("py -3.12", payload["checks"]["python"]["command"])
+        self.assertEqual("3.14.5", payload["checks"]["python"]["actual"])
+        self.assertEqual("python", payload["checks"]["python"]["command"])
 
     def test_runtime_tool_version_checker_cli_accepts_selected_python_command(self):
         module = _load_tool_version_module()
@@ -288,23 +288,23 @@ class DependencyReproducibilityTests(unittest.TestCase):
             "build_tool_version_report",
             return_value={"ok": True, "checks": {}, "remediations": []},
         ) as report:
-            self.assertEqual(0, module.main(["--json", "--skip-node", "--python-command", "py -3.12"]))
+            self.assertEqual(0, module.main(["--json", "--skip-node", "--python-command", "python"]))
 
-        report.assert_called_once_with(skip_python=False, skip_node=True, python_command=("py", "-3.12"))
+        report.assert_called_once_with(skip_python=False, skip_node=True, python_command=("python",))
 
     def test_local_dev_bootstrap_accepts_explicit_python_command(self):
         module = _load_bootstrap_module()
 
         steps = module.build_bootstrap_steps(
-            python_command=("py", "-3.12"),
+            python_command=("python",),
             npm_executable="npm",
             include_python_deps=True,
             include_client_deps=False,
         )
         commands = [" ".join(step.command) for step in steps]
 
-        self.assertTrue(all(command.startswith("py -3.12 ") for command in commands))
-        self.assertEqual(("py", "-3.12"), module._split_command("py -3.12"))
+        self.assertTrue(all(command.startswith("python ") for command in commands))
+        self.assertEqual(("python",), module._split_command("python"))
 
     def test_local_dev_bootstrap_checks_selected_python_command(self):
         module = _load_bootstrap_module()
@@ -313,11 +313,11 @@ class DependencyReproducibilityTests(unittest.TestCase):
             remediations = module.runtime_remediations(
                 include_python_deps=True,
                 include_client_deps=False,
-                python_command=("py", "-3.12"),
+                python_command=("python",),
             )
 
         self.assertEqual([], remediations)
-        report.assert_called_once_with(skip_python=False, skip_node=True, python_command=("py", "-3.12"))
+        report.assert_called_once_with(skip_python=False, skip_node=True, python_command=("python",))
 
     def test_workspace_cleanup_tool_dry_run_reports_expected_shape(self):
         module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
@@ -326,7 +326,6 @@ class DependencyReproducibilityTests(unittest.TestCase):
             module,
             "_ignored_paths",
             return_value=[
-                ".venv/",
                 ".vcpkg/",
                 "Languages/Python/app/__pycache__/",
                 "Languages/Python/.pytest_cache/",
@@ -338,10 +337,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         ):
             payload = module.clean_workspace_artifacts(apply=False)
         self.assertFalse(payload["applied"])
-        self.assertEqual(6, payload["planned_count"])
+        self.assertEqual(5, payload["planned_count"])
         self.assertEqual(
             [
-                ".venv/",
                 ".vcpkg/",
                 "Languages/Python/app/__pycache__/",
                 "Languages/Python/.pytest_cache/",

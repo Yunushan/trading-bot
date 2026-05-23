@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--python-command",
         default="",
-        help='Python command to validate and use for installs, for example: "py -3.12" or python3.12.',
+        help='Python command to validate and use for installs, for example: "python" or python3.14.',
     )
     parser.add_argument(
         "--allow-version-mismatch",

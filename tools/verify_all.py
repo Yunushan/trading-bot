@@ -47,8 +47,10 @@ def _read_version_file(name: str) -> str:
 
 
 def _declared_python_command() -> str:
-    expected = _read_version_file(".python-version") or "3.12"
-    return f"py -{expected}" if sys.platform == "win32" else f"python{expected}"
+    expected = _read_version_file(".python-version") or "3.14"
+    if sys.platform == "win32":
+        return f"py -{expected}" if shutil.which("py") else "python"
+    return f"python{expected}"
 
 
 def _python_install_remediation(extra: str) -> str:

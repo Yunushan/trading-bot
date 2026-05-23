@@ -8,13 +8,11 @@ from pathlib import Path
 
 
 NOISY_IGNORED_PREFIXES = (
-    ".venv/",
     ".vcpkg/",
     ".tmp_showtests/",
     "build/",
     "dist/",
     "dist_enduser/",
-    "Languages/Python/.venv/",
     "Languages/Python/build/",
     "Languages/Rust/target/",
     "experiments/rust-shells/target/",

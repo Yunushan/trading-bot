@@ -61,7 +61,7 @@ A desktop-first trading workspace centered on the **PyQt6 Python app** in `Langu
 
 ## System requirements
 
-- **Python**: 3.10 – 3.14 (3.12 is the pinned local development version in `.python-version`).
+- **Python**: 3.10 – 3.14 (3.14 is the pinned local development version in `.python-version`).
 - **Node.js**: 24 for the thin web dashboard tests, pinned in `.node-version`.
 - **pip**: bundled with Python, used to install dependencies.
 - **Internet access**: required for supported exchange/broker REST or WebSocket APIs. Binance is the primary current live path.
@@ -230,7 +230,7 @@ python tools/update_loc_snapshot.py
 ## Quick start
 
 1. **Clone or download** this repository.
-2. **Install Python 3.12** for local development and CI parity. Remember to check “Add Python to PATH” on Windows.
+2. **Install Python 3.14** for local development and CI parity. Remember to check “Add Python to PATH” on Windows.
 3. **Install dependencies** using the instructions for your OS below.
 4. **Launch the GUI:**
    - Canonical product path: run `python apps/desktop-pyqt/main.py` from the repository root, **or**
@@ -261,7 +261,7 @@ If your shell `python` is not the declared runtime, point the checker at the
 target interpreter before installing:
 
 ```powershell
-python ../../tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
+python ../../tools/check_local_tool_versions.py --strict --skip-node --python-command "python"
 ```
 
 From the repository root, contributors can use the bootstrap planner before
@@ -277,8 +277,8 @@ script launcher you already have and tell the bootstrap which Python should
 receive the editable install:
 
 ```powershell
-python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
-python tools/bootstrap_local_dev.py --python-command "py -3.12"
+python tools/bootstrap_local_dev.py --python-command "python" --dry-run
+python tools/bootstrap_local_dev.py --python-command "python"
 ```
 
 The `dev` extra includes test-only tools such as the FastAPI `TestClient`

@@ -55,7 +55,7 @@ active shell `python` is not the declared release runtime, target the intended
 interpreter explicitly:
 
 ```powershell
-python tools/release_smoke.py --python-command "py -3.12" --skip-full-tests --manual-smoke-mode fast
+python tools/release_smoke.py --python-command "python" --skip-full-tests --manual-smoke-mode fast
 ```
 
 ## Release steps

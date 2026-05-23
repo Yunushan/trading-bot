@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import shutil
 import sys
 import unittest
 from pathlib import Path
@@ -30,12 +31,14 @@ def _read_declared_python_version() -> str:
     try:
         return (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip()
     except OSError:
-        return "3.12"
+        return "3.14"
 
 
 def _declared_python_command() -> str:
-    expected = _read_declared_python_version() or "3.12"
-    return f"py -{expected}" if sys.platform == "win32" else f"python{expected}"
+    expected = _read_declared_python_version() or "3.14"
+    if sys.platform == "win32":
+        return f"py -{expected}" if shutil.which("py") else "python"
+    return f"python{expected}"
 
 
 def service_dependency_install_hint() -> str:

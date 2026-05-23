@@ -66,7 +66,7 @@ On Windows machines with multiple Python installs, validate the intended
 interpreter explicitly:
 
 ```powershell
-python tools/check_local_tool_versions.py --json --skip-node --python-command "py -3.12"
+python tools/check_local_tool_versions.py --json --skip-node --python-command "python"
 ```
 
 For the service API:
@@ -86,5 +86,5 @@ If the default `python` command is not the declared Python, target the install
 interpreter explicitly:
 
 ```powershell
-python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
+python tools/bootstrap_local_dev.py --python-command "python" --dry-run
 ```

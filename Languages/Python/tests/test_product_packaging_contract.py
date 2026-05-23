@@ -82,7 +82,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("apps/desktop-pyqt", config["include"])
         self.assertIn("apps/service-api", config["include"])
         self.assertIn("Languages/Python/app", config["include"])
-        self.assertEqual("3.12", config["pythonVersion"])
+        self.assertEqual("3.14", config["pythonVersion"])
 
     def test_windows_build_script_targets_canonical_desktop_wrapper(self):
         script = (REPO_ROOT / "Languages" / "Python" / "tools" / "build_exe.ps1").read_text(encoding="utf-8")

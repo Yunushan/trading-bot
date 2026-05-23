@@ -23,7 +23,7 @@ When more than one Python version is installed, point the checker at the same
 interpreter you will use for the editable install:
 
 ```powershell
-python tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
+python tools/check_local_tool_versions.py --strict --skip-node --python-command "python"
 ```
 
 For a complete contributor environment after the declared runtimes are
@@ -35,12 +35,12 @@ python tools/bootstrap_local_dev.py
 ```
 
 When the active shell `python` is not the declared Python, pass the target
-interpreter to the bootstrap. On Windows, this keeps installs in Python 3.12
+interpreter to the bootstrap. On Windows, this keeps installs in Python 3.14
 even if the script itself was launched by another Python:
 
 ```powershell
-python tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
-python tools/bootstrap_local_dev.py --python-command "py -3.12"
+python tools/bootstrap_local_dev.py --python-command "python" --dry-run
+python tools/bootstrap_local_dev.py --python-command "python"
 ```
 
 When a runtime is missing or mismatched, the checker prints a `fix:` line and

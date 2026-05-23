@@ -41,8 +41,8 @@ python tools/run_python_tests.py
 If the active shell Python is not the repository Python, pass the target command:
 
 ```powershell
-python ../../tools/check_local_tool_versions.py --strict --skip-node --python-command "py -3.12"
-python ../../tools/bootstrap_local_dev.py --python-command "py -3.12" --dry-run
+python ../../tools/check_local_tool_versions.py --strict --skip-node --python-command "python"
+python ../../tools/bootstrap_local_dev.py --python-command "python" --dry-run
 ```
 
 Focused service suite:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import shlex
 import subprocess
 import sys
@@ -76,7 +77,9 @@ def _matches(expected: str, actual: str) -> bool:
 
 
 def _default_python_command(expected: str) -> tuple[str, ...]:
-    return ("py", f"-{expected}") if sys.platform == "win32" else (f"python{expected}",)
+    if sys.platform == "win32":
+        return ("py", f"-{expected}") if shutil.which("py") else ("python",)
+    return (f"python{expected}",)
 
 
 def _runtime_remediation(
@@ -164,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--python-command",
         default="",
-        help='Python command to probe instead of the current interpreter, for example: "py -3.12" or python3.12.',
+        help='Python command to probe instead of the current interpreter, for example: "python" or python3.14.',
     )
     args = parser.parse_args(argv)
 

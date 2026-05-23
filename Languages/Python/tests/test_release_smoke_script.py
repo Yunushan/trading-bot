@@ -75,13 +75,13 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
             "--manual-smoke-mode",
             "skip",
             "--python-command",
-            "py -3.12",
+            "python",
         )
 
         self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
-        self.assertIn('py -3.12 tools/check_local_tool_versions.py --strict --python-command "py -3.12"', stdout)
-        self.assertIn("py -3.12 -m ruff check --no-cache", stdout)
-        self.assertIn("py -3.12 -m mypy --no-incremental --cache-dir", stdout)
+        self.assertIn('python tools/check_local_tool_versions.py --strict --python-command python', stdout)
+        self.assertIn("python -m ruff check --no-cache", stdout)
+        self.assertIn("python -m mypy --no-incremental --cache-dir", stdout)
 
     def test_release_smoke_rejects_conflicting_python_options(self):
         returncode, stdout, stderr = _run_release_smoke(
@@ -89,7 +89,7 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
             "--python",
             "python",
             "--python-command",
-            "py -3.12",
+            "python",
         )
 
         self.assertEqual(2, returncode)
