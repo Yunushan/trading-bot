@@ -197,6 +197,22 @@ class BacktestBehaviorTests(unittest.TestCase):
         assert series is not None
         self.assertEqual([0.0, 200.0, 150.0, 450.0], [float(value) for value in series.tolist()])
 
+    def test_compute_obv_slope_signal_mode(self):
+        df = _build_frame([10.0, 11.0, 10.0, 12.0])
+        df["volume"] = [100.0, 200.0, 50.0, 300.0]
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(
+                key="obv",
+                params={"signal_mode": "slope", "length": 2},
+            ),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertEqual([0.0, 0.0, 150.0, 250.0], [float(value) for value in series.tolist()])
+
     def test_compute_cmf_indicator_series(self):
         df = _build_frame(
             [11.0, 11.5, 8.5, 12.5],

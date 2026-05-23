@@ -109,7 +109,10 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         self.assertEqual("On-Balance Volume (OBV)", INDICATOR_DISPLAY_NAMES["obv"])
         self.assertEqual({"enabled": False, "buy_value": None, "sell_value": None}, config["indicators"]["obv"])
-        self.assertEqual({"enabled": False, "buy_value": None, "sell_value": None}, config["backtest"]["indicators"]["obv"])
+        self.assertEqual(
+            {"enabled": False, "buy_value": 0, "sell_value": 0, "signal_mode": "slope", "length": 3},
+            config["backtest"]["indicators"]["obv"],
+        )
 
     def test_rvol_indicator_defaults_are_available_for_runtime_and_backtest(self):
         config = build_default_config()

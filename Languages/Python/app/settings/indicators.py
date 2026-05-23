@@ -113,6 +113,7 @@ INDICATOR_CATALOG = (
         key="obv",
         display_name="On-Balance Volume (OBV)",
         defaults={"enabled": False, "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "slope", "length": 3, "buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="rvol",

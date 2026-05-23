@@ -87,7 +87,7 @@ class BacktestRequestBehaviorTests(unittest.TestCase):
         self.assertEqual(("ema",), summary["indicator_keys"])
         self.assertFalse(request.stop_loss_enabled)
 
-    def test_build_request_rejects_enabled_indicators_without_signal_rules(self):
+    def test_build_request_rejects_enabled_custom_indicators_without_signal_rules(self):
         runtime = _build_runtime()
 
         with self.assertRaisesRegex(ValueError, "signal rules are missing"):
@@ -100,10 +100,34 @@ class BacktestRequestBehaviorTests(unittest.TestCase):
                     "start": "2025-01-01T00:00:00",
                     "end": "2025-01-02T00:00:00",
                     "indicators": {
-                        "obv": {"enabled": True},
+                        "custom_signal": {"enabled": True},
                     },
                 },
             )
+
+    def test_build_request_adds_obv_backtest_signal_defaults(self):
+        runtime = _build_runtime()
+
+        request, _wrapper_kwargs, summary = build_request(
+            runtime,
+            {
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1h"],
+                "capital": 1000.0,
+                "start": "2025-01-01T00:00:00",
+                "end": "2025-01-02T00:00:00",
+                "indicators": {
+                    "obv": {"enabled": True},
+                },
+            },
+        )
+
+        self.assertEqual(["obv"], [indicator.key for indicator in request.indicators])
+        self.assertEqual(("obv",), summary["indicator_keys"])
+        self.assertEqual(
+            {"signal_mode": "slope", "length": 3, "buy_value": 0, "sell_value": 0},
+            request.indicators[0].params,
+        )
 
     def test_build_request_rejects_filter_only_indicator_sets(self):
         runtime = _build_runtime()
