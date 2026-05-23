@@ -31,6 +31,7 @@ BACKTEST_TEMPLATE_DEFAULT = BacktestTemplateSettings().to_config_dict()
 class BacktestSettings:
     symbols: tuple[str, ...] = ("BTCUSDT",)
     intervals: tuple[str, ...] = ("1h",)
+    execution_backend: str = "local"
     capital: float = 1000.0
     logic: str = "AND"
     symbol_source: str = "Futures"
@@ -61,6 +62,7 @@ class BacktestSettings:
         return {
             "symbols": list(self.symbols),
             "intervals": list(self.intervals),
+            "execution_backend": self.execution_backend,
             "capital": self.capital,
             "logic": self.logic,
             "symbol_source": self.symbol_source,

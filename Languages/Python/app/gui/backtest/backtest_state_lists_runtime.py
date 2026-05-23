@@ -9,6 +9,15 @@ from .backtest_state_context_runtime import (
 )
 
 
+def _refresh_optimizer_estimate_if_available(self) -> None:
+    refresher = getattr(self, "_refresh_backtest_optimizer_estimate", None)
+    if callable(refresher):
+        try:
+            refresher()
+        except Exception:
+            pass
+
+
 def populate_backtest_lists(self):
     try:
         if not self.backtest_symbols_all:
@@ -79,6 +88,7 @@ def populate_backtest_lists(self):
     cfg = self.config.setdefault("backtest", {})
     cfg["intervals"] = list(selected_intervals)
     self._backtest_store_intervals()
+    _refresh_optimizer_estimate_if_available(self)
 
 
 def set_backtest_symbol_selection(self, symbols):
@@ -185,6 +195,7 @@ def update_backtest_symbol_list(self, candidates):
         if unique_candidates and not selected and self.backtest_symbol_list.count():
             self.backtest_symbol_list.item(0).setSelected(True)
         self._backtest_store_symbols()
+        _refresh_optimizer_estimate_if_available(self)
     except Exception:
         pass
 
@@ -199,6 +210,7 @@ def backtest_store_symbols(self):
         self.backtest_config["symbols"] = symbols
         cfg = self.config.setdefault("backtest", {})
         cfg["symbols"] = list(symbols)
+        _refresh_optimizer_estimate_if_available(self)
     except Exception:
         pass
 
@@ -215,6 +227,7 @@ def backtest_store_intervals(self):
         self.backtest_config["intervals"] = intervals
         cfg = self.config.setdefault("backtest", {})
         cfg["intervals"] = list(intervals)
+        _refresh_optimizer_estimate_if_available(self)
     except Exception:
         pass
 

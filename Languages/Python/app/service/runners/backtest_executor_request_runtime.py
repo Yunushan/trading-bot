@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 
 from ...config import coerce_bool, normalize_stop_loss_dict
+from ...core.backtest.indicator_selection_runtime import (
+    build_backtest_indicator_definitions,
+    format_missing_signal_indicator_message,
+    format_missing_signal_rule_message,
+)
+from ...core.backtest.indicator_runtime import filter_indicators, signal_indicators
 from ...core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
 from ...core.backtest.models import BacktestRequest, IndicatorDefinition, PairOverride
 from ...settings.exchange_support import build_exchange_support_payload
+
+MAX_BACKTEST_OPTIMIZER_RUNS = 5000
+OPTIMIZER_MODE_VALUES = {"current", "single", "pairs", "combinations"}
+OPTIMIZER_METRIC_VALUES = {
+    "roi_percent",
+    "roi_percent_mdd",
+    "roi_drawdown",
+    "roi_value",
+}
+SCAN_SCOPE_VALUES = {"selected", "top_n", "all_loaded"}
 
 
 def utc_now_iso() -> str:
@@ -50,6 +68,30 @@ def coerce_number(value, default: float = 0.0) -> float:  # noqa: ANN001
         return float(default)
 
 
+def coerce_int(value, default: int = 0) -> int:  # noqa: ANN001
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def normalize_choice(value, allowed: set[str], default: str) -> str:  # noqa: ANN001
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text if text in allowed else default
+
+
+def normalize_optimizer_mode(value) -> str:  # noqa: ANN001
+    return normalize_choice(value, OPTIMIZER_MODE_VALUES, "current")
+
+
+def normalize_optimizer_metric(value) -> str:  # noqa: ANN001
+    return normalize_choice(value, OPTIMIZER_METRIC_VALUES, "roi_percent")
+
+
+def normalize_scan_scope(value) -> str:  # noqa: ANN001
+    return normalize_choice(value, SCAN_SCOPE_VALUES, "selected")
+
+
 def coerce_datetime(value) -> datetime | None:  # noqa: ANN001
     if isinstance(value, datetime):
         parsed = value
@@ -79,32 +121,14 @@ def coerce_datetime(value) -> datetime | None:  # noqa: ANN001
 
 
 def build_indicator_definitions(indicators_payload) -> list[IndicatorDefinition]:  # noqa: ANN001
-    indicators: list[IndicatorDefinition] = []
-    if isinstance(indicators_payload, dict):
-        for key, params in indicators_payload.items():
-            if not isinstance(params, dict) or not coerce_bool(params.get("enabled"), False):
-                continue
-            clean_params = copy.deepcopy(params)
-            clean_params.pop("enabled", None)
-            indicators.append(IndicatorDefinition(key=str(key), params=clean_params))
-        return indicators
-    if isinstance(indicators_payload, (list, tuple)):
-        for item in indicators_payload:
-            if not isinstance(item, dict):
-                continue
-            key = clean_text(item.get("key"))
-            if not key:
-                continue
-            params = copy.deepcopy(item.get("params") or {})
-            indicators.append(IndicatorDefinition(key=key, params=params if isinstance(params, dict) else {}))
-    return indicators
+    return build_backtest_indicator_definitions(indicators_payload)
 
 
 def build_pair_overrides(overrides_payload) -> list[PairOverride] | None:  # noqa: ANN001
     if not isinstance(overrides_payload, (list, tuple)):
         return None
     overrides: list[PairOverride] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for item in overrides_payload:
         if not isinstance(item, dict):
             continue
@@ -112,14 +136,43 @@ def build_pair_overrides(overrides_payload) -> list[PairOverride] | None:  # noq
         interval = normalize_backtest_interval(item.get("interval"))
         if not symbol or not interval:
             continue
-        key = (symbol, interval)
+        indicators = string_list(item.get("indicators"))
+        key = (symbol, interval, tuple(sorted(indicators)))
         if key in seen:
             continue
         seen.add(key)
-        indicators = string_list(item.get("indicators"))
+        strategy_controls = (
+            copy.deepcopy(item.get("strategy_controls"))
+            if isinstance(item.get("strategy_controls"), dict)
+            else {}
+        )
+        for control_key in (
+            "logic",
+            "capital",
+            "side",
+            "position_pct",
+            "position_pct_units",
+            "margin_mode",
+            "position_mode",
+            "assets_mode",
+            "account_mode",
+            "mdd_logic",
+            "leverage",
+            "stop_loss_enabled",
+            "stop_loss_mode",
+            "stop_loss_usdt",
+            "stop_loss_percent",
+            "stop_loss_scope",
+        ):
+            if control_key in item and item.get(control_key) is not None:
+                strategy_controls[control_key] = copy.deepcopy(item.get(control_key))
+        if isinstance(item.get("stop_loss"), dict):
+            strategy_controls["stop_loss"] = copy.deepcopy(item.get("stop_loss"))
         leverage = None
         try:
             raw_leverage = item.get("leverage")
+            if raw_leverage is None:
+                raw_leverage = strategy_controls.get("leverage")
             if raw_leverage is not None:
                 leverage = int(float(raw_leverage))
         except Exception:
@@ -130,9 +183,93 @@ def build_pair_overrides(overrides_payload) -> list[PairOverride] | None:  # noq
                 interval=interval,
                 indicators=indicators or None,
                 leverage=leverage,
+                strategy_controls=strategy_controls or None,
             )
         )
     return overrides or None
+
+
+def unique_texts(values, *, uppercase: bool = False) -> list[str]:  # noqa: ANN001
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        value = clean_text(raw)
+        if not value:
+            continue
+        if uppercase:
+            value = value.upper()
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def build_indicator_key_groups(
+    indicator_keys,
+    *,
+    mode: str,
+    combo_size: int,
+) -> list[list[str]]:  # noqa: ANN001
+    keys = unique_texts(indicator_keys)
+    mode_norm = normalize_optimizer_mode(mode)
+    if mode_norm == "current":
+        return []
+    if mode_norm == "single":
+        return [[key] for key in keys]
+    if mode_norm == "pairs":
+        return [list(group) for group in combinations(keys, 2)]
+    max_size = max(1, min(int(combo_size or 1), len(keys)))
+    groups: list[list[str]] = []
+    for size in range(1, max_size + 1):
+        groups.extend(list(group) for group in combinations(keys, size))
+    return groups
+
+
+def build_optimizer_pair_overrides(
+    *,
+    symbols: list[str],
+    intervals: list[str],
+    indicators: list[IndicatorDefinition],
+    mode: str,
+    combo_size: int,
+    logic: str,
+) -> tuple[list[PairOverride], str, int, int]:
+    signal_defs = signal_indicators(indicators)
+    signal_keys = [indicator.key for indicator in signal_defs]
+    filter_keys = [indicator.key for indicator in filter_indicators(indicators)]
+    indicator_groups = build_indicator_key_groups(
+        signal_keys,
+        mode=mode,
+        combo_size=combo_size,
+    )
+    if normalize_optimizer_mode(mode) != "current" and not indicator_groups:
+        raise ValueError(
+            "Optimizer mode needs more enabled signal indicators for the selected "
+            "combination type."
+        )
+    if filter_keys:
+        indicator_groups = [
+            list(dict.fromkeys([*group, *filter_keys]))
+            for group in indicator_groups
+        ]
+
+    request_logic = str(logic or "AND").strip().upper()
+    if request_logic == "SEPARATE" and any(len(group) > 1 for group in indicator_groups):
+        request_logic = "AND"
+
+    overrides: list[PairOverride] = []
+    for symbol in symbols:
+        for interval in intervals:
+            for indicator_group in indicator_groups:
+                overrides.append(
+                    PairOverride(
+                        symbol=symbol,
+                        interval=interval,
+                        indicators=list(indicator_group),
+                    )
+                )
+    return overrides, request_logic, len(signal_keys), len(indicator_groups)
 
 
 def estimate_run_count(
@@ -141,26 +278,177 @@ def estimate_run_count(
     indicator_count: int,
     logic: str,
     pair_overrides: list[PairOverride] | None,
+    *,
+    optimizer_generated: bool = False,
 ) -> int:
     combos = len(pair_overrides) if pair_overrides else (len(symbols) * len(intervals))
     if combos <= 0:
         return 0
+    if optimizer_generated:
+        return combos
     if str(logic or "").upper() == "SEPARATE":
         return combos * max(1, indicator_count)
     return combos
 
 
 def sort_runs(records: list) -> list:  # noqa: ANN001
+    def _field(item, key: str, default=0.0):  # noqa: ANN001
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
+
+    def _optimizer_rank_sort(item) -> int:  # noqa: ANN001
+        try:
+            rank = int(_field(item, "optimizer_rank", 0) or 0)
+        except Exception:
+            rank = 0
+        return rank if rank > 0 else 1_000_000
+
     return sorted(
         records,
         key=lambda item: (
-            float(getattr(item, "roi_percent", 0.0) or 0.0),
-            float(getattr(item, "roi_value", 0.0) or 0.0),
-            -float(getattr(item, "max_drawdown_percent", 0.0) or 0.0),
-            int(getattr(item, "trades", 0) or 0),
+            -_optimizer_rank_sort(item),
+            float(_field(item, "roi_percent", 0.0) or 0.0),
+            float(_field(item, "roi_value", 0.0) or 0.0),
+            -float(_field(item, "max_drawdown_percent", 0.0) or 0.0),
+            int(_field(item, "trades", 0) or 0),
         ),
         reverse=True,
     )
+
+
+def run_to_mapping(run) -> dict[str, object]:  # noqa: ANN001
+    if is_dataclass(run):
+        return asdict(run)
+    if isinstance(run, dict):
+        return dict(run)
+    return {
+        "symbol": getattr(run, "symbol", ""),
+        "interval": getattr(run, "interval", ""),
+        "indicator_keys": getattr(run, "indicator_keys", []),
+        "trades": getattr(run, "trades", 0),
+        "roi_percent": getattr(run, "roi_percent", 0.0),
+        "roi_value": getattr(run, "roi_value", 0.0),
+        "max_drawdown_percent": getattr(run, "max_drawdown_percent", 0.0),
+        "mdd_logic": getattr(run, "mdd_logic", None),
+    }
+
+
+def optimizer_score(
+    run,
+    *,
+    metric: str,
+    mdd_limit: float,
+    min_trades: int,
+) -> tuple[float, ...] | None:
+    data = run_to_mapping(run)
+    trades = coerce_int(data.get("trades", 0), 0)
+    if trades < max(0, int(min_trades or 0)):
+        return None
+    mdd = coerce_number(data.get("max_drawdown_percent", 0.0), 0.0)
+    limit = coerce_number(mdd_limit, 0.0)
+    if limit > 0.0 and mdd > limit:
+        return None
+    roi_pct = coerce_number(data.get("roi_percent", 0.0), 0.0)
+    roi_val = coerce_number(data.get("roi_value", 0.0), 0.0)
+    metric_norm = normalize_optimizer_metric(metric)
+    if metric_norm == "roi_value":
+        return (roi_val, roi_pct, float(trades), -mdd)
+    if metric_norm == "roi_drawdown":
+        return (roi_pct / max(abs(mdd), 1.0), roi_pct, roi_val, float(trades), -mdd)
+    return (roi_pct, roi_val, float(trades), -mdd)
+
+
+def optimizer_rejection_reasons(
+    run,
+    *,
+    mdd_limit: float,
+    min_trades: int,
+) -> list[str]:
+    data = run_to_mapping(run)
+    trades = coerce_int(data.get("trades", 0), 0)
+    mdd = coerce_number(data.get("max_drawdown_percent", 0.0), 0.0)
+    trade_floor = max(0, int(min_trades or 0))
+    limit = coerce_number(mdd_limit, 0.0)
+    reasons: list[str] = []
+    if trades < trade_floor:
+        reasons.append(f"trades {trades} < {trade_floor}")
+    if limit > 0.0 and mdd > limit:
+        reasons.append(f"MDD {mdd:.2f}% > {limit:.2f}%")
+    return reasons
+
+
+def rank_optimizer_runs(
+    runs,
+    *,
+    metric: str,
+    mdd_limit: float,
+    min_trades: int,
+    mode: str = "",
+    scope: str = "",
+    run_count: int | None = None,
+) -> list[dict[str, object]]:
+    metric_norm = normalize_optimizer_metric(metric)
+    mode_norm = normalize_optimizer_mode(mode) if clean_text(mode) else ""
+    scope_norm = normalize_scan_scope(scope) if clean_text(scope) else ""
+    mdd_limit_value = max(0.0, coerce_number(mdd_limit, 0.0))
+    min_trades_value = max(0, coerce_int(min_trades, 0))
+    run_count_value = coerce_int(run_count, 0) if run_count is not None else None
+    ranked_rows: list[dict[str, object]] = []
+    for original_index, run in enumerate(runs or []):
+        data = run_to_mapping(run)
+        score = optimizer_score(
+            data,
+            metric=metric_norm,
+            mdd_limit=mdd_limit_value,
+            min_trades=min_trades_value,
+        )
+        row = dict(data)
+        row["_optimizer_original_index"] = original_index
+        row["optimizer_metric"] = metric_norm
+        row["optimizer_mdd_limit"] = mdd_limit_value
+        row["optimizer_min_trades"] = min_trades_value
+        if mode_norm:
+            row["optimizer_mode"] = mode_norm
+        if scope_norm:
+            row["optimizer_scope"] = scope_norm
+        if run_count_value is not None:
+            row["optimizer_run_count"] = run_count_value
+        row["optimizer_eligible"] = score is not None
+        row["optimizer_score"] = tuple(score or ())
+        row["optimizer_primary_score"] = float(score[0]) if score else None
+        row["optimizer_rejection_reason"] = "; ".join(
+            optimizer_rejection_reasons(
+                data,
+                mdd_limit=mdd_limit_value,
+                min_trades=min_trades_value,
+            )
+        )
+        ranked_rows.append(row)
+
+    eligible_rows = [row for row in ranked_rows if row.get("optimizer_eligible")]
+    eligible_rows.sort(
+        key=lambda row: (
+            tuple(row.get("optimizer_score") or ()),
+            -int(row.get("_optimizer_original_index", 0) or 0),
+        ),
+        reverse=True,
+    )
+    for rank, row in enumerate(eligible_rows, start=1):
+        row["optimizer_rank"] = rank
+    rejected_rows = [row for row in ranked_rows if not row.get("optimizer_eligible")]
+    rejected_rows.sort(key=lambda row: int(row.get("_optimizer_original_index", 0) or 0))
+    for row in rejected_rows:
+        row["optimizer_rank"] = None
+
+    candidate_count = len(ranked_rows)
+    eligible_count = len(eligible_rows)
+    filtered_count = len(rejected_rows)
+    for row in ranked_rows:
+        row["optimizer_candidate_count"] = candidate_count
+        row["optimizer_eligible_count"] = eligible_count
+        row["optimizer_filtered_count"] = filtered_count
+    return eligible_rows + rejected_rows
 
 
 def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest, dict[str, object], dict[str, object]]:
@@ -177,16 +465,83 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
     )
     if not indicators:
         raise ValueError("At least one enabled indicator is required for backtesting.")
+    signal_rule_message = format_missing_signal_rule_message(indicators)
+    if signal_rule_message:
+        raise ValueError(signal_rule_message)
+    signal_indicator_message = format_missing_signal_indicator_message(indicators)
+    if signal_indicator_message:
+        raise ValueError(signal_indicator_message)
 
     logic = clean_text(patch.get("logic", backtest_cfg.get("logic", "AND")), "AND").upper()
+    optimizer_mode = normalize_optimizer_mode(
+        patch.get("optimizer_mode", backtest_cfg.get("optimizer_mode", "current"))
+    )
+    optimizer_metric = normalize_optimizer_metric(
+        patch.get("optimizer_metric", backtest_cfg.get("optimizer_metric", "roi_percent"))
+    )
+    optimizer_combo_size = max(
+        1,
+        min(
+            5,
+            coerce_int(
+                patch.get(
+                    "optimizer_combo_size",
+                    backtest_cfg.get("optimizer_combo_size", 2),
+                ),
+                2,
+            ),
+        ),
+    )
+    optimizer_min_trades = max(
+        0,
+        coerce_int(
+            patch.get("optimizer_min_trades", backtest_cfg.get("optimizer_min_trades", 1)),
+            1,
+        ),
+    )
+    optimizer_mdd_limit = max(
+        0.0,
+        coerce_number(
+            patch.get("scan_mdd_limit", backtest_cfg.get("scan_mdd_limit", 10.0)),
+            10.0,
+        ),
+    )
+    scan_scope = normalize_scan_scope(
+        patch.get("scan_scope", backtest_cfg.get("scan_scope", "selected"))
+    )
+    scan_top_n = max(
+        1,
+        coerce_int(patch.get("scan_top_n", backtest_cfg.get("scan_top_n", 200)), 200),
+    )
+    if optimizer_mode != "current" and scan_scope == "top_n":
+        symbols = symbols[:scan_top_n]
     symbol_source = clean_text(patch.get("symbol_source", backtest_cfg.get("symbol_source", "Futures")), "Futures")
     capital = max(0.0, coerce_number(patch.get("capital", backtest_cfg.get("capital", 0.0)), 0.0))
     if capital <= 0.0:
         raise ValueError("Backtest capital must be positive.")
 
-    pair_overrides = build_pair_overrides(
-        patch.get("pair_overrides", config.get("backtest_symbol_interval_pairs"))
-    )
+    optimizer_generated_overrides = False
+    optimizer_signal_indicator_count = len(signal_indicators(indicators))
+    optimizer_indicator_group_count = 0
+    if "pair_overrides" in patch:
+        pair_overrides = build_pair_overrides(patch.get("pair_overrides"))
+    elif optimizer_mode != "current":
+        (
+            pair_overrides,
+            logic,
+            optimizer_signal_indicator_count,
+            optimizer_indicator_group_count,
+        ) = build_optimizer_pair_overrides(
+            symbols=symbols,
+            intervals=intervals,
+            indicators=indicators,
+            mode=optimizer_mode,
+            combo_size=optimizer_combo_size,
+            logic=logic,
+        )
+        optimizer_generated_overrides = True
+    else:
+        pair_overrides = build_pair_overrides(config.get("backtest_symbol_interval_pairs"))
     if pair_overrides:
         symbols = list(dict.fromkeys(item.symbol for item in pair_overrides))
         intervals = list(dict.fromkeys(item.interval for item in pair_overrides))
@@ -204,6 +559,20 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         start_dt = end_dt - timedelta(days=30)
     if start_dt >= end_dt:
         raise ValueError("Backtest start must be earlier than backtest end.")
+
+    estimated_run_count = estimate_run_count(
+        symbols,
+        intervals,
+        optimizer_signal_indicator_count,
+        logic,
+        pair_overrides,
+        optimizer_generated=optimizer_generated_overrides,
+    )
+    if optimizer_generated_overrides and estimated_run_count > MAX_BACKTEST_OPTIMIZER_RUNS:
+        raise ValueError(
+            f"Optimizer would create {estimated_run_count} runs; reduce symbols, "
+            f"intervals, or combination size (limit {MAX_BACKTEST_OPTIMIZER_RUNS})."
+        )
 
     stop_loss_cfg = normalize_stop_loss_dict(
         patch.get("stop_loss", backtest_cfg.get("stop_loss", config.get("stop_loss")))
@@ -289,7 +658,17 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         "logic": logic,
         "symbol_source": symbol_source,
         "capital": capital,
-        "estimated_run_count": estimate_run_count(symbols, intervals, len(indicators), logic, pair_overrides),
+        "estimated_run_count": estimated_run_count,
+        "optimizer_enabled": optimizer_generated_overrides,
+        "optimizer_mode": optimizer_mode,
+        "optimizer_metric": optimizer_metric,
+        "optimizer_combo_size": optimizer_combo_size,
+        "optimizer_min_trades": optimizer_min_trades,
+        "optimizer_mdd_limit": optimizer_mdd_limit,
+        "optimizer_scope": scan_scope,
+        "optimizer_scan_top_n": scan_top_n,
+        "optimizer_signal_indicator_count": optimizer_signal_indicator_count,
+        "optimizer_indicator_group_count": optimizer_indicator_group_count,
         "live_parity": {
             "mode": mode,
             "account_type": account_type,

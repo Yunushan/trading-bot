@@ -18,6 +18,9 @@ class _FakeDesktopClient:
         self.connector_order_circuit_breaker_snapshot = None
         self.operational_preflight = {"state": "ok", "start": {"allowed": True}}
         self.start_result = {"accepted": True, "status_message": "Start requested."}
+        self.backtest_request = None
+        self.backtest_source = ""
+        self.backtest_snapshot = {"state": "idle", "run_count": 0}
 
     def replace_config(self, config):
         self.config = config
@@ -55,6 +58,19 @@ class _FakeDesktopClient:
         self.start_result["source"] = source
         return self.start_result
 
+    def submit_backtest(self, request=None, *, source="desktop-backtest"):
+        self.backtest_request = dict(request or {})
+        self.backtest_source = source
+        self.backtest_snapshot = {"state": "running", "run_count": 0}
+        return {"accepted": True, "state": "running", "source": source}
+
+    def stop_backtest(self, *, source="desktop-backtest"):
+        self.backtest_snapshot = {"state": "stopping", "run_count": 0}
+        return {"accepted": True, "state": "stopping", "source": source}
+
+    def get_backtest_snapshot(self):
+        return self.backtest_snapshot
+
 
 class DesktopServiceBridgeSmokeTests(unittest.TestCase):
     def test_bind_main_window_desktop_service_bridge_attaches_methods(self):
@@ -86,9 +102,12 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
             "_service_request_stop",
             "_service_mark_start_failed",
             "_service_record_log_event",
+            "_service_submit_backtest",
+            "_service_stop_backtest",
             "_get_service_client_descriptor",
             "_get_service_account_snapshot",
             "_get_service_status_snapshot",
+            "_get_service_backtest_snapshot",
             "_get_service_config_summary",
             "_get_service_portfolio_snapshot",
             "_get_service_exchange_connector_snapshot",
@@ -108,6 +127,15 @@ class DesktopServiceBridgeSmokeTests(unittest.TestCase):
         self.assertEqual(window._desktop_service_client.config, {"demo": True})
         self.assertEqual(window._get_service_operational_preflight()["state"], "ok")
         self.assertTrue(window._service_request_start(requested_job_count=2)["accepted"])
+        backtest_result = window._service_submit_backtest(
+            {"symbols": ["BTCUSDT"], "optimizer_mode": "pairs"},
+            source="desktop-test",
+        )
+        self.assertTrue(backtest_result["accepted"])
+        self.assertEqual("desktop-test", window._desktop_service_client.backtest_source)
+        self.assertEqual("pairs", window._desktop_service_client.backtest_request["optimizer_mode"])
+        self.assertEqual("running", window._get_service_backtest_snapshot()["state"])
+        self.assertEqual("stopping", window._service_stop_backtest(source="desktop-stop")["state"])
 
 
 if __name__ == "__main__":

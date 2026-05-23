@@ -11,8 +11,22 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
+import app.desktop.adapters.service_client as service_client_module  # noqa: E402
 from app.desktop import EmbeddedDesktopServiceClient, RemoteDesktopServiceClient, create_desktop_service_client  # noqa: E402
+from app.service.api_contract import SERVICE_API_ROUTE_PATHS, SERVICE_BACKTEST_RUN_REQUEST_FIELDS  # noqa: E402
 from app.service.runtime import TradingBotService  # noqa: E402
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload: dict | None = None) -> None:
+        self._payload = payload or {}
+        self.content = json.dumps(self._payload).encode("utf-8")
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
 
 
 class ServiceClientIntegrationTests(unittest.TestCase):
@@ -21,6 +35,13 @@ class ServiceClientIntegrationTests(unittest.TestCase):
         self.assertIsInstance(client, EmbeddedDesktopServiceClient)
         descriptor = client.describe()
         self.assertEqual(descriptor.get("client_mode"), "embedded")
+        backtest_fields = descriptor.get("backtest_request_fields")
+        self.assertIsInstance(backtest_fields, list)
+        self.assertIn("optimizer_mode", backtest_fields)
+        self.assertIn("optimizer_metric", backtest_fields)
+        self.assertTrue(callable(getattr(client, "get_backtest_snapshot", None)))
+        self.assertTrue(callable(getattr(client, "submit_backtest", None)))
+        self.assertTrue(callable(getattr(client, "stop_backtest", None)))
         preflight = client.get_operational_preflight()
         self.assertIsInstance(preflight, dict)
         self.assertIn("start", preflight)
@@ -35,7 +56,95 @@ class ServiceClientIntegrationTests(unittest.TestCase):
         descriptor = client.describe()
         self.assertEqual(descriptor.get("client_mode"), "remote")
         self.assertEqual(descriptor.get("base_url"), "http://127.0.0.1:9000")
+        self.assertIn("optimizer_combo_size", descriptor.get("backtest_request_fields", []))
         self.assertTrue(callable(getattr(client, "get_operational_preflight", None)))
+
+    def test_remote_desktop_service_client_submits_optimizer_backtest_contract(self):
+        captured: list[dict] = []
+
+        class FakeRequests:
+            @staticmethod
+            def request(**kwargs):
+                captured.append(kwargs)
+                return _FakeHttpResponse({"accepted": True, "state": "queued"})
+
+        request_payload = {
+            "symbols": ["BTCUSDT"],
+            "intervals": ["1h"],
+            "indicators": [{"key": "rsi", "enabled": True, "signal_role": "entry"}],
+            "capital": 1000,
+            "optimizer_mode": "combinations",
+            "optimizer_metric": "roi_drawdown",
+            "optimizer_combo_size": 3,
+            "optimizer_min_trades": 2,
+            "scan_scope": "top_n",
+            "scan_top_n": 50,
+            "scan_mdd_limit": 8.5,
+        }
+
+        with mock.patch.object(service_client_module, "requests", FakeRequests):
+            client = RemoteDesktopServiceClient(
+                base_url="http://127.0.0.1:9000",
+                api_token="token-123",
+            )
+            result = client.submit_backtest(request_payload, source="desktop-test")
+
+        self.assertEqual({"accepted": True, "state": "queued"}, result)
+        self.assertEqual(1, len(captured))
+        call = captured[0]
+        self.assertEqual("POST", call["method"])
+        self.assertEqual(
+            f"http://127.0.0.1:9000{SERVICE_API_ROUTE_PATHS['backtest_run']}",
+            call["url"],
+        )
+        self.assertEqual({"Authorization": "Bearer token-123"}, call["headers"])
+        self.assertEqual("desktop-test", call["json"]["source"])
+        submitted_request = call["json"]["request"]
+        self.assertEqual(request_payload, submitted_request)
+        for field in (
+            "optimizer_mode",
+            "optimizer_metric",
+            "optimizer_combo_size",
+            "optimizer_min_trades",
+            "scan_scope",
+            "scan_top_n",
+            "scan_mdd_limit",
+        ):
+            self.assertIn(field, SERVICE_BACKTEST_RUN_REQUEST_FIELDS)
+            self.assertIn(field, submitted_request)
+
+    def test_remote_desktop_service_client_reads_and_stops_backtests(self):
+        captured: list[dict] = []
+        responses = [
+            {"state": "idle"},
+            {"accepted": True, "state": "stopping"},
+        ]
+
+        class FakeRequests:
+            @staticmethod
+            def request(**kwargs):
+                captured.append(kwargs)
+                return _FakeHttpResponse(responses.pop(0))
+
+        with mock.patch.object(service_client_module, "requests", FakeRequests):
+            client = RemoteDesktopServiceClient(base_url="http://127.0.0.1:9000")
+            snapshot = client.get_backtest_snapshot()
+            stop_result = client.stop_backtest(source="desktop-stop-test")
+
+        self.assertEqual({"state": "idle"}, snapshot)
+        self.assertEqual({"accepted": True, "state": "stopping"}, stop_result)
+        self.assertEqual("GET", captured[0]["method"])
+        self.assertEqual(
+            f"http://127.0.0.1:9000{SERVICE_API_ROUTE_PATHS['backtest']}",
+            captured[0]["url"],
+        )
+        self.assertIsNone(captured[0]["headers"])
+        self.assertEqual("POST", captured[1]["method"])
+        self.assertEqual(
+            f"http://127.0.0.1:9000{SERVICE_API_ROUTE_PATHS['backtest_stop']}",
+            captured[1]["url"],
+        )
+        self.assertEqual({"source": "desktop-stop-test"}, captured[1]["json"])
 
     def test_service_runtime_imports_without_optional_backtest_or_llm_clients(self):
         script = r'''

@@ -7,6 +7,91 @@ import pandas as pd
 from .. import indicators as ind
 from .models import IndicatorDefinition
 
+SIGNAL_MODE_PRICE_CROSS = "price_cross"
+SIGNAL_MODE_BAND_POSITION = "band_position"
+SIGNAL_MODE_RELATIVE_TO_SMA = "relative_to_sma"
+SIGNAL_MODE_PERCENT_OF_CLOSE = "percent_of_close"
+SIGNAL_MODE_SLOPE = "slope"
+SIGNAL_ROLE_FILTER = "filter"
+SIGNAL_ROLE_SIGNAL = "signal"
+
+
+def _normalized_signal_mode(params: dict[str, object]) -> str:
+    return str(params.get("signal_mode") or "").strip().lower()
+
+
+def indicator_signal_role(indicator: IndicatorDefinition) -> str:
+    params = indicator.params or {}
+    raw_role = str(params.get("signal_role") or params.get("role") or SIGNAL_ROLE_SIGNAL)
+    role = raw_role.strip().lower().replace("-", "_").replace(" ", "_")
+    if role in {"filter", "entry_filter", "gate", "confirmation"}:
+        return SIGNAL_ROLE_FILTER
+    return SIGNAL_ROLE_SIGNAL
+
+
+def indicator_is_filter(indicator: IndicatorDefinition) -> bool:
+    return indicator_signal_role(indicator) == SIGNAL_ROLE_FILTER
+
+
+def _price_cross_series(df: pd.DataFrame, baseline: pd.Series) -> pd.Series:
+    return (df["close"] - baseline).fillna(0.0)
+
+
+def _band_position_series(close: pd.Series, lower: pd.Series, upper: pd.Series) -> pd.Series:
+    band_range = upper - lower
+    position = ((close - lower) / band_range.where(band_range != 0)) * 100.0
+    return position.fillna(0.0)
+
+
+def _percent_of_close(df: pd.DataFrame, series: pd.Series) -> pd.Series:
+    close = df["close"]
+    return ((series / close.where(close != 0)) * 100.0).fillna(0.0)
+
+
+def _to_bool(ser: pd.Series) -> pd.Series:
+    if not pd.api.types.is_bool_dtype(ser):
+        ser = ser.where(ser.notna(), False)
+        try:
+            ser = ser.infer_objects()
+        except AttributeError:
+            pass
+    return ser.astype(bool)
+
+
+def _filter_threshold(params: dict[str, object]) -> object:
+    if params.get("filter_value") is not None:
+        return params.get("filter_value")
+    if params.get("buy_value") is not None:
+        return params.get("buy_value")
+    return params.get("sell_value")
+
+
+def indicator_has_filter_rule(indicator: IndicatorDefinition) -> bool:
+    params = indicator.params or {}
+    operator = str(params.get("filter_operator") or "gte").strip().lower()
+    if operator in {"between", "outside"}:
+        return params.get("buy_value") is not None and params.get("sell_value") is not None
+    return _filter_threshold(params) is not None
+
+
+def indicator_has_signal_rule(indicator: IndicatorDefinition) -> bool:
+    params = indicator.params or {}
+    if indicator_is_filter(indicator):
+        return indicator_has_filter_rule(indicator)
+    return params.get("buy_value") is not None or params.get("sell_value") is not None
+
+
+def indicators_missing_signal_rules(indicators: list[IndicatorDefinition]) -> list[IndicatorDefinition]:
+    return [indicator for indicator in indicators if not indicator_has_signal_rule(indicator)]
+
+
+def signal_indicators(indicators: list[IndicatorDefinition]) -> list[IndicatorDefinition]:
+    return [indicator for indicator in indicators if not indicator_is_filter(indicator)]
+
+
+def filter_indicators(indicators: list[IndicatorDefinition]) -> list[IndicatorDefinition]:
+    return [indicator for indicator in indicators if indicator_is_filter(indicator)]
+
 
 def estimate_warmup(indicator: IndicatorDefinition) -> int:
     params = indicator.params or {}
@@ -49,15 +134,6 @@ def generate_signals(series: pd.Series, buy_value, sell_value) -> tuple[Optional
     if series is None or series.empty:
         return None, None
 
-    def _to_bool(ser: pd.Series) -> pd.Series:
-        if not pd.api.types.is_bool_dtype(ser):
-            ser = ser.where(ser.notna(), False)
-            try:
-                ser = ser.infer_objects()
-            except AttributeError:
-                pass
-        return ser.astype(bool)
-
     buy_events = None
     sell_events = None
     if buy_value is not None:
@@ -80,9 +156,49 @@ def generate_signals(series: pd.Series, buy_value, sell_value) -> tuple[Optional
     return buy_events, sell_events
 
 
+def generate_filter_state(series: pd.Series, params: dict[str, object]) -> Optional[pd.Series]:
+    if series is None or series.empty:
+        return None
+    operator = str(params.get("filter_operator") or "gte").strip().lower()
+    operator = operator.replace("-", "_").replace(" ", "_")
+    if operator in {"greater_than_or_equal", "above_or_equal", "min"}:
+        operator = "gte"
+    elif operator in {"greater_than", "above"}:
+        operator = "gt"
+    elif operator in {"less_than_or_equal", "below_or_equal", "max"}:
+        operator = "lte"
+    elif operator in {"less_than", "below"}:
+        operator = "lt"
+
+    if operator in {"between", "outside"}:
+        if params.get("buy_value") is None or params.get("sell_value") is None:
+            return None
+        lower = min(float(params.get("buy_value")), float(params.get("sell_value")))
+        upper = max(float(params.get("buy_value")), float(params.get("sell_value")))
+        condition = series.between(lower, upper, inclusive="both")
+        if operator == "outside":
+            condition = ~condition
+        return _to_bool(condition)
+
+    threshold = _filter_threshold(params)
+    if threshold is None:
+        return None
+    threshold_float = float(threshold)
+    if operator == "gt":
+        condition = series > threshold_float
+    elif operator == "lte":
+        condition = series <= threshold_float
+    elif operator == "lt":
+        condition = series < threshold_float
+    else:
+        condition = series >= threshold_float
+    return _to_bool(condition)
+
+
 def compute_indicator_series(df: pd.DataFrame, indicator: IndicatorDefinition) -> Optional[pd.Series]:
     key = indicator.key
     params = indicator.params or {}
+    signal_mode = _normalized_signal_mode(params)
 
     try:
         if key == "rsi":
@@ -92,17 +208,25 @@ def compute_indicator_series(df: pd.DataFrame, indicator: IndicatorDefinition) -
             length = int(params.get("length") or 20)
             ma_type = str(params.get("type") or "SMA").upper()
             if ma_type == "EMA":
-                return ind.ema(df["close"], length)
-            return ind.sma(df["close"], length)
+                series = ind.ema(df["close"], length)
+            else:
+                series = ind.sma(df["close"], length)
+            if signal_mode == SIGNAL_MODE_PRICE_CROSS:
+                return _price_cross_series(df, series)
+            return series
         if key == "donchian":
             length = int(params.get("length") or 20)
             high = ind.donchian_high(df, length)
             low = ind.donchian_low(df, length)
+            if signal_mode == SIGNAL_MODE_BAND_POSITION:
+                return _band_position_series(df["close"], low, high)
             return (high + low) / 2.0
         if key == "bb":
             length = int(params.get("length") or 20)
             std = float(params.get("std") or 2.0)
-            _upper, mid, _lower = ind.bollinger_bands(df, length=length, std=std)
+            upper, mid, lower = ind.bollinger_bands(df, length=length, std=std)
+            if signal_mode == SIGNAL_MODE_BAND_POSITION:
+                return _band_position_series(df["close"], lower, upper)
             return mid
         if key == "bbw":
             length = int(params.get("length") or 20)
@@ -112,12 +236,14 @@ def compute_indicator_series(df: pd.DataFrame, indicator: IndicatorDefinition) -
             length = int(params.get("length") or 20)
             atr_length = int(params.get("atr_length") or 10)
             multiplier = float(params.get("multiplier") or 2.0)
-            _upper, mid, _lower = ind.keltner_channels(
+            upper, mid, lower = ind.keltner_channels(
                 df,
                 length=length,
                 atr_length=atr_length,
                 multiplier=multiplier,
             )
+            if signal_mode == SIGNAL_MODE_BAND_POSITION:
+                return _band_position_series(df["close"], lower, upper)
             return mid
         if key == "ichimoku":
             conversion_length = int(params.get("conversion_length") or 9)
@@ -135,7 +261,10 @@ def compute_indicator_series(df: pd.DataFrame, indicator: IndicatorDefinition) -
         if key == "psar":
             af = float(params.get("af") or 0.02)
             max_af = float(params.get("max_af") or 0.2)
-            return ind.parabolic_sar(df, af=af, max_af=max_af)
+            series = ind.parabolic_sar(df, af=af, max_af=max_af)
+            if signal_mode == SIGNAL_MODE_PRICE_CROSS:
+                return _price_cross_series(df, series)
+            return series
         if key == "stoch_rsi":
             length = int(params.get("length") or 14)
             smooth_k = int(params.get("smooth_k") or 3)
@@ -152,9 +281,16 @@ def compute_indicator_series(df: pd.DataFrame, indicator: IndicatorDefinition) -
             _macd, _signal, hist = ind.macd(df["close"], fast=fast, slow=slow, signal=signal)
             return hist
         if key == "volume":
+            if signal_mode == SIGNAL_MODE_RELATIVE_TO_SMA:
+                length = int(params.get("length") or 20)
+                return ind.relative_volume(df, length=length)
             return df["volume"]
         if key == "obv":
-            return ind.obv(df)
+            series = ind.obv(df)
+            if signal_mode == SIGNAL_MODE_SLOPE:
+                length = int(params.get("length") or 3)
+                return (series - series.shift(length)).fillna(0.0)
+            return series
         if key == "rvol":
             length = int(params.get("length") or 20)
             return ind.relative_volume(df, length=length)
@@ -204,13 +340,19 @@ def compute_indicator_series(df: pd.DataFrame, indicator: IndicatorDefinition) -
             return ind.choppiness_index(df, length=length)
         if key == "atr":
             length = int(params.get("length") or 14)
-            return ind.atr(df, length=length)
+            series = ind.atr(df, length=length)
+            if signal_mode == SIGNAL_MODE_PERCENT_OF_CLOSE:
+                return _percent_of_close(df, series)
+            return series
         if key == "natr":
             length = int(params.get("length") or 14)
             return ind.natr(df, length=length)
         if key == "vwap":
             length = int(params.get("length") or 20)
-            return ind.vwap(df, length=length)
+            series = ind.vwap(df, length=length)
+            if signal_mode == SIGNAL_MODE_PRICE_CROSS:
+                return _price_cross_series(df, series)
+            return series
         if key == "mfi":
             length = int(params.get("length") or 14)
             return ind.mfi(df, length=length)
@@ -221,7 +363,10 @@ def compute_indicator_series(df: pd.DataFrame, indicator: IndicatorDefinition) -
             return ind.ultimate_oscillator(df, short=short, medium=medium, long=long)
         if key == "ema":
             length = int(params.get("length") or 20)
-            return ind.ema(df["close"], length)
+            series = ind.ema(df["close"], length)
+            if signal_mode == SIGNAL_MODE_PRICE_CROSS:
+                return _price_cross_series(df, series)
+            return series
         if key == "adx":
             length = int(params.get("length") or 14)
             return ind.adx(df, length=length)

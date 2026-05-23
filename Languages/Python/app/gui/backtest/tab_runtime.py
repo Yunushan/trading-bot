@@ -82,6 +82,9 @@ def bind_main_window_backtest_tab(
         normalize_stop_loss_dict=normalize_stop_loss_dict,
     )
     MainWindow._create_backtest_tab = _create_backtest_tab
+    MainWindow._refresh_backtest_optimizer_estimate = (
+        backtest_tab_params_runtime.refresh_backtest_optimizer_estimate
+    )
 
 
 __all__ = [

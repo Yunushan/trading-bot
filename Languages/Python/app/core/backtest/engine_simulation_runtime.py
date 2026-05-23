@@ -234,27 +234,40 @@ def simulate_backtest(
 
     buy_arrays = [signals["buy"] for signals in indicator_signals if signals["buy"] is not None]
     sell_arrays = [signals["sell"] for signals in indicator_signals if signals["sell"] is not None]
+    filter_arrays = [signals["filter"] for signals in indicator_signals if signals.get("filter") is not None]
+
+    if not buy_arrays and not sell_arrays:
+        raise ValueError("At least one signal indicator is required; filter-only indicators cannot open trades.")
 
     if buy_arrays:
         if len(buy_arrays) == 1:
-            aggregated_buy_array = buy_arrays[0]
+            raw_buy_array = buy_arrays[0]
         else:
             buy_stack = np.vstack(buy_arrays)
             if logic == "AND":
-                aggregated_buy_array = np.all(buy_stack, axis=0)
+                raw_buy_array = np.all(buy_stack, axis=0)
             else:
-                aggregated_buy_array = np.any(buy_stack, axis=0)
+                raw_buy_array = np.any(buy_stack, axis=0)
     else:
-        aggregated_buy_array = np.zeros(n_rows, dtype=bool)
+        raw_buy_array = np.zeros(n_rows, dtype=bool)
 
     if sell_arrays:
         if len(sell_arrays) == 1:
-            aggregated_sell_array = sell_arrays[0]
+            raw_sell_array = sell_arrays[0]
         else:
             sell_stack = np.vstack(sell_arrays)
-            aggregated_sell_array = np.any(sell_stack, axis=0)
+            raw_sell_array = np.any(sell_stack, axis=0)
     else:
-        aggregated_sell_array = np.zeros(n_rows, dtype=bool)
+        raw_sell_array = np.zeros(n_rows, dtype=bool)
+
+    if filter_arrays:
+        filter_stack = np.vstack(filter_arrays)
+        entry_filter_array = np.all(filter_stack, axis=0)
+    else:
+        entry_filter_array = np.ones(n_rows, dtype=bool)
+
+    entry_buy_array = raw_buy_array & entry_filter_array
+    entry_sell_array = raw_sell_array & entry_filter_array
 
     for idx in range(n_rows):
         if should_stop_cb and callable(should_stop_cb) and should_stop_cb():
@@ -269,8 +282,10 @@ def simulate_backtest(
         if low_price_val <= 0.0:
             low_price_val = price
 
-        aggregated_buy = bool(aggregated_buy_array[idx])
-        aggregated_sell = bool(aggregated_sell_array[idx])
+        raw_buy = bool(raw_buy_array[idx])
+        raw_sell = bool(raw_sell_array[idx])
+        entry_buy = bool(entry_buy_array[idx])
+        entry_sell = bool(entry_sell_array[idx])
         if not position_open and mdd_logic == "entire_account":
             _update_drawdown(drawdown_state_account, equity)
 
@@ -352,7 +367,7 @@ def simulate_backtest(
                     trades += 1
                     continue
 
-            if direction == "LONG" and aggregated_sell:
+            if direction == "LONG" and raw_sell:
                 pnl = (price - entry_price) * units
                 equity = max(0.0, equity + pnl)
                 _record_realized_equity(equity)
@@ -361,11 +376,11 @@ def simulate_backtest(
                 units = 0.0
                 position_margin = 0.0
                 direction = ""
-                if can_short and aggregated_sell and equity > 0.0:
-                    aggregated_sell = True
+                if can_short and entry_sell and equity > 0.0:
+                    entry_sell = True
                 else:
-                    aggregated_sell = False
-            elif direction == "SHORT" and aggregated_buy:
+                    entry_sell = False
+            elif direction == "SHORT" and raw_buy:
                 pnl = (entry_price - price) * units
                 equity = max(0.0, equity + pnl)
                 _record_realized_equity(equity)
@@ -374,13 +389,13 @@ def simulate_backtest(
                 units = 0.0
                 position_margin = 0.0
                 direction = ""
-                if can_long and aggregated_buy and equity > 0.0:
-                    aggregated_buy = True
+                if can_long and entry_buy and equity > 0.0:
+                    entry_buy = True
                 else:
-                    aggregated_buy = False
+                    entry_buy = False
 
         if not position_open and equity > 0.0:
-            if aggregated_buy and can_long:
+            if entry_buy and can_long:
                 entry_price = price
                 position_margin = equity * pct_fraction
                 units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
@@ -391,7 +406,7 @@ def simulate_backtest(
                 direction = "LONG"
                 _start_trade(direction, units)
                 trades += 1
-            elif aggregated_sell and can_short:
+            elif entry_sell and can_short:
                 entry_price = price
                 position_margin = equity * pct_fraction
                 units = (position_margin * leverage) / entry_price if entry_price > 0.0 else 0.0
@@ -460,7 +475,10 @@ def simulate_backtest(
         mdd_logic=mdd_logic,
         start=request.start,
         end=request.end,
+        side=side_pref,
+        capital=capital,
         position_pct=pct_fraction,
+        position_pct_units="fraction",
         stop_loss_enabled=stop_enabled,
         stop_loss_mode=stop_mode,
         stop_loss_usdt=stop_usdt,

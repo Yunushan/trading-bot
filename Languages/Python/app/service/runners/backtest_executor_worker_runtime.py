@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ...core.backtest import BacktestEngine
-from .backtest_executor_request_runtime import clean_text
+from .backtest_executor_request_runtime import clean_text, rank_optimizer_runs
 from .backtest_executor_snapshot_runtime import finish_snapshots, set_running_snapshots
 
 
@@ -45,6 +45,16 @@ def run_backtest_thread(
             should_stop=lambda: bool(adapter._cancel_event and adapter._cancel_event.is_set()),
         )
         run_records = list(result.get("runs", []) or []) if isinstance(result, dict) else []
+        if bool(summary.get("optimizer_enabled")):
+            run_records = rank_optimizer_runs(
+                run_records,
+                metric=str(summary.get("optimizer_metric") or "roi_percent"),
+                mdd_limit=float(summary.get("optimizer_mdd_limit") or 0.0),
+                min_trades=int(summary.get("optimizer_min_trades") or 0),
+                mode=str(summary.get("optimizer_mode") or ""),
+                scope=str(summary.get("optimizer_scope") or ""),
+                run_count=int(summary.get("estimated_run_count") or len(run_records)),
+            )
         error_records = list(result.get("errors", []) or []) if isinstance(result, dict) else []
         cancelled = bool(adapter._cancel_event and adapter._cancel_event.is_set())
         if cancelled:

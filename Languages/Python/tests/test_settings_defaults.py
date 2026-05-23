@@ -66,7 +66,36 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         self.assertEqual("Average True Range (ATR)", INDICATOR_DISPLAY_NAMES["atr"])
         self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["indicators"]["atr"])
-        self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["backtest"]["indicators"]["atr"])
+        self.assertEqual(
+            {
+                "enabled": False,
+                "length": 14,
+                "buy_value": 1.0,
+                "sell_value": None,
+                "signal_role": "filter",
+                "signal_mode": "percent_of_close",
+                "filter_operator": "gte",
+            },
+            config["backtest"]["indicators"]["atr"],
+        )
+
+    def test_volume_indicator_defaults_are_available_for_runtime_and_backtest(self):
+        config = build_default_config()
+
+        self.assertEqual("Volume", INDICATOR_DISPLAY_NAMES["volume"])
+        self.assertEqual({"enabled": False, "buy_value": None, "sell_value": None}, config["indicators"]["volume"])
+        self.assertEqual(
+            {
+                "enabled": False,
+                "buy_value": 1.0,
+                "sell_value": None,
+                "signal_role": "filter",
+                "signal_mode": "relative_to_sma",
+                "length": 20,
+                "filter_operator": "gte",
+            },
+            config["backtest"]["indicators"]["volume"],
+        )
 
     def test_natr_indicator_defaults_are_available_for_runtime_and_backtest(self):
         config = build_default_config()
@@ -200,7 +229,10 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         self.assertEqual("Volume Weighted Average Price (VWAP)", INDICATOR_DISPLAY_NAMES["vwap"])
         self.assertEqual({"enabled": False, "length": 20, "buy_value": None, "sell_value": None}, config["indicators"]["vwap"])
-        self.assertEqual({"enabled": False, "length": 20, "buy_value": None, "sell_value": None}, config["backtest"]["indicators"]["vwap"])
+        self.assertEqual(
+            {"enabled": False, "length": 20, "buy_value": 0, "sell_value": 0, "signal_mode": "price_cross"},
+            config["backtest"]["indicators"]["vwap"],
+        )
 
     def test_keltner_indicator_defaults_are_available_for_runtime_and_backtest(self):
         config = build_default_config()
@@ -215,7 +247,10 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         self.assertEqual("Keltner Channels (KC)", INDICATOR_DISPLAY_NAMES["keltner"])
         self.assertEqual(expected, config["indicators"]["keltner"])
-        self.assertEqual(expected, config["backtest"]["indicators"]["keltner"])
+        self.assertEqual(
+            dict(expected, buy_value=0, sell_value=100, signal_mode="band_position"),
+            config["backtest"]["indicators"]["keltner"],
+        )
 
     def test_ichimoku_indicator_defaults_are_available_for_runtime_and_backtest(self):
         config = build_default_config()
@@ -253,6 +288,24 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual({"enabled": False, "length": 14, "buy_value": None, "sell_value": None}, config["indicators"]["mfi"])
         self.assertEqual({"enabled": False, "length": 14, "buy_value": 20, "sell_value": 80}, config["backtest"]["indicators"]["mfi"])
 
+    def test_backtest_directional_indicator_defaults_include_signal_rules(self):
+        config = build_default_config()
+        backtest_indicators = config["backtest"]["indicators"]
+
+        self.assertEqual({"enabled": False, "length": 20, "type": "SMA", "buy_value": 0, "sell_value": 0, "signal_mode": "price_cross"}, backtest_indicators["ma"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": 0, "sell_value": 100, "signal_mode": "band_position"}, backtest_indicators["donchian"])
+        self.assertEqual({"enabled": False, "af": 0.02, "max_af": 0.2, "buy_value": 0, "sell_value": 0, "signal_mode": "price_cross"}, backtest_indicators["psar"])
+        self.assertEqual({"enabled": False, "length": 20, "std": 2, "buy_value": 0, "sell_value": 100, "signal_mode": "band_position"}, backtest_indicators["bb"])
+        self.assertEqual({"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": 20, "sell_value": 80}, backtest_indicators["stoch_rsi"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": -80, "sell_value": -20}, backtest_indicators["willr"])
+        self.assertEqual({"enabled": False, "fast": 12, "slow": 26, "signal": 9, "buy_value": 0, "sell_value": 0}, backtest_indicators["macd"])
+        self.assertEqual({"enabled": False, "short": 7, "medium": 14, "long": 28, "buy_value": 30, "sell_value": 70}, backtest_indicators["uo"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": 20, "sell_value": None, "signal_role": "filter", "filter_operator": "gte"}, backtest_indicators["adx"])
+        self.assertEqual({"enabled": False, "length": 14, "buy_value": 0, "sell_value": 0}, backtest_indicators["dmi"])
+        self.assertEqual({"enabled": False, "atr_period": 10, "multiplier": 3.0, "buy_value": 0, "sell_value": 0, "signal_mode": "price_cross"}, backtest_indicators["supertrend"])
+        self.assertEqual({"enabled": False, "length": 20, "buy_value": 0, "sell_value": 0, "signal_mode": "price_cross"}, backtest_indicators["ema"])
+        self.assertEqual({"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": 20, "sell_value": 80}, backtest_indicators["stochastic"])
+
     def test_default_config_passes_runtime_validation(self):
         config = build_default_config()
         validated = validate_runtime_config(config)
@@ -267,6 +320,7 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertFalse(validated["live_allow_auto_bump_to_min_order"])
         self.assertIsNone(validated["lead_trader_profile"])
         self.assertEqual("selected", validated["backtest"]["scan_scope"])
+        self.assertEqual("local", validated["backtest"]["execution_backend"])
         self.assertEqual("current", validated["backtest"]["optimizer_mode"])
         self.assertEqual("roi_percent", validated["backtest"]["optimizer_metric"])
         self.assertEqual(2, validated["backtest"]["optimizer_combo_size"])
@@ -278,6 +332,7 @@ class SettingsDefaultsTests(unittest.TestCase):
             {
                 "logic": "separate",
                 "scan_scope": "all-loaded",
+                "execution_backend": "service-api",
                 "optimizer_mode": "combinations",
                 "optimizer_metric": "roi-drawdown",
                 "optimizer_combo_size": "3",
@@ -289,6 +344,7 @@ class SettingsDefaultsTests(unittest.TestCase):
 
         self.assertEqual("SEPARATE", validated["backtest"]["logic"])
         self.assertEqual("all_loaded", validated["backtest"]["scan_scope"])
+        self.assertEqual("service", validated["backtest"]["execution_backend"])
         self.assertEqual("combinations", validated["backtest"]["optimizer_mode"])
         self.assertEqual("roi_drawdown", validated["backtest"]["optimizer_metric"])
         self.assertEqual(3, validated["backtest"]["optimizer_combo_size"])
@@ -423,6 +479,7 @@ class SettingsDefaultsTests(unittest.TestCase):
             }
         )
         config["backtest"]["scan_scope"] = "everything"
+        config["backtest"]["execution_backend"] = "elsewhere"
         config["backtest"]["optimizer_mode"] = "magic"
         config["backtest"]["optimizer_metric"] = "moon"
 
@@ -444,6 +501,7 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertIn("positions_auto_resize_rows", fields)
         self.assertIn("positions_auto_resize_columns", fields)
         self.assertIn("backtest.scan_scope", fields)
+        self.assertIn("backtest.execution_backend", fields)
         self.assertIn("backtest.optimizer_mode", fields)
         self.assertIn("backtest.optimizer_metric", fields)
 

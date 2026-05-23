@@ -65,7 +65,7 @@ def build_backtest_output_group(self):
     except Exception:
         pass
 
-    self.backtest_results_table = QtWidgets.QTableWidget(0, 21)
+    self.backtest_results_table = QtWidgets.QTableWidget(0, 24)
     self.backtest_results_table.setHorizontalHeaderLabels(
         [
             "Symbol",
@@ -73,6 +73,9 @@ def build_backtest_output_group(self):
             "Logic",
             "Indicators",
             "Trades",
+            "Optimizer Rank",
+            "Optimizer Score",
+            "Optimizer Status",
             "Loop Interval",
             "Start Date",
             "End Date",

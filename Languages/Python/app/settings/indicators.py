@@ -37,21 +37,25 @@ INDICATOR_CATALOG = (
         key="ma",
         display_name="Moving Average (MA)",
         defaults={"enabled": False, "length": 20, "type": "SMA", "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "price_cross", "buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="donchian",
         display_name="Donchian Channels (DC)",
         defaults={"enabled": False, "length": 20, "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "band_position", "buy_value": 0, "sell_value": 100},
     ),
     IndicatorDefinition(
         key="psar",
         display_name="Parabolic SAR (PSAR)",
         defaults={"enabled": False, "af": 0.02, "max_af": 0.2, "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "price_cross", "buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="bb",
         display_name="Bollinger Bands (BB)",
         defaults={"enabled": False, "length": 20, "std": 2, "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "band_position", "buy_value": 0, "sell_value": 100},
     ),
     IndicatorDefinition(
         key="bbw",
@@ -70,6 +74,7 @@ INDICATOR_CATALOG = (
             "buy_value": None,
             "sell_value": None,
         },
+        backtest_overrides={"signal_mode": "band_position", "buy_value": 0, "sell_value": 100},
     ),
     IndicatorDefinition(
         key="ichimoku",
@@ -96,6 +101,13 @@ INDICATOR_CATALOG = (
         key="volume",
         display_name="Volume",
         defaults={"enabled": False, "buy_value": None, "sell_value": None},
+        backtest_overrides={
+            "signal_role": "filter",
+            "signal_mode": "relative_to_sma",
+            "length": 20,
+            "filter_operator": "gte",
+            "buy_value": 1.0,
+        },
     ),
     IndicatorDefinition(
         key="obv",
@@ -179,6 +191,12 @@ INDICATOR_CATALOG = (
         key="atr",
         display_name="Average True Range (ATR)",
         defaults={"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+        backtest_overrides={
+            "signal_role": "filter",
+            "signal_mode": "percent_of_close",
+            "filter_operator": "gte",
+            "buy_value": 1.0,
+        },
     ),
     IndicatorDefinition(
         key="natr",
@@ -190,6 +208,7 @@ INDICATOR_CATALOG = (
         key="vwap",
         display_name="Volume Weighted Average Price (VWAP)",
         defaults={"enabled": False, "length": 20, "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "price_cross", "buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="mfi",
@@ -201,46 +220,59 @@ INDICATOR_CATALOG = (
         key="stoch_rsi",
         display_name="Stochastic RSI (SRSI)",
         defaults={"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": None, "sell_value": None},
+        backtest_overrides={"buy_value": 20, "sell_value": 80},
     ),
     IndicatorDefinition(
         key="willr",
         display_name="Williams %R",
         defaults={"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+        backtest_overrides={"buy_value": -80, "sell_value": -20},
     ),
     IndicatorDefinition(
         key="macd",
         display_name="Moving Average Convergence/Divergence (MACD)",
         defaults={"enabled": False, "fast": 12, "slow": 26, "signal": 9, "buy_value": None, "sell_value": None},
+        backtest_overrides={"buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="uo",
         display_name="Ultimate Oscillator (UO)",
         defaults={"enabled": False, "short": 7, "medium": 14, "long": 28, "buy_value": None, "sell_value": None},
+        backtest_overrides={"buy_value": 30, "sell_value": 70},
     ),
     IndicatorDefinition(
         key="adx",
         display_name="Average Directional Index (ADX)",
         defaults={"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+        backtest_overrides={
+            "signal_role": "filter",
+            "filter_operator": "gte",
+            "buy_value": 20,
+        },
     ),
     IndicatorDefinition(
         key="dmi",
         display_name="Directional Movement Index (DMI)",
         defaults={"enabled": False, "length": 14, "buy_value": None, "sell_value": None},
+        backtest_overrides={"buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="supertrend",
         display_name="SuperTrend (ST)",
         defaults={"enabled": False, "atr_period": 10, "multiplier": 3.0, "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "price_cross", "buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="ema",
         display_name="Exponential Moving Average (EMA)",
         defaults={"enabled": False, "length": 20, "buy_value": None, "sell_value": None},
+        backtest_overrides={"signal_mode": "price_cross", "buy_value": 0, "sell_value": 0},
     ),
     IndicatorDefinition(
         key="stochastic",
         display_name="Stochastic Oscillator",
         defaults={"enabled": False, "length": 14, "smooth_k": 3, "smooth_d": 3, "buy_value": None, "sell_value": None},
+        backtest_overrides={"buy_value": 20, "sell_value": 80},
     ),
 )
 

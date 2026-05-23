@@ -67,8 +67,55 @@ def _normalize_backtest_run(run):
                 0.0,
             ),
             "mdd_logic": getattr(run, "mdd_logic", None),
+            "side": getattr(run, "side", None),
+            "capital": getattr(run, "capital", None),
+            "position_pct": getattr(run, "position_pct", None),
+            "position_pct_units": getattr(run, "position_pct_units", None),
+            "loop_interval_override": getattr(run, "loop_interval_override", None),
+            "connector_backend": getattr(run, "connector_backend", None),
+            "strategy_controls": getattr(run, "strategy_controls", None),
+            "stop_loss_enabled": getattr(run, "stop_loss_enabled", None),
+            "stop_loss_mode": getattr(run, "stop_loss_mode", None),
+            "stop_loss_usdt": getattr(run, "stop_loss_usdt", None),
+            "stop_loss_percent": getattr(run, "stop_loss_percent", None),
+            "stop_loss_scope": getattr(run, "stop_loss_scope", None),
+            "leverage": getattr(run, "leverage", None),
+            "margin_mode": getattr(run, "margin_mode", None),
+            "position_mode": getattr(run, "position_mode", None),
+            "assets_mode": getattr(run, "assets_mode", None),
+            "account_mode": getattr(run, "account_mode", None),
+            "optimizer_rank": getattr(run, "optimizer_rank", None),
+            "optimizer_metric": getattr(run, "optimizer_metric", ""),
+            "optimizer_primary_score": getattr(run, "optimizer_primary_score", None),
+            "optimizer_eligible": getattr(run, "optimizer_eligible", None),
+            "optimizer_mode": getattr(run, "optimizer_mode", ""),
+            "optimizer_scope": getattr(run, "optimizer_scope", ""),
+            "optimizer_mdd_limit": getattr(run, "optimizer_mdd_limit", None),
+            "optimizer_min_trades": getattr(run, "optimizer_min_trades", None),
+            "optimizer_candidate_count": getattr(
+                run,
+                "optimizer_candidate_count",
+                None,
+            ),
+            "optimizer_eligible_count": getattr(
+                run,
+                "optimizer_eligible_count",
+                None,
+            ),
+            "optimizer_filtered_count": getattr(
+                run,
+                "optimizer_filtered_count",
+                None,
+            ),
+            "optimizer_run_count": getattr(run, "optimizer_run_count", None),
+            "optimizer_rejection_reason": getattr(
+                run,
+                "optimizer_rejection_reason",
+                "",
+            ),
         }
     data.setdefault("indicator_keys", [])
+    had_position_pct = "position_pct" in data and data.get("position_pct") not in (None, "")
     keys = data.get("indicator_keys") or []
     if not isinstance(keys, (list, tuple)):
         keys = [keys]
@@ -91,7 +138,7 @@ def _normalize_backtest_run(run):
             data[key] = float(data.get(key, 0.0) or 0.0)
         except Exception:
             data[key] = 0.0
-    for pct_key in ("position_pct",):
+    for pct_key in ("position_pct", "capital"):
         try:
             data[pct_key] = float(data.get(pct_key, 0.0) or 0.0)
         except Exception:
@@ -103,19 +150,62 @@ def _normalize_backtest_run(run):
             data[lev_key] = 0.0
     for bool_key in ("stop_loss_enabled",):
         data[bool_key] = bool(data.get(bool_key, False))
+    if data.get("optimizer_eligible") is not None:
+        data["optimizer_eligible"] = bool(data.get("optimizer_eligible"))
+    try:
+        if data.get("optimizer_rank") is not None:
+            data["optimizer_rank"] = int(data.get("optimizer_rank"))
+    except Exception:
+        data["optimizer_rank"] = None
+    try:
+        if data.get("optimizer_primary_score") is not None:
+            data["optimizer_primary_score"] = float(data.get("optimizer_primary_score"))
+    except Exception:
+        data["optimizer_primary_score"] = None
+    try:
+        if data.get("optimizer_mdd_limit") is not None:
+            data["optimizer_mdd_limit"] = float(data.get("optimizer_mdd_limit"))
+    except Exception:
+        data["optimizer_mdd_limit"] = None
+    for int_key in (
+        "optimizer_min_trades",
+        "optimizer_candidate_count",
+        "optimizer_eligible_count",
+        "optimizer_filtered_count",
+        "optimizer_run_count",
+    ):
+        try:
+            if data.get(int_key) is not None:
+                data[int_key] = int(data.get(int_key))
+        except Exception:
+            data[int_key] = None
     for str_key in (
         "symbol",
         "interval",
         "logic",
+        "side",
+        "position_pct_units",
         "stop_loss_mode",
         "stop_loss_scope",
         "margin_mode",
         "position_mode",
         "assets_mode",
         "account_mode",
+        "connector_backend",
+        "optimizer_metric",
+        "optimizer_mode",
+        "optimizer_scope",
+        "optimizer_rejection_reason",
     ):
         val = data.get(str_key)
         data[str_key] = str(val or "").strip()
+    if data.get("side"):
+        data["side"] = str(data.get("side") or "").upper()
+    if had_position_pct and not data.get("position_pct_units"):
+        data["position_pct_units"] = "fraction"
+    strategy_controls = data.get("strategy_controls")
+    if not isinstance(strategy_controls, dict):
+        data.pop("strategy_controls", None)
     mdd_logic_val = str(data.get("mdd_logic", "") or "").lower()
     if mdd_logic_val not in MDD_LOGIC_OPTIONS:
         mdd_logic_val = MDD_LOGIC_DEFAULT

@@ -10,6 +10,8 @@ def _create_override_group(self, kind: str, symbol_list, interval_list) -> QtWid
     show_indicators = kind in ("runtime", "backtest")
     if show_indicators:
         columns.append("Indicators")
+    if kind in ("runtime", "backtest"):
+        columns.append("Backtest")
     include_loop = kind in ("runtime", "backtest")
     include_leverage = kind in ("runtime", "backtest")
     if include_loop:

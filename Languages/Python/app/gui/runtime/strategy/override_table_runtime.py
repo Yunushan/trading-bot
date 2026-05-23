@@ -20,6 +20,7 @@ def _refresh_symbol_interval_pairs(self, kind: str = "runtime", _depth: int = 0)
         symbol_col = column_map.get("Symbol", 0)
         interval_col = column_map.get("Interval", 1)
         indicator_col = column_map.get("Indicators")
+        backtest_col = column_map.get("Backtest")
         loop_col = column_map.get("Loop")
         leverage_col = column_map.get("Leverage")
         strategy_col = column_map.get("Strategy Controls")
@@ -86,6 +87,15 @@ def _refresh_symbol_interval_pairs(self, kind: str = "runtime", _depth: int = 0)
                     indicator_col,
                     QtWidgets.QTableWidgetItem(shared._format_indicator_list_text(indicator_values)),
                 )
+            if backtest_col is not None:
+                backtest_metadata = entry_clean.get("backtest_result")
+                backtest_item = QtWidgets.QTableWidgetItem(
+                    shared._format_backtest_result_text(backtest_metadata)
+                )
+                backtest_tooltip = shared._format_backtest_result_tooltip(backtest_metadata)
+                if backtest_tooltip:
+                    backtest_item.setToolTip(backtest_tooltip)
+                table.setItem(row, backtest_col, backtest_item)
             if loop_col is not None:
                 loop_display = entry_clean.get("loop_interval_override") or "-"
                 table.setItem(row, loop_col, QtWidgets.QTableWidgetItem(loop_display))

@@ -74,7 +74,7 @@ def finish_snapshots(
 ) -> None:
     updated_at = utc_now_iso()
     sorted_runs = sort_runs(run_records or [])
-    run_payload = [build_backtest_run_record(item) for item in sorted_runs[:5]]
+    run_payload = [build_backtest_run_record(item) for item in sorted_runs]
     error_payload = [build_backtest_error_record(item) for item in (error_records or [])[:10]]
     adapter._runtime.set_backtest_snapshot(
         build_backtest_snapshot(
@@ -94,7 +94,8 @@ def finish_snapshots(
             completed_at=updated_at,
             updated_at=updated_at,
             source="service-backtest-executor",
-            top_runs=run_payload,
+            runs=run_payload,
+            top_runs=run_payload[:5],
             errors=error_payload,
         )
     )

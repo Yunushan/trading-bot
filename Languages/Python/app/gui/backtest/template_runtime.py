@@ -12,9 +12,28 @@ _INDICATOR_DISPLAY_NAMES = {}
 _SIDE_LABELS = {}
 _ParamDialog = None
 
+_BACKTEST_ESTIMATE_REFRESH_KEYS = {
+    "intervals",
+    "logic",
+    "optimizer_combo_size",
+    "optimizer_mode",
+    "scan_scope",
+    "scan_top_n",
+    "symbols",
+}
+
 
 def _normalize_connector_backend(value):  # type: ignore
     return value
+
+
+def _refresh_optimizer_estimate_if_available(self) -> None:
+    refresher = getattr(self, "_refresh_backtest_optimizer_estimate", None)
+    if callable(refresher):
+        try:
+            refresher()
+        except Exception:
+            pass
 
 
 def _get_selected_mdd_logic(self) -> str:
@@ -414,6 +433,8 @@ def _update_backtest_config(self, key, value):
         self.backtest_config[key] = value
         cfg = self.config.setdefault("backtest", {})
         cfg[key] = value
+        if key in _BACKTEST_ESTIMATE_REFRESH_KEYS:
+            _refresh_optimizer_estimate_if_available(self)
     except Exception:
         pass
 
@@ -425,6 +446,7 @@ def _backtest_toggle_indicator(self, key: str, checked: bool):
         params["enabled"] = bool(checked)
         cfg = self.config.setdefault("backtest", {}).setdefault("indicators", {})
         cfg[key] = copy.deepcopy(params)
+        _refresh_optimizer_estimate_if_available(self)
     except Exception:
         pass
 
@@ -452,6 +474,7 @@ def _set_all_backtest_indicators(self, checked: bool):
                     checkbox.setChecked(enabled)
                 except Exception:
                     pass
+        _refresh_optimizer_estimate_if_available(self)
     except Exception:
         pass
 
@@ -470,6 +493,7 @@ def _open_backtest_params(self, key: str):
             params.update(updates)
             cfg = self.config.setdefault("backtest", {}).setdefault("indicators", {})
             cfg[key] = copy.deepcopy(params)
+            _refresh_optimizer_estimate_if_available(self)
     except Exception:
         pass
 

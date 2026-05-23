@@ -40,9 +40,12 @@ def bind_main_window_desktop_service_bridge(
     main_window_cls._service_request_stop = service_bridge_control_runtime._service_request_stop
     main_window_cls._service_mark_start_failed = service_bridge_control_runtime._service_mark_start_failed
     main_window_cls._service_record_log_event = service_bridge_control_runtime._service_record_log_event
+    main_window_cls._service_submit_backtest = service_bridge_control_runtime._service_submit_backtest
+    main_window_cls._service_stop_backtest = service_bridge_control_runtime._service_stop_backtest
     main_window_cls._get_service_client_descriptor = service_bridge_snapshot_runtime._get_service_client_descriptor
     main_window_cls._get_service_account_snapshot = service_bridge_snapshot_runtime._get_service_account_snapshot
     main_window_cls._get_service_status_snapshot = service_bridge_snapshot_runtime._get_service_status_snapshot
+    main_window_cls._get_service_backtest_snapshot = service_bridge_snapshot_runtime._get_service_backtest_snapshot
     main_window_cls._get_service_config_summary = service_bridge_snapshot_runtime._get_service_config_summary
     main_window_cls._get_service_portfolio_snapshot = service_bridge_snapshot_runtime._get_service_portfolio_snapshot
     main_window_cls._get_service_exchange_connector_snapshot = (

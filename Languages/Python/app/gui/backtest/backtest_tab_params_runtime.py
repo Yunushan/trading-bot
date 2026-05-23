@@ -4,8 +4,116 @@ import copy
 
 from PyQt6 import QtCore, QtWidgets
 
+from app.core.backtest.indicator_selection_runtime import (
+    build_backtest_indicator_definitions,
+)
+from app.core.backtest.indicator_runtime import signal_indicators
+
 from . import backtest_optimizer_runtime
 from . import backtest_tab_context_runtime as tab_context_runtime
+
+
+def _selected_backtest_symbols_for_estimate(self) -> list[str]:
+    symbols = [
+        str(symbol or "").strip().upper()
+        for symbol in (self.backtest_config.get("symbols") or [])
+        if str(symbol or "").strip()
+    ]
+    if symbols:
+        return symbols
+    symbol_list = getattr(self, "backtest_symbol_list", None)
+    if symbol_list is None:
+        return []
+    try:
+        return [
+            str(item.text() or "").strip().upper()
+            for item in symbol_list.selectedItems()
+            if str(item.text() or "").strip()
+        ]
+    except Exception:
+        return []
+
+
+def _selected_backtest_intervals_for_estimate(self) -> list[str]:
+    intervals = [
+        str(interval or "").strip()
+        for interval in (self.backtest_config.get("intervals") or [])
+        if str(interval or "").strip()
+    ]
+    if intervals:
+        return intervals
+    interval_list = getattr(self, "backtest_interval_list", None)
+    if interval_list is None:
+        return []
+    try:
+        return [
+            str(item.text() or "").strip()
+            for item in interval_list.selectedItems()
+            if str(item.text() or "").strip()
+        ]
+    except Exception:
+        return []
+
+
+def refresh_backtest_optimizer_estimate(self) -> None:
+    label = getattr(self, "backtest_optimizer_estimate_label", None)
+    if label is None:
+        return
+    try:
+        indicators = build_backtest_indicator_definitions(
+            self.backtest_config.get("indicators", {}) or {}
+        )
+        signal_keys = [indicator.key for indicator in signal_indicators(indicators)]
+        scope_combo = getattr(self, "backtest_scan_scope_combo", None)
+        mode_combo = getattr(self, "backtest_optimizer_mode_combo", None)
+        scope = (
+            scope_combo.currentData()
+            if scope_combo is not None
+            else self.backtest_config.get("scan_scope", "selected")
+        )
+        mode = (
+            mode_combo.currentData()
+            if mode_combo is not None
+            else self.backtest_config.get("optimizer_mode", "current")
+        )
+        try:
+            top_n = int(self.backtest_scan_top_spin.value())
+        except Exception:
+            top_n = int(self.backtest_config.get("scan_top_n", 1) or 1)
+        try:
+            combo_size = int(self.backtest_optimizer_combo_size_spin.value())
+        except Exception:
+            combo_size = int(self.backtest_config.get("optimizer_combo_size", 2) or 2)
+        logic = str(self.backtest_config.get("logic", "AND") or "AND").upper()
+        plan = backtest_optimizer_runtime.estimate_scan_plan(
+            symbols_all=getattr(self, "backtest_symbols_all", []) or [],
+            selected_symbols=_selected_backtest_symbols_for_estimate(self),
+            intervals=_selected_backtest_intervals_for_estimate(self),
+            indicator_keys=signal_keys,
+            scope=str(scope or ""),
+            top_n=top_n,
+            mode=str(mode or ""),
+            combo_size=combo_size,
+            logic=logic,
+        )
+        label.setText(backtest_optimizer_runtime.format_scan_plan_estimate(plan))
+        if plan.get("over_limit"):
+            label.setStyleSheet("color: #ff6b6b; font-weight: 600;")
+        else:
+            label.setStyleSheet("color: #9fd0ff;")
+        button = getattr(self, "backtest_scan_btn", None)
+        scan_worker = getattr(self, "backtest_scan_worker", None)
+        backtest_worker = getattr(self, "backtest_worker", None)
+        scan_busy = bool(scan_worker is not None and scan_worker.isRunning())
+        backtest_busy = bool(backtest_worker is not None and backtest_worker.isRunning())
+        if button is not None and not scan_busy and not backtest_busy:
+            button.setEnabled(not bool(plan.get("over_limit")))
+    except Exception:
+        try:
+            label.setText("Estimated optimizer runs: unavailable")
+            label.setStyleSheet("color: #ffb86b;")
+        except Exception:
+            pass
 
 
 def build_backtest_params_group(self):
@@ -290,15 +398,10 @@ def build_backtest_params_group(self):
     if optimizer_mode_idx < 0:
         optimizer_mode_idx = 0
     self.backtest_optimizer_mode_combo.setCurrentIndex(optimizer_mode_idx)
-    self.backtest_optimizer_mode_combo.currentIndexChanged.connect(
-        lambda idx: self._update_backtest_config(
-            "optimizer_mode",
-            self.backtest_optimizer_mode_combo.itemData(idx),
-        )
-    )
     optimizer_layout.addWidget(self.backtest_optimizer_mode_combo)
 
-    optimizer_layout.addWidget(QtWidgets.QLabel("Max Combo:"))
+    self.backtest_optimizer_combo_size_label = QtWidgets.QLabel("Max Combo:")
+    optimizer_layout.addWidget(self.backtest_optimizer_combo_size_label)
     self.backtest_optimizer_combo_size_spin = QtWidgets.QSpinBox()
     self.backtest_optimizer_combo_size_spin.setRange(1, 5)
     optimizer_combo_size = int(self.backtest_config.get("optimizer_combo_size", 2) or 2)
@@ -307,6 +410,21 @@ def build_backtest_params_group(self):
         lambda v: self._update_backtest_config("optimizer_combo_size", int(v))
     )
     optimizer_layout.addWidget(self.backtest_optimizer_combo_size_spin)
+
+    def _sync_optimizer_combo_size_enabled(idx: int) -> None:
+        mode_value = backtest_optimizer_runtime.normalize_optimizer_mode(
+            self.backtest_optimizer_mode_combo.itemData(idx)
+        )
+        self._update_backtest_config("optimizer_mode", mode_value)
+        combo_enabled = mode_value == "combinations"
+        self.backtest_optimizer_combo_size_label.setEnabled(combo_enabled)
+        self.backtest_optimizer_combo_size_spin.setEnabled(combo_enabled)
+        self.backtest_optimizer_combo_size_spin.setToolTip(
+            "Used only when Mode is Combinations up to N."
+        )
+
+    self.backtest_optimizer_mode_combo.currentIndexChanged.connect(_sync_optimizer_combo_size_enabled)
+    _sync_optimizer_combo_size_enabled(self.backtest_optimizer_mode_combo.currentIndex())
     optimizer_layout.addStretch()
     param_form.addRow("Optimizer:", optimizer_row)
 
@@ -385,6 +503,13 @@ def build_backtest_params_group(self):
     scan_layout.addStretch()
     param_form.addRow("Scanner Limits:", scan_row)
 
+    self.backtest_optimizer_estimate_label = QtWidgets.QLabel()
+    self.backtest_optimizer_estimate_label.setWordWrap(True)
+    self.backtest_optimizer_estimate_label.setTextInteractionFlags(
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    param_form.addRow("Estimate:", self.backtest_optimizer_estimate_label)
+
     self.backtest_template_enable_cb.toggled.connect(self._on_backtest_template_enabled)
     self.backtest_template_combo.currentIndexChanged.connect(self._on_backtest_template_selected)
 
@@ -422,7 +547,11 @@ def build_backtest_params_group(self):
     self.backtest_config["template"] = template_cfg_bt
     self.config.setdefault("backtest", {})["template"] = copy.deepcopy(template_cfg_bt)
     self._backtest_template_pending_apply = selected_template if template_enabled else None
+    try:
+        self._refresh_backtest_optimizer_estimate()
+    except Exception:
+        refresh_backtest_optimizer_estimate(self)
     return param_group
 
 
-__all__ = ["build_backtest_params_group"]
+__all__ = ["build_backtest_params_group", "refresh_backtest_optimizer_estimate"]

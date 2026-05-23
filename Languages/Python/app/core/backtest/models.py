@@ -19,6 +19,22 @@ class PairOverride:
     interval: str
     indicators: Optional[List[str]] = None
     leverage: Optional[int] = None
+    strategy_controls: Optional[Dict[str, object]] = None
+    logic: Optional[str] = None
+    capital: Optional[float] = None
+    side: Optional[str] = None
+    position_pct: Optional[float] = None
+    position_pct_units: Optional[str] = None
+    margin_mode: Optional[str] = None
+    position_mode: Optional[str] = None
+    assets_mode: Optional[str] = None
+    account_mode: Optional[str] = None
+    mdd_logic: Optional[str] = None
+    stop_loss_enabled: Optional[bool] = None
+    stop_loss_mode: Optional[str] = None
+    stop_loss_usdt: Optional[float] = None
+    stop_loss_percent: Optional[float] = None
+    stop_loss_scope: Optional[str] = None
 
 
 @dataclass
@@ -68,7 +84,10 @@ class BacktestRunResult:
     mdd_logic: str | None = None
     start: datetime | None = None
     end: datetime | None = None
+    side: str | None = None
+    capital: float | None = None
     position_pct: float | None = None
+    position_pct_units: str | None = None
     stop_loss_enabled: bool | None = None
     stop_loss_mode: str | None = None
     stop_loss_usdt: float | None = None
@@ -78,3 +97,9 @@ class BacktestRunResult:
     position_mode: str | None = None
     assets_mode: str | None = None
     account_mode: str | None = None
+    strategy_controls: Dict[str, object] | None = None
+    optimizer_rank: int | None = None
+    optimizer_metric: str | None = None
+    optimizer_primary_score: float | None = None
+    optimizer_eligible: bool | None = None
+    optimizer_rejection_reason: str | None = None

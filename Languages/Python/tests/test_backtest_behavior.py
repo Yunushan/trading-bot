@@ -19,17 +19,27 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition  # noqa: E402
-from app.core.backtest.indicator_runtime import compute_indicator_series  # noqa: E402
+from app.core.backtest.models import PairOverride  # noqa: E402
+from app.core.backtest.indicator_runtime import (  # noqa: E402
+    compute_indicator_series,
+    indicators_missing_signal_rules,
+)
 
 
 class _SyntheticBacktestEngine(BacktestEngine):
-    def __init__(self, indicator_series: dict[str, list[float]]) -> None:
+    def __init__(self, indicator_series: dict[str, list[float]], frame=None) -> None:  # noqa: ANN001
         super().__init__(wrapper=object())
         self._indicator_series = indicator_series
+        self._frame = frame
 
     def _compute_indicator_series(self, df, indicator):  # noqa: ANN001
         values = self._indicator_series[indicator.key]
         return pd.Series(values, index=df.index, dtype=float)
+
+    def _load_klines(self, *_args, **_kwargs):  # noqa: ANN001
+        if self._frame is None:
+            return super()._load_klines(*_args, **_kwargs)
+        return self._frame.copy()
 
 
 def _build_frame(
@@ -338,6 +348,145 @@ class BacktestBehaviorTests(unittest.TestCase):
         assert series is not None
         self.assertAlmostEqual(5.413105413, float(series.iloc[-1]), places=6)
 
+    def test_compute_volume_relative_filter_series(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+        df["volume"] = [100.0, 200.0, 300.0, 600.0]
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(
+                key="volume",
+                params={"length": 3, "signal_mode": "relative_to_sma", "signal_role": "filter"},
+            ),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(1.636363636, float(series.iloc[-1]), places=6)
+
+    def test_compute_atr_percent_filter_series(self):
+        df = _build_frame(
+            [10.0, 12.0, 13.0, 12.0],
+            highs=[11.0, 13.0, 14.0, 13.0],
+            lows=[9.0, 11.0, 12.0, 11.0],
+        )
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(
+                key="atr",
+                params={"length": 3, "signal_mode": "percent_of_close", "signal_role": "filter"},
+            ),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(17.901234568, float(series.iloc[-1]), places=6)
+
+    def test_compute_price_cross_signal_mode_uses_close_minus_baseline(self):
+        df = _build_frame([10.0, 12.0, 14.0, 11.0])
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(
+                key="ma",
+                params={
+                    "length": 2,
+                    "signal_mode": "price_cross",
+                    "buy_value": 0,
+                    "sell_value": 0,
+                },
+            ),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertEqual([0.0, 1.0, 1.0, -1.5], [float(value) for value in series.tolist()])
+
+    def test_compute_band_position_signal_mode_uses_lower_upper_position(self):
+        df = _build_frame([10.0, 11.0, 12.0, 13.0])
+
+        series = compute_indicator_series(
+            df,
+            IndicatorDefinition(
+                key="bb",
+                params={
+                    "length": 3,
+                    "std": 2,
+                    "signal_mode": "band_position",
+                    "buy_value": 0,
+                    "sell_value": 100,
+                },
+            ),
+        )
+
+        self.assertIsNotNone(series)
+        assert series is not None
+        self.assertAlmostEqual(75.0, float(series.iloc[-1]), places=6)
+
+    def test_missing_signal_rule_helper_flags_enabled_filter_only_indicators(self):
+        indicators = [
+            IndicatorDefinition(key="volume", params={"signal_role": "filter"}),
+            IndicatorDefinition(key="ema", params={"buy_value": 0, "sell_value": 0}),
+        ]
+
+        missing = indicators_missing_signal_rules(indicators)
+
+        self.assertEqual(["volume"], [indicator.key for indicator in missing])
+
+    def test_simulate_rejects_indicator_without_signal_rule(self):
+        df = _build_frame([100.0, 110.0, 120.0])
+        indicators = [IndicatorDefinition(key="synthetic", params={})]
+        engine = _SyntheticBacktestEngine({"synthetic": [20.0, 50.0, 80.0]})
+        request = _build_request(df, indicators)
+
+        with self.assertRaisesRegex(ValueError, "signal rules are missing"):
+            engine._simulate("BTCUSDT", "1h", df, indicators, request)
+
+    def test_simulate_filter_indicator_gates_entries_not_exits(self):
+        df = _build_frame([100.0, 110.0, 90.0, 80.0])
+        indicators = [
+            IndicatorDefinition(key="entry", params={"buy_value": 30, "sell_value": 70}),
+            IndicatorDefinition(
+                key="volume_filter",
+                params={"signal_role": "filter", "filter_operator": "gte", "buy_value": 1},
+            ),
+        ]
+        engine = _SyntheticBacktestEngine(
+            {
+                "entry": [50.0, 20.0, 80.0, 80.0],
+                "volume_filter": [0.0, 1.0, 0.0, 0.0],
+            }
+        )
+        request = _build_request(
+            df,
+            indicators,
+            position_pct=1.0,
+            position_pct_units="ratio",
+        )
+
+        result = engine._simulate("BTCUSDT", "1h", df, indicators, request)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(["entry", "volume_filter"], result.indicator_keys)
+        self.assertEqual(1, result.trades)
+        self.assertAlmostEqual(818.181818182, result.final_equity, places=6)
+
+    def test_simulate_filter_only_indicators_cannot_open_trades(self):
+        df = _build_frame([100.0, 110.0, 120.0])
+        indicators = [
+            IndicatorDefinition(
+                key="volume_filter",
+                params={"signal_role": "filter", "filter_operator": "gte", "buy_value": 1},
+            )
+        ]
+        engine = _SyntheticBacktestEngine({"volume_filter": [1.0, 1.0, 1.0]})
+        request = _build_request(df, indicators)
+
+        with self.assertRaisesRegex(ValueError, "filter-only indicators cannot open trades"):
+            engine._simulate("BTCUSDT", "1h", df, indicators, request)
+
     def test_simulate_signal_reversal_closes_and_reopens_on_same_bar(self):
         df = _build_frame([100.0, 110.0, 120.0])
         indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
@@ -361,7 +510,61 @@ class BacktestBehaviorTests(unittest.TestCase):
         self.assertAlmostEqual(100.0, result.roi_value)
         self.assertAlmostEqual(10.0, result.roi_percent)
         self.assertAlmostEqual(0.5, result.position_pct)
+        self.assertEqual("BOTH", result.side)
+        self.assertEqual("fraction", result.position_pct_units)
+        self.assertAlmostEqual(1000.0, result.capital)
         self.assertFalse(result.stop_loss_enabled)
+
+    def test_run_applies_pair_override_strategy_controls(self):
+        df = _build_frame([100.0, 105.0, 110.0])
+        indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
+        engine = _SyntheticBacktestEngine({"synthetic": [20.0, 50.0, 80.0]}, frame=df)
+        request = _build_request(
+            df,
+            indicators,
+            side="BUY",
+            position_pct=100.0,
+            position_pct_units="percent",
+            capital=1000.0,
+            pair_overrides=[
+                PairOverride(
+                    symbol="BTCUSDT",
+                    interval="1h",
+                    indicators=["synthetic"],
+                    leverage=4,
+                    strategy_controls={
+                        "side": "SELL",
+                        "capital": 500.0,
+                        "position_pct": 0.25,
+                        "position_pct_units": "fraction",
+                        "stop_loss": {
+                            "enabled": True,
+                            "mode": "percent",
+                            "percent": 2.5,
+                            "scope": "per_trade",
+                        },
+                    },
+                )
+            ],
+        )
+
+        result = engine.run(request)
+
+        runs = result["runs"]
+        self.assertEqual(1, len(runs))
+        run = runs[0]
+        self.assertEqual("SELL", run.side)
+        self.assertEqual(4.0, run.leverage)
+        self.assertAlmostEqual(500.0, run.capital)
+        self.assertAlmostEqual(0.25, run.position_pct)
+        self.assertEqual("fraction", run.position_pct_units)
+        self.assertTrue(run.stop_loss_enabled)
+        self.assertEqual("percent", run.stop_loss_mode)
+        self.assertAlmostEqual(2.5, run.stop_loss_percent)
+        self.assertIsInstance(run.strategy_controls, dict)
+        assert run.strategy_controls is not None
+        self.assertEqual("SELL", run.strategy_controls["side"])
+        self.assertEqual(4, run.strategy_controls["leverage"])
 
     def test_simulate_stop_loss_exits_on_intrabar_extreme(self):
         df = _build_frame(

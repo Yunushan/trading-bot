@@ -126,6 +126,101 @@ def estimate_scan_run_count(
     return base_count * len(indicator_groups)
 
 
+def estimate_scan_plan(
+    *,
+    symbols_all: Iterable[object],
+    selected_symbols: Iterable[object],
+    intervals: Iterable[object],
+    indicator_keys: Iterable[object],
+    scope: str,
+    top_n: int,
+    mode: str,
+    combo_size: int,
+    logic: str,
+) -> dict[str, object]:
+    normalized_scope = normalize_scan_scope(scope)
+    normalized_mode = normalize_optimizer_mode(mode)
+    symbols = resolve_scan_symbols(
+        symbols_all=symbols_all,
+        selected_symbols=selected_symbols,
+        scope=normalized_scope,
+        top_n=top_n,
+    )
+    interval_values = _unique_texts(intervals)
+    signal_keys = _unique_texts(indicator_keys)
+    indicator_groups = build_indicator_key_groups(
+        signal_keys,
+        mode=normalized_mode,
+        combo_size=combo_size,
+    )
+    has_groups = bool(indicator_groups) if normalized_mode != "current" else True
+    run_count = (
+        estimate_scan_run_count(
+            symbols=symbols,
+            intervals=interval_values,
+            indicator_count=len(signal_keys),
+            indicator_groups=indicator_groups,
+            mode=normalized_mode,
+            logic=logic,
+        )
+        if has_groups
+        else 0
+    )
+    return {
+        "scope": normalized_scope,
+        "mode": normalized_mode,
+        "symbols": symbols,
+        "symbol_count": len(symbols),
+        "interval_count": len(interval_values),
+        "signal_indicator_count": len(signal_keys),
+        "indicator_group_count": len(indicator_groups) if normalized_mode != "current" else 0,
+        "run_count": run_count,
+        "over_limit": run_count > MAX_BACKTEST_OPTIMIZER_RUNS,
+        "limit": MAX_BACKTEST_OPTIMIZER_RUNS,
+    }
+
+
+def format_scan_plan_estimate(plan: dict[str, object]) -> str:
+    try:
+        run_count = int(plan.get("run_count", 0) or 0)
+    except Exception:
+        run_count = 0
+    try:
+        limit = int(plan.get("limit", MAX_BACKTEST_OPTIMIZER_RUNS) or 0)
+    except Exception:
+        limit = MAX_BACKTEST_OPTIMIZER_RUNS
+    try:
+        symbol_count = int(plan.get("symbol_count", 0) or 0)
+    except Exception:
+        symbol_count = 0
+    try:
+        interval_count = int(plan.get("interval_count", 0) or 0)
+    except Exception:
+        interval_count = 0
+    try:
+        signal_count = int(plan.get("signal_indicator_count", 0) or 0)
+    except Exception:
+        signal_count = 0
+    try:
+        group_count = int(plan.get("indicator_group_count", 0) or 0)
+    except Exception:
+        group_count = 0
+
+    mode = normalize_optimizer_mode(plan.get("mode"))
+    over_limit = bool(plan.get("over_limit"))
+    if mode == "current":
+        group_text = f"{signal_count} signal indicator(s)"
+    else:
+        group_text = f"{group_count} indicator group(s)"
+    text = (
+        f"Estimated optimizer runs: {run_count} "
+        f"({symbol_count} symbol(s) x {interval_count} interval(s), {group_text})"
+    )
+    if over_limit:
+        text += f" - reduce selection; limit is {limit}."
+    return text
+
+
 def build_pair_overrides(
     *,
     symbols: Sequence[str],
@@ -203,6 +298,115 @@ def optimizer_score(
     return (roi_pct, roi_val, float(trades), -mdd)
 
 
+def _optimizer_threshold_state(
+    run,
+    *,
+    mdd_limit: float,
+    min_trades: int,
+) -> tuple[int, float, list[str]]:
+    data = run_to_mapping(run)
+    try:
+        trades = int(data.get("trades", 0) or 0)
+    except Exception:
+        trades = 0
+    try:
+        mdd = float(data.get("max_drawdown_percent", 0.0) or 0.0)
+    except Exception:
+        mdd = 0.0
+    try:
+        limit = float(mdd_limit or 0.0)
+    except Exception:
+        limit = 0.0
+    trade_floor = max(0, int(min_trades or 0))
+    reasons: list[str] = []
+    if trades < trade_floor:
+        reasons.append(f"trades {trades} < {trade_floor}")
+    if limit > 0.0 and mdd > limit:
+        reasons.append(f"MDD {mdd:.2f}% > {limit:.2f}%")
+    return trades, mdd, reasons
+
+
+def rank_optimizer_runs(
+    runs,
+    *,
+    metric: str,
+    mdd_limit: float,
+    min_trades: int,
+    mode: str = "",
+    scope: str = "",
+    run_count: int | None = None,
+) -> list[dict[str, object]]:
+    metric_norm = normalize_optimizer_metric(metric)
+    mode_norm = normalize_optimizer_mode(mode) if str(mode or "").strip() else ""
+    scope_norm = normalize_scan_scope(scope) if str(scope or "").strip() else ""
+    try:
+        mdd_limit_value = max(0.0, float(mdd_limit or 0.0))
+    except Exception:
+        mdd_limit_value = 0.0
+    try:
+        min_trades_value = max(0, int(min_trades or 0))
+    except Exception:
+        min_trades_value = 0
+    try:
+        run_count_value = int(run_count) if run_count is not None else None
+    except Exception:
+        run_count_value = None
+    ranked_rows: list[dict[str, object]] = []
+    for original_index, run in enumerate(runs or []):
+        data = run_to_mapping(run)
+        score = optimizer_score(
+            data,
+            metric=metric_norm,
+            mdd_limit=mdd_limit_value,
+            min_trades=min_trades_value,
+        )
+        _trades, _mdd, reasons = _optimizer_threshold_state(
+            data,
+            mdd_limit=mdd_limit_value,
+            min_trades=min_trades_value,
+        )
+        row = dict(data)
+        row["_optimizer_original_index"] = original_index
+        row["optimizer_metric"] = metric_norm
+        row["optimizer_mdd_limit"] = mdd_limit_value
+        row["optimizer_min_trades"] = min_trades_value
+        if mode_norm:
+            row["optimizer_mode"] = mode_norm
+        if scope_norm:
+            row["optimizer_scope"] = scope_norm
+        if run_count_value is not None:
+            row["optimizer_run_count"] = run_count_value
+        row["optimizer_eligible"] = score is not None
+        row["optimizer_score"] = tuple(score or ())
+        row["optimizer_primary_score"] = float(score[0]) if score else None
+        row["optimizer_rejection_reason"] = "; ".join(reasons)
+        ranked_rows.append(row)
+
+    eligible_rows = [row for row in ranked_rows if row.get("optimizer_eligible")]
+    eligible_rows.sort(
+        key=lambda row: (
+            tuple(row.get("optimizer_score") or ()),
+            -int(row.get("_optimizer_original_index", 0) or 0),
+        ),
+        reverse=True,
+    )
+    for rank, row in enumerate(eligible_rows, start=1):
+        row["optimizer_rank"] = rank
+
+    rejected_rows = [row for row in ranked_rows if not row.get("optimizer_eligible")]
+    rejected_rows.sort(key=lambda row: int(row.get("_optimizer_original_index", 0) or 0))
+    for row in rejected_rows:
+        row["optimizer_rank"] = None
+    candidate_count = len(ranked_rows)
+    eligible_count = len(eligible_rows)
+    filtered_count = len(rejected_rows)
+    for row in ranked_rows:
+        row["optimizer_candidate_count"] = candidate_count
+        row["optimizer_eligible_count"] = eligible_count
+        row["optimizer_filtered_count"] = filtered_count
+    return eligible_rows + rejected_rows
+
+
 __all__ = [
     "MAX_BACKTEST_OPTIMIZER_RUNS",
     "OPTIMIZER_METRIC_OPTIONS",
@@ -210,12 +414,15 @@ __all__ = [
     "SCAN_SCOPE_OPTIONS",
     "build_indicator_key_groups",
     "build_pair_overrides",
+    "estimate_scan_plan",
     "estimate_scan_run_count",
+    "format_scan_plan_estimate",
     "normalize_optimizer_metric",
     "normalize_optimizer_mode",
     "normalize_scan_scope",
     "optimizer_score",
     "option_label",
+    "rank_optimizer_runs",
     "resolve_scan_symbols",
     "run_to_mapping",
 ]

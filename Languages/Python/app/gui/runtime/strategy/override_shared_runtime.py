@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import copy
+import math
+
 from ....core.backtest.intervals import normalize_backtest_interval
 
 _FORMAT_INDICATOR_LIST = None
@@ -73,6 +76,92 @@ def _normalize_connector_backend_value(value):
         except Exception:
             pass
     return value
+
+
+def _clean_backtest_result_payload(payload) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    cleaned = {
+        str(key): copy.deepcopy(value)
+        for key, value in payload.items()
+        if isinstance(key, str) and key and value not in (None, "")
+    }
+    return cleaned
+
+
+def _format_backtest_number(value, *, suffix: str = "") -> str:
+    if isinstance(value, bool):
+        return ""
+    try:
+        number = float(str(value).strip() if isinstance(value, str) else value)
+    except Exception:
+        return ""
+    if not math.isfinite(number):
+        return ""
+    text = f"{number:.2f}".rstrip("0").rstrip(".")
+    return f"{text}{suffix}"
+
+
+def _format_backtest_result_text(payload) -> str:
+    metadata = _clean_backtest_result_payload(payload)
+    if not metadata:
+        return "-"
+    pieces: list[str] = []
+    rank = metadata.get("optimizer_rank")
+    if rank not in (None, ""):
+        pieces.append(f"Rank {rank}")
+    roi_text = _format_backtest_number(metadata.get("roi_percent"), suffix="%")
+    if roi_text:
+        pieces.append(f"ROI {roi_text}")
+    dd_value = metadata.get("max_drawdown_percent")
+    if dd_value in (None, ""):
+        dd_value = metadata.get("max_drawdown_during_percent")
+    dd_text = _format_backtest_number(dd_value, suffix="%")
+    if dd_text:
+        pieces.append(f"DD {dd_text}")
+    trades = metadata.get("trades")
+    if trades not in (None, ""):
+        pieces.append(f"Trades {trades}")
+    if pieces:
+        return " | ".join(pieces)
+    source = str(metadata.get("source") or "").strip()
+    return source or "Imported"
+
+
+def _format_backtest_result_tooltip(payload) -> str:
+    metadata = _clean_backtest_result_payload(payload)
+    if not metadata:
+        return ""
+    label_map = {
+        "source": "Source",
+        "optimizer_rank": "Optimizer rank",
+        "optimizer_metric": "Optimizer metric",
+        "optimizer_primary_score": "Optimizer score",
+        "optimizer_eligible": "Optimizer eligible",
+        "optimizer_rejection_reason": "Optimizer rejection",
+        "roi_percent": "ROI %",
+        "roi_value": "ROI value",
+        "max_drawdown_percent": "Max DD %",
+        "max_drawdown_value": "Max DD value",
+        "trades": "Trades",
+        "side": "Side",
+        "capital": "Capital",
+        "position_pct_display": "Position %",
+        "position_pct_units": "Position units",
+        "leverage_display": "Leverage",
+        "account_mode": "Account mode",
+        "stop_loss_display": "Stop loss",
+        "loop_interval_override": "Loop override",
+        "start": "Start",
+        "end": "End",
+    }
+    lines = []
+    for key in label_map:
+        value = metadata.get(key)
+        if value in (None, ""):
+            continue
+        lines.append(f"{label_map[key]}: {value}")
+    return "\n".join(lines)
 
 
 def _override_ctx(self, kind: str) -> dict[str, object]:
@@ -197,5 +286,9 @@ def _build_clean_override_entry(self, kind: str, entry) -> tuple[dict | None, li
 
     if "stop_loss" not in entry_clean and entry.get("stop_loss"):
         entry_clean["stop_loss"] = _normalize_stop_loss(entry.get("stop_loss"))
+
+    backtest_result = _clean_backtest_result_payload(entry.get("backtest_result"))
+    if backtest_result:
+        entry_clean["backtest_result"] = backtest_result
 
     return entry_clean, indicator_values, leverage_val, controls

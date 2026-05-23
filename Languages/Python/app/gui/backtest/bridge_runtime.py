@@ -16,6 +16,184 @@ def _normalize_stop_loss_dict(value):  # type: ignore
     return value
 
 
+def _clean_backtest_result_metadata(data: dict) -> dict:
+    metadata_keys = (
+        "symbol",
+        "interval",
+        "indicator_keys",
+        "logic",
+        "trades",
+        "roi_value",
+        "roi_percent",
+        "max_drawdown_percent",
+        "max_drawdown_value",
+        "max_drawdown_during_percent",
+        "max_drawdown_during_value",
+        "max_drawdown_result_percent",
+        "max_drawdown_result_value",
+        "mdd_logic",
+        "mdd_logic_display",
+        "start",
+        "start_display",
+        "end",
+        "end_display",
+        "side",
+        "capital",
+        "position_pct",
+        "position_pct_display",
+        "position_pct_units",
+        "leverage",
+        "leverage_display",
+        "margin_mode",
+        "position_mode",
+        "assets_mode",
+        "account_mode",
+        "stop_loss_enabled",
+        "stop_loss_mode",
+        "stop_loss_scope",
+        "stop_loss_usdt",
+        "stop_loss_percent",
+        "stop_loss_display",
+        "loop_interval_override",
+        "connector_backend",
+        "strategy_controls",
+        "optimizer_rank",
+        "optimizer_metric",
+        "optimizer_primary_score",
+        "optimizer_eligible",
+        "optimizer_mode",
+        "optimizer_scope",
+        "optimizer_mdd_limit",
+        "optimizer_min_trades",
+        "optimizer_candidate_count",
+        "optimizer_eligible_count",
+        "optimizer_filtered_count",
+        "optimizer_run_count",
+        "optimizer_rejection_reason",
+    )
+    metadata = {
+        key: copy.deepcopy(data.get(key))
+        for key in metadata_keys
+        if key in data and data.get(key) not in (None, "")
+    }
+    indicator_keys = metadata.get("indicator_keys")
+    if isinstance(indicator_keys, tuple):
+        metadata["indicator_keys"] = list(indicator_keys)
+    metadata["source"] = "python-backtest"
+    return metadata
+
+
+def _coerce_optional_float(value) -> float | None:  # type: ignore
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _coerce_optional_int(value) -> int | None:  # type: ignore
+    number = _coerce_optional_float(value)
+    if number is None:
+        return None
+    try:
+        return max(1, int(number))
+    except Exception:
+        return None
+
+
+def _coerce_bool(value) -> bool:  # type: ignore
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", "", "none", "null"}:
+            return False
+    return bool(value)
+
+
+def _is_filtered_optimizer_result(data: dict) -> bool:
+    if "optimizer_eligible" not in data:
+        return False
+    return not _coerce_bool(data.get("optimizer_eligible"))
+
+
+def _normalize_runtime_controls(self, controls) -> dict:  # type: ignore
+    if not isinstance(controls, dict) or not controls:
+        return {}
+    normalizer = getattr(self, "_normalize_strategy_controls", None)
+    if callable(normalizer):
+        try:
+            normalized = normalizer("runtime", copy.deepcopy(controls))
+            if isinstance(normalized, dict):
+                return normalized
+        except Exception:
+            pass
+    return copy.deepcopy(controls)
+
+
+def _stop_loss_from_backtest_result(data: dict) -> dict | None:
+    stop_cfg = data.get("stop_loss")
+    if isinstance(stop_cfg, dict):
+        return _normalize_stop_loss_dict(stop_cfg)
+    has_stop_payload = any(
+        key in data
+        for key in (
+            "stop_loss_enabled",
+            "stop_loss_mode",
+            "stop_loss_scope",
+            "stop_loss_usdt",
+            "stop_loss_percent",
+        )
+    )
+    if not has_stop_payload:
+        return None
+    return _normalize_stop_loss_dict(
+        {
+            "enabled": _coerce_bool(data.get("stop_loss_enabled", False)),
+            "mode": str(data.get("stop_loss_mode") or "usdt").strip().lower(),
+            "scope": str(data.get("stop_loss_scope") or "per_trade").strip().lower(),
+            "usdt": _coerce_optional_float(data.get("stop_loss_usdt")) or 0.0,
+            "percent": _coerce_optional_float(data.get("stop_loss_percent")) or 0.0,
+        }
+    )
+
+
+def _runtime_controls_from_backtest_result(self, data: dict) -> dict:
+    stored_controls = data.get("strategy_controls")
+    if isinstance(stored_controls, dict):
+        controls = _normalize_runtime_controls(self, stored_controls)
+        if controls:
+            return controls
+
+    controls: dict[str, object] = {}
+    side = str(data.get("side") or "").strip().upper()
+    if side:
+        controls["side"] = side
+    pos_pct = _coerce_optional_float(data.get("position_pct"))
+    if pos_pct is not None:
+        controls["position_pct"] = pos_pct
+        controls["position_pct_units"] = str(
+            data.get("position_pct_units") or "fraction"
+        ).strip()
+    leverage = _coerce_optional_int(data.get("leverage"))
+    if leverage is not None:
+        controls["leverage"] = leverage
+    loop_override = self._normalize_loop_override(data.get("loop_interval_override"))
+    if loop_override:
+        controls["loop_interval_override"] = loop_override
+    account_mode = str(data.get("account_mode") or "").strip()
+    if account_mode:
+        controls["account_mode"] = account_mode
+    connector_backend = str(data.get("connector_backend") or "").strip()
+    if connector_backend:
+        controls["connector_backend"] = connector_backend
+    stop_cfg = _stop_loss_from_backtest_result(data)
+    if isinstance(stop_cfg, dict):
+        controls["stop_loss"] = stop_cfg
+    return _normalize_runtime_controls(self, controls)
+
+
 def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
     try:
         def _dbg(msg: str) -> None:
@@ -136,6 +314,7 @@ def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
             except Exception:
                 pass
         row_count = table.rowCount()
+        skipped_ineligible_count = 0
 
         def _row_payload(row_idx: int) -> dict:
             payload = None
@@ -155,12 +334,20 @@ def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
             return {}
 
         added_count = 0
+        updated_count = 0
         for row_idx in target_rows:
             if row_idx < 0 or row_idx >= row_count:
                 _dbg(f"Row {row_idx} out of bounds (table rows={row_count})")
                 continue
             data = self._normalize_backtest_run(_row_payload(row_idx))
             _dbg(f"Row {row_idx} normalized data: {data}")
+            if _is_filtered_optimizer_result(data):
+                skipped_ineligible_count += 1
+                _dbg(
+                    f"Row {row_idx} skipped because optimizer_eligible="
+                    f"{data.get('optimizer_eligible')!r}"
+                )
+                continue
             sym = str(data.get("symbol") or "").strip().upper()
             iv = str(data.get("interval") or "").strip()
             if not sym or not iv:
@@ -168,25 +355,23 @@ def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
                 continue
             indicators_clean = _normalize_indicator_values(data.get("indicator_keys"))
 
-            controls_snapshot = self._collect_strategy_controls("backtest")
-            controls_to_apply = None
+            controls_to_apply = _runtime_controls_from_backtest_result(self, data)
             stop_cfg = None
             loop_override_value = None
             leverage_for_key = None
 
-            if controls_snapshot:
-                _dbg(f"Row {row_idx} using live controls snapshot")
-                controls_to_apply = copy.deepcopy(controls_snapshot)
+            if controls_to_apply:
+                _dbg(f"Row {row_idx} using stored controls from result")
                 stop_cfg = controls_to_apply.get("stop_loss")
                 loop_override_value = self._normalize_loop_override(
                     controls_to_apply.get("loop_interval_override")
                 )
                 leverage_for_key = controls_to_apply.get("leverage")
             else:
-                stored_controls = data.get("strategy_controls")
-                if isinstance(stored_controls, dict):
-                    _dbg(f"Row {row_idx} using stored controls from result")
-                    controls_to_apply = copy.deepcopy(stored_controls)
+                controls_snapshot = self._collect_strategy_controls("backtest")
+                if controls_snapshot:
+                    _dbg(f"Row {row_idx} using live controls snapshot fallback")
+                    controls_to_apply = _normalize_runtime_controls(self, controls_snapshot)
                     stop_cfg = controls_to_apply.get("stop_loss")
                     loop_override_value = self._normalize_loop_override(
                         controls_to_apply.get("loop_interval_override")
@@ -201,14 +386,36 @@ def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
             except Exception:
                 leverage_for_key = None
 
+            backtest_metadata = _clean_backtest_result_metadata(data)
             key = (sym, iv, tuple(indicators_clean), leverage_for_key)
             if key in existing:
+                existing_entry = existing[key]
+                row_updated = False
+                if backtest_metadata:
+                    existing_entry["backtest_result"] = backtest_metadata
+                    row_updated = True
+                if controls_to_apply:
+                    existing_entry["strategy_controls"] = controls_to_apply
+                    row_updated = True
+                if loop_override_value:
+                    existing_entry["loop_interval_override"] = loop_override_value
+                if isinstance(stop_cfg, dict):
+                    stop_cfg = _normalize_stop_loss_dict(stop_cfg)
+                    existing_entry["stop_loss"] = stop_cfg
+                    if isinstance(controls_to_apply, dict):
+                        controls_to_apply["stop_loss"] = stop_cfg
+                if leverage_for_key is not None:
+                    existing_entry["leverage"] = leverage_for_key
+                if row_updated:
+                    updated_count += 1
                 _dbg(f"Row {row_idx} already exists; skipping")
                 continue
 
             entry = {"symbol": sym, "interval": iv}
             if indicators_clean:
                 entry["indicators"] = list(indicators_clean)
+            if backtest_metadata:
+                entry["backtest_result"] = backtest_metadata
             base_loop_value = self._normalize_loop_override(data.get("loop_interval_override"))
             if base_loop_value:
                 entry["loop_interval_override"] = base_loop_value
@@ -240,6 +447,39 @@ def _backtest_add_selected_to_dashboard(self, rows: list[int] | None = None):
             )
         if added_count:
             _dbg(f"Completed: appended {added_count} entries.")
+            try:
+                status = f"Added {added_count} backtest result(s) to dashboard overrides."
+                if updated_count:
+                    status += f" Updated {updated_count} existing provenance record(s)."
+                if skipped_ineligible_count:
+                    status += (
+                        f" Skipped {skipped_ineligible_count} filtered optimizer result(s)."
+                    )
+                self.backtest_status_label.setText(status)
+            except Exception:
+                pass
+        elif updated_count:
+            try:
+                status = (
+                    f"Updated {updated_count} existing dashboard override provenance record(s)."
+                )
+                if skipped_ineligible_count:
+                    status += (
+                        f" Skipped {skipped_ineligible_count} filtered optimizer result(s)."
+                    )
+                self.backtest_status_label.setText(status)
+            except Exception:
+                pass
+            _dbg(f"Updated provenance for {updated_count} existing entries.")
+        elif skipped_ineligible_count:
+            try:
+                self.backtest_status_label.setText(
+                    f"Skipped {skipped_ineligible_count} filtered optimizer result(s); "
+                    "only eligible optimizer rows can be added."
+                )
+            except Exception:
+                pass
+            _dbg(f"Skipped {skipped_ineligible_count} ineligible optimizer entries.")
         else:
             try:
                 self.backtest_status_label.setText(

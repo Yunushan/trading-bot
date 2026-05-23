@@ -117,7 +117,9 @@ class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
         self.assertTrue(snapshot["session_id"])
         self.assertEqual(snapshot["symbols"], ["BTCUSDT"])
         self.assertEqual(snapshot["intervals"], ["1h"])
+        self.assertTrue(snapshot["runs"])
         self.assertTrue(snapshot["top_runs"])
+        self.assertEqual(snapshot["run_count"], len(snapshot["runs"]))
 
         execution = service.get_execution_snapshot().to_dict()
         self.assertEqual(execution["executor_kind"], "service-backtest-executor")
@@ -231,6 +233,7 @@ class ServiceBackgroundHostIntegrationTests(unittest.TestCase):
             self.assertEqual(snapshot.get("run_count"), 1)
             self.assertEqual(snapshot.get("error_count"), 0)
             self.assertEqual(snapshot.get("symbols"), ["BTCUSDT"])
+            self.assertTrue(snapshot.get("runs"))
             self.assertTrue(snapshot.get("top_runs"))
         finally:
             self.assertTrue(host.stop(timeout_seconds=5.0))

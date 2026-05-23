@@ -4,6 +4,12 @@ import copy
 import traceback
 
 from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition
+from app.core.backtest.indicator_selection_runtime import (
+    build_backtest_indicator_definitions,
+    format_missing_signal_indicator_message,
+    format_missing_signal_rule_message,
+)
+from app.core.backtest.indicator_runtime import filter_indicators, signal_indicators
 
 from . import backtest_optimizer_runtime
 from .backtest_execution_context_runtime import (
@@ -11,6 +17,8 @@ from .backtest_execution_context_runtime import (
     get_symbol_fetch_top_n,
     normalize_backtest_stop_loss_dict,
 )
+from .backtest_service_execution_runtime import maybe_start_service_backtest
+from .backtest_service_payload_runtime import build_service_backtest_request_payload
 
 
 def _selected_backtest_symbol_values(self) -> list[str]:
@@ -92,15 +100,17 @@ def run_backtest_scan(self):
             return
 
         indicators_cfg = self.backtest_config.get("indicators", {}) or {}
-        indicators: list[IndicatorDefinition] = []
-        for key, params in indicators_cfg.items():
-            if not params or not params.get("enabled"):
-                continue
-            clean_params = copy.deepcopy(params)
-            clean_params.pop("enabled", None)
-            indicators.append(IndicatorDefinition(key=key, params=clean_params))
+        indicators: list[IndicatorDefinition] = build_backtest_indicator_definitions(indicators_cfg)
         if not indicators:
             self.backtest_status_label.setText("Enable at least one indicator to scan.")
+            return
+        signal_rule_message = format_missing_signal_rule_message(indicators)
+        if signal_rule_message:
+            self.backtest_status_label.setText(signal_rule_message)
+            return
+        signal_indicator_message = format_missing_signal_indicator_message(indicators)
+        if signal_indicator_message:
+            self.backtest_status_label.setText(signal_indicator_message)
             return
 
         start_qdt = self.backtest_start_edit.dateTime()
@@ -179,7 +189,9 @@ def run_backtest_scan(self):
         self._update_backtest_config("optimizer_combo_size", optimizer_combo_size)
         self._update_backtest_config("optimizer_min_trades", optimizer_min_trades)
 
-        indicator_keys_order = [ind.key for ind in indicators]
+        signal_indicator_defs = signal_indicators(indicators)
+        filter_indicator_keys = [ind.key for ind in filter_indicators(indicators)]
+        indicator_keys_order = [ind.key for ind in signal_indicator_defs]
         indicator_groups = backtest_optimizer_runtime.build_indicator_key_groups(
             indicator_keys_order,
             mode=optimizer_mode,
@@ -193,7 +205,7 @@ def run_backtest_scan(self):
         run_count = backtest_optimizer_runtime.estimate_scan_run_count(
             symbols=symbols,
             intervals=intervals,
-            indicator_count=len(indicators),
+            indicator_count=len(signal_indicator_defs),
             indicator_groups=indicator_groups,
             mode=optimizer_mode,
             logic=logic,
@@ -208,6 +220,11 @@ def run_backtest_scan(self):
         pair_overrides = None
         request_logic = logic
         if optimizer_mode != "current":
+            if filter_indicator_keys:
+                indicator_groups = [
+                    list(dict.fromkeys([*group, *filter_indicator_keys]))
+                    for group in indicator_groups
+                ]
             pair_overrides = backtest_optimizer_runtime.build_pair_overrides(
                 symbols=symbols,
                 intervals=intervals,
@@ -223,12 +240,12 @@ def run_backtest_scan(self):
         elif logic == "SEPARATE":
             for sym in symbols:
                 for iv in intervals:
-                    for ind in indicators:
-                        expected_runs.append((sym, iv, [ind.key]))
+                    for ind in signal_indicator_defs:
+                        expected_runs.append((sym, iv, [ind.key, *filter_indicator_keys]))
         else:
             for sym in symbols:
                 for iv in intervals:
-                    expected_runs.append((sym, iv, list(indicator_keys_order)))
+                    expected_runs.append((sym, iv, [ind.key for ind in indicators]))
         self._backtest_expected_runs = expected_runs
         self._backtest_dates_changed()
 
@@ -271,7 +288,53 @@ def run_backtest_scan(self):
             pair_overrides=pair_overrides,
         )
 
+        try:
+            self._backtest_scan_mdd_limit = float(self.backtest_scan_mdd_spin.value())
+        except Exception:
+            self._backtest_scan_mdd_limit = float(
+                self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0
+            )
+        self._backtest_scan_optimizer_metric = optimizer_metric
+        self._backtest_scan_optimizer_min_trades = optimizer_min_trades
+        self._backtest_scan_optimizer_mode = optimizer_mode
+        self._backtest_scan_scope = scan_scope
+        self._backtest_scan_run_count = run_count
+
         signature = (mode, api_key, api_secret)
+        scope_label = backtest_optimizer_runtime.option_label(
+            backtest_optimizer_runtime.SCAN_SCOPE_OPTIONS,
+            scan_scope,
+        )
+        mode_label = backtest_optimizer_runtime.option_label(
+            backtest_optimizer_runtime.OPTIMIZER_MODE_OPTIONS,
+            optimizer_mode,
+        )
+        service_payload = build_service_backtest_request_payload(
+            request,
+            api_key=api_key,
+            api_secret=api_secret,
+            mode=mode,
+            account_type=account_type,
+            connector_backend=self._backtest_connector_backend(),
+            optimizer_mode=optimizer_mode,
+            optimizer_metric=optimizer_metric,
+            optimizer_combo_size=optimizer_combo_size,
+            optimizer_min_trades=optimizer_min_trades,
+            scan_scope=scan_scope,
+            scan_top_n=top_n,
+            scan_mdd_limit=float(self._backtest_scan_mdd_limit),
+            include_pair_overrides=optimizer_mode == "current",
+        )
+        if maybe_start_service_backtest(
+            self,
+            service_payload,
+            scan=True,
+            status_message=(
+                f"Running service optimizer: {run_count} run(s), {scope_label}, {mode_label}..."
+            ),
+        ):
+            return
+
         wrapper_entry = self._backtest_wrappers.get(account_type)
         wrapper = None
         if (
@@ -310,14 +373,6 @@ def run_backtest_scan(self):
         self.backtest_scan_worker.progress.connect(self._on_backtest_progress)
         self.backtest_scan_worker.finished.connect(self._on_backtest_scan_finished)
         self.backtest_results_table.setRowCount(0)
-        scope_label = backtest_optimizer_runtime.option_label(
-            backtest_optimizer_runtime.SCAN_SCOPE_OPTIONS,
-            scan_scope,
-        )
-        mode_label = backtest_optimizer_runtime.option_label(
-            backtest_optimizer_runtime.OPTIMIZER_MODE_OPTIONS,
-            optimizer_mode,
-        )
         self.backtest_status_label.setText(
             f"Running optimizer: {run_count} run(s), {scope_label}, {mode_label}..."
         )
@@ -330,15 +385,6 @@ def run_backtest_scan(self):
             self.backtest_stop_btn.setEnabled(True)
         except Exception:
             pass
-        try:
-            self._backtest_scan_mdd_limit = float(self.backtest_scan_mdd_spin.value())
-        except Exception:
-            self._backtest_scan_mdd_limit = float(
-                self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0
-            )
-        self._backtest_scan_optimizer_metric = optimizer_metric
-        self._backtest_scan_optimizer_min_trades = optimizer_min_trades
-        self._backtest_scan_optimizer_mode = optimizer_mode
         self.backtest_scan_worker.start()
     except Exception as exc:
         tb = traceback.format_exc()

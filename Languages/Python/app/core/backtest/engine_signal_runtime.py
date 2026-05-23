@@ -6,12 +6,13 @@ import numpy as np
 import pandas as pd
 
 from . import indicator_runtime
+from .indicator_selection_runtime import format_missing_signal_rule_message
 from .models import IndicatorDefinition
 
 IndicatorCache = dict[tuple[str, str, str, tuple[tuple[str, object], ...]], pd.Series]
 SignalCache = dict[
     tuple[str, str, str, tuple[tuple[str, object], ...], int | None, int],
-    tuple[Optional[np.ndarray], Optional[np.ndarray]],
+    tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]],
 ]
 IndicatorSignal = dict[str, Optional[np.ndarray]]
 
@@ -55,6 +56,8 @@ def collect_indicator_signals(
 
     for indicator in indicators:
         params = indicator.params or {}
+        if not indicator_runtime.indicator_has_signal_rule(indicator):
+            raise ValueError(format_missing_signal_rule_message([indicator]))
         params_key = tuple(
             sorted(
                 (key, (value if isinstance(value, (int, float, str, bool, type(None))) else repr(value)))
@@ -67,10 +70,10 @@ def collect_indicator_signals(
             signal_key = (symbol, interval, indicator.key, params_key, work_start_idx, df_len)
             cached = signal_cache.get(signal_key)
             if cached is not None:
-                buy_array, sell_array = cached
-                if buy_array is None and sell_array is None:
+                buy_array, sell_array, filter_array = cached
+                if buy_array is None and sell_array is None and filter_array is None:
                     continue
-                indicator_signals.append({"buy": buy_array, "sell": sell_array})
+                indicator_signals.append({"buy": buy_array, "sell": sell_array, "filter": filter_array})
                 indicator_keys.append(indicator.key)
                 continue
 
@@ -84,21 +87,32 @@ def collect_indicator_signals(
                 if indicator_cache is not None:
                     indicator_cache[cache_key] = series_full
         if series_full is None:
-            if signal_cache is not None and signal_key is not None:
-                signal_cache[signal_key] = (None, None)
-            continue
+            raise ValueError(f"Backtest indicator '{indicator.key}' could not be computed.")
 
         if work_start_idx is not None:
             if work_start_idx >= len(series_full):
                 if signal_cache is not None and signal_key is not None:
-                    signal_cache[signal_key] = (None, None)
+                    signal_cache[signal_key] = (None, None, None)
                 continue
             series = series_full.iloc[work_start_idx:]
         else:
             series = series_full.reindex(work_index)
         if series is None:
             if signal_cache is not None and signal_key is not None:
-                signal_cache[signal_key] = (None, None)
+                signal_cache[signal_key] = (None, None, None)
+            continue
+
+        if indicator_runtime.indicator_is_filter(indicator):
+            filter_state = indicator_runtime.generate_filter_state(series, params)
+            if filter_state is None:
+                if signal_cache is not None and signal_key is not None:
+                    signal_cache[signal_key] = (None, None, None)
+                continue
+            filter_array = filter_state.to_numpy(dtype=bool, copy=False)
+            if signal_cache is not None and signal_key is not None:
+                signal_cache[signal_key] = (None, None, filter_array)
+            indicator_signals.append({"buy": None, "sell": None, "filter": filter_array})
+            indicator_keys.append(indicator.key)
             continue
 
         buy_events, sell_events = generate_signals_fn(
@@ -108,14 +122,14 @@ def collect_indicator_signals(
         )
         if buy_events is None and sell_events is None:
             if signal_cache is not None and signal_key is not None:
-                signal_cache[signal_key] = (None, None)
+                signal_cache[signal_key] = (None, None, None)
             continue
 
         buy_array = buy_events.to_numpy(dtype=bool, copy=False) if buy_events is not None else None
         sell_array = sell_events.to_numpy(dtype=bool, copy=False) if sell_events is not None else None
         if signal_cache is not None and signal_key is not None:
-            signal_cache[signal_key] = (buy_array, sell_array)
-        indicator_signals.append({"buy": buy_array, "sell": sell_array})
+            signal_cache[signal_key] = (buy_array, sell_array, None)
+        indicator_signals.append({"buy": buy_array, "sell": sell_array, "filter": None})
         indicator_keys.append(indicator.key)
 
     return indicator_signals, indicator_keys

@@ -6,13 +6,21 @@ import traceback
 from PyQt6 import QtCore
 
 from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition
+from app.core.backtest.indicator_selection_runtime import (
+    build_backtest_indicator_definitions,
+    format_missing_signal_indicator_message,
+    format_missing_signal_rule_message,
+)
 from app.core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
+from app.core.backtest.indicator_runtime import filter_indicators, signal_indicators
 
 from .backtest_execution_context_runtime import (
     backtest_debug_enabled,
     get_backtest_worker_cls,
     normalize_backtest_stop_loss_dict,
 )
+from .backtest_service_execution_runtime import maybe_start_service_backtest
+from .backtest_service_payload_runtime import build_service_backtest_request_payload
 
 
 def run_backtest(self):
@@ -78,7 +86,13 @@ def run_backtest(self):
                 iv = normalize_backtest_interval(entry.get("interval"))
                 if not (sym and iv):
                     continue
-                key = (sym, iv)
+                indicators_raw = entry.get("indicators")
+                indicators_key = (
+                    tuple(sorted({str(key).strip() for key in indicators_raw if str(key).strip()}))
+                    if isinstance(indicators_raw, (list, tuple))
+                    else ()
+                )
+                key = (sym, iv, indicators_key)
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
@@ -128,18 +142,22 @@ def run_backtest(self):
         cfg_bt["intervals"] = list(intervals)
 
         indicators_cfg = self.backtest_config.get("indicators", {}) or {}
-        indicators: list[IndicatorDefinition] = []
-        for key, params in indicators_cfg.items():
-            if not params or not params.get("enabled"):
-                continue
-            clean_params = copy.deepcopy(params)
-            clean_params.pop("enabled", None)
-            indicators.append(IndicatorDefinition(key=key, params=clean_params))
+        indicators: list[IndicatorDefinition] = build_backtest_indicator_definitions(indicators_cfg)
         if not indicators:
             self.backtest_status_label.setText(
                 "Enable at least one indicator to backtest."
             )
             dbg("No indicators enabled.")
+            return
+        signal_rule_message = format_missing_signal_rule_message(indicators)
+        if signal_rule_message:
+            self.backtest_status_label.setText(signal_rule_message)
+            dbg(signal_rule_message)
+            return
+        signal_indicator_message = format_missing_signal_indicator_message(indicators)
+        if signal_indicator_message:
+            self.backtest_status_label.setText(signal_indicator_message)
+            dbg(signal_indicator_message)
             return
 
         start_qdt = self.backtest_start_edit.dateTime()
@@ -199,7 +217,8 @@ def run_backtest(self):
             f"side={side_value}, loop={self.backtest_config.get('loop_interval_override')}"
         )
 
-        indicator_keys_order = [ind.key for ind in indicators]
+        signal_indicator_defs = signal_indicators(indicators)
+        filter_indicator_keys = [ind.key for ind in filter_indicators(indicators)]
         combos_sequence = (
             [(entry["symbol"], entry["interval"]) for entry in pairs_override_for_request]
             if pairs_override_for_request
@@ -208,10 +227,10 @@ def run_backtest(self):
         expected_runs = []
         if logic == "SEPARATE":
             for sym, iv in combos_sequence:
-                for ind in indicators:
-                    expected_runs.append((sym, iv, [ind.key]))
+                for ind in signal_indicator_defs:
+                    expected_runs.append((sym, iv, [ind.key, *filter_indicator_keys]))
         else:
-            expected_indicator_list = list(indicator_keys_order)
+            expected_indicator_list = [ind.key for ind in indicators]
             for sym, iv in combos_sequence:
                 expected_runs.append((sym, iv, list(expected_indicator_list)))
         self._backtest_expected_runs = expected_runs
@@ -260,6 +279,23 @@ def run_backtest(self):
         dbg(
             f"BacktestRequest prepared: symbols={len(symbols)}, intervals={len(intervals)}, indicators={len(indicators)}"
         )
+
+        service_payload = build_service_backtest_request_payload(
+            request,
+            api_key=api_key,
+            api_secret=api_secret,
+            mode=mode,
+            account_type=account_type,
+            connector_backend=self._backtest_connector_backend(),
+        )
+        if maybe_start_service_backtest(
+            self,
+            service_payload,
+            scan=False,
+            status_message="Running service backtest...",
+        ):
+            dbg("Backtest dispatched through service backend.")
+            return
 
         signature = (mode, api_key, api_secret)
         wrapper_entry = self._backtest_wrappers.get(account_type)

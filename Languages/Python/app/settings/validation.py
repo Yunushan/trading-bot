@@ -96,6 +96,14 @@ _OPTIMIZER_METRIC_CHOICES = {
     "roi_value": "roi_value",
     "roi-value": "roi_value",
 }
+_BACKTEST_EXECUTION_BACKEND_CHOICES = {
+    "desktop": "local",
+    "desktop-local": "local",
+    "local": "local",
+    "remote": "service",
+    "service": "service",
+    "service-api": "service",
+}
 _CHART_VIEW_MODE_CHOICES = {
     "tradingview": "tradingview",
     "original": "original",
@@ -262,6 +270,7 @@ _ALLOWED_BACKTEST_CONFIG_KEYS = frozenset(
         "capital",
         "connector_backend",
         "end_date",
+        "execution_backend",
         "indicators",
         "intervals",
         "leverage",
@@ -783,6 +792,7 @@ def _validate_backtest_config(cfg: dict[str, object], issues: list[ConfigValidat
     _validate_symbol_list(backtest_cfg, "symbols", issues, prefix="backtest")
     _validate_interval_list(backtest_cfg, "intervals", issues, prefix="backtest")
     _validate_float_range(backtest_cfg, "capital", issues, min_value=0.0, max_value=1_000_000_000_000.0, prefix="backtest", exclusive_min=True)
+    _validate_choice(backtest_cfg, "execution_backend", _BACKTEST_EXECUTION_BACKEND_CHOICES, issues, prefix="backtest")
     _validate_choice(backtest_cfg, "logic", _LOGIC_CHOICES, issues, prefix="backtest")
     _validate_text(backtest_cfg, "symbol_source", issues, prefix="backtest")
     _validate_datetime_text(backtest_cfg, "start_date", issues, prefix="backtest")

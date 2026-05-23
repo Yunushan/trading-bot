@@ -195,3 +195,38 @@ def _service_record_log_event(
             record_log_event(message, source=source, level=level)
     except Exception:
         pass
+
+
+def _service_submit_backtest(
+    self,
+    request: dict | None = None,
+    *,
+    source: str = "desktop-backtest",
+) -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        submit_backtest = getattr(client, "submit_backtest", None)
+        if callable(submit_backtest):
+            result = submit_backtest(request or {}, source=source)
+            payload = _coerce_service_control_payload(result)
+            return payload if payload else None
+    except Exception:
+        return None
+    return None
+
+
+def _service_stop_backtest(self, *, source: str = "desktop-backtest") -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        stop_backtest = getattr(client, "stop_backtest", None)
+        if callable(stop_backtest):
+            result = stop_backtest(source=source)
+            payload = _coerce_service_control_payload(result)
+            return payload if payload else None
+    except Exception:
+        return None
+    return None

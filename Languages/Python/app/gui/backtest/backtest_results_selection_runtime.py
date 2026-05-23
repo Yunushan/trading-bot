@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import backtest_optimizer_runtime
+from .backtest_service_execution_runtime import stop_service_backtest
 
 
 def _select_backtest_scan_best(
@@ -10,51 +11,32 @@ def _select_backtest_scan_best(
     metric: str = "roi_percent",
     min_trades: int = 1,
 ):
-    best = None
-    best_score = None
-    for run in runs or []:
-        data = backtest_optimizer_runtime.run_to_mapping(run)
-        try:
-            trades = int(data.get("trades", 0) or 0)
-        except Exception:
-            trades = 0
-        try:
-            mdd = float(data.get("max_drawdown_percent", 0.0) or 0.0)
-        except Exception:
-            mdd = 0.0
-        try:
-            roi_pct = float(data.get("roi_percent", 0.0) or 0.0)
-        except Exception:
-            roi_pct = 0.0
-        try:
-            roi_val = float(data.get("roi_value", 0.0) or 0.0)
-        except Exception:
-            roi_val = 0.0
+    ranked = backtest_optimizer_runtime.rank_optimizer_runs(
+        runs,
+        metric=metric,
+        mdd_limit=mdd_limit,
+        min_trades=min_trades,
+    )
+    for data in ranked:
+        if not data.get("optimizer_eligible"):
+            continue
         symbol = str(data.get("symbol") or "").strip().upper()
         interval = str(data.get("interval") or "").strip()
         if not symbol or not interval:
             continue
-        score = backtest_optimizer_runtime.optimizer_score(
-            data,
-            metric=metric,
-            mdd_limit=mdd_limit,
-            min_trades=min_trades,
-        )
-        if score is None:
-            continue
-        if best_score is None or score > best_score:
-            best_score = score
-            best = {
-                "symbol": symbol,
-                "interval": interval,
-                "roi_percent": roi_pct,
-                "roi_value": roi_val,
-                "max_drawdown_percent": mdd,
-                "trades": trades,
-                "indicator_keys": list(data.get("indicator_keys") or []),
-                "mdd_logic": data.get("mdd_logic"),
-            }
-    return best
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "roi_percent": float(data.get("roi_percent", 0.0) or 0.0),
+            "roi_value": float(data.get("roi_value", 0.0) or 0.0),
+            "max_drawdown_percent": float(data.get("max_drawdown_percent", 0.0) or 0.0),
+            "trades": int(data.get("trades", 0) or 0),
+            "indicator_keys": list(data.get("indicator_keys") or []),
+            "mdd_logic": data.get("mdd_logic"),
+            "optimizer_rank": data.get("optimizer_rank"),
+            "optimizer_primary_score": data.get("optimizer_primary_score"),
+        }
+    return None
 
 
 def _select_backtest_scan_row(
@@ -108,6 +90,10 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
         self.backtest_scan_btn.setEnabled(True)
     except Exception:
         pass
+    try:
+        self._refresh_backtest_optimizer_estimate()
+    except Exception:
+        pass
     if error:
         return
     if not isinstance(result, dict):
@@ -121,6 +107,19 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
         getattr(self, "_backtest_scan_optimizer_metric", None)
         or self.backtest_config.get("optimizer_metric", "roi_percent")
     )
+    mode = backtest_optimizer_runtime.normalize_optimizer_mode(
+        getattr(self, "_backtest_scan_optimizer_mode", None)
+        or self.backtest_config.get("optimizer_mode", "current")
+    )
+    scope = backtest_optimizer_runtime.normalize_scan_scope(
+        getattr(self, "_backtest_scan_scope", None)
+        or self.backtest_config.get("scan_scope", "selected")
+    )
+    run_count_raw = getattr(self, "_backtest_scan_run_count", None)
+    try:
+        run_count = int(run_count_raw) if run_count_raw is not None else None
+    except Exception:
+        run_count = None
     try:
         min_trades = int(
             getattr(self, "_backtest_scan_optimizer_min_trades", None)
@@ -129,16 +128,36 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
         )
     except Exception:
         min_trades = 1
+    runs_for_ranking = getattr(self, "backtest_results", None) or runs_raw
+    ranked_runs = backtest_optimizer_runtime.rank_optimizer_runs(
+        runs_for_ranking,
+        metric=metric,
+        mdd_limit=mdd_limit,
+        min_trades=min_trades,
+        mode=mode,
+        scope=scope,
+        run_count=run_count,
+    )
+    if ranked_runs:
+        self.backtest_results = ranked_runs
+        self._populate_backtest_results_table(ranked_runs)
+        try:
+            self.backtest_results_table.sortItems(5)
+        except Exception:
+            pass
     best = self._select_backtest_scan_best(
-        runs_raw,
+        ranked_runs,
         mdd_limit,
         metric=metric,
         min_trades=min_trades,
     )
+    eligible_count = sum(1 for run in ranked_runs if run.get("optimizer_eligible"))
+    filtered_count = len(ranked_runs) - eligible_count
     if not best:
         mdd_text = f"MDD <= {mdd_limit:.2f}%" if mdd_limit > 0 else "no MDD limit"
         self.backtest_status_label.setText(
-            f"Scan complete, but no runs met {mdd_text} and min trades {min_trades}."
+            f"Scan complete, but no runs met {mdd_text} and min trades {min_trades}; "
+            f"{filtered_count} filtered."
         )
         return
     auto_apply = False
@@ -151,13 +170,15 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
     summary = (
         f"Scan best by {metric_label}: {best['symbol']}@{best['interval']} "
         f"ROI {best['roi_percent']:+.2f}% | MDD {best['max_drawdown_percent']:.2f}% "
-        f"| trades {best['trades']}"
+        f"| trades {best['trades']} | eligible {eligible_count}, filtered {filtered_count}"
     )
     self.backtest_status_label.setText(summary)
 
 
 def _stop_backtest(self):
     try:
+        if stop_service_backtest(self):
+            return
         worker = getattr(self, "backtest_worker", None)
         if worker and worker.isRunning():
             if hasattr(worker, "request_stop"):

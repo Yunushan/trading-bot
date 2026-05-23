@@ -259,6 +259,20 @@ def _get_service_status_snapshot(self) -> dict | None:
     return None
 
 
+def _get_service_backtest_snapshot(self) -> dict | None:
+    client = _ensure_service_client(self)
+    if client is None:
+        return None
+    try:
+        get_backtest_snapshot = getattr(client, "get_backtest_snapshot", None)
+        if callable(get_backtest_snapshot):
+            result = get_backtest_snapshot()
+            return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+    return None
+
+
 def _get_service_portfolio_snapshot(self) -> dict | None:
     client = _ensure_service_client(self)
     if client is None:

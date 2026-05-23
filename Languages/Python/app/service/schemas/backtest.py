@@ -4,6 +4,8 @@ Backtest schemas for the service facade.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -54,6 +56,60 @@ def _normalize_interval_tuple(value) -> tuple[str, ...]:  # noqa: ANN001
     return tuple(normalize_backtest_intervals(value))
 
 
+def _normalize_mapping_payload(value) -> dict[str, object]:  # noqa: ANN001
+    if not isinstance(value, Mapping):
+        return {}
+    payload: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            continue
+        clean_key = key.strip()
+        if not clean_key or item is None:
+            continue
+        if isinstance(item, str) and not item.strip():
+            continue
+        payload[clean_key] = deepcopy(item)
+    return payload
+
+
+def _read_field(source, key: str, default=None):  # noqa: ANN001
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def _coerce_optional_int(value) -> int | None:  # noqa: ANN001
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _coerce_optional_float(value) -> float | None:  # noqa: ANN001
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _coerce_optional_bool(value) -> bool | None:  # noqa: ANN001
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"", "none", "null"}:
+            return None
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 @dataclass(frozen=True, slots=True)
 class ServiceBacktestRunRecord:
     symbol: str
@@ -70,6 +126,33 @@ class ServiceBacktestRunRecord:
     mdd_logic: str
     start: str
     end: str
+    side: str = ""
+    capital: float = 0.0
+    position_pct: float | None = None
+    position_pct_units: str = ""
+    margin_mode: str = ""
+    position_mode: str = ""
+    assets_mode: str = ""
+    account_mode: str = ""
+    stop_loss_enabled: bool | None = None
+    stop_loss_mode: str = ""
+    stop_loss_usdt: float | None = None
+    stop_loss_percent: float | None = None
+    stop_loss_scope: str = ""
+    strategy_controls: dict[str, object] = field(default_factory=dict)
+    optimizer_rank: int | None = None
+    optimizer_metric: str = ""
+    optimizer_primary_score: float | None = None
+    optimizer_eligible: bool | None = None
+    optimizer_mode: str = ""
+    optimizer_scope: str = ""
+    optimizer_mdd_limit: float | None = None
+    optimizer_min_trades: int | None = None
+    optimizer_candidate_count: int | None = None
+    optimizer_eligible_count: int | None = None
+    optimizer_filtered_count: int | None = None
+    optimizer_run_count: int | None = None
+    optimizer_rejection_reason: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -87,6 +170,33 @@ class ServiceBacktestRunRecord:
             "mdd_logic": self.mdd_logic,
             "start": self.start,
             "end": self.end,
+            "side": self.side,
+            "capital": self.capital,
+            "position_pct": self.position_pct,
+            "position_pct_units": self.position_pct_units,
+            "margin_mode": self.margin_mode,
+            "position_mode": self.position_mode,
+            "assets_mode": self.assets_mode,
+            "account_mode": self.account_mode,
+            "stop_loss_enabled": self.stop_loss_enabled,
+            "stop_loss_mode": self.stop_loss_mode,
+            "stop_loss_usdt": self.stop_loss_usdt,
+            "stop_loss_percent": self.stop_loss_percent,
+            "stop_loss_scope": self.stop_loss_scope,
+            "strategy_controls": deepcopy(self.strategy_controls),
+            "optimizer_rank": self.optimizer_rank,
+            "optimizer_metric": self.optimizer_metric,
+            "optimizer_primary_score": self.optimizer_primary_score,
+            "optimizer_eligible": self.optimizer_eligible,
+            "optimizer_mode": self.optimizer_mode,
+            "optimizer_scope": self.optimizer_scope,
+            "optimizer_mdd_limit": self.optimizer_mdd_limit,
+            "optimizer_min_trades": self.optimizer_min_trades,
+            "optimizer_candidate_count": self.optimizer_candidate_count,
+            "optimizer_eligible_count": self.optimizer_eligible_count,
+            "optimizer_filtered_count": self.optimizer_filtered_count,
+            "optimizer_run_count": self.optimizer_run_count,
+            "optimizer_rejection_reason": self.optimizer_rejection_reason,
         }
 
 
@@ -144,6 +254,7 @@ class ServiceBacktestSnapshot:
     updated_at: str = ""
     source: str = "service"
     top_run: ServiceBacktestRunRecord | None = None
+    runs: tuple[ServiceBacktestRunRecord, ...] = field(default_factory=tuple)
     top_runs: tuple[ServiceBacktestRunRecord, ...] = field(default_factory=tuple)
     errors: tuple[ServiceBacktestErrorRecord, ...] = field(default_factory=tuple)
 
@@ -167,28 +278,68 @@ class ServiceBacktestSnapshot:
             "updated_at": self.updated_at,
             "source": self.source,
             "top_run": self.top_run.to_dict() if self.top_run else None,
+            "runs": [item.to_dict() for item in self.runs],
             "top_runs": [item.to_dict() for item in self.top_runs],
             "errors": [item.to_dict() for item in self.errors],
         }
 
 
 def build_backtest_run_record(run) -> ServiceBacktestRunRecord:  # noqa: ANN001
-    indicator_keys = getattr(run, "indicator_keys", ())
+    indicator_keys = _read_field(run, "indicator_keys", ())
     return ServiceBacktestRunRecord(
-        symbol=_clean_text(getattr(run, "symbol", "")),
-        interval=_normalize_interval_text(getattr(run, "interval", "")),
+        symbol=_clean_text(_read_field(run, "symbol", "")),
+        interval=_normalize_interval_text(_read_field(run, "interval", "")),
         indicator_keys=_normalize_string_tuple(indicator_keys),
-        trades=max(0, _coerce_int(getattr(run, "trades", 0), 0)),
-        roi_value=_coerce_float(getattr(run, "roi_value", 0.0), 0.0),
-        roi_percent=_coerce_float(getattr(run, "roi_percent", 0.0), 0.0),
-        final_equity=_coerce_float(getattr(run, "final_equity", 0.0), 0.0),
-        max_drawdown_value=_coerce_float(getattr(run, "max_drawdown_value", 0.0), 0.0),
-        max_drawdown_percent=_coerce_float(getattr(run, "max_drawdown_percent", 0.0), 0.0),
-        leverage=_coerce_float(getattr(run, "leverage", 0.0), 0.0),
-        logic=_clean_text(getattr(run, "logic", "")),
-        mdd_logic=_clean_text(getattr(run, "mdd_logic", "")),
-        start=_normalize_iso(getattr(run, "start", "")),
-        end=_normalize_iso(getattr(run, "end", "")),
+        trades=max(0, _coerce_int(_read_field(run, "trades", 0), 0)),
+        roi_value=_coerce_float(_read_field(run, "roi_value", 0.0), 0.0),
+        roi_percent=_coerce_float(_read_field(run, "roi_percent", 0.0), 0.0),
+        final_equity=_coerce_float(_read_field(run, "final_equity", 0.0), 0.0),
+        max_drawdown_value=_coerce_float(_read_field(run, "max_drawdown_value", 0.0), 0.0),
+        max_drawdown_percent=_coerce_float(_read_field(run, "max_drawdown_percent", 0.0), 0.0),
+        leverage=_coerce_float(_read_field(run, "leverage", 0.0), 0.0),
+        logic=_clean_text(_read_field(run, "logic", "")),
+        mdd_logic=_clean_text(_read_field(run, "mdd_logic", "")),
+        start=_normalize_iso(_read_field(run, "start", "")),
+        end=_normalize_iso(_read_field(run, "end", "")),
+        side=_clean_text(_read_field(run, "side", "")),
+        capital=_coerce_float(_read_field(run, "capital", 0.0), 0.0),
+        position_pct=_coerce_optional_float(_read_field(run, "position_pct")),
+        position_pct_units=_clean_text(_read_field(run, "position_pct_units", "")),
+        margin_mode=_clean_text(_read_field(run, "margin_mode", "")),
+        position_mode=_clean_text(_read_field(run, "position_mode", "")),
+        assets_mode=_clean_text(_read_field(run, "assets_mode", "")),
+        account_mode=_clean_text(_read_field(run, "account_mode", "")),
+        stop_loss_enabled=_coerce_optional_bool(_read_field(run, "stop_loss_enabled")),
+        stop_loss_mode=_clean_text(_read_field(run, "stop_loss_mode", "")),
+        stop_loss_usdt=_coerce_optional_float(_read_field(run, "stop_loss_usdt")),
+        stop_loss_percent=_coerce_optional_float(_read_field(run, "stop_loss_percent")),
+        stop_loss_scope=_clean_text(_read_field(run, "stop_loss_scope", "")),
+        strategy_controls=_normalize_mapping_payload(_read_field(run, "strategy_controls")),
+        optimizer_rank=_coerce_optional_int(_read_field(run, "optimizer_rank")),
+        optimizer_metric=_clean_text(_read_field(run, "optimizer_metric", "")),
+        optimizer_primary_score=_coerce_optional_float(
+            _read_field(run, "optimizer_primary_score")
+        ),
+        optimizer_eligible=_coerce_optional_bool(_read_field(run, "optimizer_eligible")),
+        optimizer_mode=_clean_text(_read_field(run, "optimizer_mode", "")),
+        optimizer_scope=_clean_text(_read_field(run, "optimizer_scope", "")),
+        optimizer_mdd_limit=_coerce_optional_float(
+            _read_field(run, "optimizer_mdd_limit")
+        ),
+        optimizer_min_trades=_coerce_optional_int(_read_field(run, "optimizer_min_trades")),
+        optimizer_candidate_count=_coerce_optional_int(
+            _read_field(run, "optimizer_candidate_count")
+        ),
+        optimizer_eligible_count=_coerce_optional_int(
+            _read_field(run, "optimizer_eligible_count")
+        ),
+        optimizer_filtered_count=_coerce_optional_int(
+            _read_field(run, "optimizer_filtered_count")
+        ),
+        optimizer_run_count=_coerce_optional_int(_read_field(run, "optimizer_run_count")),
+        optimizer_rejection_reason=_clean_text(
+            _read_field(run, "optimizer_rejection_reason", "")
+        ),
     )
 
 
@@ -221,16 +372,28 @@ def build_backtest_snapshot(
     updated_at="",  # noqa: ANN001
     source: str = "service",
     top_run: ServiceBacktestRunRecord | None = None,
+    runs=None,  # noqa: ANN001
     top_runs=None,  # noqa: ANN001
     errors=None,  # noqa: ANN001
 ) -> ServiceBacktestSnapshot:
-    normalized_runs: list[ServiceBacktestRunRecord] = []
+    normalized_all_runs: list[ServiceBacktestRunRecord] = []
+    if isinstance(runs, (list, tuple)):
+        for item in runs:
+            if isinstance(item, ServiceBacktestRunRecord):
+                normalized_all_runs.append(item)
+            else:
+                normalized_all_runs.append(build_backtest_run_record(item))
+    normalized_top_runs: list[ServiceBacktestRunRecord] = []
     if isinstance(top_runs, (list, tuple)):
         for item in top_runs:
             if isinstance(item, ServiceBacktestRunRecord):
-                normalized_runs.append(item)
+                normalized_top_runs.append(item)
             else:
-                normalized_runs.append(build_backtest_run_record(item))
+                normalized_top_runs.append(build_backtest_run_record(item))
+    if not normalized_top_runs and normalized_all_runs:
+        normalized_top_runs = normalized_all_runs[:5]
+    if not normalized_all_runs and normalized_top_runs:
+        normalized_all_runs = list(normalized_top_runs)
     normalized_errors: list[ServiceBacktestErrorRecord] = []
     if isinstance(errors, (list, tuple)):
         for item in errors:
@@ -238,8 +401,8 @@ def build_backtest_snapshot(
                 normalized_errors.append(item)
             else:
                 normalized_errors.append(build_backtest_error_record(item))
-    if top_run is None and normalized_runs:
-        top_run = normalized_runs[0]
+    if top_run is None and normalized_top_runs:
+        top_run = normalized_top_runs[0]
     elif top_run is not None and not isinstance(top_run, ServiceBacktestRunRecord):
         top_run = build_backtest_run_record(top_run)
     return ServiceBacktestSnapshot(
@@ -261,7 +424,8 @@ def build_backtest_snapshot(
         updated_at=_normalize_iso(updated_at),
         source=_clean_text(source, "service"),
         top_run=top_run,
-        top_runs=tuple(normalized_runs),
+        runs=tuple(normalized_all_runs),
+        top_runs=tuple(normalized_top_runs),
         errors=tuple(normalized_errors),
     )
 

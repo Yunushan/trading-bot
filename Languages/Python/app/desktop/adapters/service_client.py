@@ -16,10 +16,10 @@ if __package__ in (None, ""):
     _PYTHON_ROOT = Path(__file__).resolve().parents[3]
     if str(_PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(_PYTHON_ROOT))
-    from app.service.api_contract import service_api_route
+    from app.service.api_contract import SERVICE_BACKTEST_RUN_REQUEST_FIELDS, service_api_route
     from app.service.runtime import TradingBotService
 else:
-    from ...service.api_contract import service_api_route
+    from ...service.api_contract import SERVICE_BACKTEST_RUN_REQUEST_FIELDS, service_api_route
     from ...service.runtime import TradingBotService
 
 try:
@@ -38,6 +38,14 @@ def _maybe_to_dict(value):
         except Exception:
             return None
     return value if isinstance(value, dict) else None
+
+
+def _backtest_request_payload(request: dict | None) -> dict:
+    if request is None:
+        return {}
+    if not isinstance(request, dict):
+        raise TypeError("Backtest service requests must be dictionaries.")
+    return dict(request)
 
 
 class EmbeddedDesktopServiceClient:
@@ -67,6 +75,7 @@ class EmbeddedDesktopServiceClient:
             "transport": self._transport,
             "available": self.is_available(),
             "remote_capable": False,
+            "backtest_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
             "notes": [
                 "Desktop currently uses an embedded service client.",
                 "Remote HTTP desktop mode is available as an opt-in integration path.",
@@ -130,6 +139,26 @@ class EmbeddedDesktopServiceClient:
         if self._service is None:
             return None
         return _maybe_to_dict(self._service.get_status())
+
+    def get_backtest_snapshot(self) -> dict | None:
+        if self._service is None:
+            return None
+        return _maybe_to_dict(self._service.get_backtest_snapshot())
+
+    def submit_backtest(self, request: dict | None = None, *, source: str = "desktop-backtest") -> dict | None:
+        if self._service is None:
+            return None
+        return _maybe_to_dict(
+            self._service.submit_backtest(
+                _backtest_request_payload(request),
+                source=source,
+            )
+        )
+
+    def stop_backtest(self, *, source: str = "desktop-backtest") -> dict | None:
+        if self._service is None:
+            return None
+        return _maybe_to_dict(self._service.stop_backtest(source=source))
 
     def get_config_summary(self) -> dict | None:
         if self._service is None:
@@ -280,6 +309,7 @@ class RemoteDesktopServiceClient:
             "remote_capable": True,
             "base_url": self._base_url,
             "auth_enabled": bool(self._api_token),
+            "backtest_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
             "notes": [
                 "Desktop is configured to use the HTTP service API.",
                 "Remote mode is opt-in and depends on the service API being reachable.",
@@ -338,6 +368,23 @@ class RemoteDesktopServiceClient:
 
     def get_status_snapshot(self) -> dict | None:
         return self._request("GET", service_api_route("status"))
+
+    def get_backtest_snapshot(self) -> dict | None:
+        return self._request("GET", service_api_route("backtest"))
+
+    def submit_backtest(self, request: dict | None = None, *, source: str = "desktop-backtest") -> dict | None:
+        payload = {
+            "request": _backtest_request_payload(request),
+            "source": str(source or "desktop-backtest"),
+        }
+        return self._request("POST", service_api_route("backtest_run"), payload=payload)
+
+    def stop_backtest(self, *, source: str = "desktop-backtest") -> dict | None:
+        return self._request(
+            "POST",
+            service_api_route("backtest_stop"),
+            payload={"source": str(source or "desktop-backtest")},
+        )
 
     def get_config_summary(self) -> dict | None:
         return self._request("GET", service_api_route("config_summary"))
