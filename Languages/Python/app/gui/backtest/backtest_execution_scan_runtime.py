@@ -216,6 +216,7 @@ def run_backtest_scan(self):
                 f"(limit {backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_RUNS})."
             )
             return
+        large_optimizer_run = run_count > backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
 
         pair_overrides = None
         request_logic = logic
@@ -225,7 +226,7 @@ def run_backtest_scan(self):
                     list(dict.fromkeys([*group, *filter_indicator_keys]))
                     for group in indicator_groups
                 ]
-            pair_overrides = backtest_optimizer_runtime.build_pair_overrides(
+            pair_overrides = backtest_optimizer_runtime.build_pair_overrides_or_plan(
                 symbols=symbols,
                 intervals=intervals,
                 indicator_groups=indicator_groups,
@@ -234,15 +235,15 @@ def run_backtest_scan(self):
                 request_logic = "AND"
 
         expected_runs = []
-        if pair_overrides:
+        if pair_overrides and not large_optimizer_run:
             for override in pair_overrides:
                 expected_runs.append((override.symbol, override.interval, list(override.indicators or [])))
-        elif logic == "SEPARATE":
+        elif logic == "SEPARATE" and not large_optimizer_run:
             for sym in symbols:
                 for iv in intervals:
                     for ind in signal_indicator_defs:
                         expected_runs.append((sym, iv, [ind.key, *filter_indicator_keys]))
-        else:
+        elif not large_optimizer_run:
             for sym in symbols:
                 for iv in intervals:
                     expected_runs.append((sym, iv, [ind.key for ind in indicators]))
@@ -294,6 +295,13 @@ def run_backtest_scan(self):
             self._backtest_scan_mdd_limit = float(
                 self.backtest_config.get("scan_mdd_limit", 10.0) or 10.0
             )
+        request.optimizer_result_limit = backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
+        request.optimizer_metric = optimizer_metric
+        request.optimizer_mdd_limit = float(self._backtest_scan_mdd_limit)
+        request.optimizer_min_trades = optimizer_min_trades
+        request.optimizer_mode = optimizer_mode
+        request.optimizer_scope = scan_scope
+        request.optimizer_run_count = run_count
         self._backtest_scan_optimizer_metric = optimizer_metric
         self._backtest_scan_optimizer_min_trades = optimizer_min_trades
         self._backtest_scan_optimizer_mode = optimizer_mode
@@ -373,9 +381,12 @@ def run_backtest_scan(self):
         self.backtest_scan_worker.progress.connect(self._on_backtest_progress)
         self.backtest_scan_worker.finished.connect(self._on_backtest_scan_finished)
         self.backtest_results_table.setRowCount(0)
-        self.backtest_status_label.setText(
-            f"Running optimizer: {run_count} run(s), {scope_label}, {mode_label}..."
-        )
+        status_message = f"Running optimizer: {run_count} run(s), {scope_label}, {mode_label}..."
+        if large_optimizer_run:
+            status_message += (
+                f" Showing top {backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS} row(s)."
+            )
+        self.backtest_status_label.setText(status_message)
         self.backtest_run_btn.setEnabled(False)
         try:
             self.backtest_scan_btn.setEnabled(False)

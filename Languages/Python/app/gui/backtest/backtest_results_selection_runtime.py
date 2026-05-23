@@ -85,7 +85,14 @@ def _apply_backtest_scan_best(self, best: dict) -> None:
 
 def _on_backtest_scan_finished(self, result: dict, error: object):
     self.backtest_scan_worker = None
-    self._on_backtest_finished(result, error)
+    try:
+        self.backtest_run_btn.setEnabled(True)
+    except Exception:
+        pass
+    try:
+        self.backtest_stop_btn.setEnabled(False)
+    except Exception:
+        pass
     try:
         self.backtest_scan_btn.setEnabled(True)
     except Exception:
@@ -95,10 +102,18 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
     except Exception:
         pass
     if error:
+        err_text = str(error) if error is not None else ""
+        if isinstance(error, RuntimeError) and "backtest_cancelled" in err_text.lower():
+            self.backtest_status_label.setText("Backtest scan cancelled.")
+            return
+        msg = f"Backtest scan failed: {error}"
+        self.backtest_status_label.setText(msg)
+        self.log(msg)
         return
     if not isinstance(result, dict):
         return
     runs_raw = result.get("runs", []) or []
+    errors = result.get("errors", []) or []
     try:
         mdd_limit = float(getattr(self, "_backtest_scan_mdd_limit", 0.0) or 0.0)
     except Exception:
@@ -128,16 +143,37 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
         )
     except Exception:
         min_trades = 1
-    runs_for_ranking = getattr(self, "backtest_results", None) or runs_raw
-    ranked_runs = backtest_optimizer_runtime.rank_optimizer_runs(
-        runs_for_ranking,
-        metric=metric,
-        mdd_limit=mdd_limit,
-        min_trades=min_trades,
-        mode=mode,
-        scope=scope,
-        run_count=run_count,
-    )
+    runs_for_ranking = runs_raw
+    has_engine_rank = False
+    try:
+        first_run = next(iter(runs_for_ranking), None)
+        first_data = (
+            backtest_optimizer_runtime.run_to_mapping(first_run)
+            if first_run is not None
+            else {}
+        )
+        has_engine_rank = first_data.get("optimizer_rank") is not None or first_data.get("optimizer_candidate_count") is not None
+    except Exception:
+        has_engine_rank = False
+    if has_engine_rank:
+        ranked_runs = [
+            backtest_optimizer_runtime.run_to_mapping(run)
+            for run in (runs_for_ranking or [])
+        ]
+        ranked_runs.sort(
+            key=lambda row: int(row.get("optimizer_rank") or 1_000_000)
+        )
+    else:
+        ranked_runs = backtest_optimizer_runtime.rank_optimizer_runs(
+            runs_for_ranking,
+            metric=metric,
+            mdd_limit=mdd_limit,
+            min_trades=min_trades,
+            mode=mode,
+            scope=scope,
+            run_count=run_count,
+            max_rows=backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS,
+        )
     if ranked_runs:
         self.backtest_results = ranked_runs
         self._populate_backtest_results_table(ranked_runs)
@@ -151,13 +187,32 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
         metric=metric,
         min_trades=min_trades,
     )
-    eligible_count = sum(1 for run in ranked_runs if run.get("optimizer_eligible"))
-    filtered_count = len(ranked_runs) - eligible_count
+    first_ranked = ranked_runs[0] if ranked_runs else {}
+    try:
+        eligible_count = int(first_ranked.get("optimizer_eligible_count"))
+    except Exception:
+        eligible_count = sum(1 for run in ranked_runs if run.get("optimizer_eligible"))
+    try:
+        filtered_count = int(first_ranked.get("optimizer_filtered_count"))
+    except Exception:
+        filtered_count = max(0, int(run_count or len(ranked_runs)) - eligible_count)
+    try:
+        candidate_count = int(first_ranked.get("optimizer_candidate_count"))
+    except Exception:
+        candidate_count = int(run_count or len(ranked_runs))
+    shown_count = len(ranked_runs)
+    for err in errors:
+        try:
+            sym = err.get("symbol")
+            interval = err.get("interval")
+            self.log(f"Backtest scan error for {sym}@{interval}: {err.get('error')}")
+        except Exception:
+            pass
     if not best:
         mdd_text = f"MDD <= {mdd_limit:.2f}%" if mdd_limit > 0 else "no MDD limit"
         self.backtest_status_label.setText(
             f"Scan complete, but no runs met {mdd_text} and min trades {min_trades}; "
-            f"{filtered_count} filtered."
+            f"{filtered_count} filtered. Showing {shown_count}/{candidate_count} row(s)."
         )
         return
     auto_apply = False
@@ -172,6 +227,10 @@ def _on_backtest_scan_finished(self, result: dict, error: object):
         f"ROI {best['roi_percent']:+.2f}% | MDD {best['max_drawdown_percent']:.2f}% "
         f"| trades {best['trades']} | eligible {eligible_count}, filtered {filtered_count}"
     )
+    if shown_count < candidate_count:
+        summary += f" | showing top {shown_count}/{candidate_count}"
+    if errors:
+        summary += f" | {len(errors)} error(s)"
     self.backtest_status_label.setText(summary)
 
 

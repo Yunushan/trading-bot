@@ -14,9 +14,18 @@ from ...core.backtest.indicator_selection_runtime import (
 from ...core.backtest.indicator_runtime import filter_indicators, signal_indicators
 from ...core.backtest.intervals import normalize_backtest_interval, normalize_backtest_intervals
 from ...core.backtest.models import BacktestRequest, IndicatorDefinition, PairOverride
+from ...core.backtest.optimizer_limits_runtime import (
+    MAX_BACKTEST_EXPECTED_RUN_TRACKING,
+    MAX_BACKTEST_OPTIMIZER_RUNS,
+    MAX_BACKTEST_OPTIMIZER_TABLE_ROWS,
+)
+from ...core.backtest.optimizer_pair_plan_runtime import (
+    build_optimizer_pair_override_collection,
+    pair_override_intervals,
+    pair_override_symbols,
+)
 from ...settings.exchange_support import build_exchange_support_payload
 
-MAX_BACKTEST_OPTIMIZER_RUNS = 5000
 OPTIMIZER_MODE_VALUES = {"current", "single", "pairs", "combinations"}
 OPTIMIZER_METRIC_VALUES = {
     "roi_percent",
@@ -234,7 +243,7 @@ def build_optimizer_pair_overrides(
     mode: str,
     combo_size: int,
     logic: str,
-) -> tuple[list[PairOverride], str, int, int]:
+) -> tuple[object, str, int, int]:
     signal_defs = signal_indicators(indicators)
     signal_keys = [indicator.key for indicator in signal_defs]
     filter_keys = [indicator.key for indicator in filter_indicators(indicators)]
@@ -258,17 +267,12 @@ def build_optimizer_pair_overrides(
     if request_logic == "SEPARATE" and any(len(group) > 1 for group in indicator_groups):
         request_logic = "AND"
 
-    overrides: list[PairOverride] = []
-    for symbol in symbols:
-        for interval in intervals:
-            for indicator_group in indicator_groups:
-                overrides.append(
-                    PairOverride(
-                        symbol=symbol,
-                        interval=interval,
-                        indicators=list(indicator_group),
-                    )
-                )
+    overrides = build_optimizer_pair_override_collection(
+        symbols=symbols,
+        intervals=intervals,
+        indicator_groups=indicator_groups,
+        lazy_threshold=MAX_BACKTEST_EXPECTED_RUN_TRACKING,
+    )
     return overrides, request_logic, len(signal_keys), len(indicator_groups)
 
 
@@ -543,8 +547,8 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
     else:
         pair_overrides = build_pair_overrides(config.get("backtest_symbol_interval_pairs"))
     if pair_overrides:
-        symbols = list(dict.fromkeys(item.symbol for item in pair_overrides))
-        intervals = list(dict.fromkeys(item.interval for item in pair_overrides))
+        symbols = pair_override_symbols(pair_overrides)
+        intervals = pair_override_intervals(pair_overrides)
 
     if not symbols:
         raise ValueError("At least one symbol is required for backtesting.")
@@ -630,6 +634,14 @@ def build_request(runtime, request_patch: dict | None) -> tuple[BacktestRequest,
         stop_loss_scope=clean_text(stop_loss_cfg.get("scope"), "per_trade"),
         pair_overrides=pair_overrides,
     )
+    if optimizer_generated_overrides:
+        request.optimizer_result_limit = MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
+        request.optimizer_metric = optimizer_metric
+        request.optimizer_mdd_limit = optimizer_mdd_limit
+        request.optimizer_min_trades = optimizer_min_trades
+        request.optimizer_mode = optimizer_mode
+        request.optimizer_scope = scan_scope
+        request.optimizer_run_count = estimated_run_count
 
     mode = clean_text(patch.get("mode", config.get("mode", "Demo/Testnet")), "Demo/Testnet")
     account_type = clean_text(

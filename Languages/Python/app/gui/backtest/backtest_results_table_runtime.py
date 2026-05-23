@@ -107,8 +107,13 @@ def _on_backtest_finished(self, result: dict, error: object):
                 rd["indicator_keys"] = list(inds)
     try:
         self.log(f"Backtest returned {len(run_dicts)} run(s).")
-        for idx, rd in enumerate(run_dicts):
+        log_limit = min(len(run_dicts), 100)
+        for idx, rd in enumerate(run_dicts[:log_limit]):
             self.log(f"Backtest run[{idx}]: {rd}")
+        if len(run_dicts) > log_limit:
+            self.log(
+                f"Backtest run log truncated: {len(run_dicts) - log_limit} additional run(s) omitted."
+            )
     except Exception:
         pass
     self._populate_backtest_results_table(run_dicts)
@@ -136,6 +141,16 @@ def _on_backtest_finished(self, result: dict, error: object):
 def _populate_backtest_results_table(self, runs):
     try:
         rows_data = list(runs or [])
+        total_rows = len(rows_data)
+        if total_rows > backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS:
+            rows_data = rows_data[: backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS]
+            try:
+                self.log(
+                    "Backtest results table truncated: "
+                    f"showing {len(rows_data)}/{total_rows} row(s)."
+                )
+            except Exception:
+                pass
         try:
             self.backtest_results_table.setSortingEnabled(False)
         except Exception:

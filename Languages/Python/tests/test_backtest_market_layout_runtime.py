@@ -202,20 +202,46 @@ class BacktestParamsRuntimeTests(unittest.TestCase):
         class _DummyBacktestWindow:
             def __init__(self):
                 self.config = {"backtest": {}}
-                self.backtest_symbols_all = [f"SYM{i}USDT" for i in range(150)]
+                self.backtest_symbols_all = [f"SYM{i}USDT" for i in range(35_000)]
+                signal_indicator_keys = [
+                    "ma",
+                    "donchian",
+                    "psar",
+                    "bb",
+                    "bbw",
+                    "keltner",
+                    "ichimoku",
+                    "rsi",
+                    "rvol",
+                    "cmf",
+                    "cci",
+                    "roc",
+                    "trix",
+                    "ppo",
+                    "ao",
+                    "kst",
+                    "aroon",
+                    "chop",
+                    "natr",
+                    "vwap",
+                    "mfi",
+                    "stoch_rsi",
+                    "willr",
+                    "macd",
+                    "uo",
+                    "dmi",
+                    "supertrend",
+                    "ema",
+                    "stochastic",
+                ]
                 self.backtest_config = build_default_backtest_config()
                 self.backtest_config.update(
                     {
                         "intervals": [f"{i}h" for i in range(20)],
                         "optimizer_mode": "combinations",
-                        "optimizer_combo_size": 3,
+                        "optimizer_combo_size": 5,
                         "scan_scope": "all_loaded",
-                        "indicators": {
-                            "rsi": {"enabled": True},
-                            "macd": {"enabled": True},
-                            "ema": {"enabled": True},
-                            "bb": {"enabled": True},
-                        },
+                        "indicators": {key: {"enabled": True} for key in signal_indicator_keys},
                     }
                 )
 
@@ -291,14 +317,14 @@ class BacktestParamsRuntimeTests(unittest.TestCase):
         group = backtest_tab_params_runtime.build_backtest_params_group(window)
 
         self.assertIn("Estimated optimizer runs:", window.backtest_optimizer_estimate_label.text())
-        self.assertIn("reduce selection", window.backtest_optimizer_estimate_label.text())
+        self.assertIn("exceeds research limit", window.backtest_optimizer_estimate_label.text())
         self.assertFalse(window.backtest_scan_btn.isEnabled())
 
         selected_idx = window.backtest_scan_scope_combo.findData("selected")
         self.assertGreaterEqual(selected_idx, 0)
         window.backtest_scan_scope_combo.setCurrentIndex(selected_idx)
 
-        self.assertNotIn("reduce selection", window.backtest_optimizer_estimate_label.text())
+        self.assertNotIn("exceeds research limit", window.backtest_optimizer_estimate_label.text())
         self.assertTrue(window.backtest_scan_btn.isEnabled())
         group.deleteLater()
 

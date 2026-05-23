@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from typing import Dict, List, Optional, Sequence
 
@@ -8,6 +8,8 @@ import pandas as pd
 
 from ...settings.risk import coerce_bool, normalize_stop_loss_dict
 from .engine_data_runtime import slice_work_frame
+from .optimizer_limits_runtime import BACKTEST_OPTIMIZER_PROGRESS_EVERY
+from .optimizer_result_runtime import OptimizerTopResultCollector
 from .engine_signal_runtime import IndicatorCache, SignalCache
 from .indicator_runtime import filter_indicators, signal_indicators
 from .models import BacktestRequest, BacktestRunResult, IndicatorDefinition, PairOverride
@@ -102,12 +104,11 @@ def _override_leverage(raw_value: object, controls: Mapping[str, object]) -> int
     return max(1, lev_val)
 
 
-def build_request_combos(
+def iter_request_combos(
     request: BacktestRequest,
-) -> list[tuple[str, str, Optional[Sequence[str]], Optional[int], dict[str, object]]]:
+) -> Iterator[tuple[str, str, Optional[Sequence[str]], Optional[int], dict[str, object]]]:
     pair_override = getattr(request, "pair_overrides", None)
     if not pair_override:
-        combos: list[tuple[str, str, Optional[Sequence[str]], Optional[int], dict[str, object]]] = []
         for symbol in request.symbols:
             sym_norm = str(symbol).strip().upper()
             if not sym_norm:
@@ -116,10 +117,9 @@ def build_request_combos(
                 iv_norm = str(interval).strip()
                 if not iv_norm:
                     continue
-                combos.append((sym_norm, iv_norm, None, None, {}))
-        return combos
+                yield (sym_norm, iv_norm, None, None, {})
+        return
 
-    combos = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for entry in pair_override:
         if isinstance(entry, PairOverride):
@@ -152,8 +152,13 @@ def build_request_combos(
             continue
         seen.add(key)
         lev_val = _override_leverage(lev_raw, controls)
-        combos.append((sym_norm, iv_norm, indicator_keys or None, lev_val, controls))
-    return combos
+        yield (sym_norm, iv_norm, indicator_keys or None, lev_val, controls)
+
+
+def build_request_combos(
+    request: BacktestRequest,
+) -> list[tuple[str, str, Optional[Sequence[str]], Optional[int], dict[str, object]]]:
+    return list(iter_request_combos(request))
 
 
 def resolve_effective_leverage(
@@ -314,12 +319,19 @@ def run_backtest(
     data_cache: dict[tuple[str, str], pd.DataFrame] = {}
     indicator_cache: IndicatorCache = {}
     signal_cache: SignalCache = {}
-    combos = build_request_combos(request)
+    result_collector = OptimizerTopResultCollector.from_request(request)
+    processed_count = 0
+
+    def _record_run(run: BacktestRunResult) -> None:
+        if result_collector is not None:
+            result_collector.add(run)
+        else:
+            runs.append(run)
 
     engine._should_stop_cb = should_stop
     try:
         source_label_lower = str(request.symbol_source or "").strip().lower()
-        for symbol, interval, override_keys, override_leverage, override_controls in combos:
+        for symbol, interval, override_keys, override_leverage, override_controls in iter_request_combos(request):
             if should_stop and should_stop():
                 raise RuntimeError("backtest_cancelled")
             try:
@@ -346,7 +358,7 @@ def run_backtest(
                 if df is None:
                     detail = f" ({source_label})" if source_label else ""
                     progress(f"Fetching {symbol} @ {interval}{detail} data...")
-                    df = engine._load_klines(symbol, interval, request.start, request.end, indicator_bundle)
+                    df = engine._load_klines(symbol, interval, request.start, request.end, active_indicators)
                     if df is not None:
                         data_cache[cache_key] = df
                 if df is None or df.empty:
@@ -381,7 +393,16 @@ def run_backtest(
                                 effective_request,
                                 effective_leverage=effective_leverage,
                             )
-                            runs.append(run)
+                            _record_run(run)
+                            processed_count += 1
+                            if (
+                                result_collector is not None
+                                and processed_count % BACKTEST_OPTIMIZER_PROGRESS_EVERY == 0
+                            ):
+                                progress(
+                                    f"Optimized {processed_count:,}/"
+                                    f"{result_collector.run_count or processed_count:,} candidate run(s)..."
+                                )
                 else:
                     run = engine._simulate(
                         symbol,
@@ -403,7 +424,16 @@ def run_backtest(
                             effective_request,
                             effective_leverage=effective_leverage,
                         )
-                        runs.append(run)
+                        _record_run(run)
+                        processed_count += 1
+                        if (
+                            result_collector is not None
+                            and processed_count % BACKTEST_OPTIMIZER_PROGRESS_EVERY == 0
+                        ):
+                            progress(
+                                f"Optimized {processed_count:,}/"
+                                f"{result_collector.run_count or processed_count:,} candidate run(s)..."
+                            )
             except Exception as exc:
                 if str(exc).lower().startswith("backtest_cancelled"):
                     raise
@@ -411,4 +441,6 @@ def run_backtest(
     finally:
         engine._should_stop_cb = None
 
+    if result_collector is not None:
+        runs = result_collector.finish()
     return {"runs": runs, "errors": errors}

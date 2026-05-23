@@ -355,24 +355,50 @@ class BacktestRequestBehaviorTests(unittest.TestCase):
 
     def test_build_request_rejects_service_optimizer_runs_over_limit(self):
         runtime = _build_runtime()
+        signal_indicator_keys = [
+            "ma",
+            "donchian",
+            "psar",
+            "bb",
+            "bbw",
+            "keltner",
+            "ichimoku",
+            "rsi",
+            "rvol",
+            "cmf",
+            "cci",
+            "roc",
+            "trix",
+            "ppo",
+            "ao",
+            "kst",
+            "aroon",
+            "chop",
+            "natr",
+            "vwap",
+            "mfi",
+            "stoch_rsi",
+            "willr",
+            "macd",
+            "uo",
+            "dmi",
+            "supertrend",
+            "ema",
+            "stochastic",
+        ]
 
         with self.assertRaisesRegex(ValueError, str(MAX_BACKTEST_OPTIMIZER_RUNS)):
             build_request(
                 runtime,
                 {
-                    "symbols": [f"SYM{i}USDT" for i in range(100)],
-                    "intervals": [f"{i}h" for i in range(20)],
+                    "symbols": [f"SYM{i}USDT" for i in range(35_000)],
+                    "intervals": [f"{i + 1}h" for i in range(20)],
                     "capital": 1000.0,
                     "start": "2025-01-01T00:00:00",
                     "end": "2025-01-02T00:00:00",
                     "optimizer_mode": "combinations",
-                    "optimizer_combo_size": 3,
-                    "indicators": {
-                        "ema": {"enabled": True, "length": 20},
-                        "rsi": {"enabled": True, "length": 14},
-                        "macd": {"enabled": True},
-                        "bb": {"enabled": True},
-                    },
+                    "optimizer_combo_size": 5,
+                    "indicators": {key: {"enabled": True} for key in signal_indicator_keys},
                 },
             )
 

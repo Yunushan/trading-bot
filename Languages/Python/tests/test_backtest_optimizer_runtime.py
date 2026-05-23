@@ -10,6 +10,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.gui.backtest import backtest_optimizer_runtime  # noqa: E402
+from app.core.backtest.optimizer_result_runtime import OptimizerTopResultCollector  # noqa: E402
 
 
 class BacktestOptimizerRuntimeTests(unittest.TestCase):
@@ -141,10 +142,10 @@ class BacktestOptimizerRuntimeTests(unittest.TestCase):
         )
 
         over_limit_plan = backtest_optimizer_runtime.estimate_scan_plan(
-            symbols_all=[f"SYM{i}USDT" for i in range(100)],
+            symbols_all=[f"SYM{i}USDT" for i in range(40_000)],
             selected_symbols=[],
             intervals=[f"{i}h" for i in range(20)],
-            indicator_keys=["rsi", "macd", "ema", "bb"],
+            indicator_keys=[f"indicator_{i}" for i in range(100)],
             scope="all_loaded",
             top_n=100,
             mode="combinations",
@@ -158,8 +159,28 @@ class BacktestOptimizerRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(over_limit_plan["over_limit"])
         self.assertIn(
-            "reduce selection",
+            "exceeds research limit",
             backtest_optimizer_runtime.format_scan_plan_estimate(over_limit_plan),
+        )
+
+        large_allowed_plan = backtest_optimizer_runtime.estimate_scan_plan(
+            symbols_all=[f"SYM{i}USDT" for i in range(200)],
+            selected_symbols=[],
+            intervals=[f"{i}h" for i in range(20)],
+            indicator_keys=[f"indicator_{i}" for i in range(30)],
+            scope="top_n",
+            top_n=200,
+            mode="pairs",
+            combo_size=2,
+            logic="AND",
+        )
+
+        self.assertEqual(1_740_000, large_allowed_plan["run_count"])
+        self.assertFalse(large_allowed_plan["over_limit"])
+        self.assertTrue(large_allowed_plan["large_warning"])
+        self.assertIn(
+            "large research batch",
+            backtest_optimizer_runtime.format_scan_plan_estimate(large_allowed_plan),
         )
 
     def test_optimizer_score_filters_mdd_and_min_trades_and_ranks_metrics(self):
@@ -232,6 +253,33 @@ class BacktestOptimizerRuntimeTests(unittest.TestCase):
         self.assertEqual(4, ranked[0]["optimizer_run_count"])
         self.assertIn("trades 0 < 1", str(ranked[2]["optimizer_rejection_reason"]))
         self.assertIn("MDD 8.00% > 5.00%", str(ranked[3]["optimizer_rejection_reason"]))
+
+    def test_optimizer_top_result_collector_keeps_best_rows_only(self):
+        collector = OptimizerTopResultCollector(
+            limit=2,
+            metric="roi_percent",
+            mdd_limit=5.0,
+            min_trades=1,
+            mode="pairs",
+            scope="top_n",
+            run_count=4,
+        )
+        runs = [
+            {"symbol": "BTCUSDT", "trades": 1, "roi_percent": 5.0, "roi_value": 50.0, "max_drawdown_percent": 2.0},
+            {"symbol": "ETHUSDT", "trades": 2, "roi_percent": 12.0, "roi_value": 120.0, "max_drawdown_percent": 4.0},
+            {"symbol": "SOLUSDT", "trades": 2, "roi_percent": 9.0, "roi_value": 90.0, "max_drawdown_percent": 3.0},
+            {"symbol": "XRPUSDT", "trades": 0, "roi_percent": 50.0, "roi_value": 500.0, "max_drawdown_percent": 1.0},
+        ]
+        for run in runs:
+            collector.add(run)
+
+        top_rows = collector.finish()
+
+        self.assertEqual(["ETHUSDT", "SOLUSDT"], [row["symbol"] for row in top_rows])
+        self.assertEqual([1, 2], [row["optimizer_rank"] for row in top_rows])
+        self.assertEqual([4, 4], [row["optimizer_candidate_count"] for row in top_rows])
+        self.assertEqual([3, 3], [row["optimizer_eligible_count"] for row in top_rows])
+        self.assertEqual([1, 1], [row["optimizer_filtered_count"] for row in top_rows])
 
 
 if __name__ == "__main__":

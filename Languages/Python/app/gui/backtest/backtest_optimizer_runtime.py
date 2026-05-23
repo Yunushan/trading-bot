@@ -5,9 +5,16 @@ from itertools import combinations
 from typing import Iterable, Sequence
 
 from app.core.backtest.models import PairOverride
-
-
-MAX_BACKTEST_OPTIMIZER_RUNS = 5000
+from app.core.backtest.optimizer_limits_runtime import (
+    BACKTEST_OPTIMIZER_INTERACTIVE_RUN_WARNING,
+    BACKTEST_OPTIMIZER_LARGE_RUN_WARNING,
+    MAX_BACKTEST_EXPECTED_RUN_TRACKING,
+    MAX_BACKTEST_OPTIMIZER_RUNS,
+    MAX_BACKTEST_OPTIMIZER_TABLE_ROWS,
+)
+from app.core.backtest.optimizer_pair_plan_runtime import (
+    build_optimizer_pair_override_collection,
+)
 
 OPTIMIZER_MODE_OPTIONS = (
     ("Current selection", "current"),
@@ -176,7 +183,10 @@ def estimate_scan_plan(
         "indicator_group_count": len(indicator_groups) if normalized_mode != "current" else 0,
         "run_count": run_count,
         "over_limit": run_count > MAX_BACKTEST_OPTIMIZER_RUNS,
+        "large_warning": run_count > BACKTEST_OPTIMIZER_LARGE_RUN_WARNING,
+        "interactive_warning": run_count > BACKTEST_OPTIMIZER_INTERACTIVE_RUN_WARNING,
         "limit": MAX_BACKTEST_OPTIMIZER_RUNS,
+        "display_limit": MAX_BACKTEST_OPTIMIZER_TABLE_ROWS,
     }
 
 
@@ -205,9 +215,15 @@ def format_scan_plan_estimate(plan: dict[str, object]) -> str:
         group_count = int(plan.get("indicator_group_count", 0) or 0)
     except Exception:
         group_count = 0
+    try:
+        display_limit = int(plan.get("display_limit", MAX_BACKTEST_OPTIMIZER_TABLE_ROWS) or 0)
+    except Exception:
+        display_limit = MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
 
     mode = normalize_optimizer_mode(plan.get("mode"))
     over_limit = bool(plan.get("over_limit"))
+    large_warning = bool(plan.get("large_warning"))
+    interactive_warning = bool(plan.get("interactive_warning"))
     if mode == "current":
         group_text = f"{signal_count} signal indicator(s)"
     else:
@@ -217,7 +233,11 @@ def format_scan_plan_estimate(plan: dict[str, object]) -> str:
         f"({symbol_count} symbol(s) x {interval_count} interval(s), {group_text})"
     )
     if over_limit:
-        text += f" - reduce selection; limit is {limit}."
+        text += f" - exceeds research limit {limit}; reduce selection."
+    elif large_warning:
+        text += f" - large research batch; leaderboard keeps top {display_limit} row(s)."
+    elif interactive_warning:
+        text += f" - large interactive batch; top {display_limit} row(s) are displayed."
     return text
 
 
@@ -239,6 +259,20 @@ def build_pair_overrides(
                     )
                 )
     return overrides
+
+
+def build_pair_overrides_or_plan(
+    *,
+    symbols: Sequence[str],
+    intervals: Sequence[str],
+    indicator_groups: Sequence[Sequence[str]],
+):
+    return build_optimizer_pair_override_collection(
+        symbols=symbols,
+        intervals=intervals,
+        indicator_groups=indicator_groups,
+        lazy_threshold=MAX_BACKTEST_EXPECTED_RUN_TRACKING,
+    )
 
 
 def run_to_mapping(run) -> dict[str, object]:  # noqa: ANN001
@@ -335,6 +369,7 @@ def rank_optimizer_runs(
     mode: str = "",
     scope: str = "",
     run_count: int | None = None,
+    max_rows: int | None = None,
 ) -> list[dict[str, object]]:
     metric_norm = normalize_optimizer_metric(metric)
     mode_norm = normalize_optimizer_mode(mode) if str(mode or "").strip() else ""
@@ -351,6 +386,12 @@ def rank_optimizer_runs(
         run_count_value = int(run_count) if run_count is not None else None
     except Exception:
         run_count_value = None
+    row_limit = None
+    try:
+        if max_rows is not None:
+            row_limit = max(1, int(max_rows))
+    except Exception:
+        row_limit = None
     ranked_rows: list[dict[str, object]] = []
     for original_index, run in enumerate(runs or []):
         data = run_to_mapping(run)
@@ -404,16 +445,21 @@ def rank_optimizer_runs(
         row["optimizer_candidate_count"] = candidate_count
         row["optimizer_eligible_count"] = eligible_count
         row["optimizer_filtered_count"] = filtered_count
-    return eligible_rows + rejected_rows
+    ranked_result = eligible_rows + rejected_rows
+    if row_limit is not None and len(ranked_result) > row_limit:
+        return ranked_result[:row_limit]
+    return ranked_result
 
 
 __all__ = [
     "MAX_BACKTEST_OPTIMIZER_RUNS",
+    "MAX_BACKTEST_OPTIMIZER_TABLE_ROWS",
     "OPTIMIZER_METRIC_OPTIONS",
     "OPTIMIZER_MODE_OPTIONS",
     "SCAN_SCOPE_OPTIONS",
     "build_indicator_key_groups",
     "build_pair_overrides",
+    "build_pair_overrides_or_plan",
     "estimate_scan_plan",
     "estimate_scan_run_count",
     "format_scan_plan_estimate",

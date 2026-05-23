@@ -99,6 +99,8 @@ def refresh_backtest_optimizer_estimate(self) -> None:
         label.setText(backtest_optimizer_runtime.format_scan_plan_estimate(plan))
         if plan.get("over_limit"):
             label.setStyleSheet("color: #ff6b6b; font-weight: 600;")
+        elif plan.get("large_warning") or plan.get("interactive_warning"):
+            label.setStyleSheet("color: #ffb84d; font-weight: 600;")
         else:
             label.setStyleSheet("color: #9fd0ff;")
         button = getattr(self, "backtest_scan_btn", None)

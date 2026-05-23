@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -61,7 +62,7 @@ class BacktestRequest:
     stop_loss_usdt: float = 0.0
     stop_loss_percent: float = 0.0
     stop_loss_scope: str = "per_trade"
-    pair_overrides: Optional[List[PairOverride]] = None
+    pair_overrides: Optional[Iterable[PairOverride]] = None
 
 
 @dataclass
@@ -102,4 +103,12 @@ class BacktestRunResult:
     optimizer_metric: str | None = None
     optimizer_primary_score: float | None = None
     optimizer_eligible: bool | None = None
+    optimizer_mode: str | None = None
+    optimizer_scope: str | None = None
+    optimizer_mdd_limit: float | None = None
+    optimizer_min_trades: int | None = None
+    optimizer_candidate_count: int | None = None
+    optimizer_eligible_count: int | None = None
+    optimizer_filtered_count: int | None = None
+    optimizer_run_count: int | None = None
     optimizer_rejection_reason: str | None = None

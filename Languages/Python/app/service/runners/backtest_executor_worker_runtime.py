@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ...core.backtest import BacktestEngine
-from .backtest_executor_request_runtime import clean_text, rank_optimizer_runs
+from .backtest_executor_request_runtime import clean_text, rank_optimizer_runs, run_to_mapping
 from .backtest_executor_snapshot_runtime import finish_snapshots, set_running_snapshots
 
 
@@ -46,15 +46,20 @@ def run_backtest_thread(
         )
         run_records = list(result.get("runs", []) or []) if isinstance(result, dict) else []
         if bool(summary.get("optimizer_enabled")):
-            run_records = rank_optimizer_runs(
-                run_records,
-                metric=str(summary.get("optimizer_metric") or "roi_percent"),
-                mdd_limit=float(summary.get("optimizer_mdd_limit") or 0.0),
-                min_trades=int(summary.get("optimizer_min_trades") or 0),
-                mode=str(summary.get("optimizer_mode") or ""),
-                scope=str(summary.get("optimizer_scope") or ""),
-                run_count=int(summary.get("estimated_run_count") or len(run_records)),
-            )
+            first_record = run_to_mapping(run_records[0]) if run_records else {}
+            if first_record.get("optimizer_rank") is not None or first_record.get("optimizer_candidate_count") is not None:
+                run_records = [run_to_mapping(run) for run in run_records]
+                run_records.sort(key=lambda row: int(row.get("optimizer_rank") or 1_000_000))
+            else:
+                run_records = rank_optimizer_runs(
+                    run_records,
+                    metric=str(summary.get("optimizer_metric") or "roi_percent"),
+                    mdd_limit=float(summary.get("optimizer_mdd_limit") or 0.0),
+                    min_trades=int(summary.get("optimizer_min_trades") or 0),
+                    mode=str(summary.get("optimizer_mode") or ""),
+                    scope=str(summary.get("optimizer_scope") or ""),
+                    run_count=int(summary.get("estimated_run_count") or len(run_records)),
+                )
         error_records = list(result.get("errors", []) or []) if isinstance(result, dict) else []
         cancelled = bool(adapter._cancel_event and adapter._cancel_event.is_set())
         if cancelled:
