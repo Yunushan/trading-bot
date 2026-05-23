@@ -5,13 +5,17 @@ from PyQt6 import QtWidgets
 from .backtest_state_context_runtime import normalize_backtest_interval_value
 
 
+BACKTEST_MARKET_LIST_MIN_HEIGHT = 180
+BACKTEST_MARKET_LIST_MAX_HEIGHT = 300
+
+
 def build_backtest_market_group(self):
     market_group = QtWidgets.QGroupBox("Markets")
     market_group.setMinimumWidth(220)
     market_group.setMaximumWidth(620)
     market_group.setSizePolicy(
         QtWidgets.QSizePolicy.Policy.Preferred,
-        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Maximum,
     )
     market_layout = QtWidgets.QGridLayout(market_group)
 
@@ -29,13 +33,15 @@ def build_backtest_market_group(self):
     self.backtest_symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
     size_policy_symbols = QtWidgets.QSizePolicy(
         QtWidgets.QSizePolicy.Policy.Preferred,
-        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Preferred,
     )
     size_policy_symbols.setHorizontalStretch(0)
     size_policy_symbols.setVerticalStretch(1)
     self.backtest_symbol_list.setSizePolicy(size_policy_symbols)
     self.backtest_symbol_list.setMinimumWidth(140)
     self.backtest_symbol_list.setMaximumWidth(260)
+    self.backtest_symbol_list.setMinimumHeight(BACKTEST_MARKET_LIST_MIN_HEIGHT)
+    self.backtest_symbol_list.setMaximumHeight(BACKTEST_MARKET_LIST_MAX_HEIGHT)
     self.backtest_symbol_list.itemSelectionChanged.connect(self._backtest_store_symbols)
     market_layout.addWidget(self.backtest_symbol_list, 2, 0, 4, 3)
 
@@ -44,13 +50,15 @@ def build_backtest_market_group(self):
     self.backtest_interval_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
     size_policy_intervals = QtWidgets.QSizePolicy(
         QtWidgets.QSizePolicy.Policy.Preferred,
-        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Preferred,
     )
     size_policy_intervals.setHorizontalStretch(0)
     size_policy_intervals.setVerticalStretch(1)
     self.backtest_interval_list.setSizePolicy(size_policy_intervals)
     self.backtest_interval_list.setMinimumWidth(120)
     self.backtest_interval_list.setMaximumWidth(240)
+    self.backtest_interval_list.setMinimumHeight(BACKTEST_MARKET_LIST_MIN_HEIGHT)
+    self.backtest_interval_list.setMaximumHeight(BACKTEST_MARKET_LIST_MAX_HEIGHT)
     self.backtest_interval_list.itemSelectionChanged.connect(self._backtest_store_intervals)
     market_layout.addWidget(self.backtest_interval_list, 2, 3, 4, 2)
 
@@ -101,4 +109,8 @@ def build_backtest_market_group(self):
     return market_group
 
 
-__all__ = ["build_backtest_market_group"]
+__all__ = [
+    "BACKTEST_MARKET_LIST_MAX_HEIGHT",
+    "BACKTEST_MARKET_LIST_MIN_HEIGHT",
+    "build_backtest_market_group",
+]

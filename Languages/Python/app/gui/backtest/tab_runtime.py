@@ -26,7 +26,8 @@ def _create_backtest_tab(self, *, add_to_tabs: bool = True):
 
     top_layout = QtWidgets.QHBoxLayout()
     top_layout.setSpacing(16)
-    top_layout.addWidget(backtest_tab_market_runtime.build_backtest_market_group(self), 3)
+    market_group = backtest_tab_market_runtime.build_backtest_market_group(self)
+    top_layout.addWidget(market_group, 3, QtCore.Qt.AlignmentFlag.AlignTop)
     top_layout.addWidget(backtest_tab_params_runtime.build_backtest_params_group(self), 5)
     top_layout.addWidget(backtest_tab_indicator_runtime.build_backtest_indicator_group(self), stretch=3)
 

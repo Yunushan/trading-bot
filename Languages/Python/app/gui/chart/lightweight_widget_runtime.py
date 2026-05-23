@@ -6,7 +6,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from PyQt6 import QtCore, QtGui
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..shared.silent_webengine_page import SilentWebEnginePage
 from . import lightweight_widget_assets
@@ -42,6 +42,7 @@ _HAND_CURSOR_SHAPES = {
     QtCore.Qt.CursorShape.OpenHandCursor,
     QtCore.Qt.CursorShape.ClosedHandCursor,
 }
+_WEBENGINE_VIEW_BASE = QWebEngineView if QWebEngineView is not None else QtWidgets.QWidget
 
 
 def _log_chart_event(message: str) -> None:
@@ -91,7 +92,7 @@ def _refresh_host_window_protection(widget) -> None:
         _log_lightweight_exception("refresh_host_window_protection", exc)
 
 
-class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
+class LightweightChartWidget(_WEBENGINE_VIEW_BASE):  # type: ignore[misc]
     """
     QWebEngine wrapper around TradingView Lightweight Charts.
     """

@@ -83,7 +83,12 @@ class RuntimeExceptionDiagnosticHelperTests(unittest.TestCase):
         self.assertIn("context=account_context", joined)
 
     def test_chart_widget_helpers_write_to_chart_log(self):
+        from PyQt6 import QtWidgets
+
         from app.gui.chart import lightweight_widget_runtime, tradingview_widget_runtime
+
+        self.assertTrue(issubclass(lightweight_widget_runtime.LightweightChartWidget, QtWidgets.QWidget))
+        self.assertTrue(issubclass(tradingview_widget_runtime.TradingViewWidget, QtWidgets.QWidget))
 
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "chart.log"
