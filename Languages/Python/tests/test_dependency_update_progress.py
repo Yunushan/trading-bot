@@ -109,6 +109,16 @@ class DependencyUpdateProgressTests(unittest.TestCase):
         self.assertIn("1 installed, 1 failed", detail)
         self.assertIn("Installing: numpy", detail)
 
+    def test_windows_access_denied_install_hint_explains_locked_packages(self):
+        with mock.patch.object(dependency_versions_ui.sys, "platform", "win32"):
+            hint = dependency_versions_ui._windows_access_denied_install_hint(
+                "pandas",
+                "ERROR: Could not install packages due to an OSError: [WinError 5] Access is denied",
+            )
+
+        self.assertIn("Windows denied access", hint)
+        self.assertIn("pandas", hint)
+
     def test_python_update_prefers_active_interpreter(self):
         command = dependency_versions_ui._resolve_python_command_prefix(_FakeWindow())
 
@@ -177,6 +187,45 @@ class DependencyUpdateProgressTests(unittest.TestCase):
         self.assertEqual(progress_events[-1]["failed"], 1)
         self.assertTrue(any(event.get("state") == "running" and event.get("current") == "ok-package" for event in progress_events))
         self.assertTrue(any(event.get("state") == "failed" and event.get("current") == "broken-package" for event in progress_events))
+
+    def test_python_update_blocks_loaded_windows_binary_package_before_pip(self):
+        window = _FakeWindow()
+        progress_events = []
+        targets = [
+            {
+                "label": "pandas",
+                "package": "pandas",
+                "_latest_version": "3.0.3",
+                "_installed_version": "3.0.2",
+            },
+        ]
+
+        with (
+            mock.patch.object(dependency_versions_ui.sys, "platform", "win32"),
+            mock.patch.dict(dependency_versions_ui.sys.modules, {"pandas": mock.Mock()}),
+            mock.patch.object(dependency_versions_ui, "_resolve_python_command_prefix", return_value=["python"]),
+            mock.patch.object(
+                dependency_versions_ui,
+                "_emit_dependency_update_progress",
+                side_effect=lambda _window, progress: progress_events.append(dict(progress)),
+            ),
+            mock.patch.object(dependency_versions_ui, "_run_python_package_install") as install,
+        ):
+            result = dependency_versions_ui._run_dependency_update_worker(
+                window,
+                targets=targets,
+                selected_only=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["title"], "Python dependency update needs restart")
+        self.assertIn("Restart required: pandas", result["message"])
+        self.assertIn("pandas is already loaded by the running app", result["message"])
+        install.assert_not_called()
+        self.assertTrue(any(event.get("state") == "blocked" and event.get("current") == "pandas" for event in progress_events))
+        self.assertEqual(progress_events[-1]["state"], "finished")
+        self.assertEqual(progress_events[-1]["failed"], 0)
+        self.assertEqual(progress_events[-1]["restart_required"], 1)
 
     def test_rust_update_installs_toolchain_when_rustup_is_missing(self):
         window = _FakeWindow()

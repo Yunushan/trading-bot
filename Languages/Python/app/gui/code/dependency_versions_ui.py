@@ -16,6 +16,22 @@ from PyQt6 import QtCore, QtWidgets
 from .code_language_catalog import BASE_PROJECT_PATH, CPP_CODE_LANGUAGE_KEY, RUST_CODE_LANGUAGE_KEY, RUST_PROJECT_PATH
 
 
+_WINDOWS_RESTART_REQUIRED_PACKAGE_IMPORTS = {
+    "llvmlite": ("llvmlite",),
+    "numba": ("numba",),
+    "numpy": ("numpy",),
+    "pandas": ("pandas",),
+    "pyqt6": ("PyQt6",),
+    "pyqt6-qt6": ("PyQt6",),
+    "pyqt6-webengine": ("PyQt6",),
+}
+_WINDOWS_ACCESS_DENIED_INSTALL_MARKERS = (
+    "access is denied",
+    "winerror 5",
+    "could not install packages due to an oserror",
+)
+
+
 def _record_dependency_ui_exception(self, context: str, exc: BaseException) -> None:
     message = (
         f"Dependency UI warning [{context}]: "
@@ -154,6 +170,7 @@ def _format_dependency_progress_text(progress: dict) -> tuple[str, str, int]:
     completed = min(_safe_progress_int(progress.get("completed")), total) if total else _safe_progress_int(progress.get("completed"))
     installed = _safe_progress_int(progress.get("installed"))
     failed = _safe_progress_int(progress.get("failed"))
+    restart_required = _safe_progress_int(progress.get("restart_required"))
     current = str(progress.get("current") or "").strip()
     phase = str(progress.get("phase") or "").strip()
     percent = 0
@@ -162,6 +179,8 @@ def _format_dependency_progress_text(progress: dict) -> tuple[str, str, int]:
 
     headline = f"{completed}/{total} complete ({percent}%)" if total else f"{completed} complete"
     counts = f"{installed} installed, {failed} failed"
+    if restart_required:
+        counts = f"{counts}, {restart_required} restart required"
     if current and phase:
         detail = f"{headline} - {counts} - {phase}: {current}"
     elif phase:
@@ -190,6 +209,7 @@ def apply_dependency_update_progress(self, progress: dict | None) -> None:
     payload = progress if isinstance(progress, dict) else {}
     headline, detail, percent = _format_dependency_progress_text(payload)
     failed = _safe_progress_int(payload.get("failed"))
+    restart_required = _safe_progress_int(payload.get("restart_required"))
     state = str(payload.get("state") or "").strip().lower()
     label = str(payload.get("label") or payload.get("current") or "").strip()
     installed_version = str(payload.get("installed_version") or "").strip()
@@ -212,13 +232,21 @@ def apply_dependency_update_progress(self, progress: dict | None) -> None:
     if detail_label is not None:
         try:
             detail_label.show()
-            color = "#ef4444" if failed and state == "finished" else "#22c55e" if state == "finished" else "#f59e0b"
+            color = (
+                "#ef4444"
+                if failed and state == "finished"
+                else "#f59e0b"
+                if (restart_required and state == "finished") or state == "blocked"
+                else "#22c55e"
+                if state == "finished"
+                else "#f59e0b"
+            )
             detail_label.setStyleSheet(f"color: {color}; font-weight: 600;")
             detail_label.setText(detail)
         except Exception as exc:
             _record_dependency_ui_exception(self, "progress_detail_update", exc)
 
-    if state in {"running", "success", "failed"} and label:
+    if state in {"running", "success", "failed", "blocked"} and label:
         labels = getattr(self, "_dep_version_labels", None)
         widgets = labels.get(label) if isinstance(labels, dict) else None
         if widgets:
@@ -233,6 +261,9 @@ def apply_dependency_update_progress(self, progress: dict | None) -> None:
                 elif state == "failed":
                     installed_widget.setText("Failed")
                     installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px; color: #ef4444;")
+                elif state == "blocked":
+                    installed_widget.setText("Restart required")
+                    installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px; color: #f59e0b;")
             except Exception as exc:
                 _record_dependency_ui_exception(self, f"progress_row_update:{label}", exc)
 
@@ -318,6 +349,54 @@ def _version_text_is_installable(version_text: str | None) -> bool:
     if value.lower() in {"unknown", "not checked", "checking...", "not installed", "installed"}:
         return False
     return bool(re.match(r"^\d+(?:[A-Za-z0-9.+_!-]*\d)?$", value))
+
+
+def _canonical_python_package_name(package_name: str) -> str:
+    return re.sub(r"[-_.]+", "-", str(package_name or "").strip().lower())
+
+
+def _loaded_python_import_roots_for_package(package_name: str) -> tuple[str, ...]:
+    canonical = _canonical_python_package_name(package_name)
+    return tuple(_WINDOWS_RESTART_REQUIRED_PACKAGE_IMPORTS.get(canonical, ()))
+
+
+def _python_import_root_loaded(root: str) -> bool:
+    if not root:
+        return False
+    if root in sys.modules:
+        return True
+    prefix = f"{root}."
+    return any(str(module_name).startswith(prefix) for module_name in sys.modules)
+
+
+def _windows_package_update_restart_message(package_name: str) -> str:
+    return (
+        f"{package_name} is already loaded by the running app. Windows locks compiled dependency files while "
+        "they are loaded, so pip cannot safely replace this package from inside this session. Close all Trading "
+        f"Bot windows and background services, reopen the app, then update {package_name} before opening "
+        "Dashboard, Chart, Backtest, or service features that import it."
+    )
+
+
+def _windows_loaded_package_update_block_reason(package_name: str) -> str:
+    if sys.platform != "win32":
+        return ""
+    if not any(_python_import_root_loaded(root) for root in _loaded_python_import_roots_for_package(package_name)):
+        return ""
+    return _windows_package_update_restart_message(package_name)
+
+
+def _windows_access_denied_install_hint(package_name: str, output: str) -> str:
+    if sys.platform != "win32":
+        return ""
+    lowered = str(output or "").lower()
+    if not any(marker in lowered for marker in _WINDOWS_ACCESS_DENIED_INSTALL_MARKERS):
+        return ""
+    return (
+        "Windows denied access while pip was replacing files. This usually means the package is loaded by "
+        "Trading Bot, a service process, an IDE terminal, or antivirus scanning. Close those processes and "
+        f"run the update for {package_name} again."
+    )
 
 
 def _cpp_qt_update_verification_failures(runtime, targets: list[dict[str, str]]) -> list[str]:
@@ -770,7 +849,9 @@ def _run_dependency_update_worker(
     completed_packages = 0
     installed_packages = 0
     failed_packages = 0
+    restart_required_packages = 0
     failed_names: list[str] = []
+    restart_required_names: list[str] = []
     detail_lines: list[str] = []
     timeout_seconds = _dependency_update_timeout_seconds()
 
@@ -784,6 +865,7 @@ def _run_dependency_update_worker(
             "completed": 0,
             "installed": 0,
             "failed": 0,
+            "restart_required": 0,
         },
     )
 
@@ -805,6 +887,31 @@ def _run_dependency_update_worker(
                     "completed": completed_packages,
                     "installed": installed_packages,
                     "failed": failed_packages,
+                    "restart_required": restart_required_packages,
+                },
+            )
+            continue
+
+        restart_block_reason = _windows_loaded_package_update_block_reason(package_name)
+        if restart_block_reason:
+            completed_packages += 1
+            restart_required_packages += 1
+            restart_required_names.append(package_name)
+            detail_lines.append(f"{package_name}:\n{restart_block_reason}")
+            _emit_dependency_update_progress(
+                self,
+                {
+                    "state": "blocked",
+                    "phase": "Restart required",
+                    "current": package_name,
+                    "label": label,
+                    "installed_version": installed_before,
+                    "total": total_packages,
+                    "completed": completed_packages,
+                    "installed": installed_packages,
+                    "failed": failed_packages,
+                    "restart_required": restart_required_packages,
+                    "detail": restart_block_reason,
                 },
             )
             continue
@@ -821,6 +928,7 @@ def _run_dependency_update_worker(
                 "completed": completed_packages,
                 "installed": installed_packages,
                 "failed": failed_packages,
+                "restart_required": restart_required_packages,
             },
         )
         command = [
@@ -852,6 +960,7 @@ def _run_dependency_update_worker(
                     "completed": completed_packages,
                     "installed": installed_packages,
                     "failed": failed_packages,
+                    "restart_required": restart_required_packages,
                     "detail": line,
                 },
             )
@@ -886,6 +995,9 @@ def _run_dependency_update_worker(
             failed_packages += 1
             failed_names.append(package_name)
             detail = _trim_update_output(runtime, output)
+            access_hint = _windows_access_denied_install_hint(package_name, output)
+            if access_hint:
+                detail = "\n".join(line for line in (detail, access_hint) if line)
             if detail:
                 detail_lines.append(f"{package_name}:\n{detail}")
 
@@ -901,10 +1013,11 @@ def _run_dependency_update_worker(
                 "completed": completed_packages,
                 "installed": installed_packages,
                 "failed": failed_packages,
+                "restart_required": restart_required_packages,
             },
         )
 
-    overall_ok = failed_packages == 0
+    overall_ok = failed_packages == 0 and restart_required_packages == 0
     _emit_dependency_update_progress(
         self,
         {
@@ -915,29 +1028,44 @@ def _run_dependency_update_worker(
             "completed": completed_packages,
             "installed": installed_packages,
             "failed": failed_packages,
+            "restart_required": restart_required_packages,
         },
     )
 
-    summary_lines = [
-        (
-            f"Updated {installed_packages} of {total_packages} Python package(s)."
-            if overall_ok
-            else f"Updated {installed_packages} of {total_packages} Python package(s); {failed_packages} failed."
-        ),
-    ]
+    if overall_ok:
+        summary = f"Updated {installed_packages} of {total_packages} Python package(s)."
+    elif failed_packages:
+        summary = f"Updated {installed_packages} of {total_packages} Python package(s); {failed_packages} failed."
+    else:
+        summary = (
+            f"Updated {installed_packages} of {total_packages} Python package(s); "
+            f"{restart_required_packages} need app restart before updating."
+        )
+    summary_lines = [summary]
     if failed_names:
         summary_lines.append("Failed: " + ", ".join(failed_names))
+    if restart_required_names:
+        summary_lines.append("Restart required: " + ", ".join(restart_required_names))
     if detail_lines:
         summary_lines.append("\n\n".join(detail_lines[:5]))
+    if overall_ok:
+        title = "Python dependency update finished"
+        log_status = "Python dependency update succeeded"
+    elif failed_packages:
+        title = "Python dependency update failed"
+        log_status = "Python dependency update failed"
+    else:
+        title = "Python dependency update needs restart"
+        log_status = "Python dependency update needs app restart"
     return {
         "ok": overall_ok,
-        "title": "Python dependency update finished" if overall_ok else "Python dependency update failed",
+        "title": title,
         "message": "\n\n".join(summary_lines),
         "refresh_versions": True,
         "log_message": "; ".join(
             line
             for line in (
-                "Python dependency update succeeded" if overall_ok else "Python dependency update failed",
+                log_status,
                 ", ".join(target_labels) if target_labels else "",
             )
             if line

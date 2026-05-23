@@ -11,7 +11,6 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
 
-from app.integrations.exchanges.binance import _normalize_connector_choice as _normalize_connector_backend
 from .code_language_catalog import (
     BASE_PROJECT_PATH as _BASE_PROJECT_PATH,
     CPP_CODE_LANGUAGE_KEY,
@@ -24,6 +23,32 @@ from .code_language_catalog import (
     RUST_CODE_LANGUAGE_KEY,
     _rust_dependency_targets_for_config,
 )
+
+
+def _normalize_connector_backend(value) -> str:  # noqa: ANN001
+    text_raw = str(value or "").strip()
+    if not text_raw:
+        return "binance-sdk-derivatives-trading-usds-futures"
+    text = text_raw.lower()
+    if text in {
+        "binance-sdk-derivatives-trading-usds-futures",
+        "binance_sdk_derivatives_trading_usds_futures",
+    } or ("sdk" in text and "future" in text and ("usd" in text or "usds" in text)):
+        return "binance-sdk-derivatives-trading-usds-futures"
+    if text in {
+        "binance-sdk-derivatives-trading-coin-futures",
+        "binance_sdk_derivatives_trading_coin_futures",
+    } or ("sdk" in text and "coin" in text and "future" in text):
+        return "binance-sdk-derivatives-trading-coin-futures"
+    if text in {"binance-sdk-spot", "binance_sdk_spot"} or ("sdk" in text and "spot" in text):
+        return "binance-sdk-spot"
+    if text == "ccxt" or "ccxt" in text:
+        return "ccxt"
+    if "connector" in text or "official" in text or text == "binance-connector":
+        return "binance-connector"
+    if "python" in text and "binance" in text:
+        return "python-binance"
+    return "binance-sdk-derivatives-trading-usds-futures"
 
 _CONNECTOR_DEPENDENCY_KEYS = {
     "python-binance",
