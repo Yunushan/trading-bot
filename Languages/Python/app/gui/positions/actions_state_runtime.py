@@ -11,6 +11,30 @@ def _identity_token(value) -> str:
     return str(value or "").strip()
 
 
+def _record_positions_action_exception(self, context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    entry = f"positions action suppressed exception context={context} error={type(exc).__name__}: {message}"
+    try:
+        logger = getattr(self, "_chart_debug_log", None)
+    except Exception:
+        logger = None
+    if callable(logger):
+        try:
+            logger(entry)
+            return
+        except Exception:
+            logger = None
+    try:
+        logger = getattr(self, "log", None)
+    except Exception:
+        logger = None
+    if callable(logger):
+        try:
+            logger(entry)
+        except Exception:
+            return
+
+
 def _close_target_identity(payload: dict | None) -> dict[str, str]:
     if not isinstance(payload, dict):
         return {}
@@ -301,8 +325,8 @@ def reduce_local_position_allocation_state(
                     getattr(self, "_open_position_records", {}),
                     mode=mode_value,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_positions_action_exception(self, "reduce_allocation_save", exc)
         return bool(closed_snapshots or survivor_entries != entries)
     except Exception:
         return False
@@ -327,45 +351,45 @@ def clear_local_position_state(
 
         try:
             changed = bool(self._snapshot_closed_position(sym_upper, side_norm)) or changed
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_snapshot_closed_position", exc)
 
         try:
             open_records = getattr(self, "_open_position_records", None)
             if isinstance(open_records, dict) and key in open_records:
                 open_records.pop(key, None)
                 changed = True
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_open_position_record", exc)
 
         try:
             alloc_map = getattr(self, "_entry_allocations", None)
             if isinstance(alloc_map, dict) and key in alloc_map:
                 alloc_map.pop(key, None)
                 changed = True
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_entry_allocations", exc)
 
         try:
             pending_close = getattr(self, "_pending_close_times", None)
             if isinstance(pending_close, dict):
                 pending_close.pop(key, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_pending_close_times", exc)
 
         try:
             missing_counts = getattr(self, "_position_missing_counts", None)
             if isinstance(missing_counts, dict):
                 missing_counts.pop(key, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_position_missing_counts", exc)
 
         try:
             entry_times = getattr(self, "_entry_times", None)
             if isinstance(entry_times, dict):
                 entry_times.pop(key, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_entry_times", exc)
 
         intervals_to_close: list[str] = []
         try:
@@ -376,8 +400,8 @@ def clear_local_position_state(
                     bucket = side_map.get(side_norm)
                     if isinstance(bucket, set):
                         intervals_to_close.extend([str(iv).strip() for iv in bucket if str(iv).strip()])
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_collect_intervals", exc)
         if interval:
             iv = str(interval).strip()
             if iv and iv not in intervals_to_close:
@@ -386,7 +410,8 @@ def clear_local_position_state(
             for iv in intervals_to_close:
                 try:
                     self._track_interval_close(sym_upper, side_norm, iv)
-                except Exception:
+                except Exception as exc:
+                    _record_positions_action_exception(self, "clear_track_interval_close", exc)
                     continue
 
         try:
@@ -399,8 +424,8 @@ def clear_local_position_state(
                         continue
                     if str(sym_key or "").strip().upper() == sym_upper and str(side_key_key or "").strip().upper() == side_norm:
                         iv_times.pop(iv_key, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_entry_times_by_interval", exc)
 
         try:
             guard_obj = getattr(self, "guard", None)
@@ -414,8 +439,8 @@ def clear_local_position_state(
                         guard_obj.mark_closed(sym_upper, tracked_interval, guard_side)
                 else:
                     guard_obj.mark_closed(sym_upper, interval, guard_side)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_action_exception(self, "clear_guard_state", exc)
 
         if changed:
             saver = get_save_position_allocations()
@@ -427,21 +452,21 @@ def clear_local_position_state(
                         getattr(self, "_open_position_records", {}),
                         mode=mode_value,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_positions_action_exception(self, "clear_save_allocations", exc)
             try:
                 self._update_global_pnl_display(*self._compute_global_pnl_totals())
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_positions_action_exception(self, "clear_update_global_pnl_display", exc)
             try:
                 self._render_positions_table()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_positions_action_exception(self, "clear_render_positions_table", exc)
             if reason:
                 try:
                     self.log(f"{sym_upper} {side_norm}: cleared stale local position ({reason}).")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_positions_action_exception(self, "clear_reason_log", exc)
         return changed
     except Exception:
         return False
@@ -482,8 +507,8 @@ def sync_chart_to_active_positions(self):
             except Exception:
                 try:
                     market_combo.setCurrentText("Futures")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_positions_action_exception(self, "sync_chart_market_set_current_text", exc)
             return
         display_sym = self._futures_display_symbol(target_sym)
         cache = self.chart_symbol_cache.setdefault("Futures", [])
@@ -499,5 +524,5 @@ def sync_chart_to_active_positions(self):
         changed = self._set_chart_symbol(display_sym, ensure_option=True, from_follow=True)
         if changed or self._chart_needs_render or self._is_chart_visible():
             self.load_chart(auto=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_positions_action_exception(self, "sync_chart_to_active_positions", exc)

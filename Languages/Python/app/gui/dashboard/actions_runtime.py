@@ -103,6 +103,7 @@ def _create_dashboard_action_section(self, scroll_layout):
         self.api_secret_edit,
         self.mode_combo,
         self.theme_combo,
+        self.design_combo,
         self.account_combo,
         self.account_mode_combo,
         self.connector_combo,

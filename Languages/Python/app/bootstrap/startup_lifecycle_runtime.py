@@ -4,6 +4,22 @@ import os
 import threading
 import time
 
+from .startup_ui_shared import _boot_log
+
+
+def _record_startup_lifecycle_exception(
+    context: str,
+    exc: BaseException,
+    *,
+    boot_log=None,
+) -> None:
+    message = str(exc).replace("\n", " ")
+    logger = boot_log if callable(boot_log) else _boot_log
+    try:
+        logger(f"startup lifecycle suppressed exception context={context} error={type(exc).__name__}: {message}")
+    except Exception:
+        return
+
 
 def _visible_top_level_windows_snapshot(app) -> list:
     try:
@@ -17,8 +33,8 @@ def _visible_top_level_windows_snapshot(app) -> list:
         try:
             if not widget.isWindow():
                 continue
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_startup_lifecycle_exception("visible_window_is_window_check", exc)
         try:
             if not widget.isVisible():
                 continue
@@ -36,8 +52,8 @@ def _close_native_startup_cover(native_startup_cover, *, boot_log=None):
         cover.close()
         if callable(boot_log):
             boot_log("native startup cover hidden")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_lifecycle_exception("close_native_startup_cover", exc, boot_log=boot_log)
     return None
 
 
@@ -57,16 +73,16 @@ def _arm_background_process_exit(
         lock = threading.Lock()
         try:
             setattr(app, "_bot_hard_exit_lock", lock)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_startup_lifecycle_exception("arm_background_exit_store_lock", exc)
 
     state = getattr(app, "_bot_hard_exit_state", None)
     if not isinstance(state, dict):
         state = {"armed": False}
         try:
             setattr(app, "_bot_hard_exit_state", state)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_startup_lifecycle_exception("arm_background_exit_store_state", exc)
 
     with lock:
         if state["armed"]:
@@ -91,12 +107,12 @@ def _arm_background_process_exit(
                     elif (now - invisible_since) >= delay_s:
                         try:
                             uninstall_startup_window_suppression()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            _record_startup_lifecycle_exception("background_exit_uninstall_startup_suppression", exc)
                         try:
                             uninstall_cbt_startup_window_suppression()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            _record_startup_lifecycle_exception("background_exit_uninstall_cbt_suppression", exc)
                         os._exit(0)
                 time.sleep(0.1)
         finally:
@@ -133,60 +149,60 @@ def _install_background_restore_guard(app, win, QtCore, QWidget) -> None:
                     if callable(arm_hard_exit):
                         arm_hard_exit()
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("terminate_background_check_exiting", exc)
             try:
                 setattr(app, "_exiting", True)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("terminate_background_set_exiting", exc)
             try:
                 arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
                 if callable(arm_hard_exit):
                     arm_hard_exit()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("terminate_background_arm_hard_exit", exc)
             try:
                 if win is not None:
                     win._cpp_window_hidden_for_cpp_handoff = False
                     win._force_close = True
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("terminate_background_window_flags", exc)
             try:
                 if win is not None:
                     QWidget.close(win)
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("terminate_background_qwidget_close", exc)
             try:
                 app.quit()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("terminate_background_app_quit", exc)
 
         def _ensure_not_left_running_in_background() -> None:
             try:
                 if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("background_guard_check_exiting", exc)
             try:
                 if _visible_top_level_windows_snapshot(app):
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("background_guard_visible_snapshot", exc)
             try:
                 if bool(getattr(win, "_cpp_launch_handoff_active", False)):
                     QtCore.QTimer.singleShot(250, _ensure_not_left_running_in_background)
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("background_guard_cpp_handoff_check", exc)
             _terminate_background_app()
 
         def _restore_main_window() -> None:
             try:
                 if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("restore_main_window_check_exiting", exc)
             try:
                 hidden_for_handoff = bool(getattr(win, "_cpp_window_hidden_for_cpp_handoff", False))
             except Exception:
@@ -204,13 +220,13 @@ def _install_background_restore_guard(app, win, QtCore, QWidget) -> None:
                 win.showMaximized()
                 win.raise_()
                 win.activateWindow()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_lifecycle_exception("restore_main_window_show", exc)
             QtCore.QTimer.singleShot(300, _ensure_not_left_running_in_background)
 
         app.lastWindowClosed.connect(_restore_main_window)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_lifecycle_exception("install_background_restore_guard", exc)
 
 
 def _install_startup_input_unblocker(
@@ -244,20 +260,20 @@ def _install_startup_input_unblocker(
                 self._armed = False
                 try:
                     uninstall_startup_window_suppression()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_startup_lifecycle_exception("startup_input_unblocker_uninstall_startup_suppression", exc)
                 try:
                     uninstall_cbt_startup_window_suppression()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_startup_lifecycle_exception("startup_input_unblocker_uninstall_cbt_suppression", exc)
                 try:
                     self._app.removeEventFilter(self)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_startup_lifecycle_exception("startup_input_unblocker_remove_filter", exc)
             return False
 
     try:
         app._startup_input_unblocker = _StartupInputUnblocker(app)
         app.installEventFilter(app._startup_input_unblocker)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_lifecycle_exception("install_startup_input_unblocker", exc)

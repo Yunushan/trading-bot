@@ -57,6 +57,7 @@ function collectConfigPatch() {
     connector_backend: elements.configConnectorBackend.value.trim(),
     code_language: elements.configCodeLanguage.value.trim(),
     theme: elements.configTheme.value.trim(),
+    design: elements.configDesign.value.trim(),
     leverage: readInteger(elements.configLeverage, 0),
     position_pct: readNumber(elements.configPositionPct, 0),
     order_audit_max_bytes: readInteger(elements.configOrderAuditMaxBytes, 1),

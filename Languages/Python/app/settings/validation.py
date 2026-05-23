@@ -152,6 +152,7 @@ _ALLOWED_RUNTIME_CONFIG_KEYS = frozenset(
         "connector_order_circuit_incident_log_backup_count",
         "connector_order_circuit_incident_log_max_bytes",
         "connector_order_circuit_incident_log_path",
+        "design",
         "futures_flat_purge_grace_seconds",
         "futures_flat_purge_miss_threshold",
         "gtd_minutes",
@@ -910,6 +911,7 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
     _validate_text(cfg, "indicator_source", issues)
     _validate_text(cfg, "code_language", issues)
     _validate_text(cfg, "theme", issues, allow_empty=True)
+    _validate_text(cfg, "design", issues, allow_empty=True)
     _validate_text(cfg, "selected_rust_framework", issues, allow_empty=True)
     _validate_text(cfg, "selected_exchange", issues)
     _validate_text(cfg, "selected_forex_broker", issues, allow_empty=True)

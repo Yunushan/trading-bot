@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -49,6 +50,48 @@ class _FakeWindow:
     f"Dependency update runtime is unavailable: {DEPENDENCY_UPDATE_IMPORT_ERROR}",
 )
 class DependencyUpdateProgressTests(unittest.TestCase):
+    def test_dependency_ui_exception_logger_uses_window_log(self):
+        class _Window:
+            def __init__(self):
+                self.messages: list[str] = []
+
+            def log(self, message):
+                self.messages.append(str(message))
+
+        window = _Window()
+        dependency_versions_ui._record_dependency_ui_exception(window, "unit_context", RuntimeError("line one\nline two"))
+
+        self.assertEqual(1, len(window.messages))
+        self.assertIn("unit_context", window.messages[0])
+        self.assertIn("RuntimeError", window.messages[0])
+        self.assertIn("line one line two", window.messages[0])
+
+    def test_dependency_ui_exception_logger_falls_back_to_temp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"TEMP": tmp}):
+                dependency_versions_ui._record_dependency_ui_exception(None, "fallback_context", RuntimeError("fallback failed"))
+
+            log_path = Path(tmp) / "trading_bot_dependency_ui.log"
+            self.assertTrue(log_path.exists())
+            contents = log_path.read_text(encoding="utf-8")
+            self.assertIn("fallback_context", contents)
+            self.assertIn("fallback failed", contents)
+
+    def test_python_install_output_includes_progress_callback_failure(self):
+        def broken_callback(_line):
+            raise RuntimeError("callback failed")
+
+        ok, output = dependency_versions_ui._run_python_package_install(
+            [sys.executable, "-c", "print('hello from installer')"],
+            cwd=PYTHON_ROOT,
+            timeout=15.0,
+            on_output=broken_callback,
+        )
+
+        self.assertTrue(ok)
+        self.assertIn("hello from installer", output)
+        self.assertIn("Progress callback failed: RuntimeError: callback failed", output)
+
     def test_progress_text_includes_percentage_and_totals(self):
         headline, detail, percent = dependency_versions_ui._format_dependency_progress_text(
             {

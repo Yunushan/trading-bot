@@ -8,7 +8,13 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.gui.runtime.ui import theme_runtime  # noqa: E402
-from app.gui.runtime.ui.theme_styles import CHECKBOX_CHECK_IMAGE, DARK_THEME, LIGHT_THEME  # noqa: E402
+from app.gui.runtime.ui.theme_styles import (  # noqa: E402
+    CHECKBOX_CHECK_IMAGE,
+    DARK_THEME,
+    DESIGN_OPTIONS,
+    WORKSTATION_DESIGN_STYLES,
+    LIGHT_THEME,
+)
 
 
 class _FakeWindow:
@@ -53,6 +59,19 @@ class ThemeAccentCoverageTests(unittest.TestCase):
                 self.assertIn(f"image: {CHECKBOX_CHECK_IMAGE};", theme)
                 self.assertIn("QCheckBox::indicator:unchecked {\n    image: none;", theme)
 
+    def test_workstation_design_styles_cover_primary_desktop_surfaces(self):
+        self.assertEqual(("Classic", "Workstation"), DESIGN_OPTIONS)
+        for selector in (
+            "QMainWindow, QDialog {",
+            "QGroupBox {",
+            "QTabBar::tab:selected {",
+            "QTableWidget, QTableView, QTreeWidget",
+            "QProgressBar::chunk {",
+            "QStatusBar {",
+        ):
+            with self.subTest(selector=selector):
+                self.assertIn(selector, WORKSTATION_DESIGN_STYLES)
+
     def test_apply_accent_theme_overrides_dark_base_surfaces(self):
         window = _FakeWindow()
 
@@ -63,6 +82,16 @@ class ThemeAccentCoverageTests(unittest.TestCase):
         self.assertIn("QWidget {\n        background-color:", window.stylesheet)
         self.assertIn("QGroupBox {\n        background-color:", window.stylesheet)
         self.assertIn("QScrollBar:vertical, QScrollBar:horizontal", window.stylesheet)
+
+    def test_apply_workstation_design_stacks_on_selected_theme(self):
+        window = _FakeWindow()
+
+        theme_runtime._gui_apply_design(window, "Workstation")
+
+        self.assertEqual(window.config["theme"], "Dark")
+        self.assertEqual(window.config["design"], "Workstation")
+        self.assertIn("QWidget { background-color: #121212;", window.stylesheet)
+        self.assertIn("QTabBar::tab:selected {\n    background-color: #16345B;", window.stylesheet)
 
 
 if __name__ == "__main__":

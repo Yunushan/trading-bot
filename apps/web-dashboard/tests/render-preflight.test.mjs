@@ -355,6 +355,8 @@ test("config render surfaces advisory-only LLM execution boundary", () => {
       account_type: "Futures",
       symbols: ["BTCUSDT"],
       intervals: ["1h"],
+      theme: "Dark",
+      design: "Workstation",
       api_credentials_present: false,
       llm: {
         enabled: true,
@@ -379,4 +381,5 @@ test("config render surfaces advisory-only LLM execution boundary", () => {
   assert.equal(element("llm-execution").textContent, "Advisory Only");
   assert.match(element("llm-message").textContent, /cannot submit orders/);
   assert.equal(element("llm-catalog").textContent, "2026-05-11");
+  assert.equal(element("config-design").value, "Workstation");
 });

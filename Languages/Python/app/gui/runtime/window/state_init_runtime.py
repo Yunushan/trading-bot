@@ -157,6 +157,7 @@ def _initialize_config_state(self) -> None:
     self.config = default_config
     self.config["stop_loss"] = normalize_stop_loss_dict(self.config.get("stop_loss"))
     self.config.setdefault("theme", "Dark")
+    self.config.setdefault("design", "Classic")
     self.config["close_on_exit"] = False
     self.config.setdefault("close_on_exit", False)
     self.config["allow_opposite_positions"] = coerce_bool(

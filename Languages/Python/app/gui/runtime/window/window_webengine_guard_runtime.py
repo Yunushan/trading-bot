@@ -3,10 +3,32 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
 
 from ...shared.silent_webengine_page import SilentWebEnginePage
+
+
+def _record_webengine_guard_exception(self, context: str, exc: BaseException) -> None:
+    message = (
+        f"webengine_guard suppressed_exception context={context} "
+        f"error={type(exc).__name__}: {str(exc).replace(chr(10), ' ')}"
+    )
+    try:
+        logger = getattr(self, "_chart_debug_log", None) if self is not None else None
+        if callable(logger):
+            logger(message)
+            return
+    except Exception:
+        logger = None
+    try:
+        path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
+        with open(path, "a", encoding="utf-8", errors="ignore") as fh:
+            fh.write(f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}] {message}\n")
+    except OSError:
+        return
 
 
 def schedule_tradingview_prewarm(self) -> None:
@@ -58,19 +80,19 @@ def maybe_run_deferred_webengine_prewarm(self) -> None:
             if app is not None and app.applicationState() != QtCore.Qt.ApplicationState.ApplicationActive:
                 QtCore.QTimer.singleShot(1200, self._maybe_run_deferred_webengine_prewarm)
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "deferred_prewarm_app_state", exc)
         try:
             if not self.isVisible() or self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
                 QtCore.QTimer.singleShot(1200, self._maybe_run_deferred_webengine_prewarm)
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "deferred_prewarm_window_state", exc)
     self._webengine_runtime_prewarm_scheduled = False
     try:
         self._prewarm_webengine_runtime()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_webengine_guard_exception(self, "deferred_prewarm_run", exc)
 
 
 def prewarm_webengine_runtime(
@@ -93,8 +115,8 @@ def prewarm_webengine_runtime(
         return
     try:
         configure_tradingview_webengine_env()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_webengine_guard_exception(self, "prewarm_configure_env", exc)
     try:
         from PyQt6.QtWebEngineWidgets import QWebEngineView
     except Exception:
@@ -105,29 +127,30 @@ def prewarm_webengine_runtime(
         try:
             if SilentWebEnginePage is not None:
                 view.setPage(SilentWebEnginePage(view))
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "prewarm_set_silent_page", exc)
         try:
             view.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "prewarm_hide_attribute", exc)
         try:
             view.resize(1, 1)
             view.move(-32000, -32000)
             view.hide()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "prewarm_position_view", exc)
         try:
             view.load(QtCore.QUrl("about:blank"))
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "prewarm_load_blank", exc)
         self._webengine_runtime_prewarm_view = view
         self._webengine_runtime_prewarmed = True
         try:
             self._chart_debug_log("webengine_prewarm init=1")
-        except Exception:
-            pass
-    except Exception:
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "prewarm_debug_log", exc)
+    except Exception as exc:
+        _record_webengine_guard_exception(self, "prewarm_create_view", exc)
         return
 
     try:
@@ -142,8 +165,8 @@ def prewarm_webengine_runtime(
         if view_obj is not None:
             try:
                 view_obj.deleteLater()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_webengine_guard_exception(self, "prewarm_cleanup_view", exc)
 
     QtCore.QTimer.singleShot(hold_ms, _cleanup)
 
@@ -196,8 +219,8 @@ def start_tradingview_visibility_guard(self) -> None:
                 self.showMaximized()
                 self.raise_()
                 self.activateWindow()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "tradingview_visibility_guard_tick", exc)
 
     timer.timeout.connect(_tick)
     timer.start()
@@ -228,8 +251,8 @@ def start_tradingview_visibility_watchdog(self) -> None:
                 self.showMaximized()
                 self.raise_()
                 self.activateWindow()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "tradingview_visibility_watchdog_tick", exc)
 
     timer.timeout.connect(_tick)
     timer.start()
@@ -253,8 +276,8 @@ def start_tradingview_close_guard(self) -> None:
         extender = getattr(self, "_extend_spontaneous_close_block", None)
         if callable(extender):
             extender(duration_ms + 2500)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_webengine_guard_exception(self, "tradingview_close_guard_extend", exc)
 
 
 def start_webengine_close_guard(self, *, webengine_charts_allowed) -> None:
@@ -281,15 +304,15 @@ def start_webengine_close_guard(self, *, webengine_charts_allowed) -> None:
         extender = getattr(self, "_extend_spontaneous_close_block", None)
         if callable(extender):
             extender(duration_ms + 2500)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_webengine_guard_exception(self, "webengine_close_guard_extend", exc)
     self._start_webengine_visibility_watchdog()
     try:
         self._chart_debug_log(
             f"webengine_close_guard start duration_ms={duration_ms} until={self._webengine_close_guard_until:.3f}"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_webengine_guard_exception(self, "webengine_close_guard_debug_log", exc)
 
 
 def start_webengine_visibility_watchdog(self, *, allow_guard_bypass, restore_window_after_guard) -> None:
@@ -322,8 +345,8 @@ def start_webengine_visibility_watchdog(self, *, allow_guard_bypass, restore_win
         if not until or now >= until:
             try:
                 self._webengine_close_guard_active = False
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_webengine_guard_exception(self, "webengine_visibility_watchdog_expire", exc)
             self._stop_webengine_visibility_watchdog()
             return
         if not getattr(self, "_webengine_close_guard_active", False):
@@ -332,8 +355,8 @@ def start_webengine_visibility_watchdog(self, *, allow_guard_bypass, restore_win
         try:
             if not self.isVisible() or self.windowState() & QtCore.Qt.WindowState.WindowMinimized:
                 restore_window_after_guard(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "webengine_visibility_watchdog_restore", exc)
 
     timer.timeout.connect(_tick)
     timer.start()
@@ -345,12 +368,12 @@ def stop_webengine_visibility_watchdog(self) -> None:
     if timer is not None:
         try:
             timer.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "webengine_watchdog_timer_stop", exc)
         try:
             timer.deleteLater()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "webengine_watchdog_timer_delete", exc)
     self._webengine_visibility_watchdog_timer = None
     self._webengine_visibility_watchdog_active = False
 
@@ -360,12 +383,12 @@ def stop_tradingview_visibility_guard(self) -> None:
     if timer is not None:
         try:
             timer.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "tradingview_guard_timer_stop", exc)
         try:
             timer.deleteLater()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "tradingview_guard_timer_delete", exc)
     self._tv_visibility_guard_timer = None
     self._tv_visibility_guard_active = False
 
@@ -375,12 +398,12 @@ def stop_tradingview_visibility_watchdog(self) -> None:
     if timer is not None:
         try:
             timer.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "tradingview_watchdog_timer_stop", exc)
         try:
             timer.deleteLater()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "tradingview_watchdog_timer_delete", exc)
     self._tv_visibility_watchdog_timer = None
     self._tv_visibility_watchdog_active = False
 
@@ -402,18 +425,18 @@ def restore_window_after_guard(self) -> None:
         if minimized:
             try:
                 self.showMaximized()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_webengine_guard_exception(self, "restore_minimized_show", exc)
         elif not visible:
             try:
                 self.showMaximized()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_webengine_guard_exception(self, "restore_hidden_show", exc)
         try:
             self.raise_()
             self.activateWindow()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_webengine_guard_exception(self, "restore_raise_activate", exc)
 
     _restore_once()
     try:
@@ -421,5 +444,5 @@ def restore_window_after_guard(self) -> None:
         # hide/minimize event, so keep restoring for a short grace period.
         for delay_ms in (40, 140, 320, 700, 1400, 2400):
             QtCore.QTimer.singleShot(delay_ms, _restore_once)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_webengine_guard_exception(self, "restore_schedule_retries", exc)

@@ -11,6 +11,30 @@ _SPOT_CONNECTOR_KEYS = frozenset()
 _SIDE_LABELS = {}
 
 
+def _record_account_runtime_exception(self, context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    entry = f"account runtime suppressed exception context={context} error={type(exc).__name__}: {message}"
+    try:
+        logger = getattr(self, "_chart_debug_log", None)
+    except Exception:
+        logger = None
+    if callable(logger):
+        try:
+            logger(entry)
+            return
+        except Exception:
+            logger = None
+    try:
+        logger = getattr(self, "log", None)
+    except Exception:
+        logger = None
+    if callable(logger):
+        try:
+            logger(entry)
+        except Exception:
+            return
+
+
 def _normalize_connector_backend(value):  # type: ignore[no-untyped-def]
     return value
 
@@ -50,8 +74,8 @@ def _update_leverage_enabled(self):
             if not is_futures:
                 spin.setValue(1)
             spin.setEnabled(is_futures)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "update_leverage_spin", exc)
     futures_only_widgets = []
     try:
         futures_only_widgets.extend(
@@ -66,15 +90,15 @@ def _update_leverage_enabled(self):
                 getattr(self, "lead_trader_combo", None),
             ]
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "collect_futures_only_widgets", exc)
     for widget in futures_only_widgets:
         try:
             if widget is None:
                 continue
             widget.setEnabled(is_futures)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_account_runtime_exception(self, "update_futures_only_widget_enabled", exc)
     try:
         side_combo = getattr(self, "side_combo", None)
         if side_combo is not None:
@@ -85,7 +109,8 @@ def _update_leverage_enabled(self):
                     blocker = None
                     try:
                         blocker = QtCore.QSignalBlocker(side_combo)
-                    except Exception:
+                    except Exception as exc:
+                        _record_account_runtime_exception(self, "update_leverage_side_signal_blocker", exc)
                         blocker = None
                     side_combo.setCurrentIndex(idx_buy)
                     if blocker is not None:
@@ -93,8 +118,8 @@ def _update_leverage_enabled(self):
                 side_combo.setEnabled(False)
             else:
                 side_combo.setEnabled(True)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "update_leverage_side_combo", exc)
 
 
 def _rebuild_connector_combo_for_account(
@@ -218,17 +243,17 @@ def _invalidate_shared_binance(self, reason: str | None = None):
             self.__dict__["shared_binance"] = None
     try:
         self._shared_binance_invalidated_reason = reason
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "invalidate_shared_binance_reason", exc)
     try:
         if getattr(self, "balance_label", None):
             self.balance_label.setText("N/A")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "invalidate_shared_binance_balance_label", exc)
     try:
         self._update_positions_balance_labels(None, None)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "invalidate_shared_binance_position_labels", exc)
 
 
 def _on_api_credentials_changed(self):
@@ -239,8 +264,8 @@ def _on_api_credentials_changed(self):
 def _on_mode_changed(self, value: str):
     try:
         self.config["mode"] = str(value or self.mode_combo.currentText() or "Demo")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "mode_changed_config_update", exc)
     self._invalidate_shared_binance("mode_changed")
     self._reconfigure_positions_worker()
 
@@ -256,16 +281,16 @@ def _connector_label_text(self, backend: str) -> str:
 def _update_connector_labels(self):
     try:
         self._refresh_symbol_interval_pairs("runtime")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "update_connector_labels_runtime_pairs", exc)
     try:
         self._refresh_symbol_interval_pairs("backtest")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "update_connector_labels_backtest_pairs", exc)
     try:
         _refresh_dependency_usage_labels(self)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "update_connector_labels_dependency_usage", exc)
 
 
 def _on_account_type_changed(self, value):
@@ -298,7 +323,8 @@ def _on_account_type_changed(self, value):
                 blocker = None
                 try:
                     blocker = QtCore.QSignalBlocker(combo)
-                except Exception:
+                except Exception as exc:
+                    _record_account_runtime_exception(self, "account_type_indicator_signal_blocker", exc)
                     blocker = None
                 combo.setCurrentText(target_source)
                 if blocker is not None:
@@ -307,10 +333,10 @@ def _on_account_type_changed(self, value):
             if hasattr(self, "shared_binance") and self.shared_binance is not None:
                 try:
                     self.shared_binance.indicator_source = combo.currentText()
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:
+                    _record_account_runtime_exception(self, "account_type_shared_indicator_source", exc)
+    except Exception as exc:
+        _record_account_runtime_exception(self, "account_type_indicator_source_update", exc)
 
 
 def _refresh_backtest_connector_options(
@@ -362,13 +388,13 @@ def _refresh_backtest_connector_options(
     self._update_connector_labels()
     try:
         self._reconfigure_positions_worker()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "refresh_backtest_connector_reconfigure_positions_worker", exc)
     if getattr(self, "_ui_initialized", False):
         try:
             self.refresh_symbols()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_account_runtime_exception(self, "refresh_backtest_connector_refresh_symbols", exc)
 
 
 def _on_runtime_connector_changed(self, *_args):
@@ -385,8 +411,8 @@ def _on_runtime_connector_changed(self, *_args):
     self._update_connector_labels()
     try:
         self._reconfigure_positions_worker()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_account_runtime_exception(self, "runtime_connector_reconfigure_positions_worker", exc)
 
 
 def _on_backtest_connector_changed(self, *_args):

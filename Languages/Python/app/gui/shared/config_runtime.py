@@ -7,6 +7,8 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtWidgets
 
+from app.service.config_store import load_service_config_file, write_service_config_file
+
 _NORMALIZE_STOP_LOSS_DICT: Callable[[object], dict] | None = None
 _QT_CHARTS_AVAILABLE = False
 _TRADINGVIEW_SUPPORTED: Callable[[], bool] | None = None
@@ -72,9 +74,11 @@ def save_config(self):
         dlg.setDefaultSuffix("json")
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             fn = dlg.selectedFiles()[0]
-            with open(fn, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
-            self.log(f"Saved config to {fn}")
+            metadata = write_service_config_file(self.config, fn, allow_unsafe_path=True)
+            suffix = ""
+            if metadata.get("contains_secrets") and not metadata.get("inline_secrets_persisted"):
+                suffix = " (secret values stripped)"
+            self.log(f"Saved config to {fn}{suffix}")
     except Exception as e:
         try:
             self.log(f"Save config error: {e}")
@@ -87,8 +91,7 @@ def load_config(self):
         fn, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Config", "", "JSON Files (*.json)")
         if not fn:
             return
-        with open(fn, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
+        cfg, _metadata = load_service_config_file(fn)
         if isinstance(cfg, dict):
             self.config.update(cfg)
         self.config["stop_loss"] = _normalize_stop_loss(self.config.get("stop_loss"))
@@ -135,6 +138,7 @@ def load_config(self):
             self.config.setdefault("selected_forex_broker", next(iter(_FOREX_BROKER_PATHS)))
         else:
             self.config.setdefault("selected_forex_broker", None)
+        self.config.setdefault("design", "Classic")
         self._sync_language_exchange_lists_from_config()
         try:
             self._sync_service_config_snapshot()
@@ -161,6 +165,15 @@ def load_config(self):
             if idx_account_loaded is not None and idx_account_loaded >= 0:
                 with QtCore.QSignalBlocker(self.account_mode_combo):
                     self.account_mode_combo.setCurrentIndex(idx_account_loaded)
+            if hasattr(self, "design_combo") and self.design_combo is not None:
+                design_loaded = str(self.config.get("design") or "Classic").strip().title()
+                idx_design_loaded = self.design_combo.findText(design_loaded)
+                if idx_design_loaded < 0:
+                    idx_design_loaded = self.design_combo.findText("Classic")
+                if idx_design_loaded >= 0:
+                    with QtCore.QSignalBlocker(self.design_combo):
+                        self.design_combo.setCurrentIndex(idx_design_loaded)
+                self.apply_design(self.design_combo.currentText())
             self.tif_combo.setCurrentText(self.config.get("tif", self.tif_combo.currentText()))
             self.gtd_minutes_spin.setValue(int(self.config.get("gtd_minutes", self.gtd_minutes_spin.value())))
             backtest_assets_mode_loaded = self._normalize_assets_mode(

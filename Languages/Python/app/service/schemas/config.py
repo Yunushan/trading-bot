@@ -25,6 +25,7 @@ class ServiceEditableConfig:
     selected_exchange: str
     code_language: str
     theme: str
+    design: str
     order_audit_max_bytes: int
     order_audit_backup_count: int
     connector_order_circuit_incident_log_max_bytes: int
@@ -57,6 +58,7 @@ class ServiceConfigSummary:
     selected_exchange: str
     code_language: str
     theme: str
+    design: str
     api_credentials_present: bool
     symbol_count: int
     interval_count: int
@@ -118,6 +120,7 @@ def build_editable_config(config: dict | None) -> ServiceEditableConfig:
         selected_exchange=str(cfg.get("selected_exchange") or ""),
         code_language=str(cfg.get("code_language") or ""),
         theme=str(cfg.get("theme") or ""),
+        design=str(cfg.get("design") or ""),
         order_audit_max_bytes=_integer(cfg.get("order_audit_max_bytes"), 10 * 1024 * 1024),
         order_audit_backup_count=_integer(cfg.get("order_audit_backup_count"), 1),
         connector_order_circuit_incident_log_max_bytes=_integer(
@@ -200,6 +203,7 @@ def build_config_summary(config: dict | None) -> ServiceConfigSummary:
         selected_exchange=str(cfg.get("selected_exchange") or "Unknown"),
         code_language=str(cfg.get("code_language") or "Unknown"),
         theme=str(cfg.get("theme") or "Unknown"),
+        design=str(cfg.get("design") or "Unknown"),
         api_credentials_present=bool(api_key and api_secret),
         symbol_count=len(symbols),
         interval_count=len(intervals),

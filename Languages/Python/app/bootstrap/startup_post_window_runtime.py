@@ -5,6 +5,16 @@ import sys
 import time
 from pathlib import Path
 
+from .startup_ui_shared import _boot_log
+
+
+def _record_post_window_exception(context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    try:
+        _boot_log(f"post-window suppressed exception context={context} error={type(exc).__name__}: {message}")
+    except Exception:
+        return
+
 
 def _ensure_taskbar_identity(*, disable_taskbar: bool, app_user_model_id: str) -> None:
     if sys.platform != "win32" or disable_taskbar:
@@ -31,15 +41,16 @@ def _install_tradingview_app_watchdog(*, app, win, QtCore) -> None:
             try:
                 if getattr(app, "_exiting", False):  # type: ignore[attr-defined]
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_post_window_exception("tradingview_watchdog_check_exiting", exc)
             try:
                 guard_active = bool(
                     getattr(win, "_tv_close_guard_active", False)
                     or getattr(win, "_tv_visibility_watchdog_active", False)
                     or getattr(win, "_webengine_close_guard_active", False)
                 )
-            except Exception:
+            except Exception as exc:
+                _record_post_window_exception("tradingview_watchdog_guard_state", exc)
                 guard_active = False
             if not guard_active:
                 return
@@ -48,14 +59,14 @@ def _install_tradingview_app_watchdog(*, app, win, QtCore) -> None:
                     win.showMaximized()
                     win.raise_()
                     win.activateWindow()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_post_window_exception("tradingview_watchdog_restore_window", exc)
 
         timer.timeout.connect(_tv_watchdog)
         timer.start()
         app._tradingview_app_watchdog = timer  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_post_window_exception("install_tradingview_app_watchdog", exc)
 
 
 def _write_ready_file() -> None:
@@ -66,14 +77,15 @@ def _write_ready_file() -> None:
         ready_path = Path(str(ready_signal)).expanduser()
         try:
             ready_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_post_window_exception("ready_file_parent_create", exc)
         try:
             ready_path.write_text(str(os.getpid()), encoding="utf-8", errors="ignore")
-        except Exception:
+        except Exception as exc:
+            _record_post_window_exception("ready_file_write_text", exc)
             ready_path.touch(exist_ok=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_post_window_exception("write_ready_file", exc)
 
 
 def _schedule_startup_cleanup_timers(
@@ -149,8 +161,8 @@ def _configure_post_window_runtime(
     try:
         if sys.platform == "win32":
             win.winId()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_post_window_exception("post_window_prime_win_id", exc)
 
     if sys.platform == "win32" and not disable_taskbar:
         from app.platform.windows_taskbar import (
@@ -185,8 +197,8 @@ def _configure_post_window_runtime(
                             f"name={shortcut_name!r} path={shortcut_path!s} icon={icon_path!s}",
                             flush=True,
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _record_post_window_exception("start_menu_shortcut_boot_log", exc)
                 if shortcut_path is not None:
                     icon_path = shortcut_path
                     legacy_shortcut = shortcut_path.with_name(f"{app_display_name}.lnk")
@@ -198,10 +210,10 @@ def _configure_post_window_runtime(
                                     f"[post-window] removed legacy shortcut {legacy_shortcut}",
                                     flush=True,
                                 )
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+                            except Exception as exc:
+                                _record_post_window_exception("legacy_shortcut_boot_log", exc)
+            except Exception as exc:
+                _record_post_window_exception("ensure_start_menu_shortcut", exc)
         try:
             taskbar_delay = int(os.environ.get("BOT_TASKBAR_METADATA_DELAY_MS") or 0)
         except Exception:
@@ -216,16 +228,16 @@ def _configure_post_window_runtime(
                 icon_path=icon_path,
                 relaunch_command=relaunch_cmd,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_post_window_exception("apply_taskbar_metadata_initial", exc)
 
         def _apply_taskbar(attempts: int = 12) -> None:
             if attempts <= 0:
                 return
             try:
                 win.winId()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_post_window_exception("apply_taskbar_prime_win_id", exc)
             success = apply_taskbar_metadata(
                 win,
                 app_id=app_user_model_id,
@@ -236,8 +248,8 @@ def _configure_post_window_runtime(
             if force_taskbar_visibility:
                 try:
                     ensure_taskbar_visible(win)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_post_window_exception("apply_taskbar_force_visible", exc)
             if not success and attempts > 1:
                 QtCore.QTimer.singleShot(250, lambda: _apply_taskbar(attempts - 1))
 
@@ -247,8 +259,8 @@ def _configure_post_window_runtime(
     if apply_native_icon_after_show:
         try:
             set_native_window_icon(win)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_post_window_exception("apply_native_icon_after_show", exc)
         QtCore.QTimer.singleShot(0, lambda: set_native_window_icon(win))
     apply_qt_icon_after_show = sys.platform == "win32" and (
         force_app_icon or not disable_app_icon or env_flag("BOT_ENABLE_DELAYED_QT_ICON")
@@ -256,8 +268,8 @@ def _configure_post_window_runtime(
     if apply_qt_icon_after_show:
         try:
             apply_qt_icon(app, win)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_post_window_exception("apply_qt_icon_after_show", exc)
         QtCore.QTimer.singleShot(0, lambda: apply_qt_icon(app, win))
     if sys.platform == "win32":
         if disable_app_icon:
@@ -316,8 +328,8 @@ def _configure_post_window_runtime(
                 if force_taskbar_visibility:
                     try:
                         ensure_taskbar_visible(win)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _record_post_window_exception("taskbar_controller_force_visible", exc)
                 try:
                     apply_taskbar_metadata(
                         win,
@@ -326,8 +338,8 @@ def _configure_post_window_runtime(
                         icon_path=icon_path,
                         relaunch_command=relaunch_cmd,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_post_window_exception("taskbar_controller_apply_metadata", exc)
                 if (time.monotonic() - start_ts) * 1000.0 < controller_ms:
                     QtCore.QTimer.singleShot(interval_ms, _tick_taskbar)
 

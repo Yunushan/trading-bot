@@ -10,6 +10,19 @@ from .helpers import _requests_timeout
 from .http_base_runtime import _is_testnet_mode
 
 
+def _record_http_diagnostic_exception(self, context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    try:
+        logger = getattr(self, "_log", None)
+    except Exception:
+        logger = None
+    if callable(logger):
+        try:
+            logger(f"http diagnostic suppressed exception context={context} error={type(exc).__name__}: {message}", lvl="warn")
+        except Exception:
+            return
+
+
 def _record_futures_http_error(
     self,
     path: str | None,
@@ -48,15 +61,15 @@ def _record_futures_http_error(
             "retry_after": float(retry_after) if retry_after is not None else None,
             "ban_until": float(ban_until) if ban_until is not None else None,
         }
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "record_futures_http_error", exc)
 
 
 def _clear_futures_http_error(self) -> None:
     try:
         self._last_futures_http_error = None
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "clear_futures_http_error", exc)
 
 
 def get_connector_health_snapshot(self) -> dict[str, object]:
@@ -159,8 +172,8 @@ def _diagnose_testnet_key_scope(self) -> str | None:
         cached = getattr(self, "_testnet_key_scope", None)
         if cached and ts and (now - ts) < 600.0:
             return str(cached)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "diagnose_testnet_key_scope_cache_read", exc)
     scope = None
     try:
         acct = self._http_signed_spot("/v3/account", timeout=_requests_timeout()) or {}
@@ -171,8 +184,8 @@ def _diagnose_testnet_key_scope(self) -> str | None:
     try:
         self._testnet_key_scope = scope
         self._testnet_key_scope_ts = time.time() if scope else 0.0
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "diagnose_testnet_key_scope_cache_write", exc)
     return scope
 
 
@@ -229,13 +242,13 @@ def _probe_testnet_key_acceptance(self) -> dict | None:
     try:
         spot_url = f"{self._spot_base().rstrip('/')}/v3/userDataStream"
         spot_ok, spot_http, spot_code, spot_msg = _probe("POST", spot_url)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "probe_testnet_spot_key_acceptance", exc)
     try:
         fut_url = f"{self._futures_base().rstrip('/')}/v1/listenKey"
         futures_ok, futures_http, futures_code, futures_msg = _probe("POST", fut_url)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "probe_testnet_futures_key_acceptance", exc)
 
     result = {
         "spot_ok": bool(spot_ok),
@@ -250,8 +263,8 @@ def _probe_testnet_key_acceptance(self) -> dict | None:
     try:
         self._testnet_key_probe = dict(result)
         self._testnet_key_probe_ts = time.time()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "probe_testnet_key_cache_write", exc)
     return dict(result)
 
 
@@ -344,14 +357,14 @@ def _sync_futures_time_offset(self, *, force: bool = False) -> None:
             client = getattr(self, "client", None)
             if client is not None and hasattr(client, "timestamp_offset"):
                 setattr(client, "timestamp_offset", offset_ms)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_http_diagnostic_exception(self, "sync_futures_time_offset_client", exc)
         try:
             fb = getattr(self, "_fallback_py_client", None)
             if fb is not None and hasattr(fb, "timestamp_offset"):
                 setattr(fb, "timestamp_offset", offset_ms)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_http_diagnostic_exception(self, "sync_futures_time_offset_fallback_client", exc)
     except Exception:
         return
 
@@ -360,8 +373,8 @@ def _futures_timestamp_ms(self) -> int:
     try:
         if not float(getattr(self, "_futures_time_offset_ts", 0.0) or 0.0):
             self._sync_futures_time_offset(force=False)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, "futures_timestamp_sync_offset", exc)
     try:
         offset = int(getattr(self, "_futures_time_offset_ms", 0) or 0)
     except Exception:
@@ -373,14 +386,14 @@ def _futures_call(self, method_name: str, allow_recv=True, **kwargs):
     try:
         api_prefix = self._futures_api_prefix()
         self._throttle_request(f"{api_prefix}/{method_name}")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_http_diagnostic_exception(self, f"futures_call_throttle:{method_name}", exc)
     method = getattr(self.client, method_name)
     if allow_recv:
         try:
             return method(recvWindow=self.recv_window, **kwargs)
-        except TypeError:
-            pass
+        except TypeError as exc:
+            _record_http_diagnostic_exception(self, f"futures_call_recv_window_unsupported:{method_name}", exc)
     return method(**kwargs)
 
 

@@ -19,6 +19,19 @@ _CHART_INTERVAL_OPTIONS: tuple[str, ...] = ()
 _CHART_MARKET_OPTIONS: tuple[str, ...] = ()
 
 
+def _record_chart_view_exception(self, context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    try:
+        logger = getattr(self, "_chart_debug_log", None)
+    except Exception:
+        return
+    if callable(logger):
+        try:
+            logger(f"chart view suppressed exception context={context} error={type(exc).__name__}: {message}")
+        except Exception:
+            return
+
+
 def _on_tradingview_ready(self):
     if not getattr(self, "_pending_tradingview_switch", False):
         return
@@ -33,8 +46,8 @@ def _on_tradingview_ready(self):
     try:
         if hasattr(widget, "is_ready") and not widget.is_ready():
             return
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "tradingview_ready_state_check", exc)
     if not self._is_chart_visible():
         return
     self._pending_tradingview_switch = False
@@ -44,18 +57,18 @@ def _on_tradingview_ready(self):
             idx = self.chart_view_mode_combo.findData("tradingview")
             if idx >= 0:
                 self.chart_view_mode_combo.setCurrentIndex(idx)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "tradingview_ready_combo_update", exc)
     try:
         index = self.chart_view_stack.indexOf(widget)
         if index >= 0:
             self.chart_view_stack.setCurrentIndex(index)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "tradingview_ready_stack_switch", exc)
     try:
         self._on_chart_theme_changed()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "tradingview_ready_theme_update", exc)
     self._chart_needs_render = True
     self._tradingview_first_switch_done = True
     self._hide_chart_switch_overlay(delay_ms=200)
@@ -70,8 +83,8 @@ def eventFilter(self, obj, event):  # noqa: N802
             ev_type = event.type()
             if ev_type in {QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Show}:
                 self._update_chart_overlay_geometry()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "chart_view_event_filter_overlay_geometry", exc)
     return QtWidgets.QWidget.eventFilter(self, obj, event)
 
 
@@ -93,8 +106,8 @@ def _apply_chart_view_mode(
             f"apply_chart_view_mode requested={requested_mode} initial={int(bool(initial))} "
             f"allow_tv_init={int(bool(allow_tradingview_init))}"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "apply_chart_view_mode_debug_start", exc)
     actual_mode = requested_mode
     widget = None
     defer_switch = False
@@ -126,8 +139,8 @@ def _apply_chart_view_mode(
                 try:
                     if hasattr(widget, "is_ready") and not widget.is_ready():
                         defer_switch = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_chart_view_exception(self, "apply_chart_view_mode_tradingview_ready_check", exc)
         else:
             self._pending_tradingview_mode = True
             actual_mode = "original"
@@ -198,8 +211,8 @@ def _apply_chart_view_mode(
                 idx = self.chart_view_mode_combo.findData(combo_mode)
                 if idx >= 0:
                     self.chart_view_mode_combo.setCurrentIndex(idx)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_chart_view_exception(self, "apply_chart_view_mode_deferred_combo_update", exc)
         self.chart_config["view_mode"] = config_mode
         self._chart_needs_render = True
         self._prime_tradingview_chart(widget)
@@ -212,14 +225,14 @@ def _apply_chart_view_mode(
             idx = self.chart_view_mode_combo.findData(combo_mode)
             if idx >= 0:
                 self.chart_view_mode_combo.setCurrentIndex(idx)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "apply_chart_view_mode_combo_update", exc)
     try:
         index = self.chart_view_stack.indexOf(widget)
         if index >= 0:
             self.chart_view_stack.setCurrentIndex(index)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "apply_chart_view_mode_stack_switch", exc)
     self.chart_config["view_mode"] = config_mode
     if actual_mode == "tradingview":
         self._pending_tradingview_mode = False
@@ -227,31 +240,32 @@ def _apply_chart_view_mode(
         if tv_class is not None and isinstance(widget, tv_class):
             try:
                 self._on_chart_theme_changed()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_chart_view_exception(self, "apply_chart_view_mode_theme_update", exc)
     self._chart_needs_render = True
     if fallback_reason and not initial:
         if requested_mode == "tradingview":
             opened = False
             try:
                 opened = self._open_tradingview_external()
-            except Exception:
+            except Exception as exc:
+                _record_chart_view_exception(self, "apply_chart_view_mode_open_tradingview_external", exc)
                 opened = False
             if opened:
                 try:
                     self._show_chart_status("TradingView opened in your browser.", color="#94a3b8")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_chart_view_exception(self, "apply_chart_view_mode_external_status", exc)
             else:
                 try:
                     self._show_chart_status(fallback_reason, color="#f59e0b")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_chart_view_exception(self, "apply_chart_view_mode_fallback_status", exc)
         else:
             try:
                 self._show_chart_status(fallback_reason, color="#f59e0b")
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_chart_view_exception(self, "apply_chart_view_mode_non_tv_fallback_status", exc)
     status_text = "Chart view ready."
     if initial:
         self._show_chart_status(status_text, color="#d1d4dc")
@@ -263,8 +277,8 @@ def _apply_chart_view_mode(
     if external_opened:
         try:
             self._show_chart_status("TradingView opened in your browser.", color="#94a3b8")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_chart_view_exception(self, "apply_chart_view_mode_external_opened_status", exc)
     if actual_mode == "tradingview" and not defer_switch and not getattr(
         self, "_tradingview_first_switch_done", False
     ):
@@ -275,8 +289,8 @@ def _apply_chart_view_mode(
             f"apply_chart_view_mode done actual={actual_mode} defer={int(bool(defer_switch))} "
             f"fallback={str(fallback_reason or '')}"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "apply_chart_view_mode_debug_done", exc)
 
 
 def _on_chart_view_mode_changed(self, index: int):
@@ -288,19 +302,20 @@ def _on_chart_view_mode_changed(self, index: int):
         mode = self.chart_view_mode_combo.currentText()
     try:
         self._chart_debug_log(f"chart_view_mode_changed mode={str(mode or '').strip().lower()}")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "chart_view_mode_changed_debug_start", exc)
     mode_norm = str(mode or "").strip().lower()
     if _chart_safe_mode_enabled() and mode_norm in {"tradingview", "original", "lightweight"}:
         try:
             self._chart_debug_log(f"chart_view_mode_safe_blocked mode={mode_norm}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_chart_view_exception(self, "chart_view_mode_safe_blocked_debug", exc)
         if mode_norm == "tradingview":
             opened = False
             try:
                 opened = self._open_tradingview_external()
-            except Exception:
+            except Exception as exc:
+                _record_chart_view_exception(self, "chart_view_mode_safe_open_tradingview_external", exc)
                 opened = False
             if opened:
                 self._show_chart_status(
@@ -324,19 +339,19 @@ def _on_chart_view_mode_changed(self, index: int):
                 idx = self.chart_view_stack.indexOf(legacy)
                 if idx >= 0:
                     self.chart_view_stack.setCurrentIndex(idx)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_chart_view_exception(self, "chart_view_mode_safe_legacy_switch", exc)
         try:
             with QtCore.QSignalBlocker(self.chart_view_mode_combo):
                 fallback_idx = self.chart_view_mode_combo.findData("original")
                 if fallback_idx >= 0:
                     self.chart_view_mode_combo.setCurrentIndex(fallback_idx)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_chart_view_exception(self, "chart_view_mode_safe_combo_update", exc)
         try:
             self.chart_config["view_mode"] = "original"
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_chart_view_exception(self, "chart_view_mode_safe_config_update", exc)
         if self._is_chart_visible():
             self.load_chart(auto=True)
         return
@@ -370,8 +385,8 @@ def _restore_chart_controls_from_config(self):
     interval_cfg = str(self.chart_config.get("interval") or "").strip()
     try:
         interval_cfg = self._canonicalize_chart_interval(interval_cfg) or interval_cfg
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_chart_view_exception(self, "restore_chart_controls_interval_canonicalize", exc)
     if symbol_cfg:
         self._set_chart_symbol(symbol_cfg, ensure_option=True)
     if interval_cfg:

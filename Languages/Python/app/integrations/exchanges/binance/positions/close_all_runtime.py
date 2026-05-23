@@ -9,6 +9,19 @@ from typing import Any, Dict, List
 getcontext().prec = 28
 
 
+def _record_close_all_exception(binance, context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    try:
+        logger = getattr(binance, "_log", None)
+    except Exception:
+        logger = None
+    if callable(logger):
+        try:
+            logger(f"close-all suppressed exception context={context} error={type(exc).__name__}: {message}", lvl="warn")
+        except Exception:
+            return
+
+
 def _floor_to_step(qty: float, step: float) -> float:
     if step <= 0:
         return qty
@@ -25,8 +38,8 @@ def _get_lot_limits(binance, sym: str) -> tuple[float, float, float]:
             max_qty = float(f.get("maxQty") or 0.0)
             if step > 0.0 or min_qty > 0.0 or max_qty > 0.0:
                 return step, min_qty, max_qty
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_close_all_exception(binance, f"get_futures_lot_limits:{sym}", exc)
     try:
         f = binance.get_symbol_filters(sym)
         lot = f.get("LOT_SIZE") or {}
@@ -62,17 +75,17 @@ def _cancel_all(binance, sym: str):
     try:
         binance.client.futures_cancel_all_open_orders(symbol=sym)
         return
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_close_all_exception(binance, f"cancel_all_open_orders_bulk:{sym}", exc)
     # fallback: cancel one by one
     try:
         for o in binance.client.futures_get_open_orders(symbol=sym):
             try:
                 binance.client.futures_cancel_order(symbol=sym, orderId=o.get("orderId"))
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                _record_close_all_exception(binance, f"cancel_open_order:{sym}", exc)
+    except Exception as exc:
+        _record_close_all_exception(binance, f"cancel_all_open_orders_list:{sym}", exc)
 
 
 def _submit_futures_order(binance, params: dict) -> dict:
@@ -84,8 +97,8 @@ def _submit_futures_order(binance, params: dict) -> dict:
             invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
             if callable(invalidate):
                 invalidate()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_close_all_exception(binance, "submit_futures_order_invalidate_fallback_cache", exc)
         return order or {}
     guard = getattr(binance, "_guard_live_order_submit", None)
     if callable(guard):
@@ -95,8 +108,8 @@ def _submit_futures_order(binance, params: dict) -> dict:
         invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
         if callable(invalidate):
             invalidate()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_close_all_exception(binance, "submit_futures_order_invalidate_cache", exc)
     return order or {}
 
 
@@ -284,8 +297,8 @@ def _cleanup_zero_qty_negative_margin_position(binance, row: Dict[str, Any], dua
             invalidate = getattr(binance, "_invalidate_futures_positions_cache", None)
             if callable(invalidate):
                 invalidate()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_close_all_exception(binance, "cleanup_negative_margin_invalidate_cache", exc)
         return {
             "ok": True,
             "symbol": sym,
@@ -411,10 +424,10 @@ def close_all_futures_positions(binance, *, fast: bool = False, max_workers: int
         try:
             try:
                 binance.client.futures_cancel_all_open_orders()
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as exc:
+                _record_close_all_exception(binance, "fast_cancel_all_open_orders", exc)
+        except Exception as exc:
+            _record_close_all_exception(binance, "fast_cancel_all_wrapper", exc)
         positions, _ = _gather_positions(binance)
         if positions and max_workers is None:
             max_workers = min(6, max(1, len(positions)))

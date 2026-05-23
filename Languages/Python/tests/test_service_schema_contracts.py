@@ -144,6 +144,7 @@ class ServiceSchemaContractTests(unittest.TestCase):
             "selected_exchange": "Binance",
             "code_language": "Python",
             "theme": "Light",
+            "design": "Workstation",
             "order_audit_max_bytes": "4096",
             "order_audit_backup_count": "3",
             "connector_order_circuit_incident_log_max_bytes": "2048",
@@ -184,6 +185,7 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertEqual(4, editable["connector_order_circuit_incident_log_backup_count"])
         self.assertFalse(editable["operational_live_start_gate_enabled"])
         self.assertFalse(editable["operational_live_order_gate_enabled"])
+        self.assertEqual("Workstation", editable["design"])
         self.assertTrue(editable["llm"]["enabled"])
         self.assertEqual("qwen", editable["llm"]["provider"])
         self.assertIn("qwen3-max", editable["llm"]["model_suggestions"])
@@ -196,6 +198,7 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertEqual(2, summary["enabled_indicator_count"])
         self.assertEqual(1, summary["runtime_pair_count"])
         self.assertEqual(2, summary["backtest_pair_count"])
+        self.assertEqual("Workstation", summary["design"])
         self.assertTrue(summary["llm_enabled"])
         self.assertEqual("qwen", summary["llm_provider"])
         self.assertEqual("cloud", summary["llm_mode"])

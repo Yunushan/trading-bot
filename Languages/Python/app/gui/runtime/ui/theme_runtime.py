@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from PyQt6 import QtGui
 
-from app.gui.runtime.ui.theme_styles import CHECKBOX_CHECK_IMAGE
+from app.gui.runtime.ui.theme_styles import (
+    CHECKBOX_CHECK_IMAGE,
+    DESIGN_CLASSIC,
+    DESIGN_OPTIONS,
+    DESIGN_WORKSTATION,
+    WORKSTATION_DESIGN_STYLES,
+)
 
 
 def bind_main_window_theme_runtime(main_window_cls) -> None:
     main_window_cls.apply_theme = _gui_apply_theme
+    main_window_cls.apply_design = _gui_apply_design
 
 
 def _blend_color(base: QtGui.QColor, accent: QtGui.QColor, amount: float) -> str:
@@ -278,6 +285,41 @@ def _accent_theme_styles(accent: str) -> str:
     """
 
 
+def _normalize_design(value: object) -> str:
+    text = str(value or "").strip()
+    for option in DESIGN_OPTIONS:
+        if option.lower() == text.lower():
+            return option
+    return DESIGN_CLASSIC
+
+
+def _current_design(self) -> str:
+    combo = getattr(self, "design_combo", None)
+    if combo is not None:
+        try:
+            return _normalize_design(combo.currentText())
+        except Exception:
+            pass
+    config = getattr(self, "config", {}) or {}
+    return _normalize_design(config.get("design", DESIGN_CLASSIC))
+
+
+def _design_styles(design: str) -> str:
+    if design == DESIGN_WORKSTATION:
+        return WORKSTATION_DESIGN_STYLES
+    return ""
+
+
+def _store_theme_config(self, name: str, theme_raw: str) -> None:
+    try:
+        stored_name = name if name else "Dark"
+        if theme_raw == "gren":
+            stored_name = "Green"
+        self.config["theme"] = stored_name.title() if stored_name else "Dark"
+    except Exception:
+        pass
+
+
 def _gui_apply_theme(self, name: str):
     theme_raw = (name or "").strip().lower()
     theme = {"gren": "green"}.get(theme_raw, theme_raw)
@@ -295,12 +337,27 @@ def _gui_apply_theme(self, name: str):
     }
     accent = accents.get(theme)
     accent_styles = _accent_theme_styles(accent) if accent else ""
+    design = _current_design(self)
+    design_styles = _design_styles(design)
 
-    self.setStyleSheet(base_stylesheet + accent_styles)
+    self.setStyleSheet(base_stylesheet + accent_styles + design_styles)
+    _store_theme_config(self, name, theme_raw)
     try:
-        stored_name = name if name else "Dark"
-        if theme_raw == "gren":
-            stored_name = "Green"
-        self.config["theme"] = stored_name.title() if stored_name else "Dark"
+        self.config["design"] = design
     except Exception:
         pass
+
+
+def _gui_apply_design(self, name: str):
+    design = _normalize_design(name)
+    try:
+        self.config["design"] = design
+    except Exception:
+        pass
+
+    theme_combo = getattr(self, "theme_combo", None)
+    try:
+        theme_name = theme_combo.currentText() if theme_combo is not None else self.config.get("theme", "Dark")
+    except Exception:
+        theme_name = "Dark"
+    _gui_apply_theme(self, theme_name)

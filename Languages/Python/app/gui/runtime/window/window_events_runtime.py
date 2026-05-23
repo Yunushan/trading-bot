@@ -11,13 +11,33 @@ from PyQt6 import QtCore, QtWidgets
 from . import window_webengine_guard_runtime
 
 
+def _record_suppressed_exception(self, context: str, exc: BaseException) -> None:
+    message = (
+        f"window_event suppressed_exception context={context} "
+        f"error={type(exc).__name__}: {str(exc).replace(chr(10), ' ')}"
+    )
+    try:
+        logger = getattr(self, "_chart_debug_log", None) if self is not None else None
+        if callable(logger):
+            logger(message)
+            return
+    except Exception:
+        return
+    try:
+        path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
+        with open(path, "a", encoding="utf-8", errors="ignore") as fh:
+            fh.write(f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}] {message}\n")
+    except OSError:
+        return
+
+
 def request_strategy_shutdown(strategy_engine_cls=None) -> None:
     if strategy_engine_cls is None:
         return
     try:
         strategy_engine_cls.request_shutdown()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(None, "strategy_shutdown", exc)
 
 
 def teardown_positions_thread(self):
@@ -25,18 +45,18 @@ def teardown_positions_thread(self):
         if getattr(self, "_pos_worker", None) is not None:
             try:
                 self.req_pos_stop.emit()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_suppressed_exception(self, "positions_stop_signal", exc)
         if getattr(self, "_pos_thread", None) is not None:
             try:
                 self._pos_thread.quit()
                 self._pos_thread.wait(2000)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_suppressed_exception(self, "positions_thread_shutdown", exc)
         self._pos_worker = None
         self._pos_thread = None
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "positions_thread_teardown", exc)
 
 
 def log_window_event(self, name: str, event=None) -> None:
@@ -78,13 +98,13 @@ def log_window_event(self, name: str, event=None) -> None:
             logger(msg)
             return
     except Exception:
-        pass
+        logger = None
     try:
         path = Path(os.getenv("TEMP") or ".").resolve() / "binance_chart_debug.log"
         with open(path, "a", encoding="utf-8", errors="ignore") as fh:
             fh.write(f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}] {msg}\n")
     except Exception:
-        pass
+        return
 
 
 def allow_guard_bypass(self) -> bool:
@@ -96,8 +116,8 @@ def allow_guard_bypass(self) -> bool:
             or bool(getattr(self, "_rust_launch_handoff_active", False))
         ):
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "allow_guard_bypass_flags", exc)
     try:
         app = QtWidgets.QApplication.instance()
     except Exception:
@@ -105,8 +125,8 @@ def allow_guard_bypass(self) -> bool:
     try:
         if app is not None and bool(getattr(app, "_exiting", False)):
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "allow_guard_bypass_app_exiting", exc)
     return False
 
 
@@ -154,8 +174,8 @@ def active_spontaneous_close_block_until(self) -> float:
     if until and now >= until:
         try:
             self._spontaneous_close_block_until = 0.0
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "spontaneous_close_block_reset", exc)
         return 0.0
     return until
 
@@ -173,8 +193,8 @@ def extend_spontaneous_close_block(self, duration_ms: int = 5000) -> float:
     until = max(previous, now + (duration_ms / 1000.0))
     try:
         self._spontaneous_close_block_until = until
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "spontaneous_close_block_extend", exc)
     return until
 
 
@@ -195,8 +215,8 @@ def active_close_protection_until(self) -> float:
     if tv_active and tv_until and now >= tv_until:
         try:
             self._tv_close_guard_active = False
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "tv_close_guard_expire", exc)
         tv_active = False
         tv_until = 0.0
 
@@ -211,8 +231,8 @@ def active_close_protection_until(self) -> float:
     if we_active and we_until and now >= we_until:
         try:
             self._webengine_close_guard_active = False
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "webengine_close_guard_expire", exc)
         we_active = False
         we_until = 0.0
 
@@ -266,14 +286,14 @@ def set_visible(self, visible):  # noqa: N802, ANN001
             logger = getattr(self, "_chart_debug_log", None)
             if callable(logger):
                 logger("window_event setVisible_blocked visible=0 reason=webengine_guard")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "set_visible_block_log", exc)
         restore_window_after_guard(self)
         return
     try:
         super(type(self), self).setVisible(visible)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "set_visible_super", exc)
 
 
 def hide_window(self):  # noqa: ANN001
@@ -282,14 +302,14 @@ def hide_window(self):  # noqa: ANN001
             logger = getattr(self, "_chart_debug_log", None)
             if callable(logger):
                 logger("window_event hide_blocked reason=webengine_guard")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "hide_window_block_log", exc)
         restore_window_after_guard(self)
         return
     try:
         super(type(self), self).hide()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "hide_window_super", exc)
 
 
 def native_event(self, eventType, message):  # noqa: N802, ANN001
@@ -298,7 +318,8 @@ def native_event(self, eventType, message):  # noqa: N802, ANN001
         if detect_flag not in {"1", "true", "yes", "on"}:
             try:
                 return super(type(self), self).nativeEvent(eventType, message)
-            except Exception:
+            except Exception as exc:
+                _record_suppressed_exception(self, "native_event_super_passthrough", exc)
                 return False, 0
         try:
             et = ""
@@ -323,19 +344,20 @@ def native_event(self, eventType, message):  # noqa: N802, ANN001
                     cmd = int(msg_obj.wParam) & 0xFFF0
                     if cmd == sc_close:
                         mark_user_close_command(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "native_close_detect", exc)
     try:
         return super(type(self), self).nativeEvent(eventType, message)
-    except Exception:
+    except Exception as exc:
+        _record_suppressed_exception(self, "native_event_super", exc)
         return False, 0
 
 
 def close_event(self, event, *, strategy_engine_cls=None):
     try:
         log_window_event(self, "closeEvent", event=event)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_log", exc)
     close_guard = getattr(self, "_close_in_progress", False)
     if close_guard:
         event.ignore()
@@ -345,25 +367,26 @@ def close_event(self, event, *, strategy_engine_cls=None):
         request_strategy_shutdown(strategy_engine_cls)
         try:
             teardown_positions_thread(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "force_close_teardown_positions", exc)
         try:
             shutdown_service_host = getattr(self, "_shutdown_desktop_service_api_host", None)
             if callable(shutdown_service_host):
                 shutdown_service_host()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "force_close_shutdown_service_host", exc)
         try:
             self._mark_session_inactive()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "force_close_mark_session_inactive", exc)
         try:
             super(type(self), self).closeEvent(event)
-        except Exception:
+        except Exception as exc:
+            _record_suppressed_exception(self, "force_close_super_close_event", exc)
             try:
                 event.accept()
-            except Exception:
-                pass
+            except Exception as accept_exc:
+                _record_suppressed_exception(self, "force_close_event_accept", accept_exc)
         try:
             app = QtWidgets.QApplication.instance()
             if app is not None:
@@ -372,20 +395,20 @@ def close_event(self, event, *, strategy_engine_cls=None):
                 if callable(arm_hard_exit):
                     arm_hard_exit()
                 app.quit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "force_close_app_quit", exc)
         return
     if should_block_spontaneous_close(self, event):
         try:
             logger = getattr(self, "_chart_debug_log", None)
             if callable(logger):
                 logger("window_event closeEvent_blocked reason=spontaneous_guard")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "close_event_block_log", exc)
         try:
             event.ignore()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "close_event_block_ignore", exc)
         restore_window_after_guard(self)
         return
     if not allow_guard_bypass(self):
@@ -398,13 +421,13 @@ def close_event(self, event, *, strategy_engine_cls=None):
             if is_recent_user_close_command(self):
                 try:
                     self._last_user_close_command_ts = 0.0
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_suppressed_exception(self, "close_event_clear_user_close_timestamp", exc)
                 try:
                     self._webengine_close_guard_active = False
                     self._tv_close_guard_active = False
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_suppressed_exception(self, "close_event_clear_close_guards", exc)
             else:
                 event.ignore()
                 restore_window_after_guard(self)
@@ -418,8 +441,8 @@ def close_event(self, event, *, strategy_engine_cls=None):
             arm_hard_exit = getattr(app, "_bot_arm_hard_exit", None)
             if callable(arm_hard_exit):
                 arm_hard_exit()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_arm_app_exit", exc)
 
     close_on_exit_enabled = bool(getattr(self, "cb_close_on_exit", None) and self.cb_close_on_exit.isChecked())
     if close_on_exit_enabled:
@@ -429,29 +452,30 @@ def close_event(self, event, *, strategy_engine_cls=None):
 
     try:
         self.stop_strategy_async(close_positions=close_on_exit_enabled, blocking=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_stop_strategy", exc)
     try:
         teardown_positions_thread(self)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_teardown_positions", exc)
     try:
         shutdown_service_host = getattr(self, "_shutdown_desktop_service_api_host", None)
         if callable(shutdown_service_host):
             shutdown_service_host()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_shutdown_service_host", exc)
     try:
         self._mark_session_inactive()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_mark_session_inactive", exc)
     try:
         super(type(self), self).closeEvent(event)
-    except Exception:
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_super_close_event", exc)
         try:
             event.accept()
-        except Exception:
-            pass
+        except Exception as accept_exc:
+            _record_suppressed_exception(self, "close_event_accept_fallback", accept_exc)
     try:
         if event.isAccepted():
             app = QtWidgets.QApplication.instance()
@@ -460,26 +484,26 @@ def close_event(self, event, *, strategy_engine_cls=None):
                 if callable(arm_hard_exit):
                     arm_hard_exit()
                 app.quit()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "close_event_app_quit", exc)
 
 
 def hide_event(self, event):  # noqa: N802
     try:
         log_window_event(self, "hideEvent", event=event)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_suppressed_exception(self, "hide_event_log", exc)
     if should_block_spontaneous_close(self, event):
         try:
             logger = getattr(self, "_chart_debug_log", None)
             if callable(logger):
                 logger("window_event hideEvent_blocked reason=spontaneous_guard")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "hide_event_block_log", exc)
         try:
             event.ignore()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_suppressed_exception(self, "hide_event_block_ignore", exc)
         restore_window_after_guard(self)
         return
     if not allow_guard_bypass(self):
@@ -492,14 +516,15 @@ def hide_event(self, event):  # noqa: N802
             if not is_recent_user_close_command(self):
                 try:
                     event.ignore()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_suppressed_exception(self, "hide_event_guard_ignore", exc)
                 restore_window_after_guard(self)
                 return
     try:
         super(type(self), self).hideEvent(event)
-    except Exception:
+    except Exception as exc:
+        _record_suppressed_exception(self, "hide_event_super_hide_event", exc)
         try:
             event.accept()
-        except Exception:
-            pass
+        except Exception as accept_exc:
+            _record_suppressed_exception(self, "hide_event_accept_fallback", accept_exc)

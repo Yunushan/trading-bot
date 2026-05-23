@@ -1032,6 +1032,7 @@ class GuiRuntimePackageSplitSmokeTests(unittest.TestCase):
             "_apply_lead_trader_state",
             "_runtime_stop_loss_update",
             "apply_theme",
+            "apply_design",
             "closeEvent",
         ]
         for method_name in expected_methods:

@@ -687,6 +687,7 @@ export function renderConfig(config) {
   elements.configConnectorBackend.value = config.connector_backend || "";
   elements.configCodeLanguage.value = config.code_language || "";
   elements.configTheme.value = config.theme || "";
+  elements.configDesign.value = config.design || "";
   elements.configLeverage.value = config.leverage ?? 0;
   elements.configPositionPct.value = config.position_pct ?? 0;
   elements.configOrderAuditMaxBytes.value = config.order_audit_max_bytes ?? 10485760;

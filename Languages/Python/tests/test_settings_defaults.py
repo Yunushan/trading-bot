@@ -59,6 +59,7 @@ class SettingsDefaultsTests(unittest.TestCase):
         self.assertEqual(300.0, config["operational_portfolio_snapshot_stale_seconds"])
         self.assertTrue(config["operational_live_start_gate_enabled"])
         self.assertTrue(config["operational_live_order_gate_enabled"])
+        self.assertEqual("Classic", config["design"])
 
     def test_atr_indicator_defaults_are_available_for_runtime_and_backtest(self):
         config = build_default_config()

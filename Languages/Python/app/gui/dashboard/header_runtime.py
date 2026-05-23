@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
+from app.gui.runtime.ui.theme_styles import DESIGN_CLASSIC, DESIGN_OPTIONS
+
 from ..shared.llm_settings_panel import create_llm_settings_panel
 
 _ACCOUNT_MODE_OPTIONS = ()
@@ -55,6 +57,16 @@ def _create_dashboard_header_section(self, scroll_layout):
     self.theme_combo.currentTextChanged.connect(self.apply_theme)
     grid.addWidget(self.theme_combo, 0, 5)
 
+    grid.addWidget(QtWidgets.QLabel("Design:"), 0, 6)
+    self.design_combo = QtWidgets.QComboBox()
+    self.design_combo.addItems(list(DESIGN_OPTIONS))
+    current_design = str(self.config.get("design") or DESIGN_CLASSIC).strip().title()
+    if current_design not in DESIGN_OPTIONS:
+        current_design = DESIGN_CLASSIC
+    self.design_combo.setCurrentText(current_design)
+    self.design_combo.currentTextChanged.connect(self.apply_design)
+    grid.addWidget(self.design_combo, 0, 7)
+
     status_widget = QtWidgets.QWidget()
     status_layout = QtWidgets.QHBoxLayout(status_widget)
     status_layout.setContentsMargins(0, 0, 0, 0)
@@ -71,7 +83,7 @@ def _create_dashboard_header_section(self, scroll_layout):
         lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
         status_layout.addWidget(lbl)
     self._register_pnl_summary_labels(self.pnl_active_label_tab1, self.pnl_closed_label_tab1)
-    grid.addWidget(status_widget, 0, 6, 1, 4)
+    grid.addWidget(status_widget, 0, 8, 1, 3)
 
     grid.addWidget(QtWidgets.QLabel("Account Type:"), 1, 2)
     self.account_combo = QtWidgets.QComboBox()

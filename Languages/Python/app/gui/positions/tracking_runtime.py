@@ -3,12 +3,35 @@ from __future__ import annotations
 import copy
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 _RESOLVE_TRIGGER_INDICATORS = None
 _CLOSED_HISTORY_MAX = None
 _STOP_STRATEGY_SYNC = None
 _DEFAULT_MAX_CLOSED_HISTORY = 200
+
+
+def _record_positions_tracking_exception(self, context: str, exc: BaseException) -> None:  # noqa: ANN001
+    message = str(exc).replace("\n", " ")
+    entry = f"positions tracking suppressed exception context={context} error={type(exc).__name__}: {message}"
+    fallback_needed = True
+    try:
+        logger = getattr(self, "_chart_debug_log", None)
+        if callable(logger):
+            logger(entry)
+            fallback_needed = False
+    except Exception:
+        fallback_needed = True
+    if not fallback_needed:
+        return
+    try:
+        log_dir = Path(os.environ.get("TEMP") or os.environ.get("TMP") or os.getcwd())
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with (log_dir / "binance_chart_debug.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{timestamp} {entry}\n")
+    except Exception:
+        return
 
 
 def _resolve_trigger_indicators_safe(raw, desc: str | None = None) -> list[str]:
@@ -26,11 +49,12 @@ def _closed_history_max(self) -> int:
     if callable(func):
         try:
             return int(func(self))
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "closed_history_max_callback", exc)
     try:
         cfg_val = int(self.config.get("positions_closed_history_max", 500) or 500)
-    except Exception:
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "closed_history_max_config", exc)
         cfg_val = 500
     return max(_DEFAULT_MAX_CLOSED_HISTORY, cfg_val)
 
@@ -51,7 +75,8 @@ def _mw_pos_interval_keys(self, interval) -> tuple:
         return tuple()
     try:
         canon = self._canonicalize_interval(iv_raw)
-    except Exception:
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "canonicalize_position_interval", exc)
         canon = None
     keys = []
     if canon:
@@ -150,20 +175,21 @@ def _handle_close_all_result(self, res):
         n_ok = sum(1 for r in details if r.get("ok"))
         n_all = len(details)
         self.log(f"Close-all completed: {n_ok}/{n_all} ok.")
-    except Exception:
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "log_close_all_result_details", exc)
         self.log(f"Close-all result: {res}")
     try:
         self._apply_close_all_to_positions_cache(res)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "apply_close_all_to_positions_cache", exc)
     try:
         self.refresh_positions()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "refresh_positions_after_close_all", exc)
     try:
         self.trigger_positions_refresh()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "trigger_positions_refresh_after_close_all", exc)
 
 
 def _apply_close_all_to_positions_cache(self, res) -> None:
@@ -226,8 +252,8 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
             if hasattr(self, "_track_interval_close") and isinstance(side_bucket, set):
                 for interval in list(side_bucket):
                     self._track_interval_close(sym_key, side_key, interval)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "track_interval_close_cache_reconcile", exc)
 
         snap = copy.deepcopy(record) if isinstance(record, dict) else {
             "symbol": sym_key,
@@ -258,7 +284,8 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
                         alloc_entry["trigger_indicators"] = normalized_triggers
                     elif alloc_entry.get("trigger_indicators"):
                         alloc_entry.pop("trigger_indicators", None)
-        except Exception:
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "normalize_closed_allocations", exc)
             alloc_entries = []
         if alloc_entries:
             snap["allocations"] = alloc_entries
@@ -272,33 +299,34 @@ def _apply_close_all_to_positions_cache(self, res) -> None:
             if guard_obj and hasattr(guard_obj, "clear_symbol_side"):
                 guard_side = "BUY" if side_key == "L" else "SELL"
                 guard_obj.clear_symbol_side(sym_key, guard_side)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "clear_position_guard_symbol_side", exc)
         try:
             getattr(self, "_entry_times", {}).pop(key, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "clear_entry_time", exc)
         try:
             iv_times = getattr(self, "_entry_times_by_iv", {})
             if isinstance(iv_times, dict):
                 for (sym, side, interval) in list(iv_times.keys()):
                     if sym == sym_key and side == side_key:
                         iv_times.pop((sym, side, interval), None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "clear_entry_times_by_interval", exc)
 
     try:
         self._open_position_records = dict(open_records)
-    except Exception:
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "store_open_position_records_copy", exc)
         self._open_position_records = open_records
     try:
         self._update_global_pnl_display(*self._compute_global_pnl_totals())
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "update_global_pnl_after_close_all", exc)
     try:
         self._render_positions_table()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "render_positions_after_close_all", exc)
 
 
 def _close_all_positions_blocking(self, auth: dict | None = None, *, fast: bool = False):
@@ -334,15 +362,16 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
                     for _ in range(3):
                         try:
                             remaining = self.shared_binance.list_open_futures_positions(force_refresh=True) or []
-                        except Exception:
+                        except Exception as exc:
+                            _record_positions_tracking_exception(self, "verify_close_all_remaining_positions", exc)
                             remaining = []
                         open_left = [p for p in remaining if abs(float(p.get("positionAmt") or 0.0)) > 0.0]
                         if not open_left:
                             break
                         more = _close_all_futures(self.shared_binance) or []
                         results.extend(more)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_positions_tracking_exception(self, "verify_close_all_loop", exc)
             return results
         return self.shared_binance.close_all_spot_positions()
     finally:
@@ -351,8 +380,8 @@ def _close_all_positions_sync(self, auth: dict | None = None, *, fast: bool = Fa
                 if old_val is None:
                     try:
                         os.environ.pop(key, None)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _record_positions_tracking_exception(self, "restore_close_all_timeout_env", exc)
                 else:
                     os.environ[key] = old_val
 
@@ -367,7 +396,8 @@ def close_all_positions_async(self):
         try:
             mode_txt = str(auth_snapshot.get("mode") or "").lower()
             fast_close = any(tag in mode_txt for tag in ("demo", "test", "sandbox"))
-        except Exception:
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "detect_fast_close_mode", exc)
             fast_close = False
 
         def _do():
@@ -382,8 +412,8 @@ def close_all_positions_async(self):
         worker = _CallWorker(_do, parent=self)
         try:
             worker.progress.connect(self.log)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "connect_close_all_progress", exc)
         worker.done.connect(_done)
         if not hasattr(self, "_bg_workers"):
             self._bg_workers = []
@@ -392,19 +422,19 @@ def close_all_positions_async(self):
         def _cleanup():
             try:
                 self._bg_workers.remove(worker)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_positions_tracking_exception(self, "cleanup_close_all_worker", exc)
 
         try:
             worker.finished.connect(_cleanup)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "connect_close_all_cleanup", exc)
         worker.start()
     except Exception as e:
         try:
             self.log(f"Close-all setup error: {e}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "log_close_all_setup_error", exc)
 
 
 def _begin_close_on_exit_sequence(self):
@@ -422,13 +452,14 @@ def _begin_close_on_exit_sequence(self):
         message.setText("Closing open positions before exit. Please wait.")
         try:
             message.setIcon(QtWidgets.QMessageBox.Icon.Information)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "close_progress_dialog_icon", exc)
         message.setStandardButtons(QtWidgets.QMessageBox.StandardButton.NoButton)
         message.setModal(False)
         message.show()
         self._close_progress_dialog = message
-    except Exception:
+    except Exception as exc:
+        _record_positions_tracking_exception(self, "create_close_progress_dialog", exc)
         self._close_progress_dialog = None
 
     def _do():
@@ -441,8 +472,8 @@ def _begin_close_on_exit_sequence(self):
         try:
             if getattr(self, "_close_progress_dialog", None):
                 self._close_progress_dialog.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "close_progress_dialog_done", exc)
         self._close_progress_dialog = None
         self._close_in_progress = False
 
@@ -455,7 +486,8 @@ def _begin_close_on_exit_sequence(self):
                         for p in (self.shared_binance.list_open_futures_positions(force_refresh=True) or [])
                         if abs(float(p.get("positionAmt") or 0.0)) > 0.0
                     ]
-            except Exception:
+            except Exception as exc:
+                _record_positions_tracking_exception(self, "query_remaining_positions_on_exit", exc)
                 return []
             return []
 
@@ -463,14 +495,15 @@ def _begin_close_on_exit_sequence(self):
         try:
             from PyQt6 import QtWidgets as imported_qtwidgets
             qtwidgets = imported_qtwidgets
-        except Exception:
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "import_qtwidgets_for_exit_close", exc)
             qtwidgets = None
 
         if err:
             try:
                 self.log(f"Stop error during exit: {err}")
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_positions_tracking_exception(self, "log_exit_stop_error", exc)
             remaining = _positions_remaining()
             if remaining and qtwidgets is not None:
                 qtwidgets.QMessageBox.warning(
@@ -482,13 +515,14 @@ def _begin_close_on_exit_sequence(self):
         try:
             if isinstance(res, dict) and res.get("close_all_result"):
                 self._handle_close_all_result(res.get("close_all_result"))
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "handle_exit_close_all_result", exc)
         remaining = _positions_remaining()
         if remaining:
             try:
                 symbols_left = ", ".join(sorted({str(p.get("symbol") or "").upper() for p in remaining}))
-            except Exception:
+            except Exception as exc:
+                _record_positions_tracking_exception(self, "format_remaining_position_symbols", exc)
                 symbols_left = "some positions"
             if qtwidgets is not None:
                 qtwidgets.QMessageBox.warning(
@@ -503,8 +537,8 @@ def _begin_close_on_exit_sequence(self):
             return
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "force_close_after_exit_sequence", exc)
 
     try:
         from app.gui.runtime.background_workers import CallWorker as _CallWorker
@@ -512,15 +546,15 @@ def _begin_close_on_exit_sequence(self):
         worker = _CallWorker(_do, parent=self)
         try:
             worker.progress.connect(self.log)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "connect_exit_close_progress", exc)
         worker.done.connect(_done)
 
         def _cleanup():
             try:
                 self._bg_workers.remove(worker)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_positions_tracking_exception(self, "cleanup_exit_close_worker", exc)
 
         worker.finished.connect(_cleanup)
         worker.finished.connect(worker.deleteLater)
@@ -531,13 +565,13 @@ def _begin_close_on_exit_sequence(self):
         try:
             if getattr(self, "_close_progress_dialog", None):
                 self._close_progress_dialog.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "close_progress_dialog_after_setup_error", exc)
         self._close_progress_dialog = None
         try:
             self.log(f"Exit close setup error: {e}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_positions_tracking_exception(self, "log_exit_close_setup_error", exc)
 
 
 def bind_main_window_positions_tracking_runtime(

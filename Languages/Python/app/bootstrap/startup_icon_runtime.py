@@ -9,6 +9,14 @@ from pathlib import Path
 from .startup_ui_shared import _PROJECT_ROOT, _boot_log, _env_flag, _native_icon_handles
 
 
+def _record_startup_icon_exception(context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    try:
+        _boot_log(f"startup icon suppressed exception context={context} error={type(exc).__name__}: {message}")
+    except Exception:
+        return
+
+
 def _resolve_native_icon_path() -> Path | None:
     from app.gui.shared.app_icon import find_primary_icon_file
 
@@ -50,8 +58,8 @@ def _persist_icon_for_taskbar(icon_path: Path | None) -> Path | None:
             try:
                 if target.resolve() == src:
                     return target
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_icon_exception("persist_icon_compare_cached_target", exc)
         shutil.copy2(src, target)
         return target
     except Exception:
@@ -123,14 +131,14 @@ def _get_hwnd(window) -> int:  # noqa: ANN001
                 win_id = window.effectiveWinId()
                 if win_id:
                     return int(win_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_icon_exception("get_hwnd_effective_win_id", exc)
         try:
             win_id = window.winId()
             if win_id:
                 return int(win_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_startup_icon_exception("get_hwnd_win_id", exc)
         try:
             handle = window.windowHandle()
         except Exception:
@@ -140,8 +148,8 @@ def _get_hwnd(window) -> int:  # noqa: ANN001
                 win_id = handle.winId()
                 if win_id:
                     return int(win_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_startup_icon_exception("get_hwnd_window_handle_win_id", exc)
     except Exception:
         return 0
     return 0
@@ -171,15 +179,15 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
         user32.GetWindowLongPtrW.restype = ctypes.c_longlong
         user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_longlong]
         user32.SetWindowLongPtrW.restype = ctypes.c_longlong
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("native_icon_get_set_long_ptr_signature", exc)
     try:
         user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
         user32.GetWindowLongW.restype = ctypes.c_long
         user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
         user32.SetWindowLongW.restype = ctypes.c_long
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("native_icon_get_set_long_signature", exc)
     try:
         get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
         set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
@@ -208,10 +216,10 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
                 0,
                 SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             )
-        except Exception:
-            pass
-    except Exception:
-        pass
+        except Exception as exc:
+            _record_startup_icon_exception("native_icon_set_window_pos", exc)
+    except Exception as exc:
+        _record_startup_icon_exception("native_icon_window_style_update", exc)
     IMAGE_ICON = 1
     LR_LOADFROMFILE = 0x00000010
     LR_DEFAULTSIZE = 0x00000040
@@ -227,8 +235,8 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
             wintypes.UINT,
         ]
         user32.LoadImageW.restype = wintypes.HICON
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("native_icon_load_image_signature", exc)
     try:
         cx_small = int(user32.GetSystemMetrics(49))
         cy_small = int(user32.GetSystemMetrics(50))
@@ -253,8 +261,8 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
             wintypes.LPARAM,
         ]
         user32.SendMessageW.restype = wintypes.LRESULT
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("native_icon_send_message_signature", exc)
     applied = False
     if hicon_small:
         user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
@@ -267,13 +275,13 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
     try:
         user32.SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
         user32.SetClassLongPtrW.restype = ctypes.c_void_p
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("native_icon_set_class_long_ptr_signature", exc)
     try:
         user32.SetClassLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
         user32.SetClassLongW.restype = ctypes.c_long
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("native_icon_set_class_long_signature", exc)
     if applied:
         try:
             set_class = getattr(user32, "SetClassLongPtrW", None) or user32.SetClassLongW
@@ -283,8 +291,8 @@ def _set_native_window_icon(window) -> bool:  # noqa: ANN001
                 set_class(hwnd, GCLP_HICON, hicon_big)
             if hicon_small:
                 set_class(hwnd, GCLP_HICONSM, hicon_small)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_startup_icon_exception("native_icon_set_class_icons", exc)
     return applied
 
 
@@ -314,19 +322,19 @@ def _apply_qt_icon(app, window) -> bool:
                     pixmap = QtGui.QPixmap(str(png_path))
                     if not pixmap.isNull():
                         icon = QtGui.QIcon(pixmap)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_startup_icon_exception("qt_icon_png_fallback", exc)
     if icon.isNull():
         return False
     try:
         app.setWindowIcon(icon)
         QtGui.QGuiApplication.setWindowIcon(icon)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("qt_icon_apply_application", exc)
     try:
         window.setWindowIcon(icon)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_startup_icon_exception("qt_icon_apply_window", exc)
     try:
         handle = window.windowHandle()
     except Exception:
@@ -334,8 +342,8 @@ def _apply_qt_icon(app, window) -> bool:
     if handle is not None:
         try:
             handle.setIcon(icon)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_startup_icon_exception("qt_icon_apply_window_handle", exc)
     return True
 
 

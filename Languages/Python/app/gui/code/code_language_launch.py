@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -15,17 +16,42 @@ from ..shared.app_icon import load_app_icon
 _LANGUAGE_SWITCH_DISPLAY_NAME = str(os.environ.get("BOT_TASKBAR_DISPLAY_NAME") or "Trading Bot").strip() or "Trading Bot"
 
 
+def _record_code_launch_exception(context: str, exc: BaseException, owner=None) -> None:
+    message = str(exc).replace("\n", " ")
+    entry = f"code language launch suppressed exception context={context} error={type(exc).__name__}: {message}"
+    logger = None
+    try:
+        logger = getattr(owner, "_chart_debug_log", None) if owner is not None else None
+    except Exception:
+        logger = None
+    if callable(logger):
+        try:
+            logger(entry)
+            return
+        except Exception:
+            logger = None
+    try:
+        log_dir = Path(os.environ.get("TEMP") or os.environ.get("TMP") or os.getcwd())
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with (log_dir / "binance_chart_debug.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{timestamp} {entry}\n")
+    except Exception:
+        return
+
+
 def _language_switch_logo_pixmap() -> QtGui.QPixmap | None:
     try:
         icon = load_app_icon()
-    except Exception:
+    except Exception as exc:
+        _record_code_launch_exception("load_language_switch_logo_icon", exc)
         icon = QtGui.QIcon()
     if icon.isNull():
         return None
     for size in (72, 96, 128):
         try:
             pixmap = icon.pixmap(size, size)
-        except Exception:
+        except Exception as exc:
+            _record_code_launch_exception(f"language_switch_logo_pixmap_size_{size}", exc)
             continue
         if pixmap is not None and not pixmap.isNull():
             return pixmap
@@ -143,14 +169,14 @@ class LanguageSwitchSplash:
                         arc_pen2.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
                         painter.setPen(arc_pen2)
                         painter.drawPath(arc_path2)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _record_code_launch_exception("language_switch_splash_paint", exc)
                     finally:
                         if painter is not None:
                             try:
                                 painter.end()
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                _record_code_launch_exception("language_switch_splash_painter_end", exc)
 
             widget = _Widget(
                 None,
@@ -180,7 +206,8 @@ class LanguageSwitchSplash:
             timer.timeout.connect(self._tick)
             timer.start()
             self._timer = timer
-        except Exception:
+        except Exception as exc:
+            _record_code_launch_exception("language_switch_splash_init", exc)
             self._widget = None
 
     def _tick(self) -> None:
@@ -188,8 +215,8 @@ class LanguageSwitchSplash:
         if self._widget is not None:
             try:
                 self._widget.update()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_code_launch_exception("language_switch_splash_tick_update", exc)
 
     def set_status(self, text: str) -> None:
         self._status_text = str(text or "Loading...")
@@ -197,8 +224,8 @@ class LanguageSwitchSplash:
             try:
                 self._widget.update()
                 QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_code_launch_exception("language_switch_splash_status_update", exc)
 
     def raise_window(self) -> None:
         if self._widget is None:
@@ -208,22 +235,22 @@ class LanguageSwitchSplash:
             self._widget.raise_()
             self._widget.activateWindow()
             QtWidgets.QApplication.processEvents()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_code_launch_exception("language_switch_splash_raise", exc)
 
     def close(self) -> None:
         if self._timer is not None:
             try:
                 self._timer.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_code_launch_exception("language_switch_splash_timer_stop", exc)
             self._timer = None
         if self._widget is not None:
             try:
                 self._widget.hide()
                 self._widget.deleteLater()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_code_launch_exception("language_switch_splash_widget_close", exc)
             self._widget = None
 
 
@@ -232,7 +259,8 @@ def create_launch_progress_dialog(status_text: str, parent: QtWidgets.QWidget | 
         splash = LanguageSwitchSplash(status_text)
         splash.raise_window()
         return splash
-    except Exception:
+    except Exception as exc:
+        _record_code_launch_exception("create_launch_progress_dialog", exc, parent)
         return None
 
 
@@ -241,8 +269,8 @@ def detach_launch_progress_dialog(dialog: LanguageSwitchSplash | None) -> None:
         return
     try:
         dialog.raise_window()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("detach_launch_progress_dialog", exc)
 
 
 def hide_window_for_handoff(
@@ -258,66 +286,70 @@ def hide_window_for_handoff(
         setattr(window, active_attr, True)
         window.hide()
         hidden = not bool(window.isVisible())
-    except Exception:
+    except Exception as exc:
+        _record_code_launch_exception("hide_window_for_handoff", exc, window)
         hidden = False
     finally:
         try:
             setattr(window, active_attr, False)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_code_launch_exception("hide_window_for_handoff_active_reset", exc, window)
     try:
         setattr(window, hidden_attr, bool(hidden))
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("hide_window_for_handoff_hidden_attr_store", exc, window)
     return bool(hidden)
 
 
 def restore_window_after_handoff(window, *, hidden_attr: str) -> None:
     try:
         hidden_for_handoff = bool(getattr(window, hidden_attr, False))
-    except Exception:
+    except Exception as exc:
+        _record_code_launch_exception("restore_window_after_handoff_hidden_attr_read", exc, window)
         hidden_for_handoff = False
     if not hidden_for_handoff:
         return
     try:
         setattr(window, hidden_attr, False)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("restore_window_after_handoff_hidden_attr_clear", exc, window)
     try:
         state = window.windowState()
-    except Exception:
+    except Exception as exc:
+        _record_code_launch_exception("restore_window_after_handoff_state_read", exc, window)
         state = QtCore.Qt.WindowState.WindowNoState
     try:
         if state & QtCore.Qt.WindowState.WindowMaximized:
             window.showMaximized()
         else:
             window.show()
-    except Exception:
+    except Exception as exc:
+        _record_code_launch_exception("restore_window_after_handoff_show", exc, window)
         try:
             window.showMaximized()
-        except Exception:
-            pass
+        except Exception as fallback_exc:
+            _record_code_launch_exception("restore_window_after_handoff_show_maximized_fallback", fallback_exc, window)
     try:
         window.raise_()
         window.activateWindow()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("restore_window_after_handoff_raise", exc, window)
 
 
 def shutdown_python_after_handoff(window, *, hidden_attr: str) -> None:
     try:
         setattr(window, hidden_attr, False)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("shutdown_python_after_handoff_hidden_attr_clear", exc, window)
     try:
         window._force_close = True
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("shutdown_python_after_handoff_force_close_flag", exc, window)
     try:
         QtWidgets.QWidget.close(window)
         return
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("shutdown_python_after_handoff_qwidget_close", exc, window)
     try:
         app = QtWidgets.QApplication.instance()
         if app is not None:
@@ -326,8 +358,8 @@ def shutdown_python_after_handoff(window, *, hidden_attr: str) -> None:
             if callable(arm_hard_exit):
                 arm_hard_exit()
             app.quit()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("shutdown_python_after_handoff_app_quit", exc, window)
 
 
 def update_launch_progress(dialog: LanguageSwitchSplash | None, text: str) -> None:
@@ -335,8 +367,8 @@ def update_launch_progress(dialog: LanguageSwitchSplash | None, text: str) -> No
         return
     try:
         dialog.set_status(str(text or "Working..."))
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_code_launch_exception("update_launch_progress", exc)
 
 
 def is_qt_runtime_path(path_value: str | None) -> bool:
@@ -515,8 +547,8 @@ def deploy_cpp_runtime_bundle(
     if ok:
         try:
             stamp_path.write_text(str(time.time()), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_code_launch_exception("deploy_cpp_runtime_stamp_write", exc)
     return ok, output
 
 
@@ -577,7 +609,7 @@ def run_callable_with_ui_pump(
         while not future.done():
             try:
                 QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_code_launch_exception("run_callable_with_ui_pump_process_events", exc)
             time.sleep(max(0.01, float(poll_interval_s)))
         return future.result()

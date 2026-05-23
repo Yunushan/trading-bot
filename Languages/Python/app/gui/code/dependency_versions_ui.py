@@ -16,6 +16,26 @@ from PyQt6 import QtCore, QtWidgets
 from .code_language_catalog import BASE_PROJECT_PATH, CPP_CODE_LANGUAGE_KEY, RUST_CODE_LANGUAGE_KEY, RUST_PROJECT_PATH
 
 
+def _record_dependency_ui_exception(self, context: str, exc: BaseException) -> None:
+    message = (
+        f"Dependency UI warning [{context}]: "
+        f"{type(exc).__name__}: {str(exc).replace(chr(10), ' ')}"
+    )
+    try:
+        logger = getattr(self, "log", None) if self is not None else None
+        if callable(logger):
+            logger(message)
+            return
+    except Exception:
+        return
+    try:
+        path = Path(os.getenv("TEMP") or ".").resolve() / "trading_bot_dependency_ui.log"
+        with open(path, "a", encoding="utf-8", errors="ignore") as fh:
+            fh.write(f"{message}\n")
+    except OSError:
+        return
+
+
 def _dependency_target_label(target: dict[str, str] | None) -> str:
     if not isinstance(target, dict):
         return ""
@@ -31,11 +51,11 @@ def _dependency_target_with_ui_versions(self, target: dict[str, str]) -> dict[st
         try:
             enriched["_installed_version"] = str(widgets[0].text() or "").strip()
         except Exception:
-            pass
+            enriched["_installed_version"] = ""
         try:
             enriched["_latest_version"] = str(widgets[1].text() or "").strip()
         except Exception:
-            pass
+            enriched["_latest_version"] = ""
     return enriched
 
 
@@ -106,7 +126,7 @@ def update_dependency_action_buttons(self) -> None:
             try:
                 checkbox.setEnabled(not busy)
             except Exception:
-                pass
+                continue
 
 
 def _set_dependency_update_state(
@@ -162,8 +182,8 @@ def _emit_dependency_update_progress(self, progress: dict) -> None:
             QtCore.Qt.ConnectionType.QueuedConnection,
             QtCore.Q_ARG(object, dict(progress or {})),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "emit_update_progress", exc)
 
 
 def apply_dependency_update_progress(self, progress: dict | None) -> None:
@@ -185,8 +205,8 @@ def apply_dependency_update_progress(self, progress: dict | None) -> None:
                 progress_bar.setRange(0, 100)
                 progress_bar.setValue(percent)
                 progress_bar.setFormat(f"{percent}%")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "progress_bar_update", exc)
 
     detail_label = getattr(self, "_dependency_update_progress_detail_label", None)
     if detail_label is not None:
@@ -195,8 +215,8 @@ def apply_dependency_update_progress(self, progress: dict | None) -> None:
             color = "#ef4444" if failed and state == "finished" else "#22c55e" if state == "finished" else "#f59e0b"
             detail_label.setStyleSheet(f"color: {color}; font-weight: 600;")
             detail_label.setText(detail)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "progress_detail_update", exc)
 
     if state in {"running", "success", "failed"} and label:
         labels = getattr(self, "_dep_version_labels", None)
@@ -213,8 +233,8 @@ def apply_dependency_update_progress(self, progress: dict | None) -> None:
                 elif state == "failed":
                     installed_widget.setText("Failed")
                     installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px; color: #ef4444;")
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_dependency_ui_exception(self, f"progress_row_update:{label}", exc)
 
     if state == "running" and label:
         self._dep_version_update_status_text = f"{payload.get('phase') or 'Updating'} {label}..."
@@ -287,7 +307,7 @@ def _dependency_update_timeout_seconds() -> float:
         try:
             return max(15.0, float(raw))
         except Exception:
-            pass
+            return 180.0
     return 180.0
 
 
@@ -392,8 +412,10 @@ def _run_python_package_install(
                 if callable(on_output):
                     try:
                         on_output(clean_line)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        output_lines.append(
+                            f"Progress callback failed: {type(exc).__name__}: {str(exc).replace(chr(10), ' ')}"
+                        )
 
         if proc.poll() is not None and reader_done:
             break
@@ -402,15 +424,15 @@ def _run_python_package_install(
             timed_out = True
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except Exception as exc:
+                output_lines.append(f"Failed to terminate timed-out command: {type(exc).__name__}: {exc}")
             break
 
     if timed_out:
         try:
             proc.wait(timeout=5.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            output_lines.append(f"Timed-out command did not exit cleanly: {type(exc).__name__}: {exc}")
         return False, "\n".join([f"Command timed out after {timeout:.0f} seconds.", *output_lines]).strip()
 
     return_code = proc.poll()
@@ -945,8 +967,8 @@ def _start_dependency_update(self, *, selected_only: bool) -> None:
                     else "There are no dependencies available to update for the current language section."
                 ),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_update_no_targets_dialog", exc)
         return
 
     language_key = str((getattr(self, "config", None) or {}).get("code_language") or "").strip()
@@ -961,8 +983,8 @@ def _start_dependency_update(self, *, selected_only: bool) -> None:
     )
     try:
         self.log(status_text)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_update_start_log", exc)
 
     def _worker() -> None:
         result = _run_dependency_update_worker(self, targets=targets, selected_only=selected_only)
@@ -973,11 +995,12 @@ def _start_dependency_update(self, *, selected_only: bool) -> None:
                 QtCore.Qt.ConnectionType.QueuedConnection,
                 QtCore.Q_ARG(object, result),
             )
-        except Exception:
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_update_finished_dispatch", exc)
             try:
                 _set_dependency_update_state(self, False)
-            except Exception:
-                pass
+            except Exception as state_exc:
+                _record_dependency_ui_exception(self, "dependency_update_dispatch_state_reset", state_exc)
 
     threading.Thread(target=_worker, name="dependency-update", daemon=True).start()
 
@@ -998,8 +1021,8 @@ def apply_dependency_update_finished(self, result: dict | None) -> None:
     if log_message:
         try:
             self.log(log_message)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_update_finish_log", exc)
 
     title = str(payload.get("title") or "Dependency update finished").strip() or "Dependency update finished"
     message = str(payload.get("message") or "").strip() or "The dependency update finished."
@@ -1010,8 +1033,8 @@ def apply_dependency_update_finished(self, result: dict | None) -> None:
             QtWidgets.QMessageBox.information(self, title, message)
         else:
             QtWidgets.QMessageBox.warning(self, title, message)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_update_finish_dialog", exc)
 
     if bool(payload.get("refresh_versions", True)):
         QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
@@ -1025,13 +1048,14 @@ def start_dependency_usage_auto_poll(self, *, interval_ms: int) -> None:
             timer.setInterval(interval_ms)
             timer.timeout.connect(self._poll_dependency_usage_states)
             self._dep_usage_poll_timer = timer
-        except Exception:
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_usage_poll_timer_create", exc)
             return
     try:
         if not timer.isActive():
             timer.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_usage_poll_timer_start", exc)
     self._poll_dependency_usage_states()
 
 
@@ -1041,8 +1065,8 @@ def stop_dependency_usage_auto_poll(self) -> None:
         return
     try:
         timer.stop()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_usage_poll_timer_stop", exc)
 
 
 def poll_dependency_usage_states(self, *, refresh_dependency_usage_labels) -> None:
@@ -1166,16 +1190,16 @@ def rebuild_dependency_version_rows(
             for key in list(state_map.keys()):
                 if key not in tracked_labels:
                     state_map.pop(key, None)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_usage_state_prune", exc)
     try:
         count_map_local = getattr(self, "_dep_usage_change_counts", None)
         if isinstance(count_map_local, dict):
             for key in list(count_map_local.keys()):
                 if key not in tracked_labels:
                     count_map_local.pop(key, None)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_usage_count_prune", exc)
     refresh_dependency_usage_labels(self, target_list)
 
     rows = (len(target_list) * 2) + 1
@@ -1189,8 +1213,8 @@ def rebuild_dependency_version_rows(
         container.setMinimumHeight(target_height)
         group.setMinimumHeight(0)
         group.setMaximumHeight(16777215)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_rows_resize", exc)
 
     if scroll is not None:
         preferred_height = min(420, max(240, target_height))
@@ -1199,8 +1223,8 @@ def rebuild_dependency_version_rows(
         scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         try:
             scroll.verticalScrollBar().setValue(0)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_rows_scroll_reset", exc)
     update_dependency_action_buttons(self)
 
 
@@ -1226,7 +1250,8 @@ def refresh_dependency_versions(
 
     try:
         resolved_targets = resolve_dependency_targets_for_config(self.config)
-    except Exception:
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_targets_resolve", exc)
         resolved_targets = copy.deepcopy(dependency_targets_fallback)
     try:
         config_snapshot = dict(self.config or {})
@@ -1239,10 +1264,10 @@ def refresh_dependency_versions(
         else:
             try:
                 self._dep_version_targets = list(resolved_targets or [])
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                _record_dependency_ui_exception(self, "dependency_targets_snapshot", exc)
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_rows_rebuild", exc)
 
     try:
         maybe_auto_prepare_cpp_environment(
@@ -1250,8 +1275,8 @@ def refresh_dependency_versions(
             resolved_targets=resolved_targets,
             reason="dependency-refresh",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_auto_prepare_cpp", exc)
 
     labels = getattr(self, "_dep_version_labels", None)
     if labels:
@@ -1259,8 +1284,8 @@ def refresh_dependency_versions(
             _, latest_widget, _, _ = widgets
             try:
                 latest_widget.setText("Checking...")
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_dependency_ui_exception(self, f"dependency_latest_checking:{label}", exc)
             apply_dependency_usage_entry(self, label, "Checking...", widgets=widgets, track_change=False)
 
     try:
@@ -1269,7 +1294,8 @@ def refresh_dependency_versions(
             include_latest=False,
             config=config_snapshot,
         )
-    except Exception:
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_installed_snapshot", exc)
         installed_snapshot = []
     if labels and installed_snapshot:
         for label, installed, _, usage in installed_snapshot:
@@ -1279,8 +1305,8 @@ def refresh_dependency_versions(
             installed_widget, _, _, _ = widgets
             try:
                 installed_widget.setText(installed)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_dependency_ui_exception(self, f"dependency_installed_widget:{label}", exc)
             apply_dependency_usage_entry(self, label, usage, widgets=widgets, track_change=True)
 
     def _watchdog(token: float):
@@ -1295,13 +1321,14 @@ def refresh_dependency_versions(
                     _, latest_widget, _, _ = widgets
                     try:
                         latest_widget.setText("Unknown")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _record_dependency_ui_exception(self, f"dependency_watchdog_latest:{label}", exc)
                     if normalize_dependency_usage_text(widgets[2].text()) == "Checking...":
                         apply_dependency_usage_entry(self, label, "Passive", widgets=widgets, track_change=False)
             self._dep_version_refresh_inflight = False
             update_dependency_action_buttons(self)
-        except Exception:
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_refresh_watchdog", exc)
             self._dep_version_refresh_inflight = False
             update_dependency_action_buttons(self)
 
@@ -1316,7 +1343,8 @@ def refresh_dependency_versions(
                     config=config_snapshot,
                 )
             )
-        except Exception:
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_refresh_worker_installed_snapshot", exc)
             installed_snapshot_local = []
 
         try:
@@ -1327,7 +1355,8 @@ def refresh_dependency_versions(
                     config=config_snapshot,
                 )
             )
-        except Exception:
+        except Exception as exc:
+            _record_dependency_ui_exception(self, "dependency_refresh_worker_latest", exc)
             results = []
         if not results:
             if installed_snapshot_local:
@@ -1387,13 +1416,13 @@ def apply_dependency_version_results(
                     if label in installed_map:
                         installed_widget.setText(installed_map[label])
                         installed_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px;")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_dependency_ui_exception(self, f"dependency_results_installed:{label}", exc)
                 try:
                     latest_widget.setText(latest_map.get(label, "Unknown"))
                     latest_widget.setStyleSheet("font-size: 11px; padding: 2px 4px 4px 4px;")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_dependency_ui_exception(self, f"dependency_results_latest:{label}", exc)
                 apply_dependency_usage_entry(
                     self,
                     label,
@@ -1407,6 +1436,7 @@ def apply_dependency_version_results(
         if getattr(self, "_dep_version_refresh_pending", False):
             self._dep_version_refresh_pending = False
             QtCore.QTimer.singleShot(0, self._refresh_dependency_versions)
-    except Exception:
+    except Exception as exc:
+        _record_dependency_ui_exception(self, "dependency_results_apply", exc)
         self._dep_version_refresh_inflight = False
         update_dependency_action_buttons(self)

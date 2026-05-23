@@ -143,6 +143,7 @@ export const elements = {
   configConnectorBackend: document.getElementById("config-connector-backend"),
   configCodeLanguage: document.getElementById("config-code-language"),
   configTheme: document.getElementById("config-theme"),
+  configDesign: document.getElementById("config-design"),
   configLeverage: document.getElementById("config-leverage"),
   configPositionPct: document.getElementById("config-position-pct"),
   configOrderAuditMaxBytes: document.getElementById("config-order-audit-max-bytes"),

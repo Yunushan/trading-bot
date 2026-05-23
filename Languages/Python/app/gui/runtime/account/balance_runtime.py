@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 import urllib.request
+from datetime import datetime
+from pathlib import Path
 
 from PyQt6 import QtCore
 
 _NORMALIZE_CONNECTOR_BACKEND = None
+
+
+def _record_balance_runtime_exception(self, context: str, exc: BaseException) -> None:  # noqa: ANN001
+    message = str(exc).replace("\n", " ")
+    entry = f"balance runtime suppressed exception context={context} error={type(exc).__name__}: {message}"
+    fallback_needed = True
+    try:
+        logger = getattr(self, "_chart_debug_log", None)
+        if callable(logger):
+            logger(entry)
+            fallback_needed = False
+    except Exception:
+        fallback_needed = True
+    if not fallback_needed:
+        return
+    try:
+        log_dir = Path(os.environ.get("TEMP") or os.environ.get("TMP") or os.getcwd())
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with (log_dir / "binance_chart_debug.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{timestamp} {entry}\n")
+    except Exception:
+        return
 
 
 def _normalize_connector_backend_safe(value) -> str | None:
@@ -39,41 +64,46 @@ def update_balance_label(self):
     refresh_token = time.monotonic()
     try:
         self._balance_refresh_token = refresh_token
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "set_balance_refresh_token", exc)
     if btn:
         try:
             btn.setEnabled(False)
             btn.setText("Refreshing...")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "balance_refresh_button_start", exc)
     try:
         if getattr(self, "balance_label", None):
             self.balance_label.setText("Refreshing...")
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "balance_label_refreshing", exc)
 
     try:
         api_key = (self.api_key_edit.text() or "").strip()
         api_secret = (self.api_secret_edit.text() or "").strip()
-    except Exception:
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "read_api_credentials", exc)
         api_key = ""
         api_secret = ""
     try:
         mode_value = getattr(self.mode_combo, "currentText", lambda: "Live")()
-    except Exception:
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "read_mode_value", exc)
         mode_value = "Live"
     try:
         account_value = getattr(self.account_combo, "currentText", lambda: "Futures")()
-    except Exception:
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "read_account_value", exc)
         account_value = "Futures"
     try:
         default_leverage = int(self.leverage_spin.value() or 1)
-    except Exception:
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "read_default_leverage", exc)
         default_leverage = 1
     try:
         default_margin_mode = self.margin_mode_combo.currentText() or "Isolated"
-    except Exception:
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "read_default_margin_mode", exc)
         default_margin_mode = "Isolated"
     try:
         connector_raw = None
@@ -82,7 +112,8 @@ def update_balance_label(self):
             if connector_raw is None:
                 connector_raw = self.connector_combo.currentText()
         connector_backend = _normalize_connector_backend_safe(connector_raw)
-    except Exception:
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "read_connector_backend", exc)
         connector_backend = None
 
     if not api_key or not api_secret:
@@ -91,15 +122,15 @@ def update_balance_label(self):
         self._update_positions_balance_labels(None, None)
         try:
             self._balance_refresh_token = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "clear_missing_credentials_refresh_token", exc)
         if btn:
             try:
                 btn.setEnabled(True)
                 if old_btn_text is not None:
                     btn.setText(old_btn_text)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "missing_credentials_button_restore", exc)
         return
 
     wrapper_holder: dict[str, object | None] = {"wrapper": None}
@@ -122,8 +153,9 @@ def update_balance_label(self):
                             != str(connector_backend or "")
                         )
                     )
-                except Exception:
+                except Exception as exc:
                     needs_rebuild = True
+                    _record_balance_runtime_exception(self, "compare_existing_wrapper", exc)
             if wrapper is None or needs_rebuild:
                 wrapper = self._create_binance_wrapper(
                     api_key=api_key,
@@ -136,8 +168,8 @@ def update_balance_label(self):
                 )
             try:
                 wrapper_holder["wrapper"] = wrapper
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "store_balance_wrapper_holder", exc)
             total_balance_value = None
             available_balance_value = None
             bal = 0.0
@@ -148,18 +180,21 @@ def update_balance_label(self):
                     raise RuntimeError(f"Unexpected futures balance snapshot type: {type(snap).__name__}")
                 try:
                     total_balance_value = float(snap.get("total") or snap.get("wallet") or 0.0)
-                except Exception:
+                except Exception as exc:
+                    _record_balance_runtime_exception(self, "parse_futures_total_balance", exc)
                     total_balance_value = 0.0
                 try:
                     available_balance_value = float(snap.get("available") or 0.0)
-                except Exception:
+                except Exception as exc:
+                    _record_balance_runtime_exception(self, "parse_futures_available_balance", exc)
                     available_balance_value = 0.0
                 bal = available_balance_value if available_balance_value > 0.0 else total_balance_value
             else:
                 bal = float(wrapper.get_spot_balance("USDT") or 0.0)
                 try:
                     total_balance_value = float(wrapper.get_total_usdt_value() or bal)
-                except Exception:
+                except Exception as exc:
+                    _record_balance_runtime_exception(self, "parse_spot_total_balance", exc)
                     total_balance_value = bal
                 available_balance_value = bal
             return {"total": total_balance_value, "available": available_balance_value, "bal": bal, "wrapper": wrapper}
@@ -171,13 +206,13 @@ def update_balance_label(self):
             return
         try:
             self._balance_refresh_token = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "done_clear_balance_refresh_token", exc)
         try:
             if getattr(self, "_balance_refresh_worker", None) is worker:
                 self._balance_refresh_worker = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "done_clear_balance_worker", exc)
         total_balance_value = None
         available_balance_value = None
         err_msg = None
@@ -190,24 +225,25 @@ def update_balance_label(self):
                 wrapper_obj = wrapper_holder.get("wrapper")
                 if wrapper_obj is not None:
                     self.shared_binance = wrapper_obj
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "error_store_shared_wrapper", exc)
             try:
                 self.log(f"Balance error: {err_msg or 'unknown error'}")
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "log_balance_error", exc)
             try:
                 if getattr(self, "balance_label", None):
                     msg = str(err_msg or "unknown error").replace("\n", " ").strip()
                     try:
                         self.balance_label.setToolTip(msg)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _record_balance_runtime_exception(self, "balance_error_tooltip", exc)
                     label_text = None
                     try:
                         m = re.search(r"\bcode=([-]?[0-9]+)\b", msg)
                         code_val = int(m.group(1)) if m else None
-                    except Exception:
+                    except Exception as exc:
+                        _record_balance_runtime_exception(self, "parse_balance_error_code", exc)
                         code_val = None
                     if code_val in (-2014, -2015):
                         mode_txt = str(mode_value or "").lower()
@@ -252,10 +288,10 @@ def update_balance_label(self):
                                                 ip = (resp.read(64) or b"").decode("utf-8", "ignore").strip()
                                             if ip and re.match(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$", ip):
                                                 self.log(f"Detected public IP: {ip}")
-                                        except Exception:
-                                            pass
-                                except Exception:
-                                    pass
+                                        except Exception as exc:
+                                            _record_balance_runtime_exception(self, "public_ip_lookup", exc)
+                                except Exception as exc:
+                                    _record_balance_runtime_exception(self, "write_futures_auth_help", exc)
                         elif is_test:
                             label_text = (
                                 f"Testnet key rejected (code {code_val}). "
@@ -267,8 +303,8 @@ def update_balance_label(self):
                         short = msg if len(msg) <= 120 else (msg[:117] + "...")
                         label_text = f"Balance error: {short}"
                     self.balance_label.setText(label_text)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "apply_balance_error_label", exc)
             self._update_positions_balance_labels(None, None)
         else:
             total_balance_value = res.get("total")
@@ -278,43 +314,43 @@ def update_balance_label(self):
                 wrapper_obj = res.get("wrapper")
                 if wrapper_obj is not None:
                     self.shared_binance = wrapper_obj
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "success_store_shared_wrapper", exc)
             try:
                 if getattr(self, "balance_label", None):
                     try:
                         self.balance_label.setToolTip("")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _record_balance_runtime_exception(self, "clear_balance_tooltip", exc)
                     total_txt = f"{(total_balance_value if total_balance_value is not None else bal):.3f}"
                     avail_txt = f"{(available_balance_value if available_balance_value is not None else bal):.3f}"
                     if abs(float(total_txt) - float(avail_txt)) > 1e-6:
                         self.balance_label.setText(f"Total {total_txt} USDT | Available {avail_txt} USDT")
                     else:
                         self.balance_label.setText(f"{total_txt} USDT")
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "apply_balance_success_label", exc)
             try:
                 self._update_positions_balance_labels(total_balance_value, available_balance_value)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "update_positions_balance_success", exc)
         if btn:
             try:
                 btn.setEnabled(True)
                 if old_btn_text is not None:
                     btn.setText(old_btn_text)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "done_button_restore", exc)
 
     worker = _CallWorker(_do, parent=self)
     try:
         self._balance_refresh_worker = worker
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "store_balance_worker", exc)
     try:
         worker.progress.connect(self.log)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_balance_runtime_exception(self, "connect_balance_progress", exc)
     worker.done.connect(_done)
     worker.start()
 
@@ -323,37 +359,38 @@ def update_balance_label(self):
             return
         try:
             running = bool(worker.isRunning())
-        except Exception:
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "balance_watchdog_worker_running", exc)
             running = False
         if not running:
             return
         try:
             self._balance_refresh_token = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "watchdog_clear_balance_refresh_token", exc)
         try:
             self._balance_refresh_worker = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "watchdog_clear_balance_worker", exc)
         try:
             self.log("Balance refresh timed out; please check testnet connectivity/credentials and try again.")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "watchdog_log_timeout", exc)
         try:
             if getattr(self, "balance_label", None):
                 self.balance_label.setText("Balance timeout")
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "watchdog_balance_timeout_label", exc)
         try:
             self._update_positions_balance_labels(None, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_balance_runtime_exception(self, "watchdog_update_positions_balance", exc)
         if btn:
             try:
                 btn.setEnabled(True)
                 if old_btn_text is not None:
                     btn.setText(old_btn_text)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_balance_runtime_exception(self, "watchdog_button_restore", exc)
 
     QtCore.QTimer.singleShot(120000, lambda t=refresh_token: _watchdog(t))

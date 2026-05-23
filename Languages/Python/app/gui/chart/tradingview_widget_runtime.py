@@ -3,7 +3,7 @@ from __future__ import annotations
 import html as _html
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
@@ -44,14 +44,19 @@ _HAND_CURSOR_SHAPES = {
 
 def _log_chart_event(message: str) -> None:
     try:
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         ts = "unknown-time"
     try:
         with open(_LOG_PATH, "a", encoding="utf-8", errors="ignore") as fh:
             fh.write(f"[{ts}] {message}\n")
     except Exception:
-        pass
+        return
+
+
+def _log_tradingview_exception(context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    _log_chart_event(f"TradingViewWidget suppressed exception context={context} error={type(exc).__name__}: {message}")
 
 
 def _clear_hand_override_cursor() -> None:
@@ -88,18 +93,18 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
         try:
             self.setMouseTracking(True)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("set_mouse_tracking", exc)
         try:
             if SilentWebEnginePage is not None:
                 self.setPage(SilentWebEnginePage(self))
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("install_silent_webengine_page", exc)
         try:
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("set_scrollbar_policy", exc)
         try:
             settings = self.settings()
             settings.setAttribute(settings.WebAttribute.LocalStorageEnabled, True)
@@ -121,13 +126,13 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
             focus_attr = getattr(settings.WebAttribute, "FocusOnNavigationEnabled", None)
             if focus_attr is not None:
                 settings.setAttribute(focus_attr, False)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("configure_webengine_settings", exc)
         try:
             profile = self.page().profile()
             profile.setHttpUserAgent(_DEFAULT_UA)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("set_http_user_agent", exc)
         self._current_config: dict[str, str | list[str]] = {
             "symbol": "BINANCE:BTCUSDT",
             "interval": "60",
@@ -146,8 +151,8 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
         self._ready_probe_tries = 0
         try:
             self.loadFinished.connect(self._on_load_finished)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("connect_load_finished", exc)
         try:
             page = self.page()
             if hasattr(page, "newWindowRequested"):
@@ -156,8 +161,8 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
                 page.windowCloseRequested.connect(self._on_window_close_requested)
             if hasattr(page, "renderProcessTerminated"):
                 page.renderProcessTerminated.connect(self._on_render_process_terminated)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("connect_webengine_page_signals", exc)
         _log_chart_event("TradingViewWidget init")
 
     def showEvent(self, event):
@@ -227,8 +232,8 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
                 shape = self.cursor().shape()
                 if shape in _HAND_CURSOR_SHAPES:
                     self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("event_cursor_cleanup", exc)
         return super().event(event)
 
     def createWindow(self, _type):  # noqa: N802
@@ -237,8 +242,8 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
     def _on_new_window_requested(self, request):  # noqa: ANN001
         try:
             request.reject()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("reject_new_window_request", exc)
 
     def _on_window_close_requested(self) -> None:
         return
@@ -246,20 +251,20 @@ class TradingViewWidget(QWebEngineView):  # type: ignore[misc]
     def _on_render_process_terminated(self, *_args) -> None:
         try:
             _log_chart_event(f"TradingViewWidget renderProcessTerminated args={_args}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("render_process_terminated_log", exc)
         try:
             self.show_message("TradingView crashed. Retrying...")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("render_process_terminated_message", exc)
         self._rendered = False
         self._page_ready = False
         self._widget_ready = False
         self._pending_config = dict(self._current_config)
         try:
             QtCore.QTimer.singleShot(250, self._render)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("render_process_terminated_retry_timer", exc)
 
     def show_message(self, message: str, color: str = "#d1d4dc") -> None:
         safe_msg = _html.escape(str(message or ""))
@@ -282,8 +287,8 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
         self._page_ready = bool(ok)
         try:
             _log_chart_event(f"TradingViewWidget loadFinished ok={int(bool(ok))}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("load_finished_log", exc)
         if not self._page_ready:
             return
         self._start_ready_probe()
@@ -301,12 +306,12 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
             return
         try:
             timer.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("ready_probe_timer_stop", exc)
         try:
             timer.deleteLater()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_tradingview_exception("ready_probe_timer_delete", exc)
         self._ready_probe_timer = None
 
     def _start_ready_probe(self) -> None:
@@ -326,8 +331,8 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
                 self._widget_ready = True
                 try:
                     self.ready.emit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log_tradingview_exception("ready_probe_emit_ready", exc)
                 self._reset_ready_probe()
 
         def _tick():
@@ -339,18 +344,19 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
                 self._widget_ready = True
                 try:
                     self.ready.emit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log_tradingview_exception("ready_probe_timeout_emit_ready", exc)
                 self._reset_ready_probe()
                 return
             try:
                 self.page().runJavaScript("window.__tv_ready === true", _handle_result)
-            except Exception:
+            except Exception as exc:
+                _log_tradingview_exception("ready_probe_javascript", exc)
                 self._widget_ready = True
                 try:
                     self.ready.emit()
-                except Exception:
-                    pass
+                except Exception as emit_exc:
+                    _log_tradingview_exception("ready_probe_javascript_fallback_emit_ready", emit_exc)
                 self._reset_ready_probe()
 
         timer.timeout.connect(_tick)
@@ -395,7 +401,8 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
 
         try:
             self.page().runJavaScript(script, _done)
-        except Exception:
+        except Exception as exc:
+            _log_tradingview_exception("apply_js_config", exc)
             self._render()
             self._rendered = True
 

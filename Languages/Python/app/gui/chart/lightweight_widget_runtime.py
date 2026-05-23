@@ -3,7 +3,7 @@ from __future__ import annotations
 import html as _html
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from PyQt6 import QtCore, QtGui
@@ -46,14 +46,19 @@ _HAND_CURSOR_SHAPES = {
 
 def _log_chart_event(message: str) -> None:
     try:
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         ts = "unknown-time"
     try:
         with open(_LOG_PATH, "a", encoding="utf-8", errors="ignore") as fh:
             fh.write(f"[{ts}] {message}\n")
     except Exception:
-        pass
+        return
+
+
+def _log_lightweight_exception(context: str, exc: BaseException) -> None:
+    message = str(exc).replace("\n", " ")
+    _log_chart_event(f"LightweightChartWidget suppressed exception context={context} error={type(exc).__name__}: {message}")
 
 
 def _clear_hand_override_cursor() -> None:
@@ -82,8 +87,8 @@ def _refresh_host_window_protection(widget) -> None:
         start_guard = getattr(host_window, "_start_webengine_close_guard", None)
         if callable(start_guard):
             start_guard()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_lightweight_exception("refresh_host_window_protection", exc)
 
 
 class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
@@ -100,18 +105,18 @@ class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
         try:
             self.setMouseTracking(True)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("set_mouse_tracking", exc)
         try:
             if QWebEnginePage is not None:
                 self.setPage(_DebugWebEnginePage(self))
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("install_debug_webengine_page", exc)
         try:
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("set_scrollbar_policy", exc)
         try:
             settings = self.settings()
             settings.setAttribute(settings.WebAttribute.LocalStorageEnabled, True)
@@ -127,30 +132,30 @@ class LightweightChartWidget(QWebEngineView):  # type: ignore[misc]
                 settings.setAttribute(local_file, True)
             settings.setAttribute(settings.WebAttribute.JavascriptCanOpenWindows, False)
             settings.setAttribute(settings.WebAttribute.JavascriptCanCloseWindows, False)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("configure_webengine_settings", exc)
         try:
             profile = self.page().profile()
             profile.setHttpUserAgent(_DEFAULT_UA)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("set_http_user_agent", exc)
         self._rendered = False
         self._page_ready = False
         self._pending_payload: dict | None = None
         try:
             self.loadFinished.connect(self._on_load_finished)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("connect_load_finished", exc)
         try:
             self.loadStarted.connect(self._on_load_started)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("connect_load_started", exc)
         try:
             page = self.page()
             if hasattr(page, "renderProcessTerminated"):
                 page.renderProcessTerminated.connect(self._on_render_process_terminated)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("connect_render_process_terminated", exc)
         _log_chart_event("LightweightChartWidget init")
         self._html_path = lightweight_widget_assets._resolve_lightweight_html_path()
 
@@ -195,8 +200,8 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
                 shape = self.cursor().shape()
                 if shape in _HAND_CURSOR_SHAPES:
                     self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("event_cursor_cleanup", exc)
         return super().event(event)
 
     def _render(self, payload: dict | None = None) -> None:
@@ -219,15 +224,15 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
     def _on_load_started(self) -> None:
         try:
             _log_chart_event("LightweightChartWidget loadStarted")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("load_started_log", exc)
 
     def _on_load_finished(self, ok: bool) -> None:
         self._page_ready = bool(ok)
         try:
             _log_chart_event(f"LightweightChartWidget loadFinished ok={int(bool(ok))}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("load_finished_log", exc)
         if not self._page_ready:
             return
         _refresh_host_window_protection(self)
@@ -236,18 +241,18 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
             self._apply_payload(pending)
         try:
             self.ready.emit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("ready_signal_emit", exc)
 
     def _on_render_process_terminated(self, *_args) -> None:
         try:
             _log_chart_event(f"LightweightChartWidget renderProcessTerminated args={_args}")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("render_process_terminated_log", exc)
         try:
             self.show_message("Lightweight chart crashed. Try disabling WebEngine charts.", color="#f75467")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("render_process_terminated_message", exc)
 
     def _apply_payload(self, payload: dict) -> None:
         if not payload or not self._page_ready:
@@ -263,12 +268,12 @@ html, body {{ margin:0; padding:0; width:100%; height:100%; background-color:#0b
                 f"overlays={len(payload.get('overlays') or [])} "
                 f"panes={len(payload.get('panes') or [])}"
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("apply_payload_log", exc)
         try:
             self.page().runJavaScript(f"window.__lw_apply_payload({payload_json});")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_lightweight_exception("apply_payload_javascript", exc)
 
 
 _DebugWebEnginePageBase = SilentWebEnginePage if SilentWebEnginePage is not None else QWebEnginePage
@@ -281,9 +286,9 @@ if _DebugWebEnginePageBase is not None:
                 _log_chart_event(
                     f"Lightweight JS console level={int(level)} line={int(line_number)} source={source_id} msg={message}"
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_lightweight_exception("javascript_console_log", exc)
             try:
                 super().javaScriptConsoleMessage(level, message, line_number, source_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_lightweight_exception("javascript_console_super", exc)

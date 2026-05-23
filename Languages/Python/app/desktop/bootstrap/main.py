@@ -30,6 +30,18 @@ _DEFAULT_APP_USER_MODEL_ID = "com.tradingbot.TradingBot"
 if sys.platform == "win32" and not getattr(sys, "frozen", False):
     _DEFAULT_APP_USER_MODEL_ID = "com.tradingbot.TradingBot.PythonSource"
 APP_USER_MODEL_ID = str(os.environ.get("BOT_APP_USER_MODEL_ID") or _DEFAULT_APP_USER_MODEL_ID).strip() or _DEFAULT_APP_USER_MODEL_ID
+
+
+def _record_desktop_bootstrap_exception(context: str, exc: BaseException) -> None:
+    if str(os.environ.get("BOT_BOOT_LOG", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    message = str(exc).replace("\n", " ")
+    try:
+        print(f"[boot] desktop bootstrap suppressed exception context={context} error={type(exc).__name__}: {message}", flush=True)
+    except Exception:
+        return
+
+
 if sys.platform == "win32":
     # These Qt variables improve taskbar grouping consistency when Qt creates
     # helper processes/windows during startup.
@@ -38,8 +50,8 @@ if sys.platform == "win32":
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("set_current_process_app_user_model_id", exc)
 
 # Ensure repo root is importable so shared helpers can be used when launched directly.
 # `PROJECT_ROOT` is used by both Python and C++ integration helpers.
@@ -81,8 +93,8 @@ def _maybe_relaunch_via_pythonw() -> None:
     try:
         if sys.gettrace() is not None:
             return
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("pythonw_relaunch_trace_check", exc)
     try:
         current_exe = Path(sys.executable).resolve()
     except Exception:
@@ -95,8 +107,8 @@ def _maybe_relaunch_via_pythonw() -> None:
         return
     try:
         gui_host = gui_host.resolve()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("pythonw_relaunch_resolve_gui_host", exc)
     if gui_host == current_exe:
         return
     env = os.environ.copy()
@@ -124,8 +136,8 @@ def _maybe_relaunch_via_pythonw() -> None:
         try:
             os.startfile(str(shortcut_path))
             raise SystemExit(0)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_desktop_bootstrap_exception("pythonw_relaunch_start_shortcut", exc)
     try:
         subprocess.Popen(
             args,
@@ -194,8 +206,8 @@ def _normalized_env_path_key(path_value: str) -> str:
     try:
         resolved = Path(text).expanduser().resolve()
         text = str(resolved)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("normalized_env_path_resolve", exc)
     return os.path.normcase(os.path.normpath(text))
 
 
@@ -267,8 +279,8 @@ def _boot_log(message: str) -> None:
         return
     try:
         print(f"[boot] {message}", flush=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("boot_log_print", exc)
 
 
 def _suppress_subprocess_console_windows() -> None:
@@ -363,8 +375,8 @@ def _sanitize_webengine_cli_args() -> None:
     if changed:
         try:
             sys.argv[:] = filtered
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_desktop_bootstrap_exception("sanitize_webengine_cli_args_update", exc)
 
 _sanitize_webengine_cli_args()
 
@@ -534,8 +546,8 @@ def main() -> int:
     # main thread stuck polling join() until the user interrupts the process.
     try:
         app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("initial_process_events", exc)
     from app.gui.window_shell import MainWindow  # noqa: E402
 
     startup_presentation.set_status("Loading iconsâ€¦")
@@ -552,28 +564,28 @@ def main() -> int:
     _boot_log("MainWindow created")
     try:
         win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("main_window_delete_on_close_attribute", exc)
     if not icon.isNull():
         try:
             win.setWindowIcon(icon)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_desktop_bootstrap_exception("main_window_set_icon", exc)
     if sys.platform == "win32":
         try:
             win.winId()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_desktop_bootstrap_exception("main_window_prime_win_id", exc)
         if force_app_icon or not disable_app_icon or _env_flag("BOT_ENABLE_DELAYED_QT_ICON"):
             try:
                 _apply_qt_icon(app, win)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_desktop_bootstrap_exception("main_window_apply_qt_icon", exc)
         if force_app_icon or _env_flag("BOT_ENABLE_NATIVE_ICON"):
             try:
                 _set_native_window_icon(win)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_desktop_bootstrap_exception("main_window_apply_native_icon", exc)
         if not disable_taskbar:
             try:
                 from app.platform.windows_taskbar import apply_taskbar_metadata, build_relaunch_command
@@ -585,8 +597,8 @@ def main() -> int:
                     icon_path=_resolve_taskbar_icon_path(),
                     relaunch_command=build_relaunch_command(PUBLIC_ENTRYPOINT_PATH),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_desktop_bootstrap_exception("main_window_apply_taskbar_metadata", exc)
     startup_presentation.attach_main_window(win)
     _configure_post_window_runtime(
         app=app,
@@ -616,21 +628,21 @@ def main() -> int:
     exit_code = int(app.exec())
     try:
         _uninstall_startup_window_suppression()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("shutdown_uninstall_startup_window_suppression", exc)
     try:
         _uninstall_cbt_startup_window_suppression()
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_desktop_bootstrap_exception("shutdown_uninstall_cbt_startup_window_suppression", exc)
     if sys.platform == "win32":
         try:
             sys.stdout.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_desktop_bootstrap_exception("shutdown_stdout_flush", exc)
         try:
             sys.stderr.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_desktop_bootstrap_exception("shutdown_stderr_flush", exc)
         os._exit(exit_code)
     return exit_code
 
