@@ -1,0 +1,27 @@
+{
+  "include": [
+    "apps/desktop-pyqt",
+    "apps/service-api",
+    "Languages/Python/app",
+    "Languages/Python/main.py",
+    "Languages/Python/tests",
+    "Languages/Python/tools",
+    "Languages/Python/trading_core",
+    "tools"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.mypy_cache",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/node_modules",
+    "Languages/C++",
+    "Languages/Rust",
+    "experiments"
+  ],
+  "extraPaths": [
+    "Languages/Python"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic"
+}

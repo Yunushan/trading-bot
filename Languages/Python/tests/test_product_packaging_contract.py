@@ -75,6 +75,15 @@ def _run_service_api_contract_checker(checker_path: Path) -> subprocess.Complete
 
 
 class ProductPackagingContractTests(unittest.TestCase):
+    def test_pyright_config_resolves_app_imports_for_repo_wrappers(self):
+        config = json.loads((REPO_ROOT / "pyrightconfig.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Languages/Python", config["extraPaths"])
+        self.assertIn("apps/desktop-pyqt", config["include"])
+        self.assertIn("apps/service-api", config["include"])
+        self.assertIn("Languages/Python/app", config["include"])
+        self.assertEqual("3.12", config["pythonVersion"])
+
     def test_windows_build_script_targets_canonical_desktop_wrapper(self):
         script = (REPO_ROOT / "Languages" / "Python" / "tools" / "build_exe.ps1").read_text(encoding="utf-8")
         self.assertIn("apps\\\\desktop-pyqt\\\\main.py", script)
