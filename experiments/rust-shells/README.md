@@ -58,11 +58,32 @@ The C++ experiment already contains native runtime pieces that Rust does not:
 - `TradingBotWindow.positions.cpp`: live futures position/balance refresh and
   local table reconciliation.
 
-Before native Rust trading can be enabled, `trading-bot-core` needs equivalent
-REST market data, WebSocket streams, signed account/position snapshots, order
-submission, runtime lifecycle, and risk/shutdown guards with regression tests.
-The source-level guard for this is `rust_native_trading_runtime_ready() == false`
-and the capability matrix exposed by `rust_native_runtime_capabilities()`.
+`trading-bot-core` now has a native Binance REST market-data foundation for
+exchangeInfo USDT symbols, optional 24h quote-volume ordering, klines, ticker
+prices, and Binance error payload handling. Before native Rust trading can be
+enabled, Rust still needs custom interval aggregation, WebSocket streams, signed
+account/position snapshots, order submission, runtime lifecycle, connector
+diagnostics, and risk/shutdown guards with regression tests. The source-level
+guard for this is `rust_native_trading_runtime_ready() == false` and the
+capability matrix exposed by `rust_native_runtime_capabilities()`.
+
+## Full Python app parity audit
+
+The Rust workspace now exposes a broader full-app parity contract through
+`native_python_app_parity_domains()`. That matrix is intentionally separate from
+option-list and route-catalog parity: mirrored controls are useful, but they do
+not mean Rust owns the Python app's execution behavior.
+
+Current source-level guards:
+
+- `native_full_python_app_parity_ready() == false`
+- `cpp_entire_python_app_parity_ready() == false`
+- `rust_entire_python_app_parity_ready() == false`
+
+The tracked domains are desktop shell/tabs, Service API contract, config
+persistence, strategy runtime, exchange connectors, account/portfolio/positions,
+order execution/risk, backtest engine, charts/heatmaps, logs/terminal
+diagnostics, LLM advisory, and startup/packaging/platform integration.
 
 ## Build examples
 

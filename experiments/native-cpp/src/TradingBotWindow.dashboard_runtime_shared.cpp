@@ -282,6 +282,66 @@ QString normalizedIndicatorKey(QString indicatorName) {
     if (indicatorName.contains("stochastic")) {
         return QStringLiteral("stochastic");
     }
+    if (indicatorName.contains("macd") || indicatorName.contains("movingaverageconvergencedivergence")) {
+        return QStringLiteral("macd");
+    }
+    if (indicatorName.contains("ema") || indicatorName.contains("exponentialmovingaverage")) {
+        return QStringLiteral("ema");
+    }
+    if (indicatorName.contains("bbw") || indicatorName.contains("bollingerbandwidth")) {
+        return QStringLiteral("bbw");
+    }
+    if (indicatorName.contains("keltner") || indicatorName.contains("kc")) {
+        return QStringLiteral("keltner");
+    }
+    if (indicatorName.contains("ichimoku")) {
+        return QStringLiteral("ichimoku");
+    }
+    if (indicatorName.contains("obv") || indicatorName.contains("onbalancevolume")) {
+        return QStringLiteral("obv");
+    }
+    if (indicatorName.contains("rvol") || indicatorName.contains("relativevolume")) {
+        return QStringLiteral("rvol");
+    }
+    if (indicatorName.contains("cmf") || indicatorName.contains("chaikinmoneyflow")) {
+        return QStringLiteral("cmf");
+    }
+    if (indicatorName.contains("cci") || indicatorName.contains("commoditychannel")) {
+        return QStringLiteral("cci");
+    }
+    if (indicatorName.contains("roc") || indicatorName.contains("rateofchange")) {
+        return QStringLiteral("roc");
+    }
+    if (indicatorName.contains("trix") || indicatorName.contains("tripleexponential")) {
+        return QStringLiteral("trix");
+    }
+    if (indicatorName.contains("ppo") || indicatorName.contains("percentagepriceoscillator")) {
+        return QStringLiteral("ppo");
+    }
+    if (indicatorName.contains("awesome") || indicatorName == QStringLiteral("ao")) {
+        return QStringLiteral("ao");
+    }
+    if (indicatorName.contains("kst") || indicatorName.contains("knowsurething")) {
+        return QStringLiteral("kst");
+    }
+    if (indicatorName.contains("aroon")) {
+        return QStringLiteral("aroon");
+    }
+    if (indicatorName.contains("chop") || indicatorName.contains("choppiness")) {
+        return QStringLiteral("chop");
+    }
+    if (indicatorName.contains("natr") || indicatorName.contains("normalizedaveragetruerange")) {
+        return QStringLiteral("natr");
+    }
+    if (indicatorName.contains("atr") || indicatorName.contains("averagetruerange")) {
+        return QStringLiteral("atr");
+    }
+    if (indicatorName.contains("vwap") || indicatorName.contains("volumeweightedaverageprice")) {
+        return QStringLiteral("vwap");
+    }
+    if (indicatorName.contains("mfi") || indicatorName.contains("moneyflowindex")) {
+        return QStringLiteral("mfi");
+    }
     if (indicatorName.contains("movingaverage")) {
         return QStringLiteral("ma");
     }
@@ -303,9 +363,6 @@ QString normalizedIndicatorKey(QString indicatorName) {
     if (indicatorName.contains("willr") || indicatorName.contains("williams")) {
         return QStringLiteral("willr");
     }
-    if (indicatorName.contains("macd")) {
-        return QStringLiteral("macd");
-    }
     if (indicatorName.contains("ultimate")) {
         return QStringLiteral("uo");
     }
@@ -317,9 +374,6 @@ QString normalizedIndicatorKey(QString indicatorName) {
     }
     if (indicatorName.contains("supertrend")) {
         return QStringLiteral("supertrend");
-    }
-    if (indicatorName.contains("ema")) {
-        return QStringLiteral("ema");
     }
     return QStringLiteral("generic");
 }

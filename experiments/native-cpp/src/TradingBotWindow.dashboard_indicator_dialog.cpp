@@ -78,12 +78,91 @@ QVector<IndicatorDialogFieldSpec> indicatorDialogFieldSpecs(const QString &indic
             {QStringLiteral("std"), QStringLiteral("std"), IndicatorDialogFieldSpec::DoubleField, 0.1, 50.0, 0.1, 2.0, {}},
         };
         addBuySell();
+    } else if (indicatorKey == QStringLiteral("bbw")) {
+        fields = {
+            {QStringLiteral("length"), QStringLiteral("length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 20, {}},
+            {QStringLiteral("std"), QStringLiteral("std"), IndicatorDialogFieldSpec::DoubleField, 0.1, 50.0, 0.1, 2.0, {}},
+        };
+        addBuySell();
+    } else if (indicatorKey == QStringLiteral("keltner")) {
+        fields = {
+            {QStringLiteral("length"), QStringLiteral("length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 20, {}},
+            {QStringLiteral("atr_length"), QStringLiteral("atr_length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 10, {}},
+            {QStringLiteral("multiplier"), QStringLiteral("multiplier"), IndicatorDialogFieldSpec::DoubleField, 0.1, 50.0, 0.1, 2.0, {}},
+        };
+        addBuySell();
+    } else if (indicatorKey == QStringLiteral("ichimoku")) {
+        fields = {
+            {QStringLiteral("conversion_length"), QStringLiteral("conversion_length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 9, {}},
+            {QStringLiteral("base_length"), QStringLiteral("base_length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 26, {}},
+            {QStringLiteral("span_b_length"), QStringLiteral("span_b_length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 52, {}},
+            {QStringLiteral("displacement"), QStringLiteral("displacement"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 26, {}},
+        };
+        addBuySell();
     } else if (indicatorKey == QStringLiteral("rsi")) {
         fields = {
             {QStringLiteral("length"), QStringLiteral("length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 14, {}},
         };
         addBuySell();
     } else if (indicatorKey == QStringLiteral("volume")) {
+        addBuySell();
+    } else if (indicatorKey == QStringLiteral("obv")) {
+        fields = {
+            {QStringLiteral("length"), QStringLiteral("length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 3, {}},
+        };
+        addBuySell();
+    } else if (indicatorKey == QStringLiteral("rvol")
+               || indicatorKey == QStringLiteral("cmf")
+               || indicatorKey == QStringLiteral("cci")
+               || indicatorKey == QStringLiteral("roc")
+               || indicatorKey == QStringLiteral("trix")
+               || indicatorKey == QStringLiteral("aroon")
+               || indicatorKey == QStringLiteral("chop")
+               || indicatorKey == QStringLiteral("atr")
+               || indicatorKey == QStringLiteral("natr")
+               || indicatorKey == QStringLiteral("vwap")
+               || indicatorKey == QStringLiteral("mfi")) {
+        fields = {
+            {QStringLiteral("length"), QStringLiteral("length"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 20, {}},
+        };
+        if (indicatorKey == QStringLiteral("aroon")) {
+            fields[0].defaultValue = 25;
+        } else if (indicatorKey == QStringLiteral("chop")
+                   || indicatorKey == QStringLiteral("atr")
+                   || indicatorKey == QStringLiteral("natr")
+                   || indicatorKey == QStringLiteral("mfi")) {
+            fields[0].defaultValue = 14;
+        } else if (indicatorKey == QStringLiteral("roc")) {
+            fields[0].defaultValue = 12;
+        } else if (indicatorKey == QStringLiteral("trix")) {
+            fields[0].defaultValue = 15;
+        }
+        addBuySell();
+    } else if (indicatorKey == QStringLiteral("ppo")) {
+        fields = {
+            {QStringLiteral("fast"), QStringLiteral("fast"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 12, {}},
+            {QStringLiteral("slow"), QStringLiteral("slow"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 26, {}},
+            {QStringLiteral("signal"), QStringLiteral("signal"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 9, {}},
+        };
+        addBuySell();
+    } else if (indicatorKey == QStringLiteral("ao")) {
+        fields = {
+            {QStringLiteral("fast"), QStringLiteral("fast"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 5, {}},
+            {QStringLiteral("slow"), QStringLiteral("slow"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 34, {}},
+        };
+        addBuySell();
+    } else if (indicatorKey == QStringLiteral("kst")) {
+        fields = {
+            {QStringLiteral("roc1"), QStringLiteral("roc1"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 10, {}},
+            {QStringLiteral("roc2"), QStringLiteral("roc2"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 15, {}},
+            {QStringLiteral("roc3"), QStringLiteral("roc3"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 20, {}},
+            {QStringLiteral("roc4"), QStringLiteral("roc4"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 30, {}},
+            {QStringLiteral("sma1"), QStringLiteral("sma1"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 10, {}},
+            {QStringLiteral("sma2"), QStringLiteral("sma2"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 10, {}},
+            {QStringLiteral("sma3"), QStringLiteral("sma3"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 10, {}},
+            {QStringLiteral("sma4"), QStringLiteral("sma4"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 15, {}},
+            {QStringLiteral("signal"), QStringLiteral("signal"), IndicatorDialogFieldSpec::IntField, 1, 10000, 1.0, 9, {}},
+        };
         addBuySell();
     } else if (indicatorKey == QStringLiteral("stoch_rsi") || indicatorKey == QStringLiteral("stochastic")) {
         fields = {

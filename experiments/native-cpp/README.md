@@ -21,6 +21,27 @@ Today it is a C++ desktop preview and re-platforming path, not the primary end-u
 | Primary exchange implementation | Binance | Current connector code in this workspace is Binance-specific |
 | Cross-platform Qt build path | Supported for local builds | Windows, macOS, and Linux toolchains are expected |
 
+## Full Python app parity audit
+
+The Python app in `Languages/Python` remains the source of truth for full app
+behavior. The C++ workspace mirrors many controls and contains native Binance
+runtime experiments, but it is not yet a complete replacement for Python.
+
+| Python feature domain | C++ status | Missing before full parity |
+| --- | --- | --- |
+| Desktop shell and tabs | Major Qt tabs are present | Production startup/lifecycle parity, release ownership, and tab behavior tests |
+| Service API contract | No equivalent `/api/v1` host/client surface | Route/method/schema parity or a native service bridge |
+| Config persistence | Dashboard save/load experiments | Full Python service config save/load, dirty state, hydration, and redaction behavior |
+| Strategy runtime | Dashboard runtime experiments | Complete Python indicator, strategy cycle, worker, signal, and override semantics |
+| Exchange connectors | Native Binance REST/WebSocket pieces | Python connector backend parity, diagnostics, rate limits, and non-Binance support |
+| Account, portfolio, and positions | Binance balance/open futures position sync | Portfolio snapshots, history/allocation ledgers, reconciliation, and non-Binance account paths |
+| Order execution and risk | Futures order helpers and stop-loss controls | Python order audit, preflight, circuit breaker, submit guards, and shutdown risk behavior |
+| Backtest engine | Backtest UI mirrors Python controls | Real engine/optimizer/scanner parity; current symbol scan path is simulated |
+| Charts and heatmaps | Qt WebEngine panels and browser fallback | Verified chart state, asset loading, fallback rendering, and guard logging parity |
+| Logs, terminal, diagnostics | Local dashboard logs and installer output | Service logs, terminal route, diagnostics, redaction, and test runner parity |
+| LLM advisory | Provider/model settings mirrored | Python LLM prompt/config/local-model service route behavior |
+| Startup, packaging, platform | Local CMake/Qt build path | Product packaging, startup suppression, platform metadata, and release smoke parity |
+
 ## Source layout
 
 The `src/` folder is still being reorganized, but it already contains distinct slices such as:

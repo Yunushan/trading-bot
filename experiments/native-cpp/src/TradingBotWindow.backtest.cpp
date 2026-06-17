@@ -399,7 +399,7 @@ void TradingBotWindow::handleRunBacktest() {
         "Hedge",
         "Single-Asset",
         "Classic Trading",
-        "20x",
+        "1x",
         "+152.40",
         "+15.24%",
         "-38.12",
@@ -672,7 +672,7 @@ QWidget *TradingBotWindow::createParametersGroup() {
     assetsCombo->addItem("Single-Asset Mode", "Single-Asset");
     assetsCombo->addItem("Multi-Assets Mode", "Multi-Assets");
     form->addRow("Assets Mode:", assetsCombo);
-    addCombo("Account Mode:", {"Classic Trading", "Multi-Asset Mode"});
+    addCombo("Account Mode:", {"Classic Trading", "Portfolio Margin"});
 
     auto *connectorCombo = new QComboBox(group);
     const bool sourceFutures = symbolSourceCombo_
@@ -688,7 +688,7 @@ QWidget *TradingBotWindow::createParametersGroup() {
 
     auto *leverageSpin = new QSpinBox(group);
     leverageSpin->setRange(1, 150);
-    leverageSpin->setValue(5);
+    leverageSpin->setValue(1);
     backtestLeverageSpin_ = leverageSpin;
     form->addRow("Leverage (Futures):", leverageSpin);
 
@@ -698,7 +698,7 @@ QWidget *TradingBotWindow::createParametersGroup() {
     templateCombo->addItems({
         "First 50 Highest Volume",
         "Last 1 week · 2% per trade · 50 highest volume",
-        "Top 100, %2 per trade, isolated, %20 (%1 Actual Move) per trade SL",
+        "Top 100, %2 per trade, isolated, %20 per trade SL",
     });
     templateCombo->setEnabled(false);
 
@@ -739,9 +739,39 @@ QWidget *TradingBotWindow::createIndicatorsGroup() {
     grid->setColumnStretch(1, 1);
 
     const QStringList indicators = {
-        "Moving Average (MA)", "Donchian Channels", "Parabolic SAR", "Bollinger Bands",
-        "Relative Strength Index", "Volume", "Stochastic RSI", "Williams %R",
-        "MACD", "Ultimate Oscillator", "ADX", "DMI", "SuperTrend", "EMA", "Stochastic Oscillator"
+        "Moving Average (MA)",
+        "Donchian Channels (DC)",
+        "Parabolic SAR (PSAR)",
+        "Bollinger Bands (BB)",
+        "Bollinger Band Width (BBW)",
+        "Keltner Channels (KC)",
+        "Ichimoku Cloud (IC)",
+        "Relative Strength Index (RSI)",
+        "Volume",
+        "On-Balance Volume (OBV)",
+        "Relative Volume (RVOL)",
+        "Chaikin Money Flow (CMF)",
+        "Commodity Channel Index (CCI)",
+        "Rate of Change (ROC)",
+        "Triple Exponential Average (TRIX)",
+        "Percentage Price Oscillator (PPO)",
+        "Awesome Oscillator (AO)",
+        "Know Sure Thing (KST)",
+        "Aroon Oscillator (AROON)",
+        "Choppiness Index (CHOP)",
+        "Average True Range (ATR)",
+        "Normalized Average True Range (NATR)",
+        "Volume Weighted Average Price (VWAP)",
+        "Money Flow Index (MFI)",
+        "Stochastic RSI (SRSI)",
+        "Williams %R",
+        "Moving Average Convergence/Divergence (MACD)",
+        "Ultimate Oscillator (UO)",
+        "Average Directional Index (ADX)",
+        "Directional Movement Index (DMI)",
+        "SuperTrend (ST)",
+        "Exponential Moving Average (EMA)",
+        "Stochastic Oscillator",
     };
 
     int row = 0;
@@ -822,7 +852,12 @@ void TradingBotWindow::populateDefaults() {
     if (intervalList_) {
         intervalList_->addItems({
             "1m", "3m", "5m", "10m", "15m", "20m", "30m",
-            "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h",
+            "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
+            "1d", "2d", "3d", "4d", "5d", "6d",
+            "1w", "2w", "3w",
+            "1month", "2months", "3months", "6months",
+            "1mo", "2mo", "3mo", "6mo",
+            "1y", "2y",
         });
         for (int i = 0; i < intervalList_->count() && i < 2; ++i) {
             intervalList_->item(i)->setSelected(true);

@@ -5,7 +5,9 @@ use iced::{
     widget::{button, column, container, row, scrollable, text},
 };
 use trading_bot_core::{
-    TradingAppTab, app_banner, rust_execution_modes, rust_native_runtime_capabilities,
+    TradingAppTab, app_banner, cpp_entire_python_app_parity_ready,
+    native_full_python_app_parity_ready, native_python_app_parity_domains,
+    rust_entire_python_app_parity_ready, rust_execution_modes, rust_native_runtime_capabilities,
     rust_native_trading_runtime_ready, rust_shell_framework_parity,
     rust_trading_execution_supported, service_api_capabilities, service_api_routes,
     trading_app_tabs,
@@ -111,6 +113,32 @@ fn service_api_panel() -> Element<'static, Message> {
             capability.rust_status,
             capability.required_before_enable,
             capability.trading_execution_supported
+        )));
+    }
+    body = body.push(text(format!(
+        "Entire Python app parity ready: {}",
+        native_full_python_app_parity_ready()
+    )));
+    body = body.push(text(format!(
+        "C++ entire Python app parity ready: {}",
+        cpp_entire_python_app_parity_ready()
+    )));
+    body = body.push(text(format!(
+        "Rust entire Python app parity ready: {}",
+        rust_entire_python_app_parity_ready()
+    )));
+    body = body.push(text("Full Python App Parity Audit"));
+    for domain in native_python_app_parity_domains() {
+        body = body.push(text(format!(
+            "{} - {} | Python: {} | C++: {} | Rust: {} | Required before full parity: {} | cpp_full_parity={} | rust_full_parity={}",
+            domain.key,
+            domain.title,
+            domain.python_surface,
+            domain.cpp_status,
+            domain.rust_status,
+            domain.required_before_full_parity,
+            domain.cpp_full_parity,
+            domain.rust_full_parity
         )));
     }
     body = body.push(text("Canonical routes"));

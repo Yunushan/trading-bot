@@ -1,5 +1,7 @@
 use trading_bot_contracts::AppIdentity;
 
+pub mod market_data;
+
 pub fn app_banner(shell: &str) -> String {
     format!("Trading Bot Rust UI scaffold -> {shell}")
 }
@@ -67,6 +69,17 @@ pub struct RustNativeRuntimeCapability {
     pub trading_execution_supported: bool,
 }
 
+pub struct NativePythonAppParityDomain {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub python_surface: &'static str,
+    pub cpp_status: &'static str,
+    pub rust_status: &'static str,
+    pub required_before_full_parity: &'static str,
+    pub cpp_full_parity: bool,
+    pub rust_full_parity: bool,
+}
+
 pub const SERVICE_API_BASE_PATH: &str = "/api/v1";
 
 pub fn rust_trading_execution_supported() -> bool {
@@ -75,6 +88,22 @@ pub fn rust_trading_execution_supported() -> bool {
 
 pub fn rust_native_trading_runtime_ready() -> bool {
     false
+}
+
+pub fn cpp_entire_python_app_parity_ready() -> bool {
+    native_python_app_parity_domains()
+        .iter()
+        .all(|domain| domain.cpp_full_parity)
+}
+
+pub fn rust_entire_python_app_parity_ready() -> bool {
+    native_python_app_parity_domains()
+        .iter()
+        .all(|domain| domain.rust_full_parity)
+}
+
+pub fn native_full_python_app_parity_ready() -> bool {
+    cpp_entire_python_app_parity_ready() && rust_entire_python_app_parity_ready()
 }
 
 pub fn rust_execution_modes() -> &'static [RustExecutionMode] {
@@ -96,6 +125,131 @@ pub fn rust_execution_modes() -> &'static [RustExecutionMode] {
             title: "Native Rust trading engine",
             detail: "Reserved until a Rust engine reaches feature parity with Python strategy controls, order audit, risk gates, and connector safeguards.",
             trading_execution_supported: false,
+        },
+    ]
+}
+
+pub fn native_python_app_parity_domains() -> &'static [NativePythonAppParityDomain] {
+    &[
+        NativePythonAppParityDomain {
+            key: "desktop_shell_and_tabs",
+            title: "Desktop shell and primary tabs",
+            python_surface: "Python PyQt owns Dashboard, Chart, Positions, Backtest, Liquidation Heatmap, Code Languages, startup composition, theme, and live tab wiring.",
+            cpp_status: "C++ Qt mirrors the primary tabs and many controls, but remains a preview workspace and is not the production desktop owner.",
+            rust_status: "Tauri mirrors the operational tab surface through the Python Service API; Slint, egui, Iced, and Dioxus are non-operational comparison renderers.",
+            required_before_full_parity: "Promote C++ and Rust shells from preview/client surfaces to tested production desktop owners with the same lifecycle, startup, and tab behavior as Python.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "service_api_contract",
+            title: "Service API contract",
+            python_surface: "Python exposes the canonical /api/v1 routes, methods, schemas, dashboard stream, service auth, control-plane state, and desktop bridge contract.",
+            cpp_status: "C++ has no equivalent Service API host/client contract and does not expose the Python route catalog as an operational surface.",
+            rust_status: "Tauri is an operational client for the full Python Service API route catalog; the other Rust shells only render the route catalog for evaluation.",
+            required_before_full_parity: "Add C++ service client or native service equivalent, keep all route/method/schema contracts generated from Python metadata, and make non-Tauri Rust shells explicit clients or remove their operational claims.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "config_persistence",
+            title: "Config persistence and hydration",
+            python_surface: "Python owns runtime config, file save/load, dirty state, dashboard hydration, service snapshots, and secret redaction.",
+            cpp_status: "C++ has dashboard save/load experiments but does not implement the full Python service config persistence contract or redaction behavior.",
+            rust_status: "Tauri hydrates and patches Python Service API config, including persistence status, but native Rust has no standalone config owner.",
+            required_before_full_parity: "Port config schemas, persistence status, save/load semantics, redaction, hydration tests, and service/desktop bridge behavior to C++ and Rust.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "strategy_runtime",
+            title: "Strategy runtime and signal generation",
+            python_surface: "Python owns indicator computation, strategy cycles, signal generation, lead-trader controls, live candle options, override tables, and worker lifecycle.",
+            cpp_status: "C++ has dashboard runtime experiments and indicator normalization, but not the complete Python strategy engine and worker contract.",
+            rust_status: "Rust mirrors controls and delegates lifecycle/config requests to Python; it has no native strategy runtime.",
+            required_before_full_parity: "Port strategy cycle modules, indicator value semantics, worker lifecycle, override provenance, and signal regression tests.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "exchange_connectors",
+            title: "Exchange connectors and market data",
+            python_surface: "Python owns Binance SDK/connector/CCXT/python-binance selection, connector support metadata, transport diagnostics, rate limits, REST market data, and WebSocket paths.",
+            cpp_status: "C++ implements native Binance REST/WebSocket pieces but maps unsupported connector backends to native Binance equivalents or placeholder symbols.",
+            rust_status: "Rust now has a native Binance REST market-data foundation for exchangeInfo USDT symbols, 24h quote-volume ordering, klines, and ticker prices; WebSocket, signed account, connector metadata, diagnostics, and order paths still route through Python or remain absent.",
+            required_before_full_parity: "Add connector-specific support metadata, fallback rules, diagnostics, rate-limit handling, WebSocket parity, signed account/order clients, and unsupported-connector tests.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "account_portfolio_positions",
+            title: "Account, portfolio, and positions",
+            python_surface: "Python owns account snapshots, portfolio summaries, futures position queries, close-all behavior, position history, cumulative views, allocation tracking, and reconciliation.",
+            cpp_status: "C++ can fetch Binance balances/open futures positions and reconcile local tables, but non-Binance account paths and Python history/allocation semantics are incomplete.",
+            rust_status: "Tauri renders Python Service API account, portfolio, and positions snapshots; native Rust has no signed account or position path.",
+            required_before_full_parity: "Port signed account clients, portfolio DTOs, history/allocation ledgers, manual close reconciliation, close-all safeguards, and cumulative view tests.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "order_execution_and_risk",
+            title: "Order execution, audit, and risk",
+            python_surface: "Python owns order sizing, submit guards, audit logs, position gates, close-opposite logic, stop-loss scopes, live safety preflight, connector circuit breaker, and shutdown guards.",
+            cpp_status: "C++ has futures market/limit order helpers, stop-loss controls, retry windows, and close fallbacks, but not the full Python audit/risk/preflight contract.",
+            rust_status: "Rust intentionally exposes no native order submission path; Tauri calls Python lifecycle and circuit-breaker routes only.",
+            required_before_full_parity: "Port order intent validation, precision filters, audit/circuit events, preflight gates, close-on-stop behavior, and live safety regression tests before enabling native trading.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "backtest_engine",
+            title: "Backtest engine, optimizer, and scanner",
+            python_surface: "Python owns the backtest engine, optimizer limits/results, live parity request shape, scanner polling, dashboard import, indicator selection, and provenance.",
+            cpp_status: "C++ mirrors much of the backtest UI, but its scanner is explicitly simulated and it does not run the Python backtest engine contract.",
+            rust_status: "Tauri submits canonical backtest requests to the Python Service API and imports results, but Rust has no native backtest engine.",
+            required_before_full_parity: "Replace simulated C++ scanner paths, port or bridge the Python engine/optimizer, keep every canonical request field, and add parity tests over result/provenance behavior.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "charts_and_heatmaps",
+            title: "Charts and liquidation heatmaps",
+            python_surface: "Python owns TradingView, lightweight chart assets, candlestick fallback, chart state payloads, browser guards, and liquidation provider panels.",
+            cpp_status: "C++ provides Qt WebEngine chart/heatmap panels and browser fallback, but does not have verified parity for all Python chart state and guard behavior.",
+            rust_status: "Rust shells mirror chart and heatmap controls; Tauri renders static/Service API-backed state and does not own the Python chart engines.",
+            required_before_full_parity: "Port chart state, embedded asset loading, browser guard logging, fallback rendering, provider URLs, and visual smoke tests.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "logs_terminal_diagnostics",
+            title: "Logs, terminal, and diagnostics",
+            python_surface: "Python owns service logs, dashboard logs, terminal command execution, exception diagnostics, secret redaction, and test runner/reporting flows.",
+            cpp_status: "C++ has local dashboard logs and dependency installer output, but no full Python service logs/terminal/diagnostic contract.",
+            rust_status: "Tauri fetches Python service logs and renders local UI logs, but terminal execution remains a Python Service API route and native Rust does not own diagnostics.",
+            required_before_full_parity: "Port terminal route behavior, log schemas, exception diagnostics, redaction, service test runner metadata, and failure-mode tests.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "llm_advisory",
+            title: "LLM advisory and local model lifecycle",
+            python_surface: "Python owns provider catalogs, privacy flags, advisory prompt execution, config persistence, local Ollama status/start/pull/delete, and redacted output.",
+            cpp_status: "C++ mirrors dashboard LLM provider/model settings but does not call the Python LLM Service API or own local model lifecycle.",
+            rust_status: "Tauri calls Python LLM config/prompt/local-model routes; non-Tauri shells only mirror catalogs.",
+            required_before_full_parity: "Add C++ LLM service client behavior, decide whether Rust non-Tauri shells stay non-operational, and verify local model lifecycle and redaction tests.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
+        },
+        NativePythonAppParityDomain {
+            key: "startup_packaging_platform",
+            title: "Startup, packaging, and platform integration",
+            python_surface: "Python owns product entrypoints, startup splash/suppression, Windows taskbar metadata, PyInstaller packaging, service wrappers, and release smoke tests.",
+            cpp_status: "C++ builds locally with CMake/Qt and has dependency setup scripts, but is not the production packaging/startup owner.",
+            rust_status: "Rust shells build as experiments; Tauri can launch the Python service locally but is not a production replacement for Python packaging/startup flows.",
+            required_before_full_parity: "Add native packaging, startup suppression, platform metadata, service wrapper compatibility, release smoke, and CI coverage for C++ and Rust.",
+            cpp_full_parity: false,
+            rust_full_parity: false,
         },
     ]
 }
@@ -136,8 +290,8 @@ pub fn rust_native_runtime_capabilities() -> &'static [RustNativeRuntimeCapabili
             key: "market_data_rest",
             title: "REST market data",
             cpp_status: "C++ has BinanceRestClient fetchUsdtSymbols, fetchKlines, and fetchTickerPrice.",
-            rust_status: "Rust shells do not have a native exchange REST client; they request market data through the Python Service API.",
-            required_before_enable: "Add typed Rust exchange REST clients, timeout/error contracts, symbol filtering, interval mapping, and parity tests against Python/C++ behavior.",
+            rust_status: "Rust core now has BinanceRestMarketDataClient for native exchangeInfo USDT symbols, optional 24h quote-volume ordering, klines, ticker prices, and Binance error payload handling.",
+            required_before_enable: "Add live-network smoke coverage where credentials/network policy allow it, custom interval aggregation, connector support metadata, rate-limit diagnostics, and integration into a supervised Rust runtime loop.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
@@ -506,8 +660,26 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Donchian Channels (DC) + Buy-Sell Values",
                         "Parabolic SAR (PSAR) + Buy-Sell Values",
                         "Bollinger Bands (BB) + Buy-Sell Values",
+                        "Bollinger Band Width (BBW) + Buy-Sell Values",
+                        "Keltner Channels (KC) + Buy-Sell Values",
+                        "Ichimoku Cloud (IC) + Buy-Sell Values",
                         "Relative Strength Index (RSI) + Buy-Sell Values",
                         "Volume + Buy-Sell Values",
+                        "On-Balance Volume (OBV) + Buy-Sell Values",
+                        "Relative Volume (RVOL) + Buy-Sell Values",
+                        "Chaikin Money Flow (CMF) + Buy-Sell Values",
+                        "Commodity Channel Index (CCI) + Buy-Sell Values",
+                        "Rate of Change (ROC) + Buy-Sell Values",
+                        "Triple Exponential Average (TRIX) + Buy-Sell Values",
+                        "Percentage Price Oscillator (PPO) + Buy-Sell Values",
+                        "Awesome Oscillator (AO) + Buy-Sell Values",
+                        "Know Sure Thing (KST) + Buy-Sell Values",
+                        "Aroon Oscillator (AROON) + Buy-Sell Values",
+                        "Choppiness Index (CHOP) + Buy-Sell Values",
+                        "Average True Range (ATR) + Buy-Sell Values",
+                        "Normalized Average True Range (NATR) + Buy-Sell Values",
+                        "Volume Weighted Average Price (VWAP) + Buy-Sell Values",
+                        "Money Flow Index (MFI) + Buy-Sell Values",
                         "Stochastic RSI (SRSI) + Buy-Sell Values",
                         "Williams %R + Buy-Sell Values",
                         "Moving Average Convergence/Divergence (MACD) + Buy-Sell Values",
@@ -696,16 +868,16 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "MDD Logic: Per Trade MDD, Cumulative MDD, Entire Account MDD",
                         "Margin Capital:",
                         "Position % of Balance:",
-                        "Loop Interval Override: 30 seconds, 45 seconds, 1 minute, 5 minutes, 1 hour",
+                        "Loop Interval Override: 30 seconds, 45 seconds, 1 minute, 2 minutes, 3 minutes, 5 minutes, 10 minutes, 30 minutes, 1 hour, 2 hours",
                         "Stop Loss: Enable, mode, Scope, USDT, %",
                         "Side: Buy (Long), Sell (Short), Both (Long/Short)",
                         "Margin Mode (Futures): Isolated, Cross",
                         "Position Mode: Hedge, One-way",
                         "Assets Mode: Single-Asset Mode, Multi-Assets Mode",
                         "Account Mode: Classic Trading, Portfolio Margin",
-                        "Connector:",
+                        "Connector: Binance SDK Derivatives Trading USD-S Futures, Binance SDK Derivatives Trading COIN-M Futures, Binance SDK Spot, Binance Connector Python, CCXT, python-binance",
                         "Leverage (Futures):",
-                        "Template: Enable",
+                        "Template: Enable, First 50 Highest Volume, Last 1 week · 2% per trade · 50 highest volume, Top 100, %2 per trade, isolated, %20 per trade SL",
                         "Max MDD Scanner Top N:",
                         "Max MDD Scanner Max MDD %:",
                         "Scan Symbols",
@@ -721,8 +893,26 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                         "Donchian Channels (DC) + Buy-Sell Values",
                         "Parabolic SAR (PSAR) + Buy-Sell Values",
                         "Bollinger Bands (BB) + Buy-Sell Values",
+                        "Bollinger Band Width (BBW) + Buy-Sell Values",
+                        "Keltner Channels (KC) + Buy-Sell Values",
+                        "Ichimoku Cloud (IC) + Buy-Sell Values",
                         "Relative Strength Index (RSI) + Buy-Sell Values",
                         "Volume + Buy-Sell Values",
+                        "On-Balance Volume (OBV) + Buy-Sell Values",
+                        "Relative Volume (RVOL) + Buy-Sell Values",
+                        "Chaikin Money Flow (CMF) + Buy-Sell Values",
+                        "Commodity Channel Index (CCI) + Buy-Sell Values",
+                        "Rate of Change (ROC) + Buy-Sell Values",
+                        "Triple Exponential Average (TRIX) + Buy-Sell Values",
+                        "Percentage Price Oscillator (PPO) + Buy-Sell Values",
+                        "Awesome Oscillator (AO) + Buy-Sell Values",
+                        "Know Sure Thing (KST) + Buy-Sell Values",
+                        "Aroon Oscillator (AROON) + Buy-Sell Values",
+                        "Choppiness Index (CHOP) + Buy-Sell Values",
+                        "Average True Range (ATR) + Buy-Sell Values",
+                        "Normalized Average True Range (NATR) + Buy-Sell Values",
+                        "Volume Weighted Average Price (VWAP) + Buy-Sell Values",
+                        "Money Flow Index (MFI) + Buy-Sell Values",
                         "Stochastic RSI (SRSI) + Buy-Sell Values",
                         "Williams %R + Buy-Sell Values",
                         "Moving Average Convergence/Divergence (MACD) + Buy-Sell Values",
@@ -874,8 +1064,8 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     items: &[
                         "Native Rust trading runtime ready: false",
                         "C++ has BinanceRestClient, BinanceWsClient, dashboard runtime lifecycle, positions sync, futures order submission, and risk/shutdown experiments",
-                        "Rust currently has Service API clients, tab/catalog parity, LLM/provider catalogs, and desktop shells",
-                        "Before enabling Rust native trading: add REST market data, WebSocket streams, signed account/position snapshots, order submission, runtime lifecycle, and risk/shutdown guards",
+                        "Rust currently has BinanceRestMarketDataClient for native REST market data plus Service API clients, tab/catalog parity, LLM/provider catalogs, and desktop shells",
+                        "Before enabling Rust native trading: add WebSocket streams, signed account/position snapshots, order submission, runtime lifecycle, connector diagnostics, and risk/shutdown guards",
                     ],
                 },
                 TradingAppSection {

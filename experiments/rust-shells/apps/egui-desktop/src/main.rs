@@ -2,7 +2,9 @@
 
 use eframe::egui;
 use trading_bot_core::{
-    TradingAppTab, app_banner, rust_execution_modes, rust_native_runtime_capabilities,
+    TradingAppTab, app_banner, cpp_entire_python_app_parity_ready,
+    native_full_python_app_parity_ready, native_python_app_parity_domains,
+    rust_entire_python_app_parity_ready, rust_execution_modes, rust_native_runtime_capabilities,
     rust_native_trading_runtime_ready, rust_shell_framework_parity,
     rust_trading_execution_supported, service_api_capabilities, service_api_routes,
     trading_app_tabs,
@@ -135,6 +137,32 @@ impl EguiShell {
                 ui.label(format!(
                     "Required before enable: {} | trading_execution_supported={}",
                     capability.required_before_enable, capability.trading_execution_supported
+                ));
+                ui.add_space(4.0);
+            }
+            ui.label(format!(
+                "Entire Python app parity ready: {}",
+                native_full_python_app_parity_ready()
+            ));
+            ui.label(format!(
+                "C++ entire Python app parity ready: {}",
+                cpp_entire_python_app_parity_ready()
+            ));
+            ui.label(format!(
+                "Rust entire Python app parity ready: {}",
+                rust_entire_python_app_parity_ready()
+            ));
+            ui.label("Full Python App Parity Audit:");
+            for domain in native_python_app_parity_domains() {
+                ui.strong(format!("{} - {}", domain.key, domain.title));
+                ui.label(format!("Python: {}", domain.python_surface));
+                ui.label(format!("C++: {}", domain.cpp_status));
+                ui.label(format!("Rust: {}", domain.rust_status));
+                ui.label(format!(
+                    "Required before full parity: {} | cpp_full_parity={} | rust_full_parity={}",
+                    domain.required_before_full_parity,
+                    domain.cpp_full_parity,
+                    domain.rust_full_parity
                 ));
                 ui.add_space(4.0);
             }

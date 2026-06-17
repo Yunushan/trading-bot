@@ -46,7 +46,7 @@ DashboardTemplatePreset dashboardTemplatePresetForKey(const QString &templateKey
     if (key == QStringLiteral("top10")) {
         preset.valid = true;
         preset.positionPct = 2.0;
-        preset.leverage = 5;
+        preset.leverage = 1;
         preset.marginMode = QStringLiteral("Isolated");
         addDefaultSignalPack();
         return preset;
@@ -54,7 +54,7 @@ DashboardTemplatePreset dashboardTemplatePresetForKey(const QString &templateKey
     if (key == QStringLiteral("top50")) {
         preset.valid = true;
         preset.positionPct = 2.0;
-        preset.leverage = 20;
+        preset.leverage = 1;
         preset.marginMode = QStringLiteral("Isolated");
         addDefaultSignalPack();
         return preset;
@@ -62,7 +62,7 @@ DashboardTemplatePreset dashboardTemplatePresetForKey(const QString &templateKey
     if (key == QStringLiteral("top100")) {
         preset.valid = true;
         preset.positionPct = 1.0;
-        preset.leverage = 5;
+        preset.leverage = 1;
         preset.marginMode = QStringLiteral("Isolated");
         addDefaultSignalPack();
         return preset;

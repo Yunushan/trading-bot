@@ -314,7 +314,7 @@
               <label>Theme:<select id="config-theme"><option>Light</option><option selected>Dark</option><option>Blue</option><option>Yellow</option><option>Green</option><option>Red</option></select></label>
               <label>Account Type:<select id="config-account-type"><option>Spot</option><option selected>Futures</option></select></label>
               <label>Account Mode:<select id="config-account-mode"><option selected>Classic Trading</option><option>Portfolio Margin</option></select></label>
-              <label>Connector:<select id="config-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures (Official Recommended)</option><option value="binance-sdk-derivatives-trading-coin-futures">Binance SDK Derivatives Trading COIN-M Futures</option><option value="binance-sdk-spot">Binance SDK Spot (Official Recommended)</option><option value="binance-connector-python">Binance Connector Python</option><option value="ccxt">CCXT (Unified)</option><option value="python-binance">python-binance (Community)</option></select></label>
+              <label>Connector:<select id="config-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures (Official Recommended)</option><option value="binance-sdk-derivatives-trading-coin-futures">Binance SDK Derivatives Trading COIN-M Futures</option><option value="binance-sdk-spot">Binance SDK Spot (Official Recommended)</option><option value="binance-connector">Binance Connector Python</option><option value="ccxt">CCXT (Unified)</option><option value="python-binance">python-binance (Community)</option></select></label>
               <label>Total USDT balance:<input id="account-total-balance" value="N/A" readonly></label>
               <label>Available Balance:<output id="account-available-balance">-</output></label>
               <label>Position Mode:<input id="account-position-mode" value="N/A" readonly></label>
@@ -533,7 +533,7 @@
               <label>MDD Logic:<select id="backtest-mdd-logic"><option value="per_trade">Per Trade MDD</option><option value="cumulative">Cumulative MDD</option><option value="entire_account">Entire Account MDD</option></select></label>
               <label>Margin Capital:<input id="backtest-capital" type="number" min="1" value="1000"></label>
               <label>Position % of Balance:<input id="backtest-position-pct" type="number" min="0.01" max="100" step="0.01" value="2.00"></label>
-              <label>Loop Interval Override:<select id="backtest-loop-interval"><option value="30s">30 seconds</option><option value="45s">45 seconds</option><option value="1m">1 minute</option><option value="5m">5 minutes</option><option value="1h">1 hour</option></select></label>
+              <label>Loop Interval Override:<select id="backtest-loop-interval"><option value="30s">30 seconds</option><option value="45s">45 seconds</option><option value="1m">1 minute</option><option value="2m">2 minutes</option><option value="3m">3 minutes</option><option value="5m">5 minutes</option><option value="10m">10 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option><option value="2h">2 hours</option></select></label>
               <label>Stop Loss:<span class="checks"><label><input id="backtest-stop-loss-enabled" type="checkbox"> Enable</label></span></label>
               <label>Stop Loss Mode:<select id="backtest-stop-loss-mode"><option value="usdt">USDT Based Stop Loss</option><option value="percent">Percentage Based Stop Loss</option><option value="both">Both Stop Loss (USDT & Percentage)</option></select></label>
               <label>Stop Loss Scope:<select id="backtest-stop-loss-scope"><option value="per_trade">Per Trade Stop Loss</option><option value="cumulative">Cumulative Stop Loss</option><option value="entire_account">Entire Account Stop Loss</option></select></label>
@@ -544,9 +544,9 @@
               <label>Position Mode:<select id="backtest-position-mode"><option>Hedge</option><option>One-way</option></select></label>
               <label>Assets Mode:<select id="backtest-assets-mode"><option>Single-Asset Mode</option><option>Multi-Assets Mode</option></select></label>
               <label>Account Mode:<select id="backtest-account-mode"><option>Classic Trading</option><option>Portfolio Margin</option></select></label>
-              <label>Connector:<select id="backtest-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures</option><option value="ccxt">CCXT</option><option value="python-binance">python-binance</option></select></label>
+              <label>Connector:<select id="backtest-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures (Official Recommended)</option><option value="binance-sdk-derivatives-trading-coin-futures">Binance SDK Derivatives Trading COIN-M Futures</option><option value="binance-sdk-spot">Binance SDK Spot (Official Recommended)</option><option value="binance-connector">Binance Connector Python</option><option value="ccxt">CCXT (Unified)</option><option value="python-binance">python-binance (Community)</option></select></label>
               <label>Leverage (Futures):<input id="backtest-leverage" type="number" min="1" max="150" value="1"></label>
-              <label>Template:<span class="checks"><label><input id="backtest-template-enabled" type="checkbox"> Enable</label></span><select id="backtest-template-name"><option>Top 10 %2 per trade 1x Isolated</option><option>Top 50 %2 per trade 1x</option><option>Top 100 %1 per trade 1x</option></select></label>
+              <label>Template:<span class="checks"><label><input id="backtest-template-enabled" type="checkbox"> Enable</label></span><select id="backtest-template-name"><option value="volume_top50">First 50 Highest Volume</option><option value="volume_last_week">Last 1 week · 2% per trade · 50 highest volume</option><option value="top100_isolated_1pct_sl">Top 100, %2 per trade, isolated, %20 per trade SL</option></select></label>
               <label>Max MDD Scanner:<span class="grid-2"><input id="backtest-scan-top-n" type="number" value="200"><input id="backtest-scan-mdd-limit" type="number" value="10.00"></span></label>
             </div>
             <button class="action" id="backtest-scan-symbols-btn" type="button">Scan Symbols</button>
@@ -602,12 +602,35 @@
             <table>
               <thead><tr><th>Capability</th><th>C++ status</th><th>Rust status</th><th>Required before enable</th></tr></thead>
               <tbody>
-                <tr><td>REST market data</td><td>BinanceRestClient fetchUsdtSymbols/fetchKlines/fetchTickerPrice</td><td>Service API client only</td><td>Typed Rust exchange REST clients, timeout/error contracts, symbol filtering, interval mapping, parity tests</td></tr>
+                <tr><td>REST market data</td><td>BinanceRestClient fetchUsdtSymbols/fetchKlines/fetchTickerPrice</td><td>Native BinanceRestMarketDataClient foundation for exchangeInfo USDT symbols, 24h quote-volume ordering, klines, and ticker prices</td><td>Live-network smoke coverage where allowed, custom interval aggregation, connector metadata, rate-limit diagnostics, and supervised runtime integration</td></tr>
                 <tr><td>WebSocket market stream</td><td>BinanceWsClient connectBookTicker/connectKline</td><td>No native stream runtime</td><td>Supervised streams, reconnect/backoff, candle cache reconciliation, stale-feed guards</td></tr>
                 <tr><td>Account, balance, and positions</td><td>fetchUsdtBalance and fetchOpenFuturesPositions</td><td>No native account snapshot path</td><td>Signed account clients, balance/position DTOs, hedge and one-way handling</td></tr>
                 <tr><td>Order submission</td><td>placeFuturesMarketOrder/placeFuturesLimitOrder and open/close fallback helpers</td><td>No native order submit path</td><td>Order intent validation, precision filters, dry-run mode, signed fallback, audit logs</td></tr>
                 <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Tauri can start/stop Python Service API, not a Rust trading loop</td><td>Owned Rust runtime state machine, idempotent shutdown, recovery tests</td></tr>
                 <tr><td>Risk and shutdown guards</td><td>Stop-loss settings, quantity caps, retry windows, close-on-stop behavior</td><td>Controls mirrored but no native risk engine</td><td>Risk gates, stop-loss scopes, max exposure checks, close-all semantics, incident handling</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section class="panel" id="full-python-app-parity-audit">
+          <h3>Full Python App Parity Audit</h3>
+          <p class="muted">Entire Python app parity ready: false. C++ entire Python app parity ready: false. Rust entire Python app parity ready: false.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Domain</th><th>Python surface</th><th>C++ status</th><th>Rust status</th><th>Required before full parity</th></tr></thead>
+              <tbody>
+                <tr><td>desktop_shell_and_tabs</td><td>Python owns the production PyQt desktop shell and live tab wiring</td><td>Qt preview with mirrored tabs</td><td>Tauri client plus non-operational renderers</td><td>Production ownership, startup parity, and tab lifecycle tests</td></tr>
+                <tr><td>service_api_contract</td><td>Canonical /api/v1 route, method, schema, auth, and stream contract</td><td>No Service API host/client equivalent</td><td>Tauri operational client for Python Service API</td><td>C++ service client or native equivalent plus generated route/schema parity</td></tr>
+                <tr><td>config_persistence</td><td>Runtime config, save/load, dirty state, redaction, and hydration</td><td>Dashboard save/load experiments only</td><td>Tauri hydrates Python Service API config</td><td>Native schemas, persistence state, redaction, and hydration tests</td></tr>
+                <tr><td>strategy_runtime</td><td>Indicator compute, strategy cycles, workers, and signal generation</td><td>Runtime experiments, not full Python engine parity</td><td>No native Rust strategy runtime</td><td>Port strategy modules, lifecycle, and signal regressions</td></tr>
+                <tr><td>exchange_connectors</td><td>Connector selection, market data, transports, diagnostics, and rate limits</td><td>Native Binance REST/WebSocket plus fallback mapping</td><td>Native Binance REST market-data foundation plus Service API client fallback</td><td>Connector-specific clients, diagnostics, WebSocket, signed account/order, and rate-limit parity</td></tr>
+                <tr><td>account_portfolio_positions</td><td>Account, portfolio, positions, history, allocation, and reconciliation</td><td>Binance balances/open futures positions only</td><td>Renders Python snapshots, no signed native path</td><td>Signed clients, DTOs, ledgers, and close/reconcile tests</td></tr>
+                <tr><td>order_execution_and_risk</td><td>Order sizing, submit guards, audit, preflight, circuit breaker, and shutdown risk</td><td>Order helpers and stop-loss controls, not full audit/risk contract</td><td>No native order submission</td><td>Port risk gates, audit/circuit events, and live safety tests</td></tr>
+                <tr><td>backtest_engine</td><td>Backtest engine, optimizer, scanner, dashboard import, and provenance</td><td>Mirrored UI with simulated scanner path</td><td>Delegates backtests to Python Service API</td><td>Real engine/optimizer bridge or port plus canonical request coverage</td></tr>
+                <tr><td>charts_and_heatmaps</td><td>TradingView, lightweight charts, fallbacks, browser guards, and heatmap panels</td><td>Qt WebEngine panels without verified full chart-state parity</td><td>Mirrored controls/client state only</td><td>Asset loading, guard logging, provider parity, and visual smoke tests</td></tr>
+                <tr><td>logs_terminal_diagnostics</td><td>Service logs, terminal route, diagnostics, redaction, and test runner surfaces</td><td>Local logs and installer output only</td><td>Fetches Python service logs, no native terminal owner</td><td>Terminal/log schemas, diagnostics, and redaction parity</td></tr>
+                <tr><td>llm_advisory</td><td>Provider catalog, advisory prompts, privacy flags, and local model lifecycle</td><td>Mirrors settings without Python LLM Service API behavior</td><td>Tauri calls Python LLM routes</td><td>C++ LLM service client and verified local model lifecycle parity</td></tr>
+                <tr><td>startup_packaging_platform</td><td>Entrypoints, startup suppression, taskbar metadata, packaging, and release smoke</td><td>Local CMake/Qt build path</td><td>Experimental shell builds</td><td>Native packaging, startup, platform metadata, and CI release smoke</td></tr>
               </tbody>
             </table>
           </div>
@@ -636,8 +659,26 @@
       { key: "donchian", name: "Donchian Channels (DC)" },
       { key: "psar", name: "Parabolic SAR (PSAR)" },
       { key: "bb", name: "Bollinger Bands (BB)" },
+      { key: "bbw", name: "Bollinger Band Width (BBW)" },
+      { key: "keltner", name: "Keltner Channels (KC)" },
+      { key: "ichimoku", name: "Ichimoku Cloud (IC)" },
       { key: "rsi", name: "Relative Strength Index (RSI)", defaultEnabled: true },
       { key: "volume", name: "Volume" },
+      { key: "obv", name: "On-Balance Volume (OBV)" },
+      { key: "rvol", name: "Relative Volume (RVOL)" },
+      { key: "cmf", name: "Chaikin Money Flow (CMF)" },
+      { key: "cci", name: "Commodity Channel Index (CCI)" },
+      { key: "roc", name: "Rate of Change (ROC)" },
+      { key: "trix", name: "Triple Exponential Average (TRIX)" },
+      { key: "ppo", name: "Percentage Price Oscillator (PPO)" },
+      { key: "ao", name: "Awesome Oscillator (AO)" },
+      { key: "kst", name: "Know Sure Thing (KST)" },
+      { key: "aroon", name: "Aroon Oscillator (AROON)" },
+      { key: "chop", name: "Choppiness Index (CHOP)" },
+      { key: "atr", name: "Average True Range (ATR)" },
+      { key: "natr", name: "Normalized Average True Range (NATR)" },
+      { key: "vwap", name: "Volume Weighted Average Price (VWAP)" },
+      { key: "mfi", name: "Money Flow Index (MFI)" },
       { key: "stoch_rsi", name: "Stochastic RSI (SRSI)" },
       { key: "willr", name: "Williams %R" },
       { key: "macd", name: "Moving Average Convergence/Divergence (MACD)" },
@@ -2267,16 +2308,29 @@
       return result;
     };
     const buildBacktestRequest = () => {
+      const symbolSource = selectedValue("backtest-symbol-source") || "Futures";
+      const backtestStart = $("backtest-start-date")?.value || null;
+      const backtestEnd = $("backtest-end-date")?.value || null;
+      const apiKey = String($("api-key-input")?.value || "").trim();
+      const apiSecret = String($("api-secret-input")?.value || "").trim();
       const request = {
         symbols: linesFrom($("backtest-symbols-input")?.value),
         intervals: linesFrom($("backtest-intervals-input")?.value),
         indicators: selectedIndicatorsConfigForKind("backtest"),
         logic: selectedValue("backtest-logic") || "AND",
-        symbol_source: selectedValue("backtest-symbol-source") || "Futures",
+        symbol_source: symbolSource,
+        account_type: symbolSource,
+        mode: selectedText("config-mode") || "Demo",
+        backtest: true,
+        api_key: apiKey,
+        api_secret: apiSecret,
         capital: numberFrom("backtest-capital", 1000),
-        start_date: $("backtest-start-date")?.value || null,
-        end_date: $("backtest-end-date")?.value || null,
+        start: backtestStart,
+        end: backtestEnd,
+        start_date: backtestStart,
+        end_date: backtestEnd,
         position_pct: numberFrom("backtest-position-pct", 2),
+        position_pct_units: "percent",
         loop_interval_override: selectedValue("backtest-loop-interval"),
         side: selectedValue("backtest-side") || "BOTH",
         margin_mode: selectedText("backtest-margin-mode"),
@@ -2288,6 +2342,11 @@
         mdd_logic: selectedValue("backtest-mdd-logic"),
         scan_top_n: numberFrom("backtest-scan-top-n", 200),
         scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", 10),
+        scan_scope: "selected",
+        optimizer_combo_size: 1,
+        optimizer_metric: "roi_percent",
+        optimizer_min_trades: 1,
+        optimizer_mode: "off",
         pair_overrides: overrideRowsForRequest("backtest"),
         stop_loss: {
           enabled: Boolean($("backtest-stop-loss-enabled")?.checked),
@@ -2298,7 +2357,7 @@
         },
         template: {
           enabled: Boolean($("backtest-template-enabled")?.checked),
-          name: selectedText("backtest-template-name") || null
+          name: selectedValue("backtest-template-name") || null
         }
       };
       if (!request.start_date) request.start_date = null;

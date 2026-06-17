@@ -9434,6 +9434,7 @@ name = "trading-bot-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "reqwest",
  "serde",
  "serde_json",
  "trading-bot-contracts",

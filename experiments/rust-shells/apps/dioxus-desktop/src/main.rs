@@ -2,7 +2,9 @@
 
 use dioxus::prelude::*;
 use trading_bot_core::{
-    TradingAppTab, app_banner, rust_execution_modes, rust_native_runtime_capabilities,
+    TradingAppTab, app_banner, cpp_entire_python_app_parity_ready,
+    native_full_python_app_parity_ready, native_python_app_parity_domains,
+    rust_entire_python_app_parity_ready, rust_execution_modes, rust_native_runtime_capabilities,
     rust_native_trading_runtime_ready, rust_shell_framework_parity,
     rust_trading_execution_supported, service_api_capabilities, service_api_routes,
     trading_app_tabs,
@@ -130,6 +132,9 @@ fn app() -> Element {
     let tab = active_tab(selected_key);
     let rust_exec_supported = rust_trading_execution_supported();
     let rust_native_ready = rust_native_trading_runtime_ready();
+    let full_python_app_parity_ready = native_full_python_app_parity_ready();
+    let cpp_python_app_parity_ready = cpp_entire_python_app_parity_ready();
+    let rust_python_app_parity_ready = rust_entire_python_app_parity_ready();
 
     rsx! {
         style { "{APP_STYLE}" }
@@ -226,6 +231,15 @@ fn app() -> Element {
                         ul {
                             for capability in rust_native_runtime_capabilities() {
                                 li { "{capability.key} - {capability.title} | C++: {capability.cpp_status} | Rust: {capability.rust_status} | Required before enable: {capability.required_before_enable} | trading_execution_supported={capability.trading_execution_supported}" }
+                            }
+                        }
+                        h3 { "Full Python App Parity Audit" }
+                        p { "Entire Python app parity ready: {full_python_app_parity_ready}" }
+                        p { "C++ entire Python app parity ready: {cpp_python_app_parity_ready}" }
+                        p { "Rust entire Python app parity ready: {rust_python_app_parity_ready}" }
+                        ul {
+                            for domain in native_python_app_parity_domains() {
+                                li { "{domain.key} - {domain.title} | Python: {domain.python_surface} | C++: {domain.cpp_status} | Rust: {domain.rust_status} | Required before full parity: {domain.required_before_full_parity} | cpp_full_parity={domain.cpp_full_parity} | rust_full_parity={domain.rust_full_parity}" }
                             }
                         }
                         h3 { "Canonical Routes" }

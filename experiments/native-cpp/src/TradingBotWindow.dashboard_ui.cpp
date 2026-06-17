@@ -137,11 +137,12 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(0, col, "API Key:", dashboardApiKey_, 2);
 
     dashboardModeCombo_ = new QComboBox(accountBox);
-    dashboardModeCombo_->addItems({"Live", "Paper Local", "Demo/Testnet"});
+    dashboardModeCombo_->addItems({"Live", "Demo", "Testnet"});
+    dashboardModeCombo_->setCurrentText("Demo");
     dashboardModeCombo_->setToolTip(
         "Live: real Binance Futures orders.\n"
-        "Paper Local: live market data with app-local paper positions.\n"
-        "Demo/Testnet: Binance Futures Testnet orders and positions.");
+        "Demo: compatibility mode for the configured test environment.\n"
+        "Testnet: Binance Futures Testnet orders and positions.");
     registerDashboardRuntimeLockWidget(dashboardModeCombo_);
     addPair(0, col, "Mode:", dashboardModeCombo_);
 
@@ -183,12 +184,13 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(1, col, "API Secret Key:", dashboardApiSecret_, 2);
 
     dashboardAccountTypeCombo_ = new QComboBox(accountBox);
-    dashboardAccountTypeCombo_->addItems({"Futures", "Spot"});
+    dashboardAccountTypeCombo_->addItems({"Spot", "Futures"});
+    dashboardAccountTypeCombo_->setCurrentText("Futures");
     registerDashboardRuntimeLockWidget(dashboardAccountTypeCombo_);
     addPair(1, col, "Account Type:", dashboardAccountTypeCombo_);
 
     auto *accountModeCombo = new QComboBox(accountBox);
-    accountModeCombo->addItems({"Classic Trading", "Multi-Asset Mode"});
+    accountModeCombo->addItems({"Classic Trading", "Portfolio Margin"});
     registerDashboardRuntimeLockWidget(accountModeCombo);
     addPair(1, col, "Account Mode:", accountModeCombo);
 
@@ -244,26 +246,28 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     accountGrid->addWidget(paperBalanceSpin, 2, col++);
 
     auto *leverageSpin = new QSpinBox(accountBox);
-    leverageSpin->setRange(1, 125);
-    leverageSpin->setValue(20);
+    leverageSpin->setRange(1, 150);
+    leverageSpin->setValue(1);
     dashboardLeverageSpin_ = leverageSpin;
     registerDashboardRuntimeLockWidget(leverageSpin);
     addPair(2, col, "Leverage (Futures):", leverageSpin);
 
     auto *marginModeCombo = new QComboBox(accountBox);
-    marginModeCombo->addItems({"Isolated", "Cross"});
+    marginModeCombo->addItems({"Cross", "Isolated"});
+    marginModeCombo->setCurrentText("Isolated");
     dashboardMarginModeCombo_ = marginModeCombo;
     registerDashboardRuntimeLockWidget(marginModeCombo);
     addPair(2, col, "Margin Mode (Futures):", marginModeCombo);
 
     auto *positionModeCombo = new QComboBox(accountBox);
-    positionModeCombo->addItems({"Hedge", "One-way"});
+    positionModeCombo->addItems({"One-way", "Hedge"});
+    positionModeCombo->setCurrentText("Hedge");
     dashboardPositionModeCombo_ = positionModeCombo;
     registerDashboardRuntimeLockWidget(positionModeCombo);
     addPair(2, col, "Position Mode:", positionModeCombo);
 
     auto *assetsModeCombo = new QComboBox(accountBox);
-    assetsModeCombo->addItems({"Single-Asset Mode", "Multi-Asset Mode"});
+    assetsModeCombo->addItems({"Single-Asset Mode", "Multi-Assets Mode"});
     registerDashboardRuntimeLockWidget(assetsModeCombo);
     addPair(2, col, "Assets Mode:", assetsModeCombo);
 
@@ -299,15 +303,22 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     registerDashboardRuntimeLockWidget(signalFeedCombo);
     addPair(3, col, "Signal Feed:", signalFeedCombo);
 
-    auto *orderTypeCombo = new QComboBox(accountBox);
-    orderTypeCombo->addItems({"GTC", "IOC", "FOK"});
-    registerDashboardRuntimeLockWidget(orderTypeCombo);
-    addPair(3, col, "Order Type:", orderTypeCombo);
+    auto *tifCombo = new QComboBox(accountBox);
+    tifCombo->addItems({"GTC", "IOC", "FOK", "GTD"});
+    tifCombo->setCurrentText("GTC");
+    registerDashboardRuntimeLockWidget(tifCombo);
+    addPair(3, col, "Time-in-Force:", tifCombo);
 
-    auto *expiryCombo = new QComboBox(accountBox);
-    expiryCombo->addItems({"30 min (GTD)", "1h (GTD)", "4h (GTD)", "GTC"});
-    registerDashboardRuntimeLockWidget(expiryCombo);
-    addPair(3, col, "Expiry / TIF:", expiryCombo);
+    auto *gtdMinutesSpin = new QSpinBox(accountBox);
+    gtdMinutesSpin->setRange(1, 1440);
+    gtdMinutesSpin->setValue(30);
+    gtdMinutesSpin->setSuffix(" min (GTD)");
+    gtdMinutesSpin->setEnabled(false);
+    registerDashboardRuntimeLockWidget(gtdMinutesSpin);
+    connect(tifCombo, &QComboBox::currentTextChanged, this, [gtdMinutesSpin](const QString &text) {
+        gtdMinutesSpin->setEnabled(text.trimmed() == QStringLiteral("GTD"));
+    });
+    addPair(3, col, "GTD minutes:", gtdMinutesSpin);
 
     for (int stretchCol : {1, 2, 4, 6, 8, 10, 12}) {
         accountGrid->setColumnStretch(stretchCol, 1);
@@ -361,9 +372,17 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         QStringLiteral("https://api.openai.com/v1"),
         QStringLiteral("OPENAI_API_KEY"),
         {"gpt-5.5",
+         "gpt-5.5-2026-04-23",
+         "gpt-5.5-pro",
+         "gpt-5.5-pro-2026-04-23",
          "gpt-5.4",
+         "gpt-5.4-2026-03-05",
+         "gpt-5.4-pro",
+         "gpt-5.4-pro-2026-03-05",
          "gpt-5.4-mini",
+         "gpt-5.4-mini-2026-03-17",
          "gpt-5.4-nano",
+         "gpt-5.4-nano-2026-03-17",
          "gpt-5.3-chat-latest",
          "gpt-5.3-codex",
          "gpt-5.2",
@@ -373,7 +392,10 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
          "gpt-5.1",
          "gpt-5-codex",
          "gpt-5-mini",
-         "gpt-5-nano"},
+         "gpt-5-nano",
+         "gpt-4.1",
+         "gpt-4.1-mini",
+         "gpt-4.1-nano"},
         {"default", "none", "minimal", "low", "medium", "high", "xhigh"});
     addProvider(
         QStringLiteral("anthropic"),
@@ -383,11 +405,13 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         QStringLiteral("ANTHROPIC_API_KEY"),
         {"claude-sonnet-4-5-20250929",
          "claude-haiku-4-5-20251001",
+         "claude-opus-4-5-20251101",
          "claude-opus-4-1-20250805",
          "claude-opus-4-20250514",
          "claude-sonnet-4-20250514",
          "claude-sonnet-4-5",
          "claude-haiku-4-5",
+         "claude-opus-4-5",
          "claude-opus-4-1",
          "claude-opus-4-0",
          "claude-sonnet-4-0"},
@@ -398,7 +422,15 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         QStringLiteral("cloud"),
         QStringLiteral("https://generativelanguage.googleapis.com/v1beta"),
         QStringLiteral("GEMINI_API_KEY"),
-        {"gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
+        {"gemini-3.1-pro-preview",
+         "gemini-3.1-pro-preview-customtools",
+         "gemini-3-flash-preview",
+         "gemini-3.1-flash-lite-preview",
+         "gemini-2.5-pro",
+         "gemini-2.5-flash",
+         "gemini-2.5-flash-preview-09-2025",
+         "gemini-2.5-flash-lite",
+         "gemini-2.5-flash-lite-preview-09-2025"},
         {"default", "minimal", "low", "medium", "high"});
     addProvider(
         QStringLiteral("deepseek"),
@@ -409,12 +441,30 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"},
         {"default", "disabled", "enabled", "high", "max"});
     addProvider(
+        QStringLiteral("mistral"),
+        QStringLiteral("Mistral AI"),
+        QStringLiteral("cloud"),
+        QStringLiteral("https://api.mistral.ai/v1"),
+        QStringLiteral("MISTRAL_API_KEY"),
+        {"mistral-large-latest",
+         "mistral-medium-latest",
+         "mistral-small-latest",
+         "codestral-latest",
+         "open-mistral-nemo"},
+        {"default", "low", "medium", "high"});
+    addProvider(
         QStringLiteral("grok"),
         QStringLiteral("xAI Grok"),
         QStringLiteral("cloud"),
         QStringLiteral("https://api.x.ai/v1"),
         QStringLiteral("XAI_API_KEY"),
-        {"grok-4.20", "grok-4.20-reasoning", "grok-4.20-non-reasoning", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"},
+        {"grok-4.3",
+         "grok-4.3-latest",
+         "grok-4.20",
+         "grok-4.20-reasoning",
+         "grok-4.20-non-reasoning",
+         "grok-4-fast-reasoning",
+         "grok-4-fast-non-reasoning"},
         {"default", "low", "medium", "high"});
     addProvider(
         QStringLiteral("qwen"),
@@ -422,7 +472,23 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         QStringLiteral("cloud"),
         QStringLiteral("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
         QStringLiteral("DASHSCOPE_API_KEY"),
-        {"qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-flash"},
+        {"qwen3.6-max-preview",
+         "qwen3.6-plus",
+         "qwen3.6-plus-2026-04-02",
+         "qwen3.6-flash",
+         "qwen3.6-flash-2026-04-16",
+         "qwen3-max",
+         "qwen3-max-2026-01-23",
+         "qwen3-max-2025-09-23",
+         "qwen3-max-preview",
+         "qwen3.5-plus",
+         "qwen3.5-plus-2026-02-15",
+         "qwen3.5-flash",
+         "qwen3.5-flash-2026-02-23",
+         "qwen3-coder-plus",
+         "qwen3-coder-flash",
+         "qwen-plus-us",
+         "qwen-flash-us"},
         {"default", "low", "medium", "high"});
     addProvider(
         QStringLiteral("local"),
@@ -430,7 +496,24 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         QStringLiteral("local"),
         QStringLiteral("http://127.0.0.1:11434/v1"),
         QStringLiteral("LOCAL_LLM_API_KEY"),
-        {"llama3.3", "qwen3", "mistral-small3.2", "gpt-oss:20b", "custom-model"},
+        {"qwen3:0.6b",
+         "qwen3:1.7b",
+         "qwen3:4b",
+         "qwen3:8b",
+         "qwen3:14b",
+         "qwen3:30b-a3b",
+         "qwen3:32b",
+         "qwen3",
+         "gpt-oss:20b",
+         "gpt-oss:latest",
+         "llama3.3",
+         "llama3.1:8b",
+         "llama3.2:3b",
+         "llama3.2:1b",
+         "mistral-small3.2",
+         "deepseek-r1:8b",
+         "gemma3:4b",
+         "custom-model"},
         {"default", "none", "low", "medium", "high", "xhigh"});
     dashboardLlmProviderCombo_ = providerCombo;
     registerDashboardRuntimeLockWidget(providerCombo);
@@ -682,7 +765,10 @@ void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, 
 
     auto *dashboardSymbolList = new QListWidget(marketsBox);
     dashboardSymbolList->setSelectionMode(QAbstractItemView::MultiSelection);
-    dashboardSymbolList->addItems({"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"});
+    dashboardSymbolList->addItems({
+        "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+        "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT",
+    });
     dashboardSymbolList->setMinimumHeight(220);
     dashboardSymbolList->setMaximumHeight(260);
     dashboardSymbolList_ = dashboardSymbolList;
@@ -692,7 +778,13 @@ void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, 
     auto *dashboardIntervalList = new QListWidget(marketsBox);
     dashboardIntervalList->setSelectionMode(QAbstractItemView::MultiSelection);
     dashboardIntervalList->addItems({
-        "1m", "3m", "5m", "10m", "15m", "20m", "30m", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h"
+        "1m", "3m", "5m", "10m", "15m", "20m", "30m",
+        "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
+        "1d", "2d", "3d", "4d", "5d", "6d",
+        "1w", "2w", "3w",
+        "1month", "2months", "3months", "6months",
+        "1mo", "2mo", "3mo", "6mo",
+        "1y", "2y",
     });
     dashboardIntervalList->setMinimumHeight(220);
     dashboardIntervalList->setMaximumHeight(260);
@@ -852,7 +944,6 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     strategyGrid->addWidget(new QLabel("Loop Interval Override:", strategyBox), row, 4);
     auto *loopOverride = new QComboBox(strategyBox);
     loopOverride->addItems({
-        "Instant",
         "30 seconds",
         "45 seconds",
         "1 minute",
@@ -977,9 +1068,9 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     strategyGrid->addWidget(new QLabel("Template:", strategyBox), row, 0);
     auto *templateCombo = new QComboBox(strategyBox);
     templateCombo->addItem("No Template", "");
-    templateCombo->addItem("Top 10 %2 per trade 5x Isolated", "top10");
-    templateCombo->addItem("Top 50 %2 per trade 20x", "top50");
-    templateCombo->addItem("Top 100 %1 per trade 5x", "top100");
+    templateCombo->addItem("Top 10 %2 per trade 1x Isolated", "top10");
+    templateCombo->addItem("Top 50 %2 per trade 1x", "top50");
+    templateCombo->addItem("Top 100 %1 per trade 1x", "top100");
     dashboardTemplateCombo_ = templateCombo;
     registerDashboardRuntimeLockWidget(templateCombo);
     connect(templateCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, templateCombo](int) {
@@ -1020,9 +1111,39 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     };
 
     const QStringList indicators = {
-        "Moving Average (MA)", "Donchian Channels (DC)", "Parabolic SAR (PSAR)", "Bollinger Bands (BB)",
-        "Relative Strength Index (RSI)", "Volume", "Stochastic RSI", "Williams %R", "MACD",
-        "Ultimate Oscillator", "ADX", "DMI", "SuperTrend", "EMA Cross"
+        "Moving Average (MA)",
+        "Donchian Channels (DC)",
+        "Parabolic SAR (PSAR)",
+        "Bollinger Bands (BB)",
+        "Bollinger Band Width (BBW)",
+        "Keltner Channels (KC)",
+        "Ichimoku Cloud (IC)",
+        "Relative Strength Index (RSI)",
+        "Volume",
+        "On-Balance Volume (OBV)",
+        "Relative Volume (RVOL)",
+        "Chaikin Money Flow (CMF)",
+        "Commodity Channel Index (CCI)",
+        "Rate of Change (ROC)",
+        "Triple Exponential Average (TRIX)",
+        "Percentage Price Oscillator (PPO)",
+        "Awesome Oscillator (AO)",
+        "Know Sure Thing (KST)",
+        "Aroon Oscillator (AROON)",
+        "Choppiness Index (CHOP)",
+        "Average True Range (ATR)",
+        "Normalized Average True Range (NATR)",
+        "Volume Weighted Average Price (VWAP)",
+        "Money Flow Index (MFI)",
+        "Stochastic RSI (SRSI)",
+        "Williams %R",
+        "Moving Average Convergence/Divergence (MACD)",
+        "Ultimate Oscillator (UO)",
+        "Average Directional Index (ADX)",
+        "Directional Movement Index (DMI)",
+        "SuperTrend (ST)",
+        "Exponential Moving Average (EMA)",
+        "Stochastic Oscillator",
     };
     for (int i = 0; i < indicators.size(); ++i) {
         addIndicatorRow(i, indicators[i]);
