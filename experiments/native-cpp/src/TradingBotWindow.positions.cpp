@@ -1,4 +1,5 @@
 #include "TradingBotWindow.h"
+#include "TradingBotWindow.dashboard_runtime_shared.h"
 #include "TradingBotWindowSupport.h"
 
 #include <QAbstractItemView>
@@ -164,8 +165,12 @@ QWidget *TradingBotWindow::createPositionsTab() {
     auto *closeAllBtn = new QPushButton("Market Close ALL Positions", page);
     auto *positionsViewLabel = new QLabel("Positions View:", page);
     auto *positionsViewCombo = new QComboBox(page);
-    positionsViewCombo->addItems({"Cumulative View", "Per Trade View"});
-    positionsViewCombo->setCurrentIndex(0);
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        positionsViewCombo,
+        TradingBotWindowSupport::pythonSourcePositionsViewOptionKeys(),
+        TradingBotWindowSupport::pythonSourcePositionsViewOptionLabels(),
+        {},
+        QStringLiteral("cumulative"));
     positionsViewCombo_ = positionsViewCombo;
     positionsCumulativeView_ = true;
     auto *autoRowHeightCheck = new QCheckBox("Auto Row Height", page);
@@ -403,10 +408,115 @@ QWidget *TradingBotWindow::createPositionsTab() {
         applyPositionsViewMode();
     });
     connect(closeAllBtn, &QPushButton::clicked, this, [=]() {
-        const int rowCount = table->rowCount();
-        table->setRowCount(0);
-        dashboardRuntimeOpenPositions_.clear();
-        updateStatusMessage(QString("Market close-all simulated for %1 row(s).").arg(rowCount));
+        const int localRowCount = table->rowCount();
+        const QString mode = dashboardModeCombo_ ? dashboardModeCombo_->currentText() : QStringLiteral("Live");
+        if (TradingBotWindowSupport::isPaperTradingModeLabel(mode)) {
+            table->setRowCount(0);
+            dashboardRuntimeOpenPositions_.clear();
+            updateStatusMessage(QString("Cleared %1 local paper position row(s).").arg(localRowCount));
+            applyPositionsViewMode();
+            return;
+        }
+
+        const bool futuresMode = dashboardAccountTypeCombo_
+            ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
+            : true;
+        if (!futuresMode) {
+            updateStatusMessage("Market close-all currently supports Futures account only.");
+            return;
+        }
+
+        const QString apiKey = dashboardApiKey_ ? dashboardApiKey_->text().trimmed() : QString();
+        const QString apiSecret = dashboardApiSecret_ ? dashboardApiSecret_->text().trimmed() : QString();
+        if (apiKey.isEmpty() || apiSecret.isEmpty()) {
+            updateStatusMessage("Market close-all skipped: missing API credentials.");
+            return;
+        }
+
+        const bool isTestnet = dashboardModeCombo_
+            ? TradingBotWindowSupport::isTestnetModeLabel(dashboardModeCombo_->currentText())
+            : false;
+        const QString connectorText = dashboardConnectorCombo_
+            ? dashboardConnectorCombo_->currentText().trimmed()
+            : TradingBotWindowSupport::connectorLabelForKey(
+                  TradingBotWindowSupport::recommendedConnectorKey(true));
+        const TradingBotWindowSupport::ConnectorRuntimeConfig connectorCfg =
+            TradingBotWindowSupport::resolveConnectorConfig(connectorText, true);
+        if (!connectorCfg.ok()) {
+            updateStatusMessage(QString("Market close-all connector error: %1").arg(connectorCfg.error));
+            return;
+        }
+
+        const auto livePositions = BinanceRestClient::fetchOpenFuturesPositions(
+            apiKey,
+            apiSecret,
+            isTestnet,
+            10000,
+            connectorCfg.baseUrl);
+        if (!livePositions.ok) {
+            updateStatusMessage(QString("Market close-all failed to load live positions: %1").arg(livePositions.error));
+            return;
+        }
+
+        const bool hedgeMode = dashboardPositionModeCombo_
+            ? dashboardPositionModeCombo_->currentText().trimmed().toLower().contains(QStringLiteral("hedge"))
+            : true;
+        int requested = 0;
+        int succeeded = 0;
+        int failed = 0;
+        QStringList failures;
+        for (const auto &pos : livePositions.positions) {
+            if (!qIsFinite(pos.positionAmt) || std::fabs(pos.positionAmt) <= 1e-10) {
+                continue;
+            }
+            const QString symbol = pos.symbol.trimmed().toUpper();
+            if (symbol.isEmpty()) {
+                continue;
+            }
+            const double quantity = std::fabs(pos.positionAmt);
+            const QString closeSide = pos.positionAmt > 0.0 ? QStringLiteral("SELL") : QStringLiteral("BUY");
+            const QString positionSide = hedgeMode ? pos.positionSide.trimmed().toUpper() : QString();
+            const double referencePrice = qIsFinite(pos.markPrice) && pos.markPrice > 0.0
+                ? pos.markPrice
+                : (qIsFinite(pos.entryPrice) ? pos.entryPrice : 0.0);
+            ++requested;
+            const auto order = TradingBotWindowDashboardRuntime::placeFuturesCloseOrderWithFallback(
+                apiKey,
+                apiSecret,
+                symbol,
+                closeSide,
+                quantity,
+                isTestnet,
+                true,
+                positionSide,
+                10000,
+                connectorCfg.baseUrl,
+                referencePrice);
+            if (order.ok) {
+                ++succeeded;
+            } else {
+                ++failed;
+                failures.push_back(QStringLiteral("%1: %2").arg(symbol, order.error));
+            }
+        }
+
+        if (requested == 0) {
+            table->setRowCount(0);
+            dashboardRuntimeOpenPositions_.clear();
+            updateStatusMessage("Market close-all found no live futures positions; local open rows were cleared.");
+            applyPositionsViewMode();
+            return;
+        }
+        if (failed == 0) {
+            table->setRowCount(0);
+            dashboardRuntimeOpenPositions_.clear();
+        }
+        updateStatusMessage(
+            QString("Market close-all requested %1 live position(s): %2 succeeded, %3 failed%4.")
+                .arg(requested)
+                .arg(succeeded)
+                .arg(failed)
+                .arg(failures.isEmpty() ? QString() : QStringLiteral(" - ") + failures.join(QStringLiteral("; "))));
         applyPositionsViewMode();
     });
     connect(positionsViewCombo, &QComboBox::currentTextChanged, this, [=](const QString &viewText) {

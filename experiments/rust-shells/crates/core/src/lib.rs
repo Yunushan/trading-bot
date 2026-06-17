@@ -1,6 +1,17 @@
 use trading_bot_contracts::AppIdentity;
 
+pub mod generated_python_parity;
 pub mod market_data;
+
+pub use generated_python_parity::{
+    PythonConnectorOption as NativePythonConnectorOption,
+    PythonIndicator as NativePythonIndicator,
+    PythonLlmProvider as NativePythonLlmProvider,
+    PythonParityDomain as NativePythonAppParityDomain,
+    PythonServiceRoute as ServiceApiRoute,
+    PythonTradingViewInterval as NativePythonTradingViewInterval,
+    PythonUiOption as NativePythonUiOption,
+};
 
 pub fn app_banner(shell: &str) -> String {
     format!("Trading Bot Rust UI scaffold -> {shell}")
@@ -12,6 +23,198 @@ pub fn default_identity(shell: &str) -> AppIdentity {
 
 pub fn supported_frameworks() -> &'static [&'static str] {
     &["Tauri", "Slint", "egui", "Iced", "Dioxus Desktop"]
+}
+
+pub fn python_source_contract_hash() -> &'static str {
+    generated_python_parity::PYTHON_SOURCE_CONTRACT_HASH
+}
+
+pub fn python_source_parity_domain_keys() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_PARITY_DOMAIN_KEYS
+}
+
+pub fn python_source_service_route_names() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_SERVICE_ROUTE_NAMES
+}
+
+pub fn python_source_backtest_run_request_fields() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_BACKTEST_RUN_REQUEST_FIELDS
+}
+
+pub fn python_source_indicator_keys() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_INDICATOR_KEYS
+}
+
+pub fn python_source_indicator_catalog() -> &'static [NativePythonIndicator] {
+    generated_python_parity::PYTHON_INDICATOR_CATALOG
+}
+
+pub fn python_source_llm_provider_keys() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_LLM_PROVIDER_KEYS
+}
+
+pub fn python_source_llm_providers() -> &'static [NativePythonLlmProvider] {
+    generated_python_parity::PYTHON_LLM_PROVIDERS
+}
+
+pub fn python_source_connector_keys() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_CONNECTOR_KEYS
+}
+
+pub fn python_source_connector_options() -> &'static [NativePythonConnectorOption] {
+    generated_python_parity::PYTHON_CONNECTOR_OPTIONS
+}
+
+pub fn python_source_backtest_intervals() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_BACKTEST_INTERVALS
+}
+
+pub fn python_source_tradingview_interval_map() -> &'static [NativePythonTradingViewInterval] {
+    generated_python_parity::PYTHON_TRADINGVIEW_INTERVAL_MAP
+}
+
+pub fn python_source_default_chart_symbols() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_DEFAULT_CHART_SYMBOLS
+}
+
+pub fn python_source_default_execution_symbols() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_DEFAULT_EXECUTION_SYMBOLS
+}
+
+pub fn python_source_default_execution_intervals() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_DEFAULT_EXECUTION_INTERVALS
+}
+
+pub fn python_source_default_backtest_symbols() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_DEFAULT_BACKTEST_SYMBOLS
+}
+
+pub fn python_source_default_backtest_intervals() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_DEFAULT_BACKTEST_INTERVALS
+}
+
+pub fn python_source_chart_market_options() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_CHART_MARKET_OPTIONS
+}
+
+pub fn python_source_account_mode_options() -> &'static [&'static str] {
+    generated_python_parity::PYTHON_ACCOUNT_MODE_OPTIONS
+}
+
+pub fn python_source_dashboard_loop_choices() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_DASHBOARD_LOOP_CHOICES
+}
+
+pub fn python_source_lead_trader_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_LEAD_TRADER_OPTIONS
+}
+
+pub fn python_source_llm_use_for_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_LLM_USE_FOR_OPTIONS
+}
+
+pub fn python_source_dashboard_strategy_templates() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_DASHBOARD_STRATEGY_TEMPLATES
+}
+
+pub fn python_source_backtest_templates() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_BACKTEST_TEMPLATES
+}
+
+pub fn python_source_side_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_SIDE_OPTIONS
+}
+
+pub fn python_source_config_mode_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_CONFIG_MODE_OPTIONS
+}
+
+pub fn python_source_theme_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_THEME_OPTIONS
+}
+
+pub fn python_source_design_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_DESIGN_OPTIONS
+}
+
+pub fn python_source_indicator_source_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_INDICATOR_SOURCE_OPTIONS
+}
+
+pub fn python_source_exchange_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_EXCHANGE_OPTIONS
+}
+
+pub fn python_source_account_type_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_ACCOUNT_TYPE_OPTIONS
+}
+
+pub fn python_source_margin_mode_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_MARGIN_MODE_OPTIONS
+}
+
+pub fn python_source_position_mode_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_POSITION_MODE_OPTIONS
+}
+
+pub fn python_source_assets_mode_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_ASSETS_MODE_OPTIONS
+}
+
+pub fn python_source_order_type_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_ORDER_TYPE_OPTIONS
+}
+
+pub fn python_source_time_in_force_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_TIME_IN_FORCE_OPTIONS
+}
+
+pub fn python_source_signal_logic_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_SIGNAL_LOGIC_OPTIONS
+}
+
+pub fn python_source_mdd_logic_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_MDD_LOGIC_OPTIONS
+}
+
+pub fn python_source_stop_loss_modes() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_STOP_LOSS_MODES
+}
+
+pub fn python_source_stop_loss_scopes() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_STOP_LOSS_SCOPES
+}
+
+pub fn python_source_scan_scope_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_SCAN_SCOPE_OPTIONS
+}
+
+pub fn python_source_optimizer_mode_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_OPTIMIZER_MODE_OPTIONS
+}
+
+pub fn python_source_optimizer_metric_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_OPTIMIZER_METRIC_OPTIONS
+}
+
+pub fn python_source_backtest_execution_backend_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_BACKTEST_EXECUTION_BACKEND_OPTIONS
+}
+
+pub fn python_source_chart_view_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_CHART_VIEW_OPTIONS
+}
+
+pub fn python_source_positions_view_options() -> &'static [NativePythonUiOption] {
+    generated_python_parity::PYTHON_POSITIONS_VIEW_OPTIONS
+}
+
+pub fn python_source_cpp_full_parity_ready() -> bool {
+    generated_python_parity::CPP_FULL_PARITY_READY
+}
+
+pub fn python_source_rust_full_parity_ready() -> bool {
+    generated_python_parity::RUST_FULL_PARITY_READY
 }
 
 pub struct TradingAppTab {
@@ -34,12 +237,6 @@ pub struct TradingAppSection {
 pub struct TradingAppTable {
     pub title: &'static str,
     pub columns: &'static [&'static str],
-}
-
-pub struct ServiceApiRoute {
-    pub name: &'static str,
-    pub path: &'static str,
-    pub methods: &'static [&'static str],
 }
 
 pub struct ServiceApiCapability {
@@ -67,17 +264,6 @@ pub struct RustNativeRuntimeCapability {
     pub rust_status: &'static str,
     pub required_before_enable: &'static str,
     pub trading_execution_supported: bool,
-}
-
-pub struct NativePythonAppParityDomain {
-    pub key: &'static str,
-    pub title: &'static str,
-    pub python_surface: &'static str,
-    pub cpp_status: &'static str,
-    pub rust_status: &'static str,
-    pub required_before_full_parity: &'static str,
-    pub cpp_full_parity: bool,
-    pub rust_full_parity: bool,
 }
 
 pub const SERVICE_API_BASE_PATH: &str = "/api/v1";
@@ -130,128 +316,7 @@ pub fn rust_execution_modes() -> &'static [RustExecutionMode] {
 }
 
 pub fn native_python_app_parity_domains() -> &'static [NativePythonAppParityDomain] {
-    &[
-        NativePythonAppParityDomain {
-            key: "desktop_shell_and_tabs",
-            title: "Desktop shell and primary tabs",
-            python_surface: "Python PyQt owns Dashboard, Chart, Positions, Backtest, Liquidation Heatmap, Code Languages, startup composition, theme, and live tab wiring.",
-            cpp_status: "C++ Qt mirrors the primary tabs and many controls, but remains a preview workspace and is not the production desktop owner.",
-            rust_status: "Tauri mirrors the operational tab surface through the Python Service API; Slint, egui, Iced, and Dioxus are non-operational comparison renderers.",
-            required_before_full_parity: "Promote C++ and Rust shells from preview/client surfaces to tested production desktop owners with the same lifecycle, startup, and tab behavior as Python.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "service_api_contract",
-            title: "Service API contract",
-            python_surface: "Python exposes the canonical /api/v1 routes, methods, schemas, dashboard stream, service auth, control-plane state, and desktop bridge contract.",
-            cpp_status: "C++ has no equivalent Service API host/client contract and does not expose the Python route catalog as an operational surface.",
-            rust_status: "Tauri is an operational client for the full Python Service API route catalog; the other Rust shells only render the route catalog for evaluation.",
-            required_before_full_parity: "Add C++ service client or native service equivalent, keep all route/method/schema contracts generated from Python metadata, and make non-Tauri Rust shells explicit clients or remove their operational claims.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "config_persistence",
-            title: "Config persistence and hydration",
-            python_surface: "Python owns runtime config, file save/load, dirty state, dashboard hydration, service snapshots, and secret redaction.",
-            cpp_status: "C++ has dashboard save/load experiments but does not implement the full Python service config persistence contract or redaction behavior.",
-            rust_status: "Tauri hydrates and patches Python Service API config, including persistence status, but native Rust has no standalone config owner.",
-            required_before_full_parity: "Port config schemas, persistence status, save/load semantics, redaction, hydration tests, and service/desktop bridge behavior to C++ and Rust.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "strategy_runtime",
-            title: "Strategy runtime and signal generation",
-            python_surface: "Python owns indicator computation, strategy cycles, signal generation, lead-trader controls, live candle options, override tables, and worker lifecycle.",
-            cpp_status: "C++ has dashboard runtime experiments and indicator normalization, but not the complete Python strategy engine and worker contract.",
-            rust_status: "Rust mirrors controls and delegates lifecycle/config requests to Python; it has no native strategy runtime.",
-            required_before_full_parity: "Port strategy cycle modules, indicator value semantics, worker lifecycle, override provenance, and signal regression tests.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "exchange_connectors",
-            title: "Exchange connectors and market data",
-            python_surface: "Python owns Binance SDK/connector/CCXT/python-binance selection, connector support metadata, transport diagnostics, rate limits, REST market data, and WebSocket paths.",
-            cpp_status: "C++ implements native Binance REST/WebSocket pieces but maps unsupported connector backends to native Binance equivalents or placeholder symbols.",
-            rust_status: "Rust now has a native Binance REST market-data foundation for exchangeInfo USDT symbols, 24h quote-volume ordering, klines, and ticker prices; WebSocket, signed account, connector metadata, diagnostics, and order paths still route through Python or remain absent.",
-            required_before_full_parity: "Add connector-specific support metadata, fallback rules, diagnostics, rate-limit handling, WebSocket parity, signed account/order clients, and unsupported-connector tests.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "account_portfolio_positions",
-            title: "Account, portfolio, and positions",
-            python_surface: "Python owns account snapshots, portfolio summaries, futures position queries, close-all behavior, position history, cumulative views, allocation tracking, and reconciliation.",
-            cpp_status: "C++ can fetch Binance balances/open futures positions and reconcile local tables, but non-Binance account paths and Python history/allocation semantics are incomplete.",
-            rust_status: "Tauri renders Python Service API account, portfolio, and positions snapshots; native Rust has no signed account or position path.",
-            required_before_full_parity: "Port signed account clients, portfolio DTOs, history/allocation ledgers, manual close reconciliation, close-all safeguards, and cumulative view tests.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "order_execution_and_risk",
-            title: "Order execution, audit, and risk",
-            python_surface: "Python owns order sizing, submit guards, audit logs, position gates, close-opposite logic, stop-loss scopes, live safety preflight, connector circuit breaker, and shutdown guards.",
-            cpp_status: "C++ has futures market/limit order helpers, stop-loss controls, retry windows, and close fallbacks, but not the full Python audit/risk/preflight contract.",
-            rust_status: "Rust intentionally exposes no native order submission path; Tauri calls Python lifecycle and circuit-breaker routes only.",
-            required_before_full_parity: "Port order intent validation, precision filters, audit/circuit events, preflight gates, close-on-stop behavior, and live safety regression tests before enabling native trading.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "backtest_engine",
-            title: "Backtest engine, optimizer, and scanner",
-            python_surface: "Python owns the backtest engine, optimizer limits/results, live parity request shape, scanner polling, dashboard import, indicator selection, and provenance.",
-            cpp_status: "C++ mirrors much of the backtest UI, but its scanner is explicitly simulated and it does not run the Python backtest engine contract.",
-            rust_status: "Tauri submits canonical backtest requests to the Python Service API and imports results, but Rust has no native backtest engine.",
-            required_before_full_parity: "Replace simulated C++ scanner paths, port or bridge the Python engine/optimizer, keep every canonical request field, and add parity tests over result/provenance behavior.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "charts_and_heatmaps",
-            title: "Charts and liquidation heatmaps",
-            python_surface: "Python owns TradingView, lightweight chart assets, candlestick fallback, chart state payloads, browser guards, and liquidation provider panels.",
-            cpp_status: "C++ provides Qt WebEngine chart/heatmap panels and browser fallback, but does not have verified parity for all Python chart state and guard behavior.",
-            rust_status: "Rust shells mirror chart and heatmap controls; Tauri renders static/Service API-backed state and does not own the Python chart engines.",
-            required_before_full_parity: "Port chart state, embedded asset loading, browser guard logging, fallback rendering, provider URLs, and visual smoke tests.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "logs_terminal_diagnostics",
-            title: "Logs, terminal, and diagnostics",
-            python_surface: "Python owns service logs, dashboard logs, terminal command execution, exception diagnostics, secret redaction, and test runner/reporting flows.",
-            cpp_status: "C++ has local dashboard logs and dependency installer output, but no full Python service logs/terminal/diagnostic contract.",
-            rust_status: "Tauri fetches Python service logs and renders local UI logs, but terminal execution remains a Python Service API route and native Rust does not own diagnostics.",
-            required_before_full_parity: "Port terminal route behavior, log schemas, exception diagnostics, redaction, service test runner metadata, and failure-mode tests.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "llm_advisory",
-            title: "LLM advisory and local model lifecycle",
-            python_surface: "Python owns provider catalogs, privacy flags, advisory prompt execution, config persistence, local Ollama status/start/pull/delete, and redacted output.",
-            cpp_status: "C++ mirrors dashboard LLM provider/model settings but does not call the Python LLM Service API or own local model lifecycle.",
-            rust_status: "Tauri calls Python LLM config/prompt/local-model routes; non-Tauri shells only mirror catalogs.",
-            required_before_full_parity: "Add C++ LLM service client behavior, decide whether Rust non-Tauri shells stay non-operational, and verify local model lifecycle and redaction tests.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-        NativePythonAppParityDomain {
-            key: "startup_packaging_platform",
-            title: "Startup, packaging, and platform integration",
-            python_surface: "Python owns product entrypoints, startup splash/suppression, Windows taskbar metadata, PyInstaller packaging, service wrappers, and release smoke tests.",
-            cpp_status: "C++ builds locally with CMake/Qt and has dependency setup scripts, but is not the production packaging/startup owner.",
-            rust_status: "Rust shells build as experiments; Tauri can launch the Python service locally but is not a production replacement for Python packaging/startup flows.",
-            required_before_full_parity: "Add native packaging, startup suppression, platform metadata, service wrapper compatibility, release smoke, and CI coverage for C++ and Rust.",
-            cpp_full_parity: false,
-            rust_full_parity: false,
-        },
-    ]
+    generated_python_parity::PYTHON_PARITY_DOMAINS
 }
 
 pub fn rust_shell_framework_parity() -> &'static [RustShellFrameworkParity] {
@@ -375,173 +440,7 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
 }
 
 pub fn service_api_routes() -> &'static [ServiceApiRoute] {
-    &[
-        ServiceApiRoute {
-            name: "runtime",
-            path: "/api/v1/runtime",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "dashboard",
-            path: "/api/v1/dashboard",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "status",
-            path: "/api/v1/status",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "execution",
-            path: "/api/v1/execution",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "backtest",
-            path: "/api/v1/backtest",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "config_summary",
-            path: "/api/v1/config-summary",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "config",
-            path: "/api/v1/config",
-            methods: &["GET", "PUT", "PATCH"],
-        },
-        ServiceApiRoute {
-            name: "config_persistence",
-            path: "/api/v1/config/persistence",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "config_save",
-            path: "/api/v1/config/save",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "config_load",
-            path: "/api/v1/config/load",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "runtime_state",
-            path: "/api/v1/runtime/state",
-            methods: &["PUT"],
-        },
-        ServiceApiRoute {
-            name: "operational_preflight",
-            path: "/api/v1/runtime/operational-preflight",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "control_start",
-            path: "/api/v1/control/start",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "control_stop",
-            path: "/api/v1/control/stop",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "control_start_failed",
-            path: "/api/v1/control/start-failed",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "connector_order_circuit_breaker",
-            path: "/api/v1/runtime/connector-order-circuit-breaker",
-            methods: &["GET", "PUT"],
-        },
-        ServiceApiRoute {
-            name: "connector_order_circuit_breaker_reset",
-            path: "/api/v1/runtime/connector-order-circuit-breaker/reset",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "connector_order_circuit_incidents",
-            path: "/api/v1/runtime/connector-order-circuit-breaker/incidents",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "backtest_run",
-            path: "/api/v1/backtest/run",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "backtest_stop",
-            path: "/api/v1/backtest/stop",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "account",
-            path: "/api/v1/account",
-            methods: &["GET", "PUT"],
-        },
-        ServiceApiRoute {
-            name: "portfolio",
-            path: "/api/v1/portfolio",
-            methods: &["GET", "PUT"],
-        },
-        ServiceApiRoute {
-            name: "exchange_connector",
-            path: "/api/v1/exchange/connector",
-            methods: &["GET", "PUT"],
-        },
-        ServiceApiRoute {
-            name: "logs",
-            path: "/api/v1/logs",
-            methods: &["GET", "POST"],
-        },
-        ServiceApiRoute {
-            name: "terminal_run",
-            path: "/api/v1/terminal/run",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "llm_providers",
-            path: "/api/v1/llm/providers",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "llm_config",
-            path: "/api/v1/llm/config",
-            methods: &["GET", "PATCH"],
-        },
-        ServiceApiRoute {
-            name: "llm_prompt",
-            path: "/api/v1/llm/prompt",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "llm_local_model_status",
-            path: "/api/v1/llm/local-model/status",
-            methods: &["GET"],
-        },
-        ServiceApiRoute {
-            name: "llm_local_model_start",
-            path: "/api/v1/llm/local-model/start",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "llm_local_model_pull",
-            path: "/api/v1/llm/local-model/pull",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "llm_local_model_delete",
-            path: "/api/v1/llm/local-model/delete",
-            methods: &["POST"],
-        },
-        ServiceApiRoute {
-            name: "stream_dashboard",
-            path: "/api/v1/stream/dashboard",
-            methods: &["GET"],
-        },
-    ]
+    generated_python_parity::PYTHON_SERVICE_ROUTES
 }
 
 pub fn service_api_route_path(name: &str) -> Option<&'static str> {

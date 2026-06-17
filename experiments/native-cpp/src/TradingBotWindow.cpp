@@ -562,312 +562,6 @@ QString preferredIndicatorSourceForExchange(const QString &exchangeKey, const QS
     return normalized;
 }
 
-QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures) {
-    Q_UNUSED(futures);
-    const QString normalized = normalizeExchangeKey(exchangeKey);
-    if (normalized == QStringLiteral("Bybit")) {
-        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"};
-    }
-    if (normalized == QStringLiteral("OKX")) {
-        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LTCUSDT"};
-    }
-    if (normalized == QStringLiteral("Gate")) {
-        return {"BTCUSDT", "ETHUSDT", "XRPUSDT", "TRXUSDT", "ETCUSDT"};
-    }
-    if (normalized == QStringLiteral("Bitget")) {
-        return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOTUSDT"};
-    }
-    if (normalized == QStringLiteral("MEXC")) {
-        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT"};
-    }
-    if (normalized == QStringLiteral("KuCoin")) {
-        return {"BTCUSDT", "ETHUSDT", "XRPUSDT", "ADAUSDT", "LINKUSDT"};
-    }
-    return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"};
-}
-
-struct ConnectorOption {
-    QString label;
-    QString key;
-};
-
-const QString kConnectorUsdsFutures = QStringLiteral("binance-sdk-derivatives-trading-usds-futures");
-const QString kConnectorCoinFutures = QStringLiteral("binance-sdk-derivatives-trading-coin-futures");
-const QString kConnectorSpot = QStringLiteral("binance-sdk-spot");
-const QString kConnectorBinanceConnector = QStringLiteral("binance-connector");
-const QString kConnectorCcxt = QStringLiteral("ccxt");
-const QString kConnectorPyBinance = QStringLiteral("python-binance");
-const QString kConnectorLegacyGateway = QStringLiteral("gateway");
-const QString kConnectorLegacyCustom = QStringLiteral("custom");
-
-const QVector<ConnectorOption> kConnectorOptions = {
-    {QStringLiteral("Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)"), kConnectorUsdsFutures},
-    {QStringLiteral("Binance SDK Derivatives Trading COIN-M Futures"), kConnectorCoinFutures},
-    {QStringLiteral("Binance SDK Spot (Official Recommended)"), kConnectorSpot},
-    {QStringLiteral("Binance Connector Python"), kConnectorBinanceConnector},
-    {QStringLiteral("CCXT (Unified)"), kConnectorCcxt},
-    {QStringLiteral("python-binance (Community)"), kConnectorPyBinance},
-};
-
-const QSet<QString> kFuturesConnectorKeys = {
-    kConnectorUsdsFutures,
-    kConnectorCoinFutures,
-    kConnectorBinanceConnector,
-    kConnectorCcxt,
-    kConnectorPyBinance,
-};
-
-const QSet<QString> kSpotConnectorKeys = {
-    kConnectorSpot,
-    kConnectorBinanceConnector,
-    kConnectorCcxt,
-    kConnectorPyBinance,
-};
-
-QString recommendedConnectorKey(bool futures) {
-    return futures ? kConnectorUsdsFutures : kConnectorSpot;
-}
-
-bool connectorAllowedForAccount(const QString &connectorKey, bool futures) {
-    return futures ? kFuturesConnectorKeys.contains(connectorKey) : kSpotConnectorKeys.contains(connectorKey);
-}
-
-QString connectorLabelForKey(const QString &connectorKey) {
-    for (const auto &option : kConnectorOptions) {
-        if (option.key == connectorKey) {
-            return option.label;
-        }
-    }
-    return connectorKey.trimmed();
-}
-
-QVector<ConnectorOption> connectorOptionsForAccount(bool futures) {
-    const QSet<QString> &allowed = futures ? kFuturesConnectorKeys : kSpotConnectorKeys;
-    QVector<ConnectorOption> filtered;
-    filtered.reserve(kConnectorOptions.size());
-    for (const auto &option : kConnectorOptions) {
-        if (allowed.contains(option.key)) {
-            filtered.push_back(option);
-        }
-    }
-    return filtered;
-}
-
-QString normalizeConnectorBackend(const QString &value) {
-    const QString textRaw = value.trimmed();
-    if (textRaw.isEmpty()) {
-        return kConnectorUsdsFutures;
-    }
-    const QString text = textRaw.toLower();
-
-    // Legacy C++ labels still supported when loading older rows/configs.
-    if (text.contains(QStringLiteral("gateway"))) {
-        return kConnectorLegacyGateway;
-    }
-    if (text.contains(QStringLiteral("custom")) || text.startsWith(QStringLiteral("http"))) {
-        return kConnectorLegacyCustom;
-    }
-
-    if (text == kConnectorUsdsFutures
-        || text == QStringLiteral("binance_sdk_derivatives_trading_usds_futures")
-        || (text.contains(QStringLiteral("sdk"))
-            && text.contains(QStringLiteral("future"))
-            && (text.contains(QStringLiteral("usd")) || text.contains(QStringLiteral("usds"))))) {
-        return kConnectorUsdsFutures;
-    }
-    if (text == kConnectorCoinFutures
-        || text == QStringLiteral("binance_sdk_derivatives_trading_coin_futures")
-        || (text.contains(QStringLiteral("sdk"))
-            && text.contains(QStringLiteral("coin"))
-            && text.contains(QStringLiteral("future")))) {
-        return kConnectorCoinFutures;
-    }
-    if (text == kConnectorSpot
-        || text == QStringLiteral("binance_sdk_spot")
-        || (text.contains(QStringLiteral("sdk")) && text.contains(QStringLiteral("spot")))) {
-        return kConnectorSpot;
-    }
-    if (text == QStringLiteral("ccxt") || text.contains(QStringLiteral("ccxt"))) {
-        return kConnectorCcxt;
-    }
-    if (text == kConnectorBinanceConnector
-        || text.contains(QStringLiteral("connector"))
-        || text.contains(QStringLiteral("official"))) {
-        return kConnectorBinanceConnector;
-    }
-    if (text.contains(QStringLiteral("python")) && text.contains(QStringLiteral("binance"))) {
-        return kConnectorPyBinance;
-    }
-    return kConnectorUsdsFutures;
-}
-
-void rebuildDashboardConnectorComboForAccount(QComboBox *combo, bool futures, bool forceDefault = false) {
-    if (!combo) {
-        return;
-    }
-
-    QString currentKey = normalizeConnectorBackend(combo->currentData().toString().trimmed());
-    if (currentKey.trimmed().isEmpty()) {
-        currentKey = normalizeConnectorBackend(combo->currentText().trimmed());
-    }
-    const QString recommended = recommendedConnectorKey(futures);
-    if (forceDefault || !connectorAllowedForAccount(currentKey, futures)) {
-        currentKey = recommended;
-    }
-
-    const QSignalBlocker blocker(combo);
-    combo->clear();
-    const auto options = connectorOptionsForAccount(futures);
-    for (const auto &option : options) {
-        combo->addItem(option.label, option.key);
-    }
-
-    if (combo->count() <= 0) {
-        return;
-    }
-
-    int idx = combo->findData(currentKey);
-    if (idx < 0) {
-        idx = combo->findData(recommended);
-    }
-    if (idx < 0) {
-        idx = 0;
-    }
-    combo->setCurrentIndex(idx);
-}
-
-struct ConnectorRuntimeConfig {
-    QString key;
-    QString label;
-    QString baseUrl;
-    QString warning;
-    QString error;
-
-    bool ok() const {
-        return error.trimmed().isEmpty();
-    }
-};
-
-QString normalizeBaseUrl(QString url) {
-    url = url.trimmed();
-    while (url.endsWith('/')) {
-        url.chop(1);
-    }
-    return url;
-}
-
-QString firstEnvValue(const QStringList &keys) {
-    for (const QString &key : keys) {
-        const QString value = qEnvironmentVariable(key.toUtf8().constData()).trimmed();
-        if (!value.isEmpty()) {
-            return value;
-        }
-    }
-    return QString();
-}
-
-ConnectorRuntimeConfig resolveConnectorConfig(const QString &connectorText, bool futures) {
-    ConnectorRuntimeConfig cfg;
-    cfg.label = connectorText.trimmed();
-    const QString normalized = connectorText.trimmed().toLower();
-    const QString selectedKey = normalizeConnectorBackend(connectorText);
-
-    if (selectedKey == kConnectorLegacyGateway) {
-        cfg.key = kConnectorLegacyGateway;
-        const QString raw = firstEnvValue(
-            futures
-                ? QStringList{
-                      QStringLiteral("BINANCE_GATEWAY_FUTURES_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_URL"),
-                  }
-                : QStringList{
-                      QStringLiteral("BINANCE_GATEWAY_SPOT_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_BASE_URL"),
-                      QStringLiteral("BINANCE_GATEWAY_URL"),
-                  });
-        cfg.baseUrl = normalizeBaseUrl(raw);
-        if (cfg.baseUrl.isEmpty()) {
-            cfg.error = futures
-                ? QStringLiteral("Gateway connector requires BINANCE_GATEWAY_FUTURES_BASE_URL (or BINANCE_GATEWAY_BASE_URL).")
-                : QStringLiteral("Gateway connector requires BINANCE_GATEWAY_SPOT_BASE_URL (or BINANCE_GATEWAY_BASE_URL).");
-        }
-        return cfg;
-    }
-
-    if (selectedKey == kConnectorLegacyCustom || normalized.startsWith(QStringLiteral("http"))) {
-        cfg.key = kConnectorLegacyCustom;
-        QString raw = normalized.startsWith(QStringLiteral("http")) ? connectorText.trimmed() : QString();
-        if (raw.isEmpty()) {
-            raw = firstEnvValue(
-                futures
-                    ? QStringList{
-                          QStringLiteral("CUSTOM_CONNECTOR_FUTURES_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_URL"),
-                      }
-                    : QStringList{
-                          QStringLiteral("CUSTOM_CONNECTOR_SPOT_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_BASE_URL"),
-                          QStringLiteral("CUSTOM_CONNECTOR_URL"),
-                      });
-        }
-        cfg.baseUrl = normalizeBaseUrl(raw);
-        if (cfg.baseUrl.isEmpty()) {
-            cfg.error = futures
-                ? QStringLiteral("Custom connector requires CUSTOM_CONNECTOR_FUTURES_BASE_URL (or CUSTOM_CONNECTOR_BASE_URL).")
-                : QStringLiteral("Custom connector requires CUSTOM_CONNECTOR_SPOT_BASE_URL (or CUSTOM_CONNECTOR_BASE_URL).");
-        }
-        return cfg;
-    }
-
-    auto setWarning = [&cfg](const QString &message) {
-        if (cfg.warning.trimmed().isEmpty()) {
-            cfg.warning = message;
-        }
-    };
-
-    const QString recommended = recommendedConnectorKey(futures);
-    QString effectiveKey = cfg.label.isEmpty() ? recommended : selectedKey;
-    if (effectiveKey.trimmed().isEmpty()) {
-        effectiveKey = recommended;
-    }
-
-    if (!connectorAllowedForAccount(effectiveKey, futures)) {
-        const QString chosenLabel = cfg.label.isEmpty() ? connectorLabelForKey(effectiveKey) : cfg.label;
-        setWarning(
-            QStringLiteral("Connector '%1' is not available for %2. Using '%3'.")
-                .arg(chosenLabel,
-                     futures ? QStringLiteral("Futures") : QStringLiteral("Spot"),
-                     connectorLabelForKey(recommended)));
-        effectiveKey = recommended;
-    }
-
-    // C++ runtime currently executes native Binance REST endpoints.
-    // Community/SDK bridge options are mapped to native equivalents for compatibility.
-    if (effectiveKey == kConnectorCoinFutures) {
-        setWarning(
-            QStringLiteral("Connector '%1' is not implemented in C++ yet. Using '%2'.")
-                .arg(cfg.label.isEmpty() ? connectorLabelForKey(kConnectorCoinFutures) : cfg.label,
-                     connectorLabelForKey(kConnectorUsdsFutures)));
-        effectiveKey = kConnectorUsdsFutures;
-    } else if (effectiveKey == kConnectorBinanceConnector
-               || effectiveKey == kConnectorCcxt
-               || effectiveKey == kConnectorPyBinance) {
-        setWarning(
-            QStringLiteral("Connector '%1' maps to native Binance REST in C++ runtime.")
-                .arg(cfg.label.isEmpty() ? connectorLabelForKey(effectiveKey) : cfg.label));
-        effectiveKey = recommended;
-    }
-
-    cfg.key = effectiveKey;
-    if (cfg.label.isEmpty()) {
-        cfg.label = connectorLabelForKey(effectiveKey);
-    }
-    cfg.baseUrl.clear();
-    return cfg;
-}
-
 QString extractSemverFromText(const QString &value) {
     static const QRegularExpression re(QStringLiteral("(\\d+(?:[._]\\d+){1,3})"));
     const QRegularExpressionMatch match = re.match(value);
@@ -1985,12 +1679,25 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
       backtestRefreshSymbolsBtn_(nullptr),
       backtestSymbolIntervalTable_(nullptr),
       backtestConnectorCombo_(nullptr),
+      backtestSignalLogicCombo_(nullptr),
+      backtestMddLogicCombo_(nullptr),
+      backtestStartDateEdit_(nullptr),
+      backtestEndDateEdit_(nullptr),
+      backtestCapitalSpin_(nullptr),
+      backtestPositionPctSpin_(nullptr),
       backtestLoopCombo_(nullptr),
       backtestLeverageSpin_(nullptr),
       backtestStopLossEnableCheck_(nullptr),
       backtestStopLossModeCombo_(nullptr),
       backtestStopLossScopeCombo_(nullptr),
+      backtestStopLossUsdtSpin_(nullptr),
+      backtestStopLossPercentSpin_(nullptr),
       backtestSideCombo_(nullptr),
+      backtestMarginModeCombo_(nullptr),
+      backtestPositionModeCombo_(nullptr),
+      backtestAssetsModeCombo_(nullptr),
+      backtestAccountModeCombo_(nullptr),
+      backtestScanMddSpin_(nullptr),
       resultsTable_(nullptr),
       botTimer_(nullptr),
       tabs_(nullptr),
@@ -2965,6 +2672,3 @@ QWidget *TradingBotWindow::createCodeTab() {
     layout->addStretch();
     return page;
 }
-
-
-

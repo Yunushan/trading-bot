@@ -58,7 +58,7 @@ The C++ experiment already contains native runtime pieces that Rust does not:
 - `TradingBotWindow.positions.cpp`: live futures position/balance refresh and
   local table reconciliation.
 
-`trading-bot-core` now has a native Binance REST market-data foundation for
+`trading-bot-core` now has a native `BinanceRestMarketDataClient` foundation for
 exchangeInfo USDT symbols, optional 24h quote-volume ordering, klines, ticker
 prices, and Binance error payload handling. Before native Rust trading can be
 enabled, Rust still needs custom interval aggregation, WebSocket streams, signed

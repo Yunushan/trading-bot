@@ -1,0 +1,542 @@
+"""
+Python-owned native parity contract for C++ and Rust destinations.
+
+This module is intentionally data-oriented.  It defines the Python source
+surface that native destinations must track before they can honestly claim full
+parity with the Python application.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from hashlib import sha256
+import json
+from typing import Any
+
+from .gui.code.code_language_catalog import EXCHANGE_PATHS, STARTER_CRYPTO_EXCHANGES
+from .gui.backtest.backtest_templates import BACKTEST_TEMPLATE_DEFINITIONS
+from .gui.runtime.composition.module_state_constants import (
+    ACCOUNT_MODE_OPTIONS,
+    BACKTEST_INTERVAL_ORDER,
+    CHART_MARKET_OPTIONS,
+    DASHBOARD_LOOP_CHOICES,
+    DEFAULT_CHART_SYMBOLS,
+    LEAD_TRADER_OPTIONS,
+    MDD_LOGIC_LABELS,
+    SIDE_LABELS,
+    STOP_LOSS_MODE_LABELS,
+    STOP_LOSS_SCOPE_LABELS,
+    TRADINGVIEW_INTERVAL_MAP,
+    _connector_options,
+)
+from .gui.runtime.ui.theme_styles import DESIGN_OPTIONS
+from .gui.shared.llm_settings_panel import _USE_FOR_OPTIONS
+from .integrations.llm.providers import _PROVIDER_SPECS
+from .service.api_contract import (
+    SERVICE_API_ROUTE_METHODS,
+    SERVICE_API_ROUTE_PATHS,
+    SERVICE_API_ROUTE_SUFFIXES,
+    SERVICE_BACKTEST_RUN_REQUEST_FIELDS,
+    service_api_contract_payload,
+)
+from .settings.backtest import BacktestSettings
+from .settings.execution import ExecutionSettings
+from .settings.indicators import INDICATOR_CATALOG, build_runtime_indicator_defaults
+from .settings.validation import (
+    _ACCOUNT_TYPE_CHOICES,
+    _BACKTEST_EXECUTION_BACKEND_CHOICES,
+    _CHART_VIEW_MODE_CHOICES,
+    _LOGIC_CHOICES,
+    _MARGIN_MODE_CHOICES,
+    _OPTIMIZER_METRIC_CHOICES,
+    _OPTIMIZER_MODE_CHOICES,
+    _ORDER_TYPE_CHOICES,
+    _POSITION_MODE_CHOICES,
+    _SCAN_SCOPE_CHOICES,
+    _TIF_CHOICES,
+)
+
+
+NATIVE_PARITY_SCHEMA_VERSION = 1
+NATIVE_PARITY_SOURCE = "Languages/Python"
+
+CONFIG_MODE_OPTIONS = ("Live", "Demo", "Testnet")
+THEME_OPTIONS = ("Light", "Dark", "Blue", "Yellow", "Green", "Red")
+INDICATOR_SOURCE_OPTIONS = (
+    "Binance spot",
+    "Binance futures",
+    "TradingView",
+    "Bybit",
+    "Coinbase",
+    "OKX",
+    "Gate",
+    "Bitget",
+    "Mexc",
+    "Kucoin",
+    "HTX",
+    "Kraken",
+)
+DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS = {
+    "": {"label": "No Template"},
+    "top10": {"label": "Top 10 %2 per trade 1x Isolated"},
+    "top50": {"label": "Top 50 %2 per trade 1x"},
+    "top100": {"label": "Top 100 %1 per trade 1x"},
+}
+
+
+@dataclass(frozen=True, slots=True)
+class NativeParityDomain:
+    key: str
+    title: str
+    python_surface: str
+    cpp_required_before_full_parity: tuple[str, ...]
+    rust_required_before_full_parity: tuple[str, ...]
+    cpp_full_parity: bool = False
+    rust_full_parity: bool = False
+
+
+NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
+    NativeParityDomain(
+        key="desktop_shell_and_tabs",
+        title="Desktop shell and primary tabs",
+        python_surface="Dashboard, Chart, Positions, Backtest, Liquidation Heatmap, Code Languages, startup composition, theme, and live tab wiring.",
+        cpp_required_before_full_parity=(
+            "Production startup and lifecycle parity",
+            "Tab behavior parity tests",
+            "Release ownership instead of preview ownership",
+        ),
+        rust_required_before_full_parity=(
+            "Production desktop ownership for the selected Rust shell",
+            "Equivalent startup and tab lifecycle behavior",
+            "Remove non-operational claims from comparison renderers",
+        ),
+    ),
+    NativeParityDomain(
+        key="service_api_contract",
+        title="Service API contract",
+        python_surface="Canonical /api/v1 routes, methods, schemas, dashboard stream, auth, control-plane state, and desktop bridge contract.",
+        cpp_required_before_full_parity=(
+            "Generated schema parity beyond route/method lookup",
+            "Operational request/response tests",
+        ),
+        rust_required_before_full_parity=(
+            "Generated route, method, and schema parity",
+            "Tauri client behavior retained or replaced by native equivalent",
+            "Explicit non-operational boundaries for other shells",
+        ),
+    ),
+    NativeParityDomain(
+        key="config_persistence",
+        title="Config persistence and hydration",
+        python_surface="Runtime config, file save/load, dirty state, dashboard hydration, service snapshots, and secret redaction.",
+        cpp_required_before_full_parity=(
+            "Config schema parity",
+            "Save/load and dirty-state semantics",
+            "Secret redaction behavior",
+        ),
+        rust_required_before_full_parity=(
+            "Config schema parity",
+            "Persistence status parity",
+            "Secret redaction behavior",
+        ),
+    ),
+    NativeParityDomain(
+        key="strategy_runtime",
+        title="Strategy runtime and signal generation",
+        python_surface="Indicator computation, strategy cycles, signal generation, live candle options, override tables, and worker lifecycle.",
+        cpp_required_before_full_parity=(
+            "Strategy cycle parity",
+            "Indicator value semantics parity",
+            "Worker lifecycle and override provenance tests",
+        ),
+        rust_required_before_full_parity=(
+            "Native strategy runtime or strict Python-service delegation",
+            "Signal regression tests",
+            "Override provenance tests",
+        ),
+    ),
+    NativeParityDomain(
+        key="exchange_connectors",
+        title="Exchange connectors and market data",
+        python_surface="Binance SDK/connector/CCXT/python-binance selection, connector support metadata, transport diagnostics, rate limits, REST market data, and WebSocket paths.",
+        cpp_required_before_full_parity=(
+            "Connector backend parity",
+            "Diagnostics and rate-limit parity",
+            "Non-Binance support behavior",
+        ),
+        rust_required_before_full_parity=(
+            "Connector support metadata",
+            "WebSocket parity",
+            "Signed account/order clients",
+        ),
+    ),
+    NativeParityDomain(
+        key="account_portfolio_positions",
+        title="Account, portfolio, and positions",
+        python_surface="Account snapshots, portfolio summaries, futures position queries, close-all behavior, position history, allocation tracking, and reconciliation.",
+        cpp_required_before_full_parity=(
+            "Portfolio DTO parity",
+            "History/allocation ledgers",
+            "Manual close reconciliation tests",
+        ),
+        rust_required_before_full_parity=(
+            "Signed account clients",
+            "Balance and position DTOs",
+            "Manual close reconciliation tests",
+        ),
+    ),
+    NativeParityDomain(
+        key="order_execution_and_risk",
+        title="Order execution, audit, and risk",
+        python_surface="Order sizing, submit guards, audit logs, position gates, close-opposite logic, stop-loss scopes, live safety preflight, circuit breaker, and shutdown guards.",
+        cpp_required_before_full_parity=(
+            "Order audit contract",
+            "Live safety preflight parity",
+            "Circuit-breaker and shutdown guard parity",
+        ),
+        rust_required_before_full_parity=(
+            "Order intent validation",
+            "Precision and reduce-only rules",
+            "Audit and circuit-breaker tests before native execution",
+        ),
+    ),
+    NativeParityDomain(
+        key="backtest_engine",
+        title="Backtest engine, optimizer, and scanner",
+        python_surface="Backtest engine, optimizer limits/results, live parity request shape, scanner polling, dashboard import, indicator selection, and provenance.",
+        cpp_required_before_full_parity=(
+            "Result/provenance parity tests",
+        ),
+        rust_required_before_full_parity=(
+            "Result/provenance parity tests",
+        ),
+    ),
+    NativeParityDomain(
+        key="charts_and_heatmaps",
+        title="Charts and liquidation heatmaps",
+        python_surface="TradingView, lightweight chart assets, candlestick fallback, chart state payloads, browser guards, and liquidation provider panels.",
+        cpp_required_before_full_parity=(
+            "Chart state parity",
+            "Asset loading and fallback rendering tests",
+            "Browser guard logging parity",
+        ),
+        rust_required_before_full_parity=(
+            "Chart state parity",
+            "Heatmap provider parity",
+            "Visual smoke coverage",
+        ),
+    ),
+    NativeParityDomain(
+        key="logs_terminal_diagnostics",
+        title="Logs, terminal, and diagnostics",
+        python_surface="Service logs, dashboard logs, terminal command execution, exception diagnostics, secret redaction, and test runner/reporting flows.",
+        cpp_required_before_full_parity=(
+            "Service log schema parity",
+            "Terminal route behavior",
+            "Diagnostic redaction tests",
+        ),
+        rust_required_before_full_parity=(
+            "Service log schema parity",
+            "Terminal route behavior or explicit delegation",
+            "Diagnostic redaction tests",
+        ),
+    ),
+    NativeParityDomain(
+        key="llm_advisory",
+        title="LLM advisory and local model lifecycle",
+        python_surface="Provider catalogs, privacy flags, advisory prompt execution, config persistence, local Ollama status/start/pull/delete, and redacted output.",
+        cpp_required_before_full_parity=(
+            "Local model progress/cancellation UI",
+            "LLM result rendering and redaction tests",
+        ),
+        rust_required_before_full_parity=(
+            "LLM route parity",
+            "Local model lifecycle parity",
+            "Prompt/redaction tests",
+        ),
+    ),
+    NativeParityDomain(
+        key="startup_packaging_platform",
+        title="Startup, packaging, and platform integration",
+        python_surface="Product entrypoints, startup splash/suppression, Windows taskbar metadata, PyInstaller packaging, service wrappers, and release smoke tests.",
+        cpp_required_before_full_parity=(
+            "Native packaging parity",
+            "Startup suppression and platform metadata",
+            "Release smoke coverage",
+        ),
+        rust_required_before_full_parity=(
+            "Native packaging parity",
+            "Startup suppression and platform metadata",
+            "Release smoke coverage",
+        ),
+    ),
+)
+
+
+def _domain_payload(domain: NativeParityDomain) -> dict[str, Any]:
+    return asdict(domain)
+
+
+def _indicator_payload() -> list[dict[str, object]]:
+    runtime_defaults = build_runtime_indicator_defaults()
+    return [
+        {
+            "key": definition.key,
+            "display_name": definition.display_name,
+            "default_enabled": bool(runtime_defaults.get(definition.key, {}).get("enabled")),
+        }
+        for definition in INDICATOR_CATALOG
+    ]
+
+
+def _llm_provider_payload() -> list[dict[str, object]]:
+    return [
+        {
+            "key": provider.key,
+            "label": provider.label,
+            "mode": provider.mode,
+            "protocol": provider.protocol,
+            "default_base_url": provider.default_base_url,
+            "default_model": provider.default_model,
+            "api_key_env": provider.api_key_env,
+            "model_suggestions": list(provider.model_suggestions),
+            "reasoning_efforts": list(provider.reasoning_efforts),
+            "default_reasoning_effort": provider.default_reasoning_effort,
+        }
+        for provider in _PROVIDER_SPECS
+    ]
+
+
+def _label_map_payload(values: dict[str, str]) -> list[dict[str, str]]:
+    return [
+        {"key": str(key), "label": str(label)}
+        for key, label in values.items()
+    ]
+
+
+def _choice_payload(values: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
+    return [
+        {"label": str(label), "key": str(key), "value": str(key)}
+        for label, key in values
+    ]
+
+
+def _canonical_choice_payload(values: dict[str, str]) -> list[dict[str, str]]:
+    seen = set()
+    result = []
+    for value in values.values():
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append({"key": str(value), "value": str(value), "label": str(value)})
+    return result
+
+
+def _fixed_choice_payload(values: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
+    return [
+        {"key": str(key), "value": str(key), "label": str(label)}
+        for key, label in values
+    ]
+
+
+def _value_option_payload(values: tuple[str, ...] | list[str]) -> list[dict[str, str]]:
+    return [
+        {"key": str(value), "value": str(value), "label": str(value)}
+        for value in values
+    ]
+
+
+def _exchange_payload() -> list[dict[str, object]]:
+    return [
+        {
+            "key": str(option["key"]),
+            "label": (
+                f"{option['title']} ({option['badge']})"
+                if option.get("badge")
+                else str(option["title"])
+            ),
+            "title": str(option["title"]),
+            "badge": str(option.get("badge") or ""),
+            "disabled": bool(option.get("disabled", False)),
+        }
+        for option in STARTER_CRYPTO_EXCHANGES
+        if option["key"] in EXCHANGE_PATHS
+    ]
+
+
+def native_python_source_contract_payload() -> dict[str, Any]:
+    route_methods = {
+        name: list(methods)
+        for name, methods in SERVICE_API_ROUTE_METHODS.items()
+    }
+    connector_options = [
+        {"label": label, "key": key}
+        for label, key in _connector_options()
+    ]
+    execution_defaults = ExecutionSettings()
+    backtest_defaults = BacktestSettings()
+    return {
+        "schema_version": NATIVE_PARITY_SCHEMA_VERSION,
+        "source": NATIVE_PARITY_SOURCE,
+        "full_parity": {
+            "cpp": all(domain.cpp_full_parity for domain in NATIVE_PARITY_DOMAINS),
+            "rust": all(domain.rust_full_parity for domain in NATIVE_PARITY_DOMAINS),
+        },
+        "domains": [_domain_payload(domain) for domain in NATIVE_PARITY_DOMAINS],
+        "service_api": {
+            **service_api_contract_payload(),
+            "route_suffixes": dict(SERVICE_API_ROUTE_SUFFIXES),
+            "route_methods": route_methods,
+            "backtest_run_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
+        },
+        "ui_options": {
+            "intervals": list(BACKTEST_INTERVAL_ORDER),
+            "tradingview_interval_map": dict(TRADINGVIEW_INTERVAL_MAP),
+            "default_chart_symbols": list(DEFAULT_CHART_SYMBOLS),
+            "default_execution_symbols": list(execution_defaults.symbols),
+            "default_execution_intervals": list(execution_defaults.intervals),
+            "default_backtest_symbols": list(backtest_defaults.symbols),
+            "default_backtest_intervals": list(backtest_defaults.intervals),
+            "chart_market_options": list(CHART_MARKET_OPTIONS),
+            "account_mode_options": list(ACCOUNT_MODE_OPTIONS),
+            "config_mode_options": _value_option_payload(list(CONFIG_MODE_OPTIONS)),
+            "theme_options": _value_option_payload(list(THEME_OPTIONS)),
+            "design_options": _value_option_payload(list(DESIGN_OPTIONS)),
+            "indicator_source_options": _value_option_payload(list(INDICATOR_SOURCE_OPTIONS)),
+            "exchange_options": _exchange_payload(),
+            "dashboard_loop_choices": _choice_payload(DASHBOARD_LOOP_CHOICES),
+            "lead_trader_options": _choice_payload(LEAD_TRADER_OPTIONS),
+            "llm_use_for_options": _choice_payload(_USE_FOR_OPTIONS),
+            "dashboard_strategy_templates": [
+                {"key": key, "label": str(definition.get("label", key))}
+                for key, definition in DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS.items()
+            ],
+            "side_options": _label_map_payload(SIDE_LABELS),
+            "account_type_options": _canonical_choice_payload(_ACCOUNT_TYPE_CHOICES),
+            "margin_mode_options": _canonical_choice_payload(_MARGIN_MODE_CHOICES),
+            "position_mode_options": _canonical_choice_payload(_POSITION_MODE_CHOICES),
+            "assets_mode_options": [
+                {"key": "Single-Asset", "value": "Single-Asset", "label": "Single-Asset Mode"},
+                {"key": "Multi-Assets", "value": "Multi-Assets", "label": "Multi-Assets Mode"},
+            ],
+            "order_type_options": _canonical_choice_payload(_ORDER_TYPE_CHOICES),
+            "time_in_force_options": _canonical_choice_payload(_TIF_CHOICES),
+            "signal_logic_options": _canonical_choice_payload(_LOGIC_CHOICES),
+            "mdd_logic_options": _label_map_payload(MDD_LOGIC_LABELS),
+            "stop_loss_modes": _label_map_payload(STOP_LOSS_MODE_LABELS),
+            "stop_loss_scopes": _label_map_payload(STOP_LOSS_SCOPE_LABELS),
+            "scan_scope_options": _canonical_choice_payload(_SCAN_SCOPE_CHOICES),
+            "optimizer_mode_options": _canonical_choice_payload(_OPTIMIZER_MODE_CHOICES),
+            "optimizer_metric_options": _canonical_choice_payload(_OPTIMIZER_METRIC_CHOICES),
+            "backtest_execution_backend_options": _canonical_choice_payload(
+                _BACKTEST_EXECUTION_BACKEND_CHOICES
+            ),
+            "chart_view_options": _fixed_choice_payload(
+                (
+                    ("tradingview", "TradingView"),
+                    ("original", "Original"),
+                    ("lightweight", "TradingView Lightweight"),
+                )
+            ),
+            "positions_view_options": _fixed_choice_payload(
+                (
+                    ("cumulative", "Cumulative View"),
+                    ("per_trade", "Per Trade View"),
+                )
+            ),
+            "chart_view_keys": list(dict.fromkeys(_CHART_VIEW_MODE_CHOICES.values())),
+            "connectors": connector_options,
+            "backtest_templates": [
+                {"key": key, "label": str(definition.get("label", key))}
+                for key, definition in BACKTEST_TEMPLATE_DEFINITIONS.items()
+            ],
+            "indicators": _indicator_payload(),
+        },
+        "default_execution": execution_defaults.to_config_dict(),
+        "default_backtest": backtest_defaults.to_config_dict(),
+        "llm_providers": _llm_provider_payload(),
+    }
+
+
+def native_python_source_contract_json() -> str:
+    return json.dumps(
+        native_python_source_contract_payload(),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def native_python_source_contract_hash() -> str:
+    return sha256(native_python_source_contract_json().encode("utf-8")).hexdigest()
+
+
+def native_python_source_contract_summary() -> dict[str, object]:
+    payload = native_python_source_contract_payload()
+    service_routes = [
+        {
+            "name": name,
+            "path": SERVICE_API_ROUTE_PATHS[name],
+            "methods": list(SERVICE_API_ROUTE_METHODS[name]),
+        }
+        for name in SERVICE_API_ROUTE_SUFFIXES
+    ]
+    return {
+        "schema_version": payload["schema_version"],
+        "source": payload["source"],
+        "contract_hash": native_python_source_contract_hash(),
+        "domains": list(payload["domains"]),
+        "domain_keys": [domain["key"] for domain in payload["domains"]],
+        "route_names": list(SERVICE_API_ROUTE_SUFFIXES),
+        "service_routes": service_routes,
+        "backtest_run_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
+        "indicators": list(payload["ui_options"]["indicators"]),
+        "indicator_keys": [definition.key for definition in INDICATOR_CATALOG],
+        "connectors": list(payload["ui_options"]["connectors"]),
+        "llm_providers": list(payload["llm_providers"]),
+        "llm_provider_keys": [provider.key for provider in _PROVIDER_SPECS],
+        "connector_keys": [key for _label, key in _connector_options()],
+        "intervals": list(BACKTEST_INTERVAL_ORDER),
+        "tradingview_interval_map": dict(payload["ui_options"]["tradingview_interval_map"]),
+        "default_chart_symbols": list(payload["ui_options"]["default_chart_symbols"]),
+        "default_execution_symbols": list(payload["ui_options"]["default_execution_symbols"]),
+        "default_execution_intervals": list(payload["ui_options"]["default_execution_intervals"]),
+        "default_backtest_symbols": list(payload["ui_options"]["default_backtest_symbols"]),
+        "default_backtest_intervals": list(payload["ui_options"]["default_backtest_intervals"]),
+        "chart_market_options": list(payload["ui_options"]["chart_market_options"]),
+        "account_mode_options": list(payload["ui_options"]["account_mode_options"]),
+        "config_mode_options": list(payload["ui_options"]["config_mode_options"]),
+        "theme_options": list(payload["ui_options"]["theme_options"]),
+        "design_options": list(payload["ui_options"]["design_options"]),
+        "indicator_source_options": list(payload["ui_options"]["indicator_source_options"]),
+        "exchange_options": list(payload["ui_options"]["exchange_options"]),
+        "dashboard_loop_choices": list(payload["ui_options"]["dashboard_loop_choices"]),
+        "lead_trader_options": list(payload["ui_options"]["lead_trader_options"]),
+        "llm_use_for_options": list(payload["ui_options"]["llm_use_for_options"]),
+        "dashboard_strategy_templates": list(payload["ui_options"]["dashboard_strategy_templates"]),
+        "side_options": list(payload["ui_options"]["side_options"]),
+        "account_type_options": list(payload["ui_options"]["account_type_options"]),
+        "margin_mode_options": list(payload["ui_options"]["margin_mode_options"]),
+        "position_mode_options": list(payload["ui_options"]["position_mode_options"]),
+        "assets_mode_options": list(payload["ui_options"]["assets_mode_options"]),
+        "order_type_options": list(payload["ui_options"]["order_type_options"]),
+        "time_in_force_options": list(payload["ui_options"]["time_in_force_options"]),
+        "signal_logic_options": list(payload["ui_options"]["signal_logic_options"]),
+        "mdd_logic_options": list(payload["ui_options"]["mdd_logic_options"]),
+        "stop_loss_modes": list(payload["ui_options"]["stop_loss_modes"]),
+        "stop_loss_scopes": list(payload["ui_options"]["stop_loss_scopes"]),
+        "scan_scope_options": list(payload["ui_options"]["scan_scope_options"]),
+        "optimizer_mode_options": list(payload["ui_options"]["optimizer_mode_options"]),
+        "optimizer_metric_options": list(payload["ui_options"]["optimizer_metric_options"]),
+        "backtest_execution_backend_options": list(
+            payload["ui_options"]["backtest_execution_backend_options"]
+        ),
+        "chart_view_options": list(payload["ui_options"]["chart_view_options"]),
+        "positions_view_options": list(payload["ui_options"]["positions_view_options"]),
+        "chart_view_keys": list(payload["ui_options"]["chart_view_keys"]),
+        "backtest_templates": list(payload["ui_options"]["backtest_templates"]),
+        "default_execution": dict(payload["default_execution"]),
+        "default_backtest": dict(payload["default_backtest"]),
+        "cpp_full_parity": payload["full_parity"]["cpp"],
+        "rust_full_parity": payload["full_parity"]["rust"],
+    }

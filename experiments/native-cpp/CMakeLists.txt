@@ -158,6 +158,7 @@ add_executable(binance_backtest_tab
     src/TradingBotWindowSupport.h
     src/TradingBotWindow.web.cpp
     src/TradingBotWindow.h
+    src/generated/PythonParityContract.h
     resources.qrc
     ${APP_ICON_RC}
 )

@@ -12,10 +12,13 @@
 #include <QGraphicsOpacityEffect>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMap>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
@@ -101,21 +104,6 @@ void TradingBotWindow::registerDashboardRuntimeLockWidget(QWidget *widget) {
 }
 
 void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxLayout *root) {
-    const QStringList dashboardIndicatorSources = {
-        "Binance spot",
-        "Binance futures",
-        "TradingView",
-        "Bybit",
-        "Coinbase",
-        "OKX",
-        "Gate",
-        "Bitget",
-        "Mexc",
-        "Kucoin",
-        "HTX",
-        "Kraken",
-    };
-
     auto *accountBox = new QGroupBox("Account & Status", page);
     auto *accountGrid = new QGridLayout(accountBox);
     accountGrid->setHorizontalSpacing(10);
@@ -137,8 +125,12 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(0, col, "API Key:", dashboardApiKey_, 2);
 
     dashboardModeCombo_ = new QComboBox(accountBox);
-    dashboardModeCombo_->addItems({"Live", "Demo", "Testnet"});
-    dashboardModeCombo_->setCurrentText("Demo");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        dashboardModeCombo_,
+        TradingBotWindowSupport::pythonSourceConfigModeOptionKeys(),
+        TradingBotWindowSupport::pythonSourceConfigModeOptionLabels(),
+        {},
+        QStringLiteral("Demo"));
     dashboardModeCombo_->setToolTip(
         "Live: real Binance Futures orders.\n"
         "Demo: compatibility mode for the configured test environment.\n"
@@ -147,8 +139,12 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(0, col, "Mode:", dashboardModeCombo_);
 
     dashboardThemeCombo_ = new QComboBox(accountBox);
-    dashboardThemeCombo_->addItems({"Light", "Dark", "Blue", "Yellow", "Green", "Red"});
-    dashboardThemeCombo_->setCurrentText("Dark");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        dashboardThemeCombo_,
+        TradingBotWindowSupport::pythonSourceThemeOptionKeys(),
+        TradingBotWindowSupport::pythonSourceThemeOptionLabels(),
+        {},
+        QStringLiteral("Dark"));
     registerDashboardRuntimeLockWidget(dashboardThemeCombo_);
     addPair(0, col, "Theme:", dashboardThemeCombo_);
     connect(dashboardThemeCombo_, &QComboBox::currentTextChanged, this, &TradingBotWindow::applyDashboardTheme);
@@ -184,13 +180,17 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(1, col, "API Secret Key:", dashboardApiSecret_, 2);
 
     dashboardAccountTypeCombo_ = new QComboBox(accountBox);
-    dashboardAccountTypeCombo_->addItems({"Spot", "Futures"});
-    dashboardAccountTypeCombo_->setCurrentText("Futures");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        dashboardAccountTypeCombo_,
+        TradingBotWindowSupport::pythonSourceAccountTypeOptionKeys(),
+        TradingBotWindowSupport::pythonSourceAccountTypeOptionLabels(),
+        {},
+        QStringLiteral("Futures"));
     registerDashboardRuntimeLockWidget(dashboardAccountTypeCombo_);
     addPair(1, col, "Account Type:", dashboardAccountTypeCombo_);
 
     auto *accountModeCombo = new QComboBox(accountBox);
-    accountModeCombo->addItems({"Classic Trading", "Portfolio Margin"});
+    accountModeCombo->addItems(TradingBotWindowSupport::pythonSourceAccountModeOptions());
     registerDashboardRuntimeLockWidget(accountModeCombo);
     addPair(1, col, "Account Mode:", accountModeCombo);
 
@@ -253,28 +253,43 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(2, col, "Leverage (Futures):", leverageSpin);
 
     auto *marginModeCombo = new QComboBox(accountBox);
-    marginModeCombo->addItems({"Cross", "Isolated"});
-    marginModeCombo->setCurrentText("Isolated");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        marginModeCombo,
+        TradingBotWindowSupport::pythonSourceMarginModeOptionKeys(),
+        TradingBotWindowSupport::pythonSourceMarginModeOptionLabels(),
+        {},
+        QStringLiteral("Isolated"));
     dashboardMarginModeCombo_ = marginModeCombo;
     registerDashboardRuntimeLockWidget(marginModeCombo);
     addPair(2, col, "Margin Mode (Futures):", marginModeCombo);
 
     auto *positionModeCombo = new QComboBox(accountBox);
-    positionModeCombo->addItems({"One-way", "Hedge"});
-    positionModeCombo->setCurrentText("Hedge");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        positionModeCombo,
+        TradingBotWindowSupport::pythonSourcePositionModeOptionKeys(),
+        TradingBotWindowSupport::pythonSourcePositionModeOptionLabels(),
+        {},
+        QStringLiteral("Hedge"));
     dashboardPositionModeCombo_ = positionModeCombo;
     registerDashboardRuntimeLockWidget(positionModeCombo);
     addPair(2, col, "Position Mode:", positionModeCombo);
 
     auto *assetsModeCombo = new QComboBox(accountBox);
-    assetsModeCombo->addItems({"Single-Asset Mode", "Multi-Assets Mode"});
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        assetsModeCombo,
+        TradingBotWindowSupport::pythonSourceAssetsModeOptionKeys(),
+        TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels());
     registerDashboardRuntimeLockWidget(assetsModeCombo);
     addPair(2, col, "Assets Mode:", assetsModeCombo);
 
     col = 0;
     auto *indicatorSourceCombo = new QComboBox(accountBox);
-    indicatorSourceCombo->addItems(dashboardIndicatorSources);
-    indicatorSourceCombo->setCurrentText("Binance futures");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        indicatorSourceCombo,
+        TradingBotWindowSupport::pythonSourceIndicatorSourceOptionKeys(),
+        TradingBotWindowSupport::pythonSourceIndicatorSourceOptionLabels(),
+        {},
+        QStringLiteral("Binance futures"));
     indicatorSourceCombo->setMinimumWidth(140);
     indicatorSourceCombo->setToolTip(
         "Signal candles currently use Binance market data.\n"
@@ -304,8 +319,12 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     addPair(3, col, "Signal Feed:", signalFeedCombo);
 
     auto *tifCombo = new QComboBox(accountBox);
-    tifCombo->addItems({"GTC", "IOC", "FOK", "GTD"});
-    tifCombo->setCurrentText("GTC");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        tifCombo,
+        TradingBotWindowSupport::pythonSourceTimeInForceOptionKeys(),
+        TradingBotWindowSupport::pythonSourceTimeInForceOptionLabels(),
+        {},
+        QStringLiteral("GTC"));
     registerDashboardRuntimeLockWidget(tifCombo);
     addPair(3, col, "Time-in-Force:", tifCombo);
 
@@ -348,173 +367,28 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     llmGrid->addWidget(allowPublicCheck, 0, 2, 1, 2);
 
     auto *providerCombo = new QComboBox(llmBox);
-    auto addProvider = [providerCombo](
-                           const QString &key,
-                           const QString &label,
-                           const QString &mode,
-                           const QString &baseUrl,
-                           const QString &apiKeyEnv,
-                           const QStringList &models,
-                           const QStringList &reasoningEfforts) {
+    for (const auto &provider : TradingBotWindowSupport::pythonSourceLlmProviderConfigs()) {
         QVariantMap spec;
-        spec.insert(QStringLiteral("key"), key);
-        spec.insert(QStringLiteral("mode"), mode);
-        spec.insert(QStringLiteral("base_url"), baseUrl);
-        spec.insert(QStringLiteral("api_key_env"), apiKeyEnv);
-        spec.insert(QStringLiteral("models"), models);
-        spec.insert(QStringLiteral("reasoning_efforts"), reasoningEfforts);
-        providerCombo->addItem(label, spec);
-    };
-    addProvider(
-        QStringLiteral("openai"),
-        QStringLiteral("OpenAI / ChatGPT"),
-        QStringLiteral("cloud"),
-        QStringLiteral("https://api.openai.com/v1"),
-        QStringLiteral("OPENAI_API_KEY"),
-        {"gpt-5.5",
-         "gpt-5.5-2026-04-23",
-         "gpt-5.5-pro",
-         "gpt-5.5-pro-2026-04-23",
-         "gpt-5.4",
-         "gpt-5.4-2026-03-05",
-         "gpt-5.4-pro",
-         "gpt-5.4-pro-2026-03-05",
-         "gpt-5.4-mini",
-         "gpt-5.4-mini-2026-03-17",
-         "gpt-5.4-nano",
-         "gpt-5.4-nano-2026-03-17",
-         "gpt-5.3-chat-latest",
-         "gpt-5.3-codex",
-         "gpt-5.2",
-         "gpt-5.2-codex",
-         "gpt-5.2-chat-latest",
-         "gpt-5.2-pro",
-         "gpt-5.1",
-         "gpt-5-codex",
-         "gpt-5-mini",
-         "gpt-5-nano",
-         "gpt-4.1",
-         "gpt-4.1-mini",
-         "gpt-4.1-nano"},
-        {"default", "none", "minimal", "low", "medium", "high", "xhigh"});
-    addProvider(
-        QStringLiteral("anthropic"),
-        QStringLiteral("Anthropic Claude"),
-        QStringLiteral("cloud"),
-        QStringLiteral("https://api.anthropic.com"),
-        QStringLiteral("ANTHROPIC_API_KEY"),
-        {"claude-sonnet-4-5-20250929",
-         "claude-haiku-4-5-20251001",
-         "claude-opus-4-5-20251101",
-         "claude-opus-4-1-20250805",
-         "claude-opus-4-20250514",
-         "claude-sonnet-4-20250514",
-         "claude-sonnet-4-5",
-         "claude-haiku-4-5",
-         "claude-opus-4-5",
-         "claude-opus-4-1",
-         "claude-opus-4-0",
-         "claude-sonnet-4-0"},
-        {"default", "disabled", "enabled", "low", "medium", "high"});
-    addProvider(
-        QStringLiteral("gemini"),
-        QStringLiteral("Google Gemini"),
-        QStringLiteral("cloud"),
-        QStringLiteral("https://generativelanguage.googleapis.com/v1beta"),
-        QStringLiteral("GEMINI_API_KEY"),
-        {"gemini-3.1-pro-preview",
-         "gemini-3.1-pro-preview-customtools",
-         "gemini-3-flash-preview",
-         "gemini-3.1-flash-lite-preview",
-         "gemini-2.5-pro",
-         "gemini-2.5-flash",
-         "gemini-2.5-flash-preview-09-2025",
-         "gemini-2.5-flash-lite",
-         "gemini-2.5-flash-lite-preview-09-2025"},
-        {"default", "minimal", "low", "medium", "high"});
-    addProvider(
-        QStringLiteral("deepseek"),
-        QStringLiteral("DeepSeek"),
-        QStringLiteral("cloud"),
-        QStringLiteral("https://api.deepseek.com"),
-        QStringLiteral("DEEPSEEK_API_KEY"),
-        {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"},
-        {"default", "disabled", "enabled", "high", "max"});
-    addProvider(
-        QStringLiteral("mistral"),
-        QStringLiteral("Mistral AI"),
-        QStringLiteral("cloud"),
-        QStringLiteral("https://api.mistral.ai/v1"),
-        QStringLiteral("MISTRAL_API_KEY"),
-        {"mistral-large-latest",
-         "mistral-medium-latest",
-         "mistral-small-latest",
-         "codestral-latest",
-         "open-mistral-nemo"},
-        {"default", "low", "medium", "high"});
-    addProvider(
-        QStringLiteral("grok"),
-        QStringLiteral("xAI Grok"),
-        QStringLiteral("cloud"),
-        QStringLiteral("https://api.x.ai/v1"),
-        QStringLiteral("XAI_API_KEY"),
-        {"grok-4.3",
-         "grok-4.3-latest",
-         "grok-4.20",
-         "grok-4.20-reasoning",
-         "grok-4.20-non-reasoning",
-         "grok-4-fast-reasoning",
-         "grok-4-fast-non-reasoning"},
-        {"default", "low", "medium", "high"});
-    addProvider(
-        QStringLiteral("qwen"),
-        QStringLiteral("Alibaba Qwen / DashScope"),
-        QStringLiteral("cloud"),
-        QStringLiteral("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
-        QStringLiteral("DASHSCOPE_API_KEY"),
-        {"qwen3.6-max-preview",
-         "qwen3.6-plus",
-         "qwen3.6-plus-2026-04-02",
-         "qwen3.6-flash",
-         "qwen3.6-flash-2026-04-16",
-         "qwen3-max",
-         "qwen3-max-2026-01-23",
-         "qwen3-max-2025-09-23",
-         "qwen3-max-preview",
-         "qwen3.5-plus",
-         "qwen3.5-plus-2026-02-15",
-         "qwen3.5-flash",
-         "qwen3.5-flash-2026-02-23",
-         "qwen3-coder-plus",
-         "qwen3-coder-flash",
-         "qwen-plus-us",
-         "qwen-flash-us"},
-        {"default", "low", "medium", "high"});
-    addProvider(
-        QStringLiteral("local"),
-        QStringLiteral("Local / Custom OpenAI-Compatible"),
-        QStringLiteral("local"),
-        QStringLiteral("http://127.0.0.1:11434/v1"),
-        QStringLiteral("LOCAL_LLM_API_KEY"),
-        {"qwen3:0.6b",
-         "qwen3:1.7b",
-         "qwen3:4b",
-         "qwen3:8b",
-         "qwen3:14b",
-         "qwen3:30b-a3b",
-         "qwen3:32b",
-         "qwen3",
-         "gpt-oss:20b",
-         "gpt-oss:latest",
-         "llama3.3",
-         "llama3.1:8b",
-         "llama3.2:3b",
-         "llama3.2:1b",
-         "mistral-small3.2",
-         "deepseek-r1:8b",
-         "gemma3:4b",
-         "custom-model"},
-        {"default", "none", "low", "medium", "high", "xhigh"});
+        spec.insert(QStringLiteral("key"), provider.key);
+        spec.insert(QStringLiteral("label"), provider.label);
+        spec.insert(QStringLiteral("mode"), provider.mode);
+        spec.insert(QStringLiteral("protocol"), provider.protocol);
+        spec.insert(QStringLiteral("base_url"), provider.defaultBaseUrl);
+        spec.insert(QStringLiteral("default_model"), provider.defaultModel);
+        spec.insert(QStringLiteral("api_key_env"), provider.apiKeyEnv);
+        spec.insert(QStringLiteral("models"), provider.modelSuggestions);
+        spec.insert(
+            QStringLiteral("reasoning_efforts"),
+            provider.reasoningEfforts.isEmpty()
+                ? QStringList{QStringLiteral("default")}
+                : provider.reasoningEfforts);
+        spec.insert(
+            QStringLiteral("default_reasoning"),
+            provider.defaultReasoningEffort.isEmpty()
+                ? QStringLiteral("default")
+                : provider.defaultReasoningEffort);
+        providerCombo->addItem(provider.label, spec);
+    }
     dashboardLlmProviderCombo_ = providerCombo;
     registerDashboardRuntimeLockWidget(providerCombo);
     llmGrid->addWidget(new QLabel("Provider:", llmBox), 1, 0);
@@ -550,10 +424,12 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     llmGrid->addWidget(apiKeyEdit, 3, 3);
 
     auto *useForCombo = new QComboBox(llmBox);
-    useForCombo->addItem("Advisory", "advisory");
-    useForCombo->addItem("Signal confirmation", "signal_confirmation");
-    useForCombo->addItem("Risk review", "risk_review");
-    useForCombo->addItem("Backtest explanation", "backtest_explanation");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        useForCombo,
+        TradingBotWindowSupport::pythonSourceLlmUseForOptionKeys(),
+        TradingBotWindowSupport::pythonSourceLlmUseForOptionLabels(),
+        {},
+        QStringLiteral("advisory"));
     dashboardLlmUseForCombo_ = useForCombo;
     registerDashboardRuntimeLockWidget(useForCombo);
     llmGrid->addWidget(new QLabel("Use for:", llmBox), 4, 0);
@@ -566,10 +442,46 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     llmGrid->addWidget(new QLabel("Reasoning / Thinking:", llmBox), 4, 2);
     llmGrid->addWidget(reasoningCombo, 4, 3);
 
+    auto *promptEdit = new QTextEdit(llmBox);
+    promptEdit->setPlaceholderText("Ask for advisory-only market analysis. The LLM cannot place orders.");
+    promptEdit->setFixedHeight(72);
+    registerDashboardRuntimeLockWidget(promptEdit);
+    llmGrid->addWidget(new QLabel("Advisory prompt:", llmBox), 5, 0);
+    llmGrid->addWidget(promptEdit, 5, 1, 1, 3);
+
+    auto *systemPromptEdit = new QTextEdit(llmBox);
+    systemPromptEdit->setPlaceholderText("Optional system prompt; default advisory safety prompt is used when empty.");
+    systemPromptEdit->setFixedHeight(58);
+    registerDashboardRuntimeLockWidget(systemPromptEdit);
+    llmGrid->addWidget(new QLabel("System prompt:", llmBox), 6, 0);
+    llmGrid->addWidget(systemPromptEdit, 6, 1, 1, 3);
+
+    auto *applyLlmBtn = new QPushButton("Apply LLM Settings", llmBox);
+    auto *prepareLlmBtn = new QPushButton("Prepare Advisory", llmBox);
+    auto *sendLlmBtn = new QPushButton("Send Advisory", llmBox);
+    auto *checkLocalModelBtn = new QPushButton("Check Local Model", llmBox);
+    auto *startLocalModelBtn = new QPushButton("Start Local Server", llmBox);
+    auto *downloadLocalModelBtn = new QPushButton("Download Local Model", llmBox);
+    auto *deleteLocalModelBtn = new QPushButton("Delete Local Model", llmBox);
+    registerDashboardRuntimeLockWidget(applyLlmBtn);
+    registerDashboardRuntimeLockWidget(prepareLlmBtn);
+    registerDashboardRuntimeLockWidget(sendLlmBtn);
+    registerDashboardRuntimeLockWidget(checkLocalModelBtn);
+    registerDashboardRuntimeLockWidget(startLocalModelBtn);
+    registerDashboardRuntimeLockWidget(downloadLocalModelBtn);
+    registerDashboardRuntimeLockWidget(deleteLocalModelBtn);
+    llmGrid->addWidget(applyLlmBtn, 7, 0);
+    llmGrid->addWidget(prepareLlmBtn, 7, 1);
+    llmGrid->addWidget(sendLlmBtn, 7, 2);
+    llmGrid->addWidget(checkLocalModelBtn, 8, 0);
+    llmGrid->addWidget(startLocalModelBtn, 8, 1);
+    llmGrid->addWidget(downloadLocalModelBtn, 8, 2);
+    llmGrid->addWidget(deleteLocalModelBtn, 8, 3);
+
     auto *statusLabel = new QLabel("LLM settings are saved with dashboard config.", llmBox);
     statusLabel->setStyleSheet("color: #94a3b8; font-weight: 600;");
     dashboardLlmStatusLabel_ = statusLabel;
-    llmGrid->addWidget(statusLabel, 5, 0, 1, 4);
+    llmGrid->addWidget(statusLabel, 9, 0, 1, 4);
 
     auto applyProviderDefaults = [this](bool forceText) {
         if (!dashboardLlmProviderCombo_) {
@@ -577,6 +489,7 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
         }
         const QVariantMap spec = dashboardLlmProviderCombo_->currentData().toMap();
         const QStringList models = spec.value(QStringLiteral("models")).toStringList();
+        const QString defaultModel = spec.value(QStringLiteral("default_model")).toString().trimmed();
         const QString currentModel = dashboardLlmModelCombo_
             ? dashboardLlmModelCombo_->currentText().trimmed()
             : QString();
@@ -587,9 +500,10 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             dashboardLlmModelCombo_->setCurrentText(
                 !forceText && !currentModel.isEmpty()
                     ? currentModel
-                    : (models.isEmpty() ? QString() : models.first()));
+                    : (!defaultModel.isEmpty() ? defaultModel : (models.isEmpty() ? QString() : models.first())));
         }
         const QStringList reasoningEfforts = spec.value(QStringLiteral("reasoning_efforts")).toStringList();
+        const QString defaultReasoning = spec.value(QStringLiteral("default_reasoning")).toString().trimmed();
         const QString currentReasoning = dashboardLlmReasoningCombo_
             ? dashboardLlmReasoningCombo_->currentText().trimmed()
             : QString();
@@ -600,7 +514,9 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             dashboardLlmReasoningCombo_->setCurrentText(
                 !forceText && !currentReasoning.isEmpty()
                     ? currentReasoning
-                    : (reasoningEfforts.isEmpty() ? QStringLiteral("default") : reasoningEfforts.first()));
+                    : (!defaultReasoning.isEmpty()
+                        ? defaultReasoning
+                        : (reasoningEfforts.isEmpty() ? QStringLiteral("default") : reasoningEfforts.first())));
         }
         if (dashboardLlmBaseUrlEdit_ && (forceText || dashboardLlmBaseUrlEdit_->text().trimmed().isEmpty())) {
             dashboardLlmBaseUrlEdit_->setText(spec.value(QStringLiteral("base_url")).toString());
@@ -646,8 +562,59 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             dashboardLlmProviderCombo_->setCurrentIndex(fallbackIndex);
         }
     };
-    auto updateLlmEnabledState = [this]() {
+    auto buildLlmConfigPatch = [this]() {
+        const QVariantMap providerSpec = dashboardLlmProviderCombo_
+            ? dashboardLlmProviderCombo_->currentData().toMap()
+            : QVariantMap{};
+        QJsonObject config;
+        config.insert(QStringLiteral("llm_enabled"), dashboardLlmEnableCheck_ && dashboardLlmEnableCheck_->isChecked());
+        config.insert(QStringLiteral("llm_provider"), providerSpec.value(QStringLiteral("key")).toString().trimmed());
+        config.insert(
+            QStringLiteral("llm_model"),
+            dashboardLlmModelCombo_ ? dashboardLlmModelCombo_->currentText().trimmed() : QString());
+        config.insert(
+            QStringLiteral("llm_base_url"),
+            dashboardLlmBaseUrlEdit_ ? dashboardLlmBaseUrlEdit_->text().trimmed() : QString());
+        config.insert(
+            QStringLiteral("llm_api_key_env"),
+            dashboardLlmApiKeyEnvEdit_ ? dashboardLlmApiKeyEnvEdit_->text().trimmed() : QString());
+        config.insert(
+            QStringLiteral("llm_api_key"),
+            dashboardLlmApiKeyEdit_ ? dashboardLlmApiKeyEdit_->text().trimmed() : QString());
+        config.insert(
+            QStringLiteral("llm_use_for"),
+            dashboardLlmUseForCombo_ ? dashboardLlmUseForCombo_->currentData().toString().trimmed() : QStringLiteral("advisory"));
+        config.insert(
+            QStringLiteral("llm_allow_public_network"),
+            dashboardLlmAllowPublicNetworkCheck_ && dashboardLlmAllowPublicNetworkCheck_->isChecked());
+        config.insert(
+            QStringLiteral("llm_reasoning_effort"),
+            dashboardLlmReasoningCombo_ ? dashboardLlmReasoningCombo_->currentText().trimmed() : QStringLiteral("default"));
+        QJsonObject wrapper;
+        wrapper.insert(QStringLiteral("config"), config);
+        return wrapper;
+    };
+
+    auto updateLlmEnabledState = [this,
+                                  applyLlmBtn,
+                                  checkLocalModelBtn,
+                                  deleteLocalModelBtn,
+                                  downloadLocalModelBtn,
+                                  prepareLlmBtn,
+                                  promptEdit,
+                                  sendLlmBtn,
+                                  startLocalModelBtn,
+                                  systemPromptEdit]() {
         const bool enabled = dashboardLlmEnableCheck_ && dashboardLlmEnableCheck_->isChecked();
+        const QVariantMap providerSpec = dashboardLlmProviderCombo_
+            ? dashboardLlmProviderCombo_->currentData().toMap()
+            : QVariantMap{};
+        const QString providerMode = providerSpec.value(QStringLiteral("mode")).toString().trimmed().toLower();
+        const QString providerKey = providerSpec.value(QStringLiteral("key")).toString().trimmed().toLower();
+        const bool localProvider = providerMode == QStringLiteral("local")
+            || providerKey.contains(QStringLiteral("local"))
+            || providerKey.contains(QStringLiteral("ollama"))
+            || providerKey.contains(QStringLiteral("custom"));
         const QVector<QWidget *> widgets = {
             dashboardLlmAllowPublicNetworkCheck_,
             dashboardLlmProviderCombo_,
@@ -657,6 +624,15 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
             dashboardLlmApiKeyEnvEdit_,
             dashboardLlmApiKeyEdit_,
             dashboardLlmUseForCombo_,
+            applyLlmBtn,
+            checkLocalModelBtn,
+            deleteLocalModelBtn,
+            downloadLocalModelBtn,
+            prepareLlmBtn,
+            promptEdit,
+            sendLlmBtn,
+            startLocalModelBtn,
+            systemPromptEdit,
         };
         for (QWidget *widget : widgets) {
             if (!widget) {
@@ -669,6 +645,11 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
                 auto *effect = new QGraphicsOpacityEffect(widget);
                 effect->setOpacity(0.42);
                 widget->setGraphicsEffect(effect);
+            }
+        }
+        for (QWidget *widget : {checkLocalModelBtn, startLocalModelBtn, downloadLocalModelBtn, deleteLocalModelBtn}) {
+            if (widget) {
+                widget->setEnabled(enabled && localProvider);
             }
         }
         if (!dashboardLlmStatusLabel_) {
@@ -702,6 +683,235 @@ void TradingBotWindow::createDashboardLlmSection(QWidget *page, QVBoxLayout *roo
     connect(reasoningCombo, &QComboBox::currentIndexChanged, this, [updateLlmEnabledState](int) {
         updateLlmEnabledState();
     });
+    auto applyLlmSettings = [this, buildLlmConfigPatch](bool quiet) {
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("Applying LLM settings through Python Service API..."));
+        }
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("PATCH"),
+            QStringLiteral("llm_config"),
+            buildLlmConfigPatch(),
+            30000);
+        if (!dashboardLlmStatusLabel_) {
+            return result.ok;
+        }
+        if (result.ok) {
+            const QJsonObject payload = result.document.object();
+            const QString provider = payload.value(QStringLiteral("provider_label")).toString(
+                dashboardLlmProviderCombo_ ? dashboardLlmProviderCombo_->currentText().trimmed() : QStringLiteral("LLM"));
+            const QString model = payload.value(QStringLiteral("model")).toString(
+                dashboardLlmModelCombo_ ? dashboardLlmModelCombo_->currentText().trimmed() : QString());
+            if (!quiet) {
+                dashboardLlmStatusLabel_->setText(
+                    QStringLiteral("LLM settings applied through Python Service API: %1 %2.")
+                        .arg(provider, model));
+            }
+        } else {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("LLM settings apply failed: %1").arg(result.error));
+        }
+        return result.ok;
+    };
+    connect(applyLlmBtn, &QPushButton::clicked, this, [applyLlmSettings]() {
+        applyLlmSettings(false);
+    });
+    auto runLlmPrompt = [this, applyLlmSettings, promptEdit, systemPromptEdit](bool dryRun) {
+        const QString prompt = promptEdit ? promptEdit->toPlainText().trimmed() : QString();
+        if (prompt.isEmpty()) {
+            if (dashboardLlmStatusLabel_) {
+                dashboardLlmStatusLabel_->setText(QStringLiteral("LLM advisory: enter a prompt first."));
+            }
+            return;
+        }
+        if (!dryRun) {
+            const QMessageBox::StandardButton answer = QMessageBox::question(
+                this,
+                QStringLiteral("Send LLM Advisory"),
+                QStringLiteral("Send this advisory prompt to the selected LLM provider? The LLM remains advisory-only and cannot execute trades."));
+            if (answer != QMessageBox::Yes) {
+                if (dashboardLlmStatusLabel_) {
+                    dashboardLlmStatusLabel_->setText(QStringLiteral("LLM advisory send cancelled."));
+                }
+                return;
+            }
+        }
+        if (!applyLlmSettings(true)) {
+            return;
+        }
+        QJsonObject request;
+        request.insert(QStringLiteral("prompt"), prompt);
+        request.insert(QStringLiteral("system_prompt"), systemPromptEdit ? systemPromptEdit->toPlainText().trimmed() : QString());
+        request.insert(QStringLiteral("dry_run"), dryRun);
+        request.insert(
+            QStringLiteral("source"),
+            dryRun ? QStringLiteral("cpp-desktop-llm-dry-run") : QStringLiteral("cpp-desktop-llm-advisory"));
+
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(
+                dryRun
+                    ? QStringLiteral("Preparing LLM advisory request through Python Service API...")
+                    : QStringLiteral("Sending LLM advisory request through Python Service API..."));
+        }
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(
+            QStringLiteral("POST"),
+            QStringLiteral("llm_prompt"),
+            request,
+            45000);
+        if (!dashboardLlmStatusLabel_) {
+            return;
+        }
+        if (!result.ok) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("LLM advisory failed: %1").arg(result.error));
+            return;
+        }
+        const QJsonObject payload = result.document.object();
+        const bool ok = payload.value(QStringLiteral("ok")).toBool(false);
+        const QString text = payload.value(QStringLiteral("text")).toString().trimmed();
+        const QString error = payload.value(QStringLiteral("error")).toString().trimmed();
+        if (ok && dryRun) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("LLM advisory request prepared; provider payload was validated by Python Service API."));
+        } else if (ok) {
+            dashboardLlmStatusLabel_->setText(
+                text.isEmpty()
+                    ? QStringLiteral("LLM advisory completed; provider returned no text.")
+                    : QStringLiteral("LLM advisory: %1").arg(text.left(500)));
+        } else {
+            dashboardLlmStatusLabel_->setText(
+                error.isEmpty()
+                    ? QStringLiteral("LLM advisory blocked or failed by Python Service API policy.")
+                    : QStringLiteral("LLM advisory blocked or failed: %1").arg(error.left(500)));
+        }
+    };
+    connect(prepareLlmBtn, &QPushButton::clicked, this, [runLlmPrompt]() {
+        runLlmPrompt(true);
+    });
+    connect(sendLlmBtn, &QPushButton::clicked, this, [runLlmPrompt]() {
+        runLlmPrompt(false);
+    });
+    auto localModelPayload = [this]() {
+        QJsonObject request;
+        request.insert(
+            QStringLiteral("base_url"),
+            dashboardLlmBaseUrlEdit_ ? dashboardLlmBaseUrlEdit_->text().trimmed() : QStringLiteral("http://127.0.0.1:11434/v1"));
+        request.insert(
+            QStringLiteral("model"),
+            dashboardLlmModelCombo_ ? dashboardLlmModelCombo_->currentText().trimmed() : QString());
+        request.insert(QStringLiteral("source"), QStringLiteral("cpp-desktop-llm-local-model"));
+        return request;
+    };
+    auto localModelSummary = [](QJsonObject payload) {
+        if (payload.contains(QStringLiteral("status")) && payload.value(QStringLiteral("status")).isObject()) {
+            payload = payload.value(QStringLiteral("status")).toObject();
+        }
+        QStringList storagePaths;
+        for (const QJsonValue &value : payload.value(QStringLiteral("storage_paths")).toArray()) {
+            const QString path = value.toString().trimmed();
+            if (!path.isEmpty()) {
+                storagePaths.push_back(path);
+            }
+        }
+        QStringList parts;
+        const QString model = payload.value(QStringLiteral("model")).toString().trimmed();
+        const QString kind = payload.value(QStringLiteral("server_kind")).toString().trimmed();
+        const QString size = payload.value(QStringLiteral("estimated_size_label")).toString().trimmed();
+        const QString warning = payload.value(QStringLiteral("disk_space_warning")).toString().trimmed();
+        const QString error = payload.value(QStringLiteral("error")).toString().trimmed();
+        if (!model.isEmpty()) {
+            parts.push_back(QStringLiteral("model %1").arg(model));
+        }
+        if (!kind.isEmpty()) {
+            parts.push_back(kind);
+        }
+        if (payload.contains(QStringLiteral("installed"))) {
+            parts.push_back(payload.value(QStringLiteral("installed")).toBool(false) ? QStringLiteral("installed") : QStringLiteral("not installed"));
+        }
+        if (!size.isEmpty()) {
+            parts.push_back(size);
+        }
+        if (!storagePaths.isEmpty()) {
+            parts.push_back(QStringLiteral("storage: %1").arg(storagePaths.join(QStringLiteral("; "))));
+        }
+        if (!warning.isEmpty()) {
+            parts.push_back(warning);
+        }
+        if (!error.isEmpty()) {
+            parts.push_back(QStringLiteral("error: %1").arg(error));
+        }
+        if (parts.isEmpty() && payload.contains(QStringLiteral("started"))) {
+            parts.push_back(payload.value(QStringLiteral("started")).toBool(false) ? QStringLiteral("local server started") : QStringLiteral("local server not started"));
+        }
+        return parts.isEmpty() ? QStringLiteral("Local model response received.") : parts.join(QStringLiteral(" | "));
+    };
+    auto runLocalModelAction = [this, localModelPayload, localModelSummary](
+                                   const QString &label,
+                                   const QString &routeName,
+                                   const QString &method,
+                                   int timeoutMs,
+                                   bool confirm) {
+        const QJsonObject request = localModelPayload();
+        const QString model = request.value(QStringLiteral("model")).toString().trimmed();
+        if (model.isEmpty()) {
+            if (dashboardLlmStatusLabel_) {
+                dashboardLlmStatusLabel_->setText(QStringLiteral("Select a concrete local model first."));
+            }
+            return;
+        }
+        if (confirm) {
+            const QMessageBox::StandardButton answer = QMessageBox::question(
+                this,
+                label,
+                QStringLiteral("%1 for '%2' on this PC?").arg(label, model));
+            if (answer != QMessageBox::Yes) {
+                if (dashboardLlmStatusLabel_) {
+                    dashboardLlmStatusLabel_->setText(QStringLiteral("%1 cancelled for '%2'.").arg(label, model));
+                }
+                return;
+            }
+        }
+        if (dashboardLlmStatusLabel_) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("%1 through Python Service API...").arg(label));
+        }
+        const auto result = TradingBotWindowSupport::serviceApiRequestJson(method, routeName, request, timeoutMs);
+        if (!dashboardLlmStatusLabel_) {
+            return;
+        }
+        if (!result.ok) {
+            dashboardLlmStatusLabel_->setText(QStringLiteral("%1 failed: %2").arg(label, result.error));
+            return;
+        }
+        dashboardLlmStatusLabel_->setText(QStringLiteral("%1: %2").arg(label, localModelSummary(result.document.object())));
+    };
+    connect(checkLocalModelBtn, &QPushButton::clicked, this, [runLocalModelAction]() {
+        runLocalModelAction(
+            QStringLiteral("Check local model"),
+            QStringLiteral("llm_local_model_status"),
+            QStringLiteral("GET"),
+            10000,
+            false);
+    });
+    connect(startLocalModelBtn, &QPushButton::clicked, this, [runLocalModelAction]() {
+        runLocalModelAction(
+            QStringLiteral("Start local model server"),
+            QStringLiteral("llm_local_model_start"),
+            QStringLiteral("POST"),
+            30000,
+            true);
+    });
+    connect(downloadLocalModelBtn, &QPushButton::clicked, this, [runLocalModelAction]() {
+        runLocalModelAction(
+            QStringLiteral("Download local model"),
+            QStringLiteral("llm_local_model_pull"),
+            QStringLiteral("POST"),
+            1'800'000,
+            true);
+    });
+    connect(deleteLocalModelBtn, &QPushButton::clicked, this, [runLocalModelAction]() {
+        runLocalModelAction(
+            QStringLiteral("Delete local model"),
+            QStringLiteral("llm_local_model_delete"),
+            QStringLiteral("POST"),
+            60000,
+            true);
+    });
     applyProviderDefaults(true);
     syncProviderNetworkAccess();
     updateLlmEnabledState();
@@ -720,36 +930,12 @@ void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, 
     dashboardExchangeCombo_ = exchangeCombo;
     registerDashboardRuntimeLockWidget(exchangeCombo);
     exchangeLayout->addWidget(exchangeCombo);
-    struct ExchangeOption {
-        QString title;
-        QString badge;
-        bool disabled;
-    };
-    const QVector<ExchangeOption> exchangeOptions = {
-        {"Binance", "", false},
-        {"Bybit", "coming soon", true},
-        {"OKX", "coming soon", true},
-        {"Gate", "coming soon", true},
-        {"Bitget", "coming soon", true},
-        {"MEXC", "coming soon", true},
-        {"KuCoin", "coming soon", true},
-    };
-    for (const auto &opt : exchangeOptions) {
-        QString itemText = opt.title;
-        if (!opt.badge.isEmpty()) {
-            itemText += QString(" (%1)").arg(opt.badge);
-        }
-        exchangeCombo->addItem(itemText, opt.title);
-        const int idx = exchangeCombo->count() - 1;
-        if (opt.disabled) {
-            if (auto *model = qobject_cast<QStandardItemModel *>(exchangeCombo->model())) {
-                if (auto *item = model->item(idx)) {
-                    item->setFlags(item->flags() & ~Qt::ItemFlag::ItemIsEnabled);
-                    item->setForeground(QColor("#6b7280"));
-                }
-            }
-        }
-    }
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        exchangeCombo,
+        TradingBotWindowSupport::pythonSourceExchangeOptionKeys(),
+        TradingBotWindowSupport::pythonSourceExchangeOptionLabels(),
+        TradingBotWindowSupport::pythonSourceExchangeOptionDisabledLabels(),
+        QStringLiteral("Binance"));
     root->addWidget(exchangeBox);
 
     auto *marketsBox = new QGroupBox("Markets / Intervals", page);
@@ -765,10 +951,7 @@ void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, 
 
     auto *dashboardSymbolList = new QListWidget(marketsBox);
     dashboardSymbolList->setSelectionMode(QAbstractItemView::MultiSelection);
-    dashboardSymbolList->addItems({
-        "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-        "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT",
-    });
+    dashboardSymbolList->addItems(TradingBotWindowSupport::pythonSourceDefaultExecutionSymbols());
     dashboardSymbolList->setMinimumHeight(220);
     dashboardSymbolList->setMaximumHeight(260);
     dashboardSymbolList_ = dashboardSymbolList;
@@ -777,15 +960,7 @@ void TradingBotWindow::createDashboardExchangeAndMarketsSections(QWidget *page, 
 
     auto *dashboardIntervalList = new QListWidget(marketsBox);
     dashboardIntervalList->setSelectionMode(QAbstractItemView::MultiSelection);
-    dashboardIntervalList->addItems({
-        "1m", "3m", "5m", "10m", "15m", "20m", "30m",
-        "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
-        "1d", "2d", "3d", "4d", "5d", "6d",
-        "1w", "2w", "3w",
-        "1month", "2months", "3months", "6months",
-        "1mo", "2mo", "3mo", "6mo",
-        "1y", "2y",
-    });
+    dashboardIntervalList->addItems(TradingBotWindowSupport::pythonSourceBacktestIntervals());
     dashboardIntervalList->setMinimumHeight(220);
     dashboardIntervalList->setMaximumHeight(260);
     dashboardIntervalList_ = dashboardIntervalList;
@@ -925,8 +1100,13 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     int row = 0;
     strategyGrid->addWidget(new QLabel("Side:", strategyBox), row, 0);
     auto *sideCombo = new QComboBox(strategyBox);
-    sideCombo->addItems({"Buy (Long)", "Sell (Short)", "Both (Long/Short)"});
-    sideCombo->setCurrentText("Both (Long/Short)");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        sideCombo,
+        TradingBotWindowSupport::pythonSourceSideOptionKeys(),
+        TradingBotWindowSupport::pythonSourceSideOptionLabels(),
+        {},
+        {},
+        QStringLiteral("Both (Long/Short)"));
     dashboardSideCombo_ = sideCombo;
     registerDashboardRuntimeLockWidget(sideCombo);
     strategyGrid->addWidget(sideCombo, row, 1);
@@ -943,19 +1123,13 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
 
     strategyGrid->addWidget(new QLabel("Loop Interval Override:", strategyBox), row, 4);
     auto *loopOverride = new QComboBox(strategyBox);
-    loopOverride->addItems({
-        "30 seconds",
-        "45 seconds",
-        "1 minute",
-        "2 minutes",
-        "3 minutes",
-        "5 minutes",
-        "10 minutes",
-        "30 minutes",
-        "1 hour",
-        "2 hours",
-    });
-    loopOverride->setCurrentText("1 minute");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        loopOverride,
+        TradingBotWindowSupport::pythonSourceDashboardLoopChoiceKeys(),
+        TradingBotWindowSupport::pythonSourceDashboardLoopChoiceLabels(),
+        {},
+        QStringLiteral("1m"),
+        QStringLiteral("1 minute"));
     dashboardLoopOverrideCombo_ = loopOverride;
     registerDashboardRuntimeLockWidget(loopOverride);
     strategyGrid->addWidget(loopOverride, row, 5);
@@ -966,12 +1140,10 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     registerDashboardRuntimeLockWidget(enableLeadTrader);
     strategyGrid->addWidget(enableLeadTrader, row, 0, 1, 2);
     auto *leadTraderCombo = new QComboBox(strategyBox);
-    leadTraderCombo->addItems({
-        "Futures Public Lead Trader",
-        "Futures Private Lead Trader",
-        "Spot Public Lead Trader",
-        "Spot Private Lead Trader",
-    });
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        leadTraderCombo,
+        TradingBotWindowSupport::pythonSourceLeadTraderOptionKeys(),
+        TradingBotWindowSupport::pythonSourceLeadTraderOptionLabels());
     dashboardLeadTraderCombo_ = leadTraderCombo;
     leadTraderCombo->setEnabled(false);
     strategyGrid->addWidget(leadTraderCombo, row, 2, 1, 2);
@@ -1026,10 +1198,12 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     strategyGrid->addWidget(stopLossEnable, row, 1);
 
     auto *stopModeCombo = new QComboBox(strategyBox);
-    stopModeCombo->addItem("USDT Based Stop Loss", "usdt");
-    stopModeCombo->addItem("Percentage Based Stop Loss", "percent");
-    stopModeCombo->addItem("Both Stop Loss (USDT & Percentage)", "both");
-    stopModeCombo->setCurrentIndex(0);
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        stopModeCombo,
+        TradingBotWindowSupport::pythonSourceStopLossModeKeys(),
+        TradingBotWindowSupport::pythonSourceStopLossModeLabels(),
+        {},
+        QStringLiteral("usdt"));
     dashboardStopLossModeCombo_ = stopModeCombo;
     strategyGrid->addWidget(stopModeCombo, row, 2, 1, 2);
 
@@ -1052,7 +1226,12 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     ++row;
     strategyGrid->addWidget(new QLabel("Stop Loss Scope:", strategyBox), row, 0);
     auto *stopScopeCombo = new QComboBox(strategyBox);
-    stopScopeCombo->addItems({"Per Trade Stop Loss", "Cumulative Stop Loss", "Entire Account Stop Loss"});
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        stopScopeCombo,
+        TradingBotWindowSupport::pythonSourceStopLossScopeKeys(),
+        TradingBotWindowSupport::pythonSourceStopLossScopeLabels(),
+        {},
+        QStringLiteral("per_trade"));
     dashboardStopLossScopeCombo_ = stopScopeCombo;
     strategyGrid->addWidget(stopScopeCombo, row, 1, 1, 2);
 
@@ -1067,10 +1246,10 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     ++row;
     strategyGrid->addWidget(new QLabel("Template:", strategyBox), row, 0);
     auto *templateCombo = new QComboBox(strategyBox);
-    templateCombo->addItem("No Template", "");
-    templateCombo->addItem("Top 10 %2 per trade 1x Isolated", "top10");
-    templateCombo->addItem("Top 50 %2 per trade 1x", "top50");
-    templateCombo->addItem("Top 100 %1 per trade 1x", "top100");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        templateCombo,
+        TradingBotWindowSupport::pythonSourceDashboardStrategyTemplateKeys(),
+        TradingBotWindowSupport::pythonSourceDashboardStrategyTemplateLabels());
     dashboardTemplateCombo_ = templateCombo;
     registerDashboardRuntimeLockWidget(templateCombo);
     connect(templateCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, templateCombo](int) {
@@ -1088,7 +1267,11 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
     indGrid->setVerticalSpacing(8);
     indGrid->setContentsMargins(12, 12, 12, 12);
 
-    auto addIndicatorRow = [indicatorsBox, indGrid, this](int rowIndex, const QString &name) {
+    const QStringList defaultEnabledIndicatorKeys =
+        TradingBotWindowSupport::pythonSourceDefaultEnabledIndicatorKeys();
+    auto addIndicatorRow = [defaultEnabledIndicatorKeys, indicatorsBox, indGrid, this](
+                               int rowIndex,
+                               const QString &name) {
         auto *cb = new QCheckBox(name, indicatorsBox);
         auto *btn = new QPushButton("Buy-Sell Values", indicatorsBox);
         registerDashboardRuntimeLockWidget(cb);
@@ -1100,6 +1283,9 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
         QObject::connect(btn, &QPushButton::clicked, this, [this, name]() { showIndicatorDialog(name); });
         const QString indicatorKey = TradingBotWindowDashboardRuntime::normalizedIndicatorKey(name);
         if (!indicatorKey.trimmed().isEmpty()) {
+            const bool checkedByDefault = defaultEnabledIndicatorKeys.contains(indicatorKey);
+            cb->setChecked(checkedByDefault);
+            btn->setEnabled(checkedByDefault);
             dashboardIndicatorChecks_.insert(indicatorKey, cb);
             dashboardIndicatorButtons_.insert(indicatorKey, btn);
             if (!dashboardIndicatorParams_.contains(indicatorKey)) {
@@ -1110,41 +1296,7 @@ void TradingBotWindow::createDashboardStrategySection(QWidget *page, QVBoxLayout
         indGrid->addWidget(btn, rowIndex, 1);
     };
 
-    const QStringList indicators = {
-        "Moving Average (MA)",
-        "Donchian Channels (DC)",
-        "Parabolic SAR (PSAR)",
-        "Bollinger Bands (BB)",
-        "Bollinger Band Width (BBW)",
-        "Keltner Channels (KC)",
-        "Ichimoku Cloud (IC)",
-        "Relative Strength Index (RSI)",
-        "Volume",
-        "On-Balance Volume (OBV)",
-        "Relative Volume (RVOL)",
-        "Chaikin Money Flow (CMF)",
-        "Commodity Channel Index (CCI)",
-        "Rate of Change (ROC)",
-        "Triple Exponential Average (TRIX)",
-        "Percentage Price Oscillator (PPO)",
-        "Awesome Oscillator (AO)",
-        "Know Sure Thing (KST)",
-        "Aroon Oscillator (AROON)",
-        "Choppiness Index (CHOP)",
-        "Average True Range (ATR)",
-        "Normalized Average True Range (NATR)",
-        "Volume Weighted Average Price (VWAP)",
-        "Money Flow Index (MFI)",
-        "Stochastic RSI (SRSI)",
-        "Williams %R",
-        "Moving Average Convergence/Divergence (MACD)",
-        "Ultimate Oscillator (UO)",
-        "Average Directional Index (ADX)",
-        "Directional Movement Index (DMI)",
-        "SuperTrend (ST)",
-        "Exponential Moving Average (EMA)",
-        "Stochastic Oscillator",
-    };
+    const QStringList indicators = TradingBotWindowSupport::pythonSourceIndicatorDisplayNames();
     for (int i = 0; i < indicators.size(); ++i) {
         addIndicatorRow(i, indicators[i]);
     }

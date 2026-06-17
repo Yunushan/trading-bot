@@ -111,6 +111,12 @@ class ProductPackagingContractTests(unittest.TestCase):
     def test_rust_desktop_shells_surface_full_trading_tabs(self):
         rust_root = REPO_ROOT / "experiments" / "rust-shells"
         core = (rust_root / "crates" / "core" / "src" / "lib.rs").read_text(encoding="utf-8")
+        generated_core = (rust_root / "crates" / "core" / "src" / "generated_python_parity.rs").read_text(
+            encoding="utf-8"
+        )
+        generated_tauri = (rust_root / "apps" / "tauri-desktop" / "ui" / "generated-python-parity.js").read_text(
+            encoding="utf-8"
+        )
         tab_labels = (
             "Dashboard",
             "Chart",
@@ -165,10 +171,11 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Risk and shutdown guards", core)
         self.assertIn("BinanceRestClient", core)
         self.assertIn("BinanceWsClient", core)
-        self.assertIn('name: "control_start"', core)
-        self.assertIn('path: "/api/v1/control/start"', core)
-        self.assertIn('name: "llm_local_model_pull"', core)
-        self.assertIn('path: "/api/v1/llm/local-model/pull"', core)
+        self.assertIn("generated_python_parity::PYTHON_SERVICE_ROUTES", core)
+        self.assertIn('name: "control_start"', generated_core)
+        self.assertIn('path: "/api/v1/control/start"', generated_core)
+        self.assertIn('name: "llm_local_model_pull"', generated_core)
+        self.assertIn('path: "/api/v1/llm/local-model/pull"', generated_core)
         self.assertIn("Managed Local Service API", core)
         self.assertIn("Backtest Scanner & Dashboard Import", core)
         self.assertIn("LLM Advisory & Local Lifecycle", core)
@@ -191,6 +198,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             self.assertIn(label, core)
 
         tauri_html = (rust_root / "apps" / "tauri-desktop" / "ui" / "index.html").read_text(encoding="utf-8")
+        tauri_browser_surface = tauri_html + "\n" + generated_tauri
         tauri_main = (rust_root / "apps" / "tauri-desktop" / "src" / "main.rs").read_text(encoding="utf-8")
         tauri_config = tomllib.loads((rust_root / "apps" / "tauri-desktop" / "Cargo.toml").read_text(encoding="utf-8"))
         tauri_app_config = json.loads((rust_root / "apps" / "tauri-desktop" / "tauri.conf.json").read_text(encoding="utf-8"))
@@ -213,7 +221,57 @@ class ProductPackagingContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("defaultModels", tauri_html)
+        self.assertIn('src="generated-python-parity.js"', tauri_html)
         self.assertIn('src="tauri-ui-behavior.js"', tauri_html)
+        self.assertIn("window.PythonParityContract", generated_tauri)
+        self.assertIn('"connectorOptions"', generated_tauri)
+        self.assertIn('"llmProviders"', generated_tauri)
+        self.assertIn('"defaultChartSymbols"', generated_tauri)
+        self.assertIn('"defaultExecution"', generated_tauri)
+        self.assertIn('"defaultBacktest"', generated_tauri)
+        self.assertIn('"dashboardLoopChoices"', generated_tauri)
+        self.assertIn('"leadTraderOptions"', generated_tauri)
+        self.assertIn('"llmUseForOptions"', generated_tauri)
+        self.assertIn('"dashboardStrategyTemplates"', generated_tauri)
+        self.assertIn('"backtestTemplates"', generated_tauri)
+        self.assertIn('"configModeOptions"', generated_tauri)
+        self.assertIn('"themeOptions"', generated_tauri)
+        self.assertIn('"designOptions"', generated_tauri)
+        self.assertIn('"indicatorSourceOptions"', generated_tauri)
+        self.assertIn('"exchangeOptions"', generated_tauri)
+        self.assertIn('"accountTypeOptions"', generated_tauri)
+        self.assertIn('"marginModeOptions"', generated_tauri)
+        self.assertIn('"positionModeOptions"', generated_tauri)
+        self.assertIn('"assetsModeOptions"', generated_tauri)
+        self.assertIn('"timeInForceOptions"', generated_tauri)
+        self.assertIn('"signalLogicOptions"', generated_tauri)
+        self.assertIn('"chartViewOptions"', generated_tauri)
+        self.assertIn('"positionsViewOptions"', generated_tauri)
+        self.assertIn("pythonParityContract.serviceRoutePaths", tauri_html)
+        self.assertIn("pythonParityContract.connectorOptions", tauri_html)
+        self.assertIn("pythonParityContract.llmProviders", tauri_html)
+        self.assertIn("pythonParityContract.defaultChartSymbols", tauri_html)
+        self.assertIn("pythonParityContract.defaultExecution", tauri_html)
+        self.assertIn("pythonParityContract.defaultBacktest", tauri_html)
+        self.assertIn("pythonParityContract.dashboardLoopChoices", tauri_html)
+        self.assertIn("pythonParityContract.leadTraderOptions", tauri_html)
+        self.assertIn("pythonParityContract.llmUseForOptions", tauri_html)
+        self.assertIn("pythonParityContract.dashboardStrategyTemplates", tauri_html)
+        self.assertIn("pythonParityContract.backtestTemplates", tauri_html)
+        self.assertIn("pythonParityContract.configModeOptions", tauri_html)
+        self.assertIn("pythonParityContract.themeOptions", tauri_html)
+        self.assertIn("pythonParityContract.designOptions", tauri_html)
+        self.assertIn("pythonParityContract.indicatorSourceOptions", tauri_html)
+        self.assertIn("pythonParityContract.exchangeOptions", tauri_html)
+        self.assertIn("pythonParityContract.accountTypeOptions", tauri_html)
+        self.assertIn("pythonParityContract.marginModeOptions", tauri_html)
+        self.assertIn("pythonParityContract.positionModeOptions", tauri_html)
+        self.assertIn("pythonParityContract.assetsModeOptions", tauri_html)
+        self.assertIn("pythonParityContract.timeInForceOptions", tauri_html)
+        self.assertIn("pythonParityContract.signalLogicOptions", tauri_html)
+        self.assertIn("pythonParityContract.chartViewOptions", tauri_html)
+        self.assertIn("pythonParityContract.positionsViewOptions", tauri_html)
+        self.assertIn("serviceRouteSupportsMethod", tauri_html)
         self.assertIn("const tauriUiBehavior = window.TauriUiBehavior", tauri_html)
         self.assertIn("tauriUiBehavior.importBacktestRowsToDashboard", tauri_html)
         self.assertIn("tauriUiBehavior.selectBacktestScanBest", tauri_html)
@@ -259,7 +317,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "gemma3:4b",
         ):
             self.assertIn(llm_text, core)
-            self.assertIn(llm_text, tauri_html)
+            self.assertIn(llm_text, tauri_browser_surface)
         for source in (tauri_html, slint_ui):
             for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
                 self.assertIn(label, source)
@@ -274,7 +332,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "Remove Selected",
             "Max MDD Scanner",
         ):
-            self.assertIn(tauri_parity_text, tauri_html)
+            self.assertIn(tauri_parity_text, tauri_browser_surface)
         for slint_parity_text in (
             "Alibaba Qwen / DashScope",
             "Add Selected, Remove Selected, Clear All",
@@ -304,14 +362,16 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("service_api_route_path", tauri_main)
         for route_name, suffix in SERVICE_API_ROUTE_SUFFIXES.items():
             route_path = f"/api/v1{suffix}"
-            self.assertIn(f'name: "{route_name}"', core)
-            self.assertIn(f'path: "{route_path}"', core)
-            self.assertIn(f'{route_name}: "{route_path}"', tauri_html)
+            self.assertIn(f'name: "{route_name}"', generated_core)
+            self.assertIn(f'path: "{route_path}"', generated_core)
+            self.assertIn(f'"{route_name}": "{route_path}"', generated_tauri)
             methods = ", ".join(f'"{method}"' for method in SERVICE_API_ROUTE_METHODS[route_name])
             self.assertRegex(
-                core,
+                generated_core,
                 rf'name: "{re.escape(route_name)}",\s*path: "{re.escape(route_path)}",\s*methods: &\[{re.escape(methods)}\]',
             )
+            for method in SERVICE_API_ROUTE_METHODS[route_name]:
+                self.assertIn(f'"{method}"', generated_tauri)
         for element_id in (
             "start-bot-btn",
             "stop-bot-btn",
@@ -356,6 +416,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "llm-result-status",
             "llm-result-output",
             "config-account-mode",
+            "config-design",
             "config-gtd-minutes",
             "refresh-balance-btn",
             "check-local-model-btn",
@@ -482,6 +543,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             "stop_loss",
             "template",
             "indicatorCatalog",
+            "pythonParityContract.indicatorCatalog",
             "indicatorKeyByName",
             "data-indicator-key",
             "selectedIndicatorKeysForKind",
@@ -545,8 +607,11 @@ class ProductPackagingContractTests(unittest.TestCase):
             "config_persistence",
         ):
             self.assertIn(hydration_hook, tauri_html)
-        for chart_text in ("DOGEUSDT", "AVAXUSDT", "1month", "2y", "BINANCE:BTCUSDT.P"):
-            self.assertIn(chart_text, tauri_html)
+        for chart_text in ("DOGEUSDT", "AVAXUSDT", "1month", "2y"):
+            self.assertIn(chart_text, tauri_browser_surface)
+        self.assertIn('symbol.endsWith("USDT") && !symbol.endsWith(".P")', tauri_html)
+        self.assertIn("symbol = `${symbol}.P`", tauri_html)
+        self.assertIn("`BINANCE:${symbol}`", tauri_html)
 
         rust_app_sources = {
             "egui": rust_root / "apps" / "egui-desktop" / "src" / "main.rs",

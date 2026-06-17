@@ -30,13 +30,13 @@ runtime experiments, but it is not yet a complete replacement for Python.
 | Python feature domain | C++ status | Missing before full parity |
 | --- | --- | --- |
 | Desktop shell and tabs | Major Qt tabs are present | Production startup/lifecycle parity, release ownership, and tab behavior tests |
-| Service API contract | No equivalent `/api/v1` host/client surface | Route/method/schema parity or a native service bridge |
+| Service API contract | Backtest run/stop can delegate to the local Python Service API; no full `/api/v1` host/client surface yet | Generated route/method/schema parity and operational request/response tests |
 | Config persistence | Dashboard save/load experiments | Full Python service config save/load, dirty state, hydration, and redaction behavior |
 | Strategy runtime | Dashboard runtime experiments | Complete Python indicator, strategy cycle, worker, signal, and override semantics |
 | Exchange connectors | Native Binance REST/WebSocket pieces | Python connector backend parity, diagnostics, rate limits, and non-Binance support |
 | Account, portfolio, and positions | Binance balance/open futures position sync | Portfolio snapshots, history/allocation ledgers, reconciliation, and non-Binance account paths |
 | Order execution and risk | Futures order helpers and stop-loss controls | Python order audit, preflight, circuit breaker, submit guards, and shutdown risk behavior |
-| Backtest engine | Backtest UI mirrors Python controls | Real engine/optimizer/scanner parity; current symbol scan path is simulated |
+| Backtest engine | Backtest UI mirrors Python controls and delegates run/stop to the Python Service API when available | Result/provenance parity tests and full optimizer/scanner coverage |
 | Charts and heatmaps | Qt WebEngine panels and browser fallback | Verified chart state, asset loading, fallback rendering, and guard logging parity |
 | Logs, terminal, diagnostics | Local dashboard logs and installer output | Service logs, terminal route, diagnostics, redaction, and test runner parity |
 | LLM advisory | Provider/model settings mirrored | Python LLM prompt/config/local-model service route behavior |

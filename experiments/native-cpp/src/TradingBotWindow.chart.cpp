@@ -295,8 +295,9 @@ QWidget *TradingBotWindow::createChartTab() {
     controls->addWidget(new QLabel("Market:", page));
 
     auto *marketCombo = new QComboBox(page);
-    marketCombo->addItem("Futures", "futures");
-    marketCombo->addItem("Spot", "spot");
+    for (const QString &market : TradingBotWindowSupport::pythonSourceChartMarketOptions()) {
+        marketCombo->addItem(market, market.trimmed().toLower());
+    }
     chartMarketCombo_ = marketCombo;
     controls->addWidget(marketCombo);
 
@@ -310,24 +311,19 @@ QWidget *TradingBotWindow::createChartTab() {
 
     controls->addWidget(new QLabel("Interval:", page));
     auto *intervalCombo = new QComboBox(page);
-    intervalCombo->addItems({
-        "1m", "3m", "5m", "10m", "15m", "20m", "30m",
-        "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h",
-        "1d", "2d", "3d", "4d", "5d", "6d",
-        "1w", "2w", "3w",
-        "1month", "2months", "3months", "6months",
-        "1mo", "2mo", "3mo", "6mo",
-        "1y", "2y",
-    });
+    intervalCombo->addItems(TradingBotWindowSupport::pythonSourceBacktestIntervals());
     intervalCombo->setCurrentText("1m");
     chartIntervalCombo_ = intervalCombo;
     controls->addWidget(intervalCombo);
 
     controls->addWidget(new QLabel("View:", page));
     auto *viewModeCombo = new QComboBox(page);
-    viewModeCombo->addItem("TradingView", "tradingview");
-    viewModeCombo->addItem("Original", "original");
-    viewModeCombo->addItem("TradingView Lightweight", "lightweight");
+    TradingBotWindowSupport::populateComboFromPythonSourceOptions(
+        viewModeCombo,
+        TradingBotWindowSupport::pythonSourceChartViewOptionKeys(),
+        TradingBotWindowSupport::pythonSourceChartViewOptionLabels(),
+        {},
+        QStringLiteral("tradingview"));
     chartViewModeCombo_ = viewModeCombo;
     controls->addWidget(viewModeCombo);
 

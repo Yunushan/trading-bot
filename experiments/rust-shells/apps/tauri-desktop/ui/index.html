@@ -310,11 +310,12 @@
             <div class="grid-3">
               <label>API Key:<input id="api-key-input" autocomplete="off"></label>
               <label>API Secret Key:<input id="api-secret-input" type="password" autocomplete="off"></label>
-              <label>Mode:<select id="config-mode"><option>Live</option><option selected>Demo</option><option>Testnet</option></select></label>
-              <label>Theme:<select id="config-theme"><option>Light</option><option selected>Dark</option><option>Blue</option><option>Yellow</option><option>Green</option><option>Red</option></select></label>
-              <label>Account Type:<select id="config-account-type"><option>Spot</option><option selected>Futures</option></select></label>
-              <label>Account Mode:<select id="config-account-mode"><option selected>Classic Trading</option><option>Portfolio Margin</option></select></label>
-              <label>Connector:<select id="config-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures (Official Recommended)</option><option value="binance-sdk-derivatives-trading-coin-futures">Binance SDK Derivatives Trading COIN-M Futures</option><option value="binance-sdk-spot">Binance SDK Spot (Official Recommended)</option><option value="binance-connector">Binance Connector Python</option><option value="ccxt">CCXT (Unified)</option><option value="python-binance">python-binance (Community)</option></select></label>
+              <label>Mode:<select id="config-mode"></select></label>
+              <label>Theme:<select id="config-theme"></select></label>
+              <label>Design:<select id="config-design"></select></label>
+              <label>Account Type:<select id="config-account-type"></select></label>
+              <label>Account Mode:<select id="config-account-mode"></select></label>
+              <label>Connector:<select id="config-connector"></select></label>
               <label>Total USDT balance:<input id="account-total-balance" value="N/A" readonly></label>
               <label>Available Balance:<output id="account-available-balance">-</output></label>
               <label>Position Mode:<input id="account-position-mode" value="N/A" readonly></label>
@@ -324,12 +325,12 @@
               <label>Open Positions:<output id="portfolio-open">-</output></label>
               <label>Closed Trades:<output id="portfolio-closed">-</output></label>
               <label>Leverage (Futures):<input id="config-leverage" type="number" min="1" max="150" value="1"></label>
-              <label>Margin Mode (Futures):<select id="config-margin-mode"><option>Cross</option><option selected>Isolated</option></select></label>
-              <label>Position Mode:<select id="config-position-mode"><option>One-way</option><option selected>Hedge</option></select></label>
-              <label>Assets Mode:<select id="config-assets-mode"><option>Single-Asset Mode</option><option>Multi-Assets Mode</option></select></label>
-              <label>Time-in-Force:<select id="config-time-in-force"><option selected>GTC</option><option>IOC</option><option>FOK</option><option>GTD</option></select></label>
+              <label>Margin Mode (Futures):<select id="config-margin-mode"></select></label>
+              <label>Position Mode:<select id="config-position-mode"></select></label>
+              <label>Assets Mode:<select id="config-assets-mode"></select></label>
+              <label>Time-in-Force:<select id="config-time-in-force"></select></label>
               <label>GTD minutes:<input id="config-gtd-minutes" type="number" min="1" max="1440" value="30"></label>
-              <label>Indicator Source:<select id="config-indicator-source"><option>Binance spot</option><option selected>Binance futures</option><option>TradingView</option><option>Bybit</option><option>Coinbase</option><option>OKX</option><option>Gate</option><option>Bitget</option><option>Mexc</option><option>Kucoin</option><option>HTX</option><option>Kraken</option></select></label>
+              <label>Indicator Source:<select id="config-indicator-source"></select></label>
             </div>
             <div class="grid-2">
               <label>Config Persistence:<output id="config-persistence-state">Runtime only</output></label>
@@ -347,7 +348,7 @@
                 <label><input type="checkbox" id="llm-public"> Allow public network endpoint</label>
               </div>
               <div class="grid-2">
-                <label>Provider:<select id="llm-provider"><option value="openai" data-mode="cloud" data-base="https://api.openai.com/v1" data-env="OPENAI_API_KEY">OpenAI / ChatGPT</option><option value="anthropic" data-mode="cloud" data-base="https://api.anthropic.com" data-env="ANTHROPIC_API_KEY">Anthropic Claude</option><option value="gemini" data-mode="cloud" data-base="https://generativelanguage.googleapis.com/v1beta" data-env="GEMINI_API_KEY">Google Gemini</option><option value="deepseek" data-mode="cloud" data-base="https://api.deepseek.com" data-env="DEEPSEEK_API_KEY">DeepSeek</option><option value="mistral" data-mode="cloud" data-base="https://api.mistral.ai/v1" data-env="MISTRAL_API_KEY">Mistral AI</option><option value="grok" data-mode="cloud" data-base="https://api.x.ai/v1" data-env="XAI_API_KEY">xAI Grok</option><option value="qwen" data-mode="cloud" data-base="https://dashscope-intl.aliyuncs.com/compatible-mode/v1" data-env="DASHSCOPE_API_KEY">Alibaba Qwen / DashScope</option><option value="local" data-mode="local" data-base="http://127.0.0.1:11434/v1" data-env="LOCAL_LLM_API_KEY">Local / Custom OpenAI-Compatible</option></select></label>
+                <label>Provider:<select id="llm-provider"></select></label>
                 <label>Model:<select id="llm-model"></select></label>
               </div>
               <label>Base URL / IP:<input id="llm-base-url" value="https://api.openai.com/v1"></label>
@@ -356,7 +357,7 @@
                 <label>API token:<input id="llm-api-token" type="password" placeholder="Optional; env var is preferred"></label>
               </div>
               <div class="grid-2">
-                <label>Use for:<select id="llm-use-for"><option>Advisory</option><option>Signal confirmation</option><option>Risk review</option><option>Backtest explanation</option></select></label>
+                <label>Use for:<select id="llm-use-for"></select></label>
                 <label>Reasoning / Thinking:<select id="llm-reasoning"></select></label>
               </div>
               <div class="actions">
@@ -379,7 +380,7 @@
         <div class="grid-2">
           <section class="panel">
             <h3>Exchange</h3>
-            <label>Select exchange<select id="exchange-select"><option selected>Binance</option><option disabled>Bybit (coming soon)</option><option disabled>OKX (coming soon)</option><option disabled>Gate (coming soon)</option><option disabled>Bitget (coming soon)</option><option disabled>MEXC (coming soon)</option><option disabled>KuCoin (coming soon)</option></select></label>
+            <label>Select exchange<select id="exchange-select"></select></label>
             <div class="grid-2">
               <label>Connector Health:<output id="exchange-connector-health">-</output></label>
               <label>Connector State:<output id="exchange-connector-state">-</output></label>
@@ -390,8 +391,8 @@
           <section class="panel">
             <h3>Markets & Intervals</h3>
             <div class="grid-2">
-              <label>Symbols (select 1 or more):<textarea id="symbols-input">BTCUSDT&#10;ETHUSDT&#10;BNBUSDT&#10;SOLUSDT&#10;XRPUSDT</textarea></label>
-              <label>Intervals (select 1 or more):<textarea id="intervals-input">1m&#10;3m&#10;5m&#10;10m&#10;15m&#10;30m&#10;1h&#10;4h&#10;1d</textarea></label>
+              <label>Symbols (select 1 or more):<textarea id="symbols-input"></textarea></label>
+              <label>Intervals (select 1 or more):<textarea id="intervals-input"></textarea></label>
             </div>
             <div class="grid-2">
               <input id="custom-interval-input" placeholder="e.g., 45s or 7m or 90m, comma-separated">
@@ -403,13 +404,13 @@
         <section class="panel">
           <h3>Strategy Controls</h3>
           <div class="grid-3">
-            <label>Side:<select id="strategy-side"><option value="BUY">Buy (Long)</option><option value="SELL">Sell (Short)</option><option value="BOTH" selected>Both (Long/Short)</option></select></label>
+            <label>Side:<select id="strategy-side"></select></label>
             <label>Position % of Balance:<input id="position-pct-input" type="number" min="0.01" max="100" step="0.01" value="2.00"></label>
-            <label>Loop Interval Override:<select id="loop-interval-select"><option value="30s">30 seconds</option><option value="45s">45 seconds</option><option value="1m" selected>1 minute</option><option value="2m">2 minutes</option><option value="3m">3 minutes</option><option value="5m">5 minutes</option><option value="10m">10 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option><option value="2h">2 hours</option></select></label>
+            <label>Loop Interval Override:<select id="loop-interval-select"></select></label>
           </div>
           <div class="checks">
             <label><input id="lead-trader-enabled" type="checkbox"> Enable Lead Trader</label>
-            <label><select id="lead-trader-profile"><option value="futures_public">Futures Public Lead Trader</option><option value="futures_private">Futures Private Lead Trader</option><option value="spot_public">Spot Public Lead Trader</option><option value="spot_private">Spot Private Lead Trader</option></select></label>
+            <label><select id="lead-trader-profile"></select></label>
             <label><input id="indicator-live-values" type="checkbox"> Use live candle values for signals (repaints)</label>
             <label><input id="add-only-net-direction" type="checkbox"> Add-only in current net direction (one-way)</label>
             <label><input id="allow-opposite-positions" type="checkbox" checked> Allow simultaneous long & short positions (hedge stacking)</label>
@@ -418,11 +419,11 @@
           </div>
           <div class="grid-3">
             <label>Stop Loss:<span class="checks"><label><input id="stop-loss-enabled" type="checkbox"> Enable</label></span></label>
-            <label>Stop Loss Mode:<select id="stop-loss-mode"><option value="usdt">USDT Based Stop Loss</option><option value="percent">Percentage Based Stop Loss</option><option value="both">Both Stop Loss (USDT & Percentage)</option></select></label>
-            <label>Stop Loss Scope:<select id="stop-loss-scope"><option value="per_trade">Per Trade Stop Loss</option><option value="cumulative">Cumulative Stop Loss</option><option value="entire_account">Entire Account Stop Loss</option></select></label>
+            <label>Stop Loss Mode:<select id="stop-loss-mode"></select></label>
+            <label>Stop Loss Scope:<select id="stop-loss-scope"></select></label>
             <label>Stop Loss USDT:<input id="stop-loss-usdt" type="number" min="0" step="1" value="0"></label>
             <label>Stop Loss %:<input id="stop-loss-percent" type="number" min="0" max="100" step="0.5" value="0"></label>
-            <label>Template:<select id="strategy-template"><option>No Template</option><option>Top 10 %2 per trade 1x Isolated</option><option>Top 50 %2 per trade 1x</option><option>Top 100 %1 per trade 1x</option></select></label>
+            <label>Template:<select id="strategy-template"></select></label>
           </div>
         </section>
         <section class="panel">
@@ -481,13 +482,13 @@
         </div>
         <section class="panel">
           <div class="grid-3">
-            <label>Market:<select id="chart-market-select"><option value="Futures">Futures</option><option value="Spot">Spot</option></select></label>
-            <label>Symbol:<select id="chart-symbol-select"><option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option><option>SOLUSDT</option><option>XRPUSDT</option><option>ADAUSDT</option><option>DOGEUSDT</option><option>AVAXUSDT</option><option>LINKUSDT</option><option>TRXUSDT</option></select></label>
-            <label>Interval:<select id="chart-interval-select"><option>1m</option><option>3m</option><option>5m</option><option>10m</option><option>15m</option><option>20m</option><option>30m</option><option>1h</option><option>2h</option><option>3h</option><option>4h</option><option>5h</option><option>6h</option><option>7h</option><option>8h</option><option>9h</option><option>10h</option><option>11h</option><option>12h</option><option>1d</option><option>2d</option><option>3d</option><option>4d</option><option>5d</option><option>6d</option><option>1w</option><option>2w</option><option>3w</option><option>1month</option><option>2months</option><option>3months</option><option>6months</option><option>1mo</option><option>2mo</option><option>3mo</option><option>6mo</option><option>1y</option><option>2y</option></select></label>
-            <label>View:<select id="chart-view-select"><option value="tradingview">TradingView</option><option value="original">Original</option><option value="lightweight">TradingView Lightweight</option></select></label>
+            <label>Market:<select id="chart-market-select"></select></label>
+            <label>Symbol:<select id="chart-symbol-select"></select></label>
+            <label>Interval:<select id="chart-interval-select"></select></label>
+            <label>View:<select id="chart-view-select"></select></label>
           </div>
         </section>
-        <section class="panel"><h3>Chart View Stack</h3><div class="metrics"><div class="metric"><span class="muted">TradingView</span><strong id="chart-tradingview-state">Active</strong></div><div class="metric"><span class="muted">Original</span><strong id="chart-original-state">Ready</strong></div><div class="metric"><span class="muted">TradingView Lightweight</span><strong id="chart-lightweight-state">Ready</strong></div><div class="metric"><span class="muted">Status</span><strong id="chart-status-text">TradingView: Futures BTCUSDT 1m</strong></div></div><p class="muted" id="chart-open-url-text">https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT.P&amp;interval=1</p></section>
+        <section class="panel"><h3>Chart View Stack</h3><div class="metrics"><div class="metric"><span class="muted">TradingView</span><strong id="chart-tradingview-state">Active</strong></div><div class="metric"><span class="muted">Original</span><strong id="chart-original-state">Ready</strong></div><div class="metric"><span class="muted">TradingView Lightweight</span><strong id="chart-lightweight-state">Ready</strong></div><div class="metric"><span class="muted">Status</span><strong id="chart-status-text">TradingView: --</strong></div></div><p class="muted" id="chart-open-url-text">--</p></section>
       </article>
 
       <article class="tab-panel" id="positions" aria-label="Positions">
@@ -497,7 +498,7 @@
         </div>
         <section class="panel">
           <div class="grid-3">
-            <label>Positions View:<select id="positions-view-select"><option value="cumulative">Cumulative View</option><option value="per_trade">Per Trade View</option></select></label>
+            <label>Positions View:<select id="positions-view-select"></select></label>
             <label class="checks"><input id="positions-auto-row-height" type="checkbox" checked> Auto Row Height</label>
             <label class="checks"><input id="positions-auto-column-width" type="checkbox" checked> Auto Column Width</label>
           </div>
@@ -517,10 +518,10 @@
         <div class="grid-3">
           <section class="panel">
             <h3>Markets</h3>
-              <label>Symbol Source:<select id="backtest-symbol-source"><option>Futures</option><option>Spot</option></select></label>
+              <label>Symbol Source:<select id="backtest-symbol-source"></select></label>
             <button class="action" id="backtest-refresh-symbols-btn" type="button">Refresh</button>
-            <label>Symbols (select 1 or more):<textarea id="backtest-symbols-input">BTCUSDT&#10;ETHUSDT&#10;BNBUSDT</textarea></label>
-            <label>Intervals (select 1 or more):<textarea id="backtest-intervals-input">1m&#10;5m&#10;15m&#10;1h</textarea></label>
+            <label>Symbols (select 1 or more):<textarea id="backtest-symbols-input"></textarea></label>
+            <label>Intervals (select 1 or more):<textarea id="backtest-intervals-input"></textarea></label>
             <input id="backtest-custom-interval-input" placeholder="e.g., 45s or 7m or 90m, comma-separated">
             <button class="action" id="backtest-add-custom-interval-btn" type="button">Add Custom Interval(s)</button>
           </section>
@@ -529,24 +530,29 @@
             <div class="grid-2">
               <label>Start Date/Time:<input id="backtest-start-date" type="datetime-local"></label>
               <label>End Date/Time:<input id="backtest-end-date" type="datetime-local"></label>
-              <label>Signal Logic:<select id="backtest-logic"><option>AND</option><option>OR</option><option>SEPARATE</option></select></label>
-              <label>MDD Logic:<select id="backtest-mdd-logic"><option value="per_trade">Per Trade MDD</option><option value="cumulative">Cumulative MDD</option><option value="entire_account">Entire Account MDD</option></select></label>
+              <label>Signal Logic:<select id="backtest-logic"></select></label>
+              <label>MDD Logic:<select id="backtest-mdd-logic"></select></label>
               <label>Margin Capital:<input id="backtest-capital" type="number" min="1" value="1000"></label>
               <label>Position % of Balance:<input id="backtest-position-pct" type="number" min="0.01" max="100" step="0.01" value="2.00"></label>
-              <label>Loop Interval Override:<select id="backtest-loop-interval"><option value="30s">30 seconds</option><option value="45s">45 seconds</option><option value="1m">1 minute</option><option value="2m">2 minutes</option><option value="3m">3 minutes</option><option value="5m">5 minutes</option><option value="10m">10 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option><option value="2h">2 hours</option></select></label>
+              <label>Loop Interval Override:<select id="backtest-loop-interval"></select></label>
               <label>Stop Loss:<span class="checks"><label><input id="backtest-stop-loss-enabled" type="checkbox"> Enable</label></span></label>
-              <label>Stop Loss Mode:<select id="backtest-stop-loss-mode"><option value="usdt">USDT Based Stop Loss</option><option value="percent">Percentage Based Stop Loss</option><option value="both">Both Stop Loss (USDT & Percentage)</option></select></label>
-              <label>Stop Loss Scope:<select id="backtest-stop-loss-scope"><option value="per_trade">Per Trade Stop Loss</option><option value="cumulative">Cumulative Stop Loss</option><option value="entire_account">Entire Account Stop Loss</option></select></label>
+              <label>Stop Loss Mode:<select id="backtest-stop-loss-mode"></select></label>
+              <label>Stop Loss Scope:<select id="backtest-stop-loss-scope"></select></label>
               <label>Stop Loss USDT:<input id="backtest-stop-loss-usdt" type="number" min="0" step="1" value="0"></label>
               <label>Stop Loss %:<input id="backtest-stop-loss-percent" type="number" min="0" max="100" step="0.5" value="0"></label>
-              <label>Side:<select id="backtest-side"><option value="BUY">Buy (Long)</option><option value="SELL">Sell (Short)</option><option value="BOTH">Both (Long/Short)</option></select></label>
-              <label>Margin Mode (Futures):<select id="backtest-margin-mode"><option>Isolated</option><option>Cross</option></select></label>
-              <label>Position Mode:<select id="backtest-position-mode"><option>Hedge</option><option>One-way</option></select></label>
-              <label>Assets Mode:<select id="backtest-assets-mode"><option>Single-Asset Mode</option><option>Multi-Assets Mode</option></select></label>
-              <label>Account Mode:<select id="backtest-account-mode"><option>Classic Trading</option><option>Portfolio Margin</option></select></label>
-              <label>Connector:<select id="backtest-connector"><option value="binance-sdk-derivatives-trading-usds-futures">Binance SDK Derivatives Trading USD-S Futures (Official Recommended)</option><option value="binance-sdk-derivatives-trading-coin-futures">Binance SDK Derivatives Trading COIN-M Futures</option><option value="binance-sdk-spot">Binance SDK Spot (Official Recommended)</option><option value="binance-connector">Binance Connector Python</option><option value="ccxt">CCXT (Unified)</option><option value="python-binance">python-binance (Community)</option></select></label>
+              <label>Side:<select id="backtest-side"></select></label>
+              <label>Margin Mode (Futures):<select id="backtest-margin-mode"></select></label>
+              <label>Position Mode:<select id="backtest-position-mode"></select></label>
+              <label>Assets Mode:<select id="backtest-assets-mode"></select></label>
+              <label>Account Mode:<select id="backtest-account-mode"></select></label>
+              <label>Connector:<select id="backtest-connector"></select></label>
               <label>Leverage (Futures):<input id="backtest-leverage" type="number" min="1" max="150" value="1"></label>
-              <label>Template:<span class="checks"><label><input id="backtest-template-enabled" type="checkbox"> Enable</label></span><select id="backtest-template-name"><option value="volume_top50">First 50 Highest Volume</option><option value="volume_last_week">Last 1 week · 2% per trade · 50 highest volume</option><option value="top100_isolated_1pct_sl">Top 100, %2 per trade, isolated, %20 per trade SL</option></select></label>
+              <label>Template:<span class="checks"><label><input id="backtest-template-enabled" type="checkbox"> Enable</label></span><select id="backtest-template-name"></select></label>
+              <label>Optimizer Scope:<select id="backtest-scan-scope"></select></label>
+              <label>Optimizer Mode:<select id="backtest-optimizer-mode"></select></label>
+              <label>Optimize For:<select id="backtest-optimizer-metric"></select></label>
+              <label>Max Combo:<input id="backtest-optimizer-combo-size" type="number" min="1" max="5" value="2"></label>
+              <label>Min Trades:<input id="backtest-optimizer-min-trades" type="number" min="0" value="1"></label>
               <label>Max MDD Scanner:<span class="grid-2"><input id="backtest-scan-top-n" type="number" value="200"><input id="backtest-scan-mdd-limit" type="number" value="10.00"></span></label>
             </div>
             <button class="action" id="backtest-scan-symbols-btn" type="button">Scan Symbols</button>
@@ -626,7 +632,7 @@
                 <tr><td>exchange_connectors</td><td>Connector selection, market data, transports, diagnostics, and rate limits</td><td>Native Binance REST/WebSocket plus fallback mapping</td><td>Native Binance REST market-data foundation plus Service API client fallback</td><td>Connector-specific clients, diagnostics, WebSocket, signed account/order, and rate-limit parity</td></tr>
                 <tr><td>account_portfolio_positions</td><td>Account, portfolio, positions, history, allocation, and reconciliation</td><td>Binance balances/open futures positions only</td><td>Renders Python snapshots, no signed native path</td><td>Signed clients, DTOs, ledgers, and close/reconcile tests</td></tr>
                 <tr><td>order_execution_and_risk</td><td>Order sizing, submit guards, audit, preflight, circuit breaker, and shutdown risk</td><td>Order helpers and stop-loss controls, not full audit/risk contract</td><td>No native order submission</td><td>Port risk gates, audit/circuit events, and live safety tests</td></tr>
-                <tr><td>backtest_engine</td><td>Backtest engine, optimizer, scanner, dashboard import, and provenance</td><td>Mirrored UI with simulated scanner path</td><td>Delegates backtests to Python Service API</td><td>Real engine/optimizer bridge or port plus canonical request coverage</td></tr>
+                <tr><td>backtest_engine</td><td>Backtest engine, optimizer, scanner, dashboard import, and provenance</td><td>Mirrored UI with Python Service API run/stop bridge</td><td>Delegates backtests to Python Service API</td><td>Result/provenance parity tests plus full optimizer/scanner coverage</td></tr>
                 <tr><td>charts_and_heatmaps</td><td>TradingView, lightweight charts, fallbacks, browser guards, and heatmap panels</td><td>Qt WebEngine panels without verified full chart-state parity</td><td>Mirrored controls/client state only</td><td>Asset loading, guard logging, provider parity, and visual smoke tests</td></tr>
                 <tr><td>logs_terminal_diagnostics</td><td>Service logs, terminal route, diagnostics, redaction, and test runner surfaces</td><td>Local logs and installer output only</td><td>Fetches Python service logs, no native terminal owner</td><td>Terminal/log schemas, diagnostics, and redaction parity</td></tr>
                 <tr><td>llm_advisory</td><td>Provider catalog, advisory prompts, privacy flags, and local model lifecycle</td><td>Mirrors settings without Python LLM Service API behavior</td><td>Tauri calls Python LLM routes</td><td>C++ LLM service client and verified local model lifecycle parity</td></tr>
@@ -651,44 +657,112 @@
     </footer>
   </main>
 
+  <script src="generated-python-parity.js"></script>
   <script src="tauri-ui-behavior.js"></script>
   <script>
     const tauriUiBehavior = window.TauriUiBehavior || {};
-    const indicatorCatalog = [
-      { key: "ma", name: "Moving Average (MA)" },
-      { key: "donchian", name: "Donchian Channels (DC)" },
-      { key: "psar", name: "Parabolic SAR (PSAR)" },
-      { key: "bb", name: "Bollinger Bands (BB)" },
-      { key: "bbw", name: "Bollinger Band Width (BBW)" },
-      { key: "keltner", name: "Keltner Channels (KC)" },
-      { key: "ichimoku", name: "Ichimoku Cloud (IC)" },
-      { key: "rsi", name: "Relative Strength Index (RSI)", defaultEnabled: true },
-      { key: "volume", name: "Volume" },
-      { key: "obv", name: "On-Balance Volume (OBV)" },
-      { key: "rvol", name: "Relative Volume (RVOL)" },
-      { key: "cmf", name: "Chaikin Money Flow (CMF)" },
-      { key: "cci", name: "Commodity Channel Index (CCI)" },
-      { key: "roc", name: "Rate of Change (ROC)" },
-      { key: "trix", name: "Triple Exponential Average (TRIX)" },
-      { key: "ppo", name: "Percentage Price Oscillator (PPO)" },
-      { key: "ao", name: "Awesome Oscillator (AO)" },
-      { key: "kst", name: "Know Sure Thing (KST)" },
-      { key: "aroon", name: "Aroon Oscillator (AROON)" },
-      { key: "chop", name: "Choppiness Index (CHOP)" },
-      { key: "atr", name: "Average True Range (ATR)" },
-      { key: "natr", name: "Normalized Average True Range (NATR)" },
-      { key: "vwap", name: "Volume Weighted Average Price (VWAP)" },
-      { key: "mfi", name: "Money Flow Index (MFI)" },
-      { key: "stoch_rsi", name: "Stochastic RSI (SRSI)" },
-      { key: "willr", name: "Williams %R" },
-      { key: "macd", name: "Moving Average Convergence/Divergence (MACD)" },
-      { key: "uo", name: "Ultimate Oscillator (UO)" },
-      { key: "adx", name: "Average Directional Index (ADX)" },
-      { key: "dmi", name: "Directional Movement Index (DMI)" },
-      { key: "supertrend", name: "SuperTrend (ST)" },
-      { key: "ema", name: "Exponential Moving Average (EMA)" },
-      { key: "stochastic", name: "Stochastic Oscillator" }
-    ];
+    const pythonParityContract = window.PythonParityContract || {};
+    const indicatorCatalog = Object.freeze(
+      (pythonParityContract.indicatorCatalog || []).map((item) => ({
+        key: String(item.key || ""),
+        name: String(item.name || item.displayName || item.key || ""),
+        defaultEnabled: Boolean(item.defaultEnabled)
+      })).filter((item) => item.key && item.name)
+    );
+    const connectorOptions = Object.freeze(
+      (pythonParityContract.connectorOptions || []).map((item) => ({
+        key: String(item.key || ""),
+        label: String(item.label || item.key || "")
+      })).filter((item) => item.key && item.label)
+    );
+    const llmProviders = Object.freeze(
+      (pythonParityContract.llmProviders || []).map((item) => ({
+        key: String(item.key || ""),
+        label: String(item.label || item.key || ""),
+        mode: String(item.mode || "cloud"),
+        baseUrl: String(item.default_base_url || item.defaultBaseUrl || ""),
+        defaultModel: String(item.default_model || item.defaultModel || ""),
+        apiKeyEnv: String(item.api_key_env || item.apiKeyEnv || ""),
+        modelSuggestions: Array.isArray(item.model_suggestions) ? item.model_suggestions.map(String) : [],
+        reasoningEfforts: Array.isArray(item.reasoning_efforts) ? item.reasoning_efforts.map(String) : ["default"]
+      })).filter((item) => item.key && item.label)
+    );
+    const textArray = (items) => Object.freeze(
+      (Array.isArray(items) ? items : []).map(String).map((item) => item.trim()).filter(Boolean)
+    );
+    const optionArray = (items) => Object.freeze(
+      (Array.isArray(items) ? items : []).map((item) => {
+        const hasKey = Object.prototype.hasOwnProperty.call(item, "key");
+        const hasValue = Object.prototype.hasOwnProperty.call(item, "value");
+        const rawKey = hasKey ? item.key : (hasValue ? item.value : "");
+        const key = String(rawKey ?? "").trim();
+        const label = String(item.label || item.name || key).trim();
+        return { key, label, disabled: Boolean(item.disabled) };
+      }).filter((item) => item.label)
+    );
+    const optionsFromValues = (values) => values.map((value) => ({ key: value, label: value }));
+    const defaultExecution = Object.freeze(pythonParityContract.defaultExecution || {});
+    const defaultBacktest = Object.freeze(pythonParityContract.defaultBacktest || {});
+    const chartDefaultSymbols = textArray(pythonParityContract.defaultChartSymbols);
+    const defaultExecutionSymbols = textArray(pythonParityContract.defaultExecutionSymbols);
+    const defaultExecutionIntervals = textArray(pythonParityContract.defaultExecutionIntervals);
+    const defaultBacktestSymbols = textArray(pythonParityContract.defaultBacktestSymbols);
+    const defaultBacktestIntervals = textArray(pythonParityContract.defaultBacktestIntervals);
+    const chartDefaultIntervals = textArray(pythonParityContract.backtestIntervals);
+    const chartMarketOptions = textArray(pythonParityContract.chartMarketOptions);
+    const accountModeOptions = textArray(pythonParityContract.accountModeOptions);
+    const configModeOptions = optionArray(pythonParityContract.configModeOptions);
+    const themeOptions = optionArray(pythonParityContract.themeOptions);
+    const designOptions = optionArray(pythonParityContract.designOptions);
+    const indicatorSourceOptions = optionArray(pythonParityContract.indicatorSourceOptions);
+    const exchangeOptions = optionArray(pythonParityContract.exchangeOptions);
+    const dashboardLoopChoiceOptions = optionArray(pythonParityContract.dashboardLoopChoices);
+    const leadTraderOptions = optionArray(pythonParityContract.leadTraderOptions);
+    const llmUseForOptions = optionArray(pythonParityContract.llmUseForOptions);
+    const dashboardStrategyTemplateOptions = optionArray(pythonParityContract.dashboardStrategyTemplates);
+    const backtestTemplateOptions = optionArray(pythonParityContract.backtestTemplates);
+    const sideOptions = optionArray(pythonParityContract.sideOptions);
+    const accountTypeOptions = optionArray(pythonParityContract.accountTypeOptions);
+    const marginModeOptions = optionArray(pythonParityContract.marginModeOptions);
+    const positionModeOptions = optionArray(pythonParityContract.positionModeOptions);
+    const assetsModeOptions = optionArray(pythonParityContract.assetsModeOptions);
+    const timeInForceOptions = optionArray(pythonParityContract.timeInForceOptions);
+    const signalLogicOptions = optionArray(pythonParityContract.signalLogicOptions);
+    const mddLogicOptions = optionArray(pythonParityContract.mddLogicOptions);
+    const stopLossModeOptions = optionArray(pythonParityContract.stopLossModes);
+    const stopLossScopeOptions = optionArray(pythonParityContract.stopLossScopes);
+    const scanScopeOptions = optionArray(pythonParityContract.scanScopeOptions);
+    const optimizerModeOptions = optionArray(pythonParityContract.optimizerModeOptions);
+    const optimizerMetricOptions = optionArray(pythonParityContract.optimizerMetricOptions);
+    const chartViewOptions = optionArray(pythonParityContract.chartViewOptions);
+    const positionsViewOptions = optionArray(pythonParityContract.positionsViewOptions);
+    const chartIntervalMap = Object.freeze(Object.fromEntries(
+      Object.entries(pythonParityContract.tradingviewIntervalMap || {})
+        .map(([key, value]) => [String(key).toLowerCase(), String(value)])
+    ));
+    const defaultChartSymbol = chartDefaultSymbols[0] || defaultExecutionSymbols[0] || "BTCUSDT";
+    const defaultChartInterval = defaultExecutionIntervals[0] || chartDefaultIntervals[0] || "1m";
+    const populateOptions = (select, options, selectedValue = "") => {
+      if (!select) return;
+      select.replaceChildren(...options.map((optionPayload) => {
+        const option = document.createElement("option");
+        option.value = optionPayload.key;
+        option.textContent = optionPayload.label;
+        option.disabled = Boolean(optionPayload.disabled);
+        for (const [key, value] of Object.entries(optionPayload.dataset || {})) {
+          option.dataset[key] = value;
+        }
+        return option;
+      }));
+      if (selectedValue && [...select.options].some((option) => option.value === selectedValue)) {
+        select.value = selectedValue;
+      }
+    };
+    const populateTextareaDefault = (id, values) => {
+      const target = document.getElementById(id);
+      if (!target || String(target.value || "").trim()) return;
+      target.value = textArray(values).join("\n");
+    };
     const indicatorNames = indicatorCatalog.map((item) => item.name);
     const indicatorKeyByName = Object.fromEntries(indicatorCatalog.map((item) => [item.name, item.key]));
     const indicatorNameByKey = Object.fromEntries(indicatorCatalog.map((item) => [item.key, item.name]));
@@ -720,42 +794,239 @@
       });
     }
 
-    const modelSuggestions = {
-      openai: ["gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23", "gpt-5.4", "gpt-5.4-2026-03-05", "gpt-5.4-pro", "gpt-5.4-pro-2026-03-05", "gpt-5.4-mini", "gpt-5.4-mini-2026-03-17", "gpt-5.4-nano", "gpt-5.4-nano-2026-03-17", "gpt-5.3-chat-latest", "gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.1", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"],
-      anthropic: ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101", "claude-opus-4-1-20250805", "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-1", "claude-opus-4-0", "claude-sonnet-4-0"],
-      gemini: ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite", "gemini-2.5-flash-lite-preview-09-2025"],
-      deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
-      mistral: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest", "open-mistral-nemo"],
-      grok: ["grok-4.3", "grok-4.3-latest", "grok-4.20", "grok-4.20-reasoning", "grok-4.20-non-reasoning", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"],
-      qwen: ["qwen3.6-max-preview", "qwen3.6-plus", "qwen3.6-plus-2026-04-02", "qwen3.6-flash", "qwen3.6-flash-2026-04-16", "qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-2025-09-23", "qwen3-max-preview", "qwen3.5-plus", "qwen3.5-plus-2026-02-15", "qwen3.5-flash", "qwen3.5-flash-2026-02-23", "qwen3-coder-plus", "qwen3-coder-flash", "qwen-plus-us", "qwen-flash-us"],
-      local: ["qwen3:0.6b", "qwen3:1.7b", "qwen3:4b", "qwen3:8b", "qwen3:14b", "qwen3:30b-a3b", "qwen3:32b", "qwen3", "gpt-oss:20b", "gpt-oss:latest", "llama3.3", "llama3.1:8b", "llama3.2:3b", "llama3.2:1b", "mistral-small3.2", "deepseek-r1:8b", "gemma3:4b", "custom-model"]
-    };
-    const reasoningSuggestions = {
-      openai: ["default", "none", "minimal", "low", "medium", "high", "xhigh"],
-      anthropic: ["default", "disabled", "enabled", "low", "medium", "high"],
-      gemini: ["default", "minimal", "low", "medium", "high"],
-      deepseek: ["default", "disabled", "enabled", "high", "max"],
-      mistral: ["default", "low", "medium", "high"],
-      grok: ["default", "low", "medium", "high"],
-      qwen: ["default", "low", "medium", "high"],
-      local: ["default", "none", "low", "medium", "high", "xhigh"]
-    };
-    const defaultModels = {
-      openai: "gpt-5.5",
-      anthropic: "claude-sonnet-4-5-20250929",
-      gemini: "gemini-3-flash-preview",
-      deepseek: "deepseek-v4-flash",
-      mistral: "mistral-small-latest",
-      grok: "grok-4.3",
-      qwen: "qwen3.6-plus",
-      local: "qwen3:8b"
-    };
+    const modelSuggestions = Object.freeze(Object.fromEntries(
+      llmProviders.map((item) => [item.key, item.modelSuggestions])
+    ));
+    const reasoningSuggestions = Object.freeze(Object.fromEntries(
+      llmProviders.map((item) => [item.key, item.reasoningEfforts])
+    ));
+    const defaultModels = Object.freeze(Object.fromEntries(
+      llmProviders.map((item) => [item.key, item.defaultModel])
+    ));
     const llmEnabled = document.getElementById("llm-enabled");
     const llmControls = document.getElementById("llm-controls");
     const llmPublic = document.getElementById("llm-public");
     const provider = document.getElementById("llm-provider");
     const model = document.getElementById("llm-model");
     const reasoning = document.getElementById("llm-reasoning");
+    const connectorSelectOptions = connectorOptions.map((item) => ({ key: item.key, label: item.label }));
+    populateOptions(
+      document.getElementById("config-mode"),
+      configModeOptions,
+      defaultExecution.mode === "Demo/Testnet" ? "Demo" : (defaultExecution.mode || configModeOptions[0]?.key)
+    );
+    populateOptions(
+      document.getElementById("config-theme"),
+      themeOptions,
+      defaultExecution.theme || "Dark"
+    );
+    populateOptions(
+      document.getElementById("config-design"),
+      designOptions,
+      defaultExecution.design || "Classic"
+    );
+    populateOptions(
+      document.getElementById("config-indicator-source"),
+      indicatorSourceOptions,
+      defaultExecution.indicator_source || "Binance futures"
+    );
+    populateOptions(
+      document.getElementById("exchange-select"),
+      exchangeOptions,
+      defaultExecution.selected_exchange || exchangeOptions.find((item) => !item.disabled)?.key
+    );
+    populateOptions(
+      document.getElementById("llm-use-for"),
+      llmUseForOptions,
+      defaultExecution.llm_use_for || llmUseForOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("strategy-template"),
+      dashboardStrategyTemplateOptions,
+      defaultExecution.dashboard_template || dashboardStrategyTemplateOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("config-account-mode"),
+      optionsFromValues(accountModeOptions),
+      defaultExecution.account_mode || accountModeOptions[0]
+    );
+    populateOptions(
+      document.getElementById("config-account-type"),
+      accountTypeOptions,
+      defaultExecution.account_type || accountTypeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("config-margin-mode"),
+      marginModeOptions,
+      defaultExecution.margin_mode || marginModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("config-position-mode"),
+      positionModeOptions,
+      defaultExecution.position_mode || positionModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("config-assets-mode"),
+      assetsModeOptions,
+      defaultExecution.assets_mode || assetsModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("config-time-in-force"),
+      timeInForceOptions,
+      defaultExecution.tif || timeInForceOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-account-mode"),
+      optionsFromValues(accountModeOptions),
+      defaultBacktest.account_mode || accountModeOptions[0]
+    );
+    populateOptions(
+      document.getElementById("chart-market-select"),
+      optionsFromValues(chartMarketOptions),
+      defaultExecution.account_type || chartMarketOptions[0]
+    );
+    populateOptions(
+      document.getElementById("chart-view-select"),
+      chartViewOptions,
+      defaultExecution.chart?.view_mode || "tradingview"
+    );
+    populateOptions(
+      document.getElementById("positions-view-select"),
+      positionsViewOptions,
+      "cumulative"
+    );
+    populateOptions(
+      document.getElementById("backtest-symbol-source"),
+      accountTypeOptions,
+      defaultBacktest.symbol_source || defaultExecution.account_type || accountTypeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-logic"),
+      signalLogicOptions,
+      defaultBacktest.logic || signalLogicOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-margin-mode"),
+      marginModeOptions,
+      defaultBacktest.margin_mode || defaultExecution.margin_mode || marginModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-position-mode"),
+      positionModeOptions,
+      defaultBacktest.position_mode || defaultExecution.position_mode || positionModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-assets-mode"),
+      assetsModeOptions,
+      defaultBacktest.assets_mode || defaultExecution.assets_mode || assetsModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("strategy-side"),
+      sideOptions,
+      defaultExecution.side || "BOTH"
+    );
+    populateOptions(
+      document.getElementById("backtest-side"),
+      sideOptions,
+      defaultBacktest.side || defaultExecution.side || "BOTH"
+    );
+    populateOptions(
+      document.getElementById("loop-interval-select"),
+      dashboardLoopChoiceOptions,
+      defaultExecution.loop_interval_override || dashboardLoopChoiceOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-loop-interval"),
+      dashboardLoopChoiceOptions,
+      defaultBacktest.loop_interval_override || dashboardLoopChoiceOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("lead-trader-profile"),
+      leadTraderOptions,
+      defaultExecution.lead_trader_profile || leadTraderOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-mdd-logic"),
+      mddLogicOptions,
+      defaultBacktest.mdd_logic || mddLogicOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("stop-loss-mode"),
+      stopLossModeOptions,
+      defaultExecution.stop_loss?.mode || stopLossModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-stop-loss-mode"),
+      stopLossModeOptions,
+      defaultBacktest.stop_loss?.mode || stopLossModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("stop-loss-scope"),
+      stopLossScopeOptions,
+      defaultExecution.stop_loss?.scope || stopLossScopeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-stop-loss-scope"),
+      stopLossScopeOptions,
+      defaultBacktest.stop_loss?.scope || stopLossScopeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-template-name"),
+      backtestTemplateOptions,
+      defaultBacktest.template?.name || backtestTemplateOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-scan-scope"),
+      scanScopeOptions,
+      defaultBacktest.scan_scope || scanScopeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-optimizer-mode"),
+      optimizerModeOptions,
+      defaultBacktest.optimizer_mode || optimizerModeOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-optimizer-metric"),
+      optimizerMetricOptions,
+      defaultBacktest.optimizer_metric || optimizerMetricOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("chart-symbol-select"),
+      optionsFromValues(chartDefaultSymbols),
+      defaultChartSymbol
+    );
+    populateOptions(
+      document.getElementById("chart-interval-select"),
+      optionsFromValues(chartDefaultIntervals),
+      defaultChartInterval
+    );
+    populateTextareaDefault("symbols-input", defaultExecutionSymbols);
+    populateTextareaDefault("intervals-input", defaultExecutionIntervals);
+    populateTextareaDefault("backtest-symbols-input", defaultBacktestSymbols);
+    populateTextareaDefault("backtest-intervals-input", defaultBacktestIntervals);
+    populateOptions(
+      document.getElementById("config-connector"),
+      connectorSelectOptions,
+      defaultBacktest.connector_backend || connectorSelectOptions[0]?.key
+    );
+    populateOptions(
+      document.getElementById("backtest-connector"),
+      connectorSelectOptions,
+      defaultBacktest.connector_backend || connectorSelectOptions[0]?.key
+    );
+    populateOptions(
+      provider,
+      llmProviders.map((item) => ({
+        key: item.key,
+        label: item.label,
+        dataset: {
+          mode: item.mode,
+          base: item.baseUrl,
+          env: item.apiKeyEnv
+        }
+      })),
+      "openai"
+    );
     const syncEnabledState = () => { llmControls.disabled = !llmEnabled.checked; };
     const syncModelOptions = () => {
       const previous = model.value;
@@ -780,6 +1051,7 @@
     };
     const syncProviderDefaults = () => {
       const option = provider.selectedOptions[0];
+      if (!option) return;
       document.getElementById("llm-base-url").value = option.dataset.base || "";
       document.getElementById("llm-api-env").value = option.dataset.env || "";
       syncModelOptions();
@@ -811,42 +1083,16 @@
       serviceControls.disabled = !serviceEnabled.checked;
     });
     const $ = (id) => document.getElementById(id);
-    const invoke = window.__TAURI__?.core?.invoke;
-    const routePaths = {
-      runtime: "/api/v1/runtime",
-      dashboard: "/api/v1/dashboard",
-      status: "/api/v1/status",
-      execution: "/api/v1/execution",
-      backtest: "/api/v1/backtest",
-      config_summary: "/api/v1/config-summary",
-      config: "/api/v1/config",
-      config_persistence: "/api/v1/config/persistence",
-      config_save: "/api/v1/config/save",
-      config_load: "/api/v1/config/load",
-      runtime_state: "/api/v1/runtime/state",
-      operational_preflight: "/api/v1/runtime/operational-preflight",
-      control_start: "/api/v1/control/start",
-      control_stop: "/api/v1/control/stop",
-      control_start_failed: "/api/v1/control/start-failed",
-      connector_order_circuit_breaker: "/api/v1/runtime/connector-order-circuit-breaker",
-      connector_order_circuit_breaker_reset: "/api/v1/runtime/connector-order-circuit-breaker/reset",
-      connector_order_circuit_incidents: "/api/v1/runtime/connector-order-circuit-breaker/incidents",
-      backtest_run: "/api/v1/backtest/run",
-      backtest_stop: "/api/v1/backtest/stop",
-      account: "/api/v1/account",
-      portfolio: "/api/v1/portfolio",
-      exchange_connector: "/api/v1/exchange/connector",
-      logs: "/api/v1/logs",
-      terminal_run: "/api/v1/terminal/run",
-      llm_providers: "/api/v1/llm/providers",
-      llm_config: "/api/v1/llm/config",
-      llm_prompt: "/api/v1/llm/prompt",
-      llm_local_model_status: "/api/v1/llm/local-model/status",
-      llm_local_model_start: "/api/v1/llm/local-model/start",
-      llm_local_model_pull: "/api/v1/llm/local-model/pull",
-      llm_local_model_delete: "/api/v1/llm/local-model/delete",
-      stream_dashboard: "/api/v1/stream/dashboard"
+    const syncBacktestOptimizerMode = () => {
+      const mode = String($("backtest-optimizer-mode")?.value || "").trim();
+      const comboSize = $("backtest-optimizer-combo-size");
+      if (comboSize) comboSize.disabled = mode === "current" || mode === "off";
     };
+    $("backtest-optimizer-mode")?.addEventListener("change", syncBacktestOptimizerMode);
+    syncBacktestOptimizerMode();
+    const invoke = window.__TAURI__?.core?.invoke;
+    const routePaths = Object.freeze({ ...(pythonParityContract.serviceRoutePaths || {}) });
+    const routeMethods = Object.freeze({ ...(pythonParityContract.serviceRouteMethods || {}) });
     const linesFrom = (value) => String(value || "").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
     const numberFrom = (id, fallback = 0) => {
       const value = Number($(id)?.value);
@@ -913,16 +1159,6 @@
       const el = $(id);
       return el?.value || selectedText(id);
     };
-    const chartDefaultSymbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"];
-    const chartDefaultIntervals = ["1m", "3m", "5m", "10m", "15m", "20m", "30m", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h", "12h", "1d", "2d", "3d", "4d", "5d", "6d", "1w", "2w", "3w", "1month", "2months", "3months", "6months", "1mo", "2mo", "3mo", "6mo", "1y", "2y"];
-    const chartIntervalMap = {
-      "1m": "1", "3m": "3", "5m": "5", "10m": "10", "15m": "15", "20m": "20", "30m": "30",
-      "45m": "45", "1h": "60", "2h": "120", "3h": "180", "4h": "240", "5h": "300", "6h": "360",
-      "7h": "420", "8h": "480", "9h": "540", "10h": "600", "11h": "660", "12h": "720",
-      "1d": "1D", "2d": "2D", "3d": "3D", "4d": "4D", "5d": "5D", "6d": "6D",
-      "1w": "1W", "2w": "2W", "3w": "3W", "1mo": "1M", "2mo": "2M", "3mo": "3M", "6mo": "6M",
-      "1month": "1M", "2months": "2M", "3months": "3M", "6months": "6M", "1y": "12M", "2y": "24M"
-    };
     const uniqueValues = (...groups) => {
       const seen = new Set();
       const result = [];
@@ -963,7 +1199,7 @@
       return "60";
     };
     const chartTradingViewSymbol = () => {
-      let symbol = String(selectedValue("chart-symbol-select") || "BTCUSDT").trim().toUpperCase().replace("/", "");
+      let symbol = String(selectedValue("chart-symbol-select") || defaultChartSymbol).trim().toUpperCase().replace("/", "");
       if (symbol.includes(":")) return symbol;
       if (selectedValue("chart-market-select") === "Futures" && symbol.endsWith("USDT") && !symbol.endsWith(".P")) {
         symbol = `${symbol}.P`;
@@ -981,8 +1217,8 @@
     })[view] || "TradingView";
     const buildChartConfigPatch = () => ({
       market: selectedValue("chart-market-select") || "Futures",
-      symbol: selectedValue("chart-symbol-select") || "BTCUSDT",
-      interval: selectedValue("chart-interval-select") || "1m",
+      symbol: selectedValue("chart-symbol-select") || defaultChartSymbol,
+      interval: selectedValue("chart-interval-select") || defaultChartInterval,
       view_mode: selectedValue("chart-view-select") || "tradingview",
       auto_follow: selectedValue("chart-market-select") === "Futures"
     });
@@ -1424,7 +1660,7 @@
         if (!isBacktestSnapshotActive(payload)) return latest;
         await sleep(1000);
       }
-      appendLog(`[api] ${label}: scan still running after timeout; refresh backtest later for final results.`);
+      appendLog(`[api] ${label}: backtest still running after timeout; refresh backtest later for final results.`);
       return latest;
     };
     const runBacktestScan = async () => {
@@ -1579,8 +1815,8 @@
       };
       for (const [id, label] of Object.entries(states)) setText(id, label);
       const market = selectedValue("chart-market-select") || "Futures";
-      const symbol = selectedValue("chart-symbol-select") || "BTCUSDT";
-      const interval = selectedValue("chart-interval-select") || "1m";
+      const symbol = selectedValue("chart-symbol-select") || defaultChartSymbol;
+      const interval = selectedValue("chart-interval-select") || defaultChartInterval;
       setText("chart-status-text", `${chartViewLabel(view)}: ${market} ${symbol} ${interval}`);
       setText("chart-open-url-text", chartUrl());
     };
@@ -1596,8 +1832,8 @@
         chart.interval ? [chart.interval] : [],
         chartDefaultIntervals
       );
-      replaceSelectOptions("chart-symbol-select", symbols, chart.symbol || symbols[0] || "BTCUSDT");
-      replaceSelectOptions("chart-interval-select", intervals, chart.interval || intervals[0] || "1m");
+      replaceSelectOptions("chart-symbol-select", symbols, chart.symbol || symbols[0] || defaultChartSymbol);
+      replaceSelectOptions("chart-interval-select", intervals, chart.interval || intervals[0] || defaultChartInterval);
       setSelect("chart-market-select", chart.market || config?.account_type || "Futures");
       setSelect("chart-view-select", chart.view_mode || "tradingview", true);
       renderChartState();
@@ -1608,7 +1844,12 @@
       if (/^https?:\/\//i.test(host)) return host.replace(/\/+$/, "");
       return `http://${host}:${port}`;
     };
-    const serviceApiUrl = (routeName) => `${serviceBaseUrl()}${routePaths[routeName] || ""}`;
+    const serviceRoutePath = (routeName) => routePaths[routeName] || "";
+    const serviceRouteSupportsMethod = (routeName, method) => {
+      const expected = Array.isArray(routeMethods[routeName]) ? routeMethods[routeName] : [];
+      return !expected.length || expected.includes(String(method || "GET").toUpperCase());
+    };
+    const serviceApiUrl = (routeName) => `${serviceBaseUrl()}${serviceRoutePath(routeName)}`;
     const appendLog = (message) => {
       const output = $("log-output");
       if (!output) return;
@@ -1737,12 +1978,33 @@
       return summary;
     };
     const serviceRequest = async (routeName, method = "GET", payload = null, query = null) => {
+      const path = serviceRoutePath(routeName);
+      if (!path) {
+        return {
+          ok: false,
+          status: 0,
+          route_name: routeName,
+          path: "",
+          payload: {},
+          error: `Unknown generated Python Service API route: ${routeName}`
+        };
+      }
+      if (!serviceRouteSupportsMethod(routeName, method)) {
+        return {
+          ok: false,
+          status: 0,
+          route_name: routeName,
+          path,
+          payload: {},
+          error: `Method ${method} is not declared for generated Python Service API route ${routeName}`
+        };
+      }
       if (!invoke) {
         return {
           ok: false,
           status: 0,
           route_name: routeName,
-          path: routePaths[routeName] || "",
+          path,
           payload: {},
           error: "Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell."
         };
@@ -1762,7 +2024,7 @@
           ok: false,
           status: 0,
           route_name: routeName,
-          path: routePaths[routeName] || "",
+          path,
           payload: {},
           error: String(error)
         };
@@ -1951,6 +2213,7 @@
       if (!config || typeof config !== "object") return;
       setSelect("config-mode", config.mode);
       setSelect("config-theme", config.theme);
+      setSelect("config-design", config.design);
       setSelect("config-account-type", config.account_type);
       setSelect("config-account-mode", config.account_mode);
       setSelect("config-connector", config.connector_backend);
@@ -2022,8 +2285,14 @@
       setSelect("backtest-account-mode", backtest.account_mode);
       setSelect("backtest-connector", backtest.connector_backend);
       setValue("backtest-leverage", backtest.leverage);
+      setSelect("backtest-scan-scope", backtest.scan_scope);
       setValue("backtest-scan-top-n", backtest.scan_top_n);
       setValue("backtest-scan-mdd-limit", backtest.scan_mdd_limit);
+      setSelect("backtest-optimizer-mode", backtest.optimizer_mode);
+      setSelect("backtest-optimizer-metric", backtest.optimizer_metric);
+      setValue("backtest-optimizer-combo-size", backtest.optimizer_combo_size);
+      setValue("backtest-optimizer-min-trades", backtest.optimizer_min_trades);
+      syncBacktestOptimizerMode();
       if (backtest.template && typeof backtest.template === "object") {
         setChecked("backtest-template-enabled", backtest.template.enabled);
         setSelect("backtest-template-name", backtest.template.name);
@@ -2105,6 +2374,7 @@
         connector_backend: selectedValue("config-connector"),
         selected_exchange: selectedText("exchange-select"),
         theme: selectedText("config-theme"),
+        design: selectedText("config-design"),
         leverage: numberFrom("config-leverage", 1),
         tif: selectedValue("config-time-in-force"),
         gtd_minutes: numberFrom("config-gtd-minutes", 30),
@@ -2147,7 +2417,7 @@
       llm_base_url: $("llm-base-url")?.value || "",
       llm_api_key_env: $("llm-api-env")?.value || "",
       llm_api_key: $("llm-api-token")?.value || "",
-      llm_use_for: $("llm-use-for")?.value || "Advisory",
+      llm_use_for: $("llm-use-for")?.value || llmUseForOptions[0]?.key || "advisory",
       llm_allow_public_network: Boolean(llmPublic.checked),
       llm_reasoning_effort: reasoning.value || "default"
     });
@@ -2342,11 +2612,11 @@
         mdd_logic: selectedValue("backtest-mdd-logic"),
         scan_top_n: numberFrom("backtest-scan-top-n", 200),
         scan_mdd_limit: numberFrom("backtest-scan-mdd-limit", 10),
-        scan_scope: "selected",
-        optimizer_combo_size: 1,
-        optimizer_metric: "roi_percent",
-        optimizer_min_trades: 1,
-        optimizer_mode: "off",
+        scan_scope: selectedValue("backtest-scan-scope") || "selected",
+        optimizer_combo_size: numberFrom("backtest-optimizer-combo-size", 2),
+        optimizer_metric: selectedValue("backtest-optimizer-metric") || "roi_percent",
+        optimizer_min_trades: numberFrom("backtest-optimizer-min-trades", 1),
+        optimizer_mode: selectedValue("backtest-optimizer-mode") || "current",
         pair_overrides: overrideRowsForRequest("backtest"),
         stop_loss: {
           enabled: Boolean($("backtest-stop-loss-enabled")?.checked),
@@ -2558,14 +2828,33 @@
     $("backtest-add-all-dashboard-btn")?.addEventListener("click", () => addBacktestRowsToDashboard("all"));
     $("run-backtest-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
-      const result = await requestAndReport("Run backtest", "backtest_run", "POST", { request: buildBacktestRequest(), source: "tauri-desktop" });
-      if (!result.ok) return;
-      const snapshot = await requestAndReport("Refresh backtest", "backtest");
-      const runs = backtestRunsFromPayload(snapshot.payload);
-      renderBacktestResultsTable(runs);
+      const runButton = $("run-backtest-btn");
+      const scanButton = $("backtest-scan-symbols-btn");
+      runButton.disabled = true;
+      if (scanButton) scanButton.disabled = true;
+      setText("backtest-scan-status-text", "Starting backtest...");
+      setText("backtest-scan-best-text", "--");
+      try {
+        const result = await requestAndReport("Run backtest", "backtest_run", "POST", { request: buildBacktestRequest(), source: "tauri-desktop" });
+        if (!result.ok || result.payload?.accepted === false) {
+          setText("backtest-scan-status-text", result.payload?.status_message || result.error || "Backtest rejected.");
+          return;
+        }
+        const snapshot = await pollBacktestUntilIdle("Run backtest");
+        const runs = backtestRunsFromPayload(snapshot?.payload);
+        renderBacktestResultsTable(runs);
+        setText(
+          "backtest-scan-status-text",
+          String(snapshot?.payload?.status_message || snapshot?.payload?.state || `Complete (${runs.length} run(s))`)
+        );
+      } finally {
+        runButton.disabled = false;
+        if (scanButton) scanButton.disabled = false;
+      }
     });
     $("stop-backtest-btn")?.addEventListener("click", async () => {
       if (!(await ensureServiceApi())) return;
+      setText("backtest-scan-status-text", "Backtest cancellation requested...");
       await requestAndReport("Stop backtest", "backtest_stop", "POST", { source: "tauri-desktop" });
     });
     syncPositionsTableOptions();

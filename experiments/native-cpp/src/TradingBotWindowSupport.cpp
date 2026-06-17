@@ -1,12 +1,29 @@
 #include "TradingBotWindowSupport.h"
 
+#include "generated/PythonParityContract.h"
+
+#include <QColor>
 #include <QComboBox>
+#include <QByteArray>
+#include <QEventLoop>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QTableWidgetItem>
+#include <QTimer>
+#include <QUrl>
+#include <QUrlQuery>
 #include <QVector>
 #include <QtGlobal>
+
+#include <algorithm>
 
 namespace {
 
@@ -48,15 +65,6 @@ const QString kConnectorCcxt = QStringLiteral("ccxt");
 const QString kConnectorPyBinance = QStringLiteral("python-binance");
 const QString kConnectorLegacyGateway = QStringLiteral("gateway");
 const QString kConnectorLegacyCustom = QStringLiteral("custom");
-
-const QVector<ConnectorOption> kConnectorOptions = {
-    {QStringLiteral("Binance SDK Derivatives Trading USDⓈ Futures (Official Recommended)"), kConnectorUsdsFutures},
-    {QStringLiteral("Binance SDK Derivatives Trading COIN-M Futures"), kConnectorCoinFutures},
-    {QStringLiteral("Binance SDK Spot (Official Recommended)"), kConnectorSpot},
-    {QStringLiteral("Binance Connector Python"), kConnectorBinanceConnector},
-    {QStringLiteral("CCXT (Unified)"), kConnectorCcxt},
-    {QStringLiteral("python-binance (Community)"), kConnectorPyBinance},
-};
 
 const QSet<QString> kFuturesConnectorKeys = {
     kConnectorUsdsFutures,
@@ -142,6 +150,68 @@ QString firstEnvValue(const QStringList &keys) {
     return QString();
 }
 
+QString environmentValue(const char *name, const QString &fallback = {}) {
+    const QString value = qEnvironmentVariable(name).trimmed();
+    return value.isEmpty() ? fallback : value;
+}
+
+QString parityString(std::string_view value) {
+    return QString::fromUtf8(value.data(), static_cast<int>(value.size()));
+}
+
+QVector<ConnectorOption> pythonConnectorOptions() {
+    QVector<ConnectorOption> options;
+    options.reserve(static_cast<int>(PythonParityContract::kPythonConnectorOptions.size()));
+    for (const auto &connector : PythonParityContract::kPythonConnectorOptions) {
+        options.append({parityString(connector.label), parityString(connector.key)});
+    }
+    return options;
+}
+
+template <std::size_t N>
+QStringList parityStringList(const std::array<std::string_view, N> &values) {
+    QStringList result;
+    result.reserve(static_cast<int>(values.size()));
+    for (const std::string_view value : values) {
+        result.append(parityString(value));
+    }
+    return result;
+}
+
+QStringList parityCsvStringList(std::string_view value) {
+    return parityString(value).split(QLatin1Char(','), Qt::SkipEmptyParts);
+}
+
+template <typename OptionArray>
+QStringList parityUiOptionKeys(const OptionArray &options) {
+    QStringList result;
+    result.reserve(static_cast<int>(options.size()));
+    for (const auto &option : options) {
+        result.append(parityString(option.key));
+    }
+    return result;
+}
+
+template <typename OptionArray>
+QStringList parityUiOptionLabels(const OptionArray &options) {
+    QStringList result;
+    result.reserve(static_cast<int>(options.size()));
+    for (const auto &option : options) {
+        result.append(parityString(option.label));
+    }
+    return result;
+}
+
+const PythonParityContract::PythonParityDomain *parityDomainByKey(const QString &domainKey) {
+    const QString normalized = domainKey.trimmed();
+    for (const auto &domain : PythonParityContract::kPythonParityDomains) {
+        if (parityString(domain.key) == normalized) {
+            return &domain;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 namespace TradingBotWindowSupport {
@@ -206,12 +276,629 @@ QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futur
     return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"};
 }
 
+QString pythonSourceParityContractHash() {
+    return parityString(PythonParityContract::kPythonSourceContractHash);
+}
+
+QStringList pythonSourceParityDomainKeys() {
+    return parityStringList(PythonParityContract::kPythonParityDomainKeys);
+}
+
+QStringList pythonSourceParityDomainTitles() {
+    QStringList result;
+    result.reserve(static_cast<int>(PythonParityContract::kPythonParityDomains.size()));
+    for (const auto &domain : PythonParityContract::kPythonParityDomains) {
+        result.append(parityString(domain.title));
+    }
+    return result;
+}
+
+QString pythonSourceParityDomainTitle(const QString &domainKey) {
+    const auto *domain = parityDomainByKey(domainKey);
+    return domain ? parityString(domain->title) : QString();
+}
+
+QString pythonSourceParityDomainPythonSurface(const QString &domainKey) {
+    const auto *domain = parityDomainByKey(domainKey);
+    return domain ? parityString(domain->pythonSurface) : QString();
+}
+
+QString pythonSourceParityDomainCppStatus(const QString &domainKey) {
+    const auto *domain = parityDomainByKey(domainKey);
+    return domain ? parityString(domain->cppStatus) : QString();
+}
+
+QString pythonSourceParityDomainRustStatus(const QString &domainKey) {
+    const auto *domain = parityDomainByKey(domainKey);
+    return domain ? parityString(domain->rustStatus) : QString();
+}
+
+QString pythonSourceParityDomainRequiredBeforeFullParity(const QString &domainKey) {
+    const auto *domain = parityDomainByKey(domainKey);
+    return domain ? parityString(domain->requiredBeforeFullParity) : QString();
+}
+
+bool pythonSourceParityDomainCppFullParity(const QString &domainKey) {
+    const auto *domain = parityDomainByKey(domainKey);
+    return domain ? domain->cppFullParity : false;
+}
+
+bool pythonSourceParityDomainRustFullParity(const QString &domainKey) {
+    const auto *domain = parityDomainByKey(domainKey);
+    return domain ? domain->rustFullParity : false;
+}
+
+QStringList pythonSourceServiceRouteNames() {
+    return parityStringList(PythonParityContract::kPythonServiceRouteNames);
+}
+
+QString pythonSourceServiceRoutePath(const QString &routeName) {
+    const QString normalized = routeName.trimmed();
+    for (const auto &route : PythonParityContract::kPythonServiceRoutes) {
+        if (parityString(route.name) == normalized) {
+            return parityString(route.path);
+        }
+    }
+    return QString();
+}
+
+QStringList pythonSourceServiceRouteMethods(const QString &routeName) {
+    const QString normalized = routeName.trimmed();
+    for (const auto &route : PythonParityContract::kPythonServiceRoutes) {
+        if (parityString(route.name) == normalized) {
+            return parityString(route.methods).split(QLatin1Char(','), Qt::SkipEmptyParts);
+        }
+    }
+    return {};
+}
+
+QString serviceApiBaseUrl() {
+    QString base = environmentValue("BOT_DESKTOP_SERVICE_API_BASE_URL");
+    if (base.isEmpty()) {
+        const QString host = environmentValue("BOT_DESKTOP_SERVICE_API_HOST", QStringLiteral("127.0.0.1"));
+        const QString port = environmentValue("BOT_DESKTOP_SERVICE_API_PORT", QStringLiteral("8000"));
+        base = QStringLiteral("http://%1:%2").arg(host, port);
+    }
+    return normalizeBaseUrl(base);
+}
+
+QString serviceApiUrlForRoute(const QString &routeName) {
+    const QString path = pythonSourceServiceRoutePath(routeName);
+    const QString base = serviceApiBaseUrl();
+    if (path.trimmed().isEmpty()) {
+        return base;
+    }
+    return base + (path.startsWith(u'/') ? path : QStringLiteral("/") + path);
+}
+
+ServiceApiJsonResult serviceApiRequestJson(
+    const QString &method,
+    const QString &routeName,
+    const QJsonObject &body,
+    int timeoutMs) {
+    ServiceApiJsonResult result;
+    const QString normalizedMethod = method.trimmed().toUpper();
+    const QString url = serviceApiUrlForRoute(routeName);
+
+    if (pythonSourceServiceRoutePath(routeName).trimmed().isEmpty()) {
+        result.error = QStringLiteral("Unknown Python Service API route '%1'.").arg(routeName);
+        return result;
+    }
+    if (normalizedMethod.isEmpty()) {
+        result.error = QStringLiteral("Missing Service API method for route '%1'.").arg(routeName);
+        return result;
+    }
+
+    QUrl requestUrl(url);
+    if (normalizedMethod == QStringLiteral("GET") && !body.isEmpty()) {
+        QUrlQuery query(requestUrl);
+        for (auto it = body.constBegin(); it != body.constEnd(); ++it) {
+            const QJsonValue value = it.value();
+            if (value.isString()) {
+                query.addQueryItem(it.key(), value.toString());
+            } else if (value.isDouble()) {
+                query.addQueryItem(it.key(), QString::number(value.toDouble(), 'g', 15));
+            } else if (value.isBool()) {
+                query.addQueryItem(it.key(), value.toBool() ? QStringLiteral("true") : QStringLiteral("false"));
+            }
+        }
+        requestUrl.setQuery(query);
+    }
+
+    QNetworkAccessManager manager;
+    QNetworkRequest request{requestUrl};
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("trading-bot-cpp/1.0"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    const QString token = environmentValue("BOT_SERVICE_API_TOKEN");
+    if (!token.isEmpty()) {
+        request.setRawHeader(QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token.toUtf8());
+    }
+
+    QNetworkReply *reply = nullptr;
+    const QByteArray payload = body.isEmpty() ? QByteArrayLiteral("{}") : QJsonDocument(body).toJson(QJsonDocument::Compact);
+    if (normalizedMethod == QStringLiteral("GET")) {
+        reply = manager.get(request);
+    } else if (normalizedMethod == QStringLiteral("POST")) {
+        reply = manager.post(request, payload);
+    } else if (normalizedMethod == QStringLiteral("PATCH")) {
+        reply = manager.sendCustomRequest(request, QByteArrayLiteral("PATCH"), payload);
+    } else if (normalizedMethod == QStringLiteral("PUT")) {
+        reply = manager.put(request, payload);
+    } else if (normalizedMethod == QStringLiteral("DELETE")) {
+        reply = manager.sendCustomRequest(request, QByteArrayLiteral("DELETE"), payload);
+    } else {
+        result.error = QStringLiteral("Unsupported Service API method %1").arg(normalizedMethod);
+        return result;
+    }
+
+    QEventLoop loop;
+    QTimer timer;
+    bool timedOut = false;
+    timer.setSingleShot(true);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+        timedOut = true;
+        reply->abort();
+        loop.quit();
+    });
+    timer.start(timeoutMs);
+    loop.exec();
+
+    const QByteArray responseBody = reply->readAll();
+    result.statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QNetworkReply::NetworkError networkError = reply->error();
+    const QString networkErrorText = reply->errorString();
+    reply->deleteLater();
+
+    if (timedOut) {
+        result.error = QStringLiteral("Service API request timed out: %1").arg(url);
+        return result;
+    }
+    if (result.statusCode >= 400) {
+        const QString detail = QString::fromUtf8(responseBody).trimmed();
+        result.error = QStringLiteral("Service API HTTP %1 for %2%3")
+                           .arg(result.statusCode)
+                           .arg(url, detail.isEmpty() ? QString() : QStringLiteral(": ") + detail);
+        return result;
+    }
+    if (networkError != QNetworkReply::NoError) {
+        result.error = QStringLiteral("Service API request failed (%1): %2").arg(url, networkErrorText);
+        return result;
+    }
+
+    QJsonParseError parseError{};
+    result.document = QJsonDocument::fromJson(responseBody, &parseError);
+    if (parseError.error != QJsonParseError::NoError || result.document.isNull()) {
+        result.error = QStringLiteral("Service API returned invalid JSON for %1: %2").arg(url, parseError.errorString());
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
+QStringList pythonSourceBacktestRunRequestFields() {
+    return parityStringList(PythonParityContract::kPythonBacktestRunRequestFields);
+}
+
+QStringList pythonSourceIndicatorKeys() {
+    return parityStringList(PythonParityContract::kPythonIndicatorKeys);
+}
+
+QStringList pythonSourceIndicatorDisplayNames() {
+    QStringList names;
+    for (const auto &indicator : PythonParityContract::kPythonIndicatorCatalog) {
+        names.append(parityString(indicator.displayName));
+    }
+    return names;
+}
+
+QStringList pythonSourceDefaultEnabledIndicatorKeys() {
+    QStringList keys;
+    for (const auto &indicator : PythonParityContract::kPythonIndicatorCatalog) {
+        if (indicator.defaultEnabled) {
+            keys.append(parityString(indicator.key));
+        }
+    }
+    return keys;
+}
+
+QStringList pythonSourceLlmProviderKeys() {
+    return parityStringList(PythonParityContract::kPythonLlmProviderKeys);
+}
+
+QStringList pythonSourceLlmProviderLabels() {
+    QStringList labels;
+    for (const auto &provider : PythonParityContract::kPythonLlmProviders) {
+        labels.append(parityString(provider.label));
+    }
+    return labels;
+}
+
+QStringList pythonSourceLlmProviderDefaultModels() {
+    QStringList models;
+    for (const auto &provider : PythonParityContract::kPythonLlmProviders) {
+        models.append(parityString(provider.defaultModel));
+    }
+    return models;
+}
+
+QStringList pythonSourceLlmProviderApiKeyEnvs() {
+    QStringList envs;
+    for (const auto &provider : PythonParityContract::kPythonLlmProviders) {
+        envs.append(parityString(provider.apiKeyEnv));
+    }
+    return envs;
+}
+
+QVector<LlmProviderRuntimeConfig> pythonSourceLlmProviderConfigs() {
+    QVector<LlmProviderRuntimeConfig> configs;
+    configs.reserve(static_cast<int>(PythonParityContract::kPythonLlmProviders.size()));
+    for (const auto &provider : PythonParityContract::kPythonLlmProviders) {
+        configs.append({
+            parityString(provider.key),
+            parityString(provider.label),
+            parityString(provider.mode),
+            parityString(provider.protocol),
+            parityString(provider.defaultBaseUrl),
+            parityString(provider.defaultModel),
+            parityString(provider.apiKeyEnv),
+            parityCsvStringList(provider.modelSuggestions),
+            parityCsvStringList(provider.reasoningEfforts),
+            parityString(provider.defaultReasoningEffort),
+        });
+    }
+    return configs;
+}
+
+QStringList pythonSourceConnectorKeys() {
+    return parityStringList(PythonParityContract::kPythonConnectorKeys);
+}
+
+QStringList pythonSourceConnectorLabels() {
+    QStringList labels;
+    for (const auto &connector : PythonParityContract::kPythonConnectorOptions) {
+        labels.append(parityString(connector.label));
+    }
+    return labels;
+}
+
+QStringList pythonSourceBacktestIntervals() {
+    return parityStringList(PythonParityContract::kPythonBacktestIntervals);
+}
+
+QStringList pythonSourceTradingViewIntervalKeys() {
+    QStringList keys;
+    keys.reserve(static_cast<int>(PythonParityContract::kPythonTradingViewIntervalMap.size()));
+    for (const auto &interval : PythonParityContract::kPythonTradingViewIntervalMap) {
+        keys.append(parityString(interval.interval));
+    }
+    return keys;
+}
+
+QStringList pythonSourceTradingViewIntervalCodes() {
+    QStringList codes;
+    codes.reserve(static_cast<int>(PythonParityContract::kPythonTradingViewIntervalMap.size()));
+    for (const auto &interval : PythonParityContract::kPythonTradingViewIntervalMap) {
+        codes.append(parityString(interval.code));
+    }
+    return codes;
+}
+
+QStringList pythonSourceDefaultChartSymbols() {
+    return parityStringList(PythonParityContract::kPythonDefaultChartSymbols);
+}
+
+QStringList pythonSourceDefaultExecutionSymbols() {
+    return parityStringList(PythonParityContract::kPythonDefaultExecutionSymbols);
+}
+
+QStringList pythonSourceDefaultExecutionIntervals() {
+    return parityStringList(PythonParityContract::kPythonDefaultExecutionIntervals);
+}
+
+QStringList pythonSourceDefaultBacktestSymbols() {
+    return parityStringList(PythonParityContract::kPythonDefaultBacktestSymbols);
+}
+
+QStringList pythonSourceDefaultBacktestIntervals() {
+    return parityStringList(PythonParityContract::kPythonDefaultBacktestIntervals);
+}
+
+QStringList pythonSourceChartMarketOptions() {
+    return parityStringList(PythonParityContract::kPythonChartMarketOptions);
+}
+
+QStringList pythonSourceAccountModeOptions() {
+    return parityStringList(PythonParityContract::kPythonAccountModeOptions);
+}
+
+QStringList pythonSourceDashboardLoopChoiceKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonDashboardLoopChoices);
+}
+
+QStringList pythonSourceDashboardLoopChoiceLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonDashboardLoopChoices);
+}
+
+QStringList pythonSourceLeadTraderOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonLeadTraderOptions);
+}
+
+QStringList pythonSourceLeadTraderOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonLeadTraderOptions);
+}
+
+QStringList pythonSourceLlmUseForOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonLlmUseForOptions);
+}
+
+QStringList pythonSourceLlmUseForOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonLlmUseForOptions);
+}
+
+QStringList pythonSourceDashboardStrategyTemplateKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonDashboardStrategyTemplates);
+}
+
+QStringList pythonSourceDashboardStrategyTemplateLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonDashboardStrategyTemplates);
+}
+
+QStringList pythonSourceBacktestTemplateKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonBacktestTemplates);
+}
+
+QStringList pythonSourceBacktestTemplateLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonBacktestTemplates);
+}
+
+QStringList pythonSourceSideOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonSideOptions);
+}
+
+QStringList pythonSourceSideOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonSideOptions);
+}
+
+QStringList pythonSourceConfigModeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonConfigModeOptions);
+}
+
+QStringList pythonSourceConfigModeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonConfigModeOptions);
+}
+
+QStringList pythonSourceThemeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonThemeOptions);
+}
+
+QStringList pythonSourceThemeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonThemeOptions);
+}
+
+QStringList pythonSourceDesignOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonDesignOptions);
+}
+
+QStringList pythonSourceDesignOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonDesignOptions);
+}
+
+QStringList pythonSourceIndicatorSourceOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonIndicatorSourceOptions);
+}
+
+QStringList pythonSourceIndicatorSourceOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonIndicatorSourceOptions);
+}
+
+QStringList pythonSourceExchangeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonExchangeOptions);
+}
+
+QStringList pythonSourceExchangeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonExchangeOptions);
+}
+
+QStringList pythonSourceExchangeOptionDisabledLabels() {
+    QStringList labels;
+    for (const auto &option : PythonParityContract::kPythonExchangeOptions) {
+        if (option.disabled) {
+            labels.append(parityString(option.label));
+        }
+    }
+    return labels;
+}
+
+QStringList pythonSourceAccountTypeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonAccountTypeOptions);
+}
+
+QStringList pythonSourceAccountTypeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonAccountTypeOptions);
+}
+
+QStringList pythonSourceMarginModeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonMarginModeOptions);
+}
+
+QStringList pythonSourceMarginModeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonMarginModeOptions);
+}
+
+QStringList pythonSourcePositionModeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonPositionModeOptions);
+}
+
+QStringList pythonSourcePositionModeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonPositionModeOptions);
+}
+
+QStringList pythonSourceAssetsModeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonAssetsModeOptions);
+}
+
+QStringList pythonSourceAssetsModeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonAssetsModeOptions);
+}
+
+QStringList pythonSourceOrderTypeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonOrderTypeOptions);
+}
+
+QStringList pythonSourceOrderTypeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonOrderTypeOptions);
+}
+
+QStringList pythonSourceTimeInForceOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonTimeInForceOptions);
+}
+
+QStringList pythonSourceTimeInForceOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonTimeInForceOptions);
+}
+
+QStringList pythonSourceSignalLogicOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonSignalLogicOptions);
+}
+
+QStringList pythonSourceSignalLogicOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonSignalLogicOptions);
+}
+
+QStringList pythonSourceMddLogicOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonMddLogicOptions);
+}
+
+QStringList pythonSourceMddLogicOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonMddLogicOptions);
+}
+
+QStringList pythonSourceStopLossModeKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonStopLossModes);
+}
+
+QStringList pythonSourceStopLossModeLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonStopLossModes);
+}
+
+QStringList pythonSourceStopLossScopeKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonStopLossScopes);
+}
+
+QStringList pythonSourceStopLossScopeLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonStopLossScopes);
+}
+
+QStringList pythonSourceScanScopeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonScanScopeOptions);
+}
+
+QStringList pythonSourceScanScopeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonScanScopeOptions);
+}
+
+QStringList pythonSourceOptimizerModeOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonOptimizerModeOptions);
+}
+
+QStringList pythonSourceOptimizerModeOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonOptimizerModeOptions);
+}
+
+QStringList pythonSourceOptimizerMetricOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonOptimizerMetricOptions);
+}
+
+QStringList pythonSourceOptimizerMetricOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonOptimizerMetricOptions);
+}
+
+QStringList pythonSourceBacktestExecutionBackendOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonBacktestExecutionBackendOptions);
+}
+
+QStringList pythonSourceBacktestExecutionBackendOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonBacktestExecutionBackendOptions);
+}
+
+QStringList pythonSourceChartViewOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonChartViewOptions);
+}
+
+QStringList pythonSourceChartViewOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonChartViewOptions);
+}
+
+QStringList pythonSourcePositionsViewOptionKeys() {
+    return parityUiOptionKeys(PythonParityContract::kPythonPositionsViewOptions);
+}
+
+QStringList pythonSourcePositionsViewOptionLabels() {
+    return parityUiOptionLabels(PythonParityContract::kPythonPositionsViewOptions);
+}
+
+void populateComboFromPythonSourceOptions(
+    QComboBox *combo,
+    const QStringList &keys,
+    const QStringList &labels,
+    const QStringList &disabledLabels,
+    const QString &currentKey,
+    const QString &currentLabel) {
+    if (!combo) {
+        return;
+    }
+    combo->clear();
+    const int count = std::max(keys.size(), labels.size());
+    for (int i = 0; i < count; ++i) {
+        const QString key = keys.value(i).trimmed();
+        QString label = labels.value(i).trimmed();
+        if (label.isEmpty()) {
+            label = key;
+        }
+        if (label.isEmpty()) {
+            continue;
+        }
+        combo->addItem(label, key);
+        if (disabledLabels.contains(label)) {
+            const int idx = combo->count() - 1;
+            if (auto *model = qobject_cast<QStandardItemModel *>(combo->model())) {
+                if (auto *item = model->item(idx)) {
+                    item->setFlags(item->flags() & ~Qt::ItemFlag::ItemIsEnabled);
+                    item->setForeground(QColor("#6b7280"));
+                }
+            }
+        }
+    }
+    if (!currentKey.trimmed().isEmpty()) {
+        const int idx = combo->findData(currentKey.trimmed());
+        if (idx >= 0) {
+            combo->setCurrentIndex(idx);
+            return;
+        }
+    }
+    if (!currentLabel.trimmed().isEmpty()) {
+        const int idx = combo->findText(currentLabel.trimmed());
+        if (idx >= 0) {
+            combo->setCurrentIndex(idx);
+        }
+    }
+}
+
+bool cppPythonSourceParityReady() {
+    return PythonParityContract::kCppFullParityReady;
+}
+
+bool rustPythonSourceParityReady() {
+    return PythonParityContract::kRustFullParityReady;
+}
+
 QString recommendedConnectorKey(bool futures) {
     return futures ? kConnectorUsdsFutures : kConnectorSpot;
 }
 
 QString connectorLabelForKey(const QString &connectorKey) {
-    for (const auto &option : kConnectorOptions) {
+    for (const auto &option : pythonConnectorOptions()) {
         if (option.key == connectorKey) {
             return option.label;
         }
@@ -236,7 +923,7 @@ void rebuildConnectorComboForAccount(QComboBox *combo, bool futures, bool forceD
     const QSignalBlocker blocker(combo);
     combo->clear();
     const QSet<QString> &allowed = futures ? kFuturesConnectorKeys : kSpotConnectorKeys;
-    for (const auto &option : kConnectorOptions) {
+    for (const auto &option : pythonConnectorOptions()) {
         if (allowed.contains(option.key)) {
             combo->addItem(option.label, option.key);
         }
