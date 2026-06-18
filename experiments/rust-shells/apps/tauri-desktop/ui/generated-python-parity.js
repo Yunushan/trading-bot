@@ -207,7 +207,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "5f226cd68f0d40a44af7d611dd68c3b15645d452d6421854b5f31100c5533e08",
+  "contractHash": "6bf3edc7db5018b05fb8b0858ee5c912956f86499a0b706a5ca6f912322025d4",
   "dashboardLoopChoices": [
     {
       "key": "30s",
@@ -1608,6 +1608,1235 @@
     "stream_dashboard": "/api/v1/stream/dashboard",
     "terminal_run": "/api/v1/terminal/run"
   },
+  "serviceRouteQueryFields": {
+    "account": [],
+    "backtest": [],
+    "backtest_run": [],
+    "backtest_stop": [],
+    "config": [],
+    "config_load": [],
+    "config_persistence": [],
+    "config_save": [],
+    "config_summary": [],
+    "connector_order_circuit_breaker": [],
+    "connector_order_circuit_breaker_reset": [],
+    "connector_order_circuit_incidents": [
+      "limit"
+    ],
+    "control_start": [],
+    "control_start_failed": [],
+    "control_stop": [],
+    "dashboard": [
+      "log_limit",
+      "incident_limit"
+    ],
+    "exchange_connector": [],
+    "execution": [],
+    "llm_config": [],
+    "llm_local_model_delete": [],
+    "llm_local_model_pull": [],
+    "llm_local_model_start": [],
+    "llm_local_model_status": [
+      "base_url",
+      "model"
+    ],
+    "llm_prompt": [],
+    "llm_providers": [],
+    "logs": [
+      "limit"
+    ],
+    "operational_preflight": [],
+    "portfolio": [],
+    "runtime": [],
+    "runtime_state": [],
+    "status": [],
+    "stream_dashboard": [
+      "log_limit",
+      "incident_limit",
+      "interval_ms",
+      "max_events"
+    ],
+    "terminal_run": []
+  },
+  "serviceRouteRequestFields": {
+    "account": [
+      "total_balance",
+      "available_balance",
+      "source"
+    ],
+    "backtest": [],
+    "backtest_run": [
+      "request",
+      "source"
+    ],
+    "backtest_stop": [
+      "source"
+    ],
+    "config": [
+      "config"
+    ],
+    "config_load": [
+      "path",
+      "source",
+      "allow_unsafe_path"
+    ],
+    "config_persistence": [],
+    "config_save": [
+      "path",
+      "source",
+      "allow_unsafe_path"
+    ],
+    "config_summary": [],
+    "connector_order_circuit_breaker": [
+      "snapshot",
+      "source",
+      "force"
+    ],
+    "connector_order_circuit_breaker_reset": [
+      "snapshot",
+      "source",
+      "force"
+    ],
+    "connector_order_circuit_incidents": [],
+    "control_start": [
+      "requested_job_count",
+      "source"
+    ],
+    "control_start_failed": [
+      "reason",
+      "source"
+    ],
+    "control_stop": [
+      "close_positions",
+      "source"
+    ],
+    "dashboard": [],
+    "exchange_connector": [
+      "snapshot",
+      "source"
+    ],
+    "execution": [],
+    "llm_config": [
+      "config"
+    ],
+    "llm_local_model_delete": [
+      "base_url",
+      "model",
+      "source"
+    ],
+    "llm_local_model_pull": [
+      "base_url",
+      "model",
+      "source"
+    ],
+    "llm_local_model_start": [
+      "base_url",
+      "model",
+      "source"
+    ],
+    "llm_local_model_status": [],
+    "llm_prompt": [
+      "prompt",
+      "system_prompt",
+      "dry_run",
+      "source"
+    ],
+    "llm_providers": [],
+    "logs": [
+      "message",
+      "source",
+      "level"
+    ],
+    "operational_preflight": [],
+    "portfolio": [
+      "open_position_records",
+      "closed_position_records",
+      "closed_trade_registry",
+      "active_pnl",
+      "active_margin",
+      "closed_pnl",
+      "closed_margin",
+      "total_balance",
+      "available_balance",
+      "source"
+    ],
+    "runtime": [],
+    "runtime_state": [
+      "active",
+      "active_engine_count",
+      "source"
+    ],
+    "status": [],
+    "stream_dashboard": [],
+    "terminal_run": [
+      "command",
+      "source"
+    ]
+  },
+  "serviceRouteResponseFields": {
+    "account": [
+      "account_type",
+      "mode",
+      "selected_exchange",
+      "connector_backend",
+      "balance_currency",
+      "total_balance",
+      "available_balance",
+      "source",
+      "generated_at"
+    ],
+    "backtest": [
+      "session_id",
+      "state",
+      "workload_kind",
+      "status_message",
+      "symbols",
+      "intervals",
+      "indicator_keys",
+      "logic",
+      "symbol_source",
+      "capital",
+      "run_count",
+      "error_count",
+      "cancelled",
+      "started_at",
+      "completed_at",
+      "updated_at",
+      "source",
+      "top_run",
+      "runs",
+      "top_runs",
+      "errors"
+    ],
+    "backtest_run": [
+      "accepted",
+      "action",
+      "session_id",
+      "state",
+      "status_message",
+      "source"
+    ],
+    "backtest_stop": [
+      "accepted",
+      "action",
+      "session_id",
+      "state",
+      "status_message",
+      "source"
+    ],
+    "config": [
+      "mode",
+      "account_type",
+      "margin_mode",
+      "position_mode",
+      "side",
+      "leverage",
+      "position_pct",
+      "connector_backend",
+      "selected_exchange",
+      "code_language",
+      "theme",
+      "design",
+      "order_audit_max_bytes",
+      "order_audit_backup_count",
+      "connector_order_circuit_incident_log_max_bytes",
+      "connector_order_circuit_incident_log_backup_count",
+      "operational_connector_snapshot_stale_seconds",
+      "operational_execution_heartbeat_stale_seconds",
+      "operational_account_snapshot_stale_seconds",
+      "operational_portfolio_snapshot_stale_seconds",
+      "operational_live_start_gate_enabled",
+      "operational_live_order_gate_enabled",
+      "live_allow_auto_bump_to_min_order",
+      "symbols",
+      "intervals",
+      "api_credentials_present",
+      "llm",
+      "exchange_support"
+    ],
+    "config_load": [
+      "config",
+      "persistence"
+    ],
+    "config_persistence": [
+      "path",
+      "exists",
+      "modified_at",
+      "kind",
+      "format_version",
+      "loaded",
+      "dirty",
+      "last_loaded_at",
+      "last_saved_at",
+      "migrated_from_format_version"
+    ],
+    "config_save": [
+      "path",
+      "exists",
+      "modified_at",
+      "kind",
+      "format_version",
+      "loaded",
+      "dirty",
+      "last_loaded_at",
+      "last_saved_at",
+      "migrated_from_format_version"
+    ],
+    "config_summary": [
+      "mode",
+      "account_type",
+      "connector_backend",
+      "selected_exchange",
+      "code_language",
+      "theme",
+      "design",
+      "api_credentials_present",
+      "symbol_count",
+      "interval_count",
+      "enabled_indicator_count",
+      "runtime_pair_count",
+      "backtest_pair_count",
+      "llm_enabled",
+      "llm_provider",
+      "llm_mode",
+      "llm_api_key_present"
+    ],
+    "connector_order_circuit_breaker": [
+      "active",
+      "state",
+      "reason",
+      "message",
+      "block_count",
+      "block_threshold",
+      "block_window_seconds",
+      "source",
+      "generated_at"
+    ],
+    "connector_order_circuit_breaker_reset": [
+      "active",
+      "state",
+      "source",
+      "generated_at"
+    ],
+    "connector_order_circuit_incidents": [
+      "path",
+      "path_source",
+      "configured_path",
+      "limit",
+      "events",
+      "parse_errors"
+    ],
+    "control_start": [
+      "accepted",
+      "action",
+      "lifecycle_phase",
+      "runtime_active",
+      "active_engine_count",
+      "requested_job_count",
+      "close_positions_requested",
+      "source",
+      "status_message",
+      "generated_at"
+    ],
+    "control_start_failed": [
+      "accepted",
+      "action",
+      "lifecycle_phase",
+      "runtime_active",
+      "active_engine_count",
+      "requested_job_count",
+      "close_positions_requested",
+      "source",
+      "status_message",
+      "generated_at"
+    ],
+    "control_stop": [
+      "accepted",
+      "action",
+      "lifecycle_phase",
+      "runtime_active",
+      "active_engine_count",
+      "requested_job_count",
+      "close_positions_requested",
+      "source",
+      "status_message",
+      "generated_at"
+    ],
+    "dashboard": [
+      "runtime",
+      "status",
+      "operational",
+      "config",
+      "config_summary",
+      "execution",
+      "backtest",
+      "account",
+      "portfolio",
+      "logs",
+      "service_api",
+      "connector_order_circuit_incidents"
+    ],
+    "exchange_connector": [
+      "health",
+      "state",
+      "generated_at",
+      "source",
+      "selected_exchange",
+      "connector_backend",
+      "support",
+      "rate_limit",
+      "network",
+      "last_error",
+      "attention"
+    ],
+    "execution": [
+      "executor_kind",
+      "owner",
+      "state",
+      "workload_kind",
+      "session_id",
+      "requested_job_count",
+      "active_engine_count",
+      "progress_label",
+      "progress_percent",
+      "heartbeat_at",
+      "tick_count",
+      "last_action",
+      "last_message",
+      "started_at",
+      "updated_at",
+      "source",
+      "notes"
+    ],
+    "llm_config": [
+      "enabled",
+      "provider",
+      "provider_label",
+      "mode",
+      "protocol",
+      "model",
+      "base_url",
+      "api_key_env",
+      "api_key_present",
+      "allow_public_network",
+      "use_for",
+      "reasoning_effort"
+    ],
+    "llm_local_model_delete": [
+      "ok",
+      "action",
+      "model",
+      "status"
+    ],
+    "llm_local_model_pull": [
+      "ok",
+      "action",
+      "model",
+      "status"
+    ],
+    "llm_local_model_start": [
+      "started",
+      "server_kind",
+      "executable",
+      "error"
+    ],
+    "llm_local_model_status": [
+      "model",
+      "base_url",
+      "server_kind",
+      "installed",
+      "can_download",
+      "can_start",
+      "storage_hint",
+      "storage_paths",
+      "estimated_size_label"
+    ],
+    "llm_prompt": [
+      "provider",
+      "model",
+      "dry_run",
+      "prompt",
+      "system_prompt",
+      "response",
+      "source"
+    ],
+    "llm_providers": [
+      "key",
+      "label",
+      "mode",
+      "protocol",
+      "default_base_url",
+      "default_model",
+      "api_key_env",
+      "model_suggestions",
+      "reasoning_efforts",
+      "default_reasoning_effort"
+    ],
+    "logs": [
+      "sequence_id",
+      "level",
+      "message",
+      "source",
+      "generated_at"
+    ],
+    "operational_preflight": [
+      "state",
+      "message",
+      "mode",
+      "live_mode",
+      "generated_at",
+      "start",
+      "orders",
+      "freshness",
+      "critical_stale",
+      "reasons"
+    ],
+    "portfolio": [
+      "account_type",
+      "open_position_count",
+      "closed_position_count",
+      "active_pnl",
+      "active_margin",
+      "closed_pnl",
+      "closed_margin",
+      "total_balance",
+      "available_balance",
+      "positions",
+      "source",
+      "generated_at"
+    ],
+    "runtime": [
+      "service_name",
+      "phase",
+      "python_entrypoint",
+      "desktop_entrypoint",
+      "repo_root",
+      "platform",
+      "python_version",
+      "capabilities",
+      "control_plane",
+      "notes"
+    ],
+    "runtime_state": [
+      "state",
+      "lifecycle_phase",
+      "requested_action",
+      "close_positions_requested",
+      "status_message",
+      "last_transition_at",
+      "service_mode",
+      "generated_at",
+      "api_enabled",
+      "docker_required",
+      "runtime_source",
+      "active_engine_count",
+      "account_type",
+      "mode",
+      "selected_exchange",
+      "connector_backend",
+      "connector_health",
+      "exchange_connector",
+      "operational_health",
+      "operational",
+      "notes"
+    ],
+    "status": [
+      "state",
+      "lifecycle_phase",
+      "requested_action",
+      "close_positions_requested",
+      "status_message",
+      "last_transition_at",
+      "service_mode",
+      "generated_at",
+      "api_enabled",
+      "docker_required",
+      "runtime_source",
+      "active_engine_count",
+      "account_type",
+      "mode",
+      "selected_exchange",
+      "connector_backend",
+      "connector_health",
+      "exchange_connector",
+      "operational_health",
+      "operational",
+      "notes"
+    ],
+    "stream_dashboard": [
+      "event",
+      "data"
+    ],
+    "terminal_run": [
+      "command",
+      "exit_code",
+      "output",
+      "source",
+      "generated_at"
+    ]
+  },
+  "serviceRouteSchemas": [
+    {
+      "name": "runtime",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "service_name",
+        "phase",
+        "python_entrypoint",
+        "desktop_entrypoint",
+        "repo_root",
+        "platform",
+        "python_version",
+        "capabilities",
+        "control_plane",
+        "notes"
+      ]
+    },
+    {
+      "name": "dashboard",
+      "query_fields": [
+        "log_limit",
+        "incident_limit"
+      ],
+      "request_fields": [],
+      "response_fields": [
+        "runtime",
+        "status",
+        "operational",
+        "config",
+        "config_summary",
+        "execution",
+        "backtest",
+        "account",
+        "portfolio",
+        "logs",
+        "service_api",
+        "connector_order_circuit_incidents"
+      ]
+    },
+    {
+      "name": "status",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "state",
+        "lifecycle_phase",
+        "requested_action",
+        "close_positions_requested",
+        "status_message",
+        "last_transition_at",
+        "service_mode",
+        "generated_at",
+        "api_enabled",
+        "docker_required",
+        "runtime_source",
+        "active_engine_count",
+        "account_type",
+        "mode",
+        "selected_exchange",
+        "connector_backend",
+        "connector_health",
+        "exchange_connector",
+        "operational_health",
+        "operational",
+        "notes"
+      ]
+    },
+    {
+      "name": "execution",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "executor_kind",
+        "owner",
+        "state",
+        "workload_kind",
+        "session_id",
+        "requested_job_count",
+        "active_engine_count",
+        "progress_label",
+        "progress_percent",
+        "heartbeat_at",
+        "tick_count",
+        "last_action",
+        "last_message",
+        "started_at",
+        "updated_at",
+        "source",
+        "notes"
+      ]
+    },
+    {
+      "name": "backtest",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "session_id",
+        "state",
+        "workload_kind",
+        "status_message",
+        "symbols",
+        "intervals",
+        "indicator_keys",
+        "logic",
+        "symbol_source",
+        "capital",
+        "run_count",
+        "error_count",
+        "cancelled",
+        "started_at",
+        "completed_at",
+        "updated_at",
+        "source",
+        "top_run",
+        "runs",
+        "top_runs",
+        "errors"
+      ]
+    },
+    {
+      "name": "config_summary",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "mode",
+        "account_type",
+        "connector_backend",
+        "selected_exchange",
+        "code_language",
+        "theme",
+        "design",
+        "api_credentials_present",
+        "symbol_count",
+        "interval_count",
+        "enabled_indicator_count",
+        "runtime_pair_count",
+        "backtest_pair_count",
+        "llm_enabled",
+        "llm_provider",
+        "llm_mode",
+        "llm_api_key_present"
+      ]
+    },
+    {
+      "name": "config",
+      "query_fields": [],
+      "request_fields": [
+        "config"
+      ],
+      "response_fields": [
+        "mode",
+        "account_type",
+        "margin_mode",
+        "position_mode",
+        "side",
+        "leverage",
+        "position_pct",
+        "connector_backend",
+        "selected_exchange",
+        "code_language",
+        "theme",
+        "design",
+        "order_audit_max_bytes",
+        "order_audit_backup_count",
+        "connector_order_circuit_incident_log_max_bytes",
+        "connector_order_circuit_incident_log_backup_count",
+        "operational_connector_snapshot_stale_seconds",
+        "operational_execution_heartbeat_stale_seconds",
+        "operational_account_snapshot_stale_seconds",
+        "operational_portfolio_snapshot_stale_seconds",
+        "operational_live_start_gate_enabled",
+        "operational_live_order_gate_enabled",
+        "live_allow_auto_bump_to_min_order",
+        "symbols",
+        "intervals",
+        "api_credentials_present",
+        "llm",
+        "exchange_support"
+      ]
+    },
+    {
+      "name": "config_persistence",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "path",
+        "exists",
+        "modified_at",
+        "kind",
+        "format_version",
+        "loaded",
+        "dirty",
+        "last_loaded_at",
+        "last_saved_at",
+        "migrated_from_format_version"
+      ]
+    },
+    {
+      "name": "config_save",
+      "query_fields": [],
+      "request_fields": [
+        "path",
+        "source",
+        "allow_unsafe_path"
+      ],
+      "response_fields": [
+        "path",
+        "exists",
+        "modified_at",
+        "kind",
+        "format_version",
+        "loaded",
+        "dirty",
+        "last_loaded_at",
+        "last_saved_at",
+        "migrated_from_format_version"
+      ]
+    },
+    {
+      "name": "config_load",
+      "query_fields": [],
+      "request_fields": [
+        "path",
+        "source",
+        "allow_unsafe_path"
+      ],
+      "response_fields": [
+        "config",
+        "persistence"
+      ]
+    },
+    {
+      "name": "runtime_state",
+      "query_fields": [],
+      "request_fields": [
+        "active",
+        "active_engine_count",
+        "source"
+      ],
+      "response_fields": [
+        "state",
+        "lifecycle_phase",
+        "requested_action",
+        "close_positions_requested",
+        "status_message",
+        "last_transition_at",
+        "service_mode",
+        "generated_at",
+        "api_enabled",
+        "docker_required",
+        "runtime_source",
+        "active_engine_count",
+        "account_type",
+        "mode",
+        "selected_exchange",
+        "connector_backend",
+        "connector_health",
+        "exchange_connector",
+        "operational_health",
+        "operational",
+        "notes"
+      ]
+    },
+    {
+      "name": "operational_preflight",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "state",
+        "message",
+        "mode",
+        "live_mode",
+        "generated_at",
+        "start",
+        "orders",
+        "freshness",
+        "critical_stale",
+        "reasons"
+      ]
+    },
+    {
+      "name": "control_start",
+      "query_fields": [],
+      "request_fields": [
+        "requested_job_count",
+        "source"
+      ],
+      "response_fields": [
+        "accepted",
+        "action",
+        "lifecycle_phase",
+        "runtime_active",
+        "active_engine_count",
+        "requested_job_count",
+        "close_positions_requested",
+        "source",
+        "status_message",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "control_stop",
+      "query_fields": [],
+      "request_fields": [
+        "close_positions",
+        "source"
+      ],
+      "response_fields": [
+        "accepted",
+        "action",
+        "lifecycle_phase",
+        "runtime_active",
+        "active_engine_count",
+        "requested_job_count",
+        "close_positions_requested",
+        "source",
+        "status_message",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "control_start_failed",
+      "query_fields": [],
+      "request_fields": [
+        "reason",
+        "source"
+      ],
+      "response_fields": [
+        "accepted",
+        "action",
+        "lifecycle_phase",
+        "runtime_active",
+        "active_engine_count",
+        "requested_job_count",
+        "close_positions_requested",
+        "source",
+        "status_message",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "connector_order_circuit_breaker",
+      "query_fields": [],
+      "request_fields": [
+        "snapshot",
+        "source",
+        "force"
+      ],
+      "response_fields": [
+        "active",
+        "state",
+        "reason",
+        "message",
+        "block_count",
+        "block_threshold",
+        "block_window_seconds",
+        "source",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "connector_order_circuit_breaker_reset",
+      "query_fields": [],
+      "request_fields": [
+        "snapshot",
+        "source",
+        "force"
+      ],
+      "response_fields": [
+        "active",
+        "state",
+        "source",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "connector_order_circuit_incidents",
+      "query_fields": [
+        "limit"
+      ],
+      "request_fields": [],
+      "response_fields": [
+        "path",
+        "path_source",
+        "configured_path",
+        "limit",
+        "events",
+        "parse_errors"
+      ]
+    },
+    {
+      "name": "backtest_run",
+      "query_fields": [],
+      "request_fields": [
+        "request",
+        "source"
+      ],
+      "response_fields": [
+        "accepted",
+        "action",
+        "session_id",
+        "state",
+        "status_message",
+        "source"
+      ]
+    },
+    {
+      "name": "backtest_stop",
+      "query_fields": [],
+      "request_fields": [
+        "source"
+      ],
+      "response_fields": [
+        "accepted",
+        "action",
+        "session_id",
+        "state",
+        "status_message",
+        "source"
+      ]
+    },
+    {
+      "name": "account",
+      "query_fields": [],
+      "request_fields": [
+        "total_balance",
+        "available_balance",
+        "source"
+      ],
+      "response_fields": [
+        "account_type",
+        "mode",
+        "selected_exchange",
+        "connector_backend",
+        "balance_currency",
+        "total_balance",
+        "available_balance",
+        "source",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "portfolio",
+      "query_fields": [],
+      "request_fields": [
+        "open_position_records",
+        "closed_position_records",
+        "closed_trade_registry",
+        "active_pnl",
+        "active_margin",
+        "closed_pnl",
+        "closed_margin",
+        "total_balance",
+        "available_balance",
+        "source"
+      ],
+      "response_fields": [
+        "account_type",
+        "open_position_count",
+        "closed_position_count",
+        "active_pnl",
+        "active_margin",
+        "closed_pnl",
+        "closed_margin",
+        "total_balance",
+        "available_balance",
+        "positions",
+        "source",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "exchange_connector",
+      "query_fields": [],
+      "request_fields": [
+        "snapshot",
+        "source"
+      ],
+      "response_fields": [
+        "health",
+        "state",
+        "generated_at",
+        "source",
+        "selected_exchange",
+        "connector_backend",
+        "support",
+        "rate_limit",
+        "network",
+        "last_error",
+        "attention"
+      ]
+    },
+    {
+      "name": "logs",
+      "query_fields": [
+        "limit"
+      ],
+      "request_fields": [
+        "message",
+        "source",
+        "level"
+      ],
+      "response_fields": [
+        "sequence_id",
+        "level",
+        "message",
+        "source",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "terminal_run",
+      "query_fields": [],
+      "request_fields": [
+        "command",
+        "source"
+      ],
+      "response_fields": [
+        "command",
+        "exit_code",
+        "output",
+        "source",
+        "generated_at"
+      ]
+    },
+    {
+      "name": "llm_providers",
+      "query_fields": [],
+      "request_fields": [],
+      "response_fields": [
+        "key",
+        "label",
+        "mode",
+        "protocol",
+        "default_base_url",
+        "default_model",
+        "api_key_env",
+        "model_suggestions",
+        "reasoning_efforts",
+        "default_reasoning_effort"
+      ]
+    },
+    {
+      "name": "llm_config",
+      "query_fields": [],
+      "request_fields": [
+        "config"
+      ],
+      "response_fields": [
+        "enabled",
+        "provider",
+        "provider_label",
+        "mode",
+        "protocol",
+        "model",
+        "base_url",
+        "api_key_env",
+        "api_key_present",
+        "allow_public_network",
+        "use_for",
+        "reasoning_effort"
+      ]
+    },
+    {
+      "name": "llm_prompt",
+      "query_fields": [],
+      "request_fields": [
+        "prompt",
+        "system_prompt",
+        "dry_run",
+        "source"
+      ],
+      "response_fields": [
+        "provider",
+        "model",
+        "dry_run",
+        "prompt",
+        "system_prompt",
+        "response",
+        "source"
+      ]
+    },
+    {
+      "name": "llm_local_model_status",
+      "query_fields": [
+        "base_url",
+        "model"
+      ],
+      "request_fields": [],
+      "response_fields": [
+        "model",
+        "base_url",
+        "server_kind",
+        "installed",
+        "can_download",
+        "can_start",
+        "storage_hint",
+        "storage_paths",
+        "estimated_size_label"
+      ]
+    },
+    {
+      "name": "llm_local_model_start",
+      "query_fields": [],
+      "request_fields": [
+        "base_url",
+        "model",
+        "source"
+      ],
+      "response_fields": [
+        "started",
+        "server_kind",
+        "executable",
+        "error"
+      ]
+    },
+    {
+      "name": "llm_local_model_pull",
+      "query_fields": [],
+      "request_fields": [
+        "base_url",
+        "model",
+        "source"
+      ],
+      "response_fields": [
+        "ok",
+        "action",
+        "model",
+        "status"
+      ]
+    },
+    {
+      "name": "llm_local_model_delete",
+      "query_fields": [],
+      "request_fields": [
+        "base_url",
+        "model",
+        "source"
+      ],
+      "response_fields": [
+        "ok",
+        "action",
+        "model",
+        "status"
+      ]
+    },
+    {
+      "name": "stream_dashboard",
+      "query_fields": [
+        "log_limit",
+        "incident_limit",
+        "interval_ms",
+        "max_events"
+      ],
+      "request_fields": [],
+      "response_fields": [
+        "event",
+        "data"
+      ]
+    }
+  ],
   "serviceRoutes": [
     {
       "methods": [

@@ -1715,6 +1715,7 @@ TradingBotWindow::TradingBotWindow(QWidget *parent)
       dashboardSignalFeedCombo_(nullptr),
       dashboardStartBtn_(nullptr),
       dashboardStopBtn_(nullptr),
+      dashboardOrderAuditStatusLabel_(nullptr),
       dashboardOverridesTable_(nullptr),
       dashboardAllLogsEdit_(nullptr),
       dashboardPositionLogsEdit_(nullptr),

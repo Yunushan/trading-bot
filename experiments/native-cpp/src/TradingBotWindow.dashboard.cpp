@@ -1,9 +1,12 @@
 #include "TradingBotWindow.h"
+#include "NativeOrderSafety.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDoubleSpinBox>
+#include <QJsonObject>
+#include <QLabel>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -84,12 +87,48 @@ void TradingBotWindow::setDashboardRuntimeControlsEnabled(bool enabled) {
     syncDashboardPaperBalanceUi();
 }
 
+void TradingBotWindow::refreshDashboardOrderAuditStatus() {
+    if (!dashboardOrderAuditStatusLabel_) {
+        return;
+    }
+    const QJsonObject status = NativeOrderSafety::currentOrderAuditStatus(
+        NativeOrderSafety::orderAuditLogConfigFromEnvironment());
+    const QString state = status.value(QStringLiteral("state")).toString(QStringLiteral("unknown")).trimmed();
+    const QString path = status.value(QStringLiteral("path")).toString(NativeOrderSafety::defaultOrderAuditPath()).trimmed();
+    const QString lastOk = status.value(QStringLiteral("last_write_ok_at")).toString().trimmed();
+    const QJsonObject lastError = status.value(QStringLiteral("last_write_error")).toObject();
+    const QString errorMessage = lastError.value(QStringLiteral("message")).toString().trimmed();
+    const bool enabled = status.value(QStringLiteral("enabled")).toBool(true);
+    const bool writeOk = status.value(QStringLiteral("write_ok")).toBool(true);
+
+    QString detail = path.isEmpty() ? QStringLiteral("path unavailable") : path;
+    if (!errorMessage.isEmpty()) {
+        detail = QStringLiteral("%1 | %2").arg(detail, errorMessage);
+    } else if (!lastOk.isEmpty()) {
+        detail = QStringLiteral("%1 | last write %2").arg(detail, lastOk);
+    }
+    dashboardOrderAuditStatusLabel_->setText(
+        QStringLiteral("Order audit: %1 | %2").arg(state.isEmpty() ? QStringLiteral("unknown") : state, detail));
+    dashboardOrderAuditStatusLabel_->setToolTip(
+        QStringLiteral("Order audit JSONL path: %1\nMax bytes: %2\nBackups: %3")
+            .arg(path,
+                 QString::number(status.value(QStringLiteral("max_bytes")).toVariant().toLongLong()),
+                 QString::number(status.value(QStringLiteral("backup_count")).toInt())));
+    const QString color = !enabled
+        ? QStringLiteral("#f59e0b")
+        : (!writeOk || state == QStringLiteral("write_failed"))
+            ? QStringLiteral("#ef4444")
+            : QStringLiteral("#22c55e");
+    dashboardOrderAuditStatusLabel_->setStyleSheet(QStringLiteral("color: %1; font-weight: 700;").arg(color));
+}
+
 void TradingBotWindow::appendDashboardAllLog(const QString &message) {
     if (!dashboardAllLogsEdit_) {
         return;
     }
     const QString ts = QDateTime::currentDateTime().toString("[dd.MM.yyyy HH:mm:ss]");
     dashboardAllLogsEdit_->append(QString("%1 %2").arg(ts, message));
+    refreshDashboardOrderAuditStatus();
 }
 
 void TradingBotWindow::appendDashboardPositionLog(const QString &message) {
@@ -100,6 +139,7 @@ void TradingBotWindow::appendDashboardPositionLog(const QString &message) {
     if (dashboardAllLogsEdit_) {
         dashboardAllLogsEdit_->append(QString("%1 [Position] %2").arg(ts, message));
     }
+    refreshDashboardOrderAuditStatus();
 }
 
 void TradingBotWindow::appendDashboardWaitingLog(const QString &message) {

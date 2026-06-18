@@ -1,6 +1,7 @@
 ﻿#include "TradingBotWindow.h"
 #include "TradingBotWindowSupport.h"
 #include "BinanceWsClient.h"
+#include "NativeOrderSafety.h"
 #include "TradingBotWindow.dashboard_runtime_shared.h"
 
 #include <QCheckBox>
@@ -11,6 +12,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -255,8 +257,25 @@ void TradingBotWindow::startDashboardRuntime() {
 }
 
 void TradingBotWindow::stopDashboardRuntime() {
+    const bool stopWithoutCloseIntent = dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked();
+    NativeOrderSafety::RuntimeStopGuardInput stopGuardInput;
+    stopGuardInput.runtimeActive = dashboardRuntimeActive_;
+    stopGuardInput.activeEngineCount = dashboardRuntimeActive_
+        ? std::max(1, dashboardOverridesTable_ ? dashboardOverridesTable_->rowCount() : 0)
+        : 0;
+    stopGuardInput.stopAlreadyInProgress = dashboardRuntimeStopping_;
+    stopGuardInput.closePositions = !stopWithoutCloseIntent;
+    stopGuardInput.source = QStringLiteral("cpp-dashboard");
+    const QJsonObject stopGuard = NativeOrderSafety::buildRuntimeStopGuardResult(stopGuardInput);
+    const QString stopGuardMessage = stopGuard.value(QStringLiteral("status_message")).toString();
     if (dashboardRuntimeStopping_) {
+        if (!stopGuardMessage.isEmpty()) {
+            appendDashboardAllLog(stopGuardMessage);
+        }
         return;
+    }
+    if (!stopGuardMessage.isEmpty()) {
+        appendDashboardAllLog(stopGuardMessage);
     }
     dashboardRuntimeStopping_ = true;
     dashboardRuntimeActive_ = false;
@@ -290,7 +309,7 @@ void TradingBotWindow::stopDashboardRuntime() {
     }
     refreshDashboardWaitingQueueTable();
 
-    const bool keepOpenPositions = dashboardStopWithoutCloseCheck_ && dashboardStopWithoutCloseCheck_->isChecked();
+    const bool keepOpenPositions = stopWithoutCloseIntent;
     const bool futures = dashboardAccountTypeCombo_
         ? dashboardAccountTypeCombo_->currentText().trimmed().toLower().startsWith(QStringLiteral("fut"))
         : true;
@@ -933,6 +952,13 @@ void TradingBotWindow::stopDashboardRuntime() {
         dashboardBotTimeLabel_->setText("--");
     }
     handleStopBacktest();
+    const QJsonObject idleStopResult = NativeOrderSafety::buildRuntimeIdleAfterStopResult(
+        !keepOpenPositions,
+        QStringLiteral("cpp-dashboard"));
+    const QString idleStopMessage = idleStopResult.value(QStringLiteral("status_message")).toString();
+    if (!idleStopMessage.isEmpty()) {
+        appendDashboardAllLog(idleStopMessage);
+    }
     appendDashboardAllLog("Stop triggered from Dashboard.");
     appendDashboardPositionLog("Runtime strategy loop stopped.");
     clearRuntimeSignalSockets(dashboardRuntimeSignalSockets_);
@@ -941,4 +967,3 @@ void TradingBotWindow::stopDashboardRuntime() {
     dashboardRuntimeSignalUpdateMs_.clear();
     dashboardRuntimeStopping_ = false;
 }
-

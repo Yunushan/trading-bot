@@ -3,6 +3,7 @@ const behavior = require("./tauri-ui-behavior.js");
 
 const {
   backtestRunsFromPayload,
+  cleanBacktestResultMetadata,
   describeCircuitIncidentCount,
   describeConfigPersistence,
   describeLastCircuitIncident,
@@ -62,7 +63,16 @@ const runtimeRows = [
 ];
 const resultRows = [
   { symbol: "BTCUSDT", interval: "1m", indicator_keys: ["rsi"], strategy_controls: { leverage: 1 } },
-  { symbol: "ETHUSDT", interval: "5m", indicator_keys: ["macd"], strategy_controls: { leverage: 2 } },
+  {
+    symbol: "ETHUSDT",
+    interval: "5m",
+    indicator_keys: ["macd"],
+    strategy_controls: { leverage: 2 },
+    roi_percent: 12.5,
+    optimizer_rank: 1,
+    optimizer_metric: "roi_percent",
+    optimizer_eligible: true
+  },
   { symbol: "", interval: "15m", indicator_keys: ["volume"], strategy_controls: { leverage: 3 } }
 ];
 
@@ -80,6 +90,18 @@ assert.equal(imported.rows.length, 2);
 assert.deepEqual(imported.importedSymbols, ["ETHUSDT"]);
 assert.deepEqual(imported.importedIntervals, ["5m"]);
 assert.equal(overrideImportKey(imported.rows[1]), "ETHUSDT|5m|macd|2");
+assert.deepEqual(imported.rows[1].backtest_result, {
+  source: "python-backtest",
+  symbol: "ETHUSDT",
+  interval: "5m",
+  indicator_keys: ["macd"],
+  roi_percent: 12.5,
+  strategy_controls: { leverage: 2 },
+  optimizer_rank: 1,
+  optimizer_metric: "roi_percent",
+  optimizer_eligible: true
+});
+assert.deepEqual(cleanBacktestResultMetadata({ symbol: "BTCUSDT", interval: "1m" }), null);
 
 assert.deepEqual(mergeUniqueLines("BTCUSDT\nETHUSDT", ["ETHUSDT", "SOLUSDT"]), [
   "BTCUSDT",

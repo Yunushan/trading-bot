@@ -23,6 +23,7 @@ from app.service.api_contract import (  # noqa: E402
     SERVICE_API_LEGACY_ROUTE_PATHS,
     SERVICE_API_ROUTE_METHODS,
     SERVICE_API_ROUTE_PATHS,
+    SERVICE_API_ROUTE_SCHEMAS,
     SERVICE_API_STREAM_DASHBOARD_PATH,
     SERVICE_API_VERSION,
 )
@@ -147,6 +148,57 @@ class ServiceApiHttpContractTests(unittest.TestCase):
         self.assertFalse(
             app.state.service.describe_runtime().to_dict()["control_plane"]["trading_execution_supported"]
         )
+
+    @unittest.skipUnless(
+        FASTAPI_TESTCLIENT_AVAILABLE,
+        "FastAPI TestClient optional dependencies are not installed",
+    )
+    def test_service_api_route_schemas_cover_openapi_and_live_read_responses(self):
+        app = create_service_api_app(service=TradingBotService(), api_token="token-123")
+        client = _create_test_client(app)
+        openapi_paths = app.openapi()["paths"]
+
+        self.assertEqual(set(SERVICE_API_ROUTE_PATHS), set(SERVICE_API_ROUTE_SCHEMAS))
+        for route_name, route_path in SERVICE_API_ROUTE_PATHS.items():
+            schema = SERVICE_API_ROUTE_SCHEMAS[route_name]
+            path_item = openapi_paths[route_path]
+            for method in SERVICE_API_ROUTE_METHODS[route_name]:
+                operation = path_item[method.lower()]
+                query_fields = {
+                    str(parameter["name"])
+                    for parameter in operation.get("parameters", [])
+                    if parameter.get("in") == "query"
+                }
+                self.assertTrue(
+                    set(schema["query_fields"]).issubset(query_fields),
+                    f"{route_name} should expose declared query fields in OpenAPI",
+                )
+
+        live_read_routes = (
+            "runtime",
+            "dashboard",
+            "status",
+            "execution",
+            "backtest",
+            "config_summary",
+            "config",
+            "config_persistence",
+            "operational_preflight",
+            "connector_order_circuit_breaker",
+            "connector_order_circuit_incidents",
+            "account",
+            "portfolio",
+            "exchange_connector",
+            "llm_config",
+        )
+        for route_name in live_read_routes:
+            response = client.get(SERVICE_API_ROUTE_PATHS[route_name])
+            self.assertEqual(200, response.status_code, route_name)
+            payload = response.json()
+            self.assertTrue(
+                set(SERVICE_API_ROUTE_SCHEMAS[route_name]["response_fields"]).issubset(payload),
+                f"{route_name} should return declared top-level response fields",
+            )
 
     @unittest.skipUnless(
         FASTAPI_TESTCLIENT_AVAILABLE,

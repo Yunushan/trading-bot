@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 include(GNUInstallDirs)
+include(CTest)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
@@ -104,7 +105,7 @@ if (WIN32)
     endif()
 endif()
 
-find_package(Qt6 ${TB_QT_VERSION} REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 ${TB_QT_VERSION} REQUIRED COMPONENTS Core Widgets Network)
 find_package(Qt6WebEngineWidgets ${TB_QT_VERSION} QUIET)
 find_package(Qt6WebSockets ${TB_QT_VERSION} QUIET)
 
@@ -137,6 +138,26 @@ add_executable(binance_backtest_tab
     src/BinanceRestClient.h
     src/BinanceWsClient.cpp
     src/BinanceWsClient.h
+    src/NativeChartHeatmap.cpp
+    src/NativeChartHeatmap.h
+    src/NativeConfigPersistence.cpp
+    src/NativeConfigPersistence.h
+    src/NativeDesktopShell.cpp
+    src/NativeDesktopShell.h
+    src/NativeDiagnostics.cpp
+    src/NativeDiagnostics.h
+    src/NativeExchangeConnectors.cpp
+    src/NativeExchangeConnectors.h
+    src/NativeLlmAdvisory.cpp
+    src/NativeLlmAdvisory.h
+    src/NativeOrderSafety.cpp
+    src/NativeOrderSafety.h
+    src/NativePortfolio.cpp
+    src/NativePortfolio.h
+    src/NativeStartupPackaging.cpp
+    src/NativeStartupPackaging.h
+    src/NativeStrategyRuntime.cpp
+    src/NativeStrategyRuntime.h
     src/TradingBotWindow.cpp
     src/TradingBotWindow.account.cpp
     src/TradingBotWindow.backtest.cpp
@@ -188,6 +209,66 @@ if (MSVC)
     target_compile_options(binance_backtest_tab PRIVATE /Zc:__cplusplus)
 endif()
 
+if (BUILD_TESTING)
+    add_executable(native_order_safety_tests
+        tests/NativeOrderSafetyTests.cpp
+        src/NativeChartHeatmap.cpp
+        src/NativeChartHeatmap.h
+        src/NativeConfigPersistence.cpp
+        src/NativeConfigPersistence.h
+        src/NativeDesktopShell.cpp
+        src/NativeDesktopShell.h
+        src/NativeDiagnostics.cpp
+        src/NativeDiagnostics.h
+        src/NativeExchangeConnectors.cpp
+        src/NativeExchangeConnectors.h
+        src/NativeLlmAdvisory.cpp
+        src/NativeLlmAdvisory.h
+        src/NativeOrderSafety.cpp
+        src/NativeOrderSafety.h
+        src/NativePortfolio.cpp
+        src/NativePortfolio.h
+        src/NativeStartupPackaging.cpp
+        src/NativeStartupPackaging.h
+        src/NativeStrategyRuntime.cpp
+        src/NativeStrategyRuntime.h
+    )
+    target_link_libraries(native_order_safety_tests PRIVATE Qt6::Core)
+    if (MSVC)
+        target_compile_options(native_order_safety_tests PRIVATE /Zc:__cplusplus)
+    endif()
+
+    add_executable(native_service_api_contract_tests
+        tests/NativeServiceApiContractTests.cpp
+        src/TradingBotWindowSupport.cpp
+        src/TradingBotWindowSupport.h
+        src/generated/PythonParityContract.h
+    )
+    target_link_libraries(native_service_api_contract_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Network)
+    if (MSVC)
+        target_compile_options(native_service_api_contract_tests PRIVATE /Zc:__cplusplus)
+    endif()
+
+    if (WIN32)
+        get_target_property(_tb_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)
+        if (NOT _tb_qt_core_location)
+            get_target_property(_tb_qt_core_location Qt6::Core IMPORTED_LOCATION)
+        endif()
+        get_filename_component(_tb_qt_bin_dir "${_tb_qt_core_location}" DIRECTORY)
+        add_test(
+            NAME native_order_safety_tests
+            COMMAND "${CMAKE_COMMAND}" -E env "PATH=${_tb_qt_bin_dir};$ENV{PATH}" "$<TARGET_FILE:native_order_safety_tests>"
+        )
+        add_test(
+            NAME native_service_api_contract_tests
+            COMMAND "${CMAKE_COMMAND}" -E env "PATH=${_tb_qt_bin_dir};$ENV{PATH}" "$<TARGET_FILE:native_service_api_contract_tests>"
+        )
+    else()
+        add_test(NAME native_order_safety_tests COMMAND native_order_safety_tests)
+        add_test(NAME native_service_api_contract_tests COMMAND native_service_api_contract_tests)
+    endif()
+endif()
+
 if (APPLE)
     # Produce a native .app bundle on macOS so deployment tooling can package Qt frameworks.
     set_target_properties(binance_backtest_tab PROPERTIES MACOSX_BUNDLE TRUE)
@@ -207,4 +288,3 @@ if (COMMAND qt_generate_deploy_app_script)
     )
     install(SCRIPT ${tb_deploy_script})
 endif()
-

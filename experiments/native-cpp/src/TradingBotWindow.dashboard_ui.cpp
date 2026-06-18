@@ -191,6 +191,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *accountModeCombo = new QComboBox(accountBox);
     accountModeCombo->addItems(TradingBotWindowSupport::pythonSourceAccountModeOptions());
+    dashboardAccountModeCombo_ = accountModeCombo;
     registerDashboardRuntimeLockWidget(accountModeCombo);
     addPair(1, col, "Account Mode:", accountModeCombo);
 
@@ -279,6 +280,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         assetsModeCombo,
         TradingBotWindowSupport::pythonSourceAssetsModeOptionKeys(),
         TradingBotWindowSupport::pythonSourceAssetsModeOptionLabels());
+    dashboardAssetsModeCombo_ = assetsModeCombo;
     registerDashboardRuntimeLockWidget(assetsModeCombo);
     addPair(2, col, "Assets Mode:", assetsModeCombo);
 
@@ -325,6 +327,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
         TradingBotWindowSupport::pythonSourceTimeInForceOptionLabels(),
         {},
         QStringLiteral("GTC"));
+    dashboardTimeInForceCombo_ = tifCombo;
     registerDashboardRuntimeLockWidget(tifCombo);
     addPair(3, col, "Time-in-Force:", tifCombo);
 
@@ -333,6 +336,7 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
     gtdMinutesSpin->setValue(30);
     gtdMinutesSpin->setSuffix(" min (GTD)");
     gtdMinutesSpin->setEnabled(false);
+    dashboardGtdMinutesSpin_ = gtdMinutesSpin;
     registerDashboardRuntimeLockWidget(gtdMinutesSpin);
     connect(tifCombo, &QComboBox::currentTextChanged, this, [gtdMinutesSpin](const QString &text) {
         gtdMinutesSpin->setEnabled(text.trimmed() == QStringLiteral("GTD"));
@@ -1365,6 +1369,11 @@ void TradingBotWindow::createDashboardRuntimeSection(QWidget *page, QVBoxLayout 
     runtimeActions->addWidget(dashLoadBtn);
     root->addLayout(runtimeActions);
 
+    auto *orderAuditStatusLabel = new QLabel("Order audit: checking", page);
+    orderAuditStatusLabel->setWordWrap(true);
+    orderAuditStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    root->addWidget(orderAuditStatusLabel);
+
     auto *logsBox = new QGroupBox("Logs", page);
     auto *logsLayout = new QVBoxLayout(logsBox);
     logsLayout->setContentsMargins(10, 10, 10, 10);
@@ -1413,11 +1422,13 @@ void TradingBotWindow::createDashboardRuntimeSection(QWidget *page, QVBoxLayout 
     dashboardStopBtn_ = dashStopBtn;
     dashboardSaveConfigBtn_ = dashSaveBtn;
     dashboardLoadConfigBtn_ = dashLoadBtn;
+    dashboardOrderAuditStatusLabel_ = orderAuditStatusLabel;
     dashboardOverridesTable_ = overridesTable;
     dashboardAllLogsEdit_ = allLogsEdit;
     dashboardPositionLogsEdit_ = positionLogsEdit;
     dashboardWaitingLogsEdit_ = nullptr;
     dashboardWaitingQueueTable_ = waitingQueueTable;
+    refreshDashboardOrderAuditStatus();
     refreshDashboardWaitingQueueTable();
 }
 
@@ -1436,6 +1447,7 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardRefreshBtn_ = nullptr;
     dashboardThemeCombo_ = nullptr;
     dashboardAccountTypeCombo_ = nullptr;
+    dashboardAccountModeCombo_ = nullptr;
     dashboardModeCombo_ = nullptr;
     dashboardConnectorCombo_ = nullptr;
     dashboardExchangeCombo_ = nullptr;
@@ -1444,6 +1456,9 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardTemplateCombo_ = nullptr;
     dashboardMarginModeCombo_ = nullptr;
     dashboardPositionModeCombo_ = nullptr;
+    dashboardAssetsModeCombo_ = nullptr;
+    dashboardTimeInForceCombo_ = nullptr;
+    dashboardGtdMinutesSpin_ = nullptr;
     dashboardLlmEnableCheck_ = nullptr;
     dashboardLlmProviderCombo_ = nullptr;
     dashboardLlmModelCombo_ = nullptr;
@@ -1469,6 +1484,7 @@ QWidget *TradingBotWindow::createDashboardTab() {
     dashboardStopBtn_ = nullptr;
     dashboardSaveConfigBtn_ = nullptr;
     dashboardLoadConfigBtn_ = nullptr;
+    dashboardOrderAuditStatusLabel_ = nullptr;
     dashboardOverridesTable_ = nullptr;
     dashboardAllLogsEdit_ = nullptr;
     dashboardPositionLogsEdit_ = nullptr;

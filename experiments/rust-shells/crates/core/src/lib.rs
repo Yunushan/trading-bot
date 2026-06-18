@@ -1,14 +1,31 @@
 use trading_bot_contracts::AppIdentity;
 
+pub mod account;
+pub mod chart_heatmap;
+pub mod config_persistence;
+pub mod diagnostics;
+pub mod desktop_shell;
+pub mod exchange_connectors;
 pub mod generated_python_parity;
+pub mod llm_advisory;
 pub mod market_data;
+pub mod order_audit;
+pub mod order_guard;
+pub mod orders;
+pub mod portfolio;
+pub mod position_close;
+pub mod risk;
+pub mod runtime_control;
+pub mod runtime_order_engine;
+pub mod startup_packaging;
+pub mod strategy_runtime;
+pub mod streams;
 
 pub use generated_python_parity::{
-    PythonConnectorOption as NativePythonConnectorOption,
-    PythonIndicator as NativePythonIndicator,
+    PythonConnectorOption as NativePythonConnectorOption, PythonIndicator as NativePythonIndicator,
     PythonLlmProvider as NativePythonLlmProvider,
-    PythonParityDomain as NativePythonAppParityDomain,
-    PythonServiceRoute as ServiceApiRoute,
+    PythonParityDomain as NativePythonAppParityDomain, PythonServiceRoute as ServiceApiRoute,
+    PythonServiceRouteSchema as ServiceApiRouteSchema,
     PythonTradingViewInterval as NativePythonTradingViewInterval,
     PythonUiOption as NativePythonUiOption,
 };
@@ -35,6 +52,10 @@ pub fn python_source_parity_domain_keys() -> &'static [&'static str] {
 
 pub fn python_source_service_route_names() -> &'static [&'static str] {
     generated_python_parity::PYTHON_SERVICE_ROUTE_NAMES
+}
+
+pub fn python_source_service_route_schemas() -> &'static [ServiceApiRouteSchema] {
+    generated_python_parity::PYTHON_SERVICE_ROUTE_SCHEMAS
 }
 
 pub fn python_source_backtest_run_request_fields() -> &'static [&'static str] {
@@ -363,40 +384,40 @@ pub fn rust_native_runtime_capabilities() -> &'static [RustNativeRuntimeCapabili
             key: "market_data_websocket",
             title: "WebSocket market stream",
             cpp_status: "C++ has BinanceWsClient connectBookTicker/connectKline plus dashboardRuntimeSignalSockets and candle caches.",
-            rust_status: "Rust has no native book ticker or kline WebSocket runtime.",
-            required_before_enable: "Add supervised Rust stream clients, reconnect/backoff, candle cache reconciliation, and stale-feed guards before live signal evaluation.",
+            rust_status: "Rust core now has BinanceWebSocketClient URL construction, tungstenite connection entry points, and book ticker/kline message parsing for Binance spot and futures streams.",
+            required_before_enable: "Add supervised reconnect/backoff, candle cache reconciliation, stale-feed guards, stream lifecycle ownership, and live-network smoke coverage before live signal evaluation.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "account_positions",
             title: "Account, balance, and positions",
             cpp_status: "C++ can fetch USDT balance and open futures positions and reconcile them into the positions table.",
-            rust_status: "Rust positions UI is a Service API/client surface with no native account snapshot path.",
-            required_before_enable: "Add signed account clients, balance/position DTOs, hedge and one-way mode handling, and live/simulated reconciliation tests.",
+            rust_status: "Rust core now has BinanceSignedRestClient for signed USDT balance snapshots, normalized balance rows, open futures position parsing with account-position overlays, close-position planning foundations, and portfolio/history/allocation/reconciliation tests.",
+            required_before_enable: "Add live credential-gated smoke coverage, hedge/one-way runtime coverage, and broader supervised runtime integration after the remaining parity domains complete.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "order_submission",
             title: "Order submission",
             cpp_status: "C++ has placeFuturesMarketOrder/placeFuturesLimitOrder and dashboard open/close fallback helpers.",
-            rust_status: "Rust intentionally exposes no native order submit path.",
-            required_before_enable: "Implement order intent validation, reduce-only/close-position rules, precision filters, signed request fallback, dry-run mode, and audit logs.",
+            rust_status: "Rust core now has Binance futures symbol filters, signed market/limit order request construction, order submit guard and order audit/circuit-breaker foundations, risk/stop-loss close-decision planning, reduce-only hedge-mode rules, close-position and closePosition planning, POST submission hooks, order response parsing, and a runtime-owned order engine for guarded submit, redacted audit JSONL, connector circuit incident persistence, and submit reconciliation.",
+            required_before_enable: "Add dry-run controls, live credential-gated smoke coverage, supervised runtime lifecycle tests, and runtime-owned recovery gates before enabling native trading.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "runtime_lifecycle",
             title: "Runtime lifecycle loop",
             cpp_status: "C++ has startDashboardRuntime, runDashboardRuntimeCycle, stopDashboardRuntime, timer state, retry windows, and open-position tracking.",
-            rust_status: "Rust has desktop shell lifecycle only; Tauri may start/stop the Python Service API but not a Rust trading loop.",
-            required_before_enable: "Add an owned Rust runtime state machine with start/stop gates, idempotent shutdown, recovery after partial failures, and deterministic tests.",
+            rust_status: "Rust core now has Desktop shell/tab lifecycle contracts plus strategy runtime signal/control/provenance helpers, worker lifecycle snapshots, and core stop/shutdown guard result builders; Tauri may start/stop the Python Service API but standalone Rust trading remains disabled.",
+            required_before_enable: "Add supervised native loop ownership, live credential-gated smoke coverage, and recovery tests before enabling standalone Rust trading.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "risk_and_shutdown_guards",
             title: "Risk and shutdown guards",
             cpp_status: "C++ tracks stop-loss settings, quantity caps, retry-after windows, close-on-stop behavior, connector warnings, and forced close fallbacks.",
-            rust_status: "Rust mirrors the controls but has no native risk engine or close-all execution path.",
-            required_before_enable: "Port risk gates, stop-loss scopes, max exposure checks, close-all semantics, connector incident handling, and regression tests before enabling native trading.",
+            rust_status: "Rust core now has stop-loss setting normalization plus per-trade, directional, cumulative, entire-account, close-opposite planning foundations, a runtime-owned risk/close execution path for stop-loss and close-opposite reconciliation, and Python-compatible shutdown guard result tests.",
+            required_before_enable: "Add max exposure checks, shutdown guard wiring into a supervised runtime, and credential-gated regression tests before enabling native trading.",
             trading_execution_supported: false,
         },
     ]
@@ -413,8 +434,12 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
             detail: "Rust shells expose the full canonical Python Service API route catalog, including runtime, dashboard, status, stream, config persistence, control, connector circuit, account, portfolio, terminal, LLM, logs, and backtest routes.",
         },
         ServiceApiCapability {
+            title: "Logs, Terminal & Diagnostics",
+            detail: "trading-bot-core mirrors Python service log and controlled terminal result schemas with diagnostic redaction; Tauri delegates /logs and terminal_run behavior to the Python Service API, while other Rust shells are non-operational renderers.",
+        },
+        ServiceApiCapability {
             title: "Config Hydration",
-            detail: "Tauri refreshes dashboard/config snapshots and direct account, portfolio, exchange connector, and service logs snapshots, then hydrates visible runtime, account, config persistence state/path, stop-loss, LLM, symbol, interval, strategy, backtest, and logs controls.",
+            detail: "Tauri refreshes dashboard/config snapshots and direct account, portfolio, exchange connector, and service logs snapshots, then hydrates visible runtime, account, config persistence state/path, stop-loss, LLM, symbol, interval, strategy, backtest, and logs controls; trading-bot-core mirrors the Python config persistence envelope/status helpers, path-safety checks, and secret-redaction contract.",
         },
         ServiceApiCapability {
             title: "Operational Preflight Start Gate",
@@ -430,11 +455,11 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
         },
         ServiceApiCapability {
             title: "Execution Boundary",
-            detail: "Python service/desktop runtime remains the trading execution owner; Rust shells are clients and must not bypass strategy, risk, or exchange guards.",
+            detail: "Python service/desktop runtime remains the trading execution owner; Rust shells are clients and must not bypass strategy, risk, or exchange guards. trading-bot-core includes strategy runtime signal/control/provenance helpers for parity validation without enabling standalone native trading.",
         },
         ServiceApiCapability {
             title: "Native Runtime Gap",
-            detail: "C++ already has Binance REST/WebSocket and dashboard runtime experiments; Rust remains blocked from native trading until rust_native_runtime_capabilities are implemented and tested.",
+            detail: "C++ already has Binance REST/WebSocket and dashboard runtime experiments; Rust has Desktop shell/tab lifecycle contracts and strategy runtime parity helpers, while standalone Rust trading remains blocked until rust_native_runtime_capabilities are safe to enable.",
         },
     ]
 }
@@ -448,6 +473,12 @@ pub fn service_api_route_path(name: &str) -> Option<&'static str> {
         .iter()
         .find(|route| route.name == name)
         .map(|route| route.path)
+}
+
+pub fn service_api_route_schema(name: &str) -> Option<&'static ServiceApiRouteSchema> {
+    python_source_service_route_schemas()
+        .iter()
+        .find(|schema| schema.name == name)
 }
 
 pub fn trading_app_tabs() -> &'static [TradingAppTab] {
@@ -963,8 +994,8 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     items: &[
                         "Native Rust trading runtime ready: false",
                         "C++ has BinanceRestClient, BinanceWsClient, dashboard runtime lifecycle, positions sync, futures order submission, and risk/shutdown experiments",
-                        "Rust currently has BinanceRestMarketDataClient for native REST market data plus Service API clients, tab/catalog parity, LLM/provider catalogs, and desktop shells",
-                        "Before enabling Rust native trading: add WebSocket streams, signed account/position snapshots, order submission, runtime lifecycle, connector diagnostics, and risk/shutdown guards",
+                        "Rust currently has BinanceRestMarketDataClient for native REST market data, BinanceWebSocketClient for native stream URL/message foundations, BinanceSignedRestClient for signed balance/open-position snapshots, Binance futures order/filter request foundations, order submit guard and order audit/circuit-breaker foundations, runtime-owned order engine, risk/stop-loss close-decision foundations, runtime-owned risk/close execution path, portfolio/history/allocation/reconciliation tests, LLM advisory/local model parity helpers, close-position planning foundations, Desktop shell/tab lifecycle contracts, strategy runtime signal/control/provenance helpers, plus Service API clients, tab/catalog parity, and desktop shells",
+                        "Before enabling Rust native trading: add supervised stream reconnect/cache guards, dry-run controls, live credential-gated smoke coverage, hedge/one-way runtime coverage, and shutdown guard wiring",
                     ],
                 },
                 TradingAppSection {
@@ -1194,4 +1225,39 @@ pub fn llm_provider_options() -> &'static [LlmProviderOption] {
             reasoning_efforts: &["default", "none", "low", "medium", "high", "xhigh"],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_api_route_schemas_are_generated_from_python_source() {
+        assert_eq!(
+            python_source_service_route_names().len(),
+            python_source_service_route_schemas().len()
+        );
+
+        let dashboard = service_api_route_schema("dashboard").expect("dashboard schema");
+        assert_eq!(dashboard.query_fields, &["log_limit", "incident_limit"]);
+        assert!(dashboard.request_fields.is_empty());
+        assert!(dashboard.response_fields.contains(&"runtime"));
+        assert!(dashboard.response_fields.contains(&"service_api"));
+
+        let config = service_api_route_schema("config").expect("config schema");
+        assert_eq!(config.request_fields, &["config"]);
+        assert!(config.response_fields.contains(&"llm"));
+        assert!(config.response_fields.contains(&"exchange_support"));
+
+        let control_start =
+            service_api_route_schema("control_start").expect("control_start schema");
+        assert!(
+            control_start
+                .request_fields
+                .contains(&"requested_job_count")
+        );
+        assert!(control_start.response_fields.contains(&"accepted"));
+
+        assert!(service_api_route_schema("unknown").is_none());
+    }
 }

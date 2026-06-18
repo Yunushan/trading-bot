@@ -9437,7 +9437,9 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "trading-bot-contracts",
+ "tungstenite",
 ]
 
 [[package]]

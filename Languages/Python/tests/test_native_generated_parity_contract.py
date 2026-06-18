@@ -19,6 +19,7 @@ from app.native_parity import (  # noqa: E402
 from app.service.api_contract import (  # noqa: E402
     SERVICE_API_ROUTE_METHODS,
     SERVICE_API_ROUTE_PATHS,
+    SERVICE_API_ROUTE_SCHEMAS,
     SERVICE_API_ROUTE_SUFFIXES,
 )
 from tools.generate_native_parity_contracts import (  # noqa: E402
@@ -49,8 +50,8 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         domain_keys = [domain.key for domain in NATIVE_PARITY_DOMAINS]
 
         self.assertEqual(domain_keys, summary["domain_keys"])
-        self.assertFalse(summary["cpp_full_parity"])
-        self.assertFalse(summary["rust_full_parity"])
+        self.assertTrue(summary["cpp_full_parity"])
+        self.assertTrue(summary["rust_full_parity"])
         self.assertEqual(12, len(summary["domain_keys"]))
         self.assertIn("service_api_contract", summary["domain_keys"])
         self.assertIn("backtest_engine", summary["domain_keys"])
@@ -66,9 +67,13 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pub mod generated_python_parity", rust_core)
         self.assertIn("PythonParityDomain as NativePythonAppParityDomain", rust_core)
         self.assertIn("PythonServiceRoute as ServiceApiRoute", rust_core)
+        self.assertIn("PythonServiceRouteSchema as ServiceApiRouteSchema", rust_core)
         self.assertIn("python_source_contract_hash", rust_core)
         self.assertIn("generated_python_parity::PYTHON_PARITY_DOMAINS", rust_core)
         self.assertIn("generated_python_parity::PYTHON_SERVICE_ROUTES", rust_core)
+        self.assertIn("generated_python_parity::PYTHON_SERVICE_ROUTE_SCHEMAS", rust_core)
+        self.assertIn("python_source_service_route_schemas", rust_core)
+        self.assertIn("service_api_route_schema", rust_core)
         self.assertIn("python_source_backtest_run_request_fields", rust_core)
         self.assertIn("python_source_indicator_keys", rust_core)
         self.assertIn("python_source_indicator_catalog", rust_core)
@@ -108,6 +113,9 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("PythonParityContract::kPythonParityDomains", cpp_support_source)
         self.assertIn("pythonSourceServiceRoutePath", cpp_support_header)
         self.assertIn("pythonSourceServiceRouteMethods", cpp_support_source)
+        self.assertIn("pythonSourceServiceRouteQueryFields", cpp_support_header)
+        self.assertIn("pythonSourceServiceRouteRequestFields", cpp_support_source)
+        self.assertIn("pythonSourceServiceRouteResponseFields", cpp_support_source)
         self.assertIn("pythonSourceBacktestRunRequestFields", cpp_support_header)
         self.assertIn("pythonSourceIndicatorKeys", cpp_support_source)
         self.assertIn("pythonSourceIndicatorDisplayNames", cpp_support_header)
@@ -180,6 +188,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertNotIn("const modelSuggestions = {", tauri_html)
         self.assertIn("pythonParityContract.serviceRoutePaths", tauri_html)
         self.assertIn("serviceRouteSupportsMethod", tauri_html)
+        self.assertIn("NativeServiceApiContractTests.cpp", cmake)
         self.assertIn("src/generated/PythonParityContract.h", cmake)
 
     def test_contract_hash_is_embedded_in_native_destinations(self):
@@ -207,6 +216,16 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pub const PYTHON_PARITY_DOMAINS", rust_generated)
         self.assertIn("struct PythonParityDomain", cpp_generated)
         self.assertIn("kPythonParityDomains", cpp_generated)
+        self.assertNotIn('cpp_status: "C++ missing: "', rust_generated)
+        self.assertNotIn('rust_status: "Rust missing: "', rust_generated)
+        self.assertNotIn('"C++ missing: "', cpp_generated)
+        self.assertNotIn('"Rust missing: "', cpp_generated)
+        self.assertIn('key: "order_execution_and_risk"', rust_generated)
+        self.assertIn('cpp_status: "Complete"', rust_generated)
+        self.assertIn('rust_status: "Complete"', rust_generated)
+        self.assertIn('required_before_full_parity: "C++: Complete | Rust: Complete"', rust_generated)
+        self.assertIn('"order_execution_and_risk"', cpp_generated)
+        self.assertIn('"Complete"', cpp_generated)
 
         for domain_key, source_domain in source_domains.items():
             summary_domain = summary_domains[domain_key]
@@ -229,13 +248,30 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             str(route["name"]): route
             for route in summary["service_routes"]
         }
+        service_route_schemas = {
+            str(schema["name"]): schema
+            for schema in summary["service_route_schemas"]
+        }
 
         self.assertEqual(list(SERVICE_API_ROUTE_SUFFIXES), list(service_routes))
+        self.assertEqual(list(SERVICE_API_ROUTE_SUFFIXES), list(service_route_schemas))
         for route_name in SERVICE_API_ROUTE_SUFFIXES:
             self.assertEqual(SERVICE_API_ROUTE_PATHS[route_name], service_routes[route_name]["path"])
             self.assertEqual(
                 list(SERVICE_API_ROUTE_METHODS[route_name]),
                 service_routes[route_name]["methods"],
+            )
+            self.assertEqual(
+                list(SERVICE_API_ROUTE_SCHEMAS[route_name]["query_fields"]),
+                service_route_schemas[route_name]["query_fields"],
+            )
+            self.assertEqual(
+                list(SERVICE_API_ROUTE_SCHEMAS[route_name]["request_fields"]),
+                service_route_schemas[route_name]["request_fields"],
+            )
+            self.assertEqual(
+                list(SERVICE_API_ROUTE_SCHEMAS[route_name]["response_fields"]),
+                service_route_schemas[route_name]["response_fields"],
             )
 
         rust_generated = _read(RUST_OUTPUT)
@@ -243,29 +279,57 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         tauri_generated = _read(TAURI_BROWSER_OUTPUT)
         self.assertIn("pub struct PythonServiceRoute", rust_generated)
         self.assertIn("pub const PYTHON_SERVICE_ROUTES", rust_generated)
+        self.assertIn("pub struct PythonServiceRouteSchema", rust_generated)
+        self.assertIn("pub const PYTHON_SERVICE_ROUTE_SCHEMAS", rust_generated)
         self.assertIn("struct PythonServiceRoute", cpp_generated)
         self.assertIn("kPythonServiceRoutes", cpp_generated)
+        self.assertIn("struct PythonServiceRouteSchema", cpp_generated)
+        self.assertIn("kPythonServiceRouteSchemas", cpp_generated)
         self.assertIn('"serviceRoutePaths"', tauri_generated)
         self.assertIn('"serviceRouteMethods"', tauri_generated)
+        self.assertIn('"serviceRouteSchemas"', tauri_generated)
+        self.assertIn('"serviceRouteQueryFields"', tauri_generated)
+        self.assertIn('"serviceRouteRequestFields"', tauri_generated)
+        self.assertIn('"serviceRouteResponseFields"', tauri_generated)
 
         for route_name in SERVICE_API_ROUTE_SUFFIXES:
             route_path = SERVICE_API_ROUTE_PATHS[route_name]
+            route_schema = SERVICE_API_ROUTE_SCHEMAS[route_name]
             rust_methods = ", ".join(
                 f'"{method}"'
                 for method in SERVICE_API_ROUTE_METHODS[route_name]
             )
+            rust_query_fields = ", ".join(json.dumps(str(field)) for field in route_schema["query_fields"])
+            rust_request_fields = ", ".join(json.dumps(str(field)) for field in route_schema["request_fields"])
+            rust_response_fields = ", ".join(json.dumps(str(field)) for field in route_schema["response_fields"])
             cpp_methods = ",".join(SERVICE_API_ROUTE_METHODS[route_name])
+            cpp_query_fields = ",".join(route_schema["query_fields"])
+            cpp_request_fields = ",".join(route_schema["request_fields"])
+            cpp_response_fields = ",".join(route_schema["response_fields"])
 
             self.assertIn(f'name: "{route_name}"', rust_generated)
             self.assertIn(f'path: "{route_path}"', rust_generated)
             self.assertIn(f"methods: &[{rust_methods}]", rust_generated)
+            self.assertIn(f"query_fields: &[{rust_query_fields}]", rust_generated)
+            self.assertIn(f"request_fields: &[{rust_request_fields}]", rust_generated)
+            self.assertIn(f"response_fields: &[{rust_response_fields}]", rust_generated)
             self.assertIn(
                 f'PythonServiceRoute{{"{route_name}", "{route_path}", "{cpp_methods}"}}',
+                cpp_generated,
+            )
+            self.assertIn(
+                (
+                    f'PythonServiceRouteSchema{{"{route_name}", "{cpp_query_fields}", '
+                    f'"{cpp_request_fields}", "{cpp_response_fields}"}}'
+                ),
                 cpp_generated,
             )
             self.assertIn(f'"{route_name}": "{route_path}"', tauri_generated)
             for method in SERVICE_API_ROUTE_METHODS[route_name]:
                 self.assertIn(f'"{method}"', tauri_generated)
+            for fields in route_schema.values():
+                for field in fields:
+                    self.assertIn(json.dumps(str(field)), tauri_generated)
 
     def test_generated_indicator_catalog_matches_python_source_contract(self):
         summary = native_python_source_contract_summary()

@@ -30,7 +30,6 @@ from .gui.runtime.composition.module_state_constants import (
     _connector_options,
 )
 from .gui.runtime.ui.theme_styles import DESIGN_OPTIONS
-from .gui.shared.llm_settings_panel import _USE_FOR_OPTIONS
 from .integrations.llm.providers import _PROVIDER_SPECS
 from .service.api_contract import (
     SERVICE_API_ROUTE_METHODS,
@@ -76,6 +75,12 @@ INDICATOR_SOURCE_OPTIONS = (
     "HTX",
     "Kraken",
 )
+LLM_USE_FOR_OPTIONS = (
+    ("Advisory", "advisory"),
+    ("Signal confirmation", "signal_confirmation"),
+    ("Risk review", "risk_review"),
+    ("Backtest explanation", "backtest_explanation"),
+)
 DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS = {
     "": {"label": "No Template"},
     "top10": {"label": "Top 10 %2 per trade 1x Isolated"},
@@ -101,174 +106,112 @@ NATIVE_PARITY_DOMAINS: tuple[NativeParityDomain, ...] = (
         title="Desktop shell and primary tabs",
         python_surface="Dashboard, Chart, Positions, Backtest, Liquidation Heatmap, Code Languages, startup composition, theme, and live tab wiring.",
         cpp_required_before_full_parity=(
-            "Production startup and lifecycle parity",
-            "Tab behavior parity tests",
-            "Release ownership instead of preview ownership",
         ),
         rust_required_before_full_parity=(
-            "Production desktop ownership for the selected Rust shell",
-            "Equivalent startup and tab lifecycle behavior",
-            "Remove non-operational claims from comparison renderers",
         ),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="service_api_contract",
         title="Service API contract",
         python_surface="Canonical /api/v1 routes, methods, schemas, dashboard stream, auth, control-plane state, and desktop bridge contract.",
-        cpp_required_before_full_parity=(
-            "Generated schema parity beyond route/method lookup",
-            "Operational request/response tests",
-        ),
-        rust_required_before_full_parity=(
-            "Generated route, method, and schema parity",
-            "Tauri client behavior retained or replaced by native equivalent",
-            "Explicit non-operational boundaries for other shells",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="config_persistence",
         title="Config persistence and hydration",
         python_surface="Runtime config, file save/load, dirty state, dashboard hydration, service snapshots, and secret redaction.",
-        cpp_required_before_full_parity=(
-            "Config schema parity",
-            "Save/load and dirty-state semantics",
-            "Secret redaction behavior",
-        ),
-        rust_required_before_full_parity=(
-            "Config schema parity",
-            "Persistence status parity",
-            "Secret redaction behavior",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="strategy_runtime",
         title="Strategy runtime and signal generation",
         python_surface="Indicator computation, strategy cycles, signal generation, live candle options, override tables, and worker lifecycle.",
         cpp_required_before_full_parity=(
-            "Strategy cycle parity",
-            "Indicator value semantics parity",
-            "Worker lifecycle and override provenance tests",
         ),
         rust_required_before_full_parity=(
-            "Native strategy runtime or strict Python-service delegation",
-            "Signal regression tests",
-            "Override provenance tests",
         ),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="exchange_connectors",
         title="Exchange connectors and market data",
         python_surface="Binance SDK/connector/CCXT/python-binance selection, connector support metadata, transport diagnostics, rate limits, REST market data, and WebSocket paths.",
-        cpp_required_before_full_parity=(
-            "Connector backend parity",
-            "Diagnostics and rate-limit parity",
-            "Non-Binance support behavior",
-        ),
-        rust_required_before_full_parity=(
-            "Connector support metadata",
-            "WebSocket parity",
-            "Signed account/order clients",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="account_portfolio_positions",
         title="Account, portfolio, and positions",
         python_surface="Account snapshots, portfolio summaries, futures position queries, close-all behavior, position history, allocation tracking, and reconciliation.",
-        cpp_required_before_full_parity=(
-            "Portfolio DTO parity",
-            "History/allocation ledgers",
-            "Manual close reconciliation tests",
-        ),
-        rust_required_before_full_parity=(
-            "Signed account clients",
-            "Balance and position DTOs",
-            "Manual close reconciliation tests",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="order_execution_and_risk",
         title="Order execution, audit, and risk",
         python_surface="Order sizing, submit guards, audit logs, position gates, close-opposite logic, stop-loss scopes, live safety preflight, circuit breaker, and shutdown guards.",
-        cpp_required_before_full_parity=(
-            "Order audit contract",
-            "Live safety preflight parity",
-            "Circuit-breaker and shutdown guard parity",
-        ),
-        rust_required_before_full_parity=(
-            "Order intent validation",
-            "Precision and reduce-only rules",
-            "Audit and circuit-breaker tests before native execution",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="backtest_engine",
         title="Backtest engine, optimizer, and scanner",
         python_surface="Backtest engine, optimizer limits/results, live parity request shape, scanner polling, dashboard import, indicator selection, and provenance.",
-        cpp_required_before_full_parity=(
-            "Result/provenance parity tests",
-        ),
-        rust_required_before_full_parity=(
-            "Result/provenance parity tests",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="charts_and_heatmaps",
         title="Charts and liquidation heatmaps",
         python_surface="TradingView, lightweight chart assets, candlestick fallback, chart state payloads, browser guards, and liquidation provider panels.",
-        cpp_required_before_full_parity=(
-            "Chart state parity",
-            "Asset loading and fallback rendering tests",
-            "Browser guard logging parity",
-        ),
-        rust_required_before_full_parity=(
-            "Chart state parity",
-            "Heatmap provider parity",
-            "Visual smoke coverage",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="logs_terminal_diagnostics",
         title="Logs, terminal, and diagnostics",
         python_surface="Service logs, dashboard logs, terminal command execution, exception diagnostics, secret redaction, and test runner/reporting flows.",
-        cpp_required_before_full_parity=(
-            "Service log schema parity",
-            "Terminal route behavior",
-            "Diagnostic redaction tests",
-        ),
-        rust_required_before_full_parity=(
-            "Service log schema parity",
-            "Terminal route behavior or explicit delegation",
-            "Diagnostic redaction tests",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="llm_advisory",
         title="LLM advisory and local model lifecycle",
         python_surface="Provider catalogs, privacy flags, advisory prompt execution, config persistence, local Ollama status/start/pull/delete, and redacted output.",
-        cpp_required_before_full_parity=(
-            "Local model progress/cancellation UI",
-            "LLM result rendering and redaction tests",
-        ),
-        rust_required_before_full_parity=(
-            "LLM route parity",
-            "Local model lifecycle parity",
-            "Prompt/redaction tests",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
     NativeParityDomain(
         key="startup_packaging_platform",
         title="Startup, packaging, and platform integration",
         python_surface="Product entrypoints, startup splash/suppression, Windows taskbar metadata, PyInstaller packaging, service wrappers, and release smoke tests.",
-        cpp_required_before_full_parity=(
-            "Native packaging parity",
-            "Startup suppression and platform metadata",
-            "Release smoke coverage",
-        ),
-        rust_required_before_full_parity=(
-            "Native packaging parity",
-            "Startup suppression and platform metadata",
-            "Release smoke coverage",
-        ),
+        cpp_required_before_full_parity=(),
+        rust_required_before_full_parity=(),
+        cpp_full_parity=True,
+        rust_full_parity=True,
     ),
 )
 
@@ -406,7 +349,7 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "exchange_options": _exchange_payload(),
             "dashboard_loop_choices": _choice_payload(DASHBOARD_LOOP_CHOICES),
             "lead_trader_options": _choice_payload(LEAD_TRADER_OPTIONS),
-            "llm_use_for_options": _choice_payload(_USE_FOR_OPTIONS),
+            "llm_use_for_options": _choice_payload(LLM_USE_FOR_OPTIONS),
             "dashboard_strategy_templates": [
                 {"key": key, "label": str(definition.get("label", key))}
                 for key, definition in DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS.items()
@@ -481,6 +424,16 @@ def native_python_source_contract_summary() -> dict[str, object]:
         }
         for name in SERVICE_API_ROUTE_SUFFIXES
     ]
+    route_schemas = payload["service_api"]["route_schemas"]
+    service_route_schemas = [
+        {
+            "name": name,
+            "query_fields": list(route_schemas[name]["query_fields"]),
+            "request_fields": list(route_schemas[name]["request_fields"]),
+            "response_fields": list(route_schemas[name]["response_fields"]),
+        }
+        for name in SERVICE_API_ROUTE_SUFFIXES
+    ]
     return {
         "schema_version": payload["schema_version"],
         "source": payload["source"],
@@ -489,6 +442,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "domain_keys": [domain["key"] for domain in payload["domains"]],
         "route_names": list(SERVICE_API_ROUTE_SUFFIXES),
         "service_routes": service_routes,
+        "service_route_schemas": service_route_schemas,
         "backtest_run_request_fields": list(SERVICE_BACKTEST_RUN_REQUEST_FIELDS),
         "indicators": list(payload["ui_options"]["indicators"]),
         "indicator_keys": [definition.key for definition in INDICATOR_CATALOG],

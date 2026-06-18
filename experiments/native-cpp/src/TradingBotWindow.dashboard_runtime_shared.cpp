@@ -1,6 +1,7 @@
 ﻿#include "TradingBotWindow.h"
 #include "TradingBotWindowSupport.h"
 #include "BinanceWsClient.h"
+#include "NativeOrderSafety.h"
 #include "TradingBotWindow.dashboard_runtime_shared.h"
 
 #include <QCheckBox>
@@ -11,6 +12,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -94,6 +96,83 @@ using ConnectorRuntimeConfig = TradingBotWindowSupport::ConnectorRuntimeConfig;
 constexpr int kTableCellNumericRole = Qt::UserRole + 2;
 constexpr int kTableCellRawNumericRole = Qt::UserRole + 4;
 constexpr int kTableCellRawRoiBasisRole = Qt::UserRole + 5;
+
+QString orderAuditDecimal(double value) {
+    return qIsFinite(value) ? QString::number(value, 'f', 8) : QStringLiteral("0");
+}
+
+QVector<QPair<QString, QString>> futuresOrderAuditParams(
+    const QString &symbol,
+    const QString &side,
+    const QString &orderType,
+    double quantity,
+    bool reduceOnly,
+    const QString &positionSide,
+    double price = 0.0,
+    const QString &timeInForce = {}) {
+    QVector<QPair<QString, QString>> params = {
+        {QStringLiteral("symbol"), symbol.trimmed().toUpper()},
+        {QStringLiteral("side"), side.trimmed().toUpper()},
+        {QStringLiteral("type"), orderType.trimmed().toUpper()},
+        {QStringLiteral("quantity"), orderAuditDecimal(quantity)},
+    };
+    if (reduceOnly) {
+        params.append({QStringLiteral("reduceOnly"), QStringLiteral("true")});
+    }
+    const QString positionSideText = positionSide.trimmed().toUpper();
+    if (!positionSideText.isEmpty()) {
+        params.append({QStringLiteral("positionSide"), positionSideText});
+    }
+    if (qIsFinite(price) && price > 0.0) {
+        params.append({QStringLiteral("price"), orderAuditDecimal(price)});
+    }
+    const QString tif = timeInForce.trimmed().toUpper();
+    if (!tif.isEmpty()) {
+        params.append({QStringLiteral("timeInForce"), tif});
+    }
+    return params;
+}
+
+QJsonObject futuresOrderResultAuditPayload(const BinanceRestClient::FuturesOrderResult &result) {
+    return {
+        {QStringLiteral("ok"), result.ok},
+        {QStringLiteral("symbol"), result.symbol.trimmed().toUpper()},
+        {QStringLiteral("side"), result.side.trimmed().toUpper()},
+        {QStringLiteral("positionSide"), result.positionSide.trimmed().toUpper()},
+        {QStringLiteral("orderId"), result.orderId.trimmed()},
+        {QStringLiteral("status"), result.status.trimmed().toUpper()},
+        {QStringLiteral("executedQty"), result.executedQty},
+        {QStringLiteral("avgPrice"), result.avgPrice},
+        {QStringLiteral("error"), result.error.trimmed()},
+    };
+}
+
+void appendNativeFuturesOrderAudit(
+    const QString &event,
+    const QString &source,
+    const QVector<QPair<QString, QString>> &params,
+    const BinanceRestClient::FuturesOrderResult *result = nullptr,
+    const QJsonObject &extra = {}) {
+    QJsonObject payload = NativeOrderSafety::buildOrderAuditEvent(
+        event,
+        QStringLiteral("futures"),
+        params,
+        QDateTime::currentDateTimeUtc(),
+        source);
+    payload.insert(QStringLiteral("via"), QStringLiteral("Native C++ dashboard runtime"));
+    if (result) {
+        payload.insert(QStringLiteral("result"), futuresOrderResultAuditPayload(*result));
+        if (!result->ok && !result->error.trimmed().isEmpty()) {
+            payload.insert(QStringLiteral("error"), result->error.trimmed());
+        }
+    }
+    if (!extra.isEmpty()) {
+        payload.insert(QStringLiteral("extra"), extra);
+    }
+    NativeOrderSafety::appendOrderAuditEvent(
+        payload,
+        NativeOrderSafety::orderAuditLogConfigFromEnvironment());
+}
 
 void setTableCellNumeric(QTableWidget *table, int row, int col, double value) {
     if (!table) {
@@ -953,6 +1032,23 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
         }
 
         ++attempts;
+        const auto auditParams = futuresOrderAuditParams(
+            aggregated.symbol,
+            aggregated.side,
+            QStringLiteral("MARKET"),
+            chunkQty,
+            reduceOnly,
+            aggregated.positionSide);
+        appendNativeFuturesOrderAudit(
+            QStringLiteral("order_intent"),
+            QStringLiteral("cpp_futures_close_market"),
+            auditParams,
+            nullptr,
+            {
+                {QStringLiteral("attempt"), attempts},
+                {QStringLiteral("testnet"), testnet},
+                {QStringLiteral("remainingQty"), remainingQty},
+            });
         const auto order = BinanceRestClient::placeFuturesMarketOrder(
             apiKey,
             apiSecret,
@@ -964,6 +1060,16 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
             aggregated.positionSide,
             timeoutMs,
             baseUrlOverride);
+        appendNativeFuturesOrderAudit(
+            order.ok ? QStringLiteral("order_accepted") : QStringLiteral("order_rejected"),
+            QStringLiteral("cpp_futures_close_market"),
+            auditParams,
+            &order,
+            {
+                {QStringLiteral("attempt"), attempts},
+                {QStringLiteral("testnet"), testnet},
+                {QStringLiteral("remainingQty"), remainingQty},
+            });
         if (order.ok) {
             if (!consumeOrderFill(order, chunkQty)) {
                 break;
@@ -995,6 +1101,25 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
                     pricePrecision,
                     isBuy);
                 if (limitPrice > 0.0) {
+                    const auto limitAuditParams = futuresOrderAuditParams(
+                        aggregated.symbol,
+                        aggregated.side,
+                        QStringLiteral("LIMIT"),
+                        chunkQty,
+                        reduceOnly,
+                        aggregated.positionSide,
+                        limitPrice,
+                        QStringLiteral("IOC"));
+                    appendNativeFuturesOrderAudit(
+                        QStringLiteral("order_intent"),
+                        QStringLiteral("cpp_futures_close_ioc_limit"),
+                        limitAuditParams,
+                        nullptr,
+                        {
+                            {QStringLiteral("attempt"), attempts},
+                            {QStringLiteral("testnet"), testnet},
+                            {QStringLiteral("fallback"), QStringLiteral("percent_price_ioc_limit")},
+                        });
                     const auto limitOrder = BinanceRestClient::placeFuturesLimitOrder(
                         apiKey,
                         apiSecret,
@@ -1008,6 +1133,16 @@ BinanceRestClient::FuturesOrderResult placeFuturesCloseOrderWithFallback(
                         QStringLiteral("IOC"),
                         timeoutMs,
                         baseUrlOverride);
+                    appendNativeFuturesOrderAudit(
+                        limitOrder.ok ? QStringLiteral("order_accepted") : QStringLiteral("order_rejected"),
+                        QStringLiteral("cpp_futures_close_ioc_limit"),
+                        limitAuditParams,
+                        &limitOrder,
+                        {
+                            {QStringLiteral("attempt"), attempts},
+                            {QStringLiteral("testnet"), testnet},
+                            {QStringLiteral("fallback"), QStringLiteral("percent_price_ioc_limit")},
+                        });
                     if (limitOrder.ok) {
                         if (!consumeOrderFill(limitOrder, chunkQty)) {
                             break;
@@ -1298,6 +1433,24 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
         }
 
         ++attempts;
+        const auto auditParams = futuresOrderAuditParams(
+            aggregated.symbol,
+            aggregated.side,
+            QStringLiteral("MARKET"),
+            chunkQty,
+            false,
+            aggregated.positionSide);
+        appendNativeFuturesOrderAudit(
+            QStringLiteral("order_intent"),
+            QStringLiteral("cpp_futures_open_market"),
+            auditParams,
+            nullptr,
+            {
+                {QStringLiteral("attempt"), attempts},
+                {QStringLiteral("testnet"), testnet},
+                {QStringLiteral("remainingQty"), remainingQty},
+                {QStringLiteral("targetQty"), targetQty},
+            });
         const auto order = BinanceRestClient::placeFuturesMarketOrder(
             apiKey,
             apiSecret,
@@ -1309,6 +1462,17 @@ BinanceRestClient::FuturesOrderResult placeFuturesOpenOrderWithFallback(
             aggregated.positionSide,
             timeoutMs,
             baseUrlOverride);
+        appendNativeFuturesOrderAudit(
+            order.ok ? QStringLiteral("order_accepted") : QStringLiteral("order_rejected"),
+            QStringLiteral("cpp_futures_open_market"),
+            auditParams,
+            &order,
+            {
+                {QStringLiteral("attempt"), attempts},
+                {QStringLiteral("testnet"), testnet},
+                {QStringLiteral("remainingQty"), remainingQty},
+                {QStringLiteral("targetQty"), targetQty},
+            });
         if (order.ok) {
             const double filledQty = (qIsFinite(order.executedQty) && order.executedQty > 0.0)
                 ? std::min(chunkQty, order.executedQty)

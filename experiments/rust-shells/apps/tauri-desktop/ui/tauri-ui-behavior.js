@@ -44,6 +44,75 @@
     return linesFromText(value);
   };
 
+  const backtestMetadataKeys = [
+    "symbol",
+    "interval",
+    "indicator_keys",
+    "logic",
+    "trades",
+    "roi_value",
+    "roi_percent",
+    "max_drawdown_percent",
+    "max_drawdown_value",
+    "max_drawdown_during_percent",
+    "max_drawdown_during_value",
+    "max_drawdown_result_percent",
+    "max_drawdown_result_value",
+    "mdd_logic",
+    "mdd_logic_display",
+    "start",
+    "start_display",
+    "end",
+    "end_display",
+    "side",
+    "capital",
+    "position_pct",
+    "position_pct_display",
+    "position_pct_units",
+    "leverage",
+    "leverage_display",
+    "margin_mode",
+    "position_mode",
+    "assets_mode",
+    "account_mode",
+    "stop_loss_enabled",
+    "stop_loss_mode",
+    "stop_loss_scope",
+    "stop_loss_usdt",
+    "stop_loss_percent",
+    "stop_loss_display",
+    "loop_interval_override",
+    "connector_backend",
+    "strategy_controls",
+    "optimizer_rank",
+    "optimizer_metric",
+    "optimizer_primary_score",
+    "optimizer_eligible",
+    "optimizer_mode",
+    "optimizer_scope",
+    "optimizer_mdd_limit",
+    "optimizer_min_trades",
+    "optimizer_candidate_count",
+    "optimizer_eligible_count",
+    "optimizer_filtered_count",
+    "optimizer_run_count"
+  ];
+
+  const cleanBacktestResultMetadata = (row) => {
+    if (!row || typeof row !== "object") return null;
+    if (row.backtest_result && typeof row.backtest_result === "object") return { ...row.backtest_result };
+    const metadata = {};
+    let hasResultPayload = false;
+    for (const key of backtestMetadataKeys) {
+      if (row[key] === undefined || row[key] === null) continue;
+      metadata[key] = row[key];
+      if (!["symbol", "interval"].includes(key)) hasResultPayload = true;
+    }
+    if (!hasResultPayload) return null;
+    metadata.source = metadata.source || "python-backtest";
+    return metadata;
+  };
+
   const normalizeOverrideRow = (row) => {
     const controls = row?.strategy_controls && typeof row.strategy_controls === "object"
       ? { ...row.strategy_controls }
@@ -55,12 +124,15 @@
     if (row?.stop_loss && typeof row.stop_loss === "object" && controls.stop_loss === undefined) {
       controls.stop_loss = row.stop_loss;
     }
-    return {
+    const normalized = {
       symbol: String(row?.symbol || "").trim().toUpperCase(),
       interval: String(row?.interval || "").trim(),
       indicators: normalizeIndicatorList(row?.indicators ?? row?.indicator_keys ?? row?.indicator),
       strategy_controls: controls
     };
+    const backtestResult = cleanBacktestResultMetadata(row);
+    if (backtestResult) normalized.backtest_result = backtestResult;
+    return normalized;
   };
 
   const overrideImportKey = (row, normalize = normalizeOverrideRow) => {
@@ -418,6 +490,7 @@
 
   return {
     backtestRunsFromPayload,
+    cleanBacktestResultMetadata,
     describeCircuitIncidentCount,
     describeConfigPersistence,
     describeLastCircuitIncident,

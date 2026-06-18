@@ -111,21 +111,23 @@ def _domain_required_list(domain: dict[str, object], key: str) -> list[str]:
 
 
 def _domain_cpp_status(domain: dict[str, object]) -> str:
-    if bool(domain["cpp_full_parity"]):
+    required = _domain_required_list(domain, "cpp_required_before_full_parity")
+    if bool(domain["cpp_full_parity"]) or not required:
         return "Complete"
-    return "C++ missing: " + "; ".join(_domain_required_list(domain, "cpp_required_before_full_parity"))
+    return "C++ missing: " + "; ".join(required)
 
 
 def _domain_rust_status(domain: dict[str, object]) -> str:
-    if bool(domain["rust_full_parity"]):
+    required = _domain_required_list(domain, "rust_required_before_full_parity")
+    if bool(domain["rust_full_parity"]) or not required:
         return "Complete"
-    return "Rust missing: " + "; ".join(_domain_required_list(domain, "rust_required_before_full_parity"))
+    return "Rust missing: " + "; ".join(required)
 
 
 def _domain_required_before_full_parity(domain: dict[str, object]) -> str:
     cpp_required = "; ".join(_domain_required_list(domain, "cpp_required_before_full_parity"))
     rust_required = "; ".join(_domain_required_list(domain, "rust_required_before_full_parity"))
-    return f"C++: {cpp_required} | Rust: {rust_required}"
+    return f"C++: {cpp_required or 'Complete'} | Rust: {rust_required or 'Complete'}"
 
 
 def _rust_parity_domains(domains: list[dict[str, object]]) -> str:
@@ -215,6 +217,35 @@ def _rust_service_routes(routes: list[dict[str, object]]) -> str:
                 f"        name: {_rust_string(route['name'])},",
                 f"        path: {_rust_string(route['path'])},",
                 f"        methods: &[{methods}],",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def _rust_service_route_schemas(schemas: list[dict[str, object]]) -> str:
+    lines = [
+        "pub struct PythonServiceRouteSchema {",
+        "    pub name: &'static str,",
+        "    pub query_fields: &'static [&'static str],",
+        "    pub request_fields: &'static [&'static str],",
+        "    pub response_fields: &'static [&'static str],",
+        "}",
+        "",
+        "pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[",
+    ]
+    for schema in schemas:
+        query_fields = ", ".join(_rust_string(field) for field in schema["query_fields"])
+        request_fields = ", ".join(_rust_string(field) for field in schema["request_fields"])
+        response_fields = ", ".join(_rust_string(field) for field in schema["response_fields"])
+        lines.extend(
+            [
+                "    PythonServiceRouteSchema {",
+                f"        name: {_rust_string(schema['name'])},",
+                f"        query_fields: &[{query_fields}],",
+                f"        request_fields: &[{request_fields}],",
+                f"        response_fields: &[{response_fields}],",
                 "    },",
             ]
         )
@@ -411,6 +442,33 @@ def _cpp_service_routes(routes: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _cpp_service_route_schemas(schemas: list[dict[str, object]]) -> str:
+    lines = [
+        "struct PythonServiceRouteSchema {",
+        "    std::string_view name;",
+        "    std::string_view queryFields;",
+        "    std::string_view requestFields;",
+        "    std::string_view responseFields;",
+        "};",
+        "",
+        f"inline constexpr std::array<PythonServiceRouteSchema, {len(schemas)}> kPythonServiceRouteSchemas = {{",
+    ]
+    for schema in schemas:
+        query_fields = ",".join(str(field) for field in schema["query_fields"])
+        request_fields = ",".join(str(field) for field in schema["request_fields"])
+        response_fields = ",".join(str(field) for field in schema["response_fields"])
+        lines.append(
+            "    PythonServiceRouteSchema{"
+            f"{_cpp_string(schema['name'])}, "
+            f"{_cpp_string(query_fields)}, "
+            f"{_cpp_string(request_fields)}, "
+            f"{_cpp_string(response_fields)}"
+            "},"
+        )
+    lines.append("};")
+    return "\n".join(lines)
+
+
 def _cpp_indicator_catalog(indicators: list[dict[str, object]]) -> str:
     lines = [
         "struct PythonIndicator {",
@@ -585,6 +643,8 @@ def render_rust_module() -> str:
         "",
         _rust_service_routes(list(summary["service_routes"])),
         "",
+        _rust_service_route_schemas(list(summary["service_route_schemas"])),
+        "",
         _rust_array("PYTHON_BACKTEST_RUN_REQUEST_FIELDS", list(summary["backtest_run_request_fields"])),
         "",
         _rust_array("PYTHON_INDICATOR_KEYS", list(summary["indicator_keys"])),
@@ -649,6 +709,8 @@ def render_cpp_header() -> str:
         "",
         _cpp_service_routes(list(summary["service_routes"])),
         "",
+        _cpp_service_route_schemas(list(summary["service_route_schemas"])),
+        "",
         _cpp_array("kPythonBacktestRunRequestFields", list(summary["backtest_run_request_fields"])),
         "",
         _cpp_array("kPythonIndicatorKeys", list(summary["indicator_keys"])),
@@ -699,6 +761,19 @@ def render_tauri_browser_contract() -> str:
     service_route_methods = {
         str(route["name"]): [str(method) for method in route["methods"]]
         for route in service_routes
+    }
+    service_route_schemas = list(summary["service_route_schemas"])
+    service_route_query_fields = {
+        str(schema["name"]): [str(field) for field in schema["query_fields"]]
+        for schema in service_route_schemas
+    }
+    service_route_request_fields = {
+        str(schema["name"]): [str(field) for field in schema["request_fields"]]
+        for schema in service_route_schemas
+    }
+    service_route_response_fields = {
+        str(schema["name"]): [str(field) for field in schema["response_fields"]]
+        for schema in service_route_schemas
     }
     payload = {
         "source": summary["source"],
@@ -761,6 +836,10 @@ def render_tauri_browser_contract() -> str:
         "serviceRouteNames": list(summary["route_names"]),
         "serviceRoutePaths": service_route_paths,
         "serviceRouteMethods": service_route_methods,
+        "serviceRouteQueryFields": service_route_query_fields,
+        "serviceRouteRequestFields": service_route_request_fields,
+        "serviceRouteResponseFields": service_route_response_fields,
+        "serviceRouteSchemas": service_route_schemas,
         "serviceRoutes": service_routes,
     }
     body = json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2)

@@ -24,6 +24,7 @@ class QTabWidget;
 class QWidget;
 class QTextEdit;
 class QVBoxLayout;
+class QJsonObject;
 class BinanceWsClient;
 
 // Main Qt window for the C++ desktop runtime.
@@ -73,6 +74,7 @@ private:
     void startDashboardRuntime();
     void stopDashboardRuntime();
     void runDashboardRuntimeCycle();
+    void refreshDashboardOrderAuditStatus();
     void refreshDashboardOpenPositionIndicatorValuesForSignalKey(
         const QString &signalKey,
         const QVector<BinanceRestClient::KlineCandle> &marketCandles);
@@ -85,6 +87,12 @@ private:
     void clearDashboardOverrideRows();
     void saveDashboardConfig();
     void loadDashboardConfig();
+    QJsonObject buildDashboardServiceConfigPatch() const;
+    bool hydrateDashboardServiceConfig(const QJsonObject &config);
+    bool saveDashboardServiceConfig();
+    bool loadDashboardServiceConfig();
+    void saveDashboardLocalOverrideConfig();
+    void loadDashboardLocalOverrideConfig();
     // Utility/UI state helpers.
     void wireSignals();
     void ensureBotTimer(bool running);
@@ -176,6 +184,7 @@ private:
     QLabel *codeBotTimeLabel_;
     QPushButton *dashboardRefreshBtn_;
     QComboBox *dashboardAccountTypeCombo_;
+    QComboBox *dashboardAccountModeCombo_ = nullptr;
     QComboBox *dashboardModeCombo_;
     QComboBox *dashboardConnectorCombo_;
     QComboBox *dashboardExchangeCombo_;
@@ -184,6 +193,9 @@ private:
     QComboBox *dashboardTemplateCombo_;
     QComboBox *dashboardMarginModeCombo_;
     QComboBox *dashboardPositionModeCombo_;
+    QComboBox *dashboardAssetsModeCombo_ = nullptr;
+    QComboBox *dashboardTimeInForceCombo_ = nullptr;
+    QSpinBox *dashboardGtdMinutesSpin_ = nullptr;
     QCheckBox *dashboardLlmEnableCheck_ = nullptr;
     QComboBox *dashboardLlmProviderCombo_ = nullptr;
     QComboBox *dashboardLlmModelCombo_ = nullptr;
@@ -211,6 +223,7 @@ private:
     QPushButton *dashboardStopBtn_;
     QPushButton *dashboardSaveConfigBtn_ = nullptr;
     QPushButton *dashboardLoadConfigBtn_ = nullptr;
+    QLabel *dashboardOrderAuditStatusLabel_ = nullptr;
     QTableWidget *dashboardOverridesTable_;
     QTextEdit *dashboardAllLogsEdit_;
     QTextEdit *dashboardPositionLogsEdit_;
@@ -286,4 +299,3 @@ private:
     QCheckBox *positionsAutoColumnWidthCheck_;
     qint64 positionsRowSequenceCounter_ = 1;
 };
-

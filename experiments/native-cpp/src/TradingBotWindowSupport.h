@@ -61,6 +61,9 @@ bool pythonSourceParityDomainRustFullParity(const QString &domainKey);
 QStringList pythonSourceServiceRouteNames();
 QString pythonSourceServiceRoutePath(const QString &routeName);
 QStringList pythonSourceServiceRouteMethods(const QString &routeName);
+QStringList pythonSourceServiceRouteQueryFields(const QString &routeName);
+QStringList pythonSourceServiceRouteRequestFields(const QString &routeName);
+QStringList pythonSourceServiceRouteResponseFields(const QString &routeName);
 QString serviceApiBaseUrl();
 QString serviceApiUrlForRoute(const QString &routeName);
 ServiceApiJsonResult serviceApiRequestJson(

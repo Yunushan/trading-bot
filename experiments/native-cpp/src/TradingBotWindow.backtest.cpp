@@ -27,6 +27,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
+#include <QVariant>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -97,6 +98,20 @@ QString jsonText(const QJsonObject &object, const QString &key, const QString &f
     return fallback;
 }
 
+QString jsonValueText(const QJsonValue &value, const QString &fallback = {}) {
+    if (value.isString()) {
+        const QString text = value.toString().trimmed();
+        return text.isEmpty() ? fallback : text;
+    }
+    if (value.isDouble()) {
+        return QString::number(value.toDouble(), 'f', 2);
+    }
+    if (value.isBool()) {
+        return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    }
+    return fallback;
+}
+
 double jsonNumber(const QJsonObject &object, const QString &key, double fallback = 0.0) {
     const QJsonValue value = object.value(key);
     if (value.isDouble()) {
@@ -107,6 +122,26 @@ double jsonNumber(const QJsonObject &object, const QString &key, double fallback
         const double parsed = value.toString().toDouble(&ok);
         if (ok) {
             return parsed;
+        }
+    }
+    return fallback;
+}
+
+bool jsonBool(const QJsonObject &object, const QString &key, bool fallback = false) {
+    const QJsonValue value = object.value(key);
+    if (value.isBool()) {
+        return value.toBool();
+    }
+    if (value.isDouble()) {
+        return value.toDouble() != 0.0;
+    }
+    if (value.isString()) {
+        const QString text = value.toString().trimmed().toLower();
+        if (text == QStringLiteral("true") || text == QStringLiteral("1") || text == QStringLiteral("yes") || text == QStringLiteral("on")) {
+            return true;
+        }
+        if (text == QStringLiteral("false") || text == QStringLiteral("0") || text == QStringLiteral("no") || text == QStringLiteral("off") || text.isEmpty()) {
+            return false;
         }
     }
     return fallback;
@@ -131,6 +166,49 @@ QString jsonStringArrayText(const QJsonObject &object, const QString &key, const
     return values.isEmpty() ? fallback : values.join(QStringLiteral(", "));
 }
 
+QJsonArray jsonStringArrayValue(const QJsonValue &rawValue) {
+    QJsonArray values;
+    if (rawValue.isArray()) {
+        for (const QJsonValue &value : rawValue.toArray()) {
+            const QString text = jsonValueText(value).trimmed();
+            if (!text.isEmpty()) {
+                values.append(text);
+            }
+        }
+    } else if (rawValue.isString()) {
+        const QStringList parts = rawValue.toString().split(',', Qt::SkipEmptyParts);
+        for (const QString &part : parts) {
+            const QString text = part.trimmed();
+            if (!text.isEmpty()) {
+                values.append(text);
+            }
+        }
+    }
+    return values;
+}
+
+QJsonArray backtestIndicatorKeys(const QJsonObject &row) {
+    QJsonArray indicators = jsonStringArrayValue(row.value(QStringLiteral("indicator_keys")));
+    if (indicators.isEmpty()) {
+        indicators = jsonStringArrayValue(row.value(QStringLiteral("indicators")));
+    }
+    if (indicators.isEmpty()) {
+        indicators = jsonStringArrayValue(row.value(QStringLiteral("indicator")));
+    }
+    return indicators;
+}
+
+QString jsonArrayText(const QJsonArray &values, const QString &fallback = {}) {
+    QStringList parts;
+    for (const QJsonValue &value : values) {
+        const QString text = jsonValueText(value).trimmed();
+        if (!text.isEmpty()) {
+            parts.append(text);
+        }
+    }
+    return parts.isEmpty() ? fallback : parts.join(QStringLiteral(", "));
+}
+
 QString stopLossSummary(const QJsonObject &row) {
     const bool enabled = row.value(QStringLiteral("stop_loss_enabled")).toBool(false);
     if (!enabled) {
@@ -140,6 +218,49 @@ QString stopLossSummary(const QJsonObject &row) {
     const QString scope = jsonText(row, QStringLiteral("stop_loss_scope"), QStringLiteral("per_trade"));
     const QString usdt = jsonNumberText(row, QStringLiteral("stop_loss_usdt"), 2, QStringLiteral(" USDT"));
     const QString percent = jsonNumberText(row, QStringLiteral("stop_loss_percent"), 2, QStringLiteral("%"));
+    return QStringLiteral("Enabled (%1 | %2 | %3 | %4)").arg(mode, scope, usdt, percent);
+}
+
+QJsonObject stopLossFromBacktestResult(const QJsonObject &row) {
+    const QJsonObject direct = row.value(QStringLiteral("stop_loss")).toObject();
+    if (!direct.isEmpty()) {
+        return direct;
+    }
+    const QStringList keys = {
+        QStringLiteral("stop_loss_enabled"),
+        QStringLiteral("stop_loss_mode"),
+        QStringLiteral("stop_loss_scope"),
+        QStringLiteral("stop_loss_usdt"),
+        QStringLiteral("stop_loss_percent"),
+    };
+    bool hasStopLossPayload = false;
+    for (const QString &key : keys) {
+        if (row.contains(key)) {
+            hasStopLossPayload = true;
+            break;
+        }
+    }
+    if (!hasStopLossPayload) {
+        return {};
+    }
+
+    QJsonObject stopLoss;
+    stopLoss.insert(QStringLiteral("enabled"), jsonBool(row, QStringLiteral("stop_loss_enabled"), false));
+    stopLoss.insert(QStringLiteral("mode"), jsonText(row, QStringLiteral("stop_loss_mode"), QStringLiteral("usdt")).toLower());
+    stopLoss.insert(QStringLiteral("scope"), jsonText(row, QStringLiteral("stop_loss_scope"), QStringLiteral("per_trade")).toLower());
+    stopLoss.insert(QStringLiteral("usdt"), jsonNumber(row, QStringLiteral("stop_loss_usdt"), 0.0));
+    stopLoss.insert(QStringLiteral("percent"), jsonNumber(row, QStringLiteral("stop_loss_percent"), 0.0));
+    return stopLoss;
+}
+
+QString stopLossObjectSummary(const QJsonObject &stopLoss) {
+    if (stopLoss.isEmpty() || !stopLoss.value(QStringLiteral("enabled")).toBool(false)) {
+        return QStringLiteral("Disabled");
+    }
+    const QString mode = jsonText(stopLoss, QStringLiteral("mode"), QStringLiteral("usdt"));
+    const QString scope = jsonText(stopLoss, QStringLiteral("scope"), QStringLiteral("per_trade"));
+    const QString usdt = jsonNumberText(stopLoss, QStringLiteral("usdt"), 2, QStringLiteral(" USDT"));
+    const QString percent = jsonNumberText(stopLoss, QStringLiteral("percent"), 2, QStringLiteral("%"));
     return QStringLiteral("Enabled (%1 | %2 | %3 | %4)").arg(mode, scope, usdt, percent);
 }
 
@@ -163,6 +284,268 @@ QString backtestSnapshotStatusText(const QJsonObject &snapshot, const QString &f
         message = QStringLiteral("Backtest cancelled. %1").arg(message);
     }
     return message;
+}
+
+QJsonObject cleanBacktestResultMetadata(const QJsonObject &row) {
+    const QStringList metadataKeys = {
+        QStringLiteral("symbol"),
+        QStringLiteral("interval"),
+        QStringLiteral("indicator_keys"),
+        QStringLiteral("logic"),
+        QStringLiteral("trades"),
+        QStringLiteral("roi_value"),
+        QStringLiteral("roi_percent"),
+        QStringLiteral("max_drawdown_percent"),
+        QStringLiteral("max_drawdown_value"),
+        QStringLiteral("max_drawdown_during_percent"),
+        QStringLiteral("max_drawdown_during_value"),
+        QStringLiteral("max_drawdown_result_percent"),
+        QStringLiteral("max_drawdown_result_value"),
+        QStringLiteral("mdd_logic"),
+        QStringLiteral("mdd_logic_display"),
+        QStringLiteral("start"),
+        QStringLiteral("start_display"),
+        QStringLiteral("end"),
+        QStringLiteral("end_display"),
+        QStringLiteral("side"),
+        QStringLiteral("capital"),
+        QStringLiteral("position_pct"),
+        QStringLiteral("position_pct_display"),
+        QStringLiteral("position_pct_units"),
+        QStringLiteral("leverage"),
+        QStringLiteral("leverage_display"),
+        QStringLiteral("margin_mode"),
+        QStringLiteral("position_mode"),
+        QStringLiteral("assets_mode"),
+        QStringLiteral("account_mode"),
+        QStringLiteral("stop_loss_enabled"),
+        QStringLiteral("stop_loss_mode"),
+        QStringLiteral("stop_loss_scope"),
+        QStringLiteral("stop_loss_usdt"),
+        QStringLiteral("stop_loss_percent"),
+        QStringLiteral("stop_loss_display"),
+        QStringLiteral("loop_interval_override"),
+        QStringLiteral("connector_backend"),
+        QStringLiteral("strategy_controls"),
+        QStringLiteral("optimizer_rank"),
+        QStringLiteral("optimizer_metric"),
+        QStringLiteral("optimizer_primary_score"),
+        QStringLiteral("optimizer_eligible"),
+        QStringLiteral("optimizer_mode"),
+        QStringLiteral("optimizer_scope"),
+        QStringLiteral("optimizer_mdd_limit"),
+        QStringLiteral("optimizer_min_trades"),
+        QStringLiteral("optimizer_candidate_count"),
+        QStringLiteral("optimizer_eligible_count"),
+        QStringLiteral("optimizer_filtered_count"),
+        QStringLiteral("optimizer_run_count"),
+    };
+
+    QJsonObject metadata;
+    for (const QString &key : metadataKeys) {
+        const QJsonValue value = row.value(key);
+        if (!value.isUndefined() && !value.isNull()) {
+            metadata.insert(key, value);
+        }
+    }
+    metadata.insert(QStringLiteral("source"), QStringLiteral("python-backtest"));
+    return metadata;
+}
+
+QJsonObject strategyControlsFromBacktestResult(const QJsonObject &row) {
+    QJsonObject controls = row.value(QStringLiteral("strategy_controls")).toObject();
+    const auto insertTextIfPresent = [&controls, &row](const QString &sourceKey, const QString &targetKey) {
+        const QString text = jsonText(row, sourceKey).trimmed();
+        if (!text.isEmpty() && !controls.contains(targetKey)) {
+            controls.insert(targetKey, text);
+        }
+    };
+
+    insertTextIfPresent(QStringLiteral("side"), QStringLiteral("side"));
+    insertTextIfPresent(QStringLiteral("position_pct_units"), QStringLiteral("position_pct_units"));
+    insertTextIfPresent(QStringLiteral("loop_interval_override"), QStringLiteral("loop_interval_override"));
+    insertTextIfPresent(QStringLiteral("account_mode"), QStringLiteral("account_mode"));
+    insertTextIfPresent(QStringLiteral("connector_backend"), QStringLiteral("connector_backend"));
+    insertTextIfPresent(QStringLiteral("margin_mode"), QStringLiteral("margin_mode"));
+    insertTextIfPresent(QStringLiteral("position_mode"), QStringLiteral("position_mode"));
+    insertTextIfPresent(QStringLiteral("assets_mode"), QStringLiteral("assets_mode"));
+
+    if (row.contains(QStringLiteral("position_pct")) && !controls.contains(QStringLiteral("position_pct"))) {
+        controls.insert(QStringLiteral("position_pct"), jsonNumber(row, QStringLiteral("position_pct"), 0.0));
+    }
+    if (row.contains(QStringLiteral("leverage")) && !controls.contains(QStringLiteral("leverage"))) {
+        controls.insert(QStringLiteral("leverage"), static_cast<int>(std::max(1.0, jsonNumber(row, QStringLiteral("leverage"), 1.0))));
+    }
+    const QJsonObject stopLoss = stopLossFromBacktestResult(row);
+    if (!stopLoss.isEmpty() && !controls.contains(QStringLiteral("stop_loss"))) {
+        controls.insert(QStringLiteral("stop_loss"), stopLoss);
+    }
+    return controls;
+}
+
+QJsonObject dashboardOverridePayloadFromBacktestResult(const QJsonObject &row) {
+    QJsonObject payload;
+    const QString symbol = jsonText(row, QStringLiteral("symbol")).toUpper();
+    const QString interval = jsonText(row, QStringLiteral("interval"));
+    if (symbol.isEmpty() || interval.isEmpty()) {
+        return payload;
+    }
+
+    payload.insert(QStringLiteral("symbol"), symbol);
+    payload.insert(QStringLiteral("interval"), interval);
+    const QJsonArray indicators = backtestIndicatorKeys(row);
+    if (!indicators.isEmpty()) {
+        payload.insert(QStringLiteral("indicators"), indicators);
+    }
+    const QJsonObject metadata = cleanBacktestResultMetadata(row);
+    if (!metadata.isEmpty()) {
+        payload.insert(QStringLiteral("backtest_result"), metadata);
+    }
+    const QJsonObject controls = strategyControlsFromBacktestResult(row);
+    if (!controls.isEmpty()) {
+        payload.insert(QStringLiteral("strategy_controls"), controls);
+    }
+    const QJsonObject stopLoss = stopLossFromBacktestResult(row);
+    if (!stopLoss.isEmpty()) {
+        payload.insert(QStringLiteral("stop_loss"), stopLoss);
+    }
+    if (row.contains(QStringLiteral("loop_interval_override"))) {
+        payload.insert(QStringLiteral("loop_interval_override"), jsonText(row, QStringLiteral("loop_interval_override")));
+    }
+    if (row.contains(QStringLiteral("leverage"))) {
+        payload.insert(QStringLiteral("leverage"), static_cast<int>(std::max(1.0, jsonNumber(row, QStringLiteral("leverage"), 1.0))));
+    }
+    return payload;
+}
+
+QJsonObject dashboardOverridePayloadFromTableRow(const QTableWidget *table, int row) {
+    if (!table || row < 0 || row >= table->rowCount()) {
+        return {};
+    }
+    const QTableWidgetItem *symbolItem = table->item(row, 0);
+    if (symbolItem) {
+        const QJsonObject payload = symbolItem->data(Qt::UserRole).toJsonObject();
+        if (!payload.isEmpty()) {
+            return payload;
+        }
+    }
+    QJsonObject payload;
+    const QTableWidgetItem *intervalItem = table->item(row, 1);
+    const QString symbol = symbolItem ? symbolItem->text().trimmed().toUpper() : QString();
+    const QString interval = intervalItem ? intervalItem->text().trimmed() : QString();
+    if (!symbol.isEmpty() && !interval.isEmpty()) {
+        payload.insert(QStringLiteral("symbol"), symbol);
+        payload.insert(QStringLiteral("interval"), interval);
+    }
+    return payload;
+}
+
+QJsonObject backtestResultPayloadFromTableRow(const QTableWidget *table, int row) {
+    if (!table || row < 0 || row >= table->rowCount()) {
+        return {};
+    }
+    if (const QTableWidgetItem *symbolItem = table->item(row, 0)) {
+        const QJsonObject payload = symbolItem->data(Qt::UserRole).toJsonObject();
+        if (!payload.isEmpty()) {
+            return payload;
+        }
+    }
+
+    QJsonObject payload;
+    const QStringList keys = {
+        QStringLiteral("symbol"),
+        QStringLiteral("interval"),
+        QStringLiteral("logic"),
+        QStringLiteral("indicator_keys"),
+        QStringLiteral("trades"),
+        QStringLiteral("loop_interval_override"),
+        QStringLiteral("start"),
+        QStringLiteral("end"),
+        QStringLiteral("position_pct"),
+        QStringLiteral("stop_loss_display"),
+        QStringLiteral("margin_mode"),
+        QStringLiteral("position_mode"),
+        QStringLiteral("assets_mode"),
+        QStringLiteral("account_mode"),
+        QStringLiteral("leverage_display"),
+        QStringLiteral("roi_value"),
+        QStringLiteral("roi_percent"),
+        QStringLiteral("max_drawdown_during_value"),
+        QStringLiteral("max_drawdown_during_percent"),
+        QStringLiteral("max_drawdown_result_value"),
+        QStringLiteral("max_drawdown_result_percent"),
+    };
+    for (int col = 0; col < keys.size() && col < table->columnCount(); ++col) {
+        const QTableWidgetItem *item = table->item(row, col);
+        if (item) {
+            payload.insert(keys.at(col), item->text().trimmed());
+        }
+    }
+    return payload;
+}
+
+QString dashboardOverrideKey(const QJsonObject &payload) {
+    const QJsonObject controls = payload.value(QStringLiteral("strategy_controls")).toObject();
+    const QString leverage = payload.contains(QStringLiteral("leverage"))
+        ? jsonValueText(payload.value(QStringLiteral("leverage")))
+        : jsonValueText(controls.value(QStringLiteral("leverage")));
+    return QStringList{
+        jsonText(payload, QStringLiteral("symbol")).toUpper(),
+        jsonText(payload, QStringLiteral("interval")),
+        jsonArrayText(payload.value(QStringLiteral("indicators")).toArray()),
+        leverage,
+    }.join(QStringLiteral("|"));
+}
+
+QString strategyControlsSummary(const QJsonObject &controls) {
+    QStringList parts;
+    const QStringList keys = {
+        QStringLiteral("side"),
+        QStringLiteral("position_pct"),
+        QStringLiteral("margin_mode"),
+        QStringLiteral("position_mode"),
+        QStringLiteral("assets_mode"),
+        QStringLiteral("account_mode"),
+    };
+    for (const QString &key : keys) {
+        const QString text = jsonValueText(controls.value(key)).trimmed();
+        if (!text.isEmpty()) {
+            parts.append(QStringLiteral("%1 %2").arg(key, text));
+        }
+    }
+    return parts.isEmpty() ? QStringLiteral("Default") : parts.join(QStringLiteral(" | "));
+}
+
+void setDashboardOverridePayload(QTableWidget *table, int row, const QJsonObject &payload) {
+    if (!table || row < 0) {
+        return;
+    }
+    while (table->rowCount() <= row) {
+        table->insertRow(table->rowCount());
+    }
+
+    const QJsonObject controls = payload.value(QStringLiteral("strategy_controls")).toObject();
+    const QJsonObject stopLoss = payload.value(QStringLiteral("stop_loss")).toObject(
+        controls.value(QStringLiteral("stop_loss")).toObject());
+    const QStringList values = {
+        jsonText(payload, QStringLiteral("symbol")),
+        jsonText(payload, QStringLiteral("interval")),
+        jsonArrayText(payload.value(QStringLiteral("indicators")).toArray(), QStringLiteral("None")),
+        jsonText(payload, QStringLiteral("loop_interval_override"), jsonText(controls, QStringLiteral("loop_interval_override"), QStringLiteral("Default"))),
+        payload.contains(QStringLiteral("leverage"))
+            ? jsonValueText(payload.value(QStringLiteral("leverage")))
+            : jsonValueText(controls.value(QStringLiteral("leverage")), QStringLiteral("Default")),
+        jsonText(controls, QStringLiteral("connector_backend"), QStringLiteral("Default")),
+        strategyControlsSummary(controls),
+        stopLossObjectSummary(stopLoss),
+    };
+    for (int col = 0; col < values.size(); ++col) {
+        auto *item = new QTableWidgetItem(values.at(col));
+        if (col == 0) {
+            item->setData(Qt::UserRole, payload);
+        }
+        table->setItem(row, col, item);
+    }
 }
 
 int appendBacktestRows(QTableWidget *table, const QJsonObject &snapshot, const QString &loopIntervalLabel) {
@@ -206,7 +589,11 @@ int appendBacktestRows(QTableWidget *table, const QJsonObject &snapshot, const Q
             jsonNumberText(row, QStringLiteral("max_drawdown_percent"), 2, QStringLiteral("%")),
         };
         for (int col = 0; col < values.size() && col < table->columnCount(); ++col) {
-            table->setItem(currentRow, col, new QTableWidgetItem(values.at(col)));
+            auto *item = new QTableWidgetItem(values.at(col));
+            if (col == 0) {
+                item->setData(Qt::UserRole, row);
+            }
+            table->setItem(currentRow, col, item);
         }
         ++added;
     }
@@ -1266,20 +1653,83 @@ void TradingBotWindow::populateDefaults() {
 void TradingBotWindow::wireSignals() {
     connect(runButton_, &QPushButton::clicked, this, &TradingBotWindow::handleRunBacktest);
     connect(stopButton_, &QPushButton::clicked, this, &TradingBotWindow::handleStopBacktest);
-    connect(addSelectedBtn_, &QPushButton::clicked, this, [this]() {
-        const int selectedSymbols = symbolList_ ? symbolList_->selectedItems().size() : 0;
-        const int selectedIntervals = intervalList_ ? intervalList_->selectedItems().size() : 0;
-        updateStatusMessage(
-            QString("Added %1 symbol(s) x %2 interval(s) to dashboard.")
-                .arg(selectedSymbols)
-                .arg(selectedIntervals));
+    auto importBacktestRowsToDashboard = [this](const QList<int> &targetRows) {
+        if (!resultsTable_ || !dashboardOverridesTable_) {
+            updateStatusMessage(QStringLiteral("Backtest import failed: dashboard or results table is unavailable."));
+            return;
+        }
+        if (targetRows.isEmpty()) {
+            updateStatusMessage(QStringLiteral("Select one or more backtest result rows to add."));
+            return;
+        }
+
+        QMap<QString, int> existingRows;
+        for (int row = 0; row < dashboardOverridesTable_->rowCount(); ++row) {
+            const QJsonObject payload = dashboardOverridePayloadFromTableRow(dashboardOverridesTable_, row);
+            const QString key = dashboardOverrideKey(payload);
+            if (!key.trimmed().isEmpty()) {
+                existingRows.insert(key, row);
+            }
+        }
+
+        int added = 0;
+        int updated = 0;
+        int skipped = 0;
+        for (int row : targetRows) {
+            const QJsonObject result = backtestResultPayloadFromTableRow(resultsTable_, row);
+            if (result.contains(QStringLiteral("optimizer_eligible"))
+                && !jsonBool(result, QStringLiteral("optimizer_eligible"), true)) {
+                ++skipped;
+                continue;
+            }
+            const QJsonObject payload = dashboardOverridePayloadFromBacktestResult(result);
+            const QString key = dashboardOverrideKey(payload);
+            if (payload.isEmpty() || key.trimmed().isEmpty()) {
+                ++skipped;
+                continue;
+            }
+            if (existingRows.contains(key)) {
+                setDashboardOverridePayload(dashboardOverridesTable_, existingRows.value(key), payload);
+                ++updated;
+                continue;
+            }
+
+            const int dashboardRow = dashboardOverridesTable_->rowCount();
+            setDashboardOverridePayload(dashboardOverridesTable_, dashboardRow, payload);
+            existingRows.insert(key, dashboardRow);
+            ++added;
+        }
+
+        const QString status = QStringLiteral("Backtest import: added %1 row(s), updated %2, skipped %3.")
+            .arg(added)
+            .arg(updated)
+            .arg(skipped);
+        updateStatusMessage(status);
+        appendDashboardAllLog(status);
+        appendDashboardWaitingLog(status);
+    };
+
+    connect(addSelectedBtn_, &QPushButton::clicked, this, [this, importBacktestRowsToDashboard]() {
+        QSet<int> selectedRows;
+        if (resultsTable_) {
+            const QModelIndexList rows = resultsTable_->selectionModel()
+                ? resultsTable_->selectionModel()->selectedRows()
+                : QModelIndexList{};
+            for (const QModelIndex &index : rows) {
+                selectedRows.insert(index.row());
+            }
+        }
+        QList<int> rows = selectedRows.values();
+        std::sort(rows.begin(), rows.end());
+        importBacktestRowsToDashboard(rows);
     });
-    connect(addAllBtn_, &QPushButton::clicked, this, [this]() {
-        const int symbolCount = symbolList_ ? symbolList_->count() : 0;
-        const int intervalCount = intervalList_ ? intervalList_->count() : 0;
-        updateStatusMessage(
-            QString("Added all %1 symbol(s) x %2 interval(s) to dashboard.")
-                .arg(symbolCount)
-                .arg(intervalCount));
+    connect(addAllBtn_, &QPushButton::clicked, this, [this, importBacktestRowsToDashboard]() {
+        QList<int> rows;
+        if (resultsTable_) {
+            for (int row = 0; row < resultsTable_->rowCount(); ++row) {
+                rows.append(row);
+            }
+        }
+        importBacktestRowsToDashboard(rows);
     });
 }

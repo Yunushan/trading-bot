@@ -212,6 +212,16 @@ const PythonParityContract::PythonParityDomain *parityDomainByKey(const QString 
     return nullptr;
 }
 
+const PythonParityContract::PythonServiceRouteSchema *serviceRouteSchemaByName(const QString &routeName) {
+    const QString normalized = routeName.trimmed();
+    for (const auto &schema : PythonParityContract::kPythonServiceRouteSchemas) {
+        if (parityString(schema.name) == normalized) {
+            return &schema;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 namespace TradingBotWindowSupport {
@@ -346,10 +356,25 @@ QStringList pythonSourceServiceRouteMethods(const QString &routeName) {
     const QString normalized = routeName.trimmed();
     for (const auto &route : PythonParityContract::kPythonServiceRoutes) {
         if (parityString(route.name) == normalized) {
-            return parityString(route.methods).split(QLatin1Char(','), Qt::SkipEmptyParts);
+            return parityCsvStringList(route.methods);
         }
     }
     return {};
+}
+
+QStringList pythonSourceServiceRouteQueryFields(const QString &routeName) {
+    const auto *schema = serviceRouteSchemaByName(routeName);
+    return schema ? parityCsvStringList(schema->queryFields) : QStringList();
+}
+
+QStringList pythonSourceServiceRouteRequestFields(const QString &routeName) {
+    const auto *schema = serviceRouteSchemaByName(routeName);
+    return schema ? parityCsvStringList(schema->requestFields) : QStringList();
+}
+
+QStringList pythonSourceServiceRouteResponseFields(const QString &routeName) {
+    const auto *schema = serviceRouteSchemaByName(routeName);
+    return schema ? parityCsvStringList(schema->responseFields) : QStringList();
 }
 
 QString serviceApiBaseUrl() {

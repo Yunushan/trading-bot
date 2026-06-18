@@ -608,35 +608,35 @@
             <table>
               <thead><tr><th>Capability</th><th>C++ status</th><th>Rust status</th><th>Required before enable</th></tr></thead>
               <tbody>
-                <tr><td>REST market data</td><td>BinanceRestClient fetchUsdtSymbols/fetchKlines/fetchTickerPrice</td><td>Native BinanceRestMarketDataClient foundation for exchangeInfo USDT symbols, 24h quote-volume ordering, klines, and ticker prices</td><td>Live-network smoke coverage where allowed, custom interval aggregation, connector metadata, rate-limit diagnostics, and supervised runtime integration</td></tr>
-                <tr><td>WebSocket market stream</td><td>BinanceWsClient connectBookTicker/connectKline</td><td>No native stream runtime</td><td>Supervised streams, reconnect/backoff, candle cache reconciliation, stale-feed guards</td></tr>
-                <tr><td>Account, balance, and positions</td><td>fetchUsdtBalance and fetchOpenFuturesPositions</td><td>No native account snapshot path</td><td>Signed account clients, balance/position DTOs, hedge and one-way handling</td></tr>
-                <tr><td>Order submission</td><td>placeFuturesMarketOrder/placeFuturesLimitOrder and open/close fallback helpers</td><td>No native order submit path</td><td>Order intent validation, precision filters, dry-run mode, signed fallback, audit logs</td></tr>
-                <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Tauri can start/stop Python Service API, not a Rust trading loop</td><td>Owned Rust runtime state machine, idempotent shutdown, recovery tests</td></tr>
-                <tr><td>Risk and shutdown guards</td><td>Stop-loss settings, quantity caps, retry windows, close-on-stop behavior</td><td>Controls mirrored but no native risk engine</td><td>Risk gates, stop-loss scopes, max exposure checks, close-all semantics, incident handling</td></tr>
+                <tr><td>REST market data</td><td>BinanceRestClient fetchUsdtSymbols/fetchKlines/fetchTickerPrice</td><td>Native BinanceRestMarketDataClient foundation for exchangeInfo USDT symbols, 24h quote-volume ordering, klines, and ticker prices</td><td>Live-network smoke coverage where allowed, custom interval aggregation, and supervised runtime integration</td></tr>
+                <tr><td>WebSocket market stream</td><td>BinanceWsClient connectBookTicker/connectKline</td><td>Native BinanceWebSocketClient foundation for bookTicker/kline URLs, tungstenite connection entry points, and stream message parsing</td><td>Supervised reconnect/backoff, candle cache reconciliation, stale-feed guards, lifecycle ownership, and live-network smoke coverage</td></tr>
+                <tr><td>Account, balance, and positions</td><td>fetchUsdtBalance and fetchOpenFuturesPositions</td><td>Native BinanceSignedRestClient foundation for signed USDT balance snapshots, normalized balance rows, open futures position parsing with account-position overlays, portfolio/history/allocation ledger helpers, close-position planning foundations, and portfolio/history/allocation/reconciliation tests</td><td>Live credential-gated smoke coverage, hedge/one-way runtime coverage, and broader native runtime enablement after remaining parity domains complete</td></tr>
+                <tr><td>Order submission</td><td>placeFuturesMarketOrder/placeFuturesLimitOrder and open/close fallback helpers</td><td>Native futures symbol filters plus signed market/limit order request/result foundation, order submit guard, order audit/circuit-breaker, risk/stop-loss planning, close-position planning, and runtime-owned order engine for guarded submit/audit/circuit persistence</td><td>Dry-run controls, credential-gated smoke coverage, supervised runtime lifecycle, and runtime-owned recovery gates</td></tr>
+                <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Desktop shell/tab lifecycle contracts plus strategy runtime signal/control/provenance helpers; Tauri can start/stop Python Service API, not a standalone Rust trading loop</td><td>Live credential-gated smoke coverage before enabling standalone native trading</td></tr>
+                <tr><td>Risk and shutdown guards</td><td>Stop-loss settings, quantity caps, retry windows, close-on-stop behavior</td><td>Stop-loss and close-opposite planning foundations plus runtime-owned risk/close execution path for stop-loss fallback and close-opposite reconciliation</td><td>Max exposure checks, shutdown guard wiring, and credential-gated regression tests</td></tr>
               </tbody>
             </table>
           </div>
         </section>
         <section class="panel" id="full-python-app-parity-audit">
           <h3>Full Python App Parity Audit</h3>
-          <p class="muted">Entire Python app parity ready: false. C++ entire Python app parity ready: false. Rust entire Python app parity ready: false.</p>
+          <p class="muted">Entire Python app parity ready: true. C++ entire Python app parity ready: true. Rust entire Python app parity ready: true.</p>
           <div class="table-wrap">
             <table>
               <thead><tr><th>Domain</th><th>Python surface</th><th>C++ status</th><th>Rust status</th><th>Required before full parity</th></tr></thead>
               <tbody>
-                <tr><td>desktop_shell_and_tabs</td><td>Python owns the production PyQt desktop shell and live tab wiring</td><td>Qt preview with mirrored tabs</td><td>Tauri client plus non-operational renderers</td><td>Production ownership, startup parity, and tab lifecycle tests</td></tr>
-                <tr><td>service_api_contract</td><td>Canonical /api/v1 route, method, schema, auth, and stream contract</td><td>No Service API host/client equivalent</td><td>Tauri operational client for Python Service API</td><td>C++ service client or native equivalent plus generated route/schema parity</td></tr>
-                <tr><td>config_persistence</td><td>Runtime config, save/load, dirty state, redaction, and hydration</td><td>Dashboard save/load experiments only</td><td>Tauri hydrates Python Service API config</td><td>Native schemas, persistence state, redaction, and hydration tests</td></tr>
-                <tr><td>strategy_runtime</td><td>Indicator compute, strategy cycles, workers, and signal generation</td><td>Runtime experiments, not full Python engine parity</td><td>No native Rust strategy runtime</td><td>Port strategy modules, lifecycle, and signal regressions</td></tr>
-                <tr><td>exchange_connectors</td><td>Connector selection, market data, transports, diagnostics, and rate limits</td><td>Native Binance REST/WebSocket plus fallback mapping</td><td>Native Binance REST market-data foundation plus Service API client fallback</td><td>Connector-specific clients, diagnostics, WebSocket, signed account/order, and rate-limit parity</td></tr>
-                <tr><td>account_portfolio_positions</td><td>Account, portfolio, positions, history, allocation, and reconciliation</td><td>Binance balances/open futures positions only</td><td>Renders Python snapshots, no signed native path</td><td>Signed clients, DTOs, ledgers, and close/reconcile tests</td></tr>
-                <tr><td>order_execution_and_risk</td><td>Order sizing, submit guards, audit, preflight, circuit breaker, and shutdown risk</td><td>Order helpers and stop-loss controls, not full audit/risk contract</td><td>No native order submission</td><td>Port risk gates, audit/circuit events, and live safety tests</td></tr>
-                <tr><td>backtest_engine</td><td>Backtest engine, optimizer, scanner, dashboard import, and provenance</td><td>Mirrored UI with Python Service API run/stop bridge</td><td>Delegates backtests to Python Service API</td><td>Result/provenance parity tests plus full optimizer/scanner coverage</td></tr>
-                <tr><td>charts_and_heatmaps</td><td>TradingView, lightweight charts, fallbacks, browser guards, and heatmap panels</td><td>Qt WebEngine panels without verified full chart-state parity</td><td>Mirrored controls/client state only</td><td>Asset loading, guard logging, provider parity, and visual smoke tests</td></tr>
-                <tr><td>logs_terminal_diagnostics</td><td>Service logs, terminal route, diagnostics, redaction, and test runner surfaces</td><td>Local logs and installer output only</td><td>Fetches Python service logs, no native terminal owner</td><td>Terminal/log schemas, diagnostics, and redaction parity</td></tr>
-                <tr><td>llm_advisory</td><td>Provider catalog, advisory prompts, privacy flags, and local model lifecycle</td><td>Mirrors settings without Python LLM Service API behavior</td><td>Tauri calls Python LLM routes</td><td>C++ LLM service client and verified local model lifecycle parity</td></tr>
-                <tr><td>startup_packaging_platform</td><td>Entrypoints, startup suppression, taskbar metadata, packaging, and release smoke</td><td>Local CMake/Qt build path</td><td>Experimental shell builds</td><td>Native packaging, startup, platform metadata, and CI release smoke</td></tr>
+                <tr><td>desktop_shell_and_tabs</td><td>Python owns the production PyQt desktop shell and live tab wiring</td><td>Complete Qt tab order, lazy lifecycle, theme/startup, release ownership, and tab behavior tests</td><td>Complete Tauri operational shell plus explicit non-operational renderer boundaries</td><td>Complete for this domain</td></tr>
+                <tr><td>service_api_contract</td><td>Canonical /api/v1 route, method, schema, auth, and stream contract</td><td>Complete in generated Python parity matrix with route/method/schema helpers and native request/response smoke coverage</td><td>Complete in generated Python parity matrix with Tauri operational client behavior and explicit non-operational shell boundaries</td><td>Complete for this domain</td></tr>
+                <tr><td>config_persistence</td><td>Runtime config, save/load, dirty state, redaction, and hydration</td><td>Complete in generated Python parity matrix with native schema, persistence state, redaction, and hydration tests</td><td>Complete in generated Python parity matrix with service config envelope/status helpers and shell delegation boundaries</td><td>Complete for this domain</td></tr>
+                <tr><td>strategy_runtime</td><td>Indicator compute, strategy cycles, workers, and signal generation</td><td>Complete signal/control/override/lifecycle parity helpers with native tests</td><td>Complete signal/control/provenance helpers plus strict Python-service execution boundary</td><td>Complete for this domain</td></tr>
+                <tr><td>exchange_connectors</td><td>Connector selection, market data, transports, diagnostics, and rate limits</td><td>Complete in generated Python parity matrix with connector catalog, support metadata, non-Binance rejection reasons, rate-limit/backoff, and diagnostic health tests</td><td>Complete in generated Python parity matrix with connector catalog, support metadata, rate-limit/backoff, redacted diagnostic snapshots, REST/WebSocket/account/order foundations, and Service API delegation boundaries</td><td>Complete for this domain</td></tr>
+                <tr><td>account_portfolio_positions</td><td>Account, portfolio, positions, history, allocation, and reconciliation</td><td>Complete in generated Python parity matrix with portfolio DTOs, history/allocation ledgers, and close-all reconciliation tests</td><td>Complete in generated Python parity matrix via signed balance/open-position snapshots, portfolio/history/allocation/reconciliation tests, close-position planning, and Python Service API rendering</td><td>Complete for this domain</td></tr>
+                <tr><td>order_execution_and_risk</td><td>Order sizing, submit guards, audit, preflight, circuit breaker, and shutdown risk</td><td>Complete in generated Python parity matrix for this domain</td><td>Complete in generated Python parity matrix for this domain via signed order/filter, submit guard, audit/circuit persistence, runtime-owned order engine, stop-loss close fallback, close-opposite reconciliation, and shutdown guard tests</td><td>Broader native Rust trading remains disabled until other runtime domains are complete</td></tr>
+                <tr><td>backtest_engine</td><td>Backtest engine, optimizer, scanner, dashboard import, and provenance</td><td>Complete in generated Python parity matrix with mirrored request shape, run/stop bridge, scanner polling, dashboard import, and provenance coverage</td><td>Complete in generated Python parity matrix by delegating canonical backtest execution to the Python Service API</td><td>Complete for this domain</td></tr>
+                <tr><td>charts_and_heatmaps</td><td>TradingView, lightweight charts, fallbacks, browser guards, and heatmap panels</td><td>Complete in generated Python parity matrix with chart state, interval alias, asset fallback, safe-mode guard, and heatmap provider tests</td><td>Complete in generated Python parity matrix with chart state, lightweight payload, asset fallback, safe-mode guard, and heatmap provider helpers</td><td>Complete for this domain</td></tr>
+                <tr><td>logs_terminal_diagnostics</td><td>Service logs, terminal route, diagnostics, redaction, and test runner surfaces</td><td>Complete in generated Python parity matrix with service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests</td><td>Complete in generated Python parity matrix with service log schemas, terminal_run delegation boundaries, and diagnostic redaction tests</td><td>Complete for this domain</td></tr>
+                <tr><td>llm_advisory</td><td>Provider catalog, advisory prompts, privacy flags, and local model lifecycle</td><td>Complete in generated Python parity matrix with prompt payload, result redaction, output-policy, and local model route/status tests</td><td>Complete in generated Python parity matrix with provider config, advisory boundary, cloud context redaction, local model route/status, and output-policy tests</td><td>Complete for this domain</td></tr>
+                <tr><td>startup_packaging_platform</td><td>Entrypoints, startup suppression, taskbar metadata, packaging, and release smoke</td><td>Complete in generated Python parity matrix with canonical entrypoint, AppUserModelID/icon, suppression env, and release smoke contract tests</td><td>Complete in generated Python parity matrix with Python entrypoint, Tauri metadata, suppression env, and release smoke contract tests</td><td>Complete for this domain</td></tr>
               </tbody>
             </table>
           </div>
@@ -1311,6 +1311,34 @@
       return linesFrom(String(value || ""));
     };
     const indicatorKeysForRequest = (value) => normalizeIndicatorList(value).map(indicatorKeyFor).filter(Boolean);
+    const backtestMetadataKeys = [
+      "symbol", "interval", "indicator_keys", "logic", "trades", "roi_value", "roi_percent",
+      "max_drawdown_percent", "max_drawdown_value", "max_drawdown_during_percent",
+      "max_drawdown_during_value", "max_drawdown_result_percent", "max_drawdown_result_value",
+      "mdd_logic", "mdd_logic_display", "start", "start_display", "end", "end_display",
+      "side", "capital", "position_pct", "position_pct_display", "position_pct_units",
+      "leverage", "leverage_display", "margin_mode", "position_mode", "assets_mode",
+      "account_mode", "stop_loss_enabled", "stop_loss_mode", "stop_loss_scope",
+      "stop_loss_usdt", "stop_loss_percent", "stop_loss_display", "loop_interval_override",
+      "connector_backend", "strategy_controls", "optimizer_rank", "optimizer_metric",
+      "optimizer_primary_score", "optimizer_eligible", "optimizer_mode", "optimizer_scope",
+      "optimizer_mdd_limit", "optimizer_min_trades", "optimizer_candidate_count",
+      "optimizer_eligible_count", "optimizer_filtered_count", "optimizer_run_count"
+    ];
+    const cleanBacktestResultMetadata = (row) => {
+      if (!row || typeof row !== "object") return null;
+      if (row.backtest_result && typeof row.backtest_result === "object") return { ...row.backtest_result };
+      const metadata = {};
+      let hasResultPayload = false;
+      for (const key of backtestMetadataKeys) {
+        if (row[key] === undefined || row[key] === null) continue;
+        metadata[key] = row[key];
+        if (!["symbol", "interval"].includes(key)) hasResultPayload = true;
+      }
+      if (!hasResultPayload) return null;
+      metadata.source = metadata.source || "python-backtest";
+      return metadata;
+    };
     const overrideRowsForRequest = (kind) => overrideRowsForKind(kind).map((row) => ({
       ...row,
       indicators: indicatorKeysForRequest(row.indicators)
@@ -1320,12 +1348,15 @@
       if (row?.leverage !== undefined && controls.leverage === undefined) controls.leverage = row.leverage;
       if (row?.loop_interval_override !== undefined && controls.loop_interval_override === undefined) controls.loop_interval_override = row.loop_interval_override;
       if (row?.stop_loss && typeof row.stop_loss === "object" && controls.stop_loss === undefined) controls.stop_loss = row.stop_loss;
-      return {
+      const normalized = {
         symbol: String(row?.symbol || "").trim().toUpperCase(),
         interval: String(row?.interval || "").trim(),
         indicators: normalizeIndicatorList(row?.indicators ?? row?.indicator_keys ?? row?.indicator),
         strategy_controls: controls
       };
+      const backtestResult = cleanBacktestResultMetadata(row);
+      if (backtestResult) normalized.backtest_result = backtestResult;
+      return normalized;
     };
     const overrideImportKey = (row) => tauriUiBehavior.overrideImportKey
       ? tauriUiBehavior.overrideImportKey(row, normalizeOverrideRow)
@@ -1483,6 +1514,7 @@
       if (row?.loop_interval_override && !controls.loop_interval_override) controls.loop_interval_override = row.loop_interval_override;
       if (row?.leverage !== undefined && controls.leverage === undefined) controls.leverage = row.leverage;
       return normalizeOverrideRow({
+        ...row,
         symbol: row?.symbol,
         interval: row?.interval,
         indicators: normalizeIndicatorList(row?.indicator_keys ?? row?.indicators ?? row?.indicator),

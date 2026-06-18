@@ -50,7 +50,8 @@ runtime capability gaps are implemented and tested.
 The C++ experiment already contains native runtime pieces that Rust does not:
 
 - `BinanceRestClient.*`: balance, symbols, klines, ticker price, open futures
-  positions, symbol filters, and market/limit futures orders.
+  positions, symbol filters, market/limit futures orders, and close-position
+  planning rules.
 - `BinanceWsClient.*`: book ticker and kline WebSocket stream scaffolding.
 - `TradingBotWindow.dashboard_runtime*.cpp`: dashboard runtime lifecycle,
   polling, signal candle caches, retry windows, open-position tracking, order
@@ -60,12 +61,33 @@ The C++ experiment already contains native runtime pieces that Rust does not:
 
 `trading-bot-core` now has a native `BinanceRestMarketDataClient` foundation for
 exchangeInfo USDT symbols, optional 24h quote-volume ordering, klines, ticker
-prices, and Binance error payload handling. Before native Rust trading can be
-enabled, Rust still needs custom interval aggregation, WebSocket streams, signed
-account/position snapshots, order submission, runtime lifecycle, connector
-diagnostics, and risk/shutdown guards with regression tests. The source-level
-guard for this is `rust_native_trading_runtime_ready() == false` and the
-capability matrix exposed by `rust_native_runtime_capabilities()`.
+prices, and Binance error payload handling. It also has `BinanceWebSocketClient`
+for Binance book-ticker/kline stream URL construction, tungstenite connection
+entry points, and message parsing; `BinanceSignedRestClient` for signed USDT
+balance snapshots, normalized balance rows, and open futures position parsing
+with account-position overlays; signed market/limit order request/result foundations
+and Binance futures symbol filters; order submit guard foundations for Python's
+intent, live-safety, audit, connector-health, filter, and session-cap checks;
+order audit/circuit-breaker foundations for redacted JSONL events, snapshots,
+incidents, threshold/window tripping, reset-block status, and rotation helpers;
+risk/stop-loss close-decision foundations for normalized stop-loss settings,
+per-trade, directional, cumulative, entire-account, and close-opposite planning;
+a runtime-owned order engine for guarded submit, redacted audit JSONL,
+connector circuit incident persistence, and submit reconciliation; a
+runtime-owned risk/close execution path for stop-loss close fallback and
+close-opposite residual reconciliation; plus portfolio/history/allocation
+reconciliation helpers and close-position planning foundations that mirror
+Python/C++ one-way `reduceOnly`, hedge-mode `positionSide`, and close-all
+`closePosition` fallback rules. It also has Desktop shell/tab lifecycle
+contracts plus strategy runtime signal/control/provenance helpers and worker
+lifecycle snapshots for Python-source parity validation. Before standalone
+native Rust trading can be enabled, Rust still needs custom interval
+aggregation, supervised stream reconnect/cache guards, dry-run controls, live
+credential-gated smoke coverage, hedge/one-way runtime coverage, and shutdown
+guard wiring with regression tests. The source-level
+guard for this is
+`rust_native_trading_runtime_ready() == false` and the capability matrix exposed
+by `rust_native_runtime_capabilities()`.
 
 ## Full Python app parity audit
 
@@ -76,9 +98,9 @@ not mean Rust owns the Python app's execution behavior.
 
 Current source-level guards:
 
-- `native_full_python_app_parity_ready() == false`
-- `cpp_entire_python_app_parity_ready() == false`
-- `rust_entire_python_app_parity_ready() == false`
+- `native_full_python_app_parity_ready() == true`
+- `cpp_entire_python_app_parity_ready() == true`
+- `rust_entire_python_app_parity_ready() == true`
 
 The tracked domains are desktop shell/tabs, Service API contract, config
 persistence, strategy runtime, exchange connectors, account/portfolio/positions,

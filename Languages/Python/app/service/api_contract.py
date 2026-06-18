@@ -91,6 +91,389 @@ SERVICE_API_ROUTE_METHODS: dict[str, tuple[str, ...]] = {
     "stream_dashboard": ("GET",),
 }
 
+SERVICE_RUNTIME_RESPONSE_FIELDS: tuple[str, ...] = (
+    "service_name",
+    "phase",
+    "python_entrypoint",
+    "desktop_entrypoint",
+    "repo_root",
+    "platform",
+    "python_version",
+    "capabilities",
+    "control_plane",
+    "notes",
+)
+
+SERVICE_DASHBOARD_RESPONSE_FIELDS: tuple[str, ...] = (
+    "runtime",
+    "status",
+    "operational",
+    "config",
+    "config_summary",
+    "execution",
+    "backtest",
+    "account",
+    "portfolio",
+    "logs",
+    "service_api",
+    "connector_order_circuit_incidents",
+)
+
+SERVICE_STATUS_RESPONSE_FIELDS: tuple[str, ...] = (
+    "state",
+    "lifecycle_phase",
+    "requested_action",
+    "close_positions_requested",
+    "status_message",
+    "last_transition_at",
+    "service_mode",
+    "generated_at",
+    "api_enabled",
+    "docker_required",
+    "runtime_source",
+    "active_engine_count",
+    "account_type",
+    "mode",
+    "selected_exchange",
+    "connector_backend",
+    "connector_health",
+    "exchange_connector",
+    "operational_health",
+    "operational",
+    "notes",
+)
+
+SERVICE_EXECUTION_RESPONSE_FIELDS: tuple[str, ...] = (
+    "executor_kind",
+    "owner",
+    "state",
+    "workload_kind",
+    "session_id",
+    "requested_job_count",
+    "active_engine_count",
+    "progress_label",
+    "progress_percent",
+    "heartbeat_at",
+    "tick_count",
+    "last_action",
+    "last_message",
+    "started_at",
+    "updated_at",
+    "source",
+    "notes",
+)
+
+SERVICE_BACKTEST_RESPONSE_FIELDS: tuple[str, ...] = (
+    "session_id",
+    "state",
+    "workload_kind",
+    "status_message",
+    "symbols",
+    "intervals",
+    "indicator_keys",
+    "logic",
+    "symbol_source",
+    "capital",
+    "run_count",
+    "error_count",
+    "cancelled",
+    "started_at",
+    "completed_at",
+    "updated_at",
+    "source",
+    "top_run",
+    "runs",
+    "top_runs",
+    "errors",
+)
+
+SERVICE_CONFIG_RESPONSE_FIELDS: tuple[str, ...] = (
+    "mode",
+    "account_type",
+    "margin_mode",
+    "position_mode",
+    "side",
+    "leverage",
+    "position_pct",
+    "connector_backend",
+    "selected_exchange",
+    "code_language",
+    "theme",
+    "design",
+    "order_audit_max_bytes",
+    "order_audit_backup_count",
+    "connector_order_circuit_incident_log_max_bytes",
+    "connector_order_circuit_incident_log_backup_count",
+    "operational_connector_snapshot_stale_seconds",
+    "operational_execution_heartbeat_stale_seconds",
+    "operational_account_snapshot_stale_seconds",
+    "operational_portfolio_snapshot_stale_seconds",
+    "operational_live_start_gate_enabled",
+    "operational_live_order_gate_enabled",
+    "live_allow_auto_bump_to_min_order",
+    "symbols",
+    "intervals",
+    "api_credentials_present",
+    "llm",
+    "exchange_support",
+)
+
+SERVICE_CONFIG_SUMMARY_RESPONSE_FIELDS: tuple[str, ...] = (
+    "mode",
+    "account_type",
+    "connector_backend",
+    "selected_exchange",
+    "code_language",
+    "theme",
+    "design",
+    "api_credentials_present",
+    "symbol_count",
+    "interval_count",
+    "enabled_indicator_count",
+    "runtime_pair_count",
+    "backtest_pair_count",
+    "llm_enabled",
+    "llm_provider",
+    "llm_mode",
+    "llm_api_key_present",
+)
+
+SERVICE_CONFIG_PERSISTENCE_RESPONSE_FIELDS: tuple[str, ...] = (
+    "path",
+    "exists",
+    "modified_at",
+    "kind",
+    "format_version",
+    "loaded",
+    "dirty",
+    "last_loaded_at",
+    "last_saved_at",
+    "migrated_from_format_version",
+)
+
+SERVICE_CONTROL_RESULT_RESPONSE_FIELDS: tuple[str, ...] = (
+    "accepted",
+    "action",
+    "lifecycle_phase",
+    "runtime_active",
+    "active_engine_count",
+    "requested_job_count",
+    "close_positions_requested",
+    "source",
+    "status_message",
+    "generated_at",
+)
+
+SERVICE_ACCOUNT_RESPONSE_FIELDS: tuple[str, ...] = (
+    "account_type",
+    "mode",
+    "selected_exchange",
+    "connector_backend",
+    "balance_currency",
+    "total_balance",
+    "available_balance",
+    "source",
+    "generated_at",
+)
+
+SERVICE_PORTFOLIO_RESPONSE_FIELDS: tuple[str, ...] = (
+    "account_type",
+    "open_position_count",
+    "closed_position_count",
+    "active_pnl",
+    "active_margin",
+    "closed_pnl",
+    "closed_margin",
+    "total_balance",
+    "available_balance",
+    "positions",
+    "source",
+    "generated_at",
+)
+
+SERVICE_LOG_EVENT_RESPONSE_FIELDS: tuple[str, ...] = (
+    "sequence_id",
+    "level",
+    "message",
+    "source",
+    "generated_at",
+)
+
+SERVICE_TERMINAL_RESPONSE_FIELDS: tuple[str, ...] = (
+    "command",
+    "exit_code",
+    "output",
+    "source",
+    "generated_at",
+)
+
+SERVICE_LLM_LOCAL_MODEL_RESPONSE_FIELDS: tuple[str, ...] = (
+    "model",
+    "base_url",
+    "server_kind",
+    "installed",
+    "can_download",
+    "can_start",
+    "storage_hint",
+    "storage_paths",
+    "estimated_size_label",
+)
+
+SERVICE_API_ROUTE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
+    "runtime": {
+        "query_fields": (),
+        "request_fields": (),
+        "response_fields": SERVICE_RUNTIME_RESPONSE_FIELDS,
+    },
+    "dashboard": {
+        "query_fields": ("log_limit", "incident_limit"),
+        "request_fields": (),
+        "response_fields": SERVICE_DASHBOARD_RESPONSE_FIELDS,
+    },
+    "status": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_STATUS_RESPONSE_FIELDS},
+    "execution": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_EXECUTION_RESPONSE_FIELDS},
+    "backtest": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_BACKTEST_RESPONSE_FIELDS},
+    "config_summary": {"query_fields": (), "request_fields": (), "response_fields": SERVICE_CONFIG_SUMMARY_RESPONSE_FIELDS},
+    "config": {
+        "query_fields": (),
+        "request_fields": ("config",),
+        "response_fields": SERVICE_CONFIG_RESPONSE_FIELDS,
+    },
+    "config_persistence": {
+        "query_fields": (),
+        "request_fields": (),
+        "response_fields": SERVICE_CONFIG_PERSISTENCE_RESPONSE_FIELDS,
+    },
+    "config_save": {
+        "query_fields": (),
+        "request_fields": ("path", "source", "allow_unsafe_path"),
+        "response_fields": SERVICE_CONFIG_PERSISTENCE_RESPONSE_FIELDS,
+    },
+    "config_load": {
+        "query_fields": (),
+        "request_fields": ("path", "source", "allow_unsafe_path"),
+        "response_fields": ("config", "persistence"),
+    },
+    "runtime_state": {
+        "query_fields": (),
+        "request_fields": ("active", "active_engine_count", "source"),
+        "response_fields": SERVICE_STATUS_RESPONSE_FIELDS,
+    },
+    "operational_preflight": {"query_fields": (), "request_fields": (), "response_fields": ("state", "message", "mode", "live_mode", "generated_at", "start", "orders", "freshness", "critical_stale", "reasons")},
+    "control_start": {
+        "query_fields": (),
+        "request_fields": ("requested_job_count", "source"),
+        "response_fields": SERVICE_CONTROL_RESULT_RESPONSE_FIELDS,
+    },
+    "control_stop": {
+        "query_fields": (),
+        "request_fields": ("close_positions", "source"),
+        "response_fields": SERVICE_CONTROL_RESULT_RESPONSE_FIELDS,
+    },
+    "control_start_failed": {
+        "query_fields": (),
+        "request_fields": ("reason", "source"),
+        "response_fields": SERVICE_CONTROL_RESULT_RESPONSE_FIELDS,
+    },
+    "connector_order_circuit_breaker": {
+        "query_fields": (),
+        "request_fields": ("snapshot", "source", "force"),
+        "response_fields": ("active", "state", "reason", "message", "block_count", "block_threshold", "block_window_seconds", "source", "generated_at"),
+    },
+    "connector_order_circuit_breaker_reset": {
+        "query_fields": (),
+        "request_fields": ("snapshot", "source", "force"),
+        "response_fields": ("active", "state", "source", "generated_at"),
+    },
+    "connector_order_circuit_incidents": {
+        "query_fields": ("limit",),
+        "request_fields": (),
+        "response_fields": ("path", "path_source", "configured_path", "limit", "events", "parse_errors"),
+    },
+    "backtest_run": {
+        "query_fields": (),
+        "request_fields": ("request", "source"),
+        "response_fields": ("accepted", "action", "session_id", "state", "status_message", "source"),
+    },
+    "backtest_stop": {
+        "query_fields": (),
+        "request_fields": ("source",),
+        "response_fields": ("accepted", "action", "session_id", "state", "status_message", "source"),
+    },
+    "account": {
+        "query_fields": (),
+        "request_fields": ("total_balance", "available_balance", "source"),
+        "response_fields": SERVICE_ACCOUNT_RESPONSE_FIELDS,
+    },
+    "portfolio": {
+        "query_fields": (),
+        "request_fields": (
+            "open_position_records",
+            "closed_position_records",
+            "closed_trade_registry",
+            "active_pnl",
+            "active_margin",
+            "closed_pnl",
+            "closed_margin",
+            "total_balance",
+            "available_balance",
+            "source",
+        ),
+        "response_fields": SERVICE_PORTFOLIO_RESPONSE_FIELDS,
+    },
+    "exchange_connector": {
+        "query_fields": (),
+        "request_fields": ("snapshot", "source"),
+        "response_fields": ("health", "state", "generated_at", "source", "selected_exchange", "connector_backend", "support", "rate_limit", "network", "last_error", "attention"),
+    },
+    "logs": {
+        "query_fields": ("limit",),
+        "request_fields": ("message", "source", "level"),
+        "response_fields": SERVICE_LOG_EVENT_RESPONSE_FIELDS,
+    },
+    "terminal_run": {
+        "query_fields": (),
+        "request_fields": ("command", "source"),
+        "response_fields": SERVICE_TERMINAL_RESPONSE_FIELDS,
+    },
+    "llm_providers": {"query_fields": (), "request_fields": (), "response_fields": ("key", "label", "mode", "protocol", "default_base_url", "default_model", "api_key_env", "model_suggestions", "reasoning_efforts", "default_reasoning_effort")},
+    "llm_config": {
+        "query_fields": (),
+        "request_fields": ("config",),
+        "response_fields": ("enabled", "provider", "provider_label", "mode", "protocol", "model", "base_url", "api_key_env", "api_key_present", "allow_public_network", "use_for", "reasoning_effort"),
+    },
+    "llm_prompt": {
+        "query_fields": (),
+        "request_fields": ("prompt", "system_prompt", "dry_run", "source"),
+        "response_fields": ("provider", "model", "dry_run", "prompt", "system_prompt", "response", "source"),
+    },
+    "llm_local_model_status": {
+        "query_fields": ("base_url", "model"),
+        "request_fields": (),
+        "response_fields": SERVICE_LLM_LOCAL_MODEL_RESPONSE_FIELDS,
+    },
+    "llm_local_model_start": {
+        "query_fields": (),
+        "request_fields": ("base_url", "model", "source"),
+        "response_fields": ("started", "server_kind", "executable", "error"),
+    },
+    "llm_local_model_pull": {
+        "query_fields": (),
+        "request_fields": ("base_url", "model", "source"),
+        "response_fields": ("ok", "action", "model", "status"),
+    },
+    "llm_local_model_delete": {
+        "query_fields": (),
+        "request_fields": ("base_url", "model", "source"),
+        "response_fields": ("ok", "action", "model", "status"),
+    },
+    "stream_dashboard": {
+        "query_fields": ("log_limit", "incident_limit", "interval_ms", "max_events"),
+        "request_fields": (),
+        "response_fields": ("event", "data"),
+    },
+}
+
 SERVICE_BACKTEST_RUN_REQUEST_FIELDS: tuple[str, ...] = (
     "account_mode",
     "account_type",
@@ -205,6 +588,14 @@ def service_api_contract_payload() -> dict[str, object]:
         "route_methods": {
             name: list(methods)
             for name, methods in SERVICE_API_ROUTE_METHODS.items()
+        },
+        "route_schemas": {
+            name: {
+                "query_fields": list(schema["query_fields"]),
+                "request_fields": list(schema["request_fields"]),
+                "response_fields": list(schema["response_fields"]),
+            }
+            for name, schema in SERVICE_API_ROUTE_SCHEMAS.items()
         },
         "dashboard_required_routes": list(SERVICE_API_DASHBOARD_ROUTE_NAMES),
         "mobile_required_routes": list(SERVICE_API_MOBILE_ROUTE_NAMES),
