@@ -156,6 +156,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
     def test_service_api_route_schemas_cover_openapi_and_live_read_responses(self):
         app = create_service_api_app(service=TradingBotService(), api_token="token-123")
         client = _create_test_client(app)
+        headers = {"Authorization": "Bearer token-123"}
         openapi_paths = app.openapi()["paths"]
 
         self.assertEqual(set(SERVICE_API_ROUTE_PATHS), set(SERVICE_API_ROUTE_SCHEMAS))
@@ -192,7 +193,7 @@ class ServiceApiHttpContractTests(unittest.TestCase):
             "llm_config",
         )
         for route_name in live_read_routes:
-            response = client.get(SERVICE_API_ROUTE_PATHS[route_name])
+            response = client.get(SERVICE_API_ROUTE_PATHS[route_name], headers=headers)
             self.assertEqual(200, response.status_code, route_name)
             payload = response.json()
             self.assertTrue(

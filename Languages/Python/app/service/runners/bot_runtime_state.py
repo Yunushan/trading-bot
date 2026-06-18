@@ -310,7 +310,23 @@ class BotRuntimeStateMixin:
             "last_event": raw.get("last_event") if isinstance(raw.get("last_event"), dict) else None,
             "generated_at": self._now_iso(),
         }
-        return redact_value({key: value for key, value in payload.items() if value not in (None, "", {}, [])})
+        required_fields = {
+            "active",
+            "state",
+            "reason",
+            "message",
+            "block_count",
+            "block_threshold",
+            "block_window_seconds",
+            "source",
+            "generated_at",
+        }
+        redacted = redact_value(payload)
+        return {
+            key: value
+            for key, value in redacted.items()
+            if key in required_fields or value not in (None, "", {}, [])
+        }
 
     def _connector_order_circuit_reset_block_reason_unlocked(self) -> str:
         connector_snapshot = build_exchange_connector_snapshot(
@@ -436,6 +452,7 @@ class BotRuntimeStateMixin:
             max_items = 20
         path = Path(effective_path).expanduser()
         events: deque[dict[str, object]] = deque(maxlen=max_items)
+        parse_errors: list[dict[str, object]] = []
         total_read = 0
         backup_count = self._connector_order_circuit_incident_log_backup_count_unlocked()
         candidate_paths = [
@@ -463,6 +480,7 @@ class BotRuntimeStateMixin:
                                 "message": f"Could not parse incident log line: {redact_text(str(exc))}",
                                 "raw": redact_text(text[:500]),
                             }
+                            parse_errors.append(copy.deepcopy(decoded))
                         if not isinstance(decoded, dict):
                             decoded = {
                                 "event": "connector_order_circuit_log_parse_error",
@@ -471,6 +489,7 @@ class BotRuntimeStateMixin:
                                 "message": "Incident log line was not a JSON object.",
                                 "value": redact_value(decoded),
                             }
+                            parse_errors.append(copy.deepcopy(decoded))
                         events.append(redact_value(decoded))
             except Exception as exc:
                 error_message = redact_text(str(exc))
@@ -486,10 +505,17 @@ class BotRuntimeStateMixin:
             "count": len(events),
             "total_read": total_read,
             "events": list(events),
+            "parse_errors": parse_errors,
             "last_event": events[-1] if events else None,
             "error": error_message,
         }
-        return redact_value({key: value for key, value in payload.items() if value not in ("", None)})
+        required_fields = {"path", "path_source", "configured_path", "limit", "events", "parse_errors"}
+        redacted = redact_value(payload)
+        return {
+            key: value
+            for key, value in redacted.items()
+            if key in required_fields or value not in ("", None)
+        }
 
     def set_connector_order_circuit_breaker_snapshot(
         self,

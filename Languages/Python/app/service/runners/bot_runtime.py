@@ -86,6 +86,7 @@ class BotRuntimeCoordinator(BotRuntimeStateMixin, BotRuntimeControlMixin):
             "tripped_at": "",
             "cleared_at": "",
             "source": "service-bootstrap",
+            "generated_at": self._now_iso(),
         }
         self._connector_order_circuit_last_incident = None
         self._connector_order_circuit_incident_log_warned = False

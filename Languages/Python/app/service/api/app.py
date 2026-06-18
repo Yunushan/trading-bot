@@ -735,7 +735,8 @@ def create_service_api_app(
         return [item.to_dict() for item in _service().get_recent_logs(limit=limit)]
 
     @api_router.post("/logs", dependencies=[Depends(_require_write_api_auth)])
-    def record_log_event(payload: LogEventRequest):
+    def record_log_event(payload: LogEventRequest, limit: int = 100):
+        _ = limit
         event = _service().record_log_event(
             payload.message,
             source=payload.source,
