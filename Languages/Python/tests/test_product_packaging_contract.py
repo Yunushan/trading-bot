@@ -1225,6 +1225,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Run focused service API tests", workflow)
         self.assertIn("Clean generated Python install artifacts", workflow)
         self.assertIn("python tools/clean_workspace_artifacts.py --apply", workflow)
+        self.assertIn("Native C++ Smoke", workflow)
+        self.assertIn("python tools/check_native_cpp.py", workflow)
+        self.assertIn("--no-require-webengine", workflow)
+        self.assertIn("--qt-version 6.4.0", workflow)
         self.assertLess(
             workflow.index("Install Python dependencies"),
             workflow.index("Clean generated Python install artifacts"),

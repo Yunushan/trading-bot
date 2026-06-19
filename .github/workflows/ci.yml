@@ -399,6 +399,7 @@ jobs:
           set -euo pipefail
           python tools/check_native_cpp.py \
             --no-require-webengine \
+            --qt-version 6.4.0 \
             --build-dir build/binance_cpp_ci
 
   rust-smoke:

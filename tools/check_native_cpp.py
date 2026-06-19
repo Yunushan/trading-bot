@@ -61,6 +61,7 @@ def check_native_cpp(
     build_dir: Path,
     config: str,
     require_webengine: bool,
+    qt_version: str | None,
     timeout: int,
 ) -> dict[str, object]:
     root = _repo_root()
@@ -90,6 +91,8 @@ def check_native_cpp(
         f"-DTB_REQUIRE_QT_WEBENGINE={'ON' if require_webengine else 'OFF'}",
         *_cmake_generator_args(),
     ]
+    if qt_version:
+        configure.append(f"-DTB_QT_VERSION={qt_version}")
     if sys.platform != "win32":
         configure.append("-DCMAKE_BUILD_TYPE=Debug")
     build = [cmake, "--build", str(build_dir), "--config", config, "--parallel"]
@@ -106,12 +109,14 @@ def check_native_cpp(
         "build_dir": str(build_dir),
         "config": config,
         "require_webengine": require_webengine,
+        "qt_version": qt_version or "",
         "steps": steps,
     }
     if not ok:
         report["remediation"] = (
             "Install Qt 6.10.x, CMake, a C++ compiler, and vcpkg dependencies; "
-            "then rerun tools/check_native_cpp.py."
+            "or for Linux package-manager smoke builds rerun with "
+            "--no-require-webengine --qt-version 6.4.0."
         )
     return report
 
@@ -127,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Allow CI smoke builds without Qt WebEngine.",
     )
+    parser.add_argument(
+        "--qt-version",
+        default="",
+        help="Override the CMake TB_QT_VERSION minimum for system-Qt smoke builds.",
+    )
     parser.add_argument("--timeout", type=int, default=300, help="Timeout per step in seconds.")
     args = parser.parse_args(argv)
 
@@ -134,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         build_dir=Path(args.build_dir),
         config=str(args.config or "Debug"),
         require_webengine=not args.no_require_webengine,
+        qt_version=str(args.qt_version or "").strip() or None,
         timeout=max(30, int(args.timeout or 300)),
     )
     if args.json:
