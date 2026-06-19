@@ -121,16 +121,16 @@ connector targets are declared in `docs/connector-support-matrix.json`.
 | --- | --- | --- |
 | Crypto spot trading | Supported now | Current live path is Binance-led |
 | Crypto futures trading | Supported now | Current primary live/demo path |
-| Multi-exchange crypto expansion | Diagnostics-supported / order-gated | ccxt market/account diagnostics are implemented for listed venues; live orders need venue evidence |
-| FX / broker integrations | Evidence-gated | Architecture/UI placeholders exist; runtime marks broker selections unsupported until real connectors ship |
+| Multi-exchange crypto expansion | Order-routing supported / evidence-gated | ccxt market/account diagnostics and guarded order routing are implemented for listed venues; official live support needs venue evidence |
+| FX / broker integrations | Order-routing supported / evidence-gated | OANDA, FXCM, and IG have guarded connector paths; official live support needs broker evidence |
 | Unlisted markets outside the current crypto/FX scope | Not supported today | Would require new connector work and testing |
 
 | Venue / integration | Status | Notes |
 | --- | --- | --- |
 | Binance | Supported now | Current primary live/demo connector |
-| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Diagnostics-supported / order-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account diagnostics |
-| HTX / Crypto.com Exchange / Kraken / Bitfinex | Diagnostics-supported / order-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account diagnostics |
-| OANDA / FXCM / IG | Evidence-gated | Broker placeholders exist; service support metadata reports them unsupported until live integrations ship |
+| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Order-routing supported / evidence-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account/order routing |
+| HTX / Crypto.com Exchange / Kraken / Bitfinex | Order-routing supported / evidence-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account/order routing |
+| OANDA / FXCM / IG | Order-routing supported / evidence-gated | OANDA REST-v20, FXCM fxcmpy, and IG REST connector paths are implemented with dry-run/live guards |
 | Venues not listed in the repo | Not supported today | Requires a new connector and validation work |
 
 For the fuller breakdown, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).

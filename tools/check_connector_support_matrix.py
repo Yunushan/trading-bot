@@ -24,7 +24,11 @@ REQUIRED_CCXT_VENUES = (
     "Kraken",
     "Bitfinex",
 )
-REQUIRED_FX_BROKERS = ("OANDA", "FXCM", "IG")
+REQUIRED_BROKER_GROUPS = {
+    "oanda-broker-order-routing": ("OANDA", "oanda-rest"),
+    "fxcm-broker-order-routing": ("FXCM", "fxcmpy"),
+    "ig-broker-order-routing": ("IG", "ig-rest"),
+}
 
 
 def _repo_root() -> Path:
@@ -110,15 +114,15 @@ def _validate_against_python(groups: list[dict[str, Any]]) -> list[str]:
     build_support = _support_payload_builder()
     groups_by_name = {str(group["group"]): group for group in groups}
 
-    ccxt_group = groups_by_name.get("ccxt-crypto-diagnostics")
+    ccxt_group = groups_by_name.get("ccxt-crypto-order-routing")
     if not ccxt_group:
-        issues.append("missing ccxt-crypto-diagnostics group")
+        issues.append("missing ccxt-crypto-order-routing group")
     else:
         venues = tuple(ccxt_group["venues"])
         if venues != REQUIRED_CCXT_VENUES:
-            issues.append(f"ccxt-crypto-diagnostics.venues must be {list(REQUIRED_CCXT_VENUES)}")
+            issues.append(f"ccxt-crypto-order-routing.venues must be {list(REQUIRED_CCXT_VENUES)}")
         if ccxt_group["backend"] != "ccxt":
-            issues.append("ccxt-crypto-diagnostics.backend must be ccxt")
+            issues.append("ccxt-crypto-order-routing.backend must be ccxt")
         for venue in venues:
             payload = build_support(config={"selected_exchange": venue, "connector_backend": "ccxt"})
             if not payload.get("exchange_supported"):
@@ -127,8 +131,10 @@ def _validate_against_python(groups: list[dict[str, Any]]) -> list[str]:
                 issues.append(f"{venue} must support market-data diagnostics in Python")
             if not payload.get("account_snapshot_supported"):
                 issues.append(f"{venue} must support account snapshots in Python")
-            if payload.get("order_execution_supported") or payload.get("trading_supported"):
-                issues.append(f"{venue} must remain order-gated until live order evidence exists")
+            if not payload.get("order_routing_supported") or not payload.get("order_execution_supported"):
+                issues.append(f"{venue} must support ccxt order routing in Python")
+            if payload.get("live_evidence_required") is not True:
+                issues.append(f"{venue} must require live evidence before official release support")
 
     binance_group = groups_by_name.get("binance")
     if not binance_group:
@@ -143,23 +149,29 @@ def _validate_against_python(groups: list[dict[str, Any]]) -> list[str]:
         if not payload.get("trading_supported") or not payload.get("order_execution_supported"):
             issues.append("Binance must stay full-trading supported in Python")
 
-    fx_group = groups_by_name.get("fx-brokers")
-    if not fx_group:
-        issues.append("missing fx-brokers group")
-    else:
-        venues = tuple(fx_group["venues"])
-        if venues != REQUIRED_FX_BROKERS:
-            issues.append(f"fx-brokers.venues must be {list(REQUIRED_FX_BROKERS)}")
-        for venue in venues:
-            payload = build_support(
-                config={
-                    "selected_exchange": "Binance",
-                    "connector_backend": "ccxt",
-                    "selected_forex_broker": venue,
-                }
-            )
-            if payload.get("broker_supported"):
-                issues.append(f"{venue} must not be marked broker_supported before a broker connector ships")
+    for group_name, (venue, backend) in REQUIRED_BROKER_GROUPS.items():
+        group = groups_by_name.get(group_name)
+        if not group:
+            issues.append(f"missing {group_name} group")
+            continue
+        venues = tuple(group["venues"])
+        if venues != (venue,):
+            issues.append(f"{group_name}.venues must be {[venue]}")
+        if group["backend"] != backend:
+            issues.append(f"{group_name}.backend must be {backend}")
+        payload = build_support(
+            config={
+                "selected_exchange": "",
+                "connector_backend": backend,
+                "selected_forex_broker": venue,
+            }
+        )
+        if not payload.get("broker_supported"):
+            issues.append(f"{venue} must be marked broker_supported")
+        if not payload.get("order_routing_supported") or not payload.get("order_execution_supported"):
+            issues.append(f"{venue} must support broker order routing in Python")
+        if payload.get("live_evidence_required") is not True:
+            issues.append(f"{venue} must require live evidence before official release support")
 
     return issues
 

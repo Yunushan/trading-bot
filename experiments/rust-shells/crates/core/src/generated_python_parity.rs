@@ -3,7 +3,7 @@
 
 pub const PYTHON_SOURCE: &str = "Languages/Python";
 pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "b2abd871c1b7b77ba399c3b7c0bc6d8986c8ae856a311603bb1b8ca7614e728b";
+pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "6ff3d6d9f95cc9d8c8bec2381fec157f94e5c964f20aeb9bd590c819e59deb8a";
 pub const CPP_FULL_PARITY_READY: bool = true;
 pub const RUST_FULL_PARITY_READY: bool = true;
 
@@ -1026,6 +1026,9 @@ pub const PYTHON_CONNECTOR_KEYS: &[&str] = &[
     "binance-sdk-spot",
     "binance-connector",
     "ccxt",
+    "oanda-rest",
+    "fxcmpy",
+    "ig-rest",
     "python-binance",
 ];
 
@@ -1054,6 +1057,18 @@ pub const PYTHON_CONNECTOR_OPTIONS: &[PythonConnectorOption] = &[
     PythonConnectorOption {
         key: "ccxt",
         label: "CCXT (Unified)",
+    },
+    PythonConnectorOption {
+        key: "oanda-rest",
+        label: "OANDA REST-v20",
+    },
+    PythonConnectorOption {
+        key: "fxcmpy",
+        label: "FXCM fxcmpy",
+    },
+    PythonConnectorOption {
+        key: "ig-rest",
+        label: "IG REST Trading API",
     },
     PythonConnectorOption {
         key: "python-binance",
@@ -1604,52 +1619,52 @@ pub const PYTHON_EXCHANGE_OPTIONS: &[PythonUiOption] = &[
     },
     PythonUiOption {
         key: "Bybit",
-        label: "Bybit (ccxt diagnostics)",
+        label: "Bybit (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "OKX",
-        label: "OKX (ccxt diagnostics)",
+        label: "OKX (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "Gate",
-        label: "Gate (ccxt diagnostics)",
+        label: "Gate (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "Bitget",
-        label: "Bitget (ccxt diagnostics)",
+        label: "Bitget (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "MEXC",
-        label: "MEXC (ccxt diagnostics)",
+        label: "MEXC (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "KuCoin",
-        label: "KuCoin (ccxt diagnostics)",
+        label: "KuCoin (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "HTX",
-        label: "HTX (ccxt diagnostics)",
+        label: "HTX (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "Crypto.com Exchange",
-        label: "Crypto.com Exchange (ccxt diagnostics)",
+        label: "Crypto.com Exchange (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "Kraken",
-        label: "Kraken (ccxt diagnostics)",
+        label: "Kraken (ccxt order routing)",
         disabled: false,
     },
     PythonUiOption {
         key: "Bitfinex",
-        label: "Bitfinex (ccxt diagnostics)",
+        label: "Bitfinex (ccxt order routing)",
         disabled: false,
     },
 ];

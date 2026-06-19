@@ -179,6 +179,9 @@
     "binance-sdk-spot",
     "binance-connector",
     "ccxt",
+    "oanda-rest",
+    "fxcmpy",
+    "ig-rest",
     "python-binance"
   ],
   "connectorOptions": [
@@ -203,11 +206,23 @@
       "label": "CCXT (Unified)"
     },
     {
+      "key": "oanda-rest",
+      "label": "OANDA REST-v20"
+    },
+    {
+      "key": "fxcmpy",
+      "label": "FXCM fxcmpy"
+    },
+    {
+      "key": "ig-rest",
+      "label": "IG REST Trading API"
+    },
+    {
       "key": "python-binance",
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "b2abd871c1b7b77ba399c3b7c0bc6d8986c8ae856a311603bb1b8ca7614e728b",
+  "contractHash": "6ff3d6d9f95cc9d8c8bec2381fec157f94e5c964f20aeb9bd590c819e59deb8a",
   "dashboardLoopChoices": [
     {
       "key": "30s",
@@ -660,73 +675,73 @@
       "title": "Binance"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "Bybit",
-      "label": "Bybit (ccxt diagnostics)",
+      "label": "Bybit (ccxt order routing)",
       "title": "Bybit"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "OKX",
-      "label": "OKX (ccxt diagnostics)",
+      "label": "OKX (ccxt order routing)",
       "title": "OKX"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "Gate",
-      "label": "Gate (ccxt diagnostics)",
+      "label": "Gate (ccxt order routing)",
       "title": "Gate"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "Bitget",
-      "label": "Bitget (ccxt diagnostics)",
+      "label": "Bitget (ccxt order routing)",
       "title": "Bitget"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "MEXC",
-      "label": "MEXC (ccxt diagnostics)",
+      "label": "MEXC (ccxt order routing)",
       "title": "MEXC"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "KuCoin",
-      "label": "KuCoin (ccxt diagnostics)",
+      "label": "KuCoin (ccxt order routing)",
       "title": "KuCoin"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "HTX",
-      "label": "HTX (ccxt diagnostics)",
+      "label": "HTX (ccxt order routing)",
       "title": "HTX"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "Crypto.com Exchange",
-      "label": "Crypto.com Exchange (ccxt diagnostics)",
+      "label": "Crypto.com Exchange (ccxt order routing)",
       "title": "Crypto.com Exchange"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "Kraken",
-      "label": "Kraken (ccxt diagnostics)",
+      "label": "Kraken (ccxt order routing)",
       "title": "Kraken"
     },
     {
-      "badge": "ccxt diagnostics",
+      "badge": "ccxt order routing",
       "disabled": false,
       "key": "Bitfinex",
-      "label": "Bitfinex (ccxt diagnostics)",
+      "label": "Bitfinex (ccxt order routing)",
       "title": "Bitfinex"
     }
   ],

@@ -186,14 +186,14 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("qwen3:8b", core)
         for parity_text in (
             "Alibaba Qwen / DashScope",
-            "Bybit (ccxt diagnostics)",
+            "Bybit (ccxt order routing)",
             "Default intervals: 1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d",
             "Open In Browser URL",
             "Max MDD Scanner Top N",
             "Max MDD Scanner Max MDD %",
             "Remove Selected",
         ):
-            self.assertIn(parity_text, core)
+            self.assertIn(parity_text, core + "\n" + generated_core)
         for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
             self.assertIn(label, core)
 
@@ -328,7 +328,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             self.assertIn("BinanceWsClient", source)
         for tauri_parity_text in (
             "Alibaba Qwen / DashScope",
-            "Bybit (ccxt diagnostics)",
+            "Bybit (ccxt order routing)",
             "Remove Selected",
             "Max MDD Scanner",
         ):
@@ -1269,6 +1269,14 @@ class ProductPackagingContractTests(unittest.TestCase):
             (REPO_ROOT / "Languages" / "Python" / "pyproject.toml").read_text(encoding="utf-8")
         )
         optional_dependencies = pyproject["project"]["optional-dependencies"]
+        runtime_dependencies = pyproject["project"]["dependencies"]
+
+        self.assertIn("numpy==2.2.6; python_version < '3.11'", runtime_dependencies)
+        self.assertIn("numpy==2.4.4; python_version >= '3.11'", runtime_dependencies)
+        self.assertIn("pandas==2.3.2; python_version < '3.11'", runtime_dependencies)
+        self.assertIn("pandas==3.0.2; python_version >= '3.11'", runtime_dependencies)
+        self.assertNotIn("numpy==2.4.4", runtime_dependencies)
+        self.assertNotIn("pandas==3.0.2", runtime_dependencies)
 
         desktop_dependencies = optional_dependencies["desktop"]
         self.assertIn(

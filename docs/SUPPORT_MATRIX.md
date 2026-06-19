@@ -43,8 +43,8 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 | --- | --- | --- |
 | Crypto spot | Official | Current live implementation is Binance-led |
 | Crypto futures | Official | Primary live/demo path today |
-| Multi-exchange crypto expansion | Diagnostics-supported / order-gated | ccxt market/account diagnostics are implemented for the listed venues; live order execution requires venue evidence |
-| FX / broker integrations | Evidence-gated | Architecture and UI placeholders exist; production live connectors are not shipped yet |
+| Multi-exchange crypto expansion | Order-routing supported / evidence-gated | ccxt market/account diagnostics and guarded order routing are implemented for the listed venues; official live support requires venue evidence |
+| FX / broker integrations | Order-routing supported / evidence-gated | OANDA REST-v20, FXCM fxcmpy, and IG REST connector paths are implemented with guarded live submission; official live support requires broker evidence |
 | Markets outside the current crypto/FX scope | Not targeted | Would require new connector design and validation |
 
 ## Venue / connector coverage
@@ -52,9 +52,9 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 | Venue / connector group | Current status | Notes |
 | --- | --- | --- |
 | Binance | Official | Current primary live/demo connector |
-| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Diagnostics-supported / order-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account diagnostics; order execution remains evidence-gated |
-| HTX / Crypto.com Exchange / Kraken / Bitfinex | Diagnostics-supported / order-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account diagnostics; order execution remains evidence-gated |
-| OANDA / FXCM / IG | Evidence-gated | Broker placeholders exist; service support metadata reports them unsupported until production connectors ship |
+| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Order-routing supported / evidence-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account/order routing; official live support remains evidence-gated |
+| HTX / Crypto.com Exchange / Kraken / Bitfinex | Order-routing supported / evidence-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account/order routing; official live support remains evidence-gated |
+| OANDA / FXCM / IG | Order-routing supported / evidence-gated | Broker connector paths exist for OANDA REST-v20, FXCM fxcmpy, and IG REST; official live support remains evidence-gated |
 | Unlisted venues | Not supported today | Requires new connector work |
 
 ## Practical interpretation
@@ -62,7 +62,7 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 - The current desktop-first user path is still Windows, macOS, Linux, and FreeBSD.
 - The headless backend and service API are the portability layer for BSD family and Solaris/illumos expansion.
 - Android and iOS support means a native thin client that talks to the backend API only. It does not move trading execution or exchange/broker credentials onto the phone.
-- Multi-exchange crypto support currently means ccxt diagnostics support unless `order_execution_supported` is true for that venue.
+- Multi-exchange crypto support currently means ccxt market/account/order-routing support with official live support gated on venue evidence.
 
 ## Current automation notes
 

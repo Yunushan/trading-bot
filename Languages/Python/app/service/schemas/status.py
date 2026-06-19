@@ -126,6 +126,10 @@ def build_exchange_connector_snapshot(
         health = "warning" if health != "error" else health
         if state in {"", "ready", "unknown"}:
             state = "read_only_connector"
+    elif support.get("live_evidence_required"):
+        health = "warning" if health != "error" else health
+        if state in {"", "ready", "unknown"}:
+            state = "connector_evidence_required"
 
     order_audit_error = _mapping_or_empty(order_audit_raw.get("last_write_error"))
     if order_audit_error and health != "error":
@@ -145,6 +149,7 @@ def build_exchange_connector_snapshot(
         message = str(order_audit_error.get("message") or "unknown write error").strip()
         attention.append(f"Order audit write failed: {message}")
     attention.extend(str(reason) for reason in support["unsupported_reasons"])
+    attention.extend(str(reason) for reason in support.get("capability_gaps", []))
 
     payload = {
         "health": health,

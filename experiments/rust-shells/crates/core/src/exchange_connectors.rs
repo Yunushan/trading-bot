@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 use crate::generated_python_parity::{PYTHON_CONNECTOR_OPTIONS, PythonConnectorOption};
 use crate::order_audit::{redact_text, redact_value};
@@ -17,6 +18,7 @@ pub const CCXT_DIAGNOSTIC_EXCHANGES: &[&str] = &[
     "Kraken",
     "Bitfinex",
 ];
+pub const CCXT_ORDER_ROUTING_EXCHANGES: &[&str] = CCXT_DIAGNOSTIC_EXCHANGES;
 pub const SUPPORTED_EXCHANGES: &[&str] = &[
     "Binance",
     "Bybit",
@@ -30,7 +32,13 @@ pub const SUPPORTED_EXCHANGES: &[&str] = &[
     "Kraken",
     "Bitfinex",
 ];
-pub const SUPPORTED_FOREX_BROKERS: &[&str] = &[];
+pub const SUPPORTED_FOREX_BROKERS: &[&str] = &["OANDA", "FXCM", "IG"];
+pub const BROKER_ORDER_ROUTING_BROKERS: &[&str] = SUPPORTED_FOREX_BROKERS;
+pub const BROKER_ORDER_ROUTING_BACKENDS: &[(&str, &str)] = &[
+    ("oanda", "oanda-rest"),
+    ("fxcm", "fxcmpy"),
+    ("ig", "ig-rest"),
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExchangeSupportInput {
@@ -50,7 +58,9 @@ pub struct ExchangeSupportPayload {
     pub broker_supported: bool,
     pub market_data_supported: bool,
     pub account_snapshot_supported: bool,
+    pub order_routing_supported: bool,
     pub order_execution_supported: bool,
+    pub live_evidence_required: bool,
     pub trading_supported: bool,
     pub support_tier: String,
     pub capability_gaps: Vec<String>,
@@ -59,7 +69,10 @@ pub struct ExchangeSupportPayload {
     pub supported_connector_backends: Vec<String>,
     pub supported_forex_brokers: Vec<String>,
     pub ccxt_diagnostic_exchanges: Vec<String>,
+    pub ccxt_order_routing_exchanges: Vec<String>,
     pub order_execution_exchanges: Vec<String>,
+    pub broker_order_routing_brokers: Vec<String>,
+    pub broker_order_routing_backends: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,20 +197,42 @@ pub fn build_exchange_support_payload(
             .any(|item| support_key(item) == support_key(&selected_forex_broker));
     let backend_key = support_key(&connector_backend);
     let exchange_key = support_key(&selected_exchange);
+    let broker_key = support_key(&selected_forex_broker);
+    let uses_broker = !selected_forex_broker.trim().is_empty();
     let uses_ccxt_diagnostics = !ccxt_exchange_id.is_empty() && backend_key == "ccxt";
+    let uses_ccxt_order_routing = uses_ccxt_diagnostics
+        && CCXT_ORDER_ROUTING_EXCHANGES
+            .iter()
+            .any(|item| support_key(item) == exchange_key);
+    let expected_broker_backend = BROKER_ORDER_ROUTING_BACKENDS
+        .iter()
+        .find_map(|(broker, backend)| {
+            if *broker == broker_key {
+                Some(*backend)
+            } else {
+                None
+            }
+        })
+        .unwrap_or("");
+    let uses_broker_order_routing =
+        !expected_broker_backend.is_empty() && backend_key == expected_broker_backend;
     let order_execution_exchange = exchange_key == "binance";
     let market_data_supported = connector_backend_supported
-        && broker_supported
-        && (order_execution_exchange || uses_ccxt_diagnostics);
+        && ((!uses_broker && broker_supported && (order_execution_exchange || uses_ccxt_diagnostics))
+            || (uses_broker && uses_broker_order_routing));
     let account_snapshot_supported = market_data_supported;
-    let order_execution_supported = exchange_supported
-        && connector_backend_supported
-        && broker_supported
-        && order_execution_exchange;
+    let order_routing_supported = connector_backend_supported
+        && ((!uses_broker && broker_supported && (order_execution_exchange || uses_ccxt_order_routing))
+            || (uses_broker && uses_broker_order_routing));
+    let order_execution_supported =
+        (!uses_broker && exchange_supported && broker_supported && order_routing_supported)
+            || (uses_broker && broker_supported && order_routing_supported);
+    let live_evidence_required =
+        order_execution_supported && (uses_broker || !order_execution_exchange);
 
     let mut unsupported_reasons = Vec::new();
     let mut capability_gaps = Vec::new();
-    if !exchange_supported {
+    if !uses_broker && !exchange_supported {
         unsupported_reasons.push(format!(
             "Exchange '{selected_exchange}' is not implemented by this runtime."
         ));
@@ -212,20 +247,47 @@ pub fn build_exchange_support_payload(
             "Forex broker '{selected_forex_broker}' is not implemented by this runtime."
         ));
     }
+    if uses_broker && broker_supported && connector_backend_supported && !uses_broker_order_routing
+    {
+        if expected_broker_backend.is_empty() {
+            capability_gaps.push(format!(
+                "Broker '{selected_forex_broker}' order routing requires a provider connector."
+            ));
+        } else {
+            capability_gaps.push(format!(
+                "Broker '{selected_forex_broker}' order routing requires connector backend '{expected_broker_backend}'."
+            ));
+        }
+    }
     if exchange_supported
         && connector_backend_supported
         && broker_supported
+        && !uses_broker
         && !order_execution_supported
     {
         capability_gaps.push(format!(
-            "Live order execution for '{selected_exchange}' requires venue-specific order adapter evidence."
+            "Order routing for exchange '{selected_exchange}' requires a provider connector backend."
         ));
     }
-    unsupported_reasons.extend(capability_gaps.iter().cloned());
+    if live_evidence_required {
+        if uses_broker {
+            capability_gaps.push(format!(
+                "Official live support for broker '{selected_forex_broker}' requires a passed connector evidence artifact."
+            ));
+        } else {
+            capability_gaps.push(format!(
+                "Official live support for exchange '{selected_exchange}' requires a passed connector evidence artifact."
+            ));
+        }
+    }
     let support_tier = if order_execution_supported {
-        "full-trading"
+        if live_evidence_required {
+            "order-routing-evidence-required"
+        } else {
+            "full-trading"
+        }
     } else if market_data_supported || account_snapshot_supported {
-        "ccxt-diagnostics"
+        "diagnostics-only"
     } else {
         "unsupported"
     };
@@ -240,7 +302,9 @@ pub fn build_exchange_support_payload(
         broker_supported,
         market_data_supported,
         account_snapshot_supported,
+        order_routing_supported,
         order_execution_supported,
+        live_evidence_required,
         trading_supported: order_execution_supported,
         support_tier: support_tier.to_owned(),
         capability_gaps,
@@ -258,7 +322,19 @@ pub fn build_exchange_support_payload(
             .iter()
             .map(|item| (*item).to_owned())
             .collect(),
+        ccxt_order_routing_exchanges: CCXT_ORDER_ROUTING_EXCHANGES
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect(),
         order_execution_exchanges: vec!["Binance".to_owned()],
+        broker_order_routing_brokers: BROKER_ORDER_ROUTING_BROKERS
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect(),
+        broker_order_routing_backends: BROKER_ORDER_ROUTING_BACKENDS
+            .iter()
+            .map(|(broker, backend)| ((*broker).to_owned(), (*backend).to_owned()))
+            .collect(),
     }
 }
 
@@ -553,15 +629,73 @@ mod tests {
         assert!(ccxt_diagnostics.exchange_supported);
         assert!(ccxt_diagnostics.market_data_supported);
         assert!(ccxt_diagnostics.account_snapshot_supported);
-        assert!(!ccxt_diagnostics.order_execution_supported);
-        assert!(!ccxt_diagnostics.trading_supported);
+        assert!(ccxt_diagnostics.order_routing_supported);
+        assert!(ccxt_diagnostics.order_execution_supported);
+        assert!(ccxt_diagnostics.trading_supported);
+        assert!(ccxt_diagnostics.live_evidence_required);
+        assert_eq!(ccxt_diagnostics.support_tier, "order-routing-evidence-required");
         assert_eq!(ccxt_diagnostics.ccxt_exchange_id, "bybit");
+        assert!(ccxt_diagnostics.unsupported_reasons.is_empty());
+
+        let oanda = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "oanda-rest".to_owned(),
+                selected_forex_broker: "OANDA".to_owned(),
+            },
+            None,
+        );
+        assert!(oanda.broker_supported);
+        assert!(oanda.order_routing_supported);
+        assert!(oanda.order_execution_supported);
+        assert!(oanda.live_evidence_required);
+
+        let fxcm = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "fxcmpy".to_owned(),
+                selected_forex_broker: "FXCM".to_owned(),
+            },
+            None,
+        );
+        assert!(fxcm.broker_supported);
+        assert!(fxcm.order_routing_supported);
+        assert!(fxcm.order_execution_supported);
+        assert!(fxcm.live_evidence_required);
+
+        let ig = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "ig-rest".to_owned(),
+                selected_forex_broker: "IG".to_owned(),
+            },
+            None,
+        );
+        assert!(ig.broker_supported);
+        assert!(ig.order_routing_supported);
+        assert!(ig.order_execution_supported);
+        assert!(ig.live_evidence_required);
+
+        let wrong_broker_backend = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: String::new(),
+                connector_backend: "ccxt".to_owned(),
+                selected_forex_broker: "IG".to_owned(),
+            },
+            None,
+        );
+        assert!(wrong_broker_backend.broker_supported);
+        assert!(!wrong_broker_backend.order_routing_supported);
+        assert!(
+            wrong_broker_backend.capability_gaps[0]
+                .contains("requires connector backend")
+        );
 
         let unsupported = build_exchange_support_payload(
             ExchangeSupportInput {
                 selected_exchange: "Unlisted".to_owned(),
                 connector_backend: "custom-native".to_owned(),
-                selected_forex_broker: "MetaTrader".to_owned(),
+                selected_forex_broker: String::new(),
             },
             None,
         );
@@ -574,11 +708,6 @@ mod tests {
         assert!(unsupported.unsupported_reasons.contains(
             &"Connector backend 'custom-native' is not implemented by this runtime.".to_owned()
         ));
-        assert!(
-            unsupported.unsupported_reasons.contains(
-                &"Forex broker 'MetaTrader' is not implemented by this runtime.".to_owned()
-            )
-        );
     }
 
     #[test]

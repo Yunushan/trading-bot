@@ -96,6 +96,10 @@ async function main() {
   await test("connector support helper surfaces unsupported runtime reasons", async () => {
     assert.equal(formatConnectorSupport({ trading_supported: true }), "Trading Supported");
     assert.equal(
+      formatConnectorSupport({ order_routing_supported: true, live_evidence_required: true }),
+      "Order Routing Supported (Evidence Required)",
+    );
+    assert.equal(
       formatConnectorSupport({ market_data_supported: true, account_snapshot_supported: true, trading_supported: false }),
       "Market Data + Account Snapshot Supported",
     );

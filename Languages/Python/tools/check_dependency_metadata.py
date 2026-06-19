@@ -44,6 +44,17 @@ DEV_DEPENDENCY_NAMES = {
     "types-requests",
 }
 
+PYTHON_VERSION_RUNTIME_PINS = {
+    "numpy": {
+        "numpy==2.2.6; python_version < '3.11'",
+        "numpy==2.4.4; python_version >= '3.11'",
+    },
+    "pandas": {
+        "pandas==2.3.2; python_version < '3.11'",
+        "pandas==3.0.2; python_version >= '3.11'",
+    },
+}
+
 
 def _load_pyproject() -> dict[str, Any]:
     return tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
@@ -114,6 +125,21 @@ def _check_exact_group(group_name: str, requirements: list[str]) -> list[str]:
     return errors
 
 
+def _check_runtime_python_version_pins(requirements: list[str]) -> list[str]:
+    errors: list[str] = []
+    by_name: dict[str, set[str]] = {}
+    for requirement in requirements:
+        by_name.setdefault(_dependency_name(requirement), set()).add(requirement)
+    for name, expected in PYTHON_VERSION_RUNTIME_PINS.items():
+        actual = by_name.get(name, set())
+        if actual != expected:
+            errors.append(
+                f"runtime dependency {name!r} must stay split for Python 3.10 compatibility: "
+                f"expected {sorted(expected)!r}; found {sorted(actual)!r}"
+            )
+    return errors
+
+
 def _check_windows_arm64_group(requirements: list[str]) -> list[str]:
     errors: list[str] = []
     for requirement in requirements:
@@ -147,7 +173,9 @@ def _check_dependency_groups(pyproject: dict[str, Any]) -> list[str]:
     project = pyproject.get("project") or {}
     optional = project.get("optional-dependencies") or {}
     errors: list[str] = []
-    errors.extend(_check_exact_group("runtime", list(project.get("dependencies") or [])))
+    runtime_dependencies = list(project.get("dependencies") or [])
+    errors.extend(_check_exact_group("runtime", runtime_dependencies))
+    errors.extend(_check_runtime_python_version_pins(runtime_dependencies))
     errors.extend(_check_exact_group("desktop", list(optional.get("desktop") or [])))
     errors.extend(_check_exact_group("service", list(optional.get("service") or [])))
     errors.extend(_check_windows_arm64_group(list(optional.get("windows-arm64") or [])))

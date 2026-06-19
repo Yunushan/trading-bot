@@ -155,6 +155,9 @@ def _connector_options() -> list[tuple[str, str]]:
         ("Binance SDK Spot (Official Recommended)", "binance-sdk-spot"),
         ("Binance Connector Python", "binance-connector"),
         ("CCXT (Unified)", "ccxt"),
+        ("OANDA REST-v20", "oanda-rest"),
+        ("FXCM fxcmpy", "fxcmpy"),
+        ("IG REST Trading API", "ig-rest"),
         ("python-binance (Community)", "python-binance"),
     ]
 

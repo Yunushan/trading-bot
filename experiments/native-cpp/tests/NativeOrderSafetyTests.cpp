@@ -257,13 +257,63 @@ int main(int argc, char **argv) {
           QStringLiteral("native exchange support payload should accept Python ccxt diagnostic venues"));
     check(ccxtDiagnosticsExchange.value(QStringLiteral("market_data_supported")).toBool(false),
           QStringLiteral("native exchange support payload should expose ccxt market-data diagnostics"));
-    check(!ccxtDiagnosticsExchange.value(QStringLiteral("order_execution_supported")).toBool(true),
-          QStringLiteral("native exchange support payload should keep ccxt venue orders gated"));
+    check(ccxtDiagnosticsExchange.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose ccxt order routing"));
+    check(ccxtDiagnosticsExchange.value(QStringLiteral("order_execution_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose ccxt order execution routing"));
+    check(ccxtDiagnosticsExchange.value(QStringLiteral("live_evidence_required")).toBool(false),
+          QStringLiteral("native exchange support payload should require live evidence for ccxt venues"));
+    const QJsonObject oandaBroker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("oanda-rest"),
+            QStringLiteral("OANDA"),
+        });
+    check(oandaBroker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept OANDA broker routing"));
+    check(oandaBroker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose OANDA order routing"));
+    check(oandaBroker.value(QStringLiteral("live_evidence_required")).toBool(false),
+          QStringLiteral("native exchange support payload should require live evidence for OANDA"));
+    const QJsonObject fxcmBroker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("fxcmpy"),
+            QStringLiteral("FXCM"),
+        });
+    check(fxcmBroker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept FXCM broker routing"));
+    check(fxcmBroker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose FXCM order routing"));
+    check(fxcmBroker.value(QStringLiteral("live_evidence_required")).toBool(false),
+          QStringLiteral("native exchange support payload should require live evidence for FXCM"));
+    const QJsonObject igBroker = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("ig-rest"),
+            QStringLiteral("IG"),
+        });
+    check(igBroker.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept IG broker routing"));
+    check(igBroker.value(QStringLiteral("order_routing_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose IG order routing"));
+    check(igBroker.value(QStringLiteral("live_evidence_required")).toBool(false),
+          QStringLiteral("native exchange support payload should require live evidence for IG"));
+    const QJsonObject wrongBrokerBackend = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            {},
+            QStringLiteral("ccxt"),
+            QStringLiteral("IG"),
+        });
+    check(wrongBrokerBackend.value(QStringLiteral("broker_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should recognize IG with wrong backend"));
+    check(!wrongBrokerBackend.value(QStringLiteral("order_routing_supported")).toBool(true),
+          QStringLiteral("native exchange support payload should reject generic broker backend"));
     const QJsonObject unsupportedExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
         NativeExchangeConnectors::ExchangeSupportInput{
             QStringLiteral("Unlisted"),
             QStringLiteral("custom-native"),
-            QStringLiteral("MetaTrader"),
+            {},
         });
     check(!unsupportedExchange.value(QStringLiteral("trading_supported")).toBool(true),
           QStringLiteral("native exchange support payload should reject non-Python exchange/backend/broker"));

@@ -3,7 +3,8 @@
   "generated_for_request_date": "2026-06-19",
   "policy": {
     "real_connector_support_definition": "A venue is considered live-order supported only when the runtime has a connector implementation plus a passed evidence JSON artifact from a sandbox/testnet or approved live-paper account for that venue.",
-    "diagnostics_support_definition": "A venue may be marked diagnostics-supported when the runtime can instantiate the connector and exercise market/account snapshot interfaces through deterministic tests without enabling order execution.",
+    "diagnostics_support_definition": "A venue may be marked diagnostics-supported when the runtime can instantiate the connector and exercise market/account snapshot interfaces through deterministic tests.",
+    "order_routing_support_definition": "A venue may be marked order-routing-supported when the runtime has a guarded submit path with deterministic dry-run and injected-client tests. Official live support still requires a passed evidence artifact.",
     "no_assumed_passes": true,
     "evidence_artifact_dir": "connector-support-evidence"
   },
@@ -17,20 +18,39 @@
       "evidence_required": true
     },
     {
-      "group": "ccxt-crypto-diagnostics",
+      "group": "ccxt-crypto-order-routing",
       "venues": ["Bybit", "OKX", "Bitget", "Gate", "MEXC", "KuCoin", "HTX", "Crypto.com Exchange", "Kraken", "Bitfinex"],
       "backend": "ccxt",
-      "status": "diagnostics-supported-order-gated",
-      "capabilities_required": ["market-data", "account-snapshot"],
-      "capabilities_gated": ["order-execution"],
+      "status": "order-routing-supported-evidence-required",
+      "capabilities_required": ["market-data", "account-snapshot", "order-routing"],
+      "capabilities_gated": ["official-live-evidence"],
       "evidence_required": true
     },
     {
-      "group": "fx-brokers",
-      "venues": ["OANDA", "FXCM", "IG"],
-      "backend": "broker-api",
-      "status": "not-implemented-evidence-required",
+      "group": "oanda-broker-order-routing",
+      "venues": ["OANDA"],
+      "backend": "oanda-rest",
+      "status": "order-routing-supported-evidence-required",
       "capabilities_required": ["broker-account", "market-data", "order-routing"],
+      "capabilities_gated": ["official-live-evidence"],
+      "evidence_required": true
+    },
+    {
+      "group": "fxcm-broker-order-routing",
+      "venues": ["FXCM"],
+      "backend": "fxcmpy",
+      "status": "order-routing-supported-evidence-required",
+      "capabilities_required": ["broker-account", "market-data", "order-routing"],
+      "capabilities_gated": ["official-live-evidence"],
+      "evidence_required": true
+    },
+    {
+      "group": "ig-broker-order-routing",
+      "venues": ["IG"],
+      "backend": "ig-rest",
+      "status": "order-routing-supported-evidence-required",
+      "capabilities_required": ["broker-account", "market-data", "order-routing"],
+      "capabilities_gated": ["official-live-evidence"],
       "evidence_required": true
     }
   ]

@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "b2abd871c1b7b77ba399c3b7c0bc6d8986c8ae856a311603bb1b8ca7614e728b";
+inline constexpr std::string_view kPythonSourceContractHash = "6ff3d6d9f95cc9d8c8bec2381fec157f94e5c964f20aeb9bd590c819e59deb8a";
 inline constexpr bool kCppFullParityReady = true;
 inline constexpr bool kRustFullParityReady = true;
 
@@ -335,12 +335,15 @@ inline constexpr std::array<PythonLlmProvider, 14> kPythonLlmProviders = {
     PythonLlmProvider{"open-source", "Generic Open-Source / Remote", "local", "openai-chat-completions", "http://127.0.0.1:8000/v1", "Qwen/Qwen3-8B", "OPEN_SOURCE_LLM_API_KEY", "Qwen/Qwen3-0.6B,Qwen/Qwen3-1.7B,Qwen/Qwen3-4B,Qwen/Qwen3-8B,Qwen/Qwen3-14B,Qwen/Qwen3-32B,Qwen/Qwen3-30B-A3B,Qwen/Qwen2.5-0.5B-Instruct,Qwen/Qwen2.5-1.5B-Instruct,Qwen/Qwen2.5-3B-Instruct,Qwen/Qwen2.5-7B-Instruct,Qwen/Qwen2.5-14B-Instruct,Qwen/Qwen2.5-32B-Instruct,Qwen/Qwen2.5-72B-Instruct,Qwen/Qwen2.5-Coder-1.5B-Instruct,Qwen/Qwen2.5-Coder-7B-Instruct,Qwen/Qwen2.5-Coder-14B-Instruct,Qwen/Qwen2.5-Coder-32B-Instruct,Qwen/QwQ-32B,openai/gpt-oss-20b,openai/gpt-oss-120b,google-t5/t5-small,google-t5/t5-base,google-t5/t5-large,google/flan-t5-small,google/flan-t5-base,google/flan-t5-large,google/flan-t5-xl,google/flan-t5-xxl,RWKV/rwkv-4-world,RWKV/rwkv-5-world,RWKV/rwkv-6-world,BlinkDL/rwkv-7-world,EleutherAI/gpt-neox-20b,EleutherAI/gpt-j-6b,EleutherAI/gpt-neo-2.7B,yandex/yalm-100b,meta-llama/Llama-3.3-70B-Instruct,meta-llama/Llama-3.1-8B-Instruct,meta-llama/Llama-3.1-70B-Instruct,meta-llama/Llama-3.2-1B-Instruct,meta-llama/Llama-3.2-3B-Instruct,mistralai/Mistral-7B-Instruct-v0.3,mistralai/Mistral-Nemo-Instruct-2407,mistralai/Mixtral-8x7B-Instruct-v0.1,mistralai/Mixtral-8x22B-Instruct-v0.1,mistralai/Codestral-22B-v0.1,deepseek-ai/DeepSeek-R1,deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B,deepseek-ai/DeepSeek-R1-Distill-Qwen-7B,deepseek-ai/DeepSeek-R1-Distill-Qwen-14B,deepseek-ai/DeepSeek-R1-Distill-Qwen-32B,deepseek-ai/deepseek-coder-6.7b-instruct,deepseek-ai/DeepSeek-Coder-V2-Instruct,google/gemma-3-1b-it,google/gemma-3-4b-it,google/gemma-3-12b-it,google/gemma-3-27b-it,google/gemma-2-2b-it,google/gemma-2-9b-it,google/gemma-2-27b-it,microsoft/phi-4,microsoft/Phi-4-mini-instruct,microsoft/Phi-3.5-mini-instruct,tiiuae/Falcon3-1B-Instruct,tiiuae/Falcon3-3B-Instruct,tiiuae/Falcon3-7B-Instruct,tiiuae/Falcon3-10B-Instruct,tiiuae/falcon-180B-chat,01-ai/Yi-6B-Chat,01-ai/Yi-9B-Chat,01-ai/Yi-34B-Chat,THUDM/glm-4-9b-chat,internlm/internlm2_5-7b-chat,internlm/internlm2_5-20b-chat,baichuan-inc/Baichuan2-7B-Chat,baichuan-inc/Baichuan2-13B-Chat,openbmb/MiniCPM3-4B,HuggingFaceTB/SmolLM2-135M-Instruct,HuggingFaceTB/SmolLM2-360M-Instruct,HuggingFaceTB/SmolLM2-1.7B-Instruct,ibm-granite/granite-3.3-2b-instruct,ibm-granite/granite-3.3-8b-instruct,CohereForAI/c4ai-command-r-v01,CohereForAI/c4ai-command-r-plus,CohereForAI/aya-23-8B,CohereForAI/aya-23-35B,bigscience/bloomz-7b1,bigscience/bloom,mosaicml/mpt-7b-instruct,mosaicml/mpt-30b-instruct,databricks/dbrx-instruct,ai21labs/Jamba-v0.1,Nexusflow/Starling-LM-7B-beta,HuggingFaceH4/zephyr-7b-beta,NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO,openchat/openchat-3.5-0106,WizardLMTeam/WizardLM-2-8x22B,lmsys/vicuna-13b-v1.5,codellama/CodeLlama-7b-Instruct-hf,codellama/CodeLlama-13b-Instruct-hf,codellama/CodeLlama-34b-Instruct-hf,bigcode/starcoder2-3b,bigcode/starcoder2-7b,bigcode/starcoder2-15b,nvidia/Llama-3.1-Nemotron-70B-Instruct-HF,google/flan-ul2,allenai/OLMo-7B-Instruct,allenai/OLMo-2-1124-7B-Instruct,allenai/OLMo-2-1124-13B-Instruct,cerebras/Cerebras-GPT-111M,cerebras/Cerebras-GPT-256M,cerebras/Cerebras-GPT-590M,cerebras/Cerebras-GPT-1.3B,cerebras/Cerebras-GPT-2.7B,cerebras/Cerebras-GPT-6.7B,cerebras/Cerebras-GPT-13B,OpenAssistant/oasst-sft-4-pythia-12b-epoch-3.5,EleutherAI/pythia-70m,EleutherAI/pythia-160m,EleutherAI/pythia-410m,EleutherAI/pythia-1b,EleutherAI/pythia-1.4b,EleutherAI/pythia-2.8b,EleutherAI/pythia-6.9b,EleutherAI/pythia-12b,databricks/dolly-v2-3b,databricks/dolly-v2-7b,databricks/dolly-v2-12b,stabilityai/stablelm-base-alpha-3b,stabilityai/stablelm-base-alpha-7b,stabilityai/stablelm-tuned-alpha-3b,stabilityai/stablelm-tuned-alpha-7b,lmsys/fastchat-t5-3b-v1.0,aisquared/dlite-v2-1_5b,h2oai/h2ogpt-oasst1-512-12b,togethercomputer/RedPajama-INCITE-7B-Instruct,openlm-research/open_llama_3b,openlm-research/open_llama_7b,openlm-research/open_llama_13b,mosaicml/mpt-7b-chat,mosaicml/mpt-7b-storywriter,mosaicml/mpt-30b-chat,nomic-ai/gpt4all-j,Salesforce/xgen-7b-8k-inst,inceptionai/jais-13b-chat,codellama/CodeLlama-70b-Instruct-hf,teknium/OpenHermes-2.5-Mistral-7B,apple/OpenELM-270M-Instruct,apple/OpenELM-450M-Instruct,apple/OpenELM-1_1B-Instruct,apple/OpenELM-3B-Instruct,Deci/DeciLM-7B-instruct,THUDM/chatglm-6b,THUDM/chatglm2-6b,THUDM/chatglm3-6b,Skywork/Skywork-13B-base,LLM360/Amber,Cerebras/FLOR-6.3B,Qwen/Qwen1.5-0.5B-Chat,Qwen/Qwen1.5-1.8B-Chat,Qwen/Qwen1.5-4B-Chat,Qwen/Qwen1.5-7B-Chat,Qwen/Qwen1.5-14B-Chat,Qwen/Qwen1.5-32B-Chat,Qwen/Qwen1.5-72B-Chat,Qwen/Qwen1.5-110B-Chat,Qwen/Qwen1.5-MoE-A2.7B-Chat,LargeWorldModel/LWM-Text-1M,YerevaNN/YerevaNN-Grok-1,state-spaces/mamba-130m,state-spaces/mamba-370m,state-spaces/mamba-790m,state-spaces/mamba-1.4b,state-spaces/mamba-2.8b,Snowflake/snowflake-arctic-instruct,Fugaku-LLM/Fugaku-LLM-13B-instruct,tiiuae/Falcon2-11B,01-ai/Yi-1.5-6B-Chat,01-ai/Yi-1.5-9B-Chat,01-ai/Yi-1.5-34B-Chat,deepseek-ai/DeepSeek-V2-Lite-Chat,deepseek-ai/DeepSeek-V2-Chat,deepseek-ai/DeepSeek-V3,deepseek-ai/DeepSeek-V3-0324,deepseek-ai/DeepSeek-V3.1,deepseek-ai/DeepSeek-V3.2,deepseek-ai/DeepSeek-R1-0528,microsoft/Phi-3-medium-128k-instruct,microsoft/Phi-3-mini-128k-instruct,microsoft/phi-4-reasoning,yulan-team/YuLan-Mini,AtlaAI/Selene-1-Mini-Llama-3.1-8B,bigcode/santacoder,Salesforce/codegen2-1B,Salesforce/codegen2-3_7B,Salesforce/codegen2-7B,HuggingFaceH4/starchat-alpha,replit/replit-code-v1-3b,Salesforce/codet5p-770m,Salesforce/codet5p-2b,Salesforce/codet5p-6b,Salesforce/codegen25-7b-multi,Deci/DeciCoder-1b,meta-llama/Llama-2-7b-chat-hf,meta-llama/Llama-2-13b-chat-hf,meta-llama/Llama-2-70b-chat-hf,meta-llama/Llama-3-8B-Instruct,meta-llama/Llama-3-70B-Instruct,meta-llama/Llama-4-Maverick-17B-128E-Instruct,meta-llama/Llama-4-Scout-17B-16E-Instruct,mistralai/Mistral-7B-Instruct-v0.2,mistralai/Mistral-Large-Instruct-2407,mistralai/Mistral-Large-Instruct-2411,Qwen/Qwen2-72B-Instruct,Qwen/Qwen3-235B-A22B-Instruct-2507,Qwen/Qwen3-235B-A22B-Thinking-2507,Qwen/Qwen3-VL-235B-A22B-Instruct,Qwen/Qwen3.5,Qwen/Qwen3.5-30B-A3B,Qwen/Qwen3.5-Coder,zai-org/GLM-4.5,zai-org/GLM-4.5-Air,zai-org/GLM-4.6,zai-org/GLM-5,moonshotai/Kimi-K2,moonshotai/Kimi-K2-Thinking,moonshotai/Kimi-K2.5,MiniMaxAI/MiniMax-M2.5,stepfun-ai/Step3,stepfun-ai/Step-3.5-Flash,XiaomiMiMo/MiMo-V2-Flash,google/gemma-4-4b-it,google/gemma-4-12b-it,google/gemma-4-27b-it,nvidia/Llama-3.1-Nemotron-Ultra-253B-v1,nvidia/Llama-3.1-Nemotron-Super-49B-v1,nvidia/Llama-3.1-Nemotron-Nano-8B-v1,qwen3:0.6b,qwen3:1.7b,qwen3:4b,qwen3:8b,qwen3:14b,qwen3:30b-a3b,qwen3:32b,qwen3,qwen3-vl:8b,qwen3-vl:32b,qwen3.5,qwen2.5:0.5b,qwen2.5:1.5b,qwen2.5:3b,qwen2.5:7b,qwen2.5:14b,qwen2.5:32b,qwen2.5:72b,qwen2.5-coder:1.5b,qwen2.5-coder:7b,qwen2.5-coder:14b,qwen2.5-coder:32b,qwq:32b,gpt-oss:20b,gpt-oss:120b,gpt-oss:latest,llama4:maverick,llama4:scout,deepseek-v3,deepseek-v3.1,deepseek-v3.2,deepseek-r1:1.5b,deepseek-r1:7b,deepseek-r1:8b,deepseek-r1:14b,deepseek-r1:32b,deepseek-r1:70b,deepseek-coder-v2,llama3.3,llama3.1:8b,llama3.1:70b,llama3.2:1b,llama3.2:3b,llama3.2-vision:11b,llama3.2-vision:90b,mistral,mistral-nemo,mistral-small3.2,mixtral:8x7b,mixtral:8x22b,codestral,devstral,gemma3:1b,gemma3:4b,gemma3:12b,gemma3:27b,gemma4:27b,gemma2:2b,gemma2:9b,gemma2:27b,phi4,phi4-mini,phi3.5,phi3:mini,falcon3:1b,falcon3:3b,falcon3:7b,falcon3:10b,yi:6b,yi:9b,yi:34b,glm4,glm4.5,glm5,kimi-k2,minimax-m2,step3,mimo-v2,internlm2.5,baichuan2:7b,baichuan2:13b,minicpm-v,smollm2:135m,smollm2:360m,smollm2:1.7b,granite3.3:2b,granite3.3:8b,command-r,command-r-plus,starcoder2:3b,starcoder2:7b,starcoder2:15b,codellama:7b,codellama:13b,codellama:34b,dolphin-mixtral,openchat,neural-chat,orca-mini,zephyr,solar,nous-hermes2,wizardlm2,vicuna,rwkv,pythia,dolly-v2,stablelm,redpajama,openllama,mpt,dbrx,arctic,bloom,bloomz,mamba,custom-model", "default,none,disabled,auto,low,medium,high,xhigh", "default"},
 };
 
-inline constexpr std::array<std::string_view, 6> kPythonConnectorKeys = {
+inline constexpr std::array<std::string_view, 9> kPythonConnectorKeys = {
     "binance-sdk-derivatives-trading-usds-futures",
     "binance-sdk-derivatives-trading-coin-futures",
     "binance-sdk-spot",
     "binance-connector",
     "ccxt",
+    "oanda-rest",
+    "fxcmpy",
+    "ig-rest",
     "python-binance",
 };
 
@@ -349,12 +352,15 @@ struct PythonConnectorOption {
     std::string_view label;
 };
 
-inline constexpr std::array<PythonConnectorOption, 6> kPythonConnectorOptions = {
+inline constexpr std::array<PythonConnectorOption, 9> kPythonConnectorOptions = {
     PythonConnectorOption{"binance-sdk-derivatives-trading-usds-futures", "Binance SDK Derivatives Trading USD\u24c8 Futures (Official Recommended)"},
     PythonConnectorOption{"binance-sdk-derivatives-trading-coin-futures", "Binance SDK Derivatives Trading COIN-M Futures"},
     PythonConnectorOption{"binance-sdk-spot", "Binance SDK Spot (Official Recommended)"},
     PythonConnectorOption{"binance-connector", "Binance Connector Python"},
     PythonConnectorOption{"ccxt", "CCXT (Unified)"},
+    PythonConnectorOption{"oanda-rest", "OANDA REST-v20"},
+    PythonConnectorOption{"fxcmpy", "FXCM fxcmpy"},
+    PythonConnectorOption{"ig-rest", "IG REST Trading API"},
     PythonConnectorOption{"python-binance", "python-binance (Community)"},
 };
 
@@ -574,16 +580,16 @@ inline constexpr std::array<PythonUiOption, 12> kPythonIndicatorSourceOptions = 
 
 inline constexpr std::array<PythonUiOption, 11> kPythonExchangeOptions = {
     PythonUiOption{"Binance", "Binance", false},
-    PythonUiOption{"Bybit", "Bybit (ccxt diagnostics)", false},
-    PythonUiOption{"OKX", "OKX (ccxt diagnostics)", false},
-    PythonUiOption{"Gate", "Gate (ccxt diagnostics)", false},
-    PythonUiOption{"Bitget", "Bitget (ccxt diagnostics)", false},
-    PythonUiOption{"MEXC", "MEXC (ccxt diagnostics)", false},
-    PythonUiOption{"KuCoin", "KuCoin (ccxt diagnostics)", false},
-    PythonUiOption{"HTX", "HTX (ccxt diagnostics)", false},
-    PythonUiOption{"Crypto.com Exchange", "Crypto.com Exchange (ccxt diagnostics)", false},
-    PythonUiOption{"Kraken", "Kraken (ccxt diagnostics)", false},
-    PythonUiOption{"Bitfinex", "Bitfinex (ccxt diagnostics)", false},
+    PythonUiOption{"Bybit", "Bybit (ccxt order routing)", false},
+    PythonUiOption{"OKX", "OKX (ccxt order routing)", false},
+    PythonUiOption{"Gate", "Gate (ccxt order routing)", false},
+    PythonUiOption{"Bitget", "Bitget (ccxt order routing)", false},
+    PythonUiOption{"MEXC", "MEXC (ccxt order routing)", false},
+    PythonUiOption{"KuCoin", "KuCoin (ccxt order routing)", false},
+    PythonUiOption{"HTX", "HTX (ccxt order routing)", false},
+    PythonUiOption{"Crypto.com Exchange", "Crypto.com Exchange (ccxt order routing)", false},
+    PythonUiOption{"Kraken", "Kraken (ccxt order routing)", false},
+    PythonUiOption{"Bitfinex", "Bitfinex (ccxt order routing)", false},
 };
 
 inline constexpr std::array<PythonUiOption, 2> kPythonAccountTypeOptions = {

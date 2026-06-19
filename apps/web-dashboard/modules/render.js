@@ -460,6 +460,9 @@ function renderConnectorError(lastError) {
 
 function renderConnectorSupport(support) {
   const payload = support && typeof support === "object" ? support : {};
+  if (payload.order_routing_supported && payload.live_evidence_required) {
+    return "Order Routing Supported (Evidence Required)";
+  }
   if (payload.trading_supported === true) {
     return "Trading Supported";
   }

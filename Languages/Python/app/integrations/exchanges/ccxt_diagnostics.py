@@ -44,8 +44,57 @@ def _compact_balances(payload: object) -> list[dict[str, object]]:
     return balances
 
 
+def _normalize_order_side(value: object) -> str:
+    side = str(value or "").strip().lower()
+    if side not in {"buy", "sell"}:
+        raise ValueError("order side must be 'buy' or 'sell'")
+    return side
+
+
+def _normalize_order_type(value: object) -> str:
+    order_type = str(value or "market").strip().lower()
+    if order_type not in {"market", "limit"}:
+        raise ValueError("ccxt order type must be 'market' or 'limit'")
+    return order_type
+
+
+def _positive_float(value: object, *, field: str) -> float:
+    try:
+        parsed = float(value)
+    except Exception as exc:
+        raise ValueError(f"{field} must be a positive number") from exc
+    if parsed <= 0:
+        raise ValueError(f"{field} must be a positive number")
+    return parsed
+
+
+def _compact_order(payload: object) -> dict[str, object]:
+    raw = dict(payload) if isinstance(payload, Mapping) else {}
+    result: dict[str, object] = {}
+    for key in (
+        "id",
+        "clientOrderId",
+        "timestamp",
+        "datetime",
+        "symbol",
+        "type",
+        "side",
+        "price",
+        "amount",
+        "filled",
+        "remaining",
+        "status",
+        "cost",
+        "average",
+    ):
+        value = raw.get(key)
+        if value not in (None, ""):
+            result[key] = value
+    return result
+
+
 class CcxtDiagnosticsConnector:
-    """Read-only ccxt connector for market/account diagnostics across supported venues."""
+    """ccxt connector for diagnostics plus guarded order routing across supported venues."""
 
     def __init__(
         self,
@@ -92,7 +141,7 @@ class CcxtDiagnosticsConnector:
 
     def _build_exchange(self) -> object:
         if not self.exchange_id:
-            raise ValueError(f"Exchange '{self.selected_exchange}' is not available through the ccxt diagnostics adapter.")
+            raise ValueError(f"Exchange '{self.selected_exchange}' is not available through the ccxt connector adapter.")
         options = self._options()
         if self._exchange_factory is not None:
             exchange = self._exchange_factory(self.exchange_id, dict(options))
@@ -146,6 +195,74 @@ class CcxtDiagnosticsConnector:
             {
                 **self.build_capability_snapshot(),
                 "balances": _compact_balances(balance),
+            }
+        )
+
+    def submit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        amount: float,
+        order_type: str = "market",
+        price: float | None = None,
+        client_order_id: str = "",
+        reduce_only: bool = False,
+        dry_run: bool = True,
+        allow_live: bool = False,
+        params: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        support = self.support_payload()
+        if not support.get("order_routing_supported"):
+            raise RuntimeError(f"ccxt order routing is not supported for {self.selected_exchange}.")
+        clean_symbol = str(symbol or "").strip()
+        if not clean_symbol:
+            raise ValueError("symbol is required")
+        clean_side = _normalize_order_side(side)
+        clean_type = _normalize_order_type(order_type)
+        clean_amount = _positive_float(amount, field="amount")
+        clean_price = None if price in (None, "") else _positive_float(price, field="price")
+        if clean_type == "limit" and clean_price is None:
+            raise ValueError("limit orders require price")
+        order_params = dict(params) if isinstance(params, Mapping) else {}
+        if client_order_id:
+            order_params.setdefault("clientOrderId", str(client_order_id).strip())
+        if reduce_only:
+            order_params.setdefault("reduceOnly", True)
+
+        request = {
+            "symbol": clean_symbol,
+            "type": clean_type,
+            "side": clean_side,
+            "amount": clean_amount,
+            "price": clean_price,
+            "params": order_params,
+        }
+        if dry_run:
+            return redact_value(
+                {
+                    **self.build_capability_snapshot(),
+                    "status": "dry_run",
+                    "request": request,
+                    "order": None,
+                }
+            )
+        if not allow_live:
+            raise RuntimeError("live ccxt order submission requires allow_live=True")
+        if not (self.api_key and self.api_secret):
+            raise RuntimeError("live ccxt order submission requires API key and secret")
+
+        exchange = self._build_exchange()
+        create_order = getattr(exchange, "create_order", None)
+        if not callable(create_order):
+            raise RuntimeError(f"ccxt exchange '{self.exchange_id}' does not expose create_order.")
+        order = create_order(clean_symbol, clean_type, clean_side, clean_amount, clean_price, order_params)
+        return redact_value(
+            {
+                **self.build_capability_snapshot(),
+                "status": "submitted",
+                "request": request,
+                "order": _compact_order(order),
             }
         )
 
