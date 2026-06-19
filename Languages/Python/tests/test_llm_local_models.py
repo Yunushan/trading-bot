@@ -242,6 +242,10 @@ class LocalLLMModelTests(unittest.TestCase):
         self.assertEqual(5.0, estimate_ollama_model_size_gb("qwen3:8b"))
         self.assertIn("2 GB", estimate_ollama_model_size_label("qwen3:1.7b"))
         self.assertEqual(20.0, estimate_ollama_model_size_gb("qwen3:32b"))
+        self.assertIn("75 GB", estimate_ollama_model_size_label("gpt-oss:120b"))
+        self.assertEqual(75.0, estimate_ollama_model_size_gb("gpt-oss:120b"))
+        self.assertIn("45 GB", estimate_ollama_model_size_label("qwen2.5:72b"))
+        self.assertEqual(45.0, estimate_ollama_model_size_gb("qwen2.5:72b"))
         self.assertIn("varies", estimate_ollama_model_size_label("custom-local-model"))
 
     def test_ollama_storage_path_honors_ollama_models_env(self):

@@ -83,6 +83,31 @@ class LLMClientPrivacyTests(unittest.TestCase):
         self.assertIn("kept-for-local-model", str(request["json"]))
         self.assertIn("advisory only", str(request["json"]))
 
+    def test_public_custom_open_source_endpoint_uses_minimized_context(self):
+        request = build_llm_chat_request(
+            {
+                "llm_provider": "open-source",
+                "llm_model": "RWKV/rwkv-6-world",
+                "llm_base_url": "https://llm.example.com/v1",
+            },
+            prompt="Explain risk.",
+            context={
+                "config": {
+                    "api_key": "exchange-key",
+                    "api_secret": "exchange-secret",
+                    "symbols": ["BTCUSDT"],
+                },
+                "custom": {"local_detail": "should-not-leave-private-runtime"},
+            },
+        )
+
+        body_text = str(request["json"])
+        self.assertIn("Cloud LLM context minimized", body_text)
+        self.assertIn("symbol_count", body_text)
+        self.assertNotIn("exchange-key", body_text)
+        self.assertNotIn("exchange-secret", body_text)
+        self.assertNotIn("should-not-leave-private-runtime", body_text)
+
     def test_llm_output_policy_detects_execution_boundary_violations(self):
         self.assertIn(
             "direct_order_action",

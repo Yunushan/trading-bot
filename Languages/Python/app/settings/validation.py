@@ -10,6 +10,7 @@ from datetime import datetime
 from .backtest import MDD_LOGIC_OPTIONS
 from .exchange_limits import BINANCE_MAX_FUTURES_LEVERAGE
 from .risk import normalize_stop_loss_dict
+from ..integrations.llm.providers import llm_provider_choices
 
 
 MAX_LOOKBACK_BARS = 1_000_000
@@ -110,30 +111,7 @@ _CHART_VIEW_MODE_CHOICES = {
     "lightweight": "lightweight",
     "tradingview lightweight": "lightweight",
 }
-_LLM_PROVIDER_CHOICES = {
-    "alibaba": "qwen",
-    "alibaba-qwen": "qwen",
-    "anthropic": "anthropic",
-    "anthropic-claude": "anthropic",
-    "chatgpt": "openai",
-    "claude": "anthropic",
-    "custom": "local",
-    "dashscope": "qwen",
-    "deepseek": "deepseek",
-    "gemini": "gemini",
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "grok": "grok",
-    "local": "local",
-    "local-openai": "local",
-    "local-openai-compatible": "local",
-    "ollama": "local",
-    "openai": "openai",
-    "openai-chatgpt": "openai",
-    "qwen": "qwen",
-    "xai": "grok",
-    "xai-grok": "grok",
-}
+_LLM_PROVIDER_CHOICES = llm_provider_choices()
 _LLM_USE_FOR_CHOICES = {
     "advisory": "advisory",
     "backtest_explanation": "backtest_explanation",

@@ -194,7 +194,7 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         model: str,
         show_installed_message: bool,
     ) -> bool:
-        if provider_key != "local" or not enabled:
+        if not self._provider_supports_local_model_actions(provider_key) or not enabled:
             return True
         clean_model = str(model or "").strip()
         if not clean_model or clean_model == "custom-model":
@@ -423,11 +423,11 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         provider = self._provider_by_key.get(provider_key) or {}
         model = str(self.model_combo.currentText() or provider.get("default_model") or "").strip()
         base_url = str(self.base_url_edit.text() or provider.get("default_base_url") or "").strip()
-        if provider_key != "local":
+        if not self._provider_supports_local_model_actions(provider_key):
             QtWidgets.QMessageBox.information(
                 self,
-                "Cloud provider selected",
-                "Local model downloads are only available for the Local / Custom OpenAI-Compatible provider.",
+                "Provider selected",
+                "Local model checks are available for local or open-source OpenAI-compatible providers.",
             )
             return
         self._ensure_local_model_available(
@@ -443,11 +443,11 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         provider = self._provider_by_key.get(provider_key) or {}
         model = str(self.model_combo.currentText() or provider.get("default_model") or "").strip()
         base_url = str(self.base_url_edit.text() or provider.get("default_base_url") or "").strip()
-        if provider_key != "local":
+        if not self._provider_supports_local_model_actions(provider_key):
             QtWidgets.QMessageBox.information(
                 self,
-                "Cloud provider selected",
-                "Local model removal is only available for the Local / Custom OpenAI-Compatible provider.",
+                "Provider selected",
+                "Local model removal is available only for local or open-source OpenAI-compatible providers.",
             )
             return
         if not model or model == "custom-model":
@@ -546,7 +546,8 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         self.model_label = QtWidgets.QLabel("Model:", self)
         layout.addWidget(self.model_label, 1, 2)
         self.model_combo = QtWidgets.QComboBox(self)
-        self.model_combo.setEditable(False)
+        self.model_combo.setEditable(True)
+        self.model_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
         layout.addWidget(self.model_combo, 1, 3)
 
         self.base_url_label = QtWidgets.QLabel("Base URL / IP:", self)
@@ -714,11 +715,15 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
             self._select_provider_key(self._fallback_provider_key(), block_signals=self._refreshing)
 
     def _sync_local_model_action_visibility(self, provider_key: str) -> None:
-        local = str(provider_key or "") == "local"
+        local = self._provider_supports_local_model_actions(provider_key)
         for name in ("local_model_btn", "remove_local_model_btn"):
             btn = getattr(self, name, None)
             if btn is not None:
                 btn.setVisible(local)
+
+    def _provider_supports_local_model_actions(self, provider_key: str) -> bool:
+        provider = self._provider_by_key.get(str(provider_key or "")) or {}
+        return str(provider.get("mode") or "") == "local"
 
     def _refresh_models_for_provider(self, provider_key: str, current_model: str) -> None:
         provider = self._provider_by_key.get(provider_key) or {}
@@ -731,7 +736,9 @@ class LLMSettingsPanel(QtWidgets.QGroupBox):
         if default_model and default_model not in suggestions:
             suggestions.insert(0, default_model)
         requested_model = str(current_model or "").strip()
-        model_text = requested_model if requested_model in suggestions else str(default_model or (suggestions[0] if suggestions else "")).strip()
+        if requested_model and requested_model not in suggestions:
+            suggestions.insert(0, requested_model)
+        model_text = requested_model or str(default_model or (suggestions[0] if suggestions else "")).strip()
         with QtCore.QSignalBlocker(self.model_combo):
             self.model_combo.clear()
             self.model_combo.addItems(suggestions)

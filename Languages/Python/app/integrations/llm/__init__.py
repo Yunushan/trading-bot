@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .providers import (
     build_llm_config_payload,
+    llm_provider_choices,
     list_llm_provider_specs,
     normalize_llm_provider_key,
     update_llm_config,
@@ -11,6 +12,7 @@ __all__ = [
     "build_llm_chat_request",
     "build_llm_config_payload",
     "call_llm",
+    "llm_provider_choices",
     "list_llm_provider_specs",
     "normalize_llm_provider_key",
     "update_llm_config",

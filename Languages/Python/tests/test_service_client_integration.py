@@ -216,6 +216,12 @@ print("ok")
         self.assertIn("anthropic", provider_by_key)
         self.assertIn("gemini", provider_by_key)
         self.assertIn("local", provider_by_key)
+        self.assertIn("ollama", provider_by_key)
+        self.assertIn("vllm", provider_by_key)
+        self.assertIn("llamacpp", provider_by_key)
+        self.assertIn("lmstudio", provider_by_key)
+        self.assertIn("tgi", provider_by_key)
+        self.assertIn("open-source", provider_by_key)
         self.assertIn("gpt-5.5-pro", provider_by_key["openai"]["model_suggestions"])
         self.assertIn("gpt-5.4-pro", provider_by_key["openai"]["model_suggestions"])
         self.assertIn("gpt-5.4-mini", provider_by_key["openai"]["model_suggestions"])
@@ -241,6 +247,43 @@ print("ok")
         self.assertIn("qwen3:4b", provider_by_key["local"]["model_suggestions"])
         self.assertIn("qwen3:1.7b", provider_by_key["local"]["model_suggestions"])
         self.assertIn("qwen3:32b", provider_by_key["local"]["model_suggestions"])
+        self.assertIn("google/flan-t5-xl", provider_by_key["local"]["model_suggestions"])
+        self.assertIn("RWKV/rwkv-6-world", provider_by_key["local"]["model_suggestions"])
+        self.assertIn("EleutherAI/gpt-neox-20b", provider_by_key["local"]["model_suggestions"])
+        self.assertIn("yandex/yalm-100b", provider_by_key["local"]["model_suggestions"])
+        self.assertIn("gpt-oss:120b", provider_by_key["ollama"]["model_suggestions"])
+        self.assertIn("Qwen/Qwen3-32B", provider_by_key["vllm"]["model_suggestions"])
+        self.assertIn("google/flan-t5-xxl", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("BlinkDL/rwkv-7-world", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("google/flan-ul2", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("databricks/dolly-v2-12b", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn(
+            "togethercomputer/RedPajama-INCITE-7B-Instruct",
+            provider_by_key["open-source"]["model_suggestions"],
+        )
+        self.assertIn("THUDM/chatglm3-6b", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("mosaicml/mpt-30b-chat", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("Qwen/Qwen3-235B-A22B-Instruct-2507", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("Qwen/Qwen3-235B-A22B-Thinking-2507", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("zai-org/GLM-5", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("moonshotai/Kimi-K2.5", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("MiniMaxAI/MiniMax-M2.5", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("stepfun-ai/Step-3.5-Flash", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("XiaomiMiMo/MiMo-V2-Flash", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("deepseek-ai/DeepSeek-V3.2", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("meta-llama/Llama-4-Maverick-17B-128E-Instruct", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn("google/gemma-4-27b-it", provider_by_key["open-source"]["model_suggestions"])
+        self.assertIn(
+            "nvidia/Llama-3.1-Nemotron-Ultra-253B-v1",
+            provider_by_key["open-source"]["model_suggestions"],
+        )
+        self.assertIn("Qwen/Qwen3-235B-A22B-Instruct-2507", provider_by_key["vllm"]["model_suggestions"])
+        self.assertIn("zai-org/GLM-5", provider_by_key["tgi"]["model_suggestions"])
+        self.assertIn("moonshotai/Kimi-K2-Thinking", provider_by_key["lmstudio"]["model_suggestions"])
+        self.assertEqual("http://127.0.0.1:1234/v1", provider_by_key["lmstudio"]["default_base_url"])
+        self.assertEqual("http://127.0.0.1:8080/v1", provider_by_key["llamacpp"]["default_base_url"])
+        self.assertEqual("http://127.0.0.1:3000/v1", provider_by_key["tgi"]["default_base_url"])
+        self.assertIn("xhigh", provider_by_key["open-source"]["reasoning_efforts"])
         self.assertEqual("BOT_LLM_EXTRA_MODELS_LOCAL", provider_by_key["local"]["custom_models_env"])
         self.assertEqual("BOT_LLM_MODEL_CATALOG_PATH", provider_by_key["local"]["custom_models_path_env"])
         self.assertIn("catalog_revision", provider_by_key["local"])
@@ -282,6 +325,36 @@ print("ok")
         self.assertEqual(llm_config["provider"], "deepseek")
         self.assertEqual(llm_config["model"], "deepseek-v4-flash")
         self.assertEqual(llm_config["reasoning_effort"], "max")
+
+        oss_result = service.run_terminal_command(
+            (
+                "llm set llm_provider=rwkv llm_model=RWKV/rwkv-6-world "
+                "llm_base_url=http://192.168.1.20:8000/v1 llm_enabled=true "
+                "llm_reasoning_effort=xhigh"
+            ),
+            source="test-terminal",
+        ).to_dict()
+        self.assertTrue(oss_result["accepted"])
+        oss_config = service.get_llm_config_payload()
+        self.assertEqual("open-source", oss_config["provider"])
+        self.assertEqual("RWKV/rwkv-6-world", oss_config["model"])
+        self.assertEqual("http://192.168.1.20:8000/v1", oss_config["base_url"])
+        self.assertEqual("xhigh", oss_config["reasoning_effort"])
+
+        linked_oss_result = service.run_terminal_command(
+            (
+                "llm set llm_provider=glm llm_model=zai-org/GLM-5 "
+                "llm_base_url=https://llm.example.test/v1 llm_enabled=true "
+                "llm_allow_public_network=true llm_reasoning_effort=high"
+            ),
+            source="test-terminal",
+        ).to_dict()
+        self.assertTrue(linked_oss_result["accepted"])
+        linked_oss_config = service.get_llm_config_payload()
+        self.assertEqual("open-source", linked_oss_config["provider"])
+        self.assertEqual("zai-org/GLM-5", linked_oss_config["model"])
+        self.assertEqual("https://llm.example.test/v1", linked_oss_config["base_url"])
+        self.assertEqual("high", linked_oss_config["reasoning_effort"])
 
         prompt_result = service.run_terminal_command("llm prompt Explain BTC risk", source="test-terminal").to_dict()
         self.assertTrue(prompt_result["accepted"])

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import requests
 
@@ -95,10 +96,24 @@ def _cloud_safe_context(context: dict | None) -> dict[str, object] | None:
     }
 
 
-def _context_for_provider(context: dict | None, *, mode: str) -> dict | None:
-    if str(mode or "").strip().lower() == "cloud":
+def _context_for_provider(context: dict | None, *, mode: str, allow_public_network: bool = False) -> dict | None:
+    if str(mode or "").strip().lower() == "cloud" or bool(allow_public_network):
         return _cloud_safe_context(context)
     return context
+
+
+def _base_url_uses_public_network(base_url: str) -> bool:
+    host = str(urlsplit(str(base_url or "").strip()).hostname or "").strip()
+    if not host:
+        return False
+    lowered = host.lower()
+    if lowered in {"localhost", "127.0.0.1", "::1"} or lowered.endswith(".local"):
+        return False
+    try:
+        address = ipaddress.ip_address(lowered)
+    except ValueError:
+        return True
+    return not (address.is_loopback or address.is_private or address.is_link_local)
 
 
 def _openai_compatible_reasoning_body(provider: str, effort: str) -> dict[str, object]:
@@ -160,7 +175,12 @@ def build_llm_chat_request(
     base_url = str(payload["base_url"])
     model = str(payload["model"])
     reasoning_effort = _reasoning_effort(payload)
-    context_for_request = _context_for_provider(context, mode=mode)
+    public_network = bool(payload.get("allow_public_network")) or _base_url_uses_public_network(base_url)
+    context_for_request = _context_for_provider(
+        context,
+        mode=mode,
+        allow_public_network=public_network,
+    )
     user_prompt = str(prompt or "").strip()
     if not user_prompt:
         raise ValueError("LLM prompt cannot be empty.")
