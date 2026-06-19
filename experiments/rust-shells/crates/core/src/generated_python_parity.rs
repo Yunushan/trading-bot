@@ -3,9 +3,13 @@
 
 pub const PYTHON_SOURCE: &str = "Languages/Python";
 pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "6ff3d6d9f95cc9d8c8bec2381fec157f94e5c964f20aeb9bd590c819e59deb8a";
-pub const CPP_FULL_PARITY_READY: bool = true;
-pub const RUST_FULL_PARITY_READY: bool = true;
+pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "56a331ef6ae380d032033028a663dd52e3992ed901c8e328d8c9350fb61fe28d";
+pub const CPP_CONTRACT_PARITY_READY: bool = true;
+pub const RUST_CONTRACT_PARITY_READY: bool = true;
+pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
+pub const RUST_STANDALONE_RUNTIME_READY: bool = false;
+pub const CPP_FULL_PARITY_READY: bool = false;
+pub const RUST_FULL_PARITY_READY: bool = false;
 
 pub struct PythonParityDomain {
     pub key: &'static str,

@@ -58,7 +58,7 @@ Full Python suite:
 
 ```bash
 python tools/run_python_tests.py
-python tools/run_python_tests.py --runner pytest
+python tools/run_python_tests.py --runner unittest
 python tools/run_python_tests.py --check-deps
 ```
 

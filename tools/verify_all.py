@@ -69,6 +69,8 @@ def _mypy_cache_dir() -> str:
 
 def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
     python = _python()
+    cargo = _command_path("cargo")
+    node = _command_path("node")
     npm = _command_path("npm")
     checks = [
         Check(
@@ -94,7 +96,21 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             required=False,
             remediation="Refresh missing client lockfiles with: npm install --package-lock-only",
         ),
-        Check("risky pattern audit", (python, "tools/audit_risky_patterns.py", "--json", "--summary"), root, required=False),
+        Check(
+            "risky pattern audit",
+            (
+                python,
+                "tools/audit_risky_patterns.py",
+                "--json",
+                "--summary",
+                "--baseline",
+                "tools/risky_patterns_baseline.json",
+                "--fail-on-regression",
+                "--fail-on-high",
+            ),
+            root,
+            remediation="Reduce broad exception/silent pass findings or update the reviewed risk baseline downward.",
+        ),
         Check(
             "python lint",
             (
@@ -150,6 +166,12 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             remediation="Keep docs/connector-support-matrix.json aligned with Python exchange support capabilities.",
         ),
         Check(
+            "support claim audit",
+            (python, "tools/check_support_claims.py", "--json"),
+            root,
+            remediation="Keep parity/support wording split between source-contract parity and evidence-backed runtime support.",
+        ),
+        Check(
             "service tests",
             (python, "Languages/Python/tools/run_service_tests.py"),
             root,
@@ -166,6 +188,30 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             (npm, "test"),
             root / "apps" / "mobile-client",
             remediation="Install mobile client dependencies with: npm install",
+        ),
+        Check(
+            "rust workspace check",
+            (cargo, "check", "--workspace"),
+            root / "experiments" / "rust-shells",
+            remediation="Install Rust with rustup before running native Rust checks.",
+        ),
+        Check(
+            "rust core tests",
+            (cargo, "test", "-p", "trading-bot-core"),
+            root / "experiments" / "rust-shells",
+            remediation="Install Rust with rustup before running native Rust tests.",
+        ),
+        Check(
+            "tauri ui behavior tests",
+            (node, "experiments/rust-shells/apps/tauri-desktop/ui/tauri-ui-behavior.test.cjs"),
+            root,
+            remediation="Install Node.js 24 before running Tauri UI behavior tests.",
+        ),
+        Check(
+            "native c++ build and tests",
+            (python, "tools/check_native_cpp.py", "--json"),
+            root,
+            remediation="Install Qt 6.10.x, CMake, and a C++ compiler before running native C++ checks.",
         ),
         Check("diff whitespace", ("git", "diff", "--check"), root),
     ]

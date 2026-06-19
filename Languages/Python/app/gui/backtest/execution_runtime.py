@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from .backtest_execution_context_runtime import configure_backtest_execution_runtime
 from .backtest_execution_run_runtime import run_backtest
-from .backtest_execution_scan_runtime import run_backtest_scan
+from .backtest_execution_scan_runtime import confirm_large_backtest_optimizer_run, run_backtest_scan
 
 _run_backtest = run_backtest
 _run_backtest_scan = run_backtest_scan
+_confirm_large_backtest_optimizer_run = confirm_large_backtest_optimizer_run
 
 
 def bind_main_window_backtest_execution_runtime(
@@ -25,3 +26,4 @@ def bind_main_window_backtest_execution_runtime(
 
     main_window_cls._run_backtest = _run_backtest
     main_window_cls._run_backtest_scan = _run_backtest_scan
+    main_window_cls._confirm_large_backtest_optimizer_run = _confirm_large_backtest_optimizer_run

@@ -125,6 +125,21 @@ jobs:
           set -euo pipefail
           python -m ruff check --config Languages/Python/pyproject.toml Languages/Python
 
+      - name: Check risky-pattern baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/audit_risky_patterns.py \
+            --baseline tools/risky_patterns_baseline.json \
+            --fail-on-regression \
+            --fail-on-high
+
+      - name: Check unsupported support claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_support_claims.py
+
       - name: Check Python dependency metadata
         shell: bash
         run: |
@@ -353,6 +368,38 @@ jobs:
         run: |
           set -euo pipefail
           python tools/check_release_platform_matrix.py --schema-only
+
+  native-cpp-smoke:
+    name: Native C++ Smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Linux C++/Qt dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libgl1-mesa-dev \
+            qt6-base-dev \
+            qt6-base-dev-tools
+
+      - name: Configure, build, and test native C++ smoke surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_native_cpp.py \
+            --no-require-webengine \
+            --build-dir build/binance_cpp_ci
 
   rust-smoke:
     name: Rust Smoke

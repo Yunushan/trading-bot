@@ -135,7 +135,12 @@ class BacktestOptimizerRuntimeTests(unittest.TestCase):
         self.assertEqual(3, plan["signal_indicator_count"])
         self.assertEqual(3, plan["indicator_group_count"])
         self.assertEqual(12, plan["run_count"])
+        self.assertEqual("1s", plan["estimated_duration"])
         self.assertFalse(plan["over_limit"])
+        self.assertIn(
+            "rough runtime estimate",
+            backtest_optimizer_runtime.format_scan_plan_estimate(plan),
+        )
         self.assertIn(
             "Estimated optimizer runs: 12",
             backtest_optimizer_runtime.format_scan_plan_estimate(plan),

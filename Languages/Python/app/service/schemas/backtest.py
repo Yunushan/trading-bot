@@ -49,7 +49,7 @@ def _normalize_string_tuple(value) -> tuple[str, ...]:  # noqa: ANN001
 
 
 def _normalize_interval_text(value) -> str:  # noqa: ANN001
-    return normalize_backtest_interval(_clean_text(value))
+    return str(normalize_backtest_interval(_clean_text(value)))
 
 
 def _normalize_interval_tuple(value) -> tuple[str, ...]:  # noqa: ANN001

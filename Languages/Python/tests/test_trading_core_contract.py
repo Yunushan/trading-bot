@@ -11,21 +11,29 @@ if str(PYTHON_ROOT) not in sys.path:
 import trading_core  # noqa: E402
 from app.core import indicators as app_indicators  # noqa: E402
 from app.core.backtest import (  # noqa: E402
+    BacktestDataQualityError as AppBacktestDataQualityError,
+    BacktestDataQualityReport as AppBacktestDataQualityReport,
     BacktestEngine as AppBacktestEngine,
     BacktestRequest as AppBacktestRequest,
     BacktestRunResult as AppBacktestRunResult,
     IndicatorDefinition as AppIndicatorDefinition,
     PairOverride as AppPairOverride,
+    inspect_backtest_frame as app_inspect_backtest_frame,
+    validate_backtest_frame as app_validate_backtest_frame,
 )
 from app.core.positions import IntervalPositionGuard as AppIntervalPositionGuard  # noqa: E402
 from app.core.strategy import StrategyEngine as AppStrategyEngine  # noqa: E402
 from trading_core import indicators as trading_indicators  # noqa: E402
 from trading_core.backtest import (  # noqa: E402
+    BacktestDataQualityError,
+    BacktestDataQualityReport,
     BacktestEngine,
     BacktestRequest,
     BacktestRunResult,
     IndicatorDefinition,
     PairOverride,
+    inspect_backtest_frame,
+    validate_backtest_frame,
 )
 from trading_core.positions import IntervalPositionGuard  # noqa: E402
 from trading_core.strategy import StrategyEngine  # noqa: E402
@@ -47,20 +55,28 @@ class TradingCoreContractTests(unittest.TestCase):
 
     def test_top_level_trading_core_exports_map_to_existing_domain_implementations(self):
         self.assertIs(trading_core.BacktestEngine, AppBacktestEngine)
+        self.assertIs(trading_core.BacktestDataQualityError, AppBacktestDataQualityError)
+        self.assertIs(trading_core.BacktestDataQualityReport, AppBacktestDataQualityReport)
         self.assertIs(trading_core.BacktestRequest, AppBacktestRequest)
         self.assertIs(trading_core.BacktestRunResult, AppBacktestRunResult)
         self.assertIs(trading_core.IndicatorDefinition, AppIndicatorDefinition)
         self.assertIs(trading_core.PairOverride, AppPairOverride)
         self.assertIs(trading_core.IntervalPositionGuard, AppIntervalPositionGuard)
         self.assertIs(trading_core.StrategyEngine, AppStrategyEngine)
+        self.assertIs(trading_core.inspect_backtest_frame, app_inspect_backtest_frame)
+        self.assertIs(trading_core.validate_backtest_frame, app_validate_backtest_frame)
         self.assertIs(trading_core.indicators.sma, app_indicators.sma)
 
     def test_domain_modules_reexport_stable_public_contracts(self):
         self.assertIs(BacktestEngine, AppBacktestEngine)
+        self.assertIs(BacktestDataQualityError, AppBacktestDataQualityError)
+        self.assertIs(BacktestDataQualityReport, AppBacktestDataQualityReport)
         self.assertIs(BacktestRequest, AppBacktestRequest)
         self.assertIs(BacktestRunResult, AppBacktestRunResult)
         self.assertIs(IndicatorDefinition, AppIndicatorDefinition)
         self.assertIs(PairOverride, AppPairOverride)
+        self.assertIs(inspect_backtest_frame, app_inspect_backtest_frame)
+        self.assertIs(validate_backtest_frame, app_validate_backtest_frame)
         self.assertIs(IntervalPositionGuard, AppIntervalPositionGuard)
         self.assertIs(StrategyEngine, AppStrategyEngine)
         self.assertIs(trading_indicators.atr, app_indicators.atr)

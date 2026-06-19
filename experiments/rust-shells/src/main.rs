@@ -1,6 +1,8 @@
 use trading_bot_core::{
-    app_banner, cpp_entire_python_app_parity_ready, native_full_python_app_parity_ready,
-    native_python_app_parity_domains, rust_entire_python_app_parity_ready,
+    app_banner, cpp_entire_python_app_contract_parity_ready,
+    cpp_entire_python_app_parity_ready, native_full_python_app_parity_ready,
+    native_python_app_contract_parity_ready, native_python_app_parity_domains,
+    rust_entire_python_app_contract_parity_ready, rust_entire_python_app_parity_ready,
     rust_native_runtime_capabilities, rust_native_trading_runtime_ready, supported_frameworks,
 };
 
@@ -15,18 +17,30 @@ fn main() {
         rust_native_trading_runtime_ready()
     );
     println!(
-        "Entire Python app parity ready: {}",
+        "Python app contract/catalog parity ready: {}",
+        native_python_app_contract_parity_ready()
+    );
+    println!(
+        "C++ Python app contract/catalog parity ready: {}",
+        cpp_entire_python_app_contract_parity_ready()
+    );
+    println!(
+        "Rust Python app contract/catalog parity ready: {}",
+        rust_entire_python_app_contract_parity_ready()
+    );
+    println!(
+        "Full standalone Python app parity ready: {}",
         native_full_python_app_parity_ready()
     );
     println!(
-        "C++ entire Python app parity ready: {}",
+        "C++ full standalone Python app parity ready: {}",
         cpp_entire_python_app_parity_ready()
     );
     println!(
-        "Rust entire Python app parity ready: {}",
+        "Rust full standalone Python app parity ready: {}",
         rust_entire_python_app_parity_ready()
     );
-    println!("Full Python app parity audit:");
+    println!("Python app contract parity audit:");
     for domain in native_python_app_parity_domains() {
         println!(
             "- {}: {} | C++ parity: {} | Rust parity: {}",

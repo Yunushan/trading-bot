@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import heapq
 from dataclasses import asdict, is_dataclass
-from typing import Any
+from typing import Any, cast
 
 from .optimizer_limits_runtime import MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
 
@@ -20,16 +20,18 @@ def _clean_text(value: object, default: str = "") -> str:
 
 
 def _coerce_number(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool) or value in (None, ""):
+        return float(default)
     try:
-        return float(value)
-    except Exception:
+        return float(str(value).strip() if isinstance(value, str) else str(value))
+    except (TypeError, ValueError):
         return float(default)
 
 
 def _coerce_int(value: object, default: int = 0) -> int:
     try:
-        return int(float(value))
-    except Exception:
+        return int(_coerce_number(value, float(default)))
+    except (TypeError, ValueError, OverflowError):
         return int(default)
 
 
@@ -39,8 +41,8 @@ def normalize_optimizer_metric(value: object) -> str:
 
 
 def run_to_mapping(run: object) -> dict[str, object]:
-    if is_dataclass(run):
-        return asdict(run)
+    if not isinstance(run, type) and is_dataclass(run):
+        return cast(dict[str, object], asdict(cast(Any, run)))
     if isinstance(run, dict):
         return dict(run)
     return {

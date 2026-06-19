@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import traceback
 
+from app.core.backtest.optimizer_limits_runtime import BACKTEST_OPTIMIZER_INTERACTIVE_RUN_WARNING
 from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition
 from app.core.backtest.indicator_selection_runtime import (
     build_backtest_indicator_definitions,
@@ -19,6 +20,26 @@ from .backtest_execution_context_runtime import (
 )
 from .backtest_service_execution_runtime import maybe_start_service_backtest
 from .backtest_service_payload_runtime import build_service_backtest_request_payload
+
+
+def confirm_large_backtest_optimizer_run(self, message: str) -> bool:
+    try:
+        from PyQt6 import QtWidgets
+
+        response = QtWidgets.QMessageBox.question(
+            self,
+            "Large optimizer run",
+            message,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        return response == QtWidgets.QMessageBox.StandardButton.Yes
+    except (AttributeError, ImportError, RuntimeError, TypeError):
+        try:
+            self.backtest_status_label.setText("Large optimizer run needs confirmation before starting.")
+        except (AttributeError, RuntimeError):
+            return False
+        return False
 
 
 def _selected_backtest_symbol_values(self) -> list[str]:
@@ -217,6 +238,24 @@ def run_backtest_scan(self):
             )
             return
         large_optimizer_run = run_count > backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS
+        if run_count > BACKTEST_OPTIMIZER_INTERACTIVE_RUN_WARNING:
+            plan = backtest_optimizer_runtime.estimate_scan_plan(
+                symbols_all=symbols,
+                selected_symbols=symbols,
+                intervals=intervals,
+                indicator_keys=indicator_keys_order,
+                scope="selected",
+                top_n=len(symbols),
+                mode=optimizer_mode,
+                combo_size=optimizer_combo_size,
+                logic=logic,
+            )
+            estimate = backtest_optimizer_runtime.format_scan_plan_estimate(plan)
+            if not self._confirm_large_backtest_optimizer_run(
+                f"{estimate}\n\nThis can run for a long time. Continue?"
+            ):
+                self.backtest_status_label.setText("Optimizer cancelled before start.")
+                return
 
         pair_overrides = None
         request_logic = logic
@@ -381,7 +420,21 @@ def run_backtest_scan(self):
         self.backtest_scan_worker.progress.connect(self._on_backtest_progress)
         self.backtest_scan_worker.finished.connect(self._on_backtest_scan_finished)
         self.backtest_results_table.setRowCount(0)
-        status_message = f"Running optimizer: {run_count} run(s), {scope_label}, {mode_label}..."
+        plan = backtest_optimizer_runtime.estimate_scan_plan(
+            symbols_all=symbols,
+            selected_symbols=symbols,
+            intervals=intervals,
+            indicator_keys=indicator_keys_order,
+            scope="selected",
+            top_n=len(symbols),
+            mode=optimizer_mode,
+            combo_size=optimizer_combo_size,
+            logic=logic,
+        )
+        status_message = (
+            f"Running optimizer: {run_count} run(s), {scope_label}, {mode_label}; "
+            f"rough estimate {plan.get('estimated_duration', 'unknown')}..."
+        )
         if large_optimizer_run:
             status_message += (
                 f" Showing top {backtest_optimizer_runtime.MAX_BACKTEST_OPTIMIZER_TABLE_ROWS} row(s)."

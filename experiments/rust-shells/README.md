@@ -89,18 +89,25 @@ guard for this is
 `rust_native_trading_runtime_ready() == false` and the capability matrix exposed
 by `rust_native_runtime_capabilities()`.
 
-## Full Python app parity audit
+## Python app contract parity audit
 
-The Rust workspace now exposes a broader full-app parity contract through
+The Rust workspace exposes a Python app source-contract parity matrix through
 `native_python_app_parity_domains()`. That matrix is intentionally separate from
-option-list and route-catalog parity: mirrored controls are useful, but they do
-not mean Rust owns the Python app's execution behavior.
+standalone runtime/product parity: mirrored controls and generated route catalogs
+are useful, but they do not mean Rust owns the Python app's trading execution
+behavior or has release evidence for every platform.
 
 Current source-level guards:
 
-- `native_full_python_app_parity_ready() == true`
-- `cpp_entire_python_app_parity_ready() == true`
-- `rust_entire_python_app_parity_ready() == true`
+- `native_python_app_contract_parity_ready() == true`
+- `cpp_entire_python_app_contract_parity_ready() == true`
+- `rust_entire_python_app_contract_parity_ready() == true`
+
+Current standalone runtime/product guards:
+
+- `native_full_python_app_parity_ready() == false`
+- `cpp_entire_python_app_parity_ready() == false`
+- `rust_entire_python_app_parity_ready() == false`
 
 The tracked domains are desktop shell/tabs, Service API contract, config
 persistence, strategy runtime, exchange connectors, account/portfolio/positions,

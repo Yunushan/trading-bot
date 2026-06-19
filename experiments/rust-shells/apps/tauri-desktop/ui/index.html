@@ -619,11 +619,11 @@
           </div>
         </section>
         <section class="panel" id="full-python-app-parity-audit">
-          <h3>Full Python App Parity Audit</h3>
-          <p class="muted">Entire Python app parity ready: true. C++ entire Python app parity ready: true. Rust entire Python app parity ready: true.</p>
+          <h3>Python App Contract Parity Audit</h3>
+          <p class="muted">Python app contract/catalog parity ready: true. C++ contract/catalog parity ready: true. Rust contract/catalog parity ready: true. Full standalone runtime parity ready: false until native execution ownership and external release evidence exist.</p>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Domain</th><th>Python surface</th><th>C++ status</th><th>Rust status</th><th>Required before full parity</th></tr></thead>
+              <thead><tr><th>Domain</th><th>Python surface</th><th>C++ status</th><th>Rust status</th><th>Contract completion / runtime boundary</th></tr></thead>
               <tbody>
                 <tr><td>desktop_shell_and_tabs</td><td>Python owns the production PyQt desktop shell and live tab wiring</td><td>Complete Qt tab order, lazy lifecycle, theme/startup, release ownership, and tab behavior tests</td><td>Complete Tauri operational shell plus explicit non-operational renderer boundaries</td><td>Complete for this domain</td></tr>
                 <tr><td>service_api_contract</td><td>Canonical /api/v1 route, method, schema, auth, and stream contract</td><td>Complete in generated Python parity matrix with route/method/schema helpers and native request/response smoke coverage</td><td>Complete in generated Python parity matrix with Tauri operational client behavior and explicit non-operational shell boundaries</td><td>Complete for this domain</td></tr>

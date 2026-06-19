@@ -63,16 +63,18 @@ def _env_value(env: Mapping[str, str] | None, key: str) -> str:
 
 
 def _float_value(value: object, default: float) -> float:
+    if isinstance(value, bool) or value in (None, ""):
+        return float(default)
     try:
-        return float(value)
+        return float(str(value).strip())
     except (TypeError, ValueError):
         return float(default)
 
 
 def _int_value(value: object, default: int) -> int:
     try:
-        return int(float(value))
-    except (TypeError, ValueError):
+        return int(_float_value(value, float(default)))
+    except (TypeError, ValueError, OverflowError):
         return int(default)
 
 

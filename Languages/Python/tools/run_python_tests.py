@@ -56,7 +56,7 @@ def _dependency_names_for_runner(runner: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
-def missing_python_test_dependencies(runner: str = "unittest") -> list[str]:
+def missing_python_test_dependencies(runner: str = "pytest") -> list[str]:
     return [
         name
         for name in _dependency_names_for_runner(runner)
@@ -64,7 +64,7 @@ def missing_python_test_dependencies(runner: str = "unittest") -> list[str]:
     ]
 
 
-def check_dependencies(runner: str = "unittest") -> int:
+def check_dependencies(runner: str = "pytest") -> int:
     missing = missing_python_test_dependencies(runner)
     if not missing:
         return 0
@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--runner",
         choices=("unittest", "pytest"),
-        default="unittest",
+        default="pytest",
         help="test runner to invoke after dependency preflight",
     )
     parser.add_argument("--check-deps", action="store_true", help="only verify test dependencies")

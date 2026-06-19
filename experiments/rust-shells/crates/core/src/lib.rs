@@ -230,6 +230,22 @@ pub fn python_source_positions_view_options() -> &'static [NativePythonUiOption]
     generated_python_parity::PYTHON_POSITIONS_VIEW_OPTIONS
 }
 
+pub fn python_source_cpp_contract_parity_ready() -> bool {
+    generated_python_parity::CPP_CONTRACT_PARITY_READY
+}
+
+pub fn python_source_rust_contract_parity_ready() -> bool {
+    generated_python_parity::RUST_CONTRACT_PARITY_READY
+}
+
+pub fn python_source_cpp_standalone_runtime_ready() -> bool {
+    generated_python_parity::CPP_STANDALONE_RUNTIME_READY
+}
+
+pub fn python_source_rust_standalone_runtime_ready() -> bool {
+    generated_python_parity::RUST_STANDALONE_RUNTIME_READY
+}
+
 pub fn python_source_cpp_full_parity_ready() -> bool {
     generated_python_parity::CPP_FULL_PARITY_READY
 }
@@ -297,16 +313,28 @@ pub fn rust_native_trading_runtime_ready() -> bool {
     false
 }
 
-pub fn cpp_entire_python_app_parity_ready() -> bool {
+pub fn cpp_entire_python_app_contract_parity_ready() -> bool {
     native_python_app_parity_domains()
         .iter()
         .all(|domain| domain.cpp_full_parity)
 }
 
-pub fn rust_entire_python_app_parity_ready() -> bool {
+pub fn rust_entire_python_app_contract_parity_ready() -> bool {
     native_python_app_parity_domains()
         .iter()
         .all(|domain| domain.rust_full_parity)
+}
+
+pub fn native_python_app_contract_parity_ready() -> bool {
+    cpp_entire_python_app_contract_parity_ready() && rust_entire_python_app_contract_parity_ready()
+}
+
+pub fn cpp_entire_python_app_parity_ready() -> bool {
+    python_source_cpp_full_parity_ready()
+}
+
+pub fn rust_entire_python_app_parity_ready() -> bool {
+    python_source_rust_full_parity_ready()
 }
 
 pub fn native_full_python_app_parity_ready() -> bool {

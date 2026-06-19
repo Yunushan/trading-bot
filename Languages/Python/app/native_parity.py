@@ -2,8 +2,10 @@
 Python-owned native parity contract for C++ and Rust destinations.
 
 This module is intentionally data-oriented.  It defines the Python source
-surface that native destinations must track before they can honestly claim full
-parity with the Python application.
+surface that native destinations must track before they can honestly claim
+contract parity with the Python application. Standalone product/runtime parity
+is stricter and remains false until native runtimes have matching execution
+ownership plus external evidence.
 """
 
 from __future__ import annotations
@@ -58,6 +60,8 @@ from .settings.validation import (
 
 NATIVE_PARITY_SCHEMA_VERSION = 1
 NATIVE_PARITY_SOURCE = "Languages/Python"
+CPP_STANDALONE_RUNTIME_READY = False
+RUST_STANDALONE_RUNTIME_READY = False
 
 CONFIG_MODE_OPTIONS = ("Live", "Demo", "Testnet")
 THEME_OPTIONS = ("Light", "Dark", "Blue", "Yellow", "Green", "Red")
@@ -318,12 +322,22 @@ def native_python_source_contract_payload() -> dict[str, Any]:
     ]
     execution_defaults = ExecutionSettings()
     backtest_defaults = BacktestSettings()
+    cpp_contract_parity = all(domain.cpp_full_parity for domain in NATIVE_PARITY_DOMAINS)
+    rust_contract_parity = all(domain.rust_full_parity for domain in NATIVE_PARITY_DOMAINS)
     return {
         "schema_version": NATIVE_PARITY_SCHEMA_VERSION,
         "source": NATIVE_PARITY_SOURCE,
+        "contract_parity": {
+            "cpp": cpp_contract_parity,
+            "rust": rust_contract_parity,
+        },
+        "standalone_runtime_ready": {
+            "cpp": CPP_STANDALONE_RUNTIME_READY,
+            "rust": RUST_STANDALONE_RUNTIME_READY,
+        },
         "full_parity": {
-            "cpp": all(domain.cpp_full_parity for domain in NATIVE_PARITY_DOMAINS),
-            "rust": all(domain.rust_full_parity for domain in NATIVE_PARITY_DOMAINS),
+            "cpp": cpp_contract_parity and CPP_STANDALONE_RUNTIME_READY,
+            "rust": rust_contract_parity and RUST_STANDALONE_RUNTIME_READY,
         },
         "domains": [_domain_payload(domain) for domain in NATIVE_PARITY_DOMAINS],
         "service_api": {
@@ -491,6 +505,10 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "backtest_templates": list(payload["ui_options"]["backtest_templates"]),
         "default_execution": dict(payload["default_execution"]),
         "default_backtest": dict(payload["default_backtest"]),
+        "cpp_contract_parity": payload["contract_parity"]["cpp"],
+        "rust_contract_parity": payload["contract_parity"]["rust"],
+        "cpp_standalone_runtime_ready": payload["standalone_runtime_ready"]["cpp"],
+        "rust_standalone_runtime_ready": payload["standalone_runtime_ready"]["rust"],
         "cpp_full_parity": payload["full_parity"]["cpp"],
         "rust_full_parity": payload["full_parity"]["rust"],
     }

@@ -18,7 +18,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core.backtest import BacktestEngine, BacktestRequest, IndicatorDefinition  # noqa: E402
+from app.core.backtest import (  # noqa: E402
+    BacktestDataQualityError,
+    BacktestEngine,
+    BacktestRequest,
+    IndicatorDefinition,
+    inspect_backtest_frame,
+    validate_backtest_frame,
+)
 from app.core.backtest.models import PairOverride  # noqa: E402
 from app.core.backtest.indicator_runtime import (  # noqa: E402
     compute_indicator_series,
@@ -581,6 +588,54 @@ class BacktestBehaviorTests(unittest.TestCase):
         assert run.strategy_controls is not None
         self.assertEqual("SELL", run.strategy_controls["side"])
         self.assertEqual(4, run.strategy_controls["leverage"])
+
+    def test_data_quality_report_accepts_contiguous_ohlcv_frame(self):
+        df = _build_frame([100.0, 101.0, 102.0])
+
+        report = inspect_backtest_frame(df, interval="1h")
+
+        self.assertTrue(report.ok, report.issues())
+        self.assertEqual(3, report.row_count)
+        self.assertEqual(3600.0, report.expected_interval_seconds)
+
+    def test_data_quality_report_rejects_duplicate_timestamps_and_bad_prices(self):
+        df = _build_frame([100.0, 101.0, 102.0])
+        df.index = [df.index[0], df.index[0], df.index[2]]
+        df.loc[df.index[1], "close"] = 0.0
+
+        report = inspect_backtest_frame(df, interval="1h")
+
+        self.assertFalse(report.ok)
+        self.assertEqual(1, report.duplicate_index_count)
+        self.assertGreater(report.non_positive_price_counts["close"], 0)
+        self.assertIn("duplicate timestamp", report.message())
+        self.assertIn("close has", report.message())
+        with self.assertRaises(BacktestDataQualityError):
+            validate_backtest_frame(df, interval="1h")
+
+    def test_data_quality_report_rejects_candle_gaps(self):
+        df = _build_frame([100.0, 101.0, 102.0])
+        df = df.drop(df.index[1])
+
+        report = inspect_backtest_frame(df, interval="1h")
+
+        self.assertFalse(report.ok)
+        self.assertEqual(1, report.gap_count)
+        self.assertGreaterEqual(report.max_gap_seconds, 7200.0)
+
+    def test_run_rejects_bad_historical_data_before_simulation(self):
+        df = _build_frame([100.0, 101.0, 102.0])
+        df = df.drop(columns=["volume"])
+        indicators = [IndicatorDefinition(key="synthetic", params={"buy_value": 30, "sell_value": 70})]
+        engine = _SyntheticBacktestEngine({"synthetic": [20.0, 50.0, 80.0]}, frame=df)
+        request = _build_request(df, indicators)
+
+        result = engine.run(request)
+
+        self.assertEqual([], result["runs"])
+        self.assertEqual(1, len(result["errors"]))
+        self.assertIn("Backtest data quality failed", result["errors"][0]["error"])
+        self.assertIn("missing columns: volume", result["errors"][0]["error"])
 
     def test_simulate_stop_loss_exits_on_intrabar_extreme(self):
         df = _build_frame(

@@ -288,7 +288,7 @@ _RISK_BOOL_KEYS = (
     "allow_opposite_positions",
     "hedge_preserve_opposites",
 )
-_RISK_INT_RANGES = {
+_RISK_INT_RANGES: dict[str, tuple[int, int]] = {
     "indicator_flip_cooldown_bars": (0, MAX_CONFIG_COUNT),
     "indicator_min_position_hold_bars": (0, MAX_CONFIG_COUNT),
     "indicator_reentry_cooldown_bars": (0, MAX_CONFIG_COUNT),
@@ -296,7 +296,7 @@ _RISK_INT_RANGES = {
     "positions_missing_threshold": (1, MAX_CONFIG_COUNT),
     "futures_flat_purge_miss_threshold": (1, MAX_CONFIG_COUNT),
 }
-_RISK_FLOAT_RANGES = {
+_RISK_FLOAT_RANGES: dict[str, tuple[float, float]] = {
     "indicator_flip_cooldown_seconds": (0.0, MAX_POLICY_SECONDS),
     "indicator_min_position_hold_seconds": (0.0, MAX_POLICY_SECONDS),
     "indicator_reentry_cooldown_seconds": (0.0, MAX_POLICY_SECONDS),
@@ -339,7 +339,7 @@ def _field(prefix: str, key: str) -> str:
 
 
 def _validate_allowed_keys(
-    cfg: Mapping[object, object],
+    cfg: Mapping[str, object],
     allowed_keys: frozenset[str],
     issues: list[ConfigValidationIssue],
     *,
@@ -360,7 +360,7 @@ def _finite_float(value: object) -> float | None:
     if isinstance(value, bool):
         return None
     try:
-        number = float(str(value).strip() if isinstance(value, str) else value)
+        number = float(str(value).strip())
     except Exception:
         return None
     return number if math.isfinite(number) else None
@@ -933,8 +933,8 @@ def validate_runtime_config(config: Mapping[str, object] | dict[str, object] | N
         _validate_bool(cfg, key, issues)
     for key, (min_value, max_value) in _RISK_INT_RANGES.items():
         _validate_int_range(cfg, key, issues, min_value=min_value, max_value=max_value)
-    for key, (min_value, max_value) in _RISK_FLOAT_RANGES.items():
-        _validate_float_range(cfg, key, issues, min_value=min_value, max_value=max_value)
+    for key, (min_float, max_float) in _RISK_FLOAT_RANGES.items():
+        _validate_float_range(cfg, key, issues, min_value=min_float, max_value=max_float)
     _validate_text(cfg, "connector_backend", issues)
     _validate_text(cfg, "indicator_source", issues)
     _validate_text(cfg, "code_language", issues)

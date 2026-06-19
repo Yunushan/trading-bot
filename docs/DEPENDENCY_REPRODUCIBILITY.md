@@ -65,6 +65,10 @@ versions.
 advisory checks so dependency drift, missing client lockfiles, generated
 artifacts, and missing local tooling are visible in one report.
 
+For the broader release-readiness checklist, including native C++/Rust gates,
+backtest optimizer guardrails, connector evidence, platform promotion, and
+manual product QA, see `docs/QUALITY_AND_EVIDENCE_GATES.md`.
+
 Runtime version mismatches are reported as a blocking advisory in
 `tools/verify_all.py`: the tool still prints the downstream check results, but
 the overall report does not pass until Python and Node match the declared

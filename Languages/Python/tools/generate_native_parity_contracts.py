@@ -632,6 +632,16 @@ def render_rust_module() -> str:
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
         f"pub const PYTHON_SOURCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
+        f"pub const CPP_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['cpp_contract_parity'])};",
+        f"pub const RUST_CONTRACT_PARITY_READY: bool = {_rust_bool(summary['rust_contract_parity'])};",
+        (
+            "pub const CPP_STANDALONE_RUNTIME_READY: bool = "
+            f"{_rust_bool(summary['cpp_standalone_runtime_ready'])};"
+        ),
+        (
+            "pub const RUST_STANDALONE_RUNTIME_READY: bool = "
+            f"{_rust_bool(summary['rust_standalone_runtime_ready'])};"
+        ),
         f"pub const CPP_FULL_PARITY_READY: bool = {_rust_bool(summary['cpp_full_parity'])};",
         f"pub const RUST_FULL_PARITY_READY: bool = {_rust_bool(summary['rust_full_parity'])};",
         "",
@@ -698,6 +708,16 @@ def render_cpp_header() -> str:
         f"inline constexpr std::string_view kPythonSource = {_cpp_string(summary['source'])};",
         f"inline constexpr unsigned kPythonSourceSchemaVersion = {int(summary['schema_version'])};",
         f"inline constexpr std::string_view kPythonSourceContractHash = {_cpp_string(native_python_source_contract_hash())};",
+        f"inline constexpr bool kCppContractParityReady = {str(bool(summary['cpp_contract_parity'])).lower()};",
+        f"inline constexpr bool kRustContractParityReady = {str(bool(summary['rust_contract_parity'])).lower()};",
+        (
+            "inline constexpr bool kCppStandaloneRuntimeReady = "
+            f"{str(bool(summary['cpp_standalone_runtime_ready'])).lower()};"
+        ),
+        (
+            "inline constexpr bool kRustStandaloneRuntimeReady = "
+            f"{str(bool(summary['rust_standalone_runtime_ready'])).lower()};"
+        ),
         f"inline constexpr bool kCppFullParityReady = {str(bool(summary['cpp_full_parity'])).lower()};",
         f"inline constexpr bool kRustFullParityReady = {str(bool(summary['rust_full_parity'])).lower()};",
         "",
@@ -779,6 +799,12 @@ def render_tauri_browser_contract() -> str:
         "source": summary["source"],
         "schemaVersion": int(summary["schema_version"]),
         "contractHash": native_python_source_contract_hash(),
+        "cppContractParityReady": bool(summary["cpp_contract_parity"]),
+        "rustContractParityReady": bool(summary["rust_contract_parity"]),
+        "cppStandaloneRuntimeReady": bool(summary["cpp_standalone_runtime_ready"]),
+        "rustStandaloneRuntimeReady": bool(summary["rust_standalone_runtime_ready"]),
+        "cppFullParityReady": bool(summary["cpp_full_parity"]),
+        "rustFullParityReady": bool(summary["rust_full_parity"]),
         "indicatorCatalog": [
             {
                 "key": str(indicator["key"]),

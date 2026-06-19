@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
+import time
 from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
 from ...settings.risk import coerce_bool, normalize_stop_loss_dict
+from .data_quality import validate_backtest_frame
 from .engine_data_runtime import slice_work_frame
-from .optimizer_limits_runtime import BACKTEST_OPTIMIZER_PROGRESS_EVERY
+from .optimizer_limits_runtime import BACKTEST_OPTIMIZER_PROGRESS_EVERY, format_optimizer_progress
 from .optimizer_result_runtime import OptimizerTopResultCollector
 from .engine_signal_runtime import IndicatorCache, SignalCache
 from .indicator_runtime import filter_indicators, signal_indicators
@@ -50,7 +52,7 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or value in (None, ""):
         return None
     try:
-        return float(value)
+        return float(str(value).strip())
     except Exception:
         return None
 
@@ -262,8 +264,8 @@ def build_effective_request(
     if stop_loss_cfg is not None:
         updates["stop_loss_enabled"] = bool(stop_loss_cfg.get("enabled"))
         updates["stop_loss_mode"] = str(stop_loss_cfg.get("mode") or "usdt")
-        updates["stop_loss_usdt"] = float(stop_loss_cfg.get("usdt", 0.0) or 0.0)
-        updates["stop_loss_percent"] = float(stop_loss_cfg.get("percent", 0.0) or 0.0)
+        updates["stop_loss_usdt"] = _optional_float(stop_loss_cfg.get("usdt", 0.0)) or 0.0
+        updates["stop_loss_percent"] = _optional_float(stop_loss_cfg.get("percent", 0.0)) or 0.0
         updates["stop_loss_scope"] = str(stop_loss_cfg.get("scope") or "per_trade")
     return replace(request, **updates)
 
@@ -321,6 +323,7 @@ def run_backtest(
     signal_cache: SignalCache = {}
     result_collector = OptimizerTopResultCollector.from_request(request)
     processed_count = 0
+    optimizer_started_at = time.monotonic()
 
     def _record_run(run: BacktestRunResult) -> None:
         if result_collector is not None:
@@ -363,6 +366,7 @@ def run_backtest(
                         data_cache[cache_key] = df
                 if df is None or df.empty:
                     raise RuntimeError("No historical data returned.")
+                validate_backtest_frame(df, interval=interval)
 
                 work_df, work_start_idx = slice_work_frame(df, effective_request.start)
                 if effective_logic == "SEPARATE":
@@ -400,8 +404,11 @@ def run_backtest(
                                 and processed_count % BACKTEST_OPTIMIZER_PROGRESS_EVERY == 0
                             ):
                                 progress(
-                                    f"Optimized {processed_count:,}/"
-                                    f"{result_collector.run_count or processed_count:,} candidate run(s)..."
+                                    format_optimizer_progress(
+                                        processed_count,
+                                        result_collector.run_count or processed_count,
+                                        elapsed_seconds=time.monotonic() - optimizer_started_at,
+                                    )
                                 )
                 else:
                     run = engine._simulate(
@@ -431,8 +438,11 @@ def run_backtest(
                             and processed_count % BACKTEST_OPTIMIZER_PROGRESS_EVERY == 0
                         ):
                             progress(
-                                f"Optimized {processed_count:,}/"
-                                f"{result_collector.run_count or processed_count:,} candidate run(s)..."
+                                format_optimizer_progress(
+                                    processed_count,
+                                    result_collector.run_count or processed_count,
+                                    elapsed_seconds=time.monotonic() - optimizer_started_at,
+                                )
                             )
             except Exception as exc:
                 if str(exc).lower().startswith("backtest_cancelled"):

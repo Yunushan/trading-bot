@@ -13,6 +13,8 @@ from .orders import OrderSubmitIntent, order_submit_intent_from_params, validate
 
 __all__ = [
     "BacktestEngine",
+    "BacktestDataQualityError",
+    "BacktestDataQualityReport",
     "BacktestRequest",
     "BacktestRunResult",
     "IndicatorDefinition",
@@ -21,7 +23,9 @@ __all__ = [
     "PairOverride",
     "StrategyEngine",
     "indicators",
+    "inspect_backtest_frame",
     "order_submit_intent_from_params",
+    "validate_backtest_frame",
     "validate_order_submit_intent",
 ]
 
@@ -29,7 +33,17 @@ __all__ = [
 def __getattr__(name: str):
     if name == "indicators":
         return import_module(f"{__name__}.indicators")
-    if name in {"BacktestEngine", "BacktestRequest", "BacktestRunResult", "IndicatorDefinition", "PairOverride"}:
+    if name in {
+        "BacktestDataQualityError",
+        "BacktestDataQualityReport",
+        "BacktestEngine",
+        "BacktestRequest",
+        "BacktestRunResult",
+        "IndicatorDefinition",
+        "PairOverride",
+        "inspect_backtest_frame",
+        "validate_backtest_frame",
+    }:
         backtest_module = import_module(f"{__name__}.backtest")
         return getattr(backtest_module, name)
     if name == "IntervalPositionGuard":

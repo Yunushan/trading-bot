@@ -222,7 +222,10 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "6ff3d6d9f95cc9d8c8bec2381fec157f94e5c964f20aeb9bd590c819e59deb8a",
+  "contractHash": "56a331ef6ae380d032033028a663dd52e3992ed901c8e328d8c9350fb61fe28d",
+  "cppContractParityReady": true,
+  "cppFullParityReady": false,
+  "cppStandaloneRuntimeReady": false,
   "dashboardLoopChoices": [
     {
       "key": "30s",
@@ -3374,6 +3377,9 @@
       "value": "per_trade"
     }
   ],
+  "rustContractParityReady": true,
+  "rustFullParityReady": false,
+  "rustStandaloneRuntimeReady": false,
   "scanScopeOptions": [
     {
       "key": "selected",

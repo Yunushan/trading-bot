@@ -5,9 +5,11 @@ use iced::{
     widget::{button, column, container, row, scrollable, text},
 };
 use trading_bot_core::{
-    TradingAppTab, app_banner, cpp_entire_python_app_parity_ready,
-    native_full_python_app_parity_ready, native_python_app_parity_domains,
-    rust_entire_python_app_parity_ready, rust_execution_modes, rust_native_runtime_capabilities,
+    TradingAppTab, app_banner, cpp_entire_python_app_contract_parity_ready,
+    cpp_entire_python_app_parity_ready, native_full_python_app_parity_ready,
+    native_python_app_contract_parity_ready, native_python_app_parity_domains,
+    rust_entire_python_app_contract_parity_ready, rust_entire_python_app_parity_ready,
+    rust_execution_modes, rust_native_runtime_capabilities,
     rust_native_trading_runtime_ready, rust_shell_framework_parity,
     rust_trading_execution_supported, service_api_capabilities, service_api_routes,
     trading_app_tabs,
@@ -116,21 +118,33 @@ fn service_api_panel() -> Element<'static, Message> {
         )));
     }
     body = body.push(text(format!(
-        "Entire Python app parity ready: {}",
+        "Python app contract/catalog parity ready: {}",
+        native_python_app_contract_parity_ready()
+    )));
+    body = body.push(text(format!(
+        "C++ Python app contract/catalog parity ready: {}",
+        cpp_entire_python_app_contract_parity_ready()
+    )));
+    body = body.push(text(format!(
+        "Rust Python app contract/catalog parity ready: {}",
+        rust_entire_python_app_contract_parity_ready()
+    )));
+    body = body.push(text(format!(
+        "Full standalone Python app parity ready: {}",
         native_full_python_app_parity_ready()
     )));
     body = body.push(text(format!(
-        "C++ entire Python app parity ready: {}",
+        "C++ full standalone Python app parity ready: {}",
         cpp_entire_python_app_parity_ready()
     )));
     body = body.push(text(format!(
-        "Rust entire Python app parity ready: {}",
+        "Rust full standalone Python app parity ready: {}",
         rust_entire_python_app_parity_ready()
     )));
-    body = body.push(text("Full Python App Parity Audit"));
+    body = body.push(text("Python App Contract Parity Audit"));
     for domain in native_python_app_parity_domains() {
         body = body.push(text(format!(
-            "{} - {} | Python: {} | C++: {} | Rust: {} | Required before full parity: {} | cpp_full_parity={} | rust_full_parity={}",
+            "{} - {} | Python: {} | C++: {} | Rust: {} | Contract completion: {} | cpp_contract_parity={} | rust_contract_parity={}",
             domain.key,
             domain.title,
             domain.python_surface,

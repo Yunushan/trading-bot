@@ -62,12 +62,14 @@ class PythonTestRunnerTests(unittest.TestCase):
         with (
             mock.patch.object(run_python_tests, "check_dependencies", return_value=0) as check_dependencies,
             mock.patch.object(run_python_tests, "run_unittest_suite") as run_unittest_suite,
+            mock.patch.object(run_python_tests, "run_pytest_suite") as run_pytest_suite,
         ):
             returncode, stdout, stderr = _run_runner("--check-deps")
 
         self.assertEqual(0, returncode, f"stdout={stdout}\nstderr={stderr}")
-        check_dependencies.assert_called_once_with("unittest")
+        check_dependencies.assert_called_once_with("pytest")
         run_unittest_suite.assert_not_called()
+        run_pytest_suite.assert_not_called()
 
     def test_python_test_runner_pytest_mode_invokes_pytest_after_preflight(self):
         with (

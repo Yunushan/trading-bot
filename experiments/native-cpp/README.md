@@ -2,7 +2,7 @@
 
 This directory contains the native Qt/C++ desktop path for the trading-bot workspace.
 
-Today it is a C++ desktop re-platforming path with source-level full-parity contracts against the Python/PyQt app in `Languages/Python`. Python remains the trading execution source of truth unless an explicitly tested native helper is being exercised.
+Today it is a C++ desktop re-platforming path with source-contract parity against the Python/PyQt app in `Languages/Python`. Python remains the trading execution source of truth unless an explicitly tested native helper is being exercised.
 
 ## Current role
 
@@ -17,18 +17,21 @@ Today it is a C++ desktop re-platforming path with source-level full-parity cont
 | Area | Status | Notes |
 | --- | --- | --- |
 | Native desktop shell | Active development | Real source tree exists and builds locally |
-| Full feature parity with Python app | Complete | All tracked Python-source parity domains have C++ helper coverage, UI/service delegation, or native regression tests |
+| Python source-contract parity | Complete | All tracked Python-source parity domains have C++ helper coverage, UI/service delegation, or native regression tests |
+| Standalone runtime/product parity | Not complete | Requires native execution ownership plus external release, platform, credential, and installer evidence |
 | Primary exchange implementation | Binance | Current connector code in this workspace is Binance-specific |
 | Cross-platform Qt build path | Supported for local builds | Windows, macOS, and Linux toolchains are expected |
 
-## Full Python app parity audit
+## Python app contract parity audit
 
-The Python app in `Languages/Python` remains the source of truth for full app
-behavior. The C++ workspace now has tracked parity coverage for every audited
-domain through native helpers, Qt shell wiring, Service API delegation, and
-regression tests.
+The Python app in `Languages/Python` remains the source of truth for trading
+behavior. The C++ workspace has tracked source-contract parity coverage for every
+audited domain through native helpers, Qt shell wiring, Service API delegation,
+and regression tests. That does not claim standalone runtime/product parity:
+release-grade parity still requires native execution ownership and external
+platform/installer/credential-gated evidence.
 
-| Python feature domain | C++ status | Missing before full parity |
+| Python feature domain | C++ status | Contract completion / runtime boundary |
 | --- | --- | --- |
 | Desktop shell and tabs | Complete Qt tab order, lazy tab lifecycle, theme/startup contract, release ownership, and tab behavior tests | Complete for this domain |
 | Service API contract | Complete for generated route/method/schema parity plus native request/response smoke coverage | Complete for this domain |

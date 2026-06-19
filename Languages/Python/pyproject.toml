@@ -96,6 +96,7 @@ addopts = [
     "--cov=trading_core",
     "--cov-report=term-missing:skip-covered",
     "--cov-report=xml",
+    "--cov-fail-under=38",
 ]
 filterwarnings = [
     # Temporary quarantine for third-party websocket deprecations until the connector stack is upgraded.
@@ -127,6 +128,17 @@ files = [
     "app/service/main.py",
     "app/service/product_main.py",
     "app/service/api/app.py",
+    "app/service/api_contract.py",
+    "app/service/schemas/backtest.py",
+    "app/service/schemas/config.py",
+    "app/settings/live_safety.py",
+    "app/settings/risk.py",
+    "app/settings/validation.py",
+    "app/core/backtest/data_quality.py",
+    "app/core/backtest/optimizer_limits_runtime.py",
+    "app/core/backtest/optimizer_result_runtime.py",
+    "app/core/backtest/engine_run_runtime.py",
+    "app/gui/backtest/backtest_optimizer_runtime.py",
     "trading_core/__init__.py",
     "trading_core/backtest.py",
     "trading_core/indicators.py",

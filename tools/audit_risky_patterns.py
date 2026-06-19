@@ -140,14 +140,63 @@ def _summary_report(report: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in report.items() if key != "findings"}
 
 
+def _baseline_payload(report: dict[str, object]) -> dict[str, object]:
+    return {
+        "finding_count": report.get("finding_count", 0),
+        "counts": report.get("counts", {}),
+        "severity_counts": report.get("severity_counts", {}),
+    }
+
+
+def _load_baseline(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _regressions_against_baseline(report: dict[str, object], baseline: dict[str, object]) -> list[str]:
+    regressions: list[str] = []
+    for key in ("finding_count",):
+        current = int(report.get(key, 0) or 0)
+        allowed = int(baseline.get(key, 0) or 0)
+        if current > allowed:
+            regressions.append(f"{key} increased from {allowed} to {current}")
+    for section in ("counts", "severity_counts"):
+        current_counts = report.get(section)
+        baseline_counts = baseline.get(section)
+        if not isinstance(current_counts, dict) or not isinstance(baseline_counts, dict):
+            continue
+        for key, value in current_counts.items():
+            current = int(value or 0)
+            allowed = int(baseline_counts.get(key, 0) or 0)
+            if current > allowed:
+                regressions.append(f"{section}.{key} increased from {allowed} to {current}")
+    return regressions
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Report broad exception and unsafe-pattern hotspots.")
     parser.add_argument("--json", action="store_true", help="Print the report as JSON.")
     parser.add_argument("--summary", action="store_true", help="Omit per-line findings from JSON output.")
     parser.add_argument("--fail-on-high", action="store_true", help="Exit non-zero if high-severity findings exist.")
+    parser.add_argument("--baseline", default="", help="Risk baseline JSON path used to block count regressions.")
+    parser.add_argument("--update-baseline", action="store_true", help="Write the current summary to --baseline.")
+    parser.add_argument("--fail-on-regression", action="store_true", help="Exit non-zero when counts exceed --baseline.")
     args = parser.parse_args(argv)
 
     report = audit_risky_patterns()
+    baseline_path = Path(args.baseline) if args.baseline else None
+    baseline: dict[str, object] = {}
+    regressions: list[str] = []
+    if baseline_path is not None:
+        if args.update_baseline:
+            baseline_path.write_text(json.dumps(_baseline_payload(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        baseline = _load_baseline(baseline_path)
+        regressions = _regressions_against_baseline(report, baseline) if baseline else []
+        report["baseline"] = str(baseline_path)
+        report["baseline_regressions"] = regressions
     if args.json:
         payload = _summary_report(report) if args.summary else report
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -162,7 +211,9 @@ def main(argv: list[str] | None = None) -> int:
         for finding in report["findings"][:30]:
             print(f"{finding['severity']} {finding['path']}:{finding['line']} {finding['key']}")
     has_high = any(item["severity"] == "high" for item in report["findings"])
-    return 1 if args.fail_on_high and has_high else 0
+    if args.fail_on_high and has_high:
+        return 1
+    return 1 if args.fail_on_regression and regressions else 0
 
 
 if __name__ == "__main__":

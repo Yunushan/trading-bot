@@ -147,6 +147,7 @@ docs/
   OPERATOR_RUNBOOK.md
   ARCHITECTURE_BOUNDARIES.md
   DEPENDENCY_REPRODUCIBILITY.md
+  QUALITY_AND_EVIDENCE_GATES.md
   WORKTREE_REVIEW_PLAN.md
   PLATFORM_EXPANSION_PLAN.md
   PROJECT_STRUCTURE.md    # repo/source/output layout
@@ -206,6 +207,7 @@ Contributor-facing structure and maintenance docs now live here:
 - `docs/OPERATOR_RUNBOOK.md`
 - `docs/ARCHITECTURE_BOUNDARIES.md`
 - `docs/DEPENDENCY_REPRODUCIBILITY.md`
+- `docs/QUALITY_AND_EVIDENCE_GATES.md`
 - `docs/WORKTREE_REVIEW_PLAN.md`
 
 ## Contributing and security
