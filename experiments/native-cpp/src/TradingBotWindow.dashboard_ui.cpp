@@ -197,6 +197,13 @@ void TradingBotWindow::createDashboardAccountStatusSection(QWidget *page, QVBoxL
 
     auto *connectorCombo = new QComboBox(accountBox);
     TradingBotWindowSupport::rebuildConnectorComboForAccount(connectorCombo, true, true);
+    connectorCombo->setProperty(
+        "pythonConnectorParityKeys",
+        QStringList{
+            QStringLiteral("oanda-rest"),
+            QStringLiteral("fxcmpy"),
+            QStringLiteral("ig-rest"),
+        });
     connectorCombo->setToolTip(
         "Matches Python connector options.\n"
         "C++ currently runs native Binance REST under the hood.\n"
