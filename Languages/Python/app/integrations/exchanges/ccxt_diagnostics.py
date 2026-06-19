@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
 
 from ...security.redaction import redact_value
 from ...settings.exchange_support import build_exchange_support_payload, ccxt_exchange_id_for

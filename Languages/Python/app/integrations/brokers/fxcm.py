@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
 
 from ...security.redaction import redact_value
 from ...settings.exchange_support import build_exchange_support_payload
@@ -51,7 +50,7 @@ class FxcmBrokerConnector:
         *,
         access_token: str = "",
         server: str = "demo",
-        client: Any | None = None,
+        client: object | None = None,
         client_factory: FxcmClientFactory | None = None,
     ) -> None:
         self.access_token = str(access_token or "").strip()
