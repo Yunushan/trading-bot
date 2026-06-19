@@ -62,6 +62,7 @@ def check_native_cpp(
     config: str,
     require_webengine: bool,
     enable_qt_deploy_script: bool | None,
+    smoke_targets_only: bool,
     qt_version: str | None,
     timeout: int,
 ) -> dict[str, object]:
@@ -98,14 +99,29 @@ def check_native_cpp(
         configure.append(f"-DTB_ENABLE_QT_DEPLOY_SCRIPT={'ON' if enable_qt_deploy_script else 'OFF'}")
     if sys.platform != "win32":
         configure.append("-DCMAKE_BUILD_TYPE=Debug")
-    build = [cmake, "--build", str(build_dir), "--config", config, "--parallel"]
     tests = [ctest, "--test-dir", str(build_dir), "-C", config, "--output-on-failure"]
 
-    steps = [
-        _run_step("configure", configure, cwd=root, timeout=timeout),
-        _run_step("build", build, cwd=root, timeout=timeout),
-        _run_step("test", tests, cwd=root, timeout=timeout),
-    ]
+    steps = [_run_step("configure", configure, cwd=root, timeout=timeout)]
+    if smoke_targets_only:
+        for target in ("native_order_safety_tests", "native_service_api_contract_tests"):
+            steps.append(
+                _run_step(
+                    f"build {target}",
+                    [cmake, "--build", str(build_dir), "--config", config, "--target", target, "--parallel"],
+                    cwd=root,
+                    timeout=timeout,
+                )
+            )
+    else:
+        steps.append(
+            _run_step(
+                "build",
+                [cmake, "--build", str(build_dir), "--config", config, "--parallel"],
+                cwd=root,
+                timeout=timeout,
+            )
+        )
+    steps.append(_run_step("test", tests, cwd=root, timeout=timeout))
     ok = all(bool(step.get("ok")) for step in steps)
     report: dict[str, object] = {
         "ok": ok,
@@ -113,6 +129,7 @@ def check_native_cpp(
         "config": config,
         "enable_qt_deploy_script": enable_qt_deploy_script,
         "require_webengine": require_webengine,
+        "smoke_targets_only": smoke_targets_only,
         "qt_version": qt_version or "",
         "steps": steps,
     }
@@ -120,7 +137,7 @@ def check_native_cpp(
         report["remediation"] = (
             "Install Qt 6.10.x, CMake, a C++ compiler, and vcpkg dependencies; "
             "or for Linux package-manager smoke builds rerun with "
-            "--no-require-webengine --no-enable-qt-deploy-script --qt-version 6.4.0."
+            "--no-require-webengine --no-enable-qt-deploy-script --smoke-targets-only --qt-version 6.4.0."
         )
     return report
 
@@ -154,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="Force Qt deployment script generation off for package-manager smoke builds.",
     )
+    parser.add_argument(
+        "--smoke-targets-only",
+        action="store_true",
+        help="Build only native smoke test targets instead of the full GUI executable.",
+    )
     parser.add_argument("--timeout", type=int, default=300, help="Timeout per step in seconds.")
     args = parser.parse_args(argv)
 
@@ -162,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         config=str(args.config or "Debug"),
         require_webengine=not args.no_require_webengine,
         enable_qt_deploy_script=args.enable_qt_deploy_script,
+        smoke_targets_only=bool(args.smoke_targets_only),
         qt_version=str(args.qt_version or "").strip() or None,
         timeout=max(30, int(args.timeout or 300)),
     )
