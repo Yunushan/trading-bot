@@ -120,6 +120,16 @@ function formatConnectorSupport(support) {
   if (payload.trading_supported === true) {
     return "Trading Supported";
   }
+  if (payload.market_data_supported || payload.account_snapshot_supported) {
+    const capabilities = [];
+    if (payload.market_data_supported) {
+      capabilities.push("Market Data");
+    }
+    if (payload.account_snapshot_supported) {
+      capabilities.push("Account Snapshot");
+    }
+    return `${capabilities.join(" + ")} Supported`;
+  }
   if (payload.trading_supported === false) {
     const reasons = Array.isArray(payload.unsupported_reasons) ? payload.unsupported_reasons : [];
     const reason = reasons.map((item) => String(item || "").trim()).find(Boolean);

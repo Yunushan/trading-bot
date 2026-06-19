@@ -355,7 +355,7 @@ class ServiceSchemaContractTests(unittest.TestCase):
         self.assertNotIn("exchange-secret", snapshot["last_error"]["message"])
         self.assertNotIn("order-signature", snapshot["last_error"]["message"])
 
-    def test_exchange_connector_snapshot_marks_unsupported_exchange_and_broker(self):
+    def test_exchange_connector_snapshot_marks_unsupported_backend_and_broker(self):
         snapshot = build_exchange_connector_snapshot(
             config={
                 "selected_exchange": "Kraken",
@@ -369,10 +369,10 @@ class ServiceSchemaContractTests(unittest.TestCase):
         )
 
         self.assertEqual("error", snapshot["health"])
-        self.assertEqual("unsupported_exchange", snapshot["state"])
-        self.assertFalse(snapshot["support"]["exchange_supported"])
+        self.assertEqual("unsupported_connector_backend", snapshot["state"])
+        self.assertTrue(snapshot["support"]["exchange_supported"])
         self.assertFalse(snapshot["support"]["connector_backend_supported"])
         self.assertFalse(snapshot["support"]["broker_supported"])
         self.assertFalse(snapshot["support"]["trading_supported"])
-        self.assertIn("Exchange 'Kraken' is not implemented", snapshot["attention"][0])
+        self.assertIn("Connector backend 'kraken-rest' is not implemented", snapshot["attention"][0])
         self.assertIn("Binance", snapshot["support"]["supported_exchanges"])

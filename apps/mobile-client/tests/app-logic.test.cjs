@@ -96,11 +96,15 @@ async function main() {
   await test("connector support helper surfaces unsupported runtime reasons", async () => {
     assert.equal(formatConnectorSupport({ trading_supported: true }), "Trading Supported");
     assert.equal(
+      formatConnectorSupport({ market_data_supported: true, account_snapshot_supported: true, trading_supported: false }),
+      "Market Data + Account Snapshot Supported",
+    );
+    assert.equal(
       formatConnectorSupport({
         trading_supported: false,
-        unsupported_reasons: ["Exchange 'Kraken' is not implemented by this runtime."],
+        unsupported_reasons: ["Exchange 'Unlisted' is not implemented by this runtime."],
       }),
-      "Unsupported: Exchange 'Kraken' is not implemented by this runtime.",
+      "Unsupported: Exchange 'Unlisted' is not implemented by this runtime.",
     );
     assert.equal(formatConnectorSupport({ trading_supported: false }), "Unsupported");
     assert.equal(formatConnectorSupport(null), "-");

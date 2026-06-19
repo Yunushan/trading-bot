@@ -5,7 +5,31 @@ use crate::generated_python_parity::{PYTHON_CONNECTOR_OPTIONS, PythonConnectorOp
 use crate::order_audit::{redact_text, redact_value};
 
 pub const DEFAULT_CONNECTOR_BACKEND: &str = "binance-sdk-derivatives-trading-usds-futures";
-pub const SUPPORTED_EXCHANGES: &[&str] = &["Binance"];
+pub const CCXT_DIAGNOSTIC_EXCHANGES: &[&str] = &[
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+];
+pub const SUPPORTED_EXCHANGES: &[&str] = &[
+    "Binance",
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+];
 pub const SUPPORTED_FOREX_BROKERS: &[&str] = &[];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -20,14 +44,22 @@ pub struct ExchangeSupportPayload {
     pub selected_exchange: String,
     pub connector_backend: String,
     pub selected_forex_broker: String,
+    pub ccxt_exchange_id: String,
     pub exchange_supported: bool,
     pub connector_backend_supported: bool,
     pub broker_supported: bool,
+    pub market_data_supported: bool,
+    pub account_snapshot_supported: bool,
+    pub order_execution_supported: bool,
     pub trading_supported: bool,
+    pub support_tier: String,
+    pub capability_gaps: Vec<String>,
     pub unsupported_reasons: Vec<String>,
     pub supported_exchanges: Vec<String>,
     pub supported_connector_backends: Vec<String>,
     pub supported_forex_brokers: Vec<String>,
+    pub ccxt_diagnostic_exchanges: Vec<String>,
+    pub order_execution_exchanges: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,6 +125,23 @@ pub fn supported_connector_backends() -> Vec<String> {
         .collect()
 }
 
+pub fn ccxt_exchange_id_for(value: impl AsRef<str>) -> String {
+    match support_key(value).as_str() {
+        "bybit" => "bybit",
+        "okx" => "okx",
+        "bitget" => "bitget",
+        "gate" | "gate.io" | "gateio" => "gateio",
+        "mexc" => "mexc",
+        "kucoin" => "kucoin",
+        "htx" => "htx",
+        "crypto.com" | "crypto.com exchange" | "cryptocom" => "cryptocom",
+        "kraken" => "kraken",
+        "bitfinex" => "bitfinex",
+        _ => "",
+    }
+    .to_owned()
+}
+
 pub fn normalize_connector_backend(value: impl AsRef<str>) -> String {
     let key = support_key(value);
     if key.is_empty() {
@@ -120,6 +169,7 @@ pub fn build_exchange_support_payload(
     let selected_forex_broker =
         first_non_empty(&[&raw.selected_forex_broker, &config.selected_forex_broker])
             .unwrap_or_default();
+    let ccxt_exchange_id = ccxt_exchange_id_for(&selected_exchange);
 
     let exchange_supported = SUPPORTED_EXCHANGES
         .iter()
@@ -132,8 +182,21 @@ pub fn build_exchange_support_payload(
         || SUPPORTED_FOREX_BROKERS
             .iter()
             .any(|item| support_key(item) == support_key(&selected_forex_broker));
+    let backend_key = support_key(&connector_backend);
+    let exchange_key = support_key(&selected_exchange);
+    let uses_ccxt_diagnostics = !ccxt_exchange_id.is_empty() && backend_key == "ccxt";
+    let order_execution_exchange = exchange_key == "binance";
+    let market_data_supported = connector_backend_supported
+        && broker_supported
+        && (order_execution_exchange || uses_ccxt_diagnostics);
+    let account_snapshot_supported = market_data_supported;
+    let order_execution_supported = exchange_supported
+        && connector_backend_supported
+        && broker_supported
+        && order_execution_exchange;
 
     let mut unsupported_reasons = Vec::new();
+    let mut capability_gaps = Vec::new();
     if !exchange_supported {
         unsupported_reasons.push(format!(
             "Exchange '{selected_exchange}' is not implemented by this runtime."
@@ -149,15 +212,38 @@ pub fn build_exchange_support_payload(
             "Forex broker '{selected_forex_broker}' is not implemented by this runtime."
         ));
     }
+    if exchange_supported
+        && connector_backend_supported
+        && broker_supported
+        && !order_execution_supported
+    {
+        capability_gaps.push(format!(
+            "Live order execution for '{selected_exchange}' requires venue-specific order adapter evidence."
+        ));
+    }
+    unsupported_reasons.extend(capability_gaps.iter().cloned());
+    let support_tier = if order_execution_supported {
+        "full-trading"
+    } else if market_data_supported || account_snapshot_supported {
+        "ccxt-diagnostics"
+    } else {
+        "unsupported"
+    };
 
     ExchangeSupportPayload {
         selected_exchange,
         connector_backend,
         selected_forex_broker,
+        ccxt_exchange_id,
         exchange_supported,
         connector_backend_supported,
         broker_supported,
-        trading_supported: exchange_supported && connector_backend_supported && broker_supported,
+        market_data_supported,
+        account_snapshot_supported,
+        order_execution_supported,
+        trading_supported: order_execution_supported,
+        support_tier: support_tier.to_owned(),
+        capability_gaps,
         unsupported_reasons,
         supported_exchanges: SUPPORTED_EXCHANGES
             .iter()
@@ -168,6 +254,11 @@ pub fn build_exchange_support_payload(
             .iter()
             .map(|item| (*item).to_owned())
             .collect(),
+        ccxt_diagnostic_exchanges: CCXT_DIAGNOSTIC_EXCHANGES
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect(),
+        order_execution_exchanges: vec!["Binance".to_owned()],
     }
 }
 
@@ -444,15 +535,31 @@ mod tests {
             None,
         );
         assert!(supported.trading_supported);
+        assert!(supported.order_execution_supported);
         assert!(
             supported
                 .supported_connector_backends
                 .contains(&"ccxt".to_owned())
         );
 
-        let unsupported = build_exchange_support_payload(
+        let ccxt_diagnostics = build_exchange_support_payload(
             ExchangeSupportInput {
                 selected_exchange: "Bybit".to_owned(),
+                connector_backend: "ccxt".to_owned(),
+                selected_forex_broker: String::new(),
+            },
+            None,
+        );
+        assert!(ccxt_diagnostics.exchange_supported);
+        assert!(ccxt_diagnostics.market_data_supported);
+        assert!(ccxt_diagnostics.account_snapshot_supported);
+        assert!(!ccxt_diagnostics.order_execution_supported);
+        assert!(!ccxt_diagnostics.trading_supported);
+        assert_eq!(ccxt_diagnostics.ccxt_exchange_id, "bybit");
+
+        let unsupported = build_exchange_support_payload(
+            ExchangeSupportInput {
+                selected_exchange: "Unlisted".to_owned(),
                 connector_backend: "custom-native".to_owned(),
                 selected_forex_broker: "MetaTrader".to_owned(),
             },
@@ -462,7 +569,7 @@ mod tests {
         assert!(
             unsupported
                 .unsupported_reasons
-                .contains(&"Exchange 'Bybit' is not implemented by this runtime.".to_owned())
+                .contains(&"Exchange 'Unlisted' is not implemented by this runtime.".to_owned())
         );
         assert!(unsupported.unsupported_reasons.contains(
             &"Connector backend 'custom-native' is not implemented by this runtime.".to_owned()

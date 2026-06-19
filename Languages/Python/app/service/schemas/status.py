@@ -107,7 +107,12 @@ def build_exchange_connector_snapshot(
             state = state or last_error_category or "exchange_error"
     elif not state:
         state = "ready" if health == "ok" else "unknown"
-    if not support["trading_supported"]:
+    support_has_hard_gap = (
+        not support["exchange_supported"]
+        or not support["connector_backend_supported"]
+        or not support["broker_supported"]
+    )
+    if support_has_hard_gap:
         health = "error"
         if not support["exchange_supported"]:
             state = "unsupported_exchange"
@@ -115,6 +120,12 @@ def build_exchange_connector_snapshot(
             state = "unsupported_connector_backend"
         elif not support["broker_supported"]:
             state = "unsupported_broker"
+    elif not support["trading_supported"] and (
+        support.get("market_data_supported") or support.get("account_snapshot_supported")
+    ):
+        health = "warning" if health != "error" else health
+        if state in {"", "ready", "unknown"}:
+            state = "read_only_connector"
 
     order_audit_error = _mapping_or_empty(order_audit_raw.get("last_write_error"))
     if order_audit_error and health != "error":

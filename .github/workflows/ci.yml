@@ -130,6 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           python Languages/Python/tools/check_dependency_metadata.py
+          python tools/check_python_version_support.py --current
 
       - name: Check service API contract artifacts
         shell: bash
@@ -178,6 +179,62 @@ jobs:
         run: |
           set -euo pipefail
           python tools/run_python_tests.py --runner pytest
+
+  python-version-compatibility:
+    name: Python 3.10-3.14 Compatibility (${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Install Python compatibility dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python[service,dev]"
+
+      - name: Validate Python version support metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_python_version_support.py --current
+          python Languages/Python/tools/check_dependency_metadata.py
+
+      - name: Compile service/core compatibility surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_python_sources_compile.py apps/service-api/main.py Languages/Python/app/service Languages/Python/app/settings Languages/Python/app/integrations/llm Languages/Python/trading_core Languages/Python/tools tools
+
+      - name: Run focused compatibility tests
+        shell: bash
+        working-directory: Languages/Python
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            tests.test_settings_defaults \
+            tests.test_service_config_runtime \
+            tests.test_service_schema_contracts \
+            tests.test_llm_clients_privacy \
+            tests.test_llm_local_models
 
   web-dashboard-quality:
     name: Web Dashboard Quality
@@ -278,6 +335,24 @@ jobs:
         run: |
           set -euo pipefail
           python apps/service-api/main.py --healthcheck
+
+  release-platform-matrix-contract:
+    name: Release Platform Matrix Contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Validate release platform/browser matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_platform_matrix.py --schema-only
 
   rust-smoke:
     name: Rust Smoke

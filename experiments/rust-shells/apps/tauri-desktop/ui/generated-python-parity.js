@@ -207,7 +207,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "6e9fa38bf7e734ebf67f42ac1cde448ef09c8077a0d8b459c39fe6986d47fe18",
+  "contractHash": "b2abd871c1b7b77ba399c3b7c0bc6d8986c8ae856a311603bb1b8ca7614e728b",
   "dashboardLoopChoices": [
     {
       "key": "30s",
@@ -660,46 +660,74 @@
       "title": "Binance"
     },
     {
-      "badge": "coming soon",
-      "disabled": true,
+      "badge": "ccxt diagnostics",
+      "disabled": false,
       "key": "Bybit",
-      "label": "Bybit (coming soon)",
+      "label": "Bybit (ccxt diagnostics)",
       "title": "Bybit"
     },
     {
-      "badge": "coming soon",
-      "disabled": true,
+      "badge": "ccxt diagnostics",
+      "disabled": false,
       "key": "OKX",
-      "label": "OKX (coming soon)",
+      "label": "OKX (ccxt diagnostics)",
       "title": "OKX"
     },
     {
-      "badge": "coming soon",
-      "disabled": true,
+      "badge": "ccxt diagnostics",
+      "disabled": false,
       "key": "Gate",
-      "label": "Gate (coming soon)",
+      "label": "Gate (ccxt diagnostics)",
       "title": "Gate"
     },
     {
-      "badge": "coming soon",
-      "disabled": true,
+      "badge": "ccxt diagnostics",
+      "disabled": false,
       "key": "Bitget",
-      "label": "Bitget (coming soon)",
+      "label": "Bitget (ccxt diagnostics)",
       "title": "Bitget"
     },
     {
-      "badge": "coming soon",
-      "disabled": true,
+      "badge": "ccxt diagnostics",
+      "disabled": false,
       "key": "MEXC",
-      "label": "MEXC (coming soon)",
+      "label": "MEXC (ccxt diagnostics)",
       "title": "MEXC"
     },
     {
-      "badge": "coming soon",
-      "disabled": true,
+      "badge": "ccxt diagnostics",
+      "disabled": false,
       "key": "KuCoin",
-      "label": "KuCoin (coming soon)",
+      "label": "KuCoin (ccxt diagnostics)",
       "title": "KuCoin"
+    },
+    {
+      "badge": "ccxt diagnostics",
+      "disabled": false,
+      "key": "HTX",
+      "label": "HTX (ccxt diagnostics)",
+      "title": "HTX"
+    },
+    {
+      "badge": "ccxt diagnostics",
+      "disabled": false,
+      "key": "Crypto.com Exchange",
+      "label": "Crypto.com Exchange (ccxt diagnostics)",
+      "title": "Crypto.com Exchange"
+    },
+    {
+      "badge": "ccxt diagnostics",
+      "disabled": false,
+      "key": "Kraken",
+      "label": "Kraken (ccxt diagnostics)",
+      "title": "Kraken"
+    },
+    {
+      "badge": "ccxt diagnostics",
+      "disabled": false,
+      "key": "Bitfinex",
+      "label": "Bitfinex (ccxt diagnostics)",
+      "title": "Bitfinex"
     }
   ],
   "indicatorCatalog": [

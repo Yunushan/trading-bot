@@ -186,7 +186,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("qwen3:8b", core)
         for parity_text in (
             "Alibaba Qwen / DashScope",
-            "Bybit (coming soon)",
+            "Bybit (ccxt diagnostics)",
             "Default intervals: 1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d",
             "Open In Browser URL",
             "Max MDD Scanner Top N",
@@ -328,7 +328,7 @@ class ProductPackagingContractTests(unittest.TestCase):
             self.assertIn("BinanceWsClient", source)
         for tauri_parity_text in (
             "Alibaba Qwen / DashScope",
-            "Bybit (coming soon)",
+            "Bybit (ccxt diagnostics)",
             "Remove Selected",
             "Max MDD Scanner",
         ):
@@ -1335,6 +1335,58 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("YARL_NO_EXTENSIONS", workflow)
         self.assertIn("FROZENLIST_NO_EXTENSIONS", workflow)
         self.assertIn("PROPCACHE_NO_EXTENSIONS", workflow)
+
+    def test_release_platform_real_test_matrix_covers_requested_targets(self):
+        matrix_path = REPO_ROOT / "docs" / "release-platform-test-matrix.json"
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        checker = REPO_ROOT / "tools" / "check_release_platform_matrix.py"
+        result = subprocess.run(
+            [sys.executable, str(checker), "--schema-only", "--json"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        report = json.loads(result.stdout)
+
+        self.assertEqual(70, report["platform_target_count"])
+        self.assertEqual(29, report["browser_target_count"])
+        self.assertTrue(matrix["policy"]["no_assumed_passes"])
+        self.assertIn("windows", {item["family"] for item in matrix["target_groups"]})
+        self.assertIn("internet-explorer", {item["browser"] for item in matrix["browser_groups"]})
+
+        ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        real_test_workflow = (
+            REPO_ROOT / ".github" / "workflows" / "release-platform-real-tests.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Release Platform Matrix Contract", ci_workflow)
+        self.assertIn("python tools/check_release_platform_matrix.py --schema-only", ci_workflow)
+        self.assertIn("tools/run_release_platform_probe.py", real_test_workflow)
+        self.assertIn("--require-evidence", real_test_workflow)
+        self.assertIn("actions/upload-artifact@v7", real_test_workflow)
+
+    def test_python_version_support_matrix_declares_and_checks_310_to_314(self):
+        checker = REPO_ROOT / "tools" / "check_python_version_support.py"
+        result = subprocess.run(
+            [sys.executable, str(checker), "--current", "--json"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        report = json.loads(result.stdout)
+        self.assertEqual(["3.10", "3.11", "3.12", "3.13", "3.14"], report["supported_versions"])
+        self.assertEqual("3.14", report["default_version"])
+        self.assertEqual(">=3.10,<3.15", report["requires_python"])
+
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("python-version-compatibility:", workflow)
+        self.assertIn("Python 3.10-3.14 Compatibility", workflow)
+        self.assertIn("python tools/check_python_version_support.py --current", workflow)
+        for version in report["supported_versions"]:
+            self.assertIn(f'"{version}"', workflow)
 
     def test_release_workflows_use_node24_action_versions(self):
         workflows = {

@@ -5,7 +5,19 @@ from collections.abc import Mapping
 from .connectors import DEFAULT_CONNECTOR_BACKEND
 
 
-SUPPORTED_EXCHANGES = ("Binance",)
+CCXT_DIAGNOSTIC_EXCHANGES = (
+    "Bybit",
+    "OKX",
+    "Bitget",
+    "Gate",
+    "MEXC",
+    "KuCoin",
+    "HTX",
+    "Crypto.com Exchange",
+    "Kraken",
+    "Bitfinex",
+)
+SUPPORTED_EXCHANGES = ("Binance", *CCXT_DIAGNOSTIC_EXCHANGES)
 SUPPORTED_CONNECTOR_BACKENDS = (
     DEFAULT_CONNECTOR_BACKEND,
     "binance-sdk-derivatives-trading-coin-futures",
@@ -15,6 +27,23 @@ SUPPORTED_CONNECTOR_BACKENDS = (
     "ccxt",
 )
 SUPPORTED_FOREX_BROKERS: tuple[str, ...] = ()
+CCXT_EXCHANGE_IDS = {
+    "bybit": "bybit",
+    "okx": "okx",
+    "bitget": "bitget",
+    "gate": "gateio",
+    "gate.io": "gateio",
+    "gateio": "gateio",
+    "mexc": "mexc",
+    "kucoin": "kucoin",
+    "htx": "htx",
+    "crypto.com": "cryptocom",
+    "crypto.com exchange": "cryptocom",
+    "cryptocom": "cryptocom",
+    "kraken": "kraken",
+    "bitfinex": "bitfinex",
+}
+ORDER_EXECUTION_EXCHANGES = ("Binance",)
 
 
 def _support_key(value: object) -> str:
@@ -27,6 +56,10 @@ def _first_non_empty(*values: object, default: str = "") -> str:
         if text:
             return text
     return default
+
+
+def ccxt_exchange_id_for(exchange: object) -> str:
+    return CCXT_EXCHANGE_IDS.get(_support_key(exchange), "")
 
 
 def build_exchange_support_payload(
@@ -51,40 +84,79 @@ def build_exchange_support_payload(
         cfg.get("selected_forex_broker"),
     )
 
-    exchange_supported = _support_key(selected_exchange) in {_support_key(item) for item in SUPPORTED_EXCHANGES}
+    exchange_key = _support_key(selected_exchange)
+    backend_key = _support_key(connector_backend)
+    ccxt_exchange_id = ccxt_exchange_id_for(selected_exchange)
+    exchange_supported = exchange_key in {_support_key(item) for item in SUPPORTED_EXCHANGES}
     backend_supported = _support_key(connector_backend) in {
         _support_key(item) for item in SUPPORTED_CONNECTOR_BACKENDS
     }
     broker_supported = not selected_forex_broker or _support_key(selected_forex_broker) in {
         _support_key(item) for item in SUPPORTED_FOREX_BROKERS
     }
+    uses_ccxt_diagnostics = bool(ccxt_exchange_id and backend_key == "ccxt")
+    is_order_execution_exchange = exchange_key in {_support_key(item) for item in ORDER_EXECUTION_EXCHANGES}
+    market_data_supported = backend_supported and broker_supported and (
+        is_order_execution_exchange or uses_ccxt_diagnostics
+    )
+    account_snapshot_supported = market_data_supported
+    order_execution_supported = (
+        exchange_supported
+        and backend_supported
+        and broker_supported
+        and is_order_execution_exchange
+    )
+
     reasons: list[str] = []
+    capability_gaps: list[str] = []
     if not exchange_supported:
         reasons.append(f"Exchange '{selected_exchange}' is not implemented by this runtime.")
     if not backend_supported:
         reasons.append(f"Connector backend '{connector_backend}' is not implemented by this runtime.")
     if not broker_supported:
         reasons.append(f"Forex broker '{selected_forex_broker}' is not implemented by this runtime.")
+    if exchange_supported and backend_supported and broker_supported and not order_execution_supported:
+        capability_gaps.append(
+            f"Live order execution for '{selected_exchange}' requires venue-specific order adapter evidence."
+        )
 
-    trading_supported = exchange_supported and backend_supported and broker_supported
+    trading_supported = order_execution_supported
+    support_tier = "unsupported"
+    if order_execution_supported:
+        support_tier = "full-trading"
+    elif market_data_supported or account_snapshot_supported:
+        support_tier = "ccxt-diagnostics"
+
     return {
         "selected_exchange": selected_exchange,
         "connector_backend": connector_backend,
         "selected_forex_broker": selected_forex_broker,
+        "ccxt_exchange_id": ccxt_exchange_id,
         "exchange_supported": exchange_supported,
         "connector_backend_supported": backend_supported,
         "broker_supported": broker_supported,
+        "market_data_supported": market_data_supported,
+        "account_snapshot_supported": account_snapshot_supported,
+        "order_execution_supported": order_execution_supported,
         "trading_supported": trading_supported,
-        "unsupported_reasons": reasons,
+        "support_tier": support_tier,
+        "capability_gaps": capability_gaps,
+        "unsupported_reasons": [*reasons, *capability_gaps],
         "supported_exchanges": list(SUPPORTED_EXCHANGES),
         "supported_connector_backends": list(SUPPORTED_CONNECTOR_BACKENDS),
         "supported_forex_brokers": list(SUPPORTED_FOREX_BROKERS),
+        "ccxt_diagnostic_exchanges": list(CCXT_DIAGNOSTIC_EXCHANGES),
+        "order_execution_exchanges": list(ORDER_EXECUTION_EXCHANGES),
     }
 
 
 __all__ = [
+    "CCXT_DIAGNOSTIC_EXCHANGES",
+    "CCXT_EXCHANGE_IDS",
+    "ORDER_EXECUTION_EXCHANGES",
     "SUPPORTED_CONNECTOR_BACKENDS",
     "SUPPORTED_EXCHANGES",
     "SUPPORTED_FOREX_BROKERS",
     "build_exchange_support_payload",
+    "ccxt_exchange_id_for",
 ]

@@ -323,29 +323,29 @@ test("exchange connector render surfaces unsupported exchange state", () => {
   renderDashboardSnapshot({
     status: {
       connector_health: "error",
-      selected_exchange: "Kraken",
+      selected_exchange: "Unlisted",
     },
     operational: {
       exchange_connector: {
         health: "error",
         state: "unsupported_exchange",
-        selected_exchange: "Kraken",
-        connector_backend: "kraken-rest",
+        selected_exchange: "Unlisted",
+        connector_backend: "custom-rest",
         generated_at: "2026-05-11T00:00:00+00:00",
         support: {
           trading_supported: false,
-          unsupported_reasons: ["Exchange 'Kraken' is not implemented by this runtime."],
+          unsupported_reasons: ["Exchange 'Unlisted' is not implemented by this runtime."],
         },
-        attention: ["Exchange 'Kraken' is not implemented by this runtime."],
+        attention: ["Exchange 'Unlisted' is not implemented by this runtime."],
       },
     },
   });
 
   assert.equal(element("connector-health").textContent, "Error");
   assert.equal(element("connector-state").textContent, "Unsupported Exchange");
-  assert.equal(element("connector-backend").textContent, "Kraken / kraken-rest");
-  assert.match(element("connector-support").textContent, /Unsupported: Exchange 'Kraken'/);
-  assert.match(element("connector-message").textContent, /Kraken/);
+  assert.equal(element("connector-backend").textContent, "Unlisted / custom-rest");
+  assert.match(element("connector-support").textContent, /Unsupported: Exchange 'Unlisted'/);
+  assert.match(element("connector-message").textContent, /Unlisted/);
 });
 
 test("config render surfaces advisory-only LLM execution boundary", () => {

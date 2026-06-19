@@ -80,7 +80,19 @@ QString supportKey(const QString &value) {
 }
 
 QStringList supportedExchanges() {
-    return {QStringLiteral("Binance")};
+    return {
+        QStringLiteral("Binance"),
+        QStringLiteral("Bybit"),
+        QStringLiteral("OKX"),
+        QStringLiteral("Bitget"),
+        QStringLiteral("Gate"),
+        QStringLiteral("MEXC"),
+        QStringLiteral("KuCoin"),
+        QStringLiteral("HTX"),
+        QStringLiteral("Crypto.com Exchange"),
+        QStringLiteral("Kraken"),
+        QStringLiteral("Bitfinex"),
+    };
 }
 
 QStringList supportedConnectorBackends() {
@@ -89,6 +101,27 @@ QStringList supportedConnectorBackends() {
         values.append(parityString(option.key));
     }
     return values;
+}
+
+QString ccxtExchangeIdFor(const QString &exchange) {
+    const QString key = supportKey(exchange);
+    if (key == QStringLiteral("bybit")) return QStringLiteral("bybit");
+    if (key == QStringLiteral("okx")) return QStringLiteral("okx");
+    if (key == QStringLiteral("bitget")) return QStringLiteral("bitget");
+    if (key == QStringLiteral("gate") || key == QStringLiteral("gate.io") || key == QStringLiteral("gateio")) {
+        return QStringLiteral("gateio");
+    }
+    if (key == QStringLiteral("mexc")) return QStringLiteral("mexc");
+    if (key == QStringLiteral("kucoin")) return QStringLiteral("kucoin");
+    if (key == QStringLiteral("htx")) return QStringLiteral("htx");
+    if (key == QStringLiteral("crypto.com")
+        || key == QStringLiteral("crypto.com exchange")
+        || key == QStringLiteral("cryptocom")) {
+        return QStringLiteral("cryptocom");
+    }
+    if (key == QStringLiteral("kraken")) return QStringLiteral("kraken");
+    if (key == QStringLiteral("bitfinex")) return QStringLiteral("bitfinex");
+    return {};
 }
 
 QString normalizeConnectorBackend(const QString &value) {
@@ -120,12 +153,26 @@ QJsonObject buildExchangeSupportPayload(
     const QStringList exchanges = supportedExchanges();
     const QStringList backends = supportedConnectorBackends();
     const QStringList brokers;
+    const QString exchangeKey = supportKey(selectedExchange);
+    const QString backendKey = supportKey(connectorBackend);
+    const QString ccxtExchangeId = ccxtExchangeIdFor(selectedExchange);
     const bool exchangeSupported = containsSupportKey(exchanges, selectedExchange);
     const bool backendSupported = containsSupportKey(backends, connectorBackend);
     const bool brokerSupported = selectedForexBroker.trimmed().isEmpty()
         || containsSupportKey(brokers, selectedForexBroker);
+    const bool usesCcxtDiagnostics = !ccxtExchangeId.isEmpty() && backendKey == QStringLiteral("ccxt");
+    const bool orderExecutionExchange = exchangeKey == QStringLiteral("binance");
+    const bool marketDataSupported = backendSupported
+        && brokerSupported
+        && (orderExecutionExchange || usesCcxtDiagnostics);
+    const bool accountSnapshotSupported = marketDataSupported;
+    const bool orderExecutionSupported = exchangeSupported
+        && backendSupported
+        && brokerSupported
+        && orderExecutionExchange;
 
     QJsonArray reasons;
+    QJsonArray capabilityGaps;
     if (!exchangeSupported) {
         reasons.append(QStringLiteral("Exchange '%1' is not implemented by this runtime.").arg(selectedExchange));
     }
@@ -135,6 +182,14 @@ QJsonObject buildExchangeSupportPayload(
     if (!brokerSupported) {
         reasons.append(QStringLiteral("Forex broker '%1' is not implemented by this runtime.").arg(selectedForexBroker));
     }
+    if (exchangeSupported && backendSupported && brokerSupported && !orderExecutionSupported) {
+        capabilityGaps.append(
+            QStringLiteral("Live order execution for '%1' requires venue-specific order adapter evidence.")
+                .arg(selectedExchange));
+    }
+    for (const QJsonValue &gap : capabilityGaps) {
+        reasons.append(gap);
+    }
     QJsonArray exchangeArray;
     for (const QString &exchange : exchanges) {
         exchangeArray.append(exchange);
@@ -143,18 +198,43 @@ QJsonObject buildExchangeSupportPayload(
     for (const QString &backend : backends) {
         backendArray.append(backend);
     }
+    QJsonArray ccxtDiagnosticArray;
+    for (const QString &exchange : {
+             QStringLiteral("Bybit"),
+             QStringLiteral("OKX"),
+             QStringLiteral("Bitget"),
+             QStringLiteral("Gate"),
+             QStringLiteral("MEXC"),
+             QStringLiteral("KuCoin"),
+             QStringLiteral("HTX"),
+             QStringLiteral("Crypto.com Exchange"),
+             QStringLiteral("Kraken"),
+             QStringLiteral("Bitfinex"),
+         }) {
+        ccxtDiagnosticArray.append(exchange);
+    }
     return {
         {QStringLiteral("selected_exchange"), selectedExchange},
         {QStringLiteral("connector_backend"), connectorBackend},
         {QStringLiteral("selected_forex_broker"), selectedForexBroker},
+        {QStringLiteral("ccxt_exchange_id"), ccxtExchangeId},
         {QStringLiteral("exchange_supported"), exchangeSupported},
         {QStringLiteral("connector_backend_supported"), backendSupported},
         {QStringLiteral("broker_supported"), brokerSupported},
-        {QStringLiteral("trading_supported"), exchangeSupported && backendSupported && brokerSupported},
+        {QStringLiteral("market_data_supported"), marketDataSupported},
+        {QStringLiteral("account_snapshot_supported"), accountSnapshotSupported},
+        {QStringLiteral("order_execution_supported"), orderExecutionSupported},
+        {QStringLiteral("trading_supported"), orderExecutionSupported},
+        {QStringLiteral("support_tier"), orderExecutionSupported
+            ? QStringLiteral("full-trading")
+            : (marketDataSupported || accountSnapshotSupported ? QStringLiteral("ccxt-diagnostics") : QStringLiteral("unsupported"))},
+        {QStringLiteral("capability_gaps"), capabilityGaps},
         {QStringLiteral("unsupported_reasons"), reasons},
         {QStringLiteral("supported_exchanges"), exchangeArray},
         {QStringLiteral("supported_connector_backends"), backendArray},
         {QStringLiteral("supported_forex_brokers"), QJsonArray{}},
+        {QStringLiteral("ccxt_diagnostic_exchanges"), ccxtDiagnosticArray},
+        {QStringLiteral("order_execution_exchanges"), QJsonArray{QStringLiteral("Binance")}},
     };
 }
 

@@ -16,6 +16,7 @@ QString defaultConnectorBackend();
 QString supportKey(const QString &value);
 QStringList supportedExchanges();
 QStringList supportedConnectorBackends();
+QString ccxtExchangeIdFor(const QString &exchange);
 QString normalizeConnectorBackend(const QString &value);
 
 QJsonObject buildExchangeSupportPayload(

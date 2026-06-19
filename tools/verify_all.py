@@ -132,6 +132,24 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             remediation=_python_install_remediation("service"),
         ),
         Check(
+            "python version support",
+            (python, "tools/check_python_version_support.py", "--current"),
+            root,
+            remediation="Keep pyproject Python metadata and the CI compatibility matrix aligned for Python 3.10-3.14.",
+        ),
+        Check(
+            "release platform matrix",
+            (python, "tools/check_release_platform_matrix.py", "--schema-only"),
+            root,
+            remediation="Keep docs/release-platform-test-matrix.json aligned with requested release OS/browser targets.",
+        ),
+        Check(
+            "connector support matrix",
+            (python, "tools/check_connector_support_matrix.py", "--schema-only"),
+            root,
+            remediation="Keep docs/connector-support-matrix.json aligned with Python exchange support capabilities.",
+        ),
+        Check(
             "service tests",
             (python, "Languages/Python/tools/run_service_tests.py"),
             root,

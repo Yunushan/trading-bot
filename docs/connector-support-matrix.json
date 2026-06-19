@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "generated_for_request_date": "2026-06-19",
+  "policy": {
+    "real_connector_support_definition": "A venue is considered live-order supported only when the runtime has a connector implementation plus a passed evidence JSON artifact from a sandbox/testnet or approved live-paper account for that venue.",
+    "diagnostics_support_definition": "A venue may be marked diagnostics-supported when the runtime can instantiate the connector and exercise market/account snapshot interfaces through deterministic tests without enabling order execution.",
+    "no_assumed_passes": true,
+    "evidence_artifact_dir": "connector-support-evidence"
+  },
+  "target_groups": [
+    {
+      "group": "binance",
+      "venues": ["Binance"],
+      "backend": "binance-sdk-derivatives-trading-usds-futures",
+      "status": "full-trading",
+      "capabilities_required": ["market-data", "account-snapshot", "order-execution"],
+      "evidence_required": true
+    },
+    {
+      "group": "ccxt-crypto-diagnostics",
+      "venues": ["Bybit", "OKX", "Bitget", "Gate", "MEXC", "KuCoin", "HTX", "Crypto.com Exchange", "Kraken", "Bitfinex"],
+      "backend": "ccxt",
+      "status": "diagnostics-supported-order-gated",
+      "capabilities_required": ["market-data", "account-snapshot"],
+      "capabilities_gated": ["order-execution"],
+      "evidence_required": true
+    },
+    {
+      "group": "fx-brokers",
+      "venues": ["OANDA", "FXCM", "IG"],
+      "backend": "broker-api",
+      "status": "not-implemented-evidence-required",
+      "capabilities_required": ["broker-account", "market-data", "order-routing"],
+      "evidence_required": true
+    }
+  ]
+}

@@ -241,13 +241,27 @@ int main(int argc, char **argv) {
         });
     check(supportedExchange.value(QStringLiteral("trading_supported")).toBool(false),
           QStringLiteral("native exchange support payload should accept default Binance connector"));
+    check(supportedExchange.value(QStringLiteral("order_execution_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose Binance order execution"));
     check(jsonArrayContains(
               supportedExchange.value(QStringLiteral("supported_connector_backends")).toArray(),
               QStringLiteral("ccxt")),
           QStringLiteral("native exchange support payload should expose Python connector backend catalog"));
-    const QJsonObject unsupportedExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
+    const QJsonObject ccxtDiagnosticsExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
         NativeExchangeConnectors::ExchangeSupportInput{
             QStringLiteral("Bybit"),
+            QStringLiteral("ccxt"),
+            {},
+        });
+    check(ccxtDiagnosticsExchange.value(QStringLiteral("exchange_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should accept Python ccxt diagnostic venues"));
+    check(ccxtDiagnosticsExchange.value(QStringLiteral("market_data_supported")).toBool(false),
+          QStringLiteral("native exchange support payload should expose ccxt market-data diagnostics"));
+    check(!ccxtDiagnosticsExchange.value(QStringLiteral("order_execution_supported")).toBool(true),
+          QStringLiteral("native exchange support payload should keep ccxt venue orders gated"));
+    const QJsonObject unsupportedExchange = NativeExchangeConnectors::buildExchangeSupportPayload(
+        NativeExchangeConnectors::ExchangeSupportInput{
+            QStringLiteral("Unlisted"),
             QStringLiteral("custom-native"),
             QStringLiteral("MetaTrader"),
         });
@@ -255,7 +269,7 @@ int main(int argc, char **argv) {
           QStringLiteral("native exchange support payload should reject non-Python exchange/backend/broker"));
     check(jsonArrayContains(
               unsupportedExchange.value(QStringLiteral("unsupported_reasons")).toArray(),
-              QStringLiteral("Exchange 'Bybit' is not implemented by this runtime.")),
+              QStringLiteral("Exchange 'Unlisted' is not implemented by this runtime.")),
           QStringLiteral("native exchange support payload should report unsupported exchanges like Python"));
     check(NativeExchangeConnectors::estimateRequestWeight(QStringLiteral("/fapi/v1/exchangeInfo")) == 10.0,
           QStringLiteral("native connector request weight should match Python exchangeInfo weight"));

@@ -1,0 +1,76 @@
+name: Release Platform Real Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_id:
+        description: "Target id from docs/release-platform-test-matrix.json expansion, for example ubuntu-24_04-x64 or browser-edge-windows-11-x64"
+        required: true
+        type: string
+      runner_labels_json:
+        description: "JSON string/array for runs-on, for example \"ubuntu-24.04\" or [\"self-hosted\",\"tb-release-platform\",\"windows-7-x64\"]"
+        required: true
+        default: "\"ubuntu-24.04\""
+        type: string
+      require_all_evidence:
+        description: "After this run, fail unless release-platform-evidence contains passed evidence for every matrix target."
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  run-target:
+    name: Real Target Probe (${{ inputs.target_id }})
+    runs-on: ${{ fromJson(inputs.runner_labels_json) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Validate matrix contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_platform_matrix.py --schema-only
+
+      - name: Run real target probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-platform-evidence
+          python tools/run_release_platform_probe.py \
+            --target-id "${{ inputs.target_id }}" \
+            --output "release-platform-evidence/${{ inputs.target_id }}.json"
+
+      - name: Upload target evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-platform-evidence-${{ inputs.target_id }}
+          path: release-platform-evidence/${{ inputs.target_id }}.json
+          if-no-files-found: error
+
+  full-evidence-gate:
+    name: Full Evidence Gate
+    needs: run-target
+    if: ${{ inputs.require_all_evidence }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download release platform evidence
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-platform-evidence-*
+          path: release-platform-evidence
+          merge-multiple: true
+
+      - name: Require passed evidence for every target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_platform_matrix.py \
+            --require-evidence \
+            --evidence-dir release-platform-evidence

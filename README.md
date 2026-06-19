@@ -83,6 +83,7 @@ Status legend:
 - `Supported now`: documented user path with a working implementation today.
 - `Active development`: planned/scaffolded path exists, but full end-user parity is not finished.
 - `Experimental`: best-effort/manual path, not continuously release-validated.
+- `Evidence-gated`: declared target that needs a passed evidence artifact before it is official.
 - `Not supported today`: not shipped as a working connector/runtime in the current repo.
 - `Not targeted`: no current packaging or support target.
 
@@ -90,18 +91,20 @@ Validation note: the always-on CI workflow validates the full Python,
 web-dashboard, and Rust smoke surfaces on Ubuntu 24.04, plus a lightweight
 service/runtime smoke on Windows, macOS, and Ubuntu. Release workflows still
 provide the stronger packaging signal for platform-specific desktop binaries.
+Release OS/browser targets are declared in `docs/release-platform-test-matrix.json`;
+connector targets are declared in `docs/connector-support-matrix.json`.
 
 | Area | Target | Status | Notes |
 | --- | --- | --- | --- |
 | Desktop GUI | Windows 10/11 | Supported now | Primary desktop path |
 | Desktop GUI | macOS (Intel and Apple Silicon) | Supported now | Intel and Apple Silicon release coverage |
 | Desktop GUI | Linux (major distros) | Supported now | Docs cover Ubuntu, Debian, Fedora, and Arch |
-| Desktop GUI | FreeBSD | Supported now | Source/manual path is documented; release automation depends on a self-hosted runner |
-| Desktop GUI | BSD family (OpenBSD / NetBSD / DragonFly BSD / others) | Experimental | Better fit today for the headless backend/service path than the full PyQt GUI |
-| Desktop GUI | Solaris / illumos | Experimental | Better fit today for the headless backend/service path than the full PyQt GUI |
+| Desktop GUI | FreeBSD | Evidence-gated | Source/manual path is documented; release automation depends on a self-hosted runner |
+| Desktop GUI | BSD family (OpenBSD / NetBSD / DragonFly BSD / others) | Evidence-gated | Better fit today for the headless backend/service path than the full PyQt GUI |
+| Desktop GUI | Solaris / illumos | Evidence-gated | Better fit today for the headless backend/service path than the full PyQt GUI |
 | Thin web GUI | Modern browser via service API | Supported now | Current shipped web path is the built-in service dashboard |
-| Native mobile | Android | Active development | Expo-based native thin client scaffold exists; backend-connected |
-| Native mobile | iOS | Active development | Expo-based native thin client scaffold exists; backend-connected |
+| Native mobile | Android | Evidence-gated scaffold | Expo-based native thin client scaffold exists; backend-connected |
+| Native mobile | iOS | Evidence-gated scaffold | Expo-based native thin client scaffold exists; backend-connected |
 
 | Architecture | Status | Notes |
 | --- | --- | --- |
@@ -111,23 +114,23 @@ provide the stronger packaging signal for platform-specific desktop binaries.
 | Linux ARM64 | Supported now | Release workflow uses Ubuntu 24.04 ARM |
 | macOS Intel | Supported now | Release workflow includes Intel runners |
 | macOS ARM64 | Supported now | Release workflow includes Apple Silicon runners |
-| FreeBSD runner architecture (`uname -m`) | Experimental | Release packaging follows the matching self-hosted runner architecture |
-| 32-bit x86 desktop | Not targeted | No current workflow or packaging target |
+| FreeBSD runner architecture (`uname -m`) | Evidence-gated | Release packaging follows the matching self-hosted runner architecture |
+| 32-bit x86 desktop | Evidence-gated test target | No official release artifact until matching x86 evidence exists |
 
 | Market / connector scope | Status | Notes |
 | --- | --- | --- |
 | Crypto spot trading | Supported now | Current live path is Binance-led |
 | Crypto futures trading | Supported now | Current primary live/demo path |
-| Multi-exchange crypto expansion | Active development | UI placeholders and explicit service support metadata exist; completed live connector parity is not shipped yet |
-| FX / broker integrations | Active development | Architecture/UI placeholders exist; runtime marks broker selections unsupported until real connectors ship |
+| Multi-exchange crypto expansion | Diagnostics-supported / order-gated | ccxt market/account diagnostics are implemented for listed venues; live orders need venue evidence |
+| FX / broker integrations | Evidence-gated | Architecture/UI placeholders exist; runtime marks broker selections unsupported until real connectors ship |
 | Unlisted markets outside the current crypto/FX scope | Not supported today | Would require new connector work and testing |
 
 | Venue / integration | Status | Notes |
 | --- | --- | --- |
 | Binance | Supported now | Current primary live/demo connector |
-| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Active development | Catalog/UI direction only; the service connector snapshot reports unsupported until implemented |
-| HTX / Crypto.com Exchange / Kraken / Bitfinex | Active development | Catalog/UI direction only; not wired as completed live paths yet |
-| OANDA / FXCM / IG | Active development | Broker placeholders exist; service support metadata reports them unsupported until live integrations ship |
+| Bybit / OKX / Bitget / Gate / MEXC / KuCoin | Diagnostics-supported / order-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account diagnostics |
+| HTX / Crypto.com Exchange / Kraken / Bitfinex | Diagnostics-supported / order-gated | Python, C++, and Rust support metadata accept these through ccxt for market/account diagnostics |
+| OANDA / FXCM / IG | Evidence-gated | Broker placeholders exist; service support metadata reports them unsupported until live integrations ship |
 | Venues not listed in the repo | Not supported today | Requires a new connector and validation work |
 
 For the fuller breakdown, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).

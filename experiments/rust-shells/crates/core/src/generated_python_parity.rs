@@ -3,7 +3,7 @@
 
 pub const PYTHON_SOURCE: &str = "Languages/Python";
 pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "6e9fa38bf7e734ebf67f42ac1cde448ef09c8077a0d8b459c39fe6986d47fe18";
+pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "b2abd871c1b7b77ba399c3b7c0bc6d8986c8ae856a311603bb1b8ca7614e728b";
 pub const CPP_FULL_PARITY_READY: bool = true;
 pub const RUST_FULL_PARITY_READY: bool = true;
 
@@ -1604,33 +1604,53 @@ pub const PYTHON_EXCHANGE_OPTIONS: &[PythonUiOption] = &[
     },
     PythonUiOption {
         key: "Bybit",
-        label: "Bybit (coming soon)",
-        disabled: true,
+        label: "Bybit (ccxt diagnostics)",
+        disabled: false,
     },
     PythonUiOption {
         key: "OKX",
-        label: "OKX (coming soon)",
-        disabled: true,
+        label: "OKX (ccxt diagnostics)",
+        disabled: false,
     },
     PythonUiOption {
         key: "Gate",
-        label: "Gate (coming soon)",
-        disabled: true,
+        label: "Gate (ccxt diagnostics)",
+        disabled: false,
     },
     PythonUiOption {
         key: "Bitget",
-        label: "Bitget (coming soon)",
-        disabled: true,
+        label: "Bitget (ccxt diagnostics)",
+        disabled: false,
     },
     PythonUiOption {
         key: "MEXC",
-        label: "MEXC (coming soon)",
-        disabled: true,
+        label: "MEXC (ccxt diagnostics)",
+        disabled: false,
     },
     PythonUiOption {
         key: "KuCoin",
-        label: "KuCoin (coming soon)",
-        disabled: true,
+        label: "KuCoin (ccxt diagnostics)",
+        disabled: false,
+    },
+    PythonUiOption {
+        key: "HTX",
+        label: "HTX (ccxt diagnostics)",
+        disabled: false,
+    },
+    PythonUiOption {
+        key: "Crypto.com Exchange",
+        label: "Crypto.com Exchange (ccxt diagnostics)",
+        disabled: false,
+    },
+    PythonUiOption {
+        key: "Kraken",
+        label: "Kraken (ccxt diagnostics)",
+        disabled: false,
+    },
+    PythonUiOption {
+        key: "Bitfinex",
+        label: "Bitfinex (ccxt diagnostics)",
+        disabled: false,
     },
 ];
 

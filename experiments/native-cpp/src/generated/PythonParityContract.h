@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "6e9fa38bf7e734ebf67f42ac1cde448ef09c8077a0d8b459c39fe6986d47fe18";
+inline constexpr std::string_view kPythonSourceContractHash = "b2abd871c1b7b77ba399c3b7c0bc6d8986c8ae856a311603bb1b8ca7614e728b";
 inline constexpr bool kCppFullParityReady = true;
 inline constexpr bool kRustFullParityReady = true;
 
@@ -572,14 +572,18 @@ inline constexpr std::array<PythonUiOption, 12> kPythonIndicatorSourceOptions = 
     PythonUiOption{"Kraken", "Kraken", false},
 };
 
-inline constexpr std::array<PythonUiOption, 7> kPythonExchangeOptions = {
+inline constexpr std::array<PythonUiOption, 11> kPythonExchangeOptions = {
     PythonUiOption{"Binance", "Binance", false},
-    PythonUiOption{"Bybit", "Bybit (coming soon)", true},
-    PythonUiOption{"OKX", "OKX (coming soon)", true},
-    PythonUiOption{"Gate", "Gate (coming soon)", true},
-    PythonUiOption{"Bitget", "Bitget (coming soon)", true},
-    PythonUiOption{"MEXC", "MEXC (coming soon)", true},
-    PythonUiOption{"KuCoin", "KuCoin (coming soon)", true},
+    PythonUiOption{"Bybit", "Bybit (ccxt diagnostics)", false},
+    PythonUiOption{"OKX", "OKX (ccxt diagnostics)", false},
+    PythonUiOption{"Gate", "Gate (ccxt diagnostics)", false},
+    PythonUiOption{"Bitget", "Bitget (ccxt diagnostics)", false},
+    PythonUiOption{"MEXC", "MEXC (ccxt diagnostics)", false},
+    PythonUiOption{"KuCoin", "KuCoin (ccxt diagnostics)", false},
+    PythonUiOption{"HTX", "HTX (ccxt diagnostics)", false},
+    PythonUiOption{"Crypto.com Exchange", "Crypto.com Exchange (ccxt diagnostics)", false},
+    PythonUiOption{"Kraken", "Kraken (ccxt diagnostics)", false},
+    PythonUiOption{"Bitfinex", "Bitfinex (ccxt diagnostics)", false},
 };
 
 inline constexpr std::array<PythonUiOption, 2> kPythonAccountTypeOptions = {
