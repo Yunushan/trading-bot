@@ -61,6 +61,7 @@ def check_native_cpp(
     build_dir: Path,
     config: str,
     require_webengine: bool,
+    enable_qt_deploy_script: bool | None,
     qt_version: str | None,
     timeout: int,
 ) -> dict[str, object]:
@@ -93,6 +94,8 @@ def check_native_cpp(
     ]
     if qt_version:
         configure.append(f"-DTB_QT_VERSION={qt_version}")
+    if enable_qt_deploy_script is not None:
+        configure.append(f"-DTB_ENABLE_QT_DEPLOY_SCRIPT={'ON' if enable_qt_deploy_script else 'OFF'}")
     if sys.platform != "win32":
         configure.append("-DCMAKE_BUILD_TYPE=Debug")
     build = [cmake, "--build", str(build_dir), "--config", config, "--parallel"]
@@ -108,6 +111,7 @@ def check_native_cpp(
         "ok": ok,
         "build_dir": str(build_dir),
         "config": config,
+        "enable_qt_deploy_script": enable_qt_deploy_script,
         "require_webengine": require_webengine,
         "qt_version": qt_version or "",
         "steps": steps,
@@ -116,7 +120,7 @@ def check_native_cpp(
         report["remediation"] = (
             "Install Qt 6.10.x, CMake, a C++ compiler, and vcpkg dependencies; "
             "or for Linux package-manager smoke builds rerun with "
-            "--no-require-webengine --qt-version 6.4.0."
+            "--no-require-webengine --no-enable-qt-deploy-script --qt-version 6.4.0."
         )
     return report
 
@@ -137,6 +141,19 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Override the CMake TB_QT_VERSION minimum for system-Qt smoke builds.",
     )
+    parser.add_argument(
+        "--enable-qt-deploy-script",
+        dest="enable_qt_deploy_script",
+        action="store_true",
+        default=None,
+        help="Force Qt deployment script generation on.",
+    )
+    parser.add_argument(
+        "--no-enable-qt-deploy-script",
+        dest="enable_qt_deploy_script",
+        action="store_false",
+        help="Force Qt deployment script generation off for package-manager smoke builds.",
+    )
     parser.add_argument("--timeout", type=int, default=300, help="Timeout per step in seconds.")
     args = parser.parse_args(argv)
 
@@ -144,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         build_dir=Path(args.build_dir),
         config=str(args.config or "Debug"),
         require_webengine=not args.no_require_webengine,
+        enable_qt_deploy_script=args.enable_qt_deploy_script,
         qt_version=str(args.qt_version or "").strip() or None,
         timeout=max(30, int(args.timeout or 300)),
     )

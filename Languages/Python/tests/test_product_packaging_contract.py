@@ -1228,6 +1228,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Native C++ Smoke", workflow)
         self.assertIn("python tools/check_native_cpp.py", workflow)
         self.assertIn("--no-require-webengine", workflow)
+        self.assertIn("--no-enable-qt-deploy-script", workflow)
         self.assertIn("--qt-version 6.4.0", workflow)
         self.assertLess(
             workflow.index("Install Python dependencies"),

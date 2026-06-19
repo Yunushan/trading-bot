@@ -17,6 +17,16 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 option(TB_REQUIRE_QT_WEBENGINE "Require Qt WebEngine for embedded TradingView/Binance chart modes." ON)
+if (WIN32 OR APPLE)
+    set(_tb_default_enable_qt_deploy_script ON)
+else()
+    set(_tb_default_enable_qt_deploy_script OFF)
+endif()
+option(
+    TB_ENABLE_QT_DEPLOY_SCRIPT
+    "Generate a Qt deployment script for packaging builds. Linux CI smoke builds keep this disabled for distro Qt compatibility."
+    ${_tb_default_enable_qt_deploy_script}
+)
 
 if ((NOT DEFINED Qt6_DIR) OR Qt6_DIR STREQUAL "" OR Qt6_DIR MATCHES "NOTFOUND")
     set(_tb_qt6_candidates "")
@@ -280,11 +290,13 @@ install(
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-if (COMMAND qt_generate_deploy_app_script)
+if (TB_ENABLE_QT_DEPLOY_SCRIPT AND COMMAND qt_generate_deploy_app_script)
     qt_generate_deploy_app_script(
         TARGET binance_backtest_tab
         OUTPUT_SCRIPT tb_deploy_script
         NO_UNSUPPORTED_PLATFORM_ERROR
     )
     install(SCRIPT ${tb_deploy_script})
+elseif(TB_ENABLE_QT_DEPLOY_SCRIPT)
+    message(WARNING "Qt deployment script generation requested, but qt_generate_deploy_app_script is unavailable.")
 endif()
