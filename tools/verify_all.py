@@ -172,6 +172,12 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             remediation="Keep parity/support wording split between source-contract parity and evidence-backed runtime support.",
         ),
         Check(
+            "hardening article evidence",
+            (python, "tools/check_hardening_articles.py", "--json"),
+            root,
+            remediation="Keep docs/HARDENING_ARTICLES.md and the checked code/test evidence aligned with the 18 hardening articles.",
+        ),
+        Check(
             "service tests",
             (python, "Languages/Python/tools/run_service_tests.py"),
             root,

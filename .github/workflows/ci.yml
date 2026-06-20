@@ -140,6 +140,12 @@ jobs:
           set -euo pipefail
           python tools/check_support_claims.py
 
+      - name: Check hardening article evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_hardening_articles.py
+
       - name: Check Python dependency metadata
         shell: bash
         run: |
@@ -449,6 +455,13 @@ jobs:
         run: |
           set -euo pipefail
           cargo check --workspace
+
+      - name: Test Rust core hardening contracts
+        shell: bash
+        working-directory: experiments/rust-shells
+        run: |
+          set -euo pipefail
+          cargo test -p trading-bot-core
 
       - name: Run Tauri UI behavior tests
         shell: bash
