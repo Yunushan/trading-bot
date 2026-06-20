@@ -46,6 +46,13 @@ def _run_step(name: str, command: list[str], *, cwd: Path, timeout: int) -> dict
     }
 
 
+def _tail_output(value: object, *, lines: int = 80) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return "\n".join(text.splitlines()[-lines:])
+
+
 def _default_build_dir(root: Path) -> Path:
     return root / "build" / "binance_cpp_sync_check"
 
@@ -195,10 +202,13 @@ def main(argv: list[str] | None = None) -> int:
         for step in report["steps"]:
             status = "ok" if step["ok"] else "failed"
             print(f"- {step['name']}: {status}")
-            if step.get("stdout"):
-                print(str(step["stdout"]).splitlines()[-1])
-            if step.get("stderr"):
-                print(str(step["stderr"]).splitlines()[-1])
+            output_lines = 1 if step["ok"] else 80
+            stdout_tail = _tail_output(step.get("stdout"), lines=output_lines)
+            stderr_tail = _tail_output(step.get("stderr"), lines=output_lines)
+            if stdout_tail:
+                print(stdout_tail)
+            if stderr_tail:
+                print(stderr_tail)
         if report.get("remediation"):
             print(f"remediation: {report['remediation']}")
     return 0 if bool(report["ok"]) else 1

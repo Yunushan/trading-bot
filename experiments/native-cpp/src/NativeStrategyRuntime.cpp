@@ -428,6 +428,10 @@ QString formatResultNumber(const QJsonValue &value, const QString &suffix) {
     return text + suffix;
 }
 
+QJsonValue integerValue(qint64 value) {
+    return QJsonValue(static_cast<int>(value));
+}
+
 } // namespace
 
 namespace NativeStrategyRuntime {
@@ -685,7 +689,7 @@ QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &co
                                                             ? controls.value(QStringLiteral("_position_pct_units"))
                                                             : controls.value(QStringLiteral("position_pct_units")));
         if (!units.isEmpty()) out.insert(QStringLiteral("position_pct_units"), units);
-        if (auto lev = intOf(controls.value(QStringLiteral("leverage"))); lev && *lev >= 1) out.insert(QStringLiteral("leverage"), *lev);
+        if (auto lev = intOf(controls.value(QStringLiteral("leverage"))); lev && *lev >= 1) out.insert(QStringLiteral("leverage"), integerValue(*lev));
         const QString loop = normalizeLoop(controls.value(QStringLiteral("loop_interval_override")));
         if (!loop.isEmpty()) out.insert(QStringLiteral("loop_interval_override"), loop);
         if (!controls.value(QStringLiteral("add_only")).isUndefined()) out.insert(QStringLiteral("add_only"), coerceStrategyBool(controls.value(QStringLiteral("add_only"))));
@@ -706,7 +710,7 @@ QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &co
         if (!assets.isEmpty()) out.insert(QStringLiteral("assets_mode"), assets);
         const QString account = normalizeAccountMode(controls.value(QStringLiteral("account_mode")));
         if (!account.isEmpty()) out.insert(QStringLiteral("account_mode"), account);
-        if (auto lev = intOf(controls.value(QStringLiteral("leverage")))) out.insert(QStringLiteral("leverage"), *lev);
+        if (auto lev = intOf(controls.value(QStringLiteral("leverage")))) out.insert(QStringLiteral("leverage"), integerValue(*lev));
     }
     if (controls.value(QStringLiteral("stop_loss")).isObject()) out.insert(QStringLiteral("stop_loss"), normalizeStopLoss(controls.value(QStringLiteral("stop_loss")).toObject()));
     const QString backend = textOf(controls.value(QStringLiteral("connector_backend")));
@@ -769,7 +773,7 @@ QJsonObject buildCleanOverrideEntry(const QString &kind, const QJsonObject &entr
     if (!leverage.has_value()) leverage = intOf(entry.value(QStringLiteral("leverage")));
     if (leverage.has_value()) {
         leverage = std::max<qint64>(1, *leverage);
-        controls.insert(QStringLiteral("leverage"), *leverage);
+        controls.insert(QStringLiteral("leverage"), integerValue(*leverage));
     }
     QJsonObject clean{{QStringLiteral("symbol"), symbol}, {QStringLiteral("interval"), interval}};
     if (!indicators.isEmpty()) clean.insert(QStringLiteral("indicators"), indicators);
@@ -782,7 +786,7 @@ QJsonObject buildCleanOverrideEntry(const QString &kind, const QJsonObject &entr
         if (!controls.value(QStringLiteral("connector_backend")).isUndefined()) clean.insert(QStringLiteral("connector_backend"), controls.value(QStringLiteral("connector_backend")));
         clean.insert(QStringLiteral("strategy_controls"), controls);
     }
-    if (leverage.has_value()) clean.insert(QStringLiteral("leverage"), *leverage);
+    if (leverage.has_value()) clean.insert(QStringLiteral("leverage"), integerValue(*leverage));
     if (!clean.contains(QStringLiteral("stop_loss")) && entry.value(QStringLiteral("stop_loss")).isObject()) {
         clean.insert(QStringLiteral("stop_loss"), normalizeStopLoss(entry.value(QStringLiteral("stop_loss")).toObject()));
     }
@@ -791,7 +795,7 @@ QJsonObject buildCleanOverrideEntry(const QString &kind, const QJsonObject &entr
     return {
         {QStringLiteral("entry"), clean},
         {QStringLiteral("indicator_values"), indicators},
-        {QStringLiteral("leverage"), leverage.has_value() ? QJsonValue(static_cast<qint64>(*leverage)) : QJsonValue()},
+        {QStringLiteral("leverage"), leverage.has_value() ? integerValue(*leverage) : QJsonValue()},
         {QStringLiteral("controls"), controls},
     };
 }
