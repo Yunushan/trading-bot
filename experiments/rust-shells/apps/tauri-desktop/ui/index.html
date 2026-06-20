@@ -151,6 +151,24 @@
       align-content: start;
     }
     .metric strong { font-size: 17px; line-height: 1.2; }
+    .card-button {
+      width: 100%;
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .card-button:hover,
+    .card-button:focus-visible {
+      border-color: var(--accent);
+      background: #13243a;
+      outline: none;
+    }
+    .card-button.selected {
+      border-color: var(--accent);
+      background: #102640;
+      box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.42);
+    }
     .panel {
       padding: 14px;
       display: grid;
@@ -594,12 +612,17 @@
         <div class="section-head"><div><h2>Code Languages</h2><p class="muted">Select your preferred code language. Folders for each language are created automatically inside the project so you can keep related assets organized.</p></div></div>
         <section class="panel">
           <h3>Choose your language</h3>
-          <div class="cards"><div class="metric"><span class="pill">Recommended</span><strong>Python</strong><span>Fast to build - Huge ecosystem</span></div><div class="metric"><span class="pill">Experiment</span><strong>C++</strong><span>Qt native desktop experiment</span></div><div class="metric"><span class="pill">Experiment</span><strong>Rust</strong><span>Service API client and UI scaffold</span></div></div>
+          <div class="cards" id="code-language-cards">
+            <button class="metric card-button code-language-card" data-code-language="Python" type="button" aria-pressed="false"><span class="pill">Recommended</span><strong>Python</strong><span>Fast to build - Huge ecosystem</span></button>
+            <button class="metric card-button code-language-card" data-code-language="C++" type="button" aria-pressed="false"><span class="pill">Experiment</span><strong>C++</strong><span>Qt native desktop experiment</span></button>
+            <button class="metric card-button code-language-card selected" data-code-language="Rust" type="button" aria-pressed="true"><span class="pill">Experiment</span><strong>Rust</strong><span>Service API client and UI scaffold</span></button>
+          </div>
+          <p class="muted" id="code-language-status-text">Selected language: Rust (Tauri shell).</p>
         </section>
-        <section class="panel">
+        <section class="panel" id="rust-framework-panel">
           <h3>Rust desktop framework</h3>
           <p class="muted">Tauri is the only user-selectable Rust desktop shell for this project.</p>
-          <div class="cards"><div class="metric"><span class="pill">Operational</span><strong>Tauri</strong><span>Interactive managed Python Service API client shell</span></div></div>
+          <div class="cards"><button class="metric card-button selected" data-rust-framework="Tauri" type="button" aria-pressed="true"><span class="pill">Operational</span><strong>Tauri</strong><span>Interactive managed Python Service API client shell</span></button></div>
         </section>
         <section class="panel" id="rust-native-runtime-gap">
           <h3>Native Rust Runtime Gap</h3>
@@ -1110,6 +1133,37 @@
       const el = $(id);
       if (el && value !== undefined && value !== null) el.textContent = String(value);
     };
+    const codeLanguageStatusText = Object.freeze({
+      "Python": "Selected language: Python (PyQt).",
+      "C++": "Selected language: C++ (Qt/C++23 preview).",
+      "Rust": "Selected language: Rust (Tauri shell)."
+    });
+    const selectCodeLanguage = (language, { log = false } = {}) => {
+      const nextLanguage = Object.prototype.hasOwnProperty.call(codeLanguageStatusText, language)
+        ? language
+        : "Rust";
+      for (const card of document.querySelectorAll("[data-code-language]")) {
+        const selected = card.dataset.codeLanguage === nextLanguage;
+        card.classList.toggle("selected", selected);
+        card.setAttribute("aria-pressed", selected ? "true" : "false");
+      }
+      for (const card of document.querySelectorAll("[data-rust-framework]")) {
+        const selected = nextLanguage === "Rust";
+        card.classList.toggle("selected", selected);
+        card.setAttribute("aria-pressed", selected ? "true" : "false");
+      }
+      const rustFrameworkPanel = $("rust-framework-panel");
+      if (rustFrameworkPanel) rustFrameworkPanel.hidden = nextLanguage !== "Rust";
+      setText("code-language-status-text", codeLanguageStatusText[nextLanguage]);
+      if (log) appendLog(`[ui] Code language selected: ${nextLanguage}`);
+    };
+    for (const card of document.querySelectorAll("[data-code-language]")) {
+      card.addEventListener("click", () => selectCodeLanguage(card.dataset.codeLanguage, { log: true }));
+    }
+    for (const card of document.querySelectorAll("[data-rust-framework]")) {
+      card.addEventListener("click", () => selectCodeLanguage("Rust", { log: true }));
+    }
+    selectCodeLanguage("Rust");
     const escapeHtml = (value) => String(value ?? "--").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;",
       "<": "&lt;",

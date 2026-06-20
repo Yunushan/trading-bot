@@ -223,6 +223,12 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("defaultModels", tauri_html)
         self.assertIn('src="generated-python-parity.js"', tauri_html)
         self.assertIn('src="tauri-ui-behavior.js"', tauri_html)
+        for code_language in ("Python", "C++", "Rust"):
+            self.assertIn(f'data-code-language="{code_language}"', tauri_html)
+        self.assertIn("selectCodeLanguage", tauri_html)
+        self.assertIn("code-language-status-text", tauri_html)
+        self.assertIn('id="rust-framework-panel"', tauri_html)
+        self.assertIn('data-rust-framework="Tauri"', tauri_html)
         self.assertIn("window.PythonParityContract", generated_tauri)
         self.assertIn('"connectorOptions"', generated_tauri)
         self.assertIn('"llmProviders"', generated_tauri)
