@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import unittest
@@ -37,6 +38,19 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _load_repo_tool(module_name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"Unable to load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+    return module
+
+
 class NativeGeneratedParityContractTests(unittest.TestCase):
     maxDiff = None
 
@@ -44,6 +58,12 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertEqual(render_rust_module(), _read(RUST_OUTPUT))
         self.assertEqual(render_cpp_header(), _read(CPP_OUTPUT))
         self.assertEqual(render_tauri_browser_contract(), _read(TAURI_BROWSER_OUTPUT))
+
+    def test_generated_rust_contract_is_stable_under_rustfmt(self):
+        rust_generated = _read(RUST_OUTPUT)
+
+        self.assertIn("#[rustfmt::skip]\nmod generated {", rust_generated)
+        self.assertIn("pub use generated::*;", rust_generated)
 
     def test_generated_contract_exposes_python_source_boundaries(self):
         summary = native_python_source_contract_summary()
@@ -221,6 +241,26 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn(contract_hash, _read(RUST_OUTPUT))
         self.assertIn(contract_hash, _read(CPP_OUTPUT))
         self.assertIn(contract_hash, _read(TAURI_BROWSER_OUTPUT))
+
+    def test_native_source_sync_audit_is_first_class_verification_gate(self):
+        audit = _load_repo_tool(
+            "audit_native_source_sync",
+            REPO_ROOT / "tools" / "audit_native_source_sync.py",
+        )
+        report = audit.audit_native_source_sync()
+        verify_all = _read(REPO_ROOT / "tools" / "verify_all.py")
+        ci_workflow = _read(REPO_ROOT / ".github" / "workflows" / "ci.yml")
+        hardening_checker = _read(REPO_ROOT / "tools" / "check_hardening_articles.py")
+        evidence_gates = _read(REPO_ROOT / "docs" / "QUALITY_AND_EVIDENCE_GATES.md")
+
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertEqual(native_python_source_contract_hash(), report["contract_hash"])
+        self.assertIn("native source sync audit", verify_all)
+        self.assertIn("tools/audit_native_source_sync.py", verify_all)
+        self.assertIn("Audit native source sync", ci_workflow)
+        self.assertIn("tools/audit_native_source_sync.py", ci_workflow)
+        self.assertIn("tools/audit_native_source_sync.py", hardening_checker)
+        self.assertIn("Python-owned C++/Rust source synchronization", evidence_gates)
 
     def test_generated_parity_domains_match_python_source_contract(self):
         summary = native_python_source_contract_summary()

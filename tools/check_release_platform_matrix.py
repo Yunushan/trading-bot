@@ -25,6 +25,14 @@ REQUIRED_PLATFORM_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ..
 
 REQUIRED_BROWSERS = ("chrome", "firefox", "internet-explorer", "edge")
 DEFAULT_MATRIX_PATH = Path("docs/release-platform-test-matrix.json")
+REQUIRED_SUITE_RESULT_NAMES: dict[str, tuple[str, ...]] = {
+    "platform-probe": ("platform-probe",),
+    "python-service-contract": ("python-service-contract",),
+    "desktop-release-smoke": ("desktop-release-smoke",),
+    "native-build-smoke": ("native-build-smoke", "rust-workspace-check"),
+    "mobile-client-contract": ("mobile-client-contract",),
+    "browser-contract": ("browser-contract",),
+}
 
 
 def _slug(value: str) -> str:
@@ -215,34 +223,67 @@ def _read_evidence(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _evidence_issues(targets: list[dict[str, Any]], evidence_dir: Path) -> list[str]:
+def _target_evidence_issues(target: dict[str, Any], evidence_dir: Path) -> list[str]:
     issues: list[str] = []
-    for target in targets:
-        target_id = str(target["id"])
-        path = evidence_dir / f"{target_id}.json"
-        if not path.is_file():
-            issues.append(f"missing evidence for {target_id}: {path}")
-            continue
-        payload = _read_evidence(path)
-        if payload.get("target_id") != target_id:
-            issues.append(f"{path} target_id does not match {target_id}")
-        if payload.get("status") != "passed":
-            issues.append(f"{path} status must be passed")
-        suites = payload.get("suite_results")
-        if not isinstance(suites, list) or not suites:
-            issues.append(f"{path} must contain non-empty suite_results")
-        elif any(not isinstance(item, dict) or item.get("status") != "passed" for item in suites):
+    target_id = str(target["id"])
+    path = evidence_dir / f"{target_id}.json"
+    if not path.is_file():
+        return [f"missing evidence for {target_id}: {path}"]
+    payload = _read_evidence(path)
+    if payload.get("target_id") != target_id:
+        issues.append(f"{path} target_id does not match {target_id}")
+    if payload.get("status") != "passed":
+        issues.append(f"{path} status must be passed")
+    suites = payload.get("suite_results")
+    if not isinstance(suites, list) or not suites:
+        issues.append(f"{path} must contain non-empty suite_results")
+    else:
+        if any(not isinstance(item, dict) or item.get("status") != "passed" for item in suites):
             issues.append(f"{path} has a non-passing suite result")
+
+        observed_suite_names = {
+            str(item.get("name") or "").strip()
+            for item in suites
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for suite_name in target.get("test_suites", []):
+            suite_key = str(suite_name)
+            accepted_names = REQUIRED_SUITE_RESULT_NAMES.get(suite_key, (suite_key,))
+            if not any(name in observed_suite_names for name in accepted_names):
+                issues.append(f"{path} missing required suite result for {suite_key}")
+
+        if target.get("kind") == "platform" and "platform-probe" in target.get("test_suites", []):
+            platform_probe = next(
+                (item for item in suites if isinstance(item, dict) and item.get("name") == "platform-probe"),
+                None,
+            )
+            if not isinstance(platform_probe, dict):
+                issues.append(f"{path} must contain a platform-probe suite result")
+            else:
+                target_match = platform_probe.get("target_match")
+                if not isinstance(target_match, dict) or target_match.get("matched") is not True:
+                    issues.append(f"{path} platform-probe target_match.matched must be true")
     return issues
 
 
-def _emit_matrix(targets: list[dict[str, Any]], *, target_filter: str) -> str:
+def _evidence_issues(targets: list[dict[str, Any]], evidence_dir: Path) -> list[str]:
+    issues: list[str] = []
+    for target in targets:
+        issues.extend(_target_evidence_issues(target, evidence_dir))
+    return issues
+
+
+def _filter_targets(targets: list[dict[str, Any]], *, target_filter: str) -> list[dict[str, Any]]:
     needle = target_filter.strip().lower()
+    if not needle:
+        return targets
+    return [target for target in targets if needle in str(target["id"]).lower()]
+
+
+def _emit_matrix(targets: list[dict[str, Any]]) -> str:
     include = []
     for target in targets:
         target_id = str(target["id"])
-        if needle and needle not in target_id.lower():
-            continue
         include.append(
             {
                 "target_id": target_id,
@@ -262,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-evidence", action="store_true", help="Require passed evidence JSON for every target.")
     parser.add_argument("--evidence-dir", default="release-platform-evidence", help="Directory containing target evidence JSON files.")
     parser.add_argument("--emit-github-matrix", action="store_true", help="Print a GitHub Actions matrix JSON object.")
-    parser.add_argument("--target-filter", default="", help="Only emit targets whose id contains this text.")
+    parser.add_argument("--target-filter", default="", help="Only emit or validate targets whose id contains this text.")
     parser.add_argument("--json", action="store_true", help="Print validation report as JSON.")
     args = parser.parse_args(argv)
 
@@ -278,22 +319,28 @@ def main(argv: list[str] | None = None) -> int:
 
     platform_targets, browser_targets, issues = _validate_matrix(matrix)
     targets = platform_targets + browser_targets
+    filtered_targets = _filter_targets(targets, target_filter=args.target_filter)
+    target_filter_active = bool(str(args.target_filter).strip())
+    if target_filter_active and not filtered_targets:
+        issues.append(f"target-filter matched no targets: {args.target_filter}")
 
     if args.require_evidence:
-        issues.extend(_evidence_issues(targets, Path(args.evidence_dir)))
+        issues.extend(_evidence_issues(filtered_targets, Path(args.evidence_dir)))
 
     if args.emit_github_matrix:
         if issues:
             print(json.dumps({"include": []}, separators=(",", ":")))
             return 1
-        print(_emit_matrix(targets, target_filter=args.target_filter))
+        print(_emit_matrix(filtered_targets))
         return 0
 
     report = {
         "ok": not issues,
         "platform_target_count": len(platform_targets),
         "browser_target_count": len(browser_targets),
-        "target_count": len(targets),
+        "target_count": len(filtered_targets) if target_filter_active else len(targets),
+        "total_target_count": len(targets),
+        "target_filter": str(args.target_filter).strip(),
         "issues": issues,
         "evidence_required": bool(args.require_evidence),
     }

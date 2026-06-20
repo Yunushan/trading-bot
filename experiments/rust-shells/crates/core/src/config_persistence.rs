@@ -96,15 +96,14 @@ impl Default for ServiceConfigRuntimeState {
     }
 }
 
-pub const RUST_CONFIG_PERSISTENCE_BOUNDARIES: &[RustConfigPersistenceBoundary] = &[
-    RustConfigPersistenceBoundary {
+pub const RUST_CONFIG_PERSISTENCE_BOUNDARIES: &[RustConfigPersistenceBoundary] =
+    &[RustConfigPersistenceBoundary {
         shell: "Tauri",
         role: "Operational Python Service API client",
         persistence_owner: "Python Service API /api/v1/config/save and /api/v1/config/load",
         validation_owner: "Python validate_runtime_config with Rust helper parity tests",
         operational: true,
-    },
-];
+    }];
 
 pub fn service_config_env_flag(value: impl AsRef<str>, default_value: bool) -> bool {
     let text = value.as_ref().trim().to_ascii_lowercase();

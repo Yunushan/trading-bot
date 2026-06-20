@@ -104,17 +104,20 @@ pub fn lazy_secondary_tab_keys() -> Vec<&'static str> {
         .collect()
 }
 
-pub fn lazy_secondary_tab_load_delay_ms(key: &str, platform: &str, env_override: Option<&str>) -> u64 {
+pub fn lazy_secondary_tab_load_delay_ms(
+    key: &str,
+    platform: &str,
+    env_override: Option<&str>,
+) -> u64 {
     if key.trim().to_lowercase() != "code" {
         return 0;
     }
-    let default_delay = if platform.eq_ignore_ascii_case("win32")
-        || platform.eq_ignore_ascii_case("windows")
-    {
-        90
-    } else {
-        0
-    };
+    let default_delay =
+        if platform.eq_ignore_ascii_case("win32") || platform.eq_ignore_ascii_case("windows") {
+            90
+        } else {
+            0
+        };
     env_override
         .and_then(|value| value.trim().parse::<i64>().ok())
         .unwrap_or(default_delay)
@@ -267,24 +270,46 @@ mod tests {
         );
         let tabs = desktop_shell_tabs();
         assert_eq!(tabs[0].load_policy, "startup");
-        assert_eq!(tabs[3].placeholder_message, "Backtest tools load the first time you open this tab.");
-        assert_eq!(tabs[5].placeholder_message, "Code language tools load the first time you open this tab.");
-        assert!(tabs[5].activation_hooks.contains(&"start_code_tab_window_suppression"));
+        assert_eq!(
+            tabs[3].placeholder_message,
+            "Backtest tools load the first time you open this tab."
+        );
+        assert_eq!(
+            tabs[5].placeholder_message,
+            "Code language tools load the first time you open this tab."
+        );
+        assert!(
+            tabs[5]
+                .activation_hooks
+                .contains(&"start_code_tab_window_suppression")
+        );
     }
 
     #[test]
     fn lazy_secondary_tab_lifecycle_matches_python_placeholders_and_prewarm() {
-        assert_eq!(lazy_secondary_tab_keys(), vec!["backtest", "liquidation", "code"]);
+        assert_eq!(
+            lazy_secondary_tab_keys(),
+            vec!["backtest", "liquidation", "code"]
+        );
         assert_eq!(lazy_secondary_tab_load_delay_ms("code", "win32", None), 90);
-        assert_eq!(lazy_secondary_tab_load_delay_ms("code", "win32", Some("1500")), 1000);
-        assert_eq!(lazy_secondary_tab_load_delay_ms("backtest", "win32", Some("99")), 0);
+        assert_eq!(
+            lazy_secondary_tab_load_delay_ms("code", "win32", Some("1500")),
+            1000
+        );
+        assert_eq!(
+            lazy_secondary_tab_load_delay_ms("backtest", "win32", Some("99")),
+            0
+        );
         assert!(!lazy_secondary_tab_prewarm_enabled("linux", Some("1")));
         assert!(lazy_secondary_tab_prewarm_enabled("win32", Some("true")));
 
         let startup = build_desktop_startup_contract("win32", Some("1"));
         assert_eq!(startup["startup_tab"], "Dashboard");
         assert_eq!(startup["lazy_property"], PYTHON_LAZY_SECONDARY_TAB_PROPERTY);
-        assert_eq!(startup["lazy_tabs"], json!(["backtest", "liquidation", "code"]));
+        assert_eq!(
+            startup["lazy_tabs"],
+            json!(["backtest", "liquidation", "code"])
+        );
         assert_eq!(startup["prewarm_keys"], json!(["code", "backtest"]));
         assert_eq!(startup["prewarm_enabled"], true);
     }
@@ -319,7 +344,10 @@ mod tests {
         assert_eq!(light.chart_theme, "light");
 
         let ownership = rust_desktop_shell_ownership_contract();
-        assert_eq!(ownership["tauri"]["owns_local_python_service_lifecycle"], true);
+        assert_eq!(
+            ownership["tauri"]["owns_local_python_service_lifecycle"],
+            true
+        );
         assert_eq!(ownership["tauri"]["owns_trading_execution"], false);
         let ownership_object = ownership.as_object().expect("ownership contract object");
         assert!(ownership_object.contains_key("tauri"));

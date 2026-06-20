@@ -631,12 +631,12 @@
             <table>
               <thead><tr><th>Capability</th><th>C++ status</th><th>Rust status</th><th>Required before enable</th></tr></thead>
               <tbody>
-                <tr><td>REST market data</td><td>BinanceRestClient fetchUsdtSymbols/fetchKlines/fetchTickerPrice</td><td>Native BinanceRestMarketDataClient foundation for exchangeInfo USDT symbols, 24h quote-volume ordering, klines, and ticker prices</td><td>Live-network smoke coverage where allowed, custom interval aggregation, and supervised runtime integration</td></tr>
-                <tr><td>WebSocket market stream</td><td>BinanceWsClient connectBookTicker/connectKline</td><td>Native BinanceWebSocketClient foundation for bookTicker/kline URLs, tungstenite connection entry points, and stream message parsing</td><td>Supervised reconnect/backoff, candle cache reconciliation, stale-feed guards, lifecycle ownership, and live-network smoke coverage</td></tr>
-                <tr><td>Account, balance, and positions</td><td>fetchUsdtBalance and fetchOpenFuturesPositions</td><td>Native BinanceSignedRestClient foundation for signed USDT balance snapshots, normalized balance rows, open futures position parsing with account-position overlays, portfolio/history/allocation ledger helpers, close-position planning foundations, and portfolio/history/allocation/reconciliation tests</td><td>Live credential-gated smoke coverage, hedge/one-way runtime coverage, and broader native runtime enablement after remaining parity domains complete</td></tr>
-                <tr><td>Order submission</td><td>placeFuturesMarketOrder/placeFuturesLimitOrder and open/close fallback helpers</td><td>Native futures symbol filters plus signed market/limit order request/result foundation, order submit guard, order audit/circuit-breaker, risk/stop-loss planning, close-position planning, and runtime-owned order engine for guarded submit/audit/circuit persistence</td><td>Dry-run controls, credential-gated smoke coverage, supervised runtime lifecycle, and runtime-owned recovery gates</td></tr>
-                <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Desktop shell/tab lifecycle contracts plus strategy runtime signal/control/provenance helpers; Tauri can start/stop Python Service API, not a standalone Rust trading loop</td><td>Live credential-gated smoke coverage before enabling standalone native trading</td></tr>
-                <tr><td>Risk and shutdown guards</td><td>Stop-loss settings, quantity caps, retry windows, close-on-stop behavior</td><td>Stop-loss and close-opposite planning foundations plus runtime-owned risk/close execution path for stop-loss fallback and close-opposite reconciliation</td><td>Max exposure checks, shutdown guard wiring, and credential-gated regression tests</td></tr>
+                <tr><td>REST market data</td><td>BinanceRestClient fetchUsdtSymbols/fetchKlines/fetchTickerPrice</td><td>Native BinanceRestMarketDataClient foundation for exchangeInfo USDT symbols, 24h quote-volume ordering, native/custom-aggregated klines, and ticker prices</td><td>Live-network smoke coverage where allowed and supervised runtime integration</td></tr>
+                <tr><td>WebSocket market stream</td><td>BinanceWsClient connectBookTicker/connectKline</td><td>Native BinanceWebSocketClient foundation for bookTicker/kline URLs, tungstenite connection entry points, stream message parsing, reconnect/backoff decisions, kline cache staleness guards, deterministic stream supervisor state, and live stream ingestion bridge owned by the runtime-loop coordinator</td><td>Live-network smoke coverage before standalone native trading</td></tr>
+                <tr><td>Account, balance, and positions</td><td>fetchUsdtBalance and fetchOpenFuturesPositions</td><td>Native BinanceSignedRestClient foundation for signed USDT balance snapshots, normalized balance rows, open futures position parsing with account-position overlays, futures position-mode get/change request foundations, futures margin-type/leverage/multi-assets request and parser foundations, portfolio/history/allocation ledger helpers, close-position planning foundations, native runtime hedge/one-way close planning, account-mode reconciliation, futures-settings reconciliation snapshots, a native account preflight gate, native operational preflight gate, and portfolio/history/allocation/reconciliation tests</td><td>Live credential-gated smoke coverage and broader native execution integration after remaining parity domains complete</td></tr>
+                <tr><td>Order submission</td><td>placeFuturesMarketOrder/placeFuturesLimitOrder and open/close fallback helpers</td><td>Native futures symbol filters plus signed market/limit order request/result foundation, order submit guard, order audit/circuit-breaker, risk/stop-loss planning, close-position planning, and runtime-owned order engine for guarded submit/dry-run/audit/circuit persistence</td><td>Credential-gated smoke coverage, supervised runtime lifecycle, and runtime-owned recovery gates</td></tr>
+                <tr><td>Runtime lifecycle loop</td><td>startDashboardRuntime/runDashboardRuntimeCycle/stopDashboardRuntime</td><td>Desktop shell/tab lifecycle contracts, strategy runtime signal/control/provenance helpers, and native runtime loop coordinator for stream supervision, live ingestion event/close/error handling, pause, stop, shutdown, idle transitions, hedge/one-way close planning, account-mode reconciliation, futures-settings reconciliation, a native account preflight gate, native operational preflight gate, and portfolio-aware exposure guard checks; Tauri can start/stop Python Service API, not a standalone Rust trading loop</td><td>Live credential-gated smoke, recovery evidence, and release evidence before enabling standalone native trading</td></tr>
+                <tr><td>Risk and shutdown guards</td><td>Stop-loss settings, quantity caps, retry windows, close-on-stop behavior</td><td>Stop-loss and close-opposite planning foundations plus runtime-owned risk/close execution path for stop-loss fallback, close-opposite reconciliation, native runtime stop/idle wiring, and portfolio-aware exposure guard checks for target margin, available balance, side cap, filter headroom, and one-way add-only reduce-only behavior</td><td>Credential-gated regression tests, live recovery evidence, and release evidence</td></tr>
               </tbody>
             </table>
           </div>
@@ -654,7 +654,7 @@
                 <tr><td>strategy_runtime</td><td>Indicator compute, strategy cycles, workers, and signal generation</td><td>Complete signal/control/override/lifecycle parity helpers with native tests</td><td>Complete signal/control/provenance helpers plus strict Python-service execution boundary</td><td>Complete for this domain</td></tr>
                 <tr><td>exchange_connectors</td><td>Connector selection, market data, transports, diagnostics, and rate limits</td><td>Complete in generated Python parity matrix with connector catalog, support metadata, non-Binance rejection reasons, rate-limit/backoff, and diagnostic health tests</td><td>Complete in generated Python parity matrix with connector catalog, support metadata, rate-limit/backoff, redacted diagnostic snapshots, REST/WebSocket/account/order foundations, and Service API delegation boundaries</td><td>Complete for this domain</td></tr>
                 <tr><td>account_portfolio_positions</td><td>Account, portfolio, positions, history, allocation, and reconciliation</td><td>Complete in generated Python parity matrix with portfolio DTOs, history/allocation ledgers, and close-all reconciliation tests</td><td>Complete in generated Python parity matrix via signed balance/open-position snapshots, portfolio/history/allocation/reconciliation tests, close-position planning, and Python Service API rendering</td><td>Complete for this domain</td></tr>
-                <tr><td>order_execution_and_risk</td><td>Order sizing, submit guards, audit, preflight, circuit breaker, and shutdown risk</td><td>Complete in generated Python parity matrix for this domain</td><td>Complete in generated Python parity matrix for this domain via signed order/filter, submit guard, audit/circuit persistence, runtime-owned order engine, stop-loss close fallback, close-opposite reconciliation, and shutdown guard tests</td><td>Broader native Rust trading remains disabled until other runtime domains are complete</td></tr>
+                <tr><td>order_execution_and_risk</td><td>Order sizing, submit guards, audit, preflight, circuit breaker, and shutdown risk</td><td>Complete in generated Python parity matrix for this domain</td><td>Complete in generated Python parity matrix for this domain via signed order/filter, submit guard, deterministic dry-run, audit/circuit persistence, runtime-owned order engine, stop-loss close fallback, close-opposite reconciliation, shutdown guard tests, and native runtime stop/idle wiring</td><td>Broader native Rust trading remains disabled until other runtime domains are complete</td></tr>
                 <tr><td>backtest_engine</td><td>Backtest engine, optimizer, scanner, dashboard import, and provenance</td><td>Complete in generated Python parity matrix with mirrored request shape, run/stop bridge, scanner polling, dashboard import, and provenance coverage</td><td>Complete in generated Python parity matrix by delegating canonical backtest execution to the Python Service API</td><td>Complete for this domain</td></tr>
                 <tr><td>charts_and_heatmaps</td><td>TradingView, lightweight charts, fallbacks, browser guards, and heatmap panels</td><td>Complete in generated Python parity matrix with chart state, interval alias, asset fallback, safe-mode guard, and heatmap provider tests</td><td>Complete in generated Python parity matrix with chart state, lightweight payload, asset fallback, safe-mode guard, and heatmap provider helpers</td><td>Complete for this domain</td></tr>
                 <tr><td>logs_terminal_diagnostics</td><td>Service logs, terminal route, diagnostics, redaction, and test runner surfaces</td><td>Complete in generated Python parity matrix with service log/terminal DTOs, terminal route smoke coverage, and diagnostic redaction tests</td><td>Complete in generated Python parity matrix with service log schemas, terminal_run delegation boundaries, and diagnostic redaction tests</td><td>Complete for this domain</td></tr>
@@ -1138,7 +1138,17 @@
       "C++": "Selected language: C++ (Qt/C++23 preview).",
       "Rust": "Selected language: Rust (Tauri shell)."
     });
-    const selectCodeLanguage = (language, { log = false } = {}) => {
+    const codeLanguageLaunchDetails = Object.freeze({
+      "Python": {
+        title: "Open Python desktop?",
+        body: "This will open the Python PyQt trading bot desktop from apps/desktop-pyqt/main.py."
+      },
+      "C++": {
+        title: "Open C++ desktop?",
+        body: "This will open the C++ Qt trading bot desktop if a built Trading-Bot-C++ executable is available."
+      }
+    });
+    const applyCodeLanguageSelection = (language, { log = false } = {}) => {
       const nextLanguage = Object.prototype.hasOwnProperty.call(codeLanguageStatusText, language)
         ? language
         : "Rust";
@@ -1156,6 +1166,49 @@
       if (rustFrameworkPanel) rustFrameworkPanel.hidden = nextLanguage !== "Rust";
       setText("code-language-status-text", codeLanguageStatusText[nextLanguage]);
       if (log) appendLog(`[ui] Code language selected: ${nextLanguage}`);
+      return nextLanguage;
+    };
+    const selectCodeLanguage = async (language, { log = false } = {}) => {
+      const nextLanguage = Object.prototype.hasOwnProperty.call(codeLanguageStatusText, language)
+        ? language
+        : "Rust";
+      if (nextLanguage === "Rust") {
+        applyCodeLanguageSelection(nextLanguage, { log });
+        return;
+      }
+      const launchDetails = codeLanguageLaunchDetails[nextLanguage];
+      const confirmText = `${launchDetails.title}\n\n${launchDetails.body}\n\nDo you want to continue?`;
+      if (!window.confirm(confirmText)) {
+        appendLog(`[ui] ${nextLanguage} desktop launch cancelled.`);
+        return;
+      }
+      applyCodeLanguageSelection(nextLanguage, { log });
+      setText("code-language-status-text", `Opening ${nextLanguage} desktop...`);
+      if (typeof invoke !== "function") {
+        const error = "Tauri backend is unavailable, so the desktop app cannot be opened from this page.";
+        setText("code-language-status-text", error);
+        window.alert(error);
+        appendLog(`[ui] ${nextLanguage} launch failed: ${error}`);
+        return;
+      }
+      try {
+        const result = await invoke("launch_desktop_language", { language: nextLanguage });
+        if (result?.ok) {
+          const detail = result.path ? `${result.message} ${result.path}` : result.message;
+          setText("code-language-status-text", detail || codeLanguageStatusText[nextLanguage]);
+          appendLog(`[ui] ${nextLanguage} launch started${result.path ? `: ${result.path}` : ""}.`);
+          return;
+        }
+        const error = result?.error || `${nextLanguage} desktop launch failed.`;
+        setText("code-language-status-text", error);
+        window.alert(error);
+        appendLog(`[ui] ${nextLanguage} launch failed: ${error}`);
+      } catch (error) {
+        const message = error?.message || String(error);
+        setText("code-language-status-text", `${nextLanguage} desktop launch failed: ${message}`);
+        window.alert(`${nextLanguage} desktop launch failed:\n\n${message}`);
+        appendLog(`[ui] ${nextLanguage} launch failed: ${message}`);
+      }
     };
     for (const card of document.querySelectorAll("[data-code-language]")) {
       card.addEventListener("click", () => selectCodeLanguage(card.dataset.codeLanguage, { log: true }));
@@ -1163,7 +1216,7 @@
     for (const card of document.querySelectorAll("[data-rust-framework]")) {
       card.addEventListener("click", () => selectCodeLanguage("Rust", { log: true }));
     }
-    selectCodeLanguage("Rust");
+    applyCodeLanguageSelection("Rust");
     const escapeHtml = (value) => String(value ?? "--").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;",
       "<": "&lt;",

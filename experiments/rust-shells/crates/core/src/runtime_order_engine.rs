@@ -37,6 +37,7 @@ pub struct RuntimeOrderEngine {
     pub connector_incident_max_bytes: u64,
     pub connector_incident_backup_count: usize,
     pub live_submit_attempt_count: i64,
+    pub dry_run: bool,
     audit_last_write_error: Option<OrderAuditWriteError>,
     audit_last_write_error_at: String,
     audit_last_write_ok_at: String,
@@ -66,6 +67,7 @@ impl RuntimeOrderEngine {
             connector_incident_max_bytes: DEFAULT_CONNECTOR_ORDER_CIRCUIT_INCIDENT_MAX_BYTES,
             connector_incident_backup_count: DEFAULT_CONNECTOR_ORDER_CIRCUIT_INCIDENT_BACKUP_COUNT,
             live_submit_attempt_count: 0,
+            dry_run: true,
             audit_last_write_error: None,
             audit_last_write_error_at: String::new(),
             audit_last_write_ok_at: String::new(),
@@ -129,6 +131,27 @@ impl RuntimeOrderEngine {
                 order_result: None,
                 error,
                 circuit_snapshot,
+                audit_status: self.audit_status(),
+            };
+        }
+
+        if self.dry_run {
+            let dry_run_order = dry_run_order_result(input.order);
+            self.write_audit(order_audit_from_params(
+                "order_dry_run",
+                &input.market,
+                &params,
+                &input.now_iso,
+                &input.source,
+                Some(dry_run_order_result_json(&dry_run_order)),
+                "",
+            ));
+            return RuntimeOrderSubmitResult {
+                allowed: true,
+                guard,
+                order_result: Some(dry_run_order),
+                error: String::new(),
+                circuit_snapshot: None,
                 audit_status: self.audit_status(),
             };
         }
@@ -576,6 +599,26 @@ fn order_result_json(result: &BinanceFuturesOrderResult) -> Value {
     })
 }
 
+fn dry_run_order_result(order: &BinanceFuturesOrderParams) -> BinanceFuturesOrderResult {
+    BinanceFuturesOrderResult {
+        symbol: order.symbol.clone(),
+        side: order.side.clone(),
+        position_side: order.position_side.clone(),
+        order_id: "dry-run".to_owned(),
+        status: "DRY_RUN".to_owned(),
+        executed_qty: 0.0,
+        avg_price: 0.0,
+    }
+}
+
+fn dry_run_order_result_json(result: &BinanceFuturesOrderResult) -> Value {
+    let mut payload = order_result_json(result);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("dry_run".to_owned(), Value::Bool(true));
+    }
+    payload
+}
+
 fn close_directive(
     symbol: &str,
     side: &str,
@@ -697,6 +740,7 @@ mod tests {
         engine.leverage = 5;
         engine.margin_mode = "isolated".to_owned();
         engine.position_pct = 2.0;
+        engine.dry_run = false;
         engine.safety = LiveTradingSafetyConfig {
             live_trading_enabled: true,
             live_trading_acknowledgement: LIVE_TRADING_ACKNOWLEDGEMENT.to_owned(),
@@ -799,6 +843,31 @@ mod tests {
         let audit = fs::read_to_string(&audit_path).expect("audit");
         assert!(audit.contains("order_submit_attempt"));
         assert!(audit.contains("order_accepted"));
+        fs::remove_file(audit_path).ok();
+    }
+
+    #[test]
+    fn runtime_order_engine_dry_run_audits_without_executing_or_counting_live_submit() {
+        let (audit_path, incident_path) = temp_paths("dry-run");
+        let mut engine = live_engine(audit_path.clone(), incident_path);
+        engine.dry_run = true;
+        let order = build_futures_market_order_params("ethusdt", "BUY", 0.5, false, "")
+            .expect("order params");
+
+        let result = engine.submit_futures_order(submit_input(&order), |_| {
+            panic!("dry-run submit must not call the exchange executor")
+        });
+
+        assert!(result.allowed, "{:?}", result.error);
+        assert_eq!(engine.live_submit_attempt_count, 0);
+        let order_result = result.order_result.as_ref().expect("dry-run order");
+        assert_eq!(order_result.order_id, "dry-run");
+        assert_eq!(order_result.status, "DRY_RUN");
+        assert_eq!(order_result.executed_qty, 0.0);
+        let audit = fs::read_to_string(&audit_path).expect("audit");
+        assert!(audit.contains("order_dry_run"));
+        assert!(audit.contains("\"dry_run\":true"));
+        assert!(!audit.contains("order_submit_attempt"));
         fs::remove_file(audit_path).ok();
     }
 

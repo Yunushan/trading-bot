@@ -17,6 +17,16 @@ on:
         required: true
         type: boolean
         default: false
+      desktop_smoke_command:
+        description: "Real release binary desktop smoke command for desktop-release-smoke targets, for example build/binance_cpp/Release/Trading-Bot-C++.exe --smoke"
+        required: false
+        default: ""
+        type: string
+      browser_test_command:
+        description: "Real browser contract command for browser targets, for example npm test -- --browser=edge"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -37,12 +47,24 @@ jobs:
 
       - name: Run real target probe
         shell: bash
+        env:
+          TB_RELEASE_DESKTOP_SMOKE_COMMAND: ${{ inputs.desktop_smoke_command }}
+          TB_BROWSER_TEST_COMMAND: ${{ inputs.browser_test_command }}
         run: |
           set -euo pipefail
           mkdir -p release-platform-evidence
           python tools/run_release_platform_probe.py \
             --target-id "${{ inputs.target_id }}" \
             --output "release-platform-evidence/${{ inputs.target_id }}.json"
+
+      - name: Validate target evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_release_platform_matrix.py \
+            --require-evidence \
+            --evidence-dir release-platform-evidence \
+            --target-filter "${{ inputs.target_id }}"
 
       - name: Upload target evidence
         uses: actions/upload-artifact@v7

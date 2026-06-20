@@ -208,7 +208,6 @@ class ProductPackagingContractTests(unittest.TestCase):
         tauri_behavior_test = (
             rust_root / "apps" / "tauri-desktop" / "ui" / "tauri-ui-behavior.test.cjs"
         ).read_text(encoding="utf-8")
-        slint_ui = (rust_root / "apps" / "slint-desktop" / "ui" / "main.slint").read_text(encoding="utf-8")
         rust_cli = (rust_root / "src" / "main.rs").read_text(encoding="utf-8")
         code_catalog = (REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "code" / "code_language_catalog.py").read_text(
             encoding="utf-8"
@@ -226,6 +225,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         for code_language in ("Python", "C++", "Rust"):
             self.assertIn(f'data-code-language="{code_language}"', tauri_html)
         self.assertIn("selectCodeLanguage", tauri_html)
+        self.assertIn("Open Python desktop?", tauri_html)
+        self.assertIn("Open C++ desktop?", tauri_html)
+        self.assertIn('invoke("launch_desktop_language"', tauri_html)
         self.assertIn("code-language-status-text", tauri_html)
         self.assertIn('id="rust-framework-panel"', tauri_html)
         self.assertIn('data-rust-framework="Tauri"', tauri_html)
@@ -324,7 +326,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         ):
             self.assertIn(llm_text, core)
             self.assertIn(llm_text, tauri_browser_surface)
-        for source in (tauri_html, slint_ui):
+        for source in (tauri_html,):
             for label in (*tab_labels, *mirrored_dashboard_controls, *mirrored_table_columns):
                 self.assertIn(label, source)
             self.assertIn("Bot Status", source)
@@ -339,14 +341,6 @@ class ProductPackagingContractTests(unittest.TestCase):
             "Max MDD Scanner",
         ):
             self.assertIn(tauri_parity_text, tauri_browser_surface)
-        for slint_parity_text in (
-            "Alibaba Qwen / DashScope",
-            "Add Selected, Remove Selected, Clear All",
-            "Max MDD Scanner Top N",
-            "long interval list",
-            "URL, Go, Reload, and Open in Browser",
-        ):
-            self.assertIn(slint_parity_text, slint_ui)
         for operational_text in (
             "Operational Service API client",
             "operational_status",
@@ -360,11 +354,14 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Rust desktop shell", rust_launcher)
         self.assertTrue(tauri_app_config["app"]["withGlobalTauri"])
         self.assertIn("reqwest", tauri_config["dependencies"])
+        self.assertIn("launch_desktop_language", tauri_main)
         self.assertIn("service_api_request", tauri_main)
         self.assertIn("start_service_api", tauri_main)
         self.assertIn("stop_service_api", tauri_main)
         self.assertIn("service_process_status", tauri_main)
         self.assertIn("ServiceProcessState", tauri_main)
+        self.assertIn("desktop-pyqt", tauri_main)
+        self.assertIn("Trading-Bot-C++", tauri_main)
         self.assertIn('join("apps").join("service-api").join("main.py")', tauri_main)
         self.assertIn('arg("--serve")', tauri_main)
         self.assertIn('arg("--load-config")', tauri_main)
@@ -503,6 +500,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         ):
             self.assertIn(f'id="{element_id}"', tauri_html)
         for tauri_command in (
+            'invoke("launch_desktop_language"',
             'invoke("start_service_api"',
             'invoke("stop_service_api"',
             'invoke("service_api_request"',
@@ -624,16 +622,10 @@ class ProductPackagingContractTests(unittest.TestCase):
 
         self.assertIn("rust_native_runtime_capabilities", rust_cli)
         self.assertIn("rust_native_trading_runtime_ready", rust_cli)
-        self.assertIn("Service API Integration", slint_ui)
-        self.assertIn("Framework Parity", slint_ui)
-        self.assertIn("Native Rust Runtime Gap", slint_ui)
-        self.assertIn("Local model status", slint_ui)
-        self.assertIn("llm_local_model_status", slint_ui)
-        self.assertIn("llm_local_model_pull", slint_ui)
-        self.assertIn("Scanner best candidate summary", slint_ui)
-        self.assertIn("duplicate-safe dashboard import", slint_ui)
-        self.assertIn("Python service/desktop runtime remains the trading execution owner", slint_ui)
-        self.assertIn("standalone Rust trading execution supported: false", slint_ui)
+        self.assertFalse((rust_root / "apps" / "slint-desktop").exists())
+        self.assertFalse((rust_root / "apps" / "egui-desktop").exists())
+        self.assertFalse((rust_root / "apps" / "iced-desktop").exists())
+        self.assertFalse((rust_root / "apps" / "dioxus-desktop").exists())
 
     def test_unix_build_script_targets_canonical_desktop_wrapper(self):
         script = (REPO_ROOT / "Languages" / "Python" / "tools" / "build_binary.sh").read_text(encoding="utf-8")
@@ -1207,13 +1199,18 @@ class ProductPackagingContractTests(unittest.TestCase):
 
     def test_ci_smoke_uses_canonical_service_wrapper(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        native_cpp_checker = (REPO_ROOT / "tools" / "check_native_cpp.py").read_text(encoding="utf-8")
         self.assertIn("python apps/service-api/main.py --healthcheck", workflow)
         self.assertIn("python Languages/Python/tools/check_service_api_contracts.py", workflow)
+        self.assertIn("Check Rust native runtime evidence contract", workflow)
+        self.assertIn("python tools/check_rust_native_runtime_evidence.py --schema-only", workflow)
         self.assertIn("Run focused service API tests", workflow)
         self.assertIn("Clean generated Python install artifacts", workflow)
         self.assertIn("python tools/clean_workspace_artifacts.py --apply", workflow)
         self.assertIn("Native C++ Smoke", workflow)
         self.assertIn("python tools/check_native_cpp.py", workflow)
+        self.assertIn('"desktop release smoke"', native_cpp_checker)
+        self.assertIn('"--smoke"', native_cpp_checker)
         self.assertIn("--no-require-webengine", workflow)
         self.assertIn("--no-enable-qt-deploy-script", workflow)
         self.assertIn("--smoke-targets-only", workflow)
@@ -1361,11 +1358,22 @@ class ProductPackagingContractTests(unittest.TestCase):
         real_test_workflow = (
             REPO_ROOT / ".github" / "workflows" / "release-platform-real-tests.yml"
         ).read_text(encoding="utf-8")
+        rust_release_evidence_workflow = (
+            REPO_ROOT / ".github" / "workflows" / "rust-native-release-evidence.yml"
+        ).read_text(encoding="utf-8")
         self.assertIn("Release Platform Matrix Contract", ci_workflow)
         self.assertIn("python tools/check_release_platform_matrix.py --schema-only", ci_workflow)
         self.assertIn("tools/run_release_platform_probe.py", real_test_workflow)
         self.assertIn("--require-evidence", real_test_workflow)
+        self.assertIn("desktop_smoke_command", real_test_workflow)
+        self.assertIn("TB_RELEASE_DESKTOP_SMOKE_COMMAND", real_test_workflow)
+        self.assertIn("browser_test_command", real_test_workflow)
+        self.assertIn("TB_BROWSER_TEST_COMMAND", real_test_workflow)
         self.assertIn("actions/upload-artifact@v7", real_test_workflow)
+        self.assertIn("gh run download", rust_release_evidence_workflow)
+        self.assertIn("tools/write_rust_native_release_evidence.py", rust_release_evidence_workflow)
+        self.assertIn("--only rust-native-release-platform-evidence", rust_release_evidence_workflow)
+        self.assertIn("actions/upload-artifact@v7", rust_release_evidence_workflow)
 
     def test_python_version_support_matrix_declares_and_checks_310_to_314(self):
         checker = REPO_ROOT / "tools" / "check_python_version_support.py"

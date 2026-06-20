@@ -63,7 +63,7 @@ pub const CPP_STARTUP_PACKAGING_CONTRACT: NativeStartupPackagingContract =
         ],
         release_smoke_commands: &[
             "cmake --build build/binance_cpp --config Release",
-            "build/binance_cpp/Release/Trading-Bot-C++.exe",
+            "build/binance_cpp/Release/Trading-Bot-C++.exe --smoke",
         ],
         delegates_trading_execution_to_python: true,
     };

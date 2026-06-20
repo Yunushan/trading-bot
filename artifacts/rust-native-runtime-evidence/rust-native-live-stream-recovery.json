@@ -1,0 +1,31 @@
+{
+  "command": "target\\debug\\trading-bot-rust.exe --write-local-recovery-evidence",
+  "commit": "9bc2f78de441dcf22d846c1976f1de99eddb4939",
+  "environment": {
+    "rust_package": "trading-bot-rust",
+    "scope": "deterministic_local",
+    "workspace": "C:/Users/Yunus-Home/Downloads/trading-bot\\experiments\\rust-shells"
+  },
+  "evidence_id": "rust-native-live-stream-recovery",
+  "evidence_scope": "deterministic_local",
+  "generated_at": "unix:1781961853",
+  "recovery_scenarios": [
+    {
+      "name": "websocket_error_redaction_and_reconnect_recovery",
+      "source": "native_runtime_live_ingestion_bridge_redacts_errors_and_recovers",
+      "status": "passed"
+    }
+  ],
+  "runtime_ready_claimed": false,
+  "secrets_redacted": true,
+  "status": "passed",
+  "suite_results": [
+    {
+      "command": "cargo test -p trading-bot-core native_runtime_live_ingestion_bridge_redacts_errors_and_recovers -- --nocapture",
+      "name": "native_runtime_live_ingestion_bridge_redacts_errors_and_recovers",
+      "status": "passed",
+      "stderr_tail": "Compiling trading-bot-core v0.1.0 (C:\\Users\\Yunus-Home\\Downloads\\trading-bot\\experiments\\rust-shells\\crates\\core)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.17s\n     Running unittests src\\lib.rs (target\\debug\\deps\\trading_bot_core-658d30395c593a63.exe)",
+      "stdout_tail": "running 1 test\ntest native_runtime::tests::native_runtime_live_ingestion_bridge_redacts_errors_and_recovers ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 138 filtered out; finished in 0.00s"
+    }
+  ]
+}

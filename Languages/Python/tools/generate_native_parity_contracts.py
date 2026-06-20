@@ -626,9 +626,6 @@ def _cpp_tradingview_interval_map(interval_map: dict[str, object]) -> str:
 def render_rust_module() -> str:
     summary = native_python_source_contract_summary()
     parts = [
-        "// This file is generated from Languages/Python/app/native_parity.py.",
-        "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
-        "",
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
         f"pub const PYTHON_SOURCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
@@ -690,7 +687,21 @@ def render_rust_module() -> str:
         _rust_ui_option_catalogs(summary),
         "",
     ]
-    return "\n".join(parts)
+    body = [f"    {line}" if line else "" for line in parts]
+    return "\n".join(
+        [
+            "// This file is generated from Languages/Python/app/native_parity.py.",
+            "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+            "",
+            "#[rustfmt::skip]",
+            "mod generated {",
+            *body,
+            "}",
+            "",
+            "pub use generated::*;",
+            "",
+        ]
+    )
 
 
 def render_cpp_header() -> str:

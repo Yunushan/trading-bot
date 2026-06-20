@@ -1,0 +1,114 @@
+{
+  "completed_at": "2026-06-20T16:44:56Z",
+  "started_at": "2026-06-20T16:44:50Z",
+  "status": "passed",
+  "suite_results": [
+    {
+      "name": "platform-probe",
+      "observed": {
+        "executable": "C:\\Users\\Yunus-Home\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+        "machine": "AMD64",
+        "macos_version": "",
+        "normalized_architecture": "x64",
+        "os_release_id": "",
+        "os_release_id_like": "",
+        "os_release_version_id": "",
+        "platform": "Windows-11-10.0.26200-SP0",
+        "processor": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+        "python": "3.14.5",
+        "release": "11",
+        "system": "Windows",
+        "version": "10.0.26200"
+      },
+      "status": "passed",
+      "target_match": {
+        "expected": {
+          "architecture": "x64",
+          "family": "windows",
+          "normalized_architecture": "x64",
+          "version": "11"
+        },
+        "issues": [],
+        "matched": true
+      }
+    },
+    {
+      "command": [
+        "C:\\Users\\Yunus-Home\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+        "tools/check_python_sources_compile.py",
+        "apps/service-api/main.py",
+        "Languages/Python/app/service",
+        "Languages/Python/app/settings",
+        "Languages/Python/trading_core"
+      ],
+      "duration_seconds": 0.189,
+      "name": "python-service-contract",
+      "returncode": 0,
+      "status": "passed",
+      "stderr": "",
+      "stdout": "Compiled 53 Python source file(s) in memory."
+    },
+    {
+      "command": [
+        "C:\\Users\\Yunus-Home\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+        "apps/service-api/main.py",
+        "--healthcheck"
+      ],
+      "duration_seconds": 0.334,
+      "name": "python-service-healthcheck",
+      "returncode": 0,
+      "status": "passed",
+      "stderr": "",
+      "stdout": "ok"
+    },
+    {
+      "command": [
+        "cmd",
+        "/c",
+        "build\\binance_cpp\\Release\\Trading-Bot-C++.exe --smoke"
+      ],
+      "duration_seconds": 3.721,
+      "name": "desktop-release-smoke",
+      "returncode": 0,
+      "status": "passed",
+      "stderr": "",
+      "stdout": "Trading Bot C++ smoke ok"
+    },
+    {
+      "command": [
+        "C:\\Users\\Yunus-Home\\.cargo\\bin\\cargo.EXE",
+        "check",
+        "--manifest-path",
+        "experiments/rust-shells/Cargo.toml",
+        "--workspace"
+      ],
+      "duration_seconds": 1.725,
+      "name": "rust-workspace-check",
+      "returncode": 0,
+      "status": "passed",
+      "stderr": "Compiling trading-bot-tauri-desktop v0.1.0 (C:\\Users\\Yunus-Home\\Downloads\\trading-bot\\experiments\\rust-shells\\apps\\tauri-desktop)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.62s",
+      "stdout": ""
+    }
+  ],
+  "target": {
+    "architecture": "x64",
+    "evidence_required": true,
+    "family": "windows",
+    "id": "windows-11-x64",
+    "kind": "platform",
+    "runner_kind": "external-lab",
+    "runner_labels": [
+      "self-hosted",
+      "tb-release-platform",
+      "windows-11-x64"
+    ],
+    "test_suites": [
+      "platform-probe",
+      "python-service-contract",
+      "desktop-release-smoke",
+      "native-build-smoke"
+    ],
+    "version": "11"
+  },
+  "target_id": "windows-11-x64"
+}

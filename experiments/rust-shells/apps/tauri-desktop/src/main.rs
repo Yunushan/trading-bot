@@ -97,6 +97,40 @@ impl ServiceProcessResponse {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct DesktopLanguageLaunchResponse {
+    ok: bool,
+    language: String,
+    path: String,
+    pid: Option<u32>,
+    message: String,
+    error: String,
+}
+
+impl DesktopLanguageLaunchResponse {
+    fn ok(language: &str, path: &Path, pid: u32, message: impl Into<String>) -> Self {
+        Self {
+            ok: true,
+            language: language.to_string(),
+            path: path.to_string_lossy().to_string(),
+            pid: Some(pid),
+            message: message.into(),
+            error: String::new(),
+        }
+    }
+
+    fn err(language: &str, error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            language: language.to_string(),
+            path: String::new(),
+            pid: None,
+            message: String::new(),
+            error: error.into(),
+        }
+    }
+}
+
 fn response_ok(
     route_name: &str,
     path: &str,
@@ -284,6 +318,115 @@ fn python_executable() -> String {
         .unwrap_or_else(|_| "python".to_string())
 }
 
+fn executable_names(base_name: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    #[cfg(target_os = "windows")]
+    names.push(format!("{base_name}.exe"));
+    names.push(base_name.to_string());
+    names
+}
+
+fn find_python_desktop_entrypoint(repo_root: &Path) -> Option<PathBuf> {
+    [
+        repo_root.join("apps").join("desktop-pyqt").join("main.py"),
+        repo_root.join("Languages").join("Python").join("main.py"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+fn find_cpp_desktop_executable(repo_root: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(raw_path) = env::var("TRADING_BOT_CPP") {
+        let candidate = PathBuf::from(raw_path.trim());
+        if !candidate.as_os_str().is_empty() {
+            candidates.push(candidate);
+        }
+    }
+
+    let roots = [
+        repo_root.to_path_buf(),
+        repo_root.join("release"),
+        repo_root.join("build").join("binance_cpp"),
+        repo_root.join("build").join("binance_cpp").join("Release"),
+        repo_root.join("build").join("binance_cpp").join("Debug"),
+        repo_root
+            .join("build")
+            .join("binance_cpp")
+            .join("RelWithDebInfo"),
+        repo_root
+            .join("build")
+            .join("binance_cpp")
+            .join("MinSizeRel"),
+    ];
+    for root in roots {
+        for name in executable_names("Trading-Bot-C++")
+            .into_iter()
+            .chain(executable_names("binance_backtest_tab"))
+        {
+            candidates.push(root.join(name));
+        }
+    }
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn apply_no_console_flag(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+fn prepend_process_path(command: &mut Command, directory: &Path) {
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let existing = env::var("PATH").unwrap_or_default();
+    let path = if existing.trim().is_empty() {
+        directory.to_string_lossy().to_string()
+    } else {
+        format!("{}{}{}", directory.to_string_lossy(), separator, existing)
+    };
+    command.env("PATH", path);
+}
+
+fn spawn_desktop_process(
+    language: &str,
+    path: &Path,
+    command: &mut Command,
+) -> DesktopLanguageLaunchResponse {
+    let mut child = match command.spawn() {
+        Ok(value) => value,
+        Err(exc) => {
+            return DesktopLanguageLaunchResponse::err(
+                language,
+                format!("Could not launch {language} desktop: {exc}"),
+            );
+        }
+    };
+    let pid = child.id();
+    thread::sleep(Duration::from_millis(600));
+    match child.try_wait() {
+        Ok(None) => DesktopLanguageLaunchResponse::ok(
+            language,
+            path,
+            pid,
+            format!("{language} desktop launch started."),
+        ),
+        Ok(Some(status)) => {
+            let code = status
+                .code()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            DesktopLanguageLaunchResponse::err(
+                language,
+                format!("{language} desktop exited immediately with code {code}."),
+            )
+        }
+        Err(exc) => DesktopLanguageLaunchResponse::err(
+            language,
+            format!("{language} desktop launch state check failed: {exc}"),
+        ),
+    }
+}
+
 fn service_pythonpath(repo_root: &Path) -> String {
     let separator = if cfg!(windows) { ";" } else { ":" };
     let mut paths = vec![
@@ -300,6 +443,49 @@ fn service_pythonpath(repo_root: &Path) -> String {
         }
     }
     paths.join(separator)
+}
+
+fn launch_python_desktop(repo_root: &Path) -> DesktopLanguageLaunchResponse {
+    let Some(script_path) = find_python_desktop_entrypoint(repo_root) else {
+        return DesktopLanguageLaunchResponse::err(
+            "Python",
+            "Could not locate apps/desktop-pyqt/main.py or Languages/Python/main.py.",
+        );
+    };
+    let mut command = Command::new(python_executable());
+    command
+        .arg(&script_path)
+        .current_dir(repo_root)
+        .env("PYTHONPATH", service_pythonpath(repo_root))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    apply_no_console_flag(&mut command);
+
+    spawn_desktop_process("Python", &script_path, &mut command)
+}
+
+fn launch_cpp_desktop(repo_root: &Path) -> DesktopLanguageLaunchResponse {
+    let Some(executable_path) = find_cpp_desktop_executable(repo_root) else {
+        return DesktopLanguageLaunchResponse::err(
+            "C++",
+            "Could not find a built Trading-Bot-C++ executable. Build C++ first or set TRADING_BOT_CPP to the executable path.",
+        );
+    };
+    let mut command = Command::new(&executable_path);
+    if let Some(parent) = executable_path.parent() {
+        command.current_dir(parent);
+        prepend_process_path(&mut command, parent);
+    } else {
+        command.current_dir(repo_root);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    apply_no_console_flag(&mut command);
+
+    spawn_desktop_process("C++", &executable_path, &mut command)
 }
 
 fn wait_for_service_health(
@@ -416,6 +602,32 @@ async fn service_api_request(
         result.error = detail.to_string();
     }
     result
+}
+
+#[tauri::command]
+fn launch_desktop_language(app: AppHandle, language: String) -> DesktopLanguageLaunchResponse {
+    let language = language.trim();
+    let Some(repo_root) = find_repo_root(&app) else {
+        return DesktopLanguageLaunchResponse::err(
+            language,
+            "Could not locate the trading-bot repository from the Tauri shell.",
+        );
+    };
+
+    match language.to_lowercase().as_str() {
+        "python" | "python (pyqt)" => launch_python_desktop(&repo_root),
+        "c++" | "cpp" | "c++ (qt/c++23)" => launch_cpp_desktop(&repo_root),
+        "rust" => DesktopLanguageLaunchResponse::ok(
+            "Rust",
+            &repo_root,
+            0,
+            "Rust Tauri shell is already open.",
+        ),
+        _ => DesktopLanguageLaunchResponse::err(
+            language,
+            format!("Unsupported desktop language: {language}"),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -615,6 +827,7 @@ fn main() {
     tauri::Builder::default()
         .manage(ServiceProcessState::default())
         .invoke_handler(tauri::generate_handler![
+            launch_desktop_language,
             service_api_request,
             service_process_status,
             start_service_api,

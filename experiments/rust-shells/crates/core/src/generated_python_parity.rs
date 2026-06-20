@@ -1,17 +1,19 @@
 // This file is generated from Languages/Python/app/native_parity.py.
 // Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.
 
-pub const PYTHON_SOURCE: &str = "Languages/Python";
-pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "56a331ef6ae380d032033028a663dd52e3992ed901c8e328d8c9350fb61fe28d";
-pub const CPP_CONTRACT_PARITY_READY: bool = true;
-pub const RUST_CONTRACT_PARITY_READY: bool = true;
-pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
-pub const RUST_STANDALONE_RUNTIME_READY: bool = false;
-pub const CPP_FULL_PARITY_READY: bool = false;
-pub const RUST_FULL_PARITY_READY: bool = false;
+#[rustfmt::skip]
+mod generated {
+    pub const PYTHON_SOURCE: &str = "Languages/Python";
+    pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "56a331ef6ae380d032033028a663dd52e3992ed901c8e328d8c9350fb61fe28d";
+    pub const CPP_CONTRACT_PARITY_READY: bool = true;
+    pub const RUST_CONTRACT_PARITY_READY: bool = true;
+    pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
+    pub const RUST_STANDALONE_RUNTIME_READY: bool = false;
+    pub const CPP_FULL_PARITY_READY: bool = false;
+    pub const RUST_FULL_PARITY_READY: bool = false;
 
-pub struct PythonParityDomain {
+    pub struct PythonParityDomain {
     pub key: &'static str,
     pub title: &'static str,
     pub python_surface: &'static str,
@@ -145,7 +147,7 @@ pub const PYTHON_PARITY_DOMAINS: &[PythonParityDomain] = &[
     },
 ];
 
-pub const PYTHON_PARITY_DOMAIN_KEYS: &[&str] = &[
+    pub const PYTHON_PARITY_DOMAIN_KEYS: &[&str] = &[
     "desktop_shell_and_tabs",
     "service_api_contract",
     "config_persistence",
@@ -160,7 +162,7 @@ pub const PYTHON_PARITY_DOMAIN_KEYS: &[&str] = &[
     "startup_packaging_platform",
 ];
 
-pub const PYTHON_SERVICE_ROUTE_NAMES: &[&str] = &[
+    pub const PYTHON_SERVICE_ROUTE_NAMES: &[&str] = &[
     "runtime",
     "dashboard",
     "status",
@@ -196,7 +198,7 @@ pub const PYTHON_SERVICE_ROUTE_NAMES: &[&str] = &[
     "stream_dashboard",
 ];
 
-pub struct PythonServiceRoute {
+    pub struct PythonServiceRoute {
     pub name: &'static str,
     pub path: &'static str,
     pub methods: &'static [&'static str],
@@ -370,7 +372,7 @@ pub const PYTHON_SERVICE_ROUTES: &[PythonServiceRoute] = &[
     },
 ];
 
-pub struct PythonServiceRouteSchema {
+    pub struct PythonServiceRouteSchema {
     pub name: &'static str,
     pub query_fields: &'static [&'static str],
     pub request_fields: &'static [&'static str],
@@ -578,7 +580,7 @@ pub const PYTHON_SERVICE_ROUTE_SCHEMAS: &[PythonServiceRouteSchema] = &[
     },
 ];
 
-pub const PYTHON_BACKTEST_RUN_REQUEST_FIELDS: &[&str] = &[
+    pub const PYTHON_BACKTEST_RUN_REQUEST_FIELDS: &[&str] = &[
     "account_mode",
     "account_type",
     "api_key",
@@ -613,7 +615,7 @@ pub const PYTHON_BACKTEST_RUN_REQUEST_FIELDS: &[&str] = &[
     "symbols",
 ];
 
-pub const PYTHON_INDICATOR_KEYS: &[&str] = &[
+    pub const PYTHON_INDICATOR_KEYS: &[&str] = &[
     "ma",
     "donchian",
     "psar",
@@ -649,7 +651,7 @@ pub const PYTHON_INDICATOR_KEYS: &[&str] = &[
     "stochastic",
 ];
 
-pub struct PythonIndicator {
+    pub struct PythonIndicator {
     pub key: &'static str,
     pub display_name: &'static str,
     pub default_enabled: bool,
@@ -823,7 +825,7 @@ pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[
     },
 ];
 
-pub const PYTHON_LLM_PROVIDER_KEYS: &[&str] = &[
+    pub const PYTHON_LLM_PROVIDER_KEYS: &[&str] = &[
     "openai",
     "anthropic",
     "gemini",
@@ -840,7 +842,7 @@ pub const PYTHON_LLM_PROVIDER_KEYS: &[&str] = &[
     "open-source",
 ];
 
-pub struct PythonLlmProvider {
+    pub struct PythonLlmProvider {
     pub key: &'static str,
     pub label: &'static str,
     pub mode: &'static str,
@@ -1024,7 +1026,7 @@ pub const PYTHON_LLM_PROVIDERS: &[PythonLlmProvider] = &[
     },
 ];
 
-pub const PYTHON_CONNECTOR_KEYS: &[&str] = &[
+    pub const PYTHON_CONNECTOR_KEYS: &[&str] = &[
     "binance-sdk-derivatives-trading-usds-futures",
     "binance-sdk-derivatives-trading-coin-futures",
     "binance-sdk-spot",
@@ -1036,7 +1038,7 @@ pub const PYTHON_CONNECTOR_KEYS: &[&str] = &[
     "python-binance",
 ];
 
-pub struct PythonConnectorOption {
+    pub struct PythonConnectorOption {
     pub key: &'static str,
     pub label: &'static str,
 }
@@ -1080,7 +1082,7 @@ pub const PYTHON_CONNECTOR_OPTIONS: &[PythonConnectorOption] = &[
     },
 ];
 
-pub const PYTHON_BACKTEST_INTERVALS: &[&str] = &[
+    pub const PYTHON_BACKTEST_INTERVALS: &[&str] = &[
     "1m",
     "3m",
     "5m",
@@ -1121,7 +1123,7 @@ pub const PYTHON_BACKTEST_INTERVALS: &[&str] = &[
     "2y",
 ];
 
-pub struct PythonTradingViewInterval {
+    pub struct PythonTradingViewInterval {
     pub interval: &'static str,
     pub code: &'static str,
 }
@@ -1285,7 +1287,7 @@ pub const PYTHON_TRADINGVIEW_INTERVAL_MAP: &[PythonTradingViewInterval] = &[
     },
 ];
 
-pub const PYTHON_DEFAULT_CHART_SYMBOLS: &[&str] = &[
+    pub const PYTHON_DEFAULT_CHART_SYMBOLS: &[&str] = &[
     "BTCUSDT",
     "ETHUSDT",
     "BNBUSDT",
@@ -1298,33 +1300,33 @@ pub const PYTHON_DEFAULT_CHART_SYMBOLS: &[&str] = &[
     "TRXUSDT",
 ];
 
-pub const PYTHON_DEFAULT_EXECUTION_SYMBOLS: &[&str] = &[
+    pub const PYTHON_DEFAULT_EXECUTION_SYMBOLS: &[&str] = &[
     "BTCUSDT",
 ];
 
-pub const PYTHON_DEFAULT_EXECUTION_INTERVALS: &[&str] = &[
+    pub const PYTHON_DEFAULT_EXECUTION_INTERVALS: &[&str] = &[
     "1m",
 ];
 
-pub const PYTHON_DEFAULT_BACKTEST_SYMBOLS: &[&str] = &[
+    pub const PYTHON_DEFAULT_BACKTEST_SYMBOLS: &[&str] = &[
     "BTCUSDT",
 ];
 
-pub const PYTHON_DEFAULT_BACKTEST_INTERVALS: &[&str] = &[
+    pub const PYTHON_DEFAULT_BACKTEST_INTERVALS: &[&str] = &[
     "1h",
 ];
 
-pub const PYTHON_CHART_MARKET_OPTIONS: &[&str] = &[
+    pub const PYTHON_CHART_MARKET_OPTIONS: &[&str] = &[
     "Futures",
     "Spot",
 ];
 
-pub const PYTHON_ACCOUNT_MODE_OPTIONS: &[&str] = &[
+    pub const PYTHON_ACCOUNT_MODE_OPTIONS: &[&str] = &[
     "Classic Trading",
     "Portfolio Margin",
 ];
 
-pub struct PythonUiOption {
+    pub struct PythonUiOption {
     pub key: &'static str,
     pub label: &'static str,
     pub disabled: bool,
@@ -1940,3 +1942,7 @@ pub const PYTHON_POSITIONS_VIEW_OPTIONS: &[PythonUiOption] = &[
         disabled: false,
     },
 ];
+
+}
+
+pub use generated::*;

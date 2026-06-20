@@ -16,7 +16,7 @@ Article 6 - Rust behavioral tests: Rust core behavioral tests are part of the lo
 
 Article 7 - Native C++ smoke coverage: `tools/check_native_cpp.py` configures, builds, and runs native order-safety and service-API contract CTest targets.
 
-Article 8 - Cross-language parity source of truth: generated parity contracts keep Python as the canonical source for C++ and Rust contract surfaces.
+Article 8 - Cross-language parity source of truth: generated parity contracts and the native source-sync audit keep Python as the canonical source for C++ and Rust contract surfaces.
 
 Article 9 - Rust GUI scope boundary: Tauri is the only user-selectable Rust desktop shell and remains a Python Service API client; native Rust trading execution is still disabled until explicitly promoted.
 

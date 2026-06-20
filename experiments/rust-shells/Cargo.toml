@@ -12,27 +12,18 @@ members = [
     "crates/contracts",
     "crates/core",
     "apps/tauri-desktop",
-    "apps/slint-desktop",
-    "apps/egui-desktop",
-    "apps/iced-desktop",
-    "apps/dioxus-desktop",
 ]
 
 [workspace.dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
 sha2 = "0.10"
 tungstenite = "0.27"
 tauri = { version = "2" }
 tauri-build = { version = "2" }
-slint = "1"
-slint-build = "1"
-eframe = "0.33"
-egui = "0.33"
-iced = "0.13"
-dioxus = { version = "0.7", features = ["desktop"] }
 
 [dependencies]
+serde_json = { workspace = true }
 trading-bot-core = { path = "crates/core" }

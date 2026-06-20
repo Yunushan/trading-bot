@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
           QStringLiteral("native startup contract should require pythonw relaunch suppression env"));
     check(jsonArrayContains(
               cppStartupContract.value(QStringLiteral("release_smoke_commands")).toArray(),
-              QStringLiteral("build/binance_cpp/Release/Trading-Bot-C++.exe")),
+              QStringLiteral("build/binance_cpp/Release/Trading-Bot-C++.exe --smoke")),
           QStringLiteral("native startup contract should expose C++ release smoke command"));
 
     check(NativeChartHeatmap::canonicalizeChartInterval(QStringLiteral("60m")) == QStringLiteral("1h"),

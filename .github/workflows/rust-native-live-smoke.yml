@@ -1,0 +1,93 @@
+name: Rust Native Live Smoke Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      binance_testnet:
+        description: "Use Binance futures testnet for the read-only signed smoke."
+        required: true
+        default: true
+        type: boolean
+      symbol:
+        description: "Symbol for the market-data portion of the smoke."
+        required: true
+        default: "BTCUSDT"
+        type: string
+      interval:
+        description: "Kline interval for the market-data portion of the smoke."
+        required: true
+        default: "1m"
+        type: string
+      evidence_dir:
+        description: "Directory where Rust native runtime evidence artifacts will be written."
+        required: true
+        default: "artifacts/rust-native-runtime-evidence"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  signed-account-read-smoke:
+    name: Signed Account Read Smoke
+    runs-on: ubuntu-24.04
+    env:
+      BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+      BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+      BINANCE_LIVE_SMOKE_INTERVAL: ${{ inputs.interval }}
+      BINANCE_LIVE_SMOKE_SYMBOL: ${{ inputs.symbol }}
+      BINANCE_TESTNET: "${{ inputs.binance_testnet }}"
+      RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}
+      TRADING_BOT_RUST_LIVE_SMOKE: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust native smoke dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            experiments/rust-shells -> target
+
+      - name: Run guarded signed account-read smoke
+        shell: bash
+        working-directory: experiments/rust-shells
+        run: |
+          set -euo pipefail
+          if [[ -z "${BINANCE_API_KEY}" || -z "${BINANCE_API_SECRET}" ]]; then
+            echo "BINANCE_API_KEY and BINANCE_API_SECRET repository secrets are required for Rust signed account-read smoke." >&2
+            exit 1
+          fi
+          cargo run -p trading-bot-rust -- --native-live-smoke-preflight
+          cargo run -p trading-bot-rust -- --native-live-smoke
+
+      - name: Validate signed account-read smoke evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_runtime_evidence.py \
+            --require-evidence \
+            --require-current-commit \
+            --require-clean-source \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --only rust-native-live-market-data-smoke \
+            --only rust-native-live-account-read-smoke
+
+      - name: Upload signed account-read smoke evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-native-live-smoke-evidence
+          path: |
+            ${{ inputs.evidence_dir }}/rust-native-live-market-data-smoke.json
+            ${{ inputs.evidence_dir }}/rust-native-live-account-read-smoke.json
+          if-no-files-found: error

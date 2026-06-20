@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -109,6 +111,87 @@ def _build_expected_assets(tag: str) -> tuple[str, list[ExpectedAsset]]:
     return version, assets
 
 
+def _is_ssl_certificate_error(exc: urllib.error.URLError) -> bool:
+    text = str(exc.reason if hasattr(exc, "reason") else exc)
+    return "CERTIFICATE_VERIFY_FAILED" in text or "[SSL:" in text
+
+
+def _powershell_executable() -> str | None:
+    for name in ("pwsh", "powershell"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def _github_json_from_windows_certificate_store(
+    url: str,
+    *,
+    timeout: float,
+    token: str | None,
+) -> dict:
+    powershell = _powershell_executable()
+    if os.name != "nt" or not powershell:
+        raise RuntimeError("Windows certificate-store fallback is unavailable.")
+
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$headers = @{
+  'User-Agent' = $env:TB_RELEASE_USER_AGENT
+  'Accept' = 'application/vnd.github+json'
+}
+if ($env:TB_RELEASE_GITHUB_TOKEN) {
+  $headers['Authorization'] = "Bearer $env:TB_RELEASE_GITHUB_TOKEN"
+}
+$timeoutSec = [Math]::Max(5, [int]$env:TB_RELEASE_TIMEOUT)
+Invoke-RestMethod -Uri $env:TB_RELEASE_URL -Headers $headers -TimeoutSec $timeoutSec |
+  ConvertTo-Json -Depth 100 -Compress
+""".strip()
+    env = os.environ.copy()
+    env.update(
+        {
+            "TB_RELEASE_URL": url,
+            "TB_RELEASE_USER_AGENT": USER_AGENT,
+            "TB_RELEASE_TIMEOUT": str(max(5, int(float(timeout or 10.0)))),
+            "TB_RELEASE_GITHUB_TOKEN": token or "",
+        }
+    )
+    try:
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(10.0, float(timeout or 10.0) + 5.0),
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"Windows certificate-store fallback failed to run: {exc}") from exc
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        message = "GitHub API request failed through Windows certificate-store fallback."
+        if detail:
+            message = f"{message} {detail}"
+        raise RuntimeError(message)
+
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Windows certificate-store fallback returned invalid JSON.") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("Windows certificate-store fallback returned an unexpected response type.")
+    return result
+
+
 def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
     headers = {
         "User-Agent": USER_AGENT,
@@ -133,6 +216,18 @@ def _github_json(url: str, *, timeout: float, token: str | None) -> dict:
             message = f"{message} {detail}"
         raise RuntimeError(message) from exc
     except urllib.error.URLError as exc:
+        if _is_ssl_certificate_error(exc):
+            try:
+                return _github_json_from_windows_certificate_store(
+                    url,
+                    timeout=timeout,
+                    token=token,
+                )
+            except RuntimeError as fallback_exc:
+                raise RuntimeError(
+                    "Could not reach GitHub API with Python TLS validation, and the "
+                    f"Windows certificate-store fallback also failed: {fallback_exc}"
+                ) from exc
         raise RuntimeError(f"Could not reach GitHub API: {exc}") from exc
 
     try:

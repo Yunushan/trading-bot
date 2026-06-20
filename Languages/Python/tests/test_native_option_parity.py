@@ -34,7 +34,6 @@ RUST_TAURI_GENERATED = (
     / "ui"
     / "generated-python-parity.js"
 )
-RUST_SLINT_UI = REPO_ROOT / "experiments" / "rust-shells" / "apps" / "slint-desktop" / "ui" / "main.slint"
 
 
 def _read(path: Path) -> str:
@@ -156,7 +155,6 @@ class NativeOptionParityTests(unittest.TestCase):
         rust_surfaces = {
             "core": _read(RUST_CORE),
             "tauri": _read(RUST_TAURI_HTML) + "\n" + _read(RUST_TAURI_GENERATED),
-            "slint": _read(RUST_SLINT_UI),
         }
 
         for context, text in rust_surfaces.items():
@@ -176,7 +174,7 @@ class NativeOptionParityTests(unittest.TestCase):
         template_json_labels = [json.dumps(label)[1:-1] for label in template_labels]
 
         tauri_text = _read(RUST_TAURI_HTML) + "\n" + _read(RUST_TAURI_GENERATED)
-        rust_summary_text = _read(RUST_CORE) + "\n" + _read(RUST_SLINT_UI)
+        rust_summary_text = _read(RUST_CORE)
 
         self.assert_all_present(tauri_text, connector_keys, "Rust Tauri connector keys")
         self.assertNotIn("binance-connector-python", tauri_text)

@@ -17,7 +17,14 @@ def _display_command(command: list[str]) -> str:
     return " ".join(command)
 
 
-def _run_step(name: str, command: list[str], *, cwd: Path, timeout: int) -> dict[str, object]:
+def _run_step(
+    name: str,
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    env: dict[str, str] | None = None,
+) -> dict[str, object]:
     try:
         result = subprocess.run(
             command,
@@ -25,6 +32,7 @@ def _run_step(name: str, command: list[str], *, cwd: Path, timeout: int) -> dict
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -61,6 +69,54 @@ def _cmake_generator_args() -> list[str]:
     if sys.platform != "win32":
         return []
     return []
+
+
+def _desktop_executable_path(build_dir: Path, config: str) -> Path:
+    if sys.platform == "win32":
+        return build_dir / config / "Trading-Bot-C++.exe"
+    return build_dir / "Trading-Bot-C++"
+
+
+def _cmake_cache_value(build_dir: Path, key: str) -> str:
+    cache_path = build_dir / "CMakeCache.txt"
+    try:
+        lines = cache_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    prefix = f"{key}:"
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        _, _, value = line.partition("=")
+        return value.strip()
+    return ""
+
+
+def _qt_bin_from_cmake_cache(build_dir: Path) -> Path | None:
+    qt6_dir = _cmake_cache_value(build_dir, "Qt6_DIR")
+    if not qt6_dir:
+        return None
+    qt6_path = Path(qt6_dir)
+    try:
+        qt_root = qt6_path.parents[2]
+    except IndexError:
+        return None
+    qt_bin = qt_root / "bin"
+    return qt_bin if qt_bin.is_dir() else None
+
+
+def _desktop_smoke_env(build_dir: Path, config: str) -> dict[str, str]:
+    env = os.environ.copy()
+    paths: list[str] = []
+    executable_dir = _desktop_executable_path(build_dir, config).parent
+    if executable_dir.is_dir():
+        paths.append(str(executable_dir))
+    qt_bin = _qt_bin_from_cmake_cache(build_dir)
+    if qt_bin is not None:
+        paths.append(str(qt_bin))
+    if paths:
+        env["PATH"] = os.pathsep.join([*paths, env.get("PATH", "")])
+    return env
 
 
 def check_native_cpp(
@@ -126,6 +182,15 @@ def check_native_cpp(
                 [cmake, "--build", str(build_dir), "--config", config, "--parallel"],
                 cwd=root,
                 timeout=timeout,
+            )
+        )
+        steps.append(
+            _run_step(
+                "desktop release smoke",
+                [str(_desktop_executable_path(build_dir, config)), "--smoke"],
+                cwd=root,
+                timeout=min(timeout, 60),
+                env=_desktop_smoke_env(build_dir, config),
             )
         )
     steps.append(_run_step("test", tests, cwd=root, timeout=timeout))

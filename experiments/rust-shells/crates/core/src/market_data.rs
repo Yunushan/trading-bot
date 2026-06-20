@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -33,6 +34,10 @@ pub struct BinanceRestMarketDataClient {
     market: BinanceMarket,
     base_url: String,
 }
+
+const BINANCE_NATIVE_INTERVALS: &[&str] = &[
+    "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M",
+];
 
 impl BinanceMarket {
     pub fn default_base_url(self, testnet: bool) -> &'static str {
@@ -145,12 +150,38 @@ impl BinanceRestMarketDataClient {
     ) -> Result<Vec<BinanceKlineCandle>> {
         let clean_symbol = normalize_symbol(symbol.as_ref())?;
         let clean_interval = normalize_interval(interval.as_ref())?;
-        let safe_limit = limit.clamp(10, 1000).to_string();
+        let safe_limit = limit.clamp(10, 1000);
+        if let Some(base_interval) = custom_interval_base(&clean_interval, self.market)? {
+            let requested_interval_seconds = interval_seconds(&clean_interval)?;
+            let base_seconds = interval_seconds(base_interval)?;
+            let factor = (requested_interval_seconds / base_seconds).ceil().max(1.0) as usize;
+            let base_limit = safe_limit
+                .saturating_mul(factor)
+                .saturating_add(factor)
+                .clamp(10, 1000);
+            let base_candles =
+                self.fetch_native_klines(&clean_symbol, base_interval, base_limit)?;
+            let aggregated = aggregate_klines_to_interval(&base_candles, &clean_interval)?;
+            if aggregated.len() <= safe_limit {
+                return Ok(aggregated);
+            }
+            return Ok(aggregated[aggregated.len() - safe_limit..].to_vec());
+        }
+        self.fetch_native_klines(&clean_symbol, &clean_interval, safe_limit)
+    }
+
+    fn fetch_native_klines(
+        &self,
+        clean_symbol: &str,
+        clean_interval: &str,
+        safe_limit: usize,
+    ) -> Result<Vec<BinanceKlineCandle>> {
+        let safe_limit = safe_limit.clamp(10, 1000).to_string();
         let payload = self.get_json(
             &self.klines_url(),
             &[
-                ("symbol", clean_symbol.as_str()),
-                ("interval", clean_interval.as_str()),
+                ("symbol", clean_symbol),
+                ("interval", clean_interval),
                 ("limit", safe_limit.as_str()),
             ],
         )?;
@@ -310,6 +341,104 @@ pub fn parse_klines(payload: &Value) -> Result<Vec<BinanceKlineCandle>> {
     Ok(candles)
 }
 
+pub fn aggregate_klines_to_interval(
+    candles: &[BinanceKlineCandle],
+    interval: impl AsRef<str>,
+) -> Result<Vec<BinanceKlineCandle>> {
+    let clean_interval = normalize_interval(interval.as_ref())?;
+    let interval_ms = interval_millis(&clean_interval)?;
+    if interval_ms < 60_000 {
+        bail!("Custom interval '{clean_interval}' below 1 minute is not supported.");
+    }
+
+    let mut sorted = candles.to_vec();
+    sorted.sort_by_key(|candle| candle.open_time_ms);
+
+    let mut buckets = BTreeMap::<i64, BinanceKlineCandle>::new();
+    for candle in sorted {
+        if ![
+            candle.open,
+            candle.high,
+            candle.low,
+            candle.close,
+            candle.volume,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+        {
+            continue;
+        }
+        let bucket_open_time = candle.open_time_ms.div_euclid(interval_ms) * interval_ms;
+        buckets
+            .entry(bucket_open_time)
+            .and_modify(|bucket| {
+                bucket.high = bucket.high.max(candle.high);
+                bucket.low = bucket.low.min(candle.low);
+                bucket.close = candle.close;
+                bucket.volume += candle.volume;
+            })
+            .or_insert_with(|| BinanceKlineCandle {
+                open_time_ms: bucket_open_time,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: candle.volume,
+            });
+    }
+
+    let aggregated: Vec<_> = buckets.into_values().collect();
+    if aggregated.is_empty() {
+        bail!("no valid kline candles returned");
+    }
+    Ok(aggregated)
+}
+
+pub fn custom_interval_base(
+    interval: impl AsRef<str>,
+    _market: BinanceMarket,
+) -> Result<Option<&'static str>> {
+    let clean_interval = normalize_interval(interval.as_ref())?;
+    if is_native_interval(&clean_interval) {
+        return Ok(None);
+    }
+
+    let interval_ms = interval_millis(&clean_interval)?;
+    if interval_ms < 60_000 {
+        bail!("Custom interval '{clean_interval}' below 1 minute is not supported.");
+    }
+
+    let (base_interval, base_ms) = if interval_ms < 3_600_000 {
+        ("1m", 60_000)
+    } else if interval_ms < 86_400_000 {
+        ("1h", 3_600_000)
+    } else {
+        ("1d", 86_400_000)
+    };
+    if interval_ms % base_ms != 0 {
+        bail!("Custom interval '{clean_interval}' is not a multiple of {base_interval}.");
+    }
+    Ok(Some(base_interval))
+}
+
+pub fn interval_seconds(interval: impl AsRef<str>) -> Result<f64> {
+    let raw = interval.as_ref().trim();
+    if raw.is_empty() {
+        return Ok(60.0);
+    }
+    let lower = raw.to_ascii_lowercase();
+    let (amount_text, unit_multiplier) =
+        interval_amount_and_unit_multiplier(&lower).unwrap_or((lower.as_str(), 1.0));
+    let amount = amount_text
+        .trim()
+        .parse::<f64>()
+        .with_context(|| format!("parse interval amount from '{raw}'"))?;
+    if !amount.is_finite() || amount <= 0.0 {
+        bail!("interval must be positive");
+    }
+    Ok((amount * unit_multiplier).max(1.0))
+}
+
 pub fn parse_ticker_price(payload: &Value) -> Result<BinanceTickerPrice> {
     ensure_not_binance_error(payload)?;
     let obj = payload
@@ -350,11 +479,58 @@ fn normalize_symbol(value: &str) -> Result<String> {
 }
 
 fn normalize_interval(value: &str) -> Result<String> {
-    let interval = value.trim().to_owned();
-    if interval.is_empty() {
+    let raw = value.trim();
+    if raw.is_empty() {
         bail!("interval is required");
     }
-    Ok(interval)
+    if raw == "1M" {
+        return Ok("1M".to_owned());
+    }
+    let lower = raw.to_ascii_lowercase();
+    if matches!(lower.as_str(), "1mo" | "1mon" | "1month" | "1months") {
+        return Ok("1M".to_owned());
+    }
+    Ok(lower)
+}
+
+fn is_native_interval(interval: &str) -> bool {
+    BINANCE_NATIVE_INTERVALS.contains(&interval)
+}
+
+fn interval_millis(interval: &str) -> Result<i64> {
+    let seconds = interval_seconds(interval)?;
+    let millis = seconds * 1000.0;
+    if !millis.is_finite() || millis < 1.0 {
+        bail!("interval must be positive");
+    }
+    let rounded = millis.round();
+    if (millis - rounded).abs() > f64::EPSILON {
+        bail!("interval must resolve to whole milliseconds");
+    }
+    Ok(rounded as i64)
+}
+
+fn interval_amount_and_unit_multiplier(lower: &str) -> Option<(&str, f64)> {
+    for (suffix, multiplier) in [
+        ("months", 30.0 * 86_400.0),
+        ("month", 30.0 * 86_400.0),
+        ("mons", 30.0 * 86_400.0),
+        ("mon", 30.0 * 86_400.0),
+        ("mo", 30.0 * 86_400.0),
+        ("years", 365.0 * 86_400.0),
+        ("year", 365.0 * 86_400.0),
+        ("y", 365.0 * 86_400.0),
+        ("w", 7.0 * 86_400.0),
+        ("d", 86_400.0),
+        ("h", 3_600.0),
+        ("m", 60.0),
+        ("s", 1.0),
+    ] {
+        if let Some(amount) = lower.strip_suffix(suffix) {
+            return Some((amount, multiplier));
+        }
+    }
+    None
 }
 
 fn parse_json_f64(value: Option<&Value>) -> Option<f64> {
@@ -516,6 +692,81 @@ mod tests {
         assert_eq!(candles[0].open, 1.25);
         assert_eq!(candles[1].close, 2.50);
         assert_eq!(candles[1].volume, 100.5);
+    }
+
+    #[test]
+    fn custom_interval_base_matches_python_binance_fallbacks() {
+        assert_eq!(
+            custom_interval_base("10m", BinanceMarket::Futures).expect("10m"),
+            Some("1m")
+        );
+        assert_eq!(
+            custom_interval_base("3h", BinanceMarket::Futures).expect("3h"),
+            Some("1h")
+        );
+        assert_eq!(
+            custom_interval_base("2d", BinanceMarket::Futures).expect("2d"),
+            Some("1d")
+        );
+        assert_eq!(
+            custom_interval_base("1M", BinanceMarket::Futures).expect("1M"),
+            None
+        );
+        assert_eq!(
+            custom_interval_base("1month", BinanceMarket::Futures).expect("1month"),
+            None
+        );
+
+        let sub_minute = custom_interval_base("45s", BinanceMarket::Futures)
+            .expect_err("sub-minute custom intervals are unsupported");
+        assert!(sub_minute.to_string().contains("below 1 minute"));
+
+        let not_multiple = custom_interval_base("90m", BinanceMarket::Futures)
+            .expect_err("90m cannot be composed from hourly candles");
+        assert!(not_multiple.to_string().contains("multiple of 1h"));
+    }
+
+    #[test]
+    fn custom_interval_klines_follow_python_resample_boundaries() {
+        let candles = vec![
+            BinanceKlineCandle {
+                open_time_ms: 120_000,
+                open: 12.0,
+                high: 13.0,
+                low: 11.5,
+                close: 12.5,
+                volume: 3.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 0,
+                open: 10.0,
+                high: 11.0,
+                low: 9.5,
+                close: 10.5,
+                volume: 1.0,
+            },
+            BinanceKlineCandle {
+                open_time_ms: 60_000,
+                open: 10.5,
+                high: 12.0,
+                low: 10.0,
+                close: 11.5,
+                volume: 2.0,
+            },
+        ];
+
+        let aggregated = aggregate_klines_to_interval(&candles, "2m").expect("aggregate 2m");
+
+        assert_eq!(aggregated.len(), 2);
+        assert_eq!(aggregated[0].open_time_ms, 0);
+        assert_eq!(aggregated[0].open, 10.0);
+        assert_eq!(aggregated[0].high, 12.0);
+        assert_eq!(aggregated[0].low, 9.5);
+        assert_eq!(aggregated[0].close, 11.5);
+        assert_eq!(aggregated[0].volume, 3.0);
+        assert_eq!(aggregated[1].open_time_ms, 120_000);
+        assert_eq!(aggregated[1].open, 12.0);
+        assert_eq!(aggregated[1].close, 12.5);
     }
 
     #[test]

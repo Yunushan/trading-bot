@@ -166,6 +166,30 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             remediation="Keep docs/connector-support-matrix.json aligned with Python exchange support capabilities.",
         ),
         Check(
+            "native source sync audit",
+            (python, "tools/audit_native_source_sync.py", "--json"),
+            root,
+            remediation="Regenerate Python-owned C++/Rust parity contracts with: python Languages/Python/tools/generate_native_parity_contracts.py.",
+        ),
+        Check(
+            "rust native runtime evidence contract",
+            (python, "tools/check_rust_native_runtime_evidence.py", "--schema-only"),
+            root,
+            remediation="Keep docs/rust-native-runtime-evidence.json aligned with Rust runtime smoke, recovery, and release evidence requirements.",
+        ),
+        Check(
+            "rust native live-smoke preflight",
+            (python, "tools/check_rust_native_live_smoke_preflight.py", "--json"),
+            root,
+            remediation="Install Rust with rustup and keep the Rust native live-smoke preflight read-only, redacted, and artifact-free.",
+        ),
+        Check(
+            "rust native runtime promotion audit",
+            (python, "tools/audit_rust_native_runtime_readiness.py", "--json"),
+            root,
+            remediation="Keep Rust native runtime readiness false until source parity plus live/release evidence artifacts are complete.",
+        ),
+        Check(
             "support claim audit",
             (python, "tools/check_support_claims.py", "--json"),
             root,
@@ -206,6 +230,12 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             (cargo, "test", "-p", "trading-bot-core"),
             root / "experiments" / "rust-shells",
             remediation="Install Rust with rustup before running native Rust tests.",
+        ),
+        Check(
+            "rust native local recovery evidence",
+            (python, "tools/check_rust_native_local_recovery_evidence.py", "--json"),
+            root,
+            remediation="Install Rust with rustup and rerun the deterministic Rust recovery evidence command.",
         ),
         Check(
             "tauri ui behavior tests",

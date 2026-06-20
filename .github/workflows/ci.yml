@@ -140,6 +140,24 @@ jobs:
           set -euo pipefail
           python tools/check_support_claims.py
 
+      - name: Audit native source sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/audit_native_source_sync.py --json
+
+      - name: Check Rust native runtime evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_runtime_evidence.py --schema-only
+
+      - name: Audit Rust native runtime promotion readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/audit_rust_native_runtime_readiness.py --json
+
       - name: Check hardening article evidence
         shell: bash
         run: |
@@ -462,6 +480,18 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p trading-bot-core
+
+      - name: Validate Rust native live-smoke preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_rust_native_live_smoke_preflight.py --json
+
+      - name: Validate Rust native local recovery evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_rust_native_local_recovery_evidence.py --json
 
       - name: Run Tauri UI behavior tests
         shell: bash

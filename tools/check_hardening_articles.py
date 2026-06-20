@@ -87,6 +87,14 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
         (
             Evidence("tools/verify_all.py", ("cargo", "test", "trading-bot-core")),
             Evidence(".github/workflows/ci.yml", ("cargo test -p trading-bot-core",)),
+            Evidence(
+                "tools/check_rust_native_local_recovery_evidence.py",
+                (
+                    "--write-local-recovery-evidence",
+                    "rust-native-live-stream-recovery",
+                    "rust-native-order-guard-recovery",
+                ),
+            ),
             Evidence("experiments/rust-shells/crates/core/src/runtime_control.rs", ("#[cfg(test)]",)),
         ),
     ),
@@ -104,6 +112,10 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
         "Cross-language parity source of truth",
         (
             Evidence("Languages/Python/tools/generate_native_parity_contracts.py"),
+            Evidence(
+                "tools/audit_native_source_sync.py",
+                ("render_rust_module", "render_cpp_header", "render_tauri_browser_contract"),
+            ),
             Evidence("Languages/Python/tests/test_native_generated_parity_contract.py", ("generated", "parity")),
             Evidence("experiments/rust-shells/crates/core/src/generated_python_parity.rs", ("PYTHON_SOURCE_CONTRACT_HASH",)),
         ),

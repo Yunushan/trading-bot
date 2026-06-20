@@ -3,12 +3,13 @@ use trading_bot_contracts::AppIdentity;
 pub mod account;
 pub mod chart_heatmap;
 pub mod config_persistence;
-pub mod diagnostics;
 pub mod desktop_shell;
+pub mod diagnostics;
 pub mod exchange_connectors;
 pub mod generated_python_parity;
 pub mod llm_advisory;
 pub mod market_data;
+pub mod native_runtime;
 pub mod order_audit;
 pub mod order_guard;
 pub mod orders;
@@ -382,48 +383,48 @@ pub fn rust_native_runtime_capabilities() -> &'static [RustNativeRuntimeCapabili
             key: "market_data_rest",
             title: "REST market data",
             cpp_status: "C++ has BinanceRestClient fetchUsdtSymbols, fetchKlines, and fetchTickerPrice.",
-            rust_status: "Rust core now has BinanceRestMarketDataClient for native exchangeInfo USDT symbols, optional 24h quote-volume ordering, klines, ticker prices, and Binance error payload handling.",
-            required_before_enable: "Add live-network smoke coverage where credentials/network policy allow it, custom interval aggregation, connector support metadata, rate-limit diagnostics, and integration into a supervised Rust runtime loop.",
+            rust_status: "Rust core now has BinanceRestMarketDataClient for native exchangeInfo USDT symbols, optional 24h quote-volume ordering, native and custom-aggregated klines, ticker prices, and Binance error payload handling.",
+            required_before_enable: "Add live-network smoke coverage where credentials/network policy allow it, connector support metadata, rate-limit diagnostics, and integration with live runtime network ingestion.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "market_data_websocket",
             title: "WebSocket market stream",
             cpp_status: "C++ has BinanceWsClient connectBookTicker/connectKline plus dashboardRuntimeSignalSockets and candle caches.",
-            rust_status: "Rust core now has BinanceWebSocketClient URL construction, tungstenite connection entry points, and book ticker/kline message parsing for Binance spot and futures streams.",
-            required_before_enable: "Add supervised reconnect/backoff, candle cache reconciliation, stale-feed guards, stream lifecycle ownership, and live-network smoke coverage before live signal evaluation.",
+            rust_status: "Rust core now has BinanceWebSocketClient URL construction, tungstenite connection entry points, book ticker/kline message parsing for Binance spot and futures streams, reconnect/backoff decisions, kline cache staleness guards, a deterministic stream supervisor state machine, and a live stream ingestion bridge that feeds WebSocket event/close/error results into the runtime loop coordinator.",
+            required_before_enable: "Add live-network smoke coverage before live signal evaluation and standalone native trading.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "account_positions",
             title: "Account, balance, and positions",
             cpp_status: "C++ can fetch USDT balance and open futures positions and reconcile them into the positions table.",
-            rust_status: "Rust core now has BinanceSignedRestClient for signed USDT balance snapshots, normalized balance rows, open futures position parsing with account-position overlays, close-position planning foundations, and portfolio/history/allocation/reconciliation tests.",
-            required_before_enable: "Add live credential-gated smoke coverage, hedge/one-way runtime coverage, and broader supervised runtime integration after the remaining parity domains complete.",
+            rust_status: "Rust core now has BinanceSignedRestClient for signed USDT balance snapshots, normalized balance rows, open futures position parsing with account-position overlays, futures position-mode get/change request foundations, futures margin-type/leverage/multi-assets request and parser foundations, close-position planning foundations, native runtime hedge/one-way close planning, account-mode reconciliation, futures-settings reconciliation snapshots, a native account preflight gate, native operational preflight gate, and portfolio/history/allocation/reconciliation tests.",
+            required_before_enable: "Add live credential-gated smoke coverage and broader supervised execution integration after the remaining parity domains complete.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "order_submission",
             title: "Order submission",
             cpp_status: "C++ has placeFuturesMarketOrder/placeFuturesLimitOrder and dashboard open/close fallback helpers.",
-            rust_status: "Rust core now has Binance futures symbol filters, signed market/limit order request construction, order submit guard and order audit/circuit-breaker foundations, risk/stop-loss close-decision planning, reduce-only hedge-mode rules, close-position and closePosition planning, POST submission hooks, order response parsing, and a runtime-owned order engine for guarded submit, redacted audit JSONL, connector circuit incident persistence, and submit reconciliation.",
-            required_before_enable: "Add dry-run controls, live credential-gated smoke coverage, supervised runtime lifecycle tests, and runtime-owned recovery gates before enabling native trading.",
+            rust_status: "Rust core now has Binance futures symbol filters, signed market/limit order request construction, order submit guard and order audit/circuit-breaker foundations, risk/stop-loss close-decision planning, reduce-only hedge-mode rules, close-position and closePosition planning, POST submission hooks, order response parsing, and a runtime-owned order engine for guarded submit, deterministic dry-run audit, redacted audit JSONL, connector circuit incident persistence, and submit reconciliation.",
+            required_before_enable: "Add live credential-gated smoke coverage, supervised runtime lifecycle tests, and runtime-owned recovery gates before enabling native trading.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "runtime_lifecycle",
             title: "Runtime lifecycle loop",
             cpp_status: "C++ has startDashboardRuntime, runDashboardRuntimeCycle, stopDashboardRuntime, timer state, retry windows, and open-position tracking.",
-            rust_status: "Rust core now has Desktop shell/tab lifecycle contracts plus strategy runtime signal/control/provenance helpers, worker lifecycle snapshots, and core stop/shutdown guard result builders; Tauri may start/stop the Python Service API but standalone Rust trading remains disabled.",
-            required_before_enable: "Add supervised native loop ownership, live credential-gated smoke coverage, and recovery tests before enabling standalone Rust trading.",
+            rust_status: "Rust core now has Desktop shell/tab lifecycle contracts plus strategy runtime signal/control/provenance helpers, worker lifecycle snapshots, core stop/shutdown guard result builders, a native runtime loop coordinator that owns stream supervisor, pause, stop, shutdown, idle transitions, hedge/one-way close planning snapshots, account-mode reconciliation, futures-settings reconciliation for margin mode, leverage, and assets mode before signal evaluation, a native account preflight gate that combines account mode plus futures settings, and a native operational preflight gate for live/demo start and order readiness, plus a mockable live ingestion bridge in dry-run coordination mode; Tauri may start/stop the Python Service API but standalone Rust trading remains disabled.",
+            required_before_enable: "Add credential-gated smoke coverage, live recovery evidence, and release evidence before enabling standalone Rust trading.",
             trading_execution_supported: false,
         },
         RustNativeRuntimeCapability {
             key: "risk_and_shutdown_guards",
             title: "Risk and shutdown guards",
             cpp_status: "C++ tracks stop-loss settings, quantity caps, retry-after windows, close-on-stop behavior, connector warnings, and forced close fallbacks.",
-            rust_status: "Rust core now has stop-loss setting normalization plus per-trade, directional, cumulative, entire-account, close-opposite planning foundations, a runtime-owned risk/close execution path for stop-loss and close-opposite reconciliation, and Python-compatible shutdown guard result tests.",
-            required_before_enable: "Add max exposure checks, shutdown guard wiring into a supervised runtime, and credential-gated regression tests before enabling native trading.",
+            rust_status: "Rust core now has stop-loss setting normalization plus per-trade, directional, cumulative, entire-account, close-opposite planning foundations, a runtime-owned risk/close execution path for stop-loss and close-opposite reconciliation, Python-compatible shutdown guard result tests, native runtime loop stop/idle wiring, and a portfolio-aware exposure guard for target margin, available balance, side cap, filter headroom, and one-way add-only reduce-only checks.",
+            required_before_enable: "Add credential-gated regression tests, live recovery evidence, and release evidence before enabling native trading.",
             trading_execution_supported: false,
         },
     ]
@@ -1000,8 +1001,8 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     items: &[
                         "Native Rust trading runtime ready: false",
                         "C++ has BinanceRestClient, BinanceWsClient, dashboard runtime lifecycle, positions sync, futures order submission, and risk/shutdown experiments",
-                        "Rust currently has BinanceRestMarketDataClient for native REST market data, BinanceWebSocketClient for native stream URL/message foundations, BinanceSignedRestClient for signed balance/open-position snapshots, Binance futures order/filter request foundations, order submit guard and order audit/circuit-breaker foundations, runtime-owned order engine, risk/stop-loss close-decision foundations, runtime-owned risk/close execution path, portfolio/history/allocation/reconciliation tests, LLM advisory/local model parity helpers, close-position planning foundations, Desktop shell/tab lifecycle contracts, strategy runtime signal/control/provenance helpers, plus Service API clients, tab/catalog parity, and desktop shells",
-                        "Before enabling Rust native trading: add supervised stream reconnect/cache guards, dry-run controls, live credential-gated smoke coverage, hedge/one-way runtime coverage, and shutdown guard wiring",
+                        "Rust currently has BinanceRestMarketDataClient for native REST market data and custom interval kline aggregation, BinanceWebSocketClient for native stream URL/message foundations, reconnect/backoff and kline cache staleness guards, a native runtime loop coordinator for stream supervision, live ingestion event/close/error handling, pause, stop, shutdown, idle transitions, hedge/one-way close planning, account-mode reconciliation, futures-settings reconciliation, a native account preflight gate, native operational preflight gate, and portfolio-aware exposure guard checks, BinanceSignedRestClient for signed balance/open-position snapshots and futures position-mode, margin-type, leverage, and multi-assets request foundations, Binance futures order/filter request foundations, order submit guard and order audit/circuit-breaker foundations, runtime-owned order engine with deterministic dry-run, risk/stop-loss close-decision foundations, runtime-owned risk/close execution path, portfolio/history/allocation/reconciliation tests, LLM advisory/local model parity helpers, close-position planning foundations, Desktop shell/tab lifecycle contracts, strategy runtime signal/control/provenance helpers, plus Service API clients, tab/catalog parity, and desktop shells",
+                        "Before enabling Rust native trading: add live credential-gated smoke coverage, live recovery evidence, and release evidence",
                     ],
                 },
                 TradingAppSection {

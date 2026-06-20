@@ -16,9 +16,11 @@ python tools/audit_workspace_hygiene.py --json
 
 `tools/verify_all.py` is the canonical local gate. It checks declared Python and
 Node runtimes, workspace hygiene, client dependency locks, risky-pattern
-regressions, unsupported support/parity claims, Python lint/type/contracts/tests,
-web and mobile client tests, Rust workspace checks, Tauri UI behavior, native
-C++ build/tests, and diff whitespace.
+regressions, unsupported support/parity claims, Rust native runtime evidence
+declarations, Python-owned C++/Rust source synchronization, Rust native runtime
+promotion readiness, Python lint/type/contracts/tests, web and mobile client
+tests, Rust workspace checks, Tauri UI behavior, native C++ build/tests, and
+diff whitespace.
 
 ## 18-article completion gate
 
@@ -55,6 +57,88 @@ C++ build/tests, and diff whitespace.
   and Rust surfaces may claim generated Python source-contract parity only; full
   standalone parity stays false until native execution ownership and external
   release/platform evidence exist.
+- Python remains the source of truth for shared C++/Rust contract catalogs.
+  `tools/audit_native_source_sync.py --json` must pass in local/CI verification;
+  if it fails, regenerate the native contracts with
+  `python Languages/Python/tools/generate_native_parity_contracts.py`.
+- Rust native runtime promotion is controlled by
+  `docs/rust-native-runtime-evidence.json` and
+  `tools/check_rust_native_runtime_evidence.py`. The schema check belongs in
+  local/CI verification; `--require-evidence --require-current-commit --require-clean-source`
+  is the promotion gate and requires passed live-smoke, recovery, and
+  release-platform artifacts from the same committed source revision being
+  promoted, generated from a clean tracked source tree.
+  Runtime evidence artifacts must use machine-readable `generated_at` values in
+  `unix:<seconds>` format.
+  Deterministic local recovery artifacts may use
+  `evidence_scope: deterministic_local`, but
+  live-smoke artifacts must remain scoped to `live_testnet` or
+  `live_production`, and release artifacts must be scoped to
+  `release_platform`. Use `tools/check_rust_native_live_smoke_preflight.py --json`
+  to continuously verify the Rust live-smoke preflight remains
+  read-only, redacted, artifact-free, and explicit about credential and
+  confirmation prerequisite booleans before any operator supplies real
+  credentials. Public market-data evidence may be collected separately with
+  `TRADING_BOT_RUST_MARKET_SMOKE=1 cargo run -p trading-bot-rust -- --native-live-market-smoke`;
+  signed account evidence still requires the credential-gated
+  `--native-live-smoke` command. Operators can also run the manual
+  `.github/workflows/rust-native-live-smoke.yml` workflow after configuring
+  `BINANCE_API_KEY` and `BINANCE_API_SECRET` repository secrets; the workflow
+  runs the same preflight, executes the read-only signed account smoke, validates
+  `rust-native-live-market-data-smoke.json` and
+  `rust-native-live-account-read-smoke.json`, and uploads them as artifacts.
+  Live-smoke artifacts must include both endpoint rows and operation-level
+  suite rows: market data evidence must prove symbols, klines, and ticker price
+  fetches; signed account evidence must prove position mode, multi-assets mode,
+  USDT balance with `balances_redacted: true`, open positions were read, and
+  redacted environment metadata shows `api_key_present: true`,
+  `api_secret_present: true`, `signed_account_read: true`, and
+  `secrets_in_artifact: false`.
+  Use
+  `tools/write_rust_native_release_evidence.py --preflight --json` to inspect
+  local release-platform evidence coverage without network access or artifact
+  writes. The preflight JSON includes a bounded `missing_platform_evidence_plan`
+  with runner labels, required workflow inputs, probe commands, and `gh workflow
+  run` examples; pass `--missing-limit 0` when an operator needs the complete
+  missing-target plan. It also distinguishes present files from usable evidence
+  with `passed_platform_evidence_count`, `invalid_platform_evidence_count`, and
+  `unknown_platform_evidence_count`; only passed evidence can contribute to
+  release promotion. Use `tools/write_rust_native_release_evidence.py` to create the Rust
+  release artifact from real GitHub Rust release assets and passed
+  release-platform evidence. Operators can also run the manual
+  `.github/workflows/rust-native-release-evidence.yml` workflow with a release
+  tag and a platform-evidence Actions run id; it downloads
+  `release-platform-evidence-*` artifacts, runs the preflight, writes
+  `rust-native-release-platform-evidence.json`, validates only that release
+  evidence artifact, and uploads it as `rust-native-release-platform-evidence`.
+  The aggregate release evidence artifact must embed each target's passed
+  `suite_results` rows, including `platform-probe.target_match.matched: true`
+  for platform targets, plus `evidence_file` and `evidence_sha256` for each
+  source target JSON. Promotion cannot rely on a target count without the suite
+  proof and file digest that produced it.
+  Platform evidence produced by
+  `tools/run_release_platform_probe.py` must include a passed `platform-probe`
+  result with `target_match.matched: true`; `tools/check_release_platform_matrix.py
+  --require-evidence` rejects artifacts collected on the wrong OS, version, or
+  architecture. It also rejects target evidence that omits any suite declared
+  for that target in `docs/release-platform-test-matrix.json`, so a target is
+  not promotion-ready unless its JSON proves every required matrix suite for
+  that OS/browser target. Operators can validate one target artifact while
+  collecting evidence with
+  `tools/check_release_platform_matrix.py --require-evidence --target-filter <target-id>`.
+  The manual `release-platform-real-tests.yml` workflow exposes
+  `desktop_smoke_command` and `browser_test_command` inputs so external labs can
+  pass the real release binary or browser command for the selected target. Use
+  `tools/check_rust_native_local_recovery_evidence.py --json` to generate and
+  validate deterministic local recovery evidence in an isolated artifact
+  directory. Use
+  `tools/audit_rust_native_runtime_readiness.py --json` for normal CI/local
+  consistency checks; it reports per-artifact status, remaining evidence IDs,
+  redacted live-smoke prerequisites, release evidence prerequisites,
+  release platform preflight coverage counts, invalid/unknown evidence counts, a
+  bounded `missing_platform_evidence_plan`, and next actions. Use
+  `--require-ready` only when intentionally promoting standalone Rust native
+  trading after all evidence artifacts exist.
 - Clean generated build, coverage, cache, and target directories after local
   verification unless they are the artifact being reviewed.
 

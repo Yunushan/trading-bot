@@ -218,11 +218,15 @@ pub fn build_exchange_support_payload(
         !expected_broker_backend.is_empty() && backend_key == expected_broker_backend;
     let order_execution_exchange = exchange_key == "binance";
     let market_data_supported = connector_backend_supported
-        && ((!uses_broker && broker_supported && (order_execution_exchange || uses_ccxt_diagnostics))
+        && ((!uses_broker
+            && broker_supported
+            && (order_execution_exchange || uses_ccxt_diagnostics))
             || (uses_broker && uses_broker_order_routing));
     let account_snapshot_supported = market_data_supported;
     let order_routing_supported = connector_backend_supported
-        && ((!uses_broker && broker_supported && (order_execution_exchange || uses_ccxt_order_routing))
+        && ((!uses_broker
+            && broker_supported
+            && (order_execution_exchange || uses_ccxt_order_routing))
             || (uses_broker && uses_broker_order_routing));
     let order_execution_supported =
         (!uses_broker && exchange_supported && broker_supported && order_routing_supported)
@@ -633,7 +637,10 @@ mod tests {
         assert!(ccxt_diagnostics.order_execution_supported);
         assert!(ccxt_diagnostics.trading_supported);
         assert!(ccxt_diagnostics.live_evidence_required);
-        assert_eq!(ccxt_diagnostics.support_tier, "order-routing-evidence-required");
+        assert_eq!(
+            ccxt_diagnostics.support_tier,
+            "order-routing-evidence-required"
+        );
         assert_eq!(ccxt_diagnostics.ccxt_exchange_id, "bybit");
         assert!(ccxt_diagnostics.unsupported_reasons.is_empty());
 
@@ -686,10 +693,7 @@ mod tests {
         );
         assert!(wrong_broker_backend.broker_supported);
         assert!(!wrong_broker_backend.order_routing_supported);
-        assert!(
-            wrong_broker_backend.capability_gaps[0]
-                .contains("requires connector backend")
-        );
+        assert!(wrong_broker_backend.capability_gaps[0].contains("requires connector backend"));
 
         let unsupported = build_exchange_support_payload(
             ExchangeSupportInput {

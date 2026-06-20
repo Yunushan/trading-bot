@@ -75,6 +75,30 @@ pub struct BinanceFuturesPosition {
     pub update_time_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceFuturesPositionMode {
+    pub dual_side_position: bool,
+    pub position_mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceFuturesMarginMode {
+    pub symbol: String,
+    pub margin_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceFuturesLeverageChange {
+    pub symbol: String,
+    pub leverage: i64,
+    pub max_notional_value: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceFuturesMultiAssetsMode {
+    pub multi_assets_margin: bool,
+}
+
 impl Default for BinanceFuturesPosition {
     fn default() -> Self {
         Self {
@@ -165,6 +189,22 @@ impl BinanceSignedRestClient {
         self.url_for_path("/fapi/v2/positionRisk")
     }
 
+    pub fn futures_position_mode_url(&self) -> String {
+        self.url_for_path("/fapi/v1/positionSide/dual")
+    }
+
+    pub fn futures_margin_type_url(&self) -> String {
+        self.url_for_path("/fapi/v1/marginType")
+    }
+
+    pub fn futures_leverage_url(&self) -> String {
+        self.url_for_path("/fapi/v1/leverage")
+    }
+
+    pub fn futures_multi_assets_margin_url(&self) -> String {
+        self.url_for_path("/fapi/v1/multiAssetsMargin")
+    }
+
     pub fn spot_account_url(&self) -> String {
         self.url_for_path("/api/v3/account")
     }
@@ -227,6 +267,130 @@ impl BinanceSignedRestClient {
             current_timestamp_ms()?,
         );
         parse_open_futures_positions(&risk_payload, account_payload.as_ref().ok())
+    }
+
+    pub fn fetch_futures_position_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceFuturesPositionMode> {
+        self.require_futures_market()?;
+        let payload = self.signed_get_json(
+            "/fapi/v1/positionSide/dual",
+            credentials,
+            &[],
+            current_timestamp_ms()?,
+        )?;
+        parse_futures_position_mode(&payload)
+    }
+
+    pub fn change_futures_position_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+        hedge_mode: bool,
+    ) -> Result<BinanceFuturesPositionMode> {
+        self.require_futures_market()?;
+        let params = build_futures_position_mode_params(hedge_mode);
+        let payload = self.signed_post_json(
+            "/fapi/v1/positionSide/dual",
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+            self.recv_window_ms,
+        )?;
+        let _ = payload;
+        Ok(BinanceFuturesPositionMode {
+            dual_side_position: hedge_mode,
+            position_mode: if hedge_mode {
+                "Hedge".to_owned()
+            } else {
+                "One-way".to_owned()
+            },
+        })
+    }
+
+    pub fn change_futures_margin_type(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: &str,
+        margin_type: &str,
+    ) -> Result<BinanceFuturesMarginMode> {
+        self.require_futures_market()?;
+        let params = build_futures_margin_type_params(symbol, margin_type)?;
+        let payload = self.signed_post_json(
+            "/fapi/v1/marginType",
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+            self.recv_window_ms,
+        )?;
+        if let Ok(parsed) = parse_futures_margin_mode(&payload, symbol) {
+            return Ok(parsed);
+        }
+        Ok(BinanceFuturesMarginMode {
+            symbol: normalize_required_symbol(symbol)?,
+            margin_type: normalize_futures_margin_type(margin_type)?,
+        })
+    }
+
+    pub fn change_futures_leverage(
+        &self,
+        credentials: &BinanceApiCredentials,
+        symbol: &str,
+        leverage: i64,
+    ) -> Result<BinanceFuturesLeverageChange> {
+        self.require_futures_market()?;
+        let params = build_futures_leverage_params(symbol, leverage)?;
+        let payload = self.signed_post_json(
+            "/fapi/v1/leverage",
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+            self.recv_window_ms,
+        )?;
+        if let Ok(parsed) = parse_futures_leverage_change(&payload, symbol) {
+            return Ok(parsed);
+        }
+        Ok(BinanceFuturesLeverageChange {
+            symbol: normalize_required_symbol(symbol)?,
+            leverage,
+            max_notional_value: None,
+        })
+    }
+
+    pub fn fetch_futures_multi_assets_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceFuturesMultiAssetsMode> {
+        self.require_futures_market()?;
+        let payload = self.signed_get_json(
+            "/fapi/v1/multiAssetsMargin",
+            credentials,
+            &[],
+            current_timestamp_ms()?,
+        )?;
+        parse_futures_multi_assets_mode(&payload)
+    }
+
+    pub fn change_futures_multi_assets_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+        enabled: bool,
+    ) -> Result<BinanceFuturesMultiAssetsMode> {
+        self.require_futures_market()?;
+        let params = build_futures_multi_assets_mode_params(enabled);
+        let payload = self.signed_post_json(
+            "/fapi/v1/multiAssetsMargin",
+            credentials,
+            &params,
+            current_timestamp_ms()?,
+            self.recv_window_ms,
+        )?;
+        if let Ok(parsed) = parse_futures_multi_assets_mode(&payload) {
+            return Ok(parsed);
+        }
+        Ok(BinanceFuturesMultiAssetsMode {
+            multi_assets_margin: enabled,
+        })
     }
 
     fn require_market(&self, expected: BinanceMarket) -> Result<()> {
@@ -390,6 +554,125 @@ pub fn signed_query_string(
     let query = parts.join("&");
     let signature = hmac_sha256_hex(api_secret, &query);
     format!("{query}&signature={signature}")
+}
+
+pub fn build_futures_position_mode_params(hedge_mode: bool) -> Vec<(&'static str, String)> {
+    vec![(
+        "dualSidePosition",
+        if hedge_mode { "true" } else { "false" }.to_owned(),
+    )]
+}
+
+pub fn normalize_futures_margin_type(margin_type: &str) -> Result<String> {
+    let normalized = margin_type.trim().to_uppercase().replace('-', "_");
+    match normalized.as_str() {
+        "ISOLATED" => Ok("ISOLATED".to_owned()),
+        "CROSS" | "CROSSED" => Ok("CROSSED".to_owned()),
+        _ => bail!("futures margin type must be ISOLATED or CROSSED"),
+    }
+}
+
+pub fn build_futures_margin_type_params(
+    symbol: &str,
+    margin_type: &str,
+) -> Result<Vec<(&'static str, String)>> {
+    Ok(vec![
+        ("symbol", normalize_required_symbol(symbol)?),
+        ("marginType", normalize_futures_margin_type(margin_type)?),
+    ])
+}
+
+pub fn build_futures_leverage_params(
+    symbol: &str,
+    leverage: i64,
+) -> Result<Vec<(&'static str, String)>> {
+    if !(1..=125).contains(&leverage) {
+        bail!("futures leverage must be between 1 and 125");
+    }
+    Ok(vec![
+        ("symbol", normalize_required_symbol(symbol)?),
+        ("leverage", leverage.to_string()),
+    ])
+}
+
+pub fn build_futures_multi_assets_mode_params(enabled: bool) -> Vec<(&'static str, String)> {
+    vec![(
+        "multiAssetsMargin",
+        if enabled { "true" } else { "false" }.to_owned(),
+    )]
+}
+
+pub fn parse_futures_position_mode(payload: &Value) -> Result<BinanceFuturesPositionMode> {
+    ensure_not_binance_error(payload)?;
+    let value = dual_side_position_value(payload)
+        .ok_or_else(|| anyhow!("futures position mode response missing dualSidePosition"))?;
+    let dual_side_position = coerce_bool_flag(value);
+    Ok(BinanceFuturesPositionMode {
+        dual_side_position,
+        position_mode: if dual_side_position {
+            "Hedge".to_owned()
+        } else {
+            "One-way".to_owned()
+        },
+    })
+}
+
+pub fn parse_futures_margin_mode(
+    payload: &Value,
+    fallback_symbol: &str,
+) -> Result<BinanceFuturesMarginMode> {
+    ensure_not_binance_error(payload)?;
+    let row = first_payload_object(payload)
+        .ok_or_else(|| anyhow!("futures margin type response missing object payload"))?;
+    let symbol = if let Some(symbol) = upper_string(row, "symbol").filter(|value| !value.is_empty())
+    {
+        symbol
+    } else {
+        normalize_required_symbol(fallback_symbol)?
+    };
+    let margin_type = row
+        .get("marginType")
+        .or_else(|| row.get("margin_type"))
+        .and_then(Value::as_str)
+        .map(normalize_futures_margin_type)
+        .transpose()?
+        .ok_or_else(|| anyhow!("futures margin type response missing marginType"))?;
+    Ok(BinanceFuturesMarginMode {
+        symbol,
+        margin_type,
+    })
+}
+
+pub fn parse_futures_leverage_change(
+    payload: &Value,
+    fallback_symbol: &str,
+) -> Result<BinanceFuturesLeverageChange> {
+    ensure_not_binance_error(payload)?;
+    let row = first_payload_object(payload)
+        .ok_or_else(|| anyhow!("futures leverage response missing object payload"))?;
+    let symbol = if let Some(symbol) = upper_string(row, "symbol").filter(|value| !value.is_empty())
+    {
+        symbol
+    } else {
+        normalize_required_symbol(fallback_symbol)?
+    };
+    let leverage = first_i64(row, &["leverage"])
+        .filter(|value| (1..=125).contains(value))
+        .ok_or_else(|| anyhow!("futures leverage response missing valid leverage"))?;
+    Ok(BinanceFuturesLeverageChange {
+        symbol,
+        leverage,
+        max_notional_value: first_f64(row, &["maxNotionalValue", "maxNotional"]),
+    })
+}
+
+pub fn parse_futures_multi_assets_mode(payload: &Value) -> Result<BinanceFuturesMultiAssetsMode> {
+    ensure_not_binance_error(payload)?;
+    let value = multi_assets_margin_value(payload)
+        .ok_or_else(|| anyhow!("futures multi-assets response missing multiAssetsMargin"))?;
+    Ok(BinanceFuturesMultiAssetsMode {
+        multi_assets_margin: coerce_bool_flag(value),
+    })
 }
 
 pub fn parse_futures_usdt_balance(
@@ -948,6 +1231,54 @@ fn upper_string(row: &Map<String, Value>, key: &str) -> Option<String> {
         .map(|value| value.trim().to_uppercase())
 }
 
+fn normalize_required_symbol(symbol: &str) -> Result<String> {
+    let normalized = symbol.trim().to_uppercase();
+    if normalized.is_empty() {
+        bail!("futures symbol is required");
+    }
+    Ok(normalized)
+}
+
+fn first_payload_object(payload: &Value) -> Option<&Map<String, Value>> {
+    payload.as_object().or_else(|| {
+        payload
+            .as_array()
+            .and_then(|rows| rows.first()?.as_object())
+    })
+}
+
+fn dual_side_position_value(payload: &Value) -> Option<&Value> {
+    if let Some(value) = payload.get("dualSidePosition") {
+        return Some(value);
+    }
+    payload.as_array().and_then(|rows| {
+        rows.first()
+            .and_then(|first| first.get("dualSidePosition").or(Some(first)))
+    })
+}
+
+fn multi_assets_margin_value(payload: &Value) -> Option<&Value> {
+    if let Some(value) = payload.get("multiAssetsMargin") {
+        return Some(value);
+    }
+    payload.as_array().and_then(|rows| {
+        rows.first()
+            .and_then(|first| first.get("multiAssetsMargin").or(Some(first)))
+    })
+}
+
+fn coerce_bool_flag(value: &Value) -> bool {
+    match value {
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_i64().unwrap_or(0) != 0,
+        Value::String(text) => matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "y"
+        ),
+        _ => false,
+    }
+}
+
 fn parse_json_f64(value: Option<&Value>) -> Option<f64> {
     match value? {
         Value::Number(number) => number.as_f64(),
@@ -987,6 +1318,12 @@ fn ensure_not_binance_error(value: &Value) -> Result<()> {
         return Ok(());
     };
     if obj.contains_key("code") && obj.contains_key("msg") {
+        if matches!(
+            parse_json_i64(obj.get("code")),
+            Some(0) | Some(200) | Some(20_000)
+        ) {
+            return Ok(());
+        }
         let message = obj
             .get("msg")
             .and_then(Value::as_str)
@@ -1053,7 +1390,119 @@ mod tests {
             futures.futures_position_risk_url(),
             "https://example.test/fapi/v2/positionRisk"
         );
+        assert_eq!(
+            futures.futures_position_mode_url(),
+            "https://example.test/fapi/v1/positionSide/dual"
+        );
+        assert_eq!(
+            futures.futures_margin_type_url(),
+            "https://example.test/fapi/v1/marginType"
+        );
+        assert_eq!(
+            futures.futures_leverage_url(),
+            "https://example.test/fapi/v1/leverage"
+        );
+        assert_eq!(
+            futures.futures_multi_assets_margin_url(),
+            "https://example.test/fapi/v1/multiAssetsMargin"
+        );
         assert_eq!(spot.spot_account_url(), "https://spot.test/api/v3/account");
+    }
+
+    #[test]
+    fn parses_and_builds_futures_position_mode_like_python_clients() {
+        let hedge =
+            parse_futures_position_mode(&json!({"dualSidePosition": "true"})).expect("hedge mode");
+        assert!(hedge.dual_side_position);
+        assert_eq!(hedge.position_mode, "Hedge");
+
+        let one_way = parse_futures_position_mode(&json!([{"dualSidePosition": false}]))
+            .expect("one-way mode");
+        assert!(!one_way.dual_side_position);
+        assert_eq!(one_way.position_mode, "One-way");
+
+        let fallback_truthy =
+            parse_futures_position_mode(&json!(["yes"])).expect("truthy list fallback");
+        assert!(fallback_truthy.dual_side_position);
+
+        assert_eq!(
+            build_futures_position_mode_params(true),
+            vec![("dualSidePosition", "true".to_owned())]
+        );
+        assert_eq!(
+            build_futures_position_mode_params(false),
+            vec![("dualSidePosition", "false".to_owned())]
+        );
+        assert!(parse_futures_position_mode(&json!({})).is_err());
+    }
+
+    #[test]
+    fn builds_futures_margin_leverage_and_multi_assets_requests_like_python() {
+        assert_eq!(normalize_futures_margin_type("cross").unwrap(), "CROSSED");
+        assert_eq!(
+            build_futures_margin_type_params("btcusdt", "cross").unwrap(),
+            vec![
+                ("symbol", "BTCUSDT".to_owned()),
+                ("marginType", "CROSSED".to_owned())
+            ]
+        );
+        assert_eq!(
+            build_futures_margin_type_params(" ETHUSDT ", "isolated").unwrap(),
+            vec![
+                ("symbol", "ETHUSDT".to_owned()),
+                ("marginType", "ISOLATED".to_owned())
+            ]
+        );
+        assert_eq!(
+            build_futures_leverage_params("btcusdt", 20).unwrap(),
+            vec![
+                ("symbol", "BTCUSDT".to_owned()),
+                ("leverage", "20".to_owned())
+            ]
+        );
+        assert_eq!(
+            build_futures_multi_assets_mode_params(true),
+            vec![("multiAssetsMargin", "true".to_owned())]
+        );
+        assert!(build_futures_margin_type_params("", "isolated").is_err());
+        assert!(build_futures_margin_type_params("BTCUSDT", "portfolio").is_err());
+        assert!(build_futures_leverage_params("BTCUSDT", 0).is_err());
+        assert!(build_futures_leverage_params("BTCUSDT", 126).is_err());
+    }
+
+    #[test]
+    fn parses_futures_setting_responses_and_accepts_success_codes() {
+        let margin =
+            parse_futures_margin_mode(&json!({"symbol": "btcusdt", "marginType": "cross"}), "")
+                .expect("margin mode");
+        assert_eq!(
+            margin,
+            BinanceFuturesMarginMode {
+                symbol: "BTCUSDT".to_owned(),
+                margin_type: "CROSSED".to_owned(),
+            }
+        );
+
+        let leverage = parse_futures_leverage_change(
+            &json!({"symbol": "ethusdt", "leverage": "21", "maxNotionalValue": "1000000"}),
+            "",
+        )
+        .expect("leverage change");
+        assert_eq!(leverage.symbol, "ETHUSDT");
+        assert_eq!(leverage.leverage, 21);
+        assert_eq!(leverage.max_notional_value, Some(1_000_000.0));
+
+        let multi = parse_futures_multi_assets_mode(&json!({"multiAssetsMargin": "true"}))
+            .expect("multi assets mode");
+        assert!(multi.multi_assets_margin);
+
+        assert!(ensure_not_binance_error(&json!({"code": 200, "msg": "success"})).is_ok());
+        assert!(
+            ensure_not_binance_error(
+                &json!({"code": -4046, "msg": "No need to change margin type."})
+            )
+            .is_err()
+        );
     }
 
     #[test]

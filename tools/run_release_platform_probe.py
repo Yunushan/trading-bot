@@ -14,7 +14,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _validate_matrix
+try:
+    from check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _validate_matrix
+except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _validate_matrix
 
 
 def _repo_root() -> Path:
@@ -81,27 +84,156 @@ def _shell_command_from_env(name: str) -> list[str] | None:
     return ["sh", "-lc", raw]
 
 
+def _os_release() -> dict[str, str]:
+    os_release = Path("/etc/os-release")
+    if not os_release.is_file():
+        return {}
+    parsed: dict[str, str] = {}
+    try:
+        lines = os_release.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        parsed[key.strip()] = value.strip().strip('"')
+    return parsed
+
+
+def _observed_platform() -> dict[str, Any]:
+    os_release = _os_release()
+    return {
+        "platform": platform.platform(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "version": platform.version(),
+        "machine": platform.machine(),
+        "normalized_architecture": _normalize_architecture(platform.machine()),
+        "processor": platform.processor(),
+        "python": sys.version.split()[0],
+        "executable": sys.executable,
+        "os_release_id": os_release.get("ID", ""),
+        "os_release_id_like": os_release.get("ID_LIKE", ""),
+        "os_release_version_id": os_release.get("VERSION_ID", ""),
+        "macos_version": platform.mac_ver()[0],
+    }
+
+
+def _normalize_architecture(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized in {"amd64", "x86_64", "x64"}:
+        return "x64"
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    if normalized in {"x86", "i386", "i686"}:
+        return "x86"
+    if normalized.startswith("armv7") or normalized.startswith("armv6"):
+        return "arm32"
+    return normalized
+
+
+def _expected_architecture(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"x64", "x86", "arm32", "arm64"}:
+        return normalized
+    if normalized.startswith("x86_64"):
+        return "x64"
+    if "arm64" in normalized:
+        return "arm64"
+    return _normalize_architecture(normalized)
+
+
+def _linux_distribution_matches(family: str, version: str, observed: dict[str, Any]) -> bool:
+    distro_id = str(observed.get("os_release_id") or "").lower()
+    distro_like = str(observed.get("os_release_id_like") or "").lower()
+    version_id = str(observed.get("os_release_version_id") or "")
+    if family == "ubuntu":
+        return distro_id == "ubuntu" and version_id.startswith(version)
+    if family == "rhel":
+        distro_tokens = {distro_id, *distro_like.split()}
+        return bool({"rhel", "fedora"} & distro_tokens) and version_id.split(".", 1)[0] == version
+    return False
+
+
+def _platform_match_issues(target: dict[str, Any], observed: dict[str, Any]) -> list[str]:
+    family = str(target.get("family") or "").lower()
+    version = str(target.get("version") or "")
+    expected_arch = _expected_architecture(str(target.get("architecture") or ""))
+    observed_arch = str(observed.get("normalized_architecture") or "")
+    system = str(observed.get("system") or "")
+    issues: list[str] = []
+
+    if expected_arch and observed_arch != expected_arch:
+        issues.append(f"architecture mismatch: expected {expected_arch}, observed {observed_arch or 'unknown'}")
+
+    if family == "windows":
+        if system != "Windows":
+            issues.append(f"system mismatch: expected Windows, observed {system or 'unknown'}")
+        if str(observed.get("release") or "") != version:
+            issues.append(f"Windows release mismatch: expected {version}, observed {observed.get('release') or 'unknown'}")
+    elif family == "macos":
+        if system != "Darwin":
+            issues.append(f"system mismatch: expected Darwin/macOS, observed {system or 'unknown'}")
+        macos_major = str(observed.get("macos_version") or "").split(".", 1)[0]
+        if macos_major != version:
+            issues.append(f"macOS major version mismatch: expected {version}, observed {macos_major or 'unknown'}")
+    elif family in {"ubuntu", "rhel"}:
+        if system != "Linux":
+            issues.append(f"system mismatch: expected Linux, observed {system or 'unknown'}")
+        elif not _linux_distribution_matches(family, version, observed):
+            issues.append(
+                "Linux distribution mismatch: expected "
+                f"{family} {version}, observed "
+                f"{observed.get('os_release_id') or 'unknown'} "
+                f"{observed.get('os_release_version_id') or 'unknown'}"
+            )
+    elif family in {"freebsd", "openbsd", "netbsd"}:
+        expected_system = family.capitalize()
+        if system.lower() != family:
+            issues.append(f"system mismatch: expected {expected_system}, observed {system or 'unknown'}")
+    elif family == "android":
+        if system not in {"Android", "Linux"}:
+            issues.append(f"system mismatch: expected Android runtime, observed {system or 'unknown'}")
+        android_root_present = bool(os.environ.get("ANDROID_ROOT") or os.environ.get("ANDROID_DATA"))
+        if not android_root_present and str(observed.get("os_release_id") or "").lower() != "android":
+            issues.append("Android runtime marker missing: ANDROID_ROOT/ANDROID_DATA or os-release ID android required")
+    elif family == "ios":
+        if system not in {"iOS", "Darwin"}:
+            issues.append(f"system mismatch: expected iOS runtime, observed {system or 'unknown'}")
+        if not (os.environ.get("SIMULATOR_UDID") or os.environ.get("IOS_DEVICE_NAME")):
+            issues.append("iOS runtime marker missing: SIMULATOR_UDID or IOS_DEVICE_NAME required")
+    else:
+        issues.append(f"unsupported platform family for target matching: {family or 'unknown'}")
+    return issues
+
+
+def _platform_probe_result(target: dict[str, Any]) -> dict[str, Any]:
+    observed = _observed_platform()
+    issues = _platform_match_issues(target, observed)
+    return {
+        "name": "platform-probe",
+        "status": "passed" if not issues else "failed",
+        "observed": observed,
+        "target_match": {
+            "matched": not issues,
+            "expected": {
+                "family": target.get("family"),
+                "version": target.get("version"),
+                "architecture": target.get("architecture"),
+                "normalized_architecture": _expected_architecture(str(target.get("architecture") or "")),
+            },
+            "issues": issues,
+        },
+    }
+
+
 def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]]:
     suites = [str(item) for item in target.get("test_suites", [])]
     results: list[dict[str, Any]] = []
 
     if "platform-probe" in suites:
-        results.append(
-            {
-                "name": "platform-probe",
-                "status": "passed",
-                "observed": {
-                    "platform": platform.platform(),
-                    "system": platform.system(),
-                    "release": platform.release(),
-                    "version": platform.version(),
-                    "machine": platform.machine(),
-                    "processor": platform.processor(),
-                    "python": sys.version.split()[0],
-                    "executable": sys.executable,
-                },
-            }
-        )
+        results.append(_platform_probe_result(target))
 
     if "python-service-contract" in suites:
         results.append(
@@ -144,14 +276,14 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
         if cargo:
             results.append(
                 _run_command(
-                    "rust-workspace-check",
+                    "native-build-smoke",
                     [cargo, "check", "--manifest-path", "experiments/rust-shells/Cargo.toml", "--workspace"],
                     cwd=root,
                     timeout=900,
                 )
             )
         else:
-            results.append({"name": "rust-workspace-check", "status": "failed", "stderr": "cargo is not on PATH"})
+            results.append({"name": "native-build-smoke", "status": "failed", "stderr": "cargo is not on PATH"})
 
     if "mobile-client-contract" in suites:
         npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm")

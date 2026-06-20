@@ -63,7 +63,7 @@ QJsonArray requiredStartupSuppressionEnv() {
 QJsonArray releaseSmokeCommands() {
     return {
         QStringLiteral("cmake --build build/binance_cpp --config Release"),
-        QStringLiteral("build/binance_cpp/Release/Trading-Bot-C++.exe"),
+        QStringLiteral("build/binance_cpp/Release/Trading-Bot-C++.exe --smoke"),
     };
 }
 

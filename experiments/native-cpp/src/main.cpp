@@ -3,9 +3,12 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QStringList>
+#include <QTextStream>
 
 #ifdef Q_OS_WIN
 #ifndef _WIN32_WINNT
@@ -54,6 +57,12 @@ QIcon loadAppIcon() {
     return icon;
 }
 
+bool hasBoundedSmokeArg() {
+    const QStringList args = QCoreApplication::arguments();
+    return args.contains(QStringLiteral("--smoke"))
+        || args.contains(QStringLiteral("--healthcheck"));
+}
+
 #ifdef Q_OS_WIN
 void applyAppUserModelID() {
     // Ensures taskbar pinning/grouping and jump-list identity stay consistent.
@@ -84,6 +93,13 @@ int main(int argc, char *argv[]) {
     if (!icon.isNull()) {
         window.setWindowIcon(icon);
     }
+
+    if (hasBoundedSmokeArg()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        QTextStream(stdout) << "Trading Bot C++ smoke ok\n";
+        return 0;
+    }
+
     window.showMaximized();
 
     return app.exec();
