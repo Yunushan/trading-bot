@@ -1,5 +1,7 @@
 #include "NativeStartupPackaging.h"
 
+#include <QJsonValue>
+
 namespace {
 
 QJsonObject entrypointContract(
