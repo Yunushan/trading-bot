@@ -34,11 +34,7 @@ MACOS_ASSET_TAGS = (
     "macos-26-arm64",
 )
 OPTIONAL_RUST_PREFIXES = (
-    "Trading-Bot-Rust-egui",
-    "Trading-Bot-Rust-iced",
-    "Trading-Bot-Rust-slint",
     "Trading-Bot-Rust-tauri",
-    "Trading-Bot-Rust-dioxus",
 )
 
 

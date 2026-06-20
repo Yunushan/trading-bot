@@ -11,6 +11,7 @@ from pathlib import Path
 class Evidence:
     path: str
     contains: tuple[str, ...] = ()
+    absent: tuple[str, ...] = ()
     regex: str | None = None
     min_value_regex: tuple[str, int] | None = None
 
@@ -111,8 +112,26 @@ HARDENING_ARTICLES: tuple[Article, ...] = (
         9,
         "Rust GUI scope boundary",
         (
-            Evidence("experiments/rust-shells/crates/core/src/lib.rs", ("rust_shell_framework_parity", "Non-operational")),
-            Evidence("experiments/rust-shells/README.md", ("Tauri", "Slint")),
+            Evidence(
+                "Languages/Python/app/gui/code/code_language_catalog.py",
+                ("RUST_FRAMEWORK_OPTIONS", "Tauri"),
+                ("Slint", "egui", "Iced", "Dioxus Desktop"),
+            ),
+            Evidence(
+                "experiments/rust-shells/apps/tauri-desktop/ui/index.html",
+                ("Rust desktop framework", "Tauri is the only user-selectable Rust desktop shell"),
+                ("Slint", "egui", "Iced", "Dioxus Desktop"),
+            ),
+            Evidence(
+                "experiments/rust-shells/crates/core/src/lib.rs",
+                ("supported_frameworks", "rust_shell_framework_parity", "only user-selectable Rust desktop shell"),
+                ("Slint", "egui", "Iced", "Dioxus Desktop"),
+            ),
+            Evidence(
+                "experiments/rust-shells/README.md",
+                ("Tauri desktop shell", "only user-selectable Rust desktop shell"),
+                ("Slint", "egui", "Iced", "Dioxus Desktop"),
+            ),
         ),
     ),
     Article(
@@ -226,6 +245,9 @@ def _check_evidence(root: Path, evidence: Evidence) -> dict[str, object]:
     for needle in evidence.contains:
         if needle not in text:
             findings.append(f"missing required text: {needle!r}")
+    for needle in evidence.absent:
+        if needle in text:
+            findings.append(f"forbidden text present: {needle!r}")
     if evidence.regex and re.search(evidence.regex, text, flags=re.MULTILINE) is None:
         findings.append(f"missing required pattern: {evidence.regex}")
     if evidence.min_value_regex:

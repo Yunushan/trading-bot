@@ -372,11 +372,7 @@ jobs:
             "--release"
           )
           $optionalRustPackages = @(
-            "trading-bot-egui-desktop",
-            "trading-bot-iced-desktop",
-            "trading-bot-slint-desktop",
-            "trading-bot-tauri-desktop",
-            "trading-bot-dioxus-desktop"
+            "trading-bot-tauri-desktop"
           )
           foreach ($package in $optionalRustPackages) {
             $rustBuildArgs = $baseRustBuildArgs + @("--package", $package)
@@ -434,11 +430,7 @@ jobs:
 
           $rustAssets = @(
             @{ AssetPrefix = "Trading-Bot-Rust"; BinaryName = "trading-bot-rust"; Required = $true },
-            @{ AssetPrefix = "Trading-Bot-Rust-egui"; BinaryName = "trading-bot-egui-desktop"; Required = $false },
-            @{ AssetPrefix = "Trading-Bot-Rust-iced"; BinaryName = "trading-bot-iced-desktop"; Required = $false },
-            @{ AssetPrefix = "Trading-Bot-Rust-slint"; BinaryName = "trading-bot-slint-desktop"; Required = $false },
-            @{ AssetPrefix = "Trading-Bot-Rust-tauri"; BinaryName = "trading-bot-tauri-desktop"; Required = $false },
-            @{ AssetPrefix = "Trading-Bot-Rust-dioxus"; BinaryName = "trading-bot-dioxus-desktop"; Required = $false }
+            @{ AssetPrefix = "Trading-Bot-Rust-tauri"; BinaryName = "trading-bot-tauri-desktop"; Required = $false }
           )
           foreach ($rustAsset in $rustAssets) {
             $rustExe = "experiments/rust-shells/target/release/$($rustAsset.BinaryName).exe"

@@ -104,34 +104,6 @@ pub const RUST_CONFIG_PERSISTENCE_BOUNDARIES: &[RustConfigPersistenceBoundary] =
         validation_owner: "Python validate_runtime_config with Rust helper parity tests",
         operational: true,
     },
-    RustConfigPersistenceBoundary {
-        shell: "Slint",
-        role: "Non-operational native UI evaluation",
-        persistence_owner: "service-only delegation; no local config persistence owner",
-        validation_owner: "Python Service API when promoted to operational use",
-        operational: false,
-    },
-    RustConfigPersistenceBoundary {
-        shell: "egui",
-        role: "Non-operational comparison renderer",
-        persistence_owner: "service-only delegation; renderer does not load or save config",
-        validation_owner: "Python Service API when promoted to operational use",
-        operational: false,
-    },
-    RustConfigPersistenceBoundary {
-        shell: "Iced",
-        role: "Non-operational comparison renderer",
-        persistence_owner: "service-only delegation; renderer does not load or save config",
-        validation_owner: "Python Service API when promoted to operational use",
-        operational: false,
-    },
-    RustConfigPersistenceBoundary {
-        shell: "Dioxus Desktop",
-        role: "Non-operational comparison renderer",
-        persistence_owner: "service-only delegation; renderer does not load or save config",
-        validation_owner: "Python Service API when promoted to operational use",
-        operational: false,
-    },
 ];
 
 pub fn service_config_env_flag(value: impl AsRef<str>, default_value: bool) -> bool {
@@ -2357,7 +2329,7 @@ mod tests {
     }
 
     #[test]
-    fn non_tauri_shells_explicitly_delegate_config_persistence_to_python_service() {
+    fn tauri_shell_delegates_config_persistence_to_python_service() {
         let tauri = RUST_CONFIG_PERSISTENCE_BOUNDARIES
             .iter()
             .find(|item| item.shell == "Tauri")
@@ -2370,18 +2342,7 @@ mod tests {
                 .contains("Python validate_runtime_config")
         );
 
-        for shell in ["Slint", "egui", "Iced", "Dioxus Desktop"] {
-            let boundary = RUST_CONFIG_PERSISTENCE_BOUNDARIES
-                .iter()
-                .find(|item| item.shell == shell)
-                .expect("non-Tauri shell boundary should be declared");
-            assert!(!boundary.operational);
-            assert!(
-                boundary
-                    .persistence_owner
-                    .contains("service-only delegation")
-            );
-        }
+        assert_eq!(RUST_CONFIG_PERSISTENCE_BOUNDARIES.len(), 1);
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

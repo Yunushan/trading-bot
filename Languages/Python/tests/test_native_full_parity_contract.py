@@ -116,8 +116,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("coerce_service_config_payload_migrates_old_versions_and_rejects_future", config_persistence)
         self.assertIn("write_load_and_status_follow_python_persistence_shape", config_persistence)
         self.assertIn("validates_runtime_config_like_python_service_load", config_persistence)
-        self.assertIn("non_tauri_shells_explicitly_delegate_config_persistence_to_python_service", config_persistence)
-        self.assertIn("service-only delegation", config_persistence)
+        self.assertIn("tauri_shell_delegates_config_persistence_to_python_service", config_persistence)
+        self.assertIn("RUST_CONFIG_PERSISTENCE_BOUNDARIES.len(), 1", config_persistence)
         self.assertIn("config persistence envelope/status helpers", core)
         self.assertIn("pub struct ServiceLogEvent", diagnostics)
         self.assertIn("pub struct ServiceTerminalCommandResult", diagnostics)
@@ -127,7 +127,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("pub fn format_service_log_line", diagnostics)
         self.assertIn("service_log_event_matches_python_schema_and_redacts", diagnostics)
         self.assertIn("terminal_result_matches_python_shape_and_redacts", diagnostics)
-        self.assertIn("non_tauri_shells_do_not_claim_terminal_ownership", diagnostics)
+        self.assertIn("tauri_shell_claims_terminal_delegation", diagnostics)
         self.assertIn("diagnostic redaction", core)
         self.assertIn("terminal_run behavior to the Python Service API", core)
         self.assertIn("pub struct DesktopShellTabContract", desktop_shell)
@@ -428,12 +428,7 @@ class NativeFullParityContractTests(unittest.TestCase):
             generated,
         )
 
-        for renderer in (
-            rust_root / "apps" / "egui-desktop" / "src" / "main.rs",
-            rust_root / "apps" / "iced-desktop" / "src" / "main.rs",
-            rust_root / "apps" / "dioxus-desktop" / "src" / "main.rs",
-            rust_root / "src" / "main.rs",
-        ):
+        for renderer in (rust_root / "src" / "main.rs",):
             source = _read(renderer)
             self.assertIn("native_python_app_parity_domains", source, renderer)
             self.assertIn("native_python_app_contract_parity_ready", source, renderer)

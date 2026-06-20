@@ -37,18 +37,10 @@ LANGUAGE_PATHS = {
 
 RUST_FRAMEWORK_PATHS = {
     "Tauri": "experiments/rust-shells/apps/tauri-desktop",
-    "Slint": "experiments/rust-shells/apps/slint-desktop",
-    "egui": "experiments/rust-shells/apps/egui-desktop",
-    "Iced": "experiments/rust-shells/apps/iced-desktop",
-    "Dioxus Desktop": "experiments/rust-shells/apps/dioxus-desktop",
 }
 
 RUST_FRAMEWORK_PACKAGES = {
     "Tauri": "trading-bot-tauri-desktop",
-    "Slint": "trading-bot-slint-desktop",
-    "egui": "trading-bot-egui-desktop",
-    "Iced": "trading-bot-iced-desktop",
-    "Dioxus Desktop": "trading-bot-dioxus-desktop",
 }
 
 RUST_SHARED_PATHS = [
@@ -107,46 +99,6 @@ RUST_FRAMEWORK_OPTIONS = [
         "operational": True,
         "operational_status": "Interactive Service API client",
         "launch_note": "Tauri can manage/connect to the local Python Service API, but Python still owns strategy, risk, account, order, and exchange execution.",
-    },
-    {
-        "key": "Slint",
-        "title": "Slint",
-        "subtitle": "Evaluation only - no live client",
-        "accent": "#22c55e",
-        "badge": "Evaluation",
-        "operational": False,
-        "operational_status": "Non-operational native UI evaluation",
-        "launch_note": "Slint is a native UI evaluation shell. It mirrors the option map but does not manage the Service API or control the bot.",
-    },
-    {
-        "key": "egui",
-        "title": "egui",
-        "subtitle": "Evaluation only - catalog renderer",
-        "accent": "#38bdf8",
-        "badge": "Evaluation",
-        "operational": False,
-        "operational_status": "Non-operational comparison renderer",
-        "launch_note": "egui renders shared catalog/status data for comparison only. It does not manage the Service API or control the bot.",
-    },
-    {
-        "key": "Iced",
-        "title": "Iced",
-        "subtitle": "Evaluation only - catalog renderer",
-        "accent": "#a78bfa",
-        "badge": "Evaluation",
-        "operational": False,
-        "operational_status": "Non-operational comparison renderer",
-        "launch_note": "Iced renders shared catalog/status data for comparison only. It does not manage the Service API or control the bot.",
-    },
-    {
-        "key": "Dioxus Desktop",
-        "title": "Dioxus Desktop",
-        "subtitle": "Evaluation only - catalog renderer",
-        "accent": "#ec4899",
-        "badge": "Evaluation",
-        "operational": False,
-        "operational_status": "Non-operational comparison renderer",
-        "launch_note": "Dioxus Desktop renders shared catalog/status data for comparison only. It does not manage the Service API or control the bot.",
     },
 ]
 
@@ -383,7 +335,7 @@ def _rust_framework_dependency_target(config: dict | None = None) -> dict[str, s
         "label": f"{framework_key} ({badge})",
         "custom": "rust_file_version",
         "path": manifest_path,
-        "usage": "Active" if _rust_framework_is_operational(framework_key) else "Evaluation only",
+        "usage": "Active",
     }
 
 

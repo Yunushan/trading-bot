@@ -6,11 +6,7 @@ arch="$(uname -m)"
 python_bin="Languages/Python/dist/Trading-Bot-Python"
 required_rust_asset="Trading-Bot-Rust:trading-bot-rust"
 optional_rust_assets=(
-  "Trading-Bot-Rust-egui:trading-bot-egui-desktop"
-  "Trading-Bot-Rust-iced:trading-bot-iced-desktop"
-  "Trading-Bot-Rust-slint:trading-bot-slint-desktop"
   "Trading-Bot-Rust-tauri:trading-bot-tauri-desktop"
-  "Trading-Bot-Rust-dioxus:trading-bot-dioxus-desktop"
 )
 release_version="$(python -c 'import os,re; tag=(os.environ.get("TB_RELEASE_TAG") or "").strip(); m=re.search(r"(\d+(?:[._-]\d+){1,3}(?:[-_.]?(?:a|b|rc|post|dev)\d+)?)", tag); print((m.group(1).replace("_",".").replace("-",".") if m else "0.0.0"))')"
 

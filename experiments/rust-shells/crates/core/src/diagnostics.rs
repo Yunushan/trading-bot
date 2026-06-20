@@ -37,30 +37,6 @@ pub const RUST_LOGS_TERMINAL_DIAGNOSTICS_BOUNDARIES: &[RustLogsTerminalDiagnosti
         terminal_behavior: "Delegates controlled terminal commands to the Python Service API terminal_run route.",
         operational_owner: "Python Service API",
     },
-    RustLogsTerminalDiagnosticsBoundary {
-        framework: "Slint",
-        service_log_behavior: "Mirrors service log schemas for non-operational native UI evaluation.",
-        terminal_behavior: "Does not execute terminal commands.",
-        operational_owner: "Python Service API",
-    },
-    RustLogsTerminalDiagnosticsBoundary {
-        framework: "egui",
-        service_log_behavior: "Renderer comparison only; no Service API ownership.",
-        terminal_behavior: "Does not execute terminal commands.",
-        operational_owner: "Python Service API",
-    },
-    RustLogsTerminalDiagnosticsBoundary {
-        framework: "Iced",
-        service_log_behavior: "Renderer comparison only; no Service API ownership.",
-        terminal_behavior: "Does not execute terminal commands.",
-        operational_owner: "Python Service API",
-    },
-    RustLogsTerminalDiagnosticsBoundary {
-        framework: "Dioxus Desktop",
-        service_log_behavior: "Renderer comparison only; no Service API ownership.",
-        terminal_behavior: "Does not execute terminal commands.",
-        operational_owner: "Python Service API",
-    },
 ];
 
 pub fn build_service_log_event(
@@ -174,19 +150,12 @@ mod tests {
     }
 
     #[test]
-    fn non_tauri_shells_do_not_claim_terminal_ownership() {
+    fn tauri_shell_claims_terminal_delegation() {
         let tauri = RUST_LOGS_TERMINAL_DIAGNOSTICS_BOUNDARIES
             .iter()
             .find(|item| item.framework == "Tauri")
             .expect("tauri boundary");
         assert!(tauri.terminal_behavior.contains("terminal_run"));
-
-        for boundary in RUST_LOGS_TERMINAL_DIAGNOSTICS_BOUNDARIES
-            .iter()
-            .filter(|item| item.framework != "Tauri")
-        {
-            assert_eq!(boundary.operational_owner, "Python Service API");
-            assert!(boundary.terminal_behavior.contains("Does not execute"));
-        }
+        assert_eq!(RUST_LOGS_TERMINAL_DIAGNOSTICS_BOUNDARIES.len(), 1);
     }
 }

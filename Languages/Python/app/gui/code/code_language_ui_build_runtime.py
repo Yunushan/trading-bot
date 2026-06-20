@@ -209,7 +209,7 @@ def init_code_language_tab(
     confirmation_no_btn.clicked.connect(lambda: self._finish_code_tab_confirmation(False))
     confirmation_yes_btn.clicked.connect(lambda: self._finish_code_tab_confirmation(True))
 
-    rust_framework_label = QtWidgets.QLabel("Choose your Rust framework", content)
+    rust_framework_label = QtWidgets.QLabel("Rust desktop framework", content)
     rust_framework_label.setStyleSheet("font-size: 18px; font-weight: 600;")
     layout.addWidget(rust_framework_label)
     self._rust_framework_section_label = rust_framework_label

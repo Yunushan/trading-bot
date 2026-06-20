@@ -12,15 +12,15 @@ This repo includes automated release workflows:
 
 When you push a tag that starts with `v` such as `v1.0.0`, GitHub Actions will build and publish platform assets:
 
-- **Windows**: x64 and ARM64 assets for Python, the native C++ preview, the Rust workspace binary, and every Rust desktop framework shell
-- **Linux**: Python/native-C++ tarballs, Linux packages (`.deb`, `.rpm`), plus tarballs for the Rust workspace binary and every Rust desktop framework shell on `x86_64` and `arm64`
-- **macOS**: Python/native-C++ zip bundles plus zip bundles for the Rust workspace binary and every Rust desktop framework shell on Intel and ARM64 runners
+- **Windows**: x64 and ARM64 assets for Python, the native C++ preview, the Rust workspace binary, and the Tauri desktop shell
+- **Linux**: Python/native-C++ tarballs, Linux packages (`.deb`, `.rpm`), plus tarballs for the Rust workspace binary and the Tauri desktop shell on `x86_64` and `arm64`
+- **macOS**: Python/native-C++ zip bundles plus zip bundles for the Rust workspace binary and the Tauri desktop shell on Intel and ARM64 runners
 - **FreeBSD**: Python/C++ tarballs when a matching self-hosted runner is available
 - **Other BSD variants / Solaris / illumos**: backend/service API support is currently manual and best-effort
 
 The Python desktop release asset is built from the canonical product wrapper at `apps/desktop-pyqt/main.py`, while `Languages/Python/main.py` remains the compatibility launcher for source-based workflows.
 
-Rust framework shell assets are best-effort. If one optional framework fails to compile on a runner, the rest of the release can still publish.
+Tauri is the only Rust desktop shell release target unless another Rust shell is explicitly promoted.
 
 > FreeBSD release workflow depends on a matching self-hosted runner. Other BSD-family systems and Solaris/illumos currently rely on manual validation against the service/backend path.
 
@@ -73,7 +73,7 @@ git push origin v1.0.0
    - `Trading-Bot-Python-*`
    - `Trading-Bot-C++-*`
    - `Trading-Bot-Rust-*`
-   - framework-specific Rust desktop assets
+   - Tauri Rust desktop assets
    - Linux, macOS, and FreeBSD artifacts from their respective workflows
 5. Verify the published release automatically:
 

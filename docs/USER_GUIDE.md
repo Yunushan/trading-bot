@@ -124,7 +124,7 @@ This tab lists the supported code languages and keeps the scaffolding paths orga
 
 1. Choose your language such as Python, C++, or Rust.
 2. The workspace ensures the language folder exists so related assets stay organized.
-3. When Rust is selected, you can also choose a Rust desktop framework scaffold such as Tauri, Slint, egui, Iced, or Dioxus Desktop.
+3. When Rust is selected, Tauri is the only supported Rust desktop shell choice.
 
 ## Utilities and helper scripts
 

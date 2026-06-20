@@ -180,7 +180,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("Backtest Scanner & Dashboard Import", core)
         self.assertIn("LLM Advisory & Local Lifecycle", core)
         self.assertIn("Operational Service API client", core)
-        self.assertIn("Non-operational comparison renderer", core)
+        self.assertIn("only user-selectable Rust desktop shell", core)
         self.assertIn("Execution Boundary", core)
         self.assertIn("default_model", core)
         self.assertIn("qwen3:8b", core)
@@ -342,12 +342,15 @@ class ProductPackagingContractTests(unittest.TestCase):
         ):
             self.assertIn(slint_parity_text, slint_ui)
         for operational_text in (
-            "Evaluation only - no live client",
+            "Operational Service API client",
             "operational_status",
-            '"usage": "Active" if _rust_framework_is_operational(framework_key) else "Evaluation only"',
+            '"usage": "Active"',
         ):
             self.assertIn(operational_text, code_catalog)
-        self.assertIn("This shell is evaluation-only and will not manage the Service API or control the bot", rust_selection)
+        for removed_framework in ("Slint", "egui", "Iced", "Dioxus Desktop"):
+            self.assertNotIn(removed_framework, code_catalog)
+        self.assertNotIn("evaluation-only", rust_selection)
+        self.assertIn("This is the only Rust shell with interactive Service API client behavior today.", rust_selection)
         self.assertIn("Rust desktop shell", rust_launcher)
         self.assertTrue(tauri_app_config["app"]["withGlobalTauri"])
         self.assertIn("reqwest", tauri_config["dependencies"])
@@ -613,28 +616,6 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("symbol = `${symbol}.P`", tauri_html)
         self.assertIn("`BINANCE:${symbol}`", tauri_html)
 
-        rust_app_sources = {
-            "egui": rust_root / "apps" / "egui-desktop" / "src" / "main.rs",
-            "Iced": rust_root / "apps" / "iced-desktop" / "src" / "main.rs",
-            "Dioxus Desktop": rust_root / "apps" / "dioxus-desktop" / "src" / "main.rs",
-        }
-        for shell, path in rust_app_sources.items():
-            source = path.read_text(encoding="utf-8")
-            self.assertIn("trading_app_tabs", source, shell)
-            self.assertIn("rust_execution_modes", source, shell)
-            self.assertIn("rust_trading_execution_supported", source, shell)
-            self.assertIn("rust_shell_framework_parity", source, shell)
-            self.assertIn("rust_native_runtime_capabilities", source, shell)
-            self.assertIn("rust_native_trading_runtime_ready", source, shell)
-            self.assertIn("service_api_capabilities", source, shell)
-            self.assertIn("service_api_routes", source, shell)
-            self.assertIn("Service API Integration", source, shell)
-            self.assertIn("Framework Parity", source, shell)
-            self.assertIn("Native Runtime Gap", source, shell)
-            self.assertIn("Standalone Rust trading execution supported", source, shell)
-            self.assertIn("Bot Status: OFF", source, shell)
-            self.assertIn("Total PNL Active Positions", source, shell)
-            self.assertNotIn("Shared Rust core scaffold wired", source, shell)
         self.assertIn("rust_native_runtime_capabilities", rust_cli)
         self.assertIn("rust_native_trading_runtime_ready", rust_cli)
         self.assertIn("Service API Integration", slint_ui)

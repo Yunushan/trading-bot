@@ -189,11 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           optional_rust_packages=(
-            trading-bot-egui-desktop
-            trading-bot-iced-desktop
-            trading-bot-slint-desktop
             trading-bot-tauri-desktop
-            trading-bot-dioxus-desktop
           )
           for package in "${optional_rust_packages[@]}"; do
             if cargo build --manifest-path experiments/rust-shells/Cargo.toml --locked --release --package "${package}"; then

@@ -18,7 +18,7 @@ Article 7 - Native C++ smoke coverage: `tools/check_native_cpp.py` configures, b
 
 Article 8 - Cross-language parity source of truth: generated parity contracts keep Python as the canonical source for C++ and Rust contract surfaces.
 
-Article 9 - Rust GUI scope boundary: Tauri is the operational Service API client; Slint, egui, Iced, and Dioxus remain non-operational comparison or evaluation shells unless separately promoted.
+Article 9 - Rust GUI scope boundary: Tauri is the only user-selectable Rust desktop shell and remains a Python Service API client; native Rust trading execution is still disabled until explicitly promoted.
 
 Article 10 - Release artifact discipline: generated executables, build directories, caches, and distribution folders are ignored and covered by workspace hygiene tools.
 

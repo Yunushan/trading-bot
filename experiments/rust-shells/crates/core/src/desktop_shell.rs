@@ -27,7 +27,7 @@ pub const DESKTOP_SHELL_PARITY_BOUNDARIES: &[&str] = &[
     "Code tab window-suppression and dependency auto-refresh hooks",
     "Chart safe-mode and code-to-chart deferred reload hooks",
     "Theme persistence and chart-theme forwarding",
-    "Rust Tauri operational Service API ownership with non-Tauri renderer boundaries",
+    "Rust Tauri operational Service API ownership as the only user-selectable Rust desktop shell",
 ];
 
 pub fn desktop_shell_tabs() -> &'static [DesktopShellTabContract] {
@@ -236,16 +236,6 @@ pub fn rust_desktop_shell_ownership_contract() -> Value {
             "owns_trading_execution": false,
             "primary_tabs": primary_tab_titles(),
         },
-        "slint": {
-            "status": "non-operational-native-ui-evaluation",
-            "owns_local_python_service_lifecycle": false,
-            "owns_trading_execution": false,
-        },
-        "egui_iced_dioxus": {
-            "status": "non-operational-comparison-renderer",
-            "owns_local_python_service_lifecycle": false,
-            "owns_trading_execution": false,
-        },
         "execution_boundary": "Python service/desktop runtime remains the trading execution owner.",
     })
 }
@@ -331,7 +321,10 @@ mod tests {
         let ownership = rust_desktop_shell_ownership_contract();
         assert_eq!(ownership["tauri"]["owns_local_python_service_lifecycle"], true);
         assert_eq!(ownership["tauri"]["owns_trading_execution"], false);
-        assert_eq!(ownership["slint"]["owns_trading_execution"], false);
+        let ownership_object = ownership.as_object().expect("ownership contract object");
+        assert!(ownership_object.contains_key("tauri"));
+        assert!(ownership_object.contains_key("execution_boundary"));
+        assert_eq!(ownership_object.len(), 2);
         assert_eq!(
             ownership["execution_boundary"],
             "Python service/desktop runtime remains the trading execution owner."

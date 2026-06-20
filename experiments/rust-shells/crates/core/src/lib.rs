@@ -39,7 +39,7 @@ pub fn default_identity(shell: &str) -> AppIdentity {
 }
 
 pub fn supported_frameworks() -> &'static [&'static str] {
-    &["Tauri", "Slint", "egui", "Iced", "Dioxus Desktop"]
+    &["Tauri"]
 }
 
 pub fn python_source_contract_hash() -> &'static str {
@@ -369,33 +369,11 @@ pub fn native_python_app_parity_domains() -> &'static [NativePythonAppParityDoma
 }
 
 pub fn rust_shell_framework_parity() -> &'static [RustShellFrameworkParity] {
-    &[
-        RustShellFrameworkParity {
-            framework: "Tauri",
-            status: "Operational Service API client",
-            detail: "Runs the operational HTML shell with live Python Service API start/stop, dashboard/config hydration, backtest scanner, dashboard import, logs, LLM advisory prompts, and local LLM model lifecycle controls; trading execution still belongs to Python.",
-        },
-        RustShellFrameworkParity {
-            framework: "Slint",
-            status: "Non-operational native UI evaluation",
-            detail: "Mirrors the Python/C++ tab, control, table, route, framework, and execution-boundary map for native UI evaluation, but does not manage the Service API or control the bot.",
-        },
-        RustShellFrameworkParity {
-            framework: "egui",
-            status: "Non-operational comparison renderer",
-            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core for renderer comparison only; it does not manage the Service API or control the bot.",
-        },
-        RustShellFrameworkParity {
-            framework: "Iced",
-            status: "Non-operational comparison renderer",
-            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core for renderer comparison only; it does not manage the Service API or control the bot.",
-        },
-        RustShellFrameworkParity {
-            framework: "Dioxus Desktop",
-            status: "Non-operational comparison renderer",
-            detail: "Renders trading_app_tabs, service_api_capabilities, service_api_routes, rust_execution_modes, and this framework parity contract directly from trading-bot-core for renderer comparison only; it does not manage the Service API or control the bot.",
-        },
-    ]
+    &[RustShellFrameworkParity {
+        framework: "Tauri",
+        status: "Operational Service API client",
+        detail: "Runs the only user-selectable Rust desktop shell with live Python Service API start/stop, dashboard/config hydration, backtest scanner, dashboard import, logs, LLM advisory prompts, and local LLM model lifecycle controls; trading execution still belongs to Python.",
+    }]
 }
 
 pub fn rust_native_runtime_capabilities() -> &'static [RustNativeRuntimeCapability] {
@@ -455,7 +433,7 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
     &[
         ServiceApiCapability {
             title: "Managed Local Service API",
-            detail: "Only Tauri can launch apps/service-api/main.py --serve on 127.0.0.1 and stop only the process it started; the other Rust shells are non-operational evaluation renderers.",
+            detail: "Tauri is the only Rust desktop shell that can launch apps/service-api/main.py --serve on 127.0.0.1 and stop only the process it started.",
         },
         ServiceApiCapability {
             title: "Canonical /api/v1 Contract",
@@ -463,7 +441,7 @@ pub fn service_api_capabilities() -> &'static [ServiceApiCapability] {
         },
         ServiceApiCapability {
             title: "Logs, Terminal & Diagnostics",
-            detail: "trading-bot-core mirrors Python service log and controlled terminal result schemas with diagnostic redaction; Tauri delegates /logs and terminal_run behavior to the Python Service API, while other Rust shells are non-operational renderers.",
+            detail: "trading-bot-core mirrors Python service log and controlled terminal result schemas with diagnostic redaction; Tauri delegates /logs and terminal_run behavior to the Python Service API.",
         },
         ServiceApiCapability {
             title: "Config Hydration",
@@ -1012,13 +990,9 @@ pub fn trading_app_tabs() -> &'static [TradingAppTab] {
                     ],
                 },
                 TradingAppSection {
-                    title: "Choose your Rust framework",
+                    title: "Rust desktop framework",
                     items: &[
-                        "Tauri - Operational Service API client with interactive managed Python Service API behavior",
-                        "Slint - Non-operational native UI evaluation for the same tab/control/route map",
-                        "egui - Non-operational comparison renderer from trading-bot-core",
-                        "Iced - Non-operational comparison renderer from trading-bot-core",
-                        "Dioxus Desktop - Non-operational comparison renderer from trading-bot-core",
+                        "Tauri - The only user-selectable Rust desktop shell; interactive managed Python Service API behavior",
                     ],
                 },
                 TradingAppSection {
