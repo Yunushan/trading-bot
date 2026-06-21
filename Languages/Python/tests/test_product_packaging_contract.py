@@ -219,6 +219,12 @@ class ProductPackagingContractTests(unittest.TestCase):
             REPO_ROOT / "Languages" / "Python" / "app" / "gui" / "code" / "code_language_rust_launcher_runtime.py"
         ).read_text(encoding="utf-8")
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        runtime_ready_match = re.search(
+            r"pub fn rust_native_trading_runtime_ready\(\) -> bool \{\s*(true|false)\s*\}",
+            core,
+        )
+        self.assertIsNotNone(runtime_ready_match)
+        runtime_ready_label = runtime_ready_match.group(1) if runtime_ready_match else ""
         self.assertIn("defaultModels", tauri_html)
         self.assertIn('src="generated-python-parity.js"', tauri_html)
         self.assertIn('src="tauri-ui-behavior.js"', tauri_html)
@@ -331,7 +337,7 @@ class ProductPackagingContractTests(unittest.TestCase):
                 self.assertIn(label, source)
             self.assertIn("Bot Status", source)
             self.assertIn("Native Rust Runtime Gap", source)
-            self.assertIn("Native Rust trading runtime ready: false", source)
+            self.assertIn(f"Native Rust trading runtime ready: {runtime_ready_label}", source)
             self.assertIn("BinanceRestClient", source)
             self.assertIn("BinanceWsClient", source)
         for tauri_parity_text in (
@@ -1200,10 +1206,13 @@ class ProductPackagingContractTests(unittest.TestCase):
     def test_ci_smoke_uses_canonical_service_wrapper(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         native_cpp_checker = (REPO_ROOT / "tools" / "check_native_cpp.py").read_text(encoding="utf-8")
+        verify_all = (REPO_ROOT / "tools" / "verify_all.py").read_text(encoding="utf-8")
         self.assertIn("python apps/service-api/main.py --healthcheck", workflow)
         self.assertIn("python Languages/Python/tools/check_service_api_contracts.py", workflow)
         self.assertIn("Check Rust native runtime evidence contract", workflow)
         self.assertIn("python tools/check_rust_native_runtime_evidence.py --schema-only", workflow)
+        self.assertIn("Audit Rust native evidence importer", workflow)
+        self.assertIn("python tools/import_rust_native_evidence_artifacts.py", workflow)
         self.assertIn("Run focused service API tests", workflow)
         self.assertIn("Clean generated Python install artifacts", workflow)
         self.assertIn("python tools/clean_workspace_artifacts.py --apply", workflow)
@@ -1215,6 +1224,10 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("--no-enable-qt-deploy-script", workflow)
         self.assertIn("--smoke-targets-only", workflow)
         self.assertIn("--qt-version 6.4.0", workflow)
+        self.assertIn('"--no-require-webengine"', verify_all)
+        self.assertIn('"--no-enable-qt-deploy-script"', verify_all)
+        self.assertIn('"--smoke-targets-only"', verify_all)
+        self.assertIn('"6.4.0"', verify_all)
         self.assertLess(
             workflow.index("Install Python dependencies"),
             workflow.index("Clean generated Python install artifacts"),

@@ -2,10 +2,12 @@ import contextlib
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 import urllib.error
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,14 +17,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools import check_rust_native_local_recovery_evidence as local_recovery  # noqa: E402
 from tools import check_rust_native_runtime_evidence as runtime_evidence  # noqa: E402
+from tools import check_generated_evidence_source_control as evidence_source_control  # noqa: E402
 from tools import check_release_platform_matrix as release_platform_matrix  # noqa: E402
 from tools import check_release_assets as release_assets  # noqa: E402
+from tools import import_rust_native_evidence_artifacts as evidence_importer  # noqa: E402
 from tools import run_release_platform_probe as release_platform_probe  # noqa: E402
 from tools import audit_rust_native_runtime_readiness as runtime_readiness  # noqa: E402
 from tools import write_rust_native_release_evidence as release_evidence  # noqa: E402
 
 
 BINANCE_FUTURES_TESTNET_BASE_URL = "https://testnet.binancefuture.com"
+PYTHON_SOURCE_CONTRACT_HASH = runtime_evidence.native_python_source_contract_hash()
 
 
 def _market_smoke_endpoints(base_url: str = BINANCE_FUTURES_TESTNET_BASE_URL) -> list[dict[str, str]]:
@@ -97,6 +102,183 @@ def _json_sha256(payload: dict[str, object]) -> str:
 
 
 class RustNativeReleaseEvidenceTests(unittest.TestCase):
+    def test_generated_evidence_source_control_guard_rejects_existing_tracked_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tracked_runtime_artifact = Path("artifacts/rust-native-runtime-evidence/stale.json")
+            pending_removal_artifact = Path("release-platform-evidence/windows-11-x64.json")
+            (root / tracked_runtime_artifact).parent.mkdir(parents=True)
+            (root / tracked_runtime_artifact).write_text("{}", encoding="utf-8")
+
+            result = evidence_source_control.check_generated_evidence_source_control(
+                root=root,
+                tracked_files=[
+                    tracked_runtime_artifact.as_posix(),
+                    pending_removal_artifact.as_posix(),
+                    "docs/rust-native-runtime-evidence.json",
+                ],
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual([tracked_runtime_artifact.as_posix()], result["tracked_existing_generated_evidence"])
+        self.assertEqual([pending_removal_artifact.as_posix()], result["tracked_pending_removal_generated_evidence"])
+        self.assertTrue(any("generated evidence artifact is tracked as source" in issue for issue in result["issues"]))
+
+    def test_generated_evidence_write_guard_rejects_tracked_pending_removal_targets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pending_output = Path("artifacts/rust-native-runtime-evidence/rust-native-live-account-read-smoke.json")
+            result = evidence_source_control.generated_evidence_write_guard(
+                [root / pending_output],
+                root=root,
+                tracked_files=[pending_output.as_posix()],
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual([pending_output.as_posix()], result["tracked_generated_evidence_write_targets"])
+        self.assertTrue(any("refusing to write generated evidence artifact" in issue for issue in result["issues"]))
+
+    def test_local_recovery_generation_refuses_tracked_generated_evidence_targets(self):
+        tracked_targets = [
+            "artifacts/rust-native-runtime-evidence/rust-native-live-stream-recovery.json",
+            "artifacts/rust-native-runtime-evidence/rust-native-order-guard-recovery.json",
+        ]
+
+        with (
+            patch.object(local_recovery, "_tracked_recovery_evidence_targets", return_value=tracked_targets),
+            patch.object(
+                local_recovery,
+                "_run_recovery_evidence_command",
+                side_effect=AssertionError("cargo should not run when evidence targets are tracked"),
+            ),
+            patch.object(
+                local_recovery,
+                "validate",
+                side_effect=AssertionError("validation should not run after source-control guard failure"),
+            ),
+        ):
+            result = local_recovery.check_local_recovery_evidence(
+                manifest_path=Path("docs/rust-native-runtime-evidence.json"),
+                evidence_dir=Path("artifacts/rust-native-runtime-evidence"),
+                validate_only=False,
+                timeout=1,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("blocked-before-run", result["command"]["command"])
+        self.assertEqual(tracked_targets, result["source_control_guard"]["tracked_generated_evidence_targets"])
+        self.assertTrue(any("refusing to write local Rust recovery evidence" in issue for issue in result["issues"]))
+
+    def test_importer_refuses_apply_to_tracked_generated_evidence_write_targets(self):
+        candidate = evidence_importer.JsonCandidate(
+            source="downloaded-artifact.zip!rust-native-live-market-data-smoke.json",
+            name="rust-native-live-market-data-smoke.json",
+            payload={"evidence_id": "rust-native-live-market-data-smoke"},
+        )
+        destination = REPO_ROOT / "artifacts" / "rust-native-runtime-evidence" / candidate.name
+        guard = {
+            "ok": False,
+            "generated_evidence_write_targets": [
+                "artifacts/rust-native-runtime-evidence/rust-native-live-market-data-smoke.json"
+            ],
+            "tracked_generated_evidence_write_targets": [
+                "artifacts/rust-native-runtime-evidence/rust-native-live-market-data-smoke.json"
+            ],
+            "issues": ["refusing to write generated evidence artifact over tracked source path(s)"],
+        }
+
+        with (
+            patch.object(evidence_importer, "_iter_json_candidates", return_value=([candidate], [])),
+            patch.object(evidence_importer, "_load_release_targets", return_value=({}, [])),
+            patch.object(evidence_importer, "_candidate_destination", return_value=("runtime", destination, [])),
+            patch.object(evidence_importer, "generated_evidence_write_guard", return_value=guard),
+        ):
+            result = evidence_importer.import_evidence_artifacts(
+                [Path("downloaded-artifact.zip")],
+                apply=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(0, result["copied_count"])
+        self.assertEqual(guard, result["source_control_write_guard"])
+        self.assertTrue(any("refusing to write generated evidence artifact" in issue for issue in result["issues"]))
+
+    def test_release_evidence_writer_refuses_tracked_generated_output_target(self):
+        artifact = {
+            "evidence_id": "rust-native-release-platform-evidence",
+            "status": "passed",
+        }
+        guard = {
+            "ok": False,
+            "generated_evidence_write_targets": [
+                "artifacts/rust-native-runtime-evidence/rust-native-release-platform-evidence.json"
+            ],
+            "tracked_generated_evidence_write_targets": [
+                "artifacts/rust-native-runtime-evidence/rust-native-release-platform-evidence.json"
+            ],
+            "issues": ["refusing to write generated evidence artifact over tracked source path(s)"],
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(release_evidence, "build_release_evidence", return_value=(artifact, [])),
+            patch.object(release_evidence, "generated_evidence_write_guard", return_value=guard),
+        ):
+            output = io.StringIO()
+            output_dir = Path(temp_dir) / "artifacts" / "rust-native-runtime-evidence"
+            with contextlib.redirect_stdout(output):
+                exit_code = release_evidence.main(
+                    [
+                        "--tag",
+                        "v1.2.3",
+                        "--output-dir",
+                        str(output_dir),
+                        "--json",
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            output_exists = (output_dir / "rust-native-release-platform-evidence.json").exists()
+
+        self.assertEqual(1, exit_code)
+        self.assertFalse(output_exists)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(guard, payload["source_control_write_guard"])
+        self.assertTrue(any("refusing to write generated evidence artifact" in issue for issue in payload["issues"]))
+
+    def test_readiness_live_smoke_prerequisites_require_canonical_write_guard(self):
+        guard = {
+            "ok": False,
+            "generated_evidence_write_targets": [
+                "artifacts/rust-native-runtime-evidence/rust-native-live-market-data-smoke.json"
+            ],
+            "tracked_generated_evidence_write_targets": [
+                "artifacts/rust-native-runtime-evidence/rust-native-live-market-data-smoke.json"
+            ],
+            "issues": ["refusing to write generated evidence artifact over tracked source path(s)"],
+        }
+
+        with (
+            patch.dict(
+                runtime_readiness.os.environ,
+                {
+                    "TRADING_BOT_RUST_MARKET_SMOKE": "1",
+                    "TRADING_BOT_RUST_LIVE_SMOKE": "1",
+                    "BINANCE_API_KEY": "test-key",
+                    "BINANCE_API_SECRET": "test-secret",
+                },
+                clear=True,
+            ),
+            patch.object(runtime_readiness, "generated_evidence_write_guard", return_value=guard),
+        ):
+            result = runtime_readiness._live_smoke_prerequisites(
+                REPO_ROOT / "artifacts" / "rust-native-runtime-evidence"
+            )
+
+        self.assertFalse(result["can_run_market_smoke"])
+        self.assertFalse(result["can_run_live_smoke"])
+        self.assertEqual(guard, result["market_source_control_write_guard"])
+        self.assertEqual(guard, result["account_source_control_write_guard"])
+
     def test_release_asset_fetch_uses_windows_cert_store_fallback_for_ssl_errors(self):
         fallback_payload = {
             "html_url": "https://github.com/Yunushan/trading-bot/releases/tag/v1.0.33",
@@ -198,6 +380,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("release_platform", artifact["evidence_scope"])
         self.assertFalse(artifact["runtime_ready_claimed"])
         self.assertTrue(artifact["source_tree_clean"])
+        self.assertEqual(PYTHON_SOURCE_CONTRACT_HASH, artifact["python_source_contract_hash"])
         self.assertTrue(artifact["secrets_redacted"])
         self.assertGreaterEqual(len(artifact["release_artifacts"]), len(rust_required_names))
         self.assertEqual(2, len(artifact["platform_results"]))
@@ -261,6 +444,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "generated_at": "unix:1",
             "commit": "abc123",
             "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "python tools/write_rust_native_release_evidence.py --tag v1.2.3",
             "environment": {
                 "tag": tag,
@@ -545,6 +729,1122 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("v9.9.9", preflight.call_args.kwargs["tag"])
         self.assertEqual(10, preflight.call_args.kwargs["missing_limit"])
 
+    def test_readiness_audit_requires_native_source_sync(self):
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": False,
+                    "issues": [],
+                    "artifact_status": [],
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": []}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": False, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": False, "contract_hash": "stale-hash", "issues": ["generated contract is stale"]},
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["promotion_ready"])
+        self.assertFalse(result["native_source_sync_ok"])
+        self.assertEqual("stale-hash", result["native_source_sync_contract_hash"])
+        self.assertEqual(["generated contract is stale"], result["native_source_sync_issues"])
+        self.assertIn("native source sync: generated contract is stale", result["issues"])
+        requirements = {row["id"]: row for row in result["promotion_requirements"]}
+        self.assertEqual(result["promotion_requirement_count"], len(result["promotion_requirements"]))
+        self.assertEqual(
+            result["promotion_requirements_passed"],
+            sum(1 for row in result["promotion_requirements"] if row["ok"]),
+        )
+        self.assertEqual("failed", requirements["native_source_sync"]["status"])
+        self.assertEqual(["generated contract is stale"], requirements["native_source_sync"]["issues"])
+        self.assertEqual("failed", requirements["required_runtime_evidence"]["status"])
+        self.assertEqual("failed", requirements["runtime_ready_source_guard"]["status"])
+        self.assertEqual("regenerate_python_owned_native_contracts", result["promotion_model"]["phase"])
+        self.assertFalse(result["promotion_model"]["can_claim_runtime_complete"])
+        self.assertIn("native_source_sync", result["promotion_model"]["failed_requirement_ids"])
+
+    def test_runtime_evidence_policy_can_represent_promoted_state(self):
+        manifest = json.loads((REPO_ROOT / "docs" / "rust-native-runtime-evidence.json").read_text(encoding="utf-8"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "rust-native-runtime-evidence.json"
+
+            manifest["policy"]["runtime_ready_flag"] = "rust_native_trading_runtime_ready() == true"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            promoted = runtime_evidence.validate(manifest_path, require_evidence=False)
+
+            manifest["policy"]["runtime_ready_flag"] = "rust_native_trading_runtime_ready() == maybe"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            invalid = runtime_evidence.validate(manifest_path, require_evidence=False)
+
+        self.assertTrue(promoted["ok"], promoted["issues"])
+        self.assertTrue(promoted["runtime_ready_policy_state"])
+        self.assertFalse(invalid["ok"])
+        self.assertTrue(any("policy.runtime_ready_flag must be" in issue for issue in invalid["issues"]))
+
+    def test_readiness_audit_fails_when_manifest_policy_disagrees_with_source_guard(self):
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": False,
+                    "issues": [],
+                    "artifact_status": [],
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": True}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": False, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["runtime_ready_policy_matches_source"])
+        self.assertTrue(result["runtime_ready_policy_state"])
+        self.assertIn(
+            "policy.runtime_ready_flag does not match rust_native_trading_runtime_ready() source state",
+            result["issues"],
+        )
+        requirements = {row["id"]: row for row in result["promotion_requirements"]}
+        self.assertEqual("failed", requirements["evidence_declaration"]["status"])
+        self.assertTrue(
+            any("does not match" in issue for issue in requirements["evidence_declaration"]["issues"])
+        )
+        self.assertEqual(
+            "align_manifest_policy_with_runtime_ready_source_guard",
+            result["promotion_model"]["phase"],
+        )
+
+    def test_readiness_audit_fails_when_python_runtime_source_disagrees_with_rust_guard(self):
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": True,
+                    "issues": [],
+                    "artifact_status": [
+                        {"id": "rust-native-live-market-data-smoke", "ok": True},
+                        {"id": "rust-native-live-account-read-smoke", "ok": True},
+                        {"id": "rust-native-live-stream-recovery", "ok": True},
+                        {"id": "rust-native-order-guard-recovery", "ok": True},
+                        {"id": "rust-native-release-platform-evidence", "ok": True},
+                    ],
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": True}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": True, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "native_python_source_contract_summary",
+                return_value={
+                    "cpp_standalone_runtime_ready": False,
+                    "rust_standalone_runtime_ready": False,
+                    "rust_full_parity": False,
+                },
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": True},
+            ),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["promotion_ready"])
+        self.assertFalse(result["runtime_ready_python_source_matches_rust_guard"])
+        self.assertFalse(result["python_rust_standalone_runtime_ready"])
+        self.assertIn(
+            "Languages/Python/app/native_parity.py rust_standalone_runtime_ready does not match "
+            "rust_native_trading_runtime_ready() source state",
+            result["issues"],
+        )
+        requirements = {row["id"]: row for row in result["promotion_requirements"]}
+        self.assertEqual("failed", requirements["python_runtime_readiness_source"]["status"])
+        self.assertEqual(
+            "align_rust_runtime_guard_with_python_source_of_truth",
+            result["promotion_model"]["phase"],
+        )
+        self.assertIn(
+            "python_runtime_readiness_source",
+            result["promotion_model"]["failed_requirement_ids"],
+        )
+
+    def test_readiness_audit_promotion_checklist_passes_only_when_all_gates_pass(self):
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": True,
+                    "issues": [],
+                    "artifact_status": [
+                        {"id": "rust-native-live-market-data-smoke", "ok": True},
+                        {"id": "rust-native-live-account-read-smoke", "ok": True},
+                        {"id": "rust-native-live-stream-recovery", "ok": True},
+                        {"id": "rust-native-order-guard-recovery", "ok": True},
+                        {"id": "rust-native-release-platform-evidence", "ok": True},
+                    ],
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": True}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": True, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "native_python_source_contract_summary",
+                return_value={
+                    "cpp_standalone_runtime_ready": False,
+                    "rust_standalone_runtime_ready": True,
+                    "rust_full_parity": True,
+                },
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": True},
+            ),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=True,
+            )
+
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertTrue(result["promotion_ready"])
+        self.assertEqual(result["promotion_requirement_count"], result["promotion_requirements_passed"])
+        self.assertTrue(all(row["required"] for row in result["promotion_requirements"]))
+        self.assertTrue(all(row["ok"] for row in result["promotion_requirements"]))
+        self.assertTrue(all(row["status"] == "passed" for row in result["promotion_requirements"]))
+        self.assertEqual([], result["remaining_evidence_ids"])
+        self.assertEqual("runtime_complete", result["promotion_model"]["phase"])
+        self.assertTrue(result["promotion_model"]["can_claim_runtime_complete"])
+        self.assertEqual([], result["promotion_model"]["failed_requirement_ids"])
+        self.assertTrue(result["runtime_ready_python_source_matches_rust_guard"])
+        self.assertTrue(result["python_rust_standalone_runtime_ready"])
+        self.assertIn("candidate source commit", " ".join(result["promotion_model"]["promotion_sequence"]))
+
+    def test_readiness_audit_exposes_reachable_promotion_model_before_evidence_is_complete(self):
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": False,
+                    "issues": ["missing evidence artifact: rust-native-live-account-read-smoke.json"],
+                    "artifact_status": [
+                        {"id": "rust-native-live-market-data-smoke", "ok": True},
+                        {"id": "rust-native-live-account-read-smoke", "ok": False},
+                        {"id": "rust-native-release-platform-evidence", "ok": False},
+                    ],
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "current_source_tree_dirty_paths": [],
+                    "current_source_tree_ignored_paths": [
+                        "artifacts/rust-native-runtime-evidence",
+                        "release-platform-evidence",
+                    ],
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": False}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": False, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=False,
+            )
+
+        model = result["promotion_model"]
+        self.assertEqual("collect_required_runtime_evidence", model["phase"])
+        self.assertFalse(model["can_claim_runtime_complete"])
+        self.assertEqual(
+            [
+                "required_runtime_evidence",
+                "current_commit_clean_source_evidence",
+                "runtime_ready_source_guard",
+            ],
+            model["failed_requirement_ids"],
+        )
+        self.assertIn("current git rev-parse HEAD", model["evidence_commit_binding"])
+        self.assertEqual(
+            ["artifacts/rust-native-runtime-evidence", "release-platform-evidence"],
+            model["clean_source_scope"]["ignored_paths"],
+        )
+        self.assertEqual([], model["clean_source_scope"]["dirty_paths"])
+        self.assertEqual([], model["clean_source_scope"]["untracked_paths"])
+        self.assertTrue(model["clean_source_scope"]["requires_no_untracked_promotion_scope_files"])
+        self.assertIn(
+            "gh workflow run rust-native-promotion-audit.yml",
+            model["github_promotion_audit_workflow_command"],
+        )
+        self.assertIn(
+            "--require-runtime-id rust-native-live-market-data-smoke",
+            model["evidence_import_command"],
+        )
+        self.assertIn(
+            "--require-runtime-id rust-native-live-account-read-smoke",
+            model["evidence_import_command"],
+        )
+        self.assertIn(
+            "--require-runtime-id rust-native-release-platform-evidence",
+            model["evidence_import_command"],
+        )
+        self.assertTrue(
+            any("rust-native-promotion-audit.yml" in action for action in result["next_actions"])
+        )
+        self.assertTrue(
+            any("--require-runtime-id rust-native-live-account-read-smoke" in action for action in result["next_actions"])
+        )
+        self.assertTrue(
+            any("--require-runtime-id rust-native-release-platform-evidence" in action for action in result["next_actions"])
+        )
+        self.assertIn("--require-current-commit", model["evidence_import_command"])
+
+    def test_promotion_clean_source_check_ignores_only_canonical_evidence_dirs(self):
+        captured_commands: list[list[str]] = []
+
+        def _run_stub(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured_commands.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch.object(runtime_evidence.subprocess, "run", side_effect=_run_stub):
+            clean = runtime_evidence._current_source_tree_clean()
+
+        self.assertTrue(clean)
+        self.assertEqual(2, len(captured_commands))
+        self.assertIn("--untracked-files=no", captured_commands[0])
+        self.assertIn("--untracked-files=all", captured_commands[1])
+        for command in captured_commands:
+            self.assertIn(":(exclude)artifacts/rust-native-runtime-evidence", command)
+            self.assertIn(":(exclude)release-platform-evidence", command)
+            self.assertIn(".", command)
+
+    def test_promotion_clean_source_reports_dirty_tracked_paths(self):
+        dirty_output = (
+            " M tools/audit_rust_native_runtime_readiness.py\n"
+            "R  old/name.py -> Languages/Python/tests/test_rust_native_release_evidence.py\n"
+        )
+        parsed_paths = runtime_evidence._dirty_paths_from_porcelain(dirty_output)
+        self.assertEqual(
+            [
+                "tools/audit_rust_native_runtime_readiness.py",
+                "Languages/Python/tests/test_rust_native_release_evidence.py",
+            ],
+            parsed_paths,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=False),
+                patch.object(runtime_evidence, "_current_source_tree_dirty_paths", return_value=parsed_paths),
+                patch.object(runtime_evidence, "_current_source_tree_untracked_paths", return_value=[]),
+            ):
+                result = runtime_evidence.validate(
+                    runtime_evidence.DEFAULT_MANIFEST_PATH,
+                    require_evidence=True,
+                    require_clean_source=True,
+                    evidence_dir_override=Path(temp_dir),
+                    requirement_ids={"rust-native-live-market-data-smoke"},
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(parsed_paths, result["current_source_tree_dirty_paths"])
+        self.assertTrue(any("dirty paths: tools/audit_rust_native_runtime_readiness.py" in issue for issue in result["issues"]))
+
+    def test_promotion_clean_source_reports_untracked_source_paths(self):
+        untracked_output = (
+            "?? tools/import_rust_native_evidence_artifacts.py\n"
+            "?? Languages/Python/app/native_new_surface.py\n"
+        )
+        parsed_paths = runtime_evidence._untracked_paths_from_porcelain(untracked_output)
+        self.assertEqual(
+            [
+                "tools/import_rust_native_evidence_artifacts.py",
+                "Languages/Python/app/native_new_surface.py",
+            ],
+            parsed_paths,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=False),
+                patch.object(runtime_evidence, "_current_source_tree_dirty_paths", return_value=[]),
+                patch.object(runtime_evidence, "_current_source_tree_untracked_paths", return_value=parsed_paths),
+            ):
+                result = runtime_evidence.validate(
+                    runtime_evidence.DEFAULT_MANIFEST_PATH,
+                    require_evidence=True,
+                    require_clean_source=True,
+                    evidence_dir_override=Path(temp_dir),
+                    requirement_ids={"rust-native-live-market-data-smoke"},
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(parsed_paths, result["current_source_tree_untracked_paths"])
+        self.assertTrue(
+            any("untracked paths: tools/import_rust_native_evidence_artifacts.py" in issue for issue in result["issues"])
+        )
+
+    def test_readiness_audit_surfaces_dirty_paths_in_promotion_model(self):
+        dirty_paths = ["tools/audit_rust_native_runtime_readiness.py"]
+
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": False,
+                    "issues": [
+                        "current tracked source tree must be clean for promotion evidence validation",
+                        "current promotion source tree must not contain untracked source/tool files; "
+                        "untracked paths: tools/import_rust_native_evidence_artifacts.py",
+                    ],
+                    "artifact_status": [],
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": False,
+                    "current_source_tree_dirty_paths": dirty_paths,
+                    "current_source_tree_untracked_paths": ["tools/import_rust_native_evidence_artifacts.py"],
+                    "current_source_tree_ignored_paths": [
+                        "artifacts/rust-native-runtime-evidence",
+                        "release-platform-evidence",
+                    ],
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": False}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": False, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=False,
+            )
+
+        self.assertEqual(dirty_paths, result["current_source_tree_dirty_paths"])
+        self.assertEqual(
+            ["tools/import_rust_native_evidence_artifacts.py"],
+            result["current_source_tree_untracked_paths"],
+        )
+        self.assertEqual(dirty_paths, result["promotion_model"]["clean_source_scope"]["dirty_paths"])
+        self.assertEqual(
+            ["tools/import_rust_native_evidence_artifacts.py"],
+            result["promotion_model"]["clean_source_scope"]["untracked_paths"],
+        )
+        requirements = {row["id"]: row for row in result["promotion_requirements"]}
+        clean_source_issues = requirements["current_commit_clean_source_evidence"]["issues"]
+        self.assertTrue(
+            any("required runtime evidence must pass before current-commit" in issue for issue in clean_source_issues)
+        )
+        self.assertTrue(
+            any("current tracked source tree must be clean" in issue for issue in clean_source_issues)
+        )
+        self.assertTrue(
+            any("untracked paths: tools/import_rust_native_evidence_artifacts.py" in issue for issue in clean_source_issues)
+        )
+        self.assertEqual(
+            [
+                "current tracked source tree must be clean for promotion evidence validation",
+                "current promotion source tree must not contain untracked source/tool files; "
+                "untracked paths: tools/import_rust_native_evidence_artifacts.py",
+            ],
+            result["promotion_evidence_issues"],
+        )
+
+    def test_readiness_audit_emits_structured_evidence_collection_plan(self):
+        artifact_status = [
+            {
+                "id": "rust-native-live-market-data-smoke",
+                "category": "live_smoke",
+                "ok": True,
+                "path": "artifacts/rust-native-runtime-evidence/rust-native-live-market-data-smoke.json",
+                "issues": [],
+            },
+            {
+                "id": "rust-native-live-account-read-smoke",
+                "category": "live_smoke",
+                "ok": False,
+                "path": "artifacts/rust-native-runtime-evidence/rust-native-live-account-read-smoke.json",
+                "issues": ["missing evidence artifact: rust-native-live-account-read-smoke.json"],
+            },
+            {
+                "id": "rust-native-live-stream-recovery",
+                "category": "local_recovery",
+                "ok": True,
+                "path": "artifacts/rust-native-runtime-evidence/rust-native-live-stream-recovery.json",
+                "issues": [],
+            },
+            {
+                "id": "rust-native-order-guard-recovery",
+                "category": "local_recovery",
+                "ok": True,
+                "path": "artifacts/rust-native-runtime-evidence/rust-native-order-guard-recovery.json",
+                "issues": [],
+            },
+            {
+                "id": "rust-native-release-platform-evidence",
+                "category": "release_platform",
+                "ok": False,
+                "path": "artifacts/rust-native-runtime-evidence/rust-native-release-platform-evidence.json",
+                "issues": ["missing evidence artifact: rust-native-release-platform-evidence.json"],
+            },
+        ]
+
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": False,
+                    "issues": [
+                        "missing evidence artifact: rust-native-live-account-read-smoke.json",
+                        "missing evidence artifact: rust-native-release-platform-evidence.json",
+                    ],
+                    "artifact_status": artifact_status,
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "current_source_tree_dirty_paths": [],
+                    "current_source_tree_ignored_paths": [
+                        "artifacts/rust-native-runtime-evidence",
+                        "release-platform-evidence",
+                    ],
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": False}
+
+        live_prerequisites = {
+            "can_run_market_smoke": False,
+            "can_run_live_smoke": True,
+            "market_preflight_command": "market preflight",
+            "market_command": "market command",
+            "preflight_command": "account preflight",
+            "command": "account command",
+            "github_workflow": "gh workflow run rust-native-live-smoke.yml",
+            "binance_api_key_present": True,
+            "binance_api_secret_present": True,
+            "live_smoke_confirmation_present": True,
+        }
+        release_prerequisites = {
+            "release_platform_preflight_ok": False,
+            "preflight_command": "release preflight",
+            "command": "release command",
+            "github_workflow": "gh workflow run rust-native-release-evidence.yml",
+            "release_tag_configured": False,
+            "missing_platform_evidence_count": 98,
+            "release_asset_presence_verified": False,
+        }
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": False, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(runtime_readiness, "_live_smoke_prerequisites", return_value=live_prerequisites),
+            patch.object(runtime_readiness, "_release_evidence_prerequisites", return_value=release_prerequisites),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=False,
+            )
+
+        plan = result["evidence_collection_plan"]
+        self.assertEqual(
+            [
+                "rust-native-live-market-data-smoke",
+                "rust-native-live-account-read-smoke",
+                "rust-native-live-stream-recovery",
+                "rust-native-order-guard-recovery",
+                "rust-native-release-platform-evidence",
+            ],
+            [row["id"] for row in plan],
+        )
+        plan_by_id = {row["id"]: row for row in plan}
+        market_row = plan_by_id["rust-native-live-market-data-smoke"]
+        account_row = plan_by_id["rust-native-live-account-read-smoke"]
+        release_row = plan_by_id["rust-native-release-platform-evidence"]
+
+        self.assertEqual("passed", market_row["status"])
+        self.assertFalse(market_row["ready_to_collect"])
+        self.assertEqual("live_signed_account_read_smoke", account_row["collection_kind"])
+        self.assertTrue(account_row["ready_to_collect"])
+        self.assertEqual("account preflight", account_row["local_preflight_command"])
+        self.assertEqual("account command", account_row["local_command"])
+        self.assertIn("BINANCE_API_KEY", account_row["required_environment"])
+        self.assertTrue(account_row["safety"]["read_only"])
+        self.assertTrue(account_row["safety"]["requires_credentials"])
+        self.assertFalse(account_row["safety"]["order_submission_attempted"])
+        self.assertTrue(account_row["details"]["binance_api_key_present"])
+        self.assertIn("--require-current-commit", account_row["import_command"])
+        self.assertIn("--require-clean-source", account_row["import_command"])
+        self.assertEqual(
+            ["rust-native-live-market-data-smoke", "rust-native-live-account-read-smoke"],
+            account_row["required_runtime_ids"],
+        )
+        self.assertIn(
+            "--require-runtime-id rust-native-live-market-data-smoke",
+            account_row["import_command"],
+        )
+        self.assertIn(
+            "--require-runtime-id rust-native-live-account-read-smoke",
+            account_row["import_command"],
+        )
+        self.assertIn("missing evidence artifact", account_row["issues"][0])
+
+        self.assertEqual("release_platform_evidence", release_row["collection_kind"])
+        self.assertFalse(release_row["ready_to_collect"])
+        self.assertEqual("release preflight", release_row["local_preflight_command"])
+        self.assertIn("Rust release assets", release_row["required_inputs"])
+        self.assertIn("passed release-platform-evidence JSON for every target", release_row["required_inputs"])
+        self.assertEqual(["rust-native-release-platform-evidence"], release_row["required_runtime_ids"])
+        self.assertIn(
+            "--require-runtime-id rust-native-release-platform-evidence",
+            release_row["import_command"],
+        )
+        self.assertEqual(98, release_row["details"]["missing_platform_evidence_count"])
+        self.assertFalse(release_row["details"]["release_asset_presence_verified"])
+
+        markdown = runtime_readiness._render_evidence_collection_markdown(result)
+        self.assertIn("# Rust Native Runtime Evidence Collection Plan", markdown)
+        self.assertIn("## Promotion Requirements", markdown)
+        self.assertIn("## Clean Source Scope", markdown)
+        self.assertIn("## Evidence Artifacts", markdown)
+        self.assertIn("rust-native-live-account-read-smoke", markdown)
+        self.assertIn("account preflight", markdown)
+        self.assertIn("account command", markdown)
+        self.assertIn("read_only=true", markdown)
+        self.assertIn("requires_credentials=true", markdown)
+        self.assertIn("release preflight", markdown)
+        self.assertIn("--require-current-commit", markdown)
+        self.assertIn("Required runtime evidence ids", markdown)
+        self.assertIn("--require-runtime-id rust-native-live-account-read-smoke", markdown)
+        self.assertIn("--require-runtime-id rust-native-release-platform-evidence", markdown)
+        self.assertIn("## Next Actions", markdown)
+        self.assertIn("gh workflow run rust-native-promotion-audit.yml", markdown)
+
+    def test_readiness_audit_blocks_local_recovery_collection_when_targets_are_tracked(self):
+        tracked_targets = [
+            "artifacts/rust-native-runtime-evidence/rust-native-live-stream-recovery.json",
+            "artifacts/rust-native-runtime-evidence/rust-native-order-guard-recovery.json",
+        ]
+        artifact_status = [
+            {
+                "id": "rust-native-live-stream-recovery",
+                "category": "live_recovery",
+                "ok": False,
+                "path": "artifacts/rust-native-runtime-evidence/rust-native-live-stream-recovery.json",
+                "issues": ["missing evidence artifact: rust-native-live-stream-recovery.json"],
+            },
+            {
+                "id": "rust-native-order-guard-recovery",
+                "category": "live_recovery",
+                "ok": False,
+                "path": "artifacts/rust-native-runtime-evidence/rust-native-order-guard-recovery.json",
+                "issues": ["missing evidence artifact: rust-native-order-guard-recovery.json"],
+            },
+        ]
+
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": False,
+                    "issues": ["missing local recovery evidence"],
+                    "artifact_status": artifact_status,
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "current_source_tree_dirty_paths": [],
+                    "current_source_tree_untracked_paths": [],
+                    "current_source_tree_ignored_paths": [
+                        "artifacts/rust-native-runtime-evidence",
+                        "release-platform-evidence",
+                    ],
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": False}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": False, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(runtime_readiness, "_live_smoke_prerequisites", return_value={}),
+            patch.object(runtime_readiness, "_release_evidence_prerequisites", return_value={"release_platform_preflight_ok": False}),
+            patch.object(
+                runtime_readiness,
+                "local_recovery_generation_guard",
+                return_value={
+                    "ok": False,
+                    "tracked_generated_evidence_targets": tracked_targets,
+                    "issues": ["refusing to write local Rust recovery evidence over tracked generated evidence artifact path(s)"],
+                },
+            ),
+        ):
+            result = runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=False,
+            )
+
+        self.assertFalse(result["local_recovery_prerequisites"]["ok"])
+        plan_by_id = {row["id"]: row for row in result["evidence_collection_plan"]}
+        stream_row = plan_by_id["rust-native-live-stream-recovery"]
+        order_row = plan_by_id["rust-native-order-guard-recovery"]
+        for row in (stream_row, order_row):
+            self.assertEqual("deterministic_local_recovery", row["collection_kind"])
+            self.assertFalse(row["ready_to_collect"])
+            self.assertFalse(row["prerequisites_ok"])
+            self.assertFalse(row["details"]["source_control_guard_ok"])
+            self.assertEqual(tracked_targets, row["details"]["tracked_generated_evidence_targets"])
+            self.assertTrue(any("refusing to write local Rust recovery evidence" in issue for issue in row["issues"]))
+
+    def test_importer_validates_actions_zip_into_runtime_and_platform_dirs(self):
+        matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+        platform_targets, browser_targets, matrix_issues = release_platform_matrix._validate_matrix(matrix)
+        self.assertEqual([], matrix_issues)
+        targets = platform_targets + browser_targets
+        windows_target = next(target for target in targets if target["id"] == "windows-11-x64")
+        account_payload = {
+            "evidence_id": "rust-native-live-account-read-smoke",
+            "status": "passed",
+            "evidence_scope": "live_testnet",
+            "generated_at": "unix:1",
+            "commit": "abc123",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "command": "cargo run -p trading-bot-rust -- --native-live-smoke",
+            "environment": {
+                "scope": "live_testnet",
+                "market_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "account_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "api_key_present": True,
+                "api_secret_present": True,
+                "signed_account_read": True,
+                "secrets_in_artifact": False,
+            },
+            "secrets_redacted": True,
+            "runtime_ready_claimed": False,
+            "read_only": True,
+            "order_submission_attempted": False,
+            "endpoints": _account_smoke_endpoints(),
+            "suite_results": _account_smoke_suite_results(),
+        }
+        market_payload = {
+            "evidence_id": "rust-native-live-market-data-smoke",
+            "status": "passed",
+            "evidence_scope": "live_testnet",
+            "generated_at": "unix:1",
+            "commit": "abc123",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
+            "environment": {
+                "scope": "live_testnet",
+                "market_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+            },
+            "secrets_redacted": True,
+            "runtime_ready_claimed": False,
+            "read_only": True,
+            "order_submission_attempted": False,
+            "endpoints": _market_smoke_endpoints(),
+            "suite_results": _market_smoke_suite_results(),
+        }
+        platform_payload = _target_evidence_payload(windows_target)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "github-actions-artifacts.zip"
+            runtime_dir = root / "runtime-evidence"
+            platform_dir = root / "release-platform-evidence"
+            runtime_dir.mkdir()
+            (runtime_dir / "rust-native-live-market-data-smoke.json").write_text(
+                json.dumps(market_payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "rust-native-live-smoke-evidence/rust-native-live-market-data-smoke.json",
+                    json.dumps(market_payload),
+                )
+                archive.writestr(
+                    "rust-native-live-smoke-evidence/rust-native-live-account-read-smoke.json",
+                    json.dumps(account_payload),
+                )
+                archive.writestr(
+                    "release-platform-evidence-windows-11-x64/windows-11-x64.json",
+                    json.dumps(platform_payload),
+                )
+                archive.writestr("release-platform-evidence-windows-11-x64/notes.txt", "ignored")
+
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="abc123"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                preview = evidence_importer.import_evidence_artifacts(
+                    [archive_path],
+                    runtime_evidence_dir=runtime_dir,
+                    platform_evidence_dir=platform_dir,
+                    apply=False,
+                    require_current_commit=True,
+                    require_clean_source=True,
+                    required_runtime_ids={
+                        "rust-native-live-market-data-smoke",
+                        "rust-native-live-account-read-smoke",
+                    },
+                )
+                imported = evidence_importer.import_evidence_artifacts(
+                    [archive_path],
+                    runtime_evidence_dir=runtime_dir,
+                    platform_evidence_dir=platform_dir,
+                    apply=True,
+                    require_current_commit=True,
+                    require_clean_source=True,
+                    required_runtime_ids={
+                        "rust-native-live-market-data-smoke",
+                        "rust-native-live-account-read-smoke",
+                    },
+                )
+            runtime_evidence_imported = (runtime_dir / "rust-native-live-account-read-smoke.json").is_file()
+            platform_evidence_imported = (platform_dir / "windows-11-x64.json").is_file()
+
+        self.assertTrue(preview["ok"], preview["issues"])
+        self.assertTrue(preview["require_current_commit"])
+        self.assertTrue(preview["require_clean_source"])
+        self.assertEqual(
+            ["rust-native-live-account-read-smoke", "rust-native-live-market-data-smoke"],
+            preview["required_runtime_ids"],
+        )
+        self.assertEqual(
+            ["rust-native-live-account-read-smoke", "rust-native-live-market-data-smoke"],
+            preview["valid_runtime_ids"],
+        )
+        self.assertEqual(2, preview["planned_count"])
+        self.assertEqual(0, preview["copied_count"])
+        self.assertEqual(0, preview["overwrite_count"])
+        self.assertEqual(1, preview["skipped_existing_count"])
+        self.assertTrue(all(row["action"] == "copy" for row in preview["planned"]))
+        self.assertEqual("skip_existing_identical", preview["skipped_existing"][0]["action"])
+        self.assertTrue(imported["ok"], imported["issues"])
+        self.assertEqual(2, imported["copied_count"])
+        self.assertEqual(0, imported["overwrite_count"])
+        self.assertEqual(1, imported["skipped_existing_count"])
+        self.assertTrue(all(row["action"] == "copy" for row in imported["copied"]))
+        self.assertTrue(runtime_evidence_imported)
+        self.assertTrue(platform_evidence_imported)
+
+    def test_importer_reports_overwrite_actions_and_hashes(self):
+        account_payload = {
+            "evidence_id": "rust-native-live-account-read-smoke",
+            "status": "passed",
+            "evidence_scope": "live_testnet",
+            "generated_at": "unix:2",
+            "commit": "abc123",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "command": "cargo run -p trading-bot-rust -- --native-live-smoke",
+            "environment": {
+                "scope": "live_testnet",
+                "market_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "account_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "api_key_present": True,
+                "api_secret_present": True,
+                "signed_account_read": True,
+                "secrets_in_artifact": False,
+            },
+            "secrets_redacted": True,
+            "runtime_ready_claimed": False,
+            "read_only": True,
+            "order_submission_attempted": False,
+            "endpoints": _account_smoke_endpoints(),
+            "suite_results": _account_smoke_suite_results(),
+        }
+        existing_payload = {
+            **account_payload,
+            "generated_at": "unix:1",
+            "command": "previous live account smoke",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "github-actions-artifacts.zip"
+            runtime_dir = root / "runtime-evidence"
+            runtime_dir.mkdir()
+            destination = runtime_dir / "rust-native-live-account-read-smoke.json"
+            destination.write_text(json.dumps(existing_payload, sort_keys=True), encoding="utf-8")
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "rust-native-live-smoke-evidence/rust-native-live-account-read-smoke.json",
+                    json.dumps(account_payload),
+                )
+
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="abc123"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                result = evidence_importer.import_evidence_artifacts(
+                    [archive_path],
+                    runtime_evidence_dir=runtime_dir,
+                    apply=True,
+                    overwrite=True,
+                    require_current_commit=True,
+                    require_clean_source=True,
+                    required_runtime_ids={"rust-native-live-account-read-smoke"},
+                )
+            imported_payload = json.loads(destination.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual(1, result["planned_count"])
+        self.assertEqual(1, result["copied_count"])
+        self.assertEqual(1, result["overwrite_count"])
+        self.assertEqual(1, len(result["overwritten"]))
+        overwrite_row = result["overwritten"][0]
+        self.assertEqual("overwrite", overwrite_row["action"])
+        self.assertEqual(str(destination), overwrite_row["destination"])
+        self.assertFalse(overwrite_row["replaces_identical_json"])
+        self.assertRegex(overwrite_row["existing_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(overwrite_row["incoming_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotEqual(overwrite_row["existing_sha256"], overwrite_row["incoming_sha256"])
+        self.assertEqual(account_payload, imported_payload)
+
+    def test_importer_requires_named_runtime_artifacts_for_promotion_import(self):
+        account_payload = {
+            "evidence_id": "rust-native-live-account-read-smoke",
+            "status": "passed",
+            "evidence_scope": "live_testnet",
+            "generated_at": "unix:1",
+            "commit": "abc123",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "command": "cargo run -p trading-bot-rust -- --native-live-smoke",
+            "environment": {
+                "scope": "live_testnet",
+                "market_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "account_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "api_key_present": True,
+                "api_secret_present": True,
+                "signed_account_read": True,
+                "secrets_in_artifact": False,
+            },
+            "secrets_redacted": True,
+            "runtime_ready_claimed": False,
+            "read_only": True,
+            "order_submission_attempted": False,
+            "endpoints": _account_smoke_endpoints(),
+            "suite_results": _account_smoke_suite_results(),
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence_path = root / "rust-native-live-account-read-smoke.json"
+            evidence_path.write_text(json.dumps(account_payload), encoding="utf-8")
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="abc123"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                result = evidence_importer.import_evidence_artifacts(
+                    [evidence_path],
+                    runtime_evidence_dir=root / "runtime-evidence",
+                    require_current_commit=True,
+                    require_clean_source=True,
+                    required_runtime_ids={
+                        "rust-native-live-market-data-smoke",
+                        "rust-native-live-account-read-smoke",
+                        "rust-native-release-platform-evidence",
+                    },
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(["rust-native-live-account-read-smoke"], result["valid_runtime_ids"])
+        self.assertTrue(
+            any(
+                "missing required runtime evidence artifact in scanned inputs: rust-native-live-market-data-smoke"
+                in issue
+                for issue in result["issues"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "missing required runtime evidence artifact in scanned inputs: rust-native-release-platform-evidence"
+                in issue
+                for issue in result["issues"]
+            )
+        )
+
+    def test_importer_treats_missing_canonical_evidence_dirs_as_empty_audit_inputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.object(evidence_importer, "_repo_root", return_value=root):
+                result = evidence_importer.import_evidence_artifacts(
+                    [
+                        Path("artifacts/rust-native-runtime-evidence"),
+                        Path("release-platform-evidence"),
+                    ],
+                    matrix_path=REPO_ROOT / "docs" / "release-platform-test-matrix.json",
+                    manifest_path=REPO_ROOT / "docs" / "rust-native-runtime-evidence.json",
+                )
+
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual(0, result["candidate_count"])
+        self.assertEqual([], result["valid_runtime_ids"])
+
+    def test_importer_can_reject_stale_runtime_evidence_in_promotion_mode(self):
+        stale_payload = {
+            "evidence_id": "rust-native-live-account-read-smoke",
+            "status": "passed",
+            "evidence_scope": "live_testnet",
+            "generated_at": "unix:1",
+            "commit": "old-commit",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "command": "cargo run -p trading-bot-rust -- --native-live-smoke",
+            "environment": {
+                "scope": "live_testnet",
+                "market_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "account_base_url": BINANCE_FUTURES_TESTNET_BASE_URL,
+                "api_key_present": True,
+                "api_secret_present": True,
+                "signed_account_read": True,
+                "secrets_in_artifact": False,
+            },
+            "secrets_redacted": True,
+            "runtime_ready_claimed": False,
+            "read_only": True,
+            "order_submission_attempted": False,
+            "endpoints": _account_smoke_endpoints(),
+            "suite_results": _account_smoke_suite_results(),
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence_path = root / "rust-native-live-account-read-smoke.json"
+            evidence_path.write_text(json.dumps(stale_payload), encoding="utf-8")
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="current-commit"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                result = evidence_importer.import_evidence_artifacts(
+                    [evidence_path],
+                    runtime_evidence_dir=root / "runtime-evidence",
+                    require_current_commit=True,
+                    require_clean_source=True,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(0, result["planned_count"])
+        self.assertTrue(any("commit must match current git commit" in issue for issue in result["issues"]))
+
     def test_release_platform_evidence_requires_platform_probe_target_match(self):
         target = {
             "id": "windows-11-x64",
@@ -683,6 +1983,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     "evidence_scope": "deterministic_local",
                     "generated_at": "unix:1",
                     "commit": "abc123",
+                    "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
                     "command": "cargo run -p trading-bot-rust -- --write-local-recovery-evidence",
                     "environment": {"scope": "deterministic_local"},
                     "secrets_redacted": True,
@@ -733,6 +2034,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "generated_at": "unix:1",
             "commit": "current-commit",
             "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
                 "scope": "live_testnet",
@@ -797,12 +2099,33 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     requirement_ids={evidence_id},
                 )
 
+            payload["source_tree_clean"] = True
+            payload["python_source_contract_hash"] = "0" * 64
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="current-commit"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                stale_python_contract = runtime_evidence.validate(
+                    runtime_evidence.DEFAULT_MANIFEST_PATH,
+                    require_evidence=True,
+                    require_current_commit=True,
+                    require_clean_source=True,
+                    evidence_dir_override=evidence_dir,
+                    requirement_ids={evidence_id},
+                )
+
         self.assertTrue(fresh["ok"], fresh["issues"])
         self.assertFalse(stale["ok"])
         self.assertTrue(any("commit must match current git commit" in issue for issue in stale["issues"]))
         self.assertFalse(dirty_artifact["ok"])
         self.assertTrue(
             any("source_tree_clean must be true" in issue for issue in dirty_artifact["issues"])
+        )
+        self.assertFalse(stale_python_contract["ok"])
+        self.assertTrue(
+            any("python_source_contract_hash must match current Python source contract" in issue for issue in stale_python_contract["issues"])
         )
 
     def test_runtime_evidence_enforces_manifest_declared_artifact_fields(self):
@@ -813,6 +2136,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
                 "scope": "live_testnet",
@@ -860,6 +2184,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
                 "scope": "live_testnet",
@@ -917,6 +2242,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
                 "scope": "live_testnet",
@@ -935,6 +2261,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-smoke",
             "environment": {
                 "scope": "live_testnet",
@@ -1099,6 +2426,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
                 "scope": "live_testnet",

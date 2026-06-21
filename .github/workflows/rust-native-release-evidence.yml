@@ -47,6 +47,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Validate release evidence inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "tag input is required for Rust native release evidence." >&2
+            exit 1
+          fi
+          if [[ -z "${PLATFORM_EVIDENCE_ARTIFACT_PATTERN}" ]]; then
+            echo "platform_evidence_artifact_pattern input is required for Rust native release evidence." >&2
+            exit 1
+          fi
+          if [[ -n "${PLATFORM_EVIDENCE_RUN_ID}" && ! "${PLATFORM_EVIDENCE_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "platform_evidence_run_id must be a numeric GitHub Actions run id." >&2
+            exit 1
+          fi
+          if [[ -z "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" ]]; then
+            echo "evidence_dir input is required for Rust native release evidence." >&2
+            exit 1
+          fi
+
       - name: Collect release platform evidence
         shell: bash
         run: |
@@ -98,9 +124,28 @@ jobs:
             --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
             --only rust-native-release-platform-evidence
 
+      - name: Write post-release Rust native runtime evidence plan
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"
+          python tools/audit_rust_native_runtime_readiness.py \
+            --json \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --write-evidence-plan "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/rust-native-runtime-evidence-plan.md"
+
       - name: Upload Rust native release evidence
         uses: actions/upload-artifact@v7
         with:
           name: rust-native-release-platform-evidence
           path: ${{ inputs.evidence_dir }}/rust-native-release-platform-evidence.json
           if-no-files-found: error
+
+      - name: Upload post-release Rust native runtime evidence plan
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-native-release-platform-evidence-plan
+          path: ${{ inputs.evidence_dir }}/rust-native-runtime-evidence-plan.md
+          if-no-files-found: warn

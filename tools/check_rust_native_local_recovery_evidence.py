@@ -22,6 +22,7 @@ RECOVERY_EVIDENCE_IDS = {
     "rust-native-live-stream-recovery",
     "rust-native-order-guard-recovery",
 }
+RECOVERY_EVIDENCE_FILENAMES = tuple(f"{evidence_id}.json" for evidence_id in sorted(RECOVERY_EVIDENCE_IDS))
 
 
 def _repo_root() -> Path:
@@ -37,6 +38,69 @@ def _tail(text: str, max_chars: int = 4000) -> str:
     if len(text) <= max_chars:
         return text
     return text[-max_chars:]
+
+
+def _repo_relative(path: Path, *, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return ""
+
+
+def _tracked_git_files(paths: list[str], *, root: Path) -> list[str]:
+    if not paths:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--", *paths],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
+
+
+def _tracked_recovery_evidence_targets(
+    evidence_dir: Path,
+    *,
+    root: Path | None = None,
+    tracked_files: list[str] | None = None,
+) -> list[str]:
+    root = root or _repo_root()
+    target_paths = [evidence_dir / filename for filename in RECOVERY_EVIDENCE_FILENAMES]
+    relative_targets = [relative for path in target_paths if (relative := _repo_relative(path, root=root))]
+    if tracked_files is None:
+        tracked_files = _tracked_git_files(relative_targets, root=root)
+    tracked = {path.replace("\\", "/") for path in tracked_files}
+    return [relative for relative in relative_targets if relative in tracked]
+
+
+def _source_control_generation_guard(evidence_dir: Path) -> dict[str, Any]:
+    tracked_targets = _tracked_recovery_evidence_targets(evidence_dir)
+    issues = []
+    if tracked_targets:
+        joined = ", ".join(tracked_targets)
+        issues.append(
+            "refusing to write local Rust recovery evidence over tracked generated evidence "
+            f"artifact path(s): {joined}. Commit the removal of generated evidence artifacts "
+            "first, then regenerate/import evidence from a clean candidate source commit."
+        )
+    return {
+        "ok": not issues,
+        "tracked_generated_evidence_targets": tracked_targets,
+        "issues": issues,
+    }
+
+
+def local_recovery_generation_guard(evidence_dir: Path) -> dict[str, Any]:
+    if not evidence_dir.is_absolute():
+        evidence_dir = (_repo_root() / evidence_dir).resolve()
+    return _source_control_generation_guard(evidence_dir)
 
 
 def _run_recovery_evidence_command(evidence_dir: Path, *, timeout: int) -> dict[str, Any]:
@@ -97,8 +161,28 @@ def check_local_recovery_evidence(
         "stderr_tail": "",
     }
     if not validate_only:
+        source_control_guard = local_recovery_generation_guard(evidence_dir)
+        if not source_control_guard["ok"]:
+            return {
+                "ok": False,
+                "evidence_dir": str(evidence_dir),
+                "validate_only": validate_only,
+                "recovery_evidence_ids": sorted(RECOVERY_EVIDENCE_IDS),
+                "command": {
+                    "ok": False,
+                    "returncode": None,
+                    "command": "blocked-before-run",
+                    "stdout_tail": "",
+                    "stderr_tail": "",
+                },
+                "source_control_guard": source_control_guard,
+                "validation": {},
+                "issues": list(source_control_guard["issues"]),
+            }
         evidence_dir.mkdir(parents=True, exist_ok=True)
         command_result = _run_recovery_evidence_command(evidence_dir, timeout=timeout)
+    else:
+        source_control_guard = {"ok": True, "tracked_generated_evidence_targets": [], "issues": []}
 
     validation = validate(
         manifest_path,
@@ -116,6 +200,7 @@ def check_local_recovery_evidence(
         "validate_only": validate_only,
         "recovery_evidence_ids": sorted(RECOVERY_EVIDENCE_IDS),
         "command": command_result,
+        "source_control_guard": source_control_guard,
         "validation": validation,
         "issues": issues,
     }

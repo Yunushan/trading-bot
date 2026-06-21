@@ -126,7 +126,11 @@ workflow with the desired testnet flag, symbol, and interval, and download the
 `rust-native-live-smoke-evidence` artifact. The workflow runs the preflight
 first, executes `--native-live-smoke`, validates only the two live-smoke
 artifacts, and uploads `rust-native-live-market-data-smoke.json` plus
-`rust-native-live-account-read-smoke.json`.
+`rust-native-live-account-read-smoke.json`. It also uploads
+`rust-native-live-smoke-evidence-plan`, a post-smoke runbook showing remaining
+promotion blockers for that source revision. The plan upload uses `always()`
+and `if-no-files-found: warn`, so a failed smoke attempt still leaves the
+operator runbook when checkout and Python tooling reached the plan step.
 
 Those artifacts are valid only when they include the expected endpoint rows and
 operation-level suite results. Market data evidence must prove USDT symbol,
@@ -268,10 +272,60 @@ release tag and, when the per-target evidence was produced by Actions, the run
 id containing `release-platform-evidence-*` artifacts. The workflow downloads
 those JSON artifacts, runs the preflight, writes and validates
 `rust-native-release-platform-evidence.json`, and uploads the
-`rust-native-release-platform-evidence` artifact.
+`rust-native-release-platform-evidence` artifact. It also uploads
+`rust-native-release-platform-evidence-plan`, a post-release runbook showing
+remaining promotion blockers for that source revision. The plan upload uses
+`always()` and `if-no-files-found: warn`, so a failed release-evidence attempt
+still leaves the operator runbook when checkout and Python tooling reached the
+plan step.
 
-Before any standalone native Rust runtime promotion, attach the required
-artifacts under `artifacts/rust-native-runtime-evidence/` and run:
+Before any standalone native Rust runtime promotion, first prove the Python-owned
+C++/Rust/Tauri source catalogs are synchronized and export the current evidence
+collection plan:
+
+```bash
+python tools/audit_native_source_sync.py --json
+python tools/audit_rust_native_runtime_readiness.py --json --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md
+```
+
+The main CI workflow writes and uploads the same
+`rust-native-runtime-evidence-plan` artifact, so operators can download a
+revision-specific runbook before collecting live or release evidence. Each row
+in that runbook includes `required_runtime_ids` plus an import command with the
+matching `--require-runtime-id` flags; for the signed live-smoke artifact, the
+plan requires both market-data and account-read evidence.
+
+After the manual live-smoke and release-evidence workflows have produced
+artifacts for the same candidate commit, run the manual
+`.github/workflows/rust-native-promotion-audit.yml` workflow with those two
+Actions run ids. The promotion workflow downloads the artifacts under
+`artifacts/rust-native-runtime-evidence/downloads/`, imports them with
+`--apply --overwrite --require-current-commit --require-clean-source` plus the
+three required `--require-runtime-id` flags, logs copy versus overwrite actions
+with existing/incoming evidence hashes, generates deterministic local recovery
+evidence for the checked commit, validates the full runtime evidence set, and runs
+`tools/audit_rust_native_runtime_readiness.py --require-ready --json`. It also
+uploads `rust-native-promotion-evidence-plan` and
+`rust-native-runtime-promotion-evidence` artifacts for review.
+
+Download the live-smoke and release-evidence workflow artifact ZIPs or folders,
+then import them through the validator instead of copying them manually:
+
+```bash
+python tools/import_rust_native_evidence_artifacts.py <artifact.zip-or-dir> --apply --require-current-commit --require-clean-source --require-runtime-id rust-native-live-market-data-smoke --require-runtime-id rust-native-live-account-read-smoke --require-runtime-id rust-native-release-platform-evidence
+```
+
+The importer validates runtime artifacts against
+`docs/rust-native-runtime-evidence.json` and release-platform target artifacts
+against `docs/release-platform-test-matrix.json`. In promotion mode it rejects
+stale runtime evidence, dirty-source evidence, evidence collected from a
+different commit, and evidence carrying an older Python source-contract hash
+before it can enter the canonical artifact directories.
+Those runtime and release-platform evidence JSON/ZIP/download artifacts are
+ignored generated outputs; do not hand-edit or commit them as source.
+
+After the required artifacts are attached under
+`artifacts/rust-native-runtime-evidence/`, run:
 
 ```bash
 python tools/check_rust_native_runtime_evidence.py --require-evidence --require-current-commit --require-clean-source
@@ -285,8 +339,12 @@ python tools/audit_rust_native_runtime_readiness.py --json
 ```
 
 That audit reports per-artifact status, remaining evidence IDs, redacted
-live-smoke prerequisites, release evidence prerequisites, and next actions. It
-does not print secret values.
+live-smoke prerequisites, release evidence prerequisites, native source-sync
+status, Python runtime-readiness source flags, dirty/untracked promotion-source
+paths, the structured evidence collection plan, and next actions. It fails
+promotion if `Languages/Python/app/native_parity.py` disagrees with
+`rust_native_trading_runtime_ready()`, so Python remains the source of truth for
+the runtime-ready claim boundary. It does not print secret values.
 
 ## Python app contract parity audit
 

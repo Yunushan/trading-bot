@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -211,6 +212,9 @@ def _validate_payload(
     for field in ("read_only", "secrets_redacted"):
         if payload.get(field) is not True:
             issues.append(f"{field} must be true")
+    python_source_contract_hash = str(payload.get("python_source_contract_hash") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", python_source_contract_hash):
+        issues.append("payload python_source_contract_hash must be a SHA-256 hex digest")
     if Path(str(payload.get("evidence_dir") or "")) != evidence_dir:
         issues.append("payload evidence_dir must match the isolated preflight directory")
     expected = sorted(expected_artifacts)
@@ -219,6 +223,14 @@ def _validate_payload(
     missing = {str(item) for item in payload.get("missing", [])}
     if missing != expected_missing:
         issues.append(f"payload missing must be {sorted(expected_missing)}")
+    source_control_guard = payload.get("source_control_write_guard")
+    if not isinstance(source_control_guard, dict):
+        issues.append("payload source_control_write_guard must be an object")
+    else:
+        if source_control_guard.get("ok") is not True:
+            issues.append("payload source_control_write_guard.ok must be true for isolated preflight directories")
+        if source_control_guard.get("issues") not in ([], None):
+            issues.append("payload source_control_write_guard.issues must be empty for isolated preflight directories")
     prerequisites = payload.get("prerequisites")
     if not isinstance(prerequisites, dict):
         issues.append("payload prerequisites must be an object")

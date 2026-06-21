@@ -10,9 +10,9 @@ use trading_bot_core::{
     app_banner, cpp_entire_python_app_contract_parity_ready, cpp_entire_python_app_parity_ready,
     market_data::{BinanceMarket, BinanceRestMarketDataClient},
     native_full_python_app_parity_ready, native_python_app_contract_parity_ready,
-    native_python_app_parity_domains, rust_entire_python_app_contract_parity_ready,
-    rust_entire_python_app_parity_ready, rust_native_runtime_capabilities,
-    rust_native_trading_runtime_ready, supported_frameworks,
+    native_python_app_parity_domains, python_source_contract_hash,
+    rust_entire_python_app_contract_parity_ready, rust_entire_python_app_parity_ready,
+    rust_native_runtime_capabilities, rust_native_trading_runtime_ready, supported_frameworks,
 };
 
 fn main() {
@@ -139,6 +139,14 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("BINANCE_LIVE_SMOKE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_owned());
     let interval = std::env::var("BINANCE_LIVE_SMOKE_INTERVAL").unwrap_or_else(|_| "1m".to_owned());
     let evidence_dir = rust_native_runtime_evidence_dir()?;
+    let expected_artifacts = [
+        "rust-native-live-market-data-smoke.json",
+        "rust-native-live-account-read-smoke.json",
+    ];
+    let source_control_write_guard = generated_evidence_write_guard(&evidence_artifact_paths(
+        &evidence_dir,
+        &expected_artifacts,
+    ))?;
     let missing: Vec<&str> = [
         (!api_key_present).then_some("BINANCE_API_KEY"),
         (!api_secret_present).then_some("BINANCE_API_SECRET"),
@@ -147,7 +155,7 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
     .into_iter()
     .flatten()
     .collect();
-    let ok = missing.is_empty();
+    let ok = missing.is_empty() && source_control_write_guard.ok;
     let report = json!({
         "ok": ok,
         "mode": "native_live_smoke_preflight",
@@ -155,6 +163,7 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         "order_submission_attempted": false,
         "read_only": true,
         "runtime_ready_claimed": false,
+        "python_source_contract_hash": python_source_contract_hash(),
         "secrets_redacted": true,
         "prerequisites": {
             "binance_api_key_present": api_key_present,
@@ -166,17 +175,15 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         },
         "missing": missing,
         "evidence_dir": evidence_dir.display().to_string(),
-        "expected_artifacts": [
-            "rust-native-live-market-data-smoke.json",
-            "rust-native-live-account-read-smoke.json"
-        ],
+        "expected_artifacts": expected_artifacts,
+        "source_control_write_guard": source_control_write_guard.as_json(),
         "operator_command": "TRADING_BOT_RUST_LIVE_SMOKE=1 BINANCE_API_KEY=... BINANCE_API_SECRET=... BINANCE_TESTNET=true cargo run -p trading-bot-rust -- --native-live-smoke"
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     if ok {
         Ok(())
     } else {
-        Err("live smoke prerequisites are incomplete; no network request was attempted".into())
+        Err("live smoke prerequisites or evidence write guard are incomplete; no network request was attempted".into())
     }
 }
 
@@ -187,11 +194,16 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         std::env::var("BINANCE_LIVE_SMOKE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_owned());
     let interval = std::env::var("BINANCE_LIVE_SMOKE_INTERVAL").unwrap_or_else(|_| "1m".to_owned());
     let evidence_dir = rust_native_runtime_evidence_dir()?;
+    let expected_artifacts = ["rust-native-live-market-data-smoke.json"];
+    let source_control_write_guard = generated_evidence_write_guard(&evidence_artifact_paths(
+        &evidence_dir,
+        &expected_artifacts,
+    ))?;
     let missing: Vec<&str> = [(!confirmed).then_some("TRADING_BOT_RUST_MARKET_SMOKE=1")]
         .into_iter()
         .flatten()
         .collect();
-    let ok = missing.is_empty();
+    let ok = missing.is_empty() && source_control_write_guard.ok;
     let report = json!({
         "ok": ok,
         "mode": "native_live_market_smoke_preflight",
@@ -199,6 +211,7 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         "order_submission_attempted": false,
         "read_only": true,
         "runtime_ready_claimed": false,
+        "python_source_contract_hash": python_source_contract_hash(),
         "secrets_redacted": true,
         "prerequisites": {
             "market_smoke_confirmation_present": confirmed,
@@ -208,16 +221,15 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         },
         "missing": missing,
         "evidence_dir": evidence_dir.display().to_string(),
-        "expected_artifacts": [
-            "rust-native-live-market-data-smoke.json"
-        ],
+        "expected_artifacts": expected_artifacts,
+        "source_control_write_guard": source_control_write_guard.as_json(),
         "operator_command": "TRADING_BOT_RUST_MARKET_SMOKE=1 BINANCE_TESTNET=true cargo run -p trading-bot-rust -- --native-live-market-smoke"
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     if ok {
         Ok(())
     } else {
-        Err("market-data smoke prerequisite is incomplete; no network request was attempted".into())
+        Err("market-data smoke prerequisite or evidence write guard is incomplete; no network request was attempted".into())
     }
 }
 
@@ -227,6 +239,11 @@ fn run_native_live_market_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let symbol =
         std::env::var("BINANCE_LIVE_SMOKE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_owned());
     let interval = std::env::var("BINANCE_LIVE_SMOKE_INTERVAL").unwrap_or_else(|_| "1m".to_owned());
+    let evidence_dir = rust_native_runtime_evidence_dir()?;
+    require_generated_evidence_write_allowed(&evidence_artifact_paths(
+        &evidence_dir,
+        &["rust-native-live-market-data-smoke.json"],
+    ))?;
     let market_client = BinanceRestMarketDataClient::new(BinanceMarket::Futures, testnet)?;
 
     println!(
@@ -256,6 +273,14 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let symbol =
         std::env::var("BINANCE_LIVE_SMOKE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_owned());
     let interval = std::env::var("BINANCE_LIVE_SMOKE_INTERVAL").unwrap_or_else(|_| "1m".to_owned());
+    let evidence_dir = rust_native_runtime_evidence_dir()?;
+    require_generated_evidence_write_allowed(&evidence_artifact_paths(
+        &evidence_dir,
+        &[
+            "rust-native-live-market-data-smoke.json",
+            "rust-native-live-account-read-smoke.json",
+        ],
+    ))?;
 
     let market_client = BinanceRestMarketDataClient::new(BinanceMarket::Futures, testnet)?;
     let account_client = BinanceSignedRestClient::new(BinanceMarket::Futures, testnet)?;
@@ -369,6 +394,9 @@ fn write_market_smoke_evidence(
     evidence: MarketSmokeEvidence,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let evidence_dir = rust_native_runtime_evidence_dir()?;
+    let destinations =
+        evidence_artifact_paths(&evidence_dir, &["rust-native-live-market-data-smoke.json"]);
+    require_generated_evidence_write_allowed(&destinations)?;
     fs::create_dir_all(&evidence_dir)?;
     let payload = build_market_smoke_payload(
         &evidence,
@@ -377,10 +405,7 @@ fn write_market_smoke_evidence(
         current_source_tree_clean(),
         std::env::args().collect::<Vec<_>>().join(" "),
     );
-    write_json_file(
-        &evidence_dir.join("rust-native-live-market-data-smoke.json"),
-        &payload,
-    )?;
+    write_json_file(&destinations[0], &payload)?;
     println!(
         "Rust native live market-data smoke evidence written to {}",
         evidence_dir.display()
@@ -409,6 +434,7 @@ fn build_market_smoke_payload(
         "generated_at": generated_at,
         "commit": commit,
         "source_tree_clean": source_tree_clean,
+        "python_source_contract_hash": python_source_contract_hash(),
         "command": command,
         "environment": environment,
         "read_only": true,
@@ -440,6 +466,14 @@ fn write_live_smoke_evidence(
     evidence: LiveSmokeEvidence,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let evidence_dir = rust_native_runtime_evidence_dir()?;
+    let destinations = evidence_artifact_paths(
+        &evidence_dir,
+        &[
+            "rust-native-live-market-data-smoke.json",
+            "rust-native-live-account-read-smoke.json",
+        ],
+    );
+    require_generated_evidence_write_allowed(&destinations)?;
     fs::create_dir_all(&evidence_dir)?;
     let generated_at = current_unix_timestamp_label();
     let commit = current_git_commit();
@@ -471,6 +505,7 @@ fn write_live_smoke_evidence(
         "generated_at": generated_at,
         "commit": commit,
         "source_tree_clean": source_tree_clean,
+        "python_source_contract_hash": python_source_contract_hash(),
         "command": command,
         "environment": account_environment,
         "read_only": true,
@@ -504,14 +539,8 @@ fn write_live_smoke_evidence(
         ]
     });
 
-    write_json_file(
-        &evidence_dir.join("rust-native-live-market-data-smoke.json"),
-        &market_payload,
-    )?;
-    write_json_file(
-        &evidence_dir.join("rust-native-live-account-read-smoke.json"),
-        &account_payload,
-    )?;
+    write_json_file(&destinations[0], &market_payload)?;
+    write_json_file(&destinations[1], &account_payload)?;
     println!(
         "Rust native live smoke evidence written to {}",
         evidence_dir.display()
@@ -520,6 +549,16 @@ fn write_live_smoke_evidence(
 }
 
 fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
+    let evidence_dir = rust_native_runtime_evidence_dir()?;
+    let destinations = evidence_artifact_paths(
+        &evidence_dir,
+        &[
+            "rust-native-live-stream-recovery.json",
+            "rust-native-order-guard-recovery.json",
+        ],
+    );
+    require_generated_evidence_write_allowed(&destinations)?;
+
     let stream_recovery = run_cargo_test(
         "native_runtime_live_ingestion_bridge_redacts_errors_and_recovers",
         &[
@@ -591,7 +630,6 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let evidence_dir = rust_native_runtime_evidence_dir()?;
     fs::create_dir_all(&evidence_dir)?;
     let generated_at = current_unix_timestamp_label();
     let commit = current_git_commit();
@@ -610,6 +648,7 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
         "generated_at": generated_at.clone(),
         "commit": commit.clone(),
         "source_tree_clean": source_tree_clean,
+        "python_source_contract_hash": python_source_contract_hash(),
         "command": command.clone(),
         "environment": environment.clone(),
         "secrets_redacted": true,
@@ -630,6 +669,7 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
         "generated_at": generated_at,
         "commit": commit,
         "source_tree_clean": source_tree_clean,
+        "python_source_contract_hash": python_source_contract_hash(),
         "command": command,
         "environment": environment,
         "secrets_redacted": true,
@@ -664,14 +704,8 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
         ]
     });
 
-    write_json_file(
-        &evidence_dir.join("rust-native-live-stream-recovery.json"),
-        &stream_payload,
-    )?;
-    write_json_file(
-        &evidence_dir.join("rust-native-order-guard-recovery.json"),
-        &order_payload,
-    )?;
+    write_json_file(&destinations[0], &stream_payload)?;
+    write_json_file(&destinations[1], &order_payload)?;
     println!(
         "Rust native deterministic recovery evidence written to {}",
         evidence_dir.display()
@@ -747,6 +781,113 @@ fn endpoint_rows(endpoints: &[(&'static str, String)]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+struct GeneratedEvidenceWriteGuard {
+    ok: bool,
+    generated_evidence_write_targets: Vec<String>,
+    tracked_generated_evidence_write_targets: Vec<String>,
+    issues: Vec<String>,
+}
+
+impl GeneratedEvidenceWriteGuard {
+    fn as_json(&self) -> Value {
+        json!({
+            "ok": self.ok,
+            "generated_evidence_write_targets": self.generated_evidence_write_targets,
+            "tracked_generated_evidence_write_targets": self.tracked_generated_evidence_write_targets,
+            "issues": self.issues
+        })
+    }
+}
+
+fn evidence_artifact_paths(evidence_dir: &Path, filenames: &[&str]) -> Vec<PathBuf> {
+    filenames
+        .iter()
+        .map(|filename| evidence_dir.join(filename))
+        .collect()
+}
+
+fn require_generated_evidence_write_allowed(
+    paths: &[PathBuf],
+) -> Result<GeneratedEvidenceWriteGuard, Box<dyn std::error::Error>> {
+    let guard = generated_evidence_write_guard(paths)?;
+    if guard.ok {
+        Ok(guard)
+    } else {
+        Err(guard.issues.join("; ").into())
+    }
+}
+
+fn generated_evidence_write_guard(
+    paths: &[PathBuf],
+) -> Result<GeneratedEvidenceWriteGuard, Box<dyn std::error::Error>> {
+    let root = repo_root();
+    let generated_targets: Vec<String> = paths
+        .iter()
+        .filter_map(|path| repo_relative_generated_evidence_path(path, &root))
+        .collect();
+    let tracked_targets = tracked_git_files(&generated_targets, &root)?;
+    let issues = if tracked_targets.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "refusing to write generated evidence artifact over tracked source path(s): {}. Commit the removal of generated evidence artifacts first, then regenerate/import evidence from a clean candidate source commit.",
+            tracked_targets.join(", ")
+        )]
+    };
+    Ok(GeneratedEvidenceWriteGuard {
+        ok: issues.is_empty(),
+        generated_evidence_write_targets: generated_targets,
+        tracked_generated_evidence_write_targets: tracked_targets,
+        issues,
+    })
+}
+
+fn repo_relative_generated_evidence_path(path: &Path, root: &Path) -> Option<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let relative = absolute.strip_prefix(root).ok()?;
+    let normalized = relative.to_string_lossy().replace('\\', "/");
+    if is_generated_evidence_path(&normalized) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn is_generated_evidence_path(path: &str) -> bool {
+    (path.starts_with("artifacts/rust-native-runtime-evidence/")
+        && (path.ends_with(".json")
+            || path.ends_with(".zip")
+            || path.starts_with("artifacts/rust-native-runtime-evidence/downloads/")))
+        || (path.starts_with("release-platform-evidence/") && path.ends_with(".json"))
+}
+
+fn tracked_git_files(
+    relative_paths: &[String],
+    root: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if relative_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = Command::new("git")
+        .arg("ls-files")
+        .arg("--")
+        .args(relative_paths)
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        return Err("could not check generated evidence source-control state".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().replace('\\', "/"))
+        .filter(|line| !line.is_empty())
+        .collect())
 }
 
 fn write_json_file(path: &Path, payload: &Value) -> Result<(), Box<dyn std::error::Error>> {

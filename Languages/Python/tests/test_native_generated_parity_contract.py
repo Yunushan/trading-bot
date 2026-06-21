@@ -255,6 +255,11 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
 
         self.assertTrue(report["ok"], report["issues"])
         self.assertEqual(native_python_source_contract_hash(), report["contract_hash"])
+        for artifact in report["generated"]:
+            self.assertEqual(report["contract_hash"], artifact["expected_contract_hash"])
+            self.assertTrue(artifact["embeds_contract_hash"], artifact)
+            self.assertEqual(artifact["expected_sha256"], artifact["actual_sha256"])
+            self.assertEqual(64, len(artifact["actual_sha256"]))
         self.assertIn("native source sync audit", verify_all)
         self.assertIn("tools/audit_native_source_sync.py", verify_all)
         self.assertIn("Audit native source sync", ci_workflow)

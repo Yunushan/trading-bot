@@ -152,11 +152,36 @@ jobs:
           set -euo pipefail
           python tools/check_rust_native_runtime_evidence.py --schema-only
 
+      - name: Check Rust native evidence workflow contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_evidence_workflows.py --json
+
+      - name: Audit Rust native evidence importer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/import_rust_native_evidence_artifacts.py \
+            artifacts/rust-native-runtime-evidence \
+            release-platform-evidence \
+            --json
+
       - name: Audit Rust native runtime promotion readiness
         shell: bash
         run: |
           set -euo pipefail
-          python tools/audit_rust_native_runtime_readiness.py --json
+          mkdir -p artifacts
+          python tools/audit_rust_native_runtime_readiness.py \
+            --json \
+            --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md
+
+      - name: Upload Rust native runtime evidence plan
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-native-runtime-evidence-plan
+          path: artifacts/rust-native-runtime-evidence-plan.md
+          if-no-files-found: error
 
       - name: Check hardening article evidence
         shell: bash

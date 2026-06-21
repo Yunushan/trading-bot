@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,21 @@ except ModuleNotFoundError:  # pragma: no cover - exercised when imported as too
 
 
 DEFAULT_MANIFEST_PATH = Path("docs/rust-native-runtime-evidence.json")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from app.native_parity import native_python_source_contract_hash  # noqa: E402
+
+PROMOTION_SOURCE_TREE_IGNORED_PATHS = (
+    "artifacts/rust-native-runtime-evidence",
+    "release-platform-evidence",
+)
+RUNTIME_READY_POLICY_STATES = {
+    "rust_native_trading_runtime_ready() == false": False,
+    "rust_native_trading_runtime_ready() == true": True,
+}
 REQUIRED_REQUIREMENTS: dict[str, str] = {
     "rust-native-live-market-data-smoke": "live_smoke",
     "rust-native-live-account-read-smoke": "live_smoke",
@@ -80,7 +96,7 @@ BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+([^\s,;&]+)")
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 def _repo_path(path: Path) -> Path:
@@ -103,10 +119,41 @@ def _current_git_commit() -> str | None:
     return commit or None
 
 
-def _current_source_tree_clean() -> bool | None:
+def _source_tree_status_command(*, untracked_files: str) -> list[str]:
+    command = ["git", "status", "--porcelain", f"--untracked-files={untracked_files}", "--", "."]
+    command.extend(f":(exclude){path}" for path in PROMOTION_SOURCE_TREE_IGNORED_PATHS)
+    return command
+
+
+def _dirty_paths_from_porcelain(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:] if len(line) > 3 else line.strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[-1]
+        path = path.strip().strip('"')
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _untracked_paths_from_porcelain(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line.startswith("?? "):
+            continue
+        path = line[3:].strip().strip('"')
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _current_source_tree_dirty_paths() -> list[str] | None:
     try:
         output = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            _source_tree_status_command(untracked_files="no"),
             cwd=_repo_root(),
             check=True,
             capture_output=True,
@@ -115,7 +162,34 @@ def _current_source_tree_clean() -> bool | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return not output.stdout.strip()
+    return _dirty_paths_from_porcelain(output.stdout)
+
+
+def _current_source_tree_untracked_paths() -> list[str] | None:
+    try:
+        output = subprocess.run(
+            _source_tree_status_command(untracked_files="all"),
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _untracked_paths_from_porcelain(output.stdout)
+
+
+def _current_source_tree_clean() -> bool | None:
+    dirty_paths = _current_source_tree_dirty_paths()
+    untracked_paths = _current_source_tree_untracked_paths()
+    if dirty_paths is None or untracked_paths is None:
+        return None
+    return not dirty_paths and not untracked_paths
+
+
+def _runtime_ready_policy_state(policy: dict[str, Any]) -> bool | None:
+    return RUNTIME_READY_POLICY_STATES.get(str(policy.get("runtime_ready_flag") or "").strip())
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -186,6 +260,7 @@ def _requirements(manifest: dict[str, Any]) -> tuple[list[dict[str, Any]], list[
             "evidence_scope",
             "generated_at",
             "commit",
+            "python_source_contract_hash",
             "command",
             "environment",
             "secrets_redacted",
@@ -281,6 +356,24 @@ def _validate_generated_at(payload: dict[str, Any], artifact_path: Path, issues:
     raw_seconds = generated_at[len(prefix) :]
     if not raw_seconds.isdigit() or int(raw_seconds) <= 0:
         issues.append(f"{artifact_path} generated_at must contain positive unix seconds")
+
+
+def _validate_python_source_contract_hash(
+    payload: dict[str, Any],
+    artifact_path: Path,
+    issues: list[str],
+    *,
+    expected_hash: str,
+) -> None:
+    artifact_hash = str(payload.get("python_source_contract_hash") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", artifact_hash):
+        issues.append(f"{artifact_path} python_source_contract_hash must be a SHA-256 hex digest")
+        return
+    if artifact_hash != expected_hash:
+        issues.append(
+            f"{artifact_path} python_source_contract_hash must match current Python source contract "
+            f"{expected_hash}; observed {artifact_hash}"
+        )
 
 
 def _is_safe_redacted_value(value: Any) -> bool:
@@ -742,6 +835,7 @@ def _validate_artifact(
     artifact_path: Path,
     *,
     expected_commit: str | None = None,
+    expected_python_source_contract_hash: str,
     require_clean_source: bool = False,
 ) -> list[str]:
     issues: list[str] = []
@@ -755,6 +849,12 @@ def _validate_artifact(
     evidence_id = str(requirement["id"])
     _required_artifact_fields_present(requirement, payload, artifact_path, issues)
     _validate_generated_at(payload, artifact_path, issues)
+    _validate_python_source_contract_hash(
+        payload,
+        artifact_path,
+        issues,
+        expected_hash=expected_python_source_contract_hash,
+    )
     _validate_no_secret_leaks(payload, artifact_path, issues)
     if payload.get("evidence_id") != evidence_id:
         issues.append(f"{artifact_path} evidence_id must be {evidence_id}")
@@ -850,22 +950,31 @@ def validate(
             "require_current_commit": bool(require_current_commit),
             "require_clean_source": bool(require_clean_source),
             "current_commit": None,
+            "current_python_source_contract_hash": None,
             "current_source_tree_clean": None,
+            "current_source_tree_dirty_paths": [],
+            "current_source_tree_untracked_paths": [],
+            "current_source_tree_ignored_paths": list(PROMOTION_SOURCE_TREE_IGNORED_PATHS),
+            "runtime_ready_policy_state": None,
             "issues": [str(exc)],
             "requirements": [],
         }
 
     if manifest.get("schema_version") != 1:
         issues.append("schema_version must be 1")
+    current_python_source_contract_hash = native_python_source_contract_hash()
     policy = manifest.get("policy")
+    runtime_ready_policy_state: bool | None = None
     if not isinstance(policy, dict):
         issues.append("policy must be an object")
         evidence_dir = Path("artifacts/rust-native-runtime-evidence")
     else:
         if policy.get("no_assumed_passes") is not True:
             issues.append("policy.no_assumed_passes must be true")
-        if policy.get("runtime_ready_flag") != "rust_native_trading_runtime_ready() == false":
-            issues.append("policy.runtime_ready_flag must keep Rust native runtime readiness false")
+        runtime_ready_policy_state = _runtime_ready_policy_state(policy)
+        if runtime_ready_policy_state is None:
+            allowed = " or ".join(sorted(RUNTIME_READY_POLICY_STATES))
+            issues.append(f"policy.runtime_ready_flag must be {allowed}")
         if policy.get("order_submission_forbidden") is not True:
             issues.append("policy.order_submission_forbidden must be true")
         if policy.get("secrets_must_be_redacted") is not True:
@@ -897,12 +1006,31 @@ def validate(
         if not current_commit:
             issues.append("current git commit could not be determined for evidence freshness validation")
     current_source_tree_clean: bool | None = None
+    current_source_tree_dirty_paths: list[str] = []
+    current_source_tree_untracked_paths: list[str] = []
     if require_evidence and require_clean_source:
         current_source_tree_clean = _current_source_tree_clean()
         if current_source_tree_clean is None:
             issues.append("current source tree cleanliness could not be determined for evidence validation")
         elif not current_source_tree_clean:
-            issues.append("current tracked source tree must be clean for promotion evidence validation")
+            current_source_tree_dirty_paths = _current_source_tree_dirty_paths() or []
+            current_source_tree_untracked_paths = _current_source_tree_untracked_paths() or []
+            if current_source_tree_dirty_paths:
+                visible_dirty_paths = ", ".join(current_source_tree_dirty_paths[:10])
+                suffix = "" if len(current_source_tree_dirty_paths) <= 10 else ", ..."
+                issues.append(
+                    "current tracked source tree must be clean for promotion evidence validation; "
+                    f"dirty paths: {visible_dirty_paths}{suffix}"
+                )
+            if current_source_tree_untracked_paths:
+                visible_untracked_paths = ", ".join(current_source_tree_untracked_paths[:10])
+                suffix = "" if len(current_source_tree_untracked_paths) <= 10 else ", ..."
+                issues.append(
+                    "current promotion source tree must not contain untracked source/tool files; "
+                    f"untracked paths: {visible_untracked_paths}{suffix}"
+                )
+            if not current_source_tree_dirty_paths and not current_source_tree_untracked_paths:
+                issues.append("current promotion source tree must be clean for evidence validation")
 
     artifact_status: list[dict[str, Any]] = []
     if require_evidence and requirements:
@@ -914,6 +1042,7 @@ def validate(
                 requirement,
                 artifact_path,
                 expected_commit=current_commit,
+                expected_python_source_contract_hash=current_python_source_contract_hash,
                 require_clean_source=require_clean_source,
             )
             artifact_status.append(
@@ -934,7 +1063,12 @@ def validate(
         "require_current_commit": bool(require_current_commit),
         "require_clean_source": bool(require_clean_source),
         "current_commit": current_commit,
+        "current_python_source_contract_hash": current_python_source_contract_hash,
         "current_source_tree_clean": current_source_tree_clean,
+        "current_source_tree_dirty_paths": current_source_tree_dirty_paths,
+        "current_source_tree_untracked_paths": current_source_tree_untracked_paths,
+        "current_source_tree_ignored_paths": list(PROMOTION_SOURCE_TREE_IGNORED_PATHS),
+        "runtime_ready_policy_state": runtime_ready_policy_state,
         "evidence_dir": str(evidence_dir),
         "requirement_count": len(requirements),
         "validated_evidence_ids": [str(requirement["id"]) for requirement in requirements],

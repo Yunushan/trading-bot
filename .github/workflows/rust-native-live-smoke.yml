@@ -43,6 +43,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Validate signed smoke inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${BINANCE_LIVE_SMOKE_SYMBOL}" ]]; then
+            echo "symbol input is required for Rust native live smoke evidence." >&2
+            exit 1
+          fi
+          if [[ -z "${BINANCE_LIVE_SMOKE_INTERVAL}" ]]; then
+            echo "interval input is required for Rust native live smoke evidence." >&2
+            exit 1
+          fi
+          if [[ -z "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" ]]; then
+            echo "evidence_dir input is required for Rust native live smoke evidence." >&2
+            exit 1
+          fi
+
       - name: Install Rust native smoke dependencies
         shell: bash
         run: |
@@ -83,6 +105,17 @@ jobs:
             --only rust-native-live-market-data-smoke \
             --only rust-native-live-account-read-smoke
 
+      - name: Write post-smoke Rust native runtime evidence plan
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"
+          python tools/audit_rust_native_runtime_readiness.py \
+            --json \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --write-evidence-plan "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/rust-native-runtime-evidence-plan.md"
+
       - name: Upload signed account-read smoke evidence
         uses: actions/upload-artifact@v7
         with:
@@ -91,3 +124,11 @@ jobs:
             ${{ inputs.evidence_dir }}/rust-native-live-market-data-smoke.json
             ${{ inputs.evidence_dir }}/rust-native-live-account-read-smoke.json
           if-no-files-found: error
+
+      - name: Upload post-smoke Rust native runtime evidence plan
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-native-live-smoke-evidence-plan
+          path: ${{ inputs.evidence_dir }}/rust-native-runtime-evidence-plan.md
+          if-no-files-found: warn

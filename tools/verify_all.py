@@ -72,6 +72,18 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
     cargo = _command_path("cargo")
     node = _command_path("node")
     npm = _command_path("npm")
+    native_cpp_command = (python, "tools/check_native_cpp.py", "--json")
+    if skip_slow:
+        native_cpp_command = (
+            python,
+            "tools/check_native_cpp.py",
+            "--json",
+            "--no-require-webengine",
+            "--no-enable-qt-deploy-script",
+            "--smoke-targets-only",
+            "--qt-version",
+            "6.4.0",
+        )
     checks = [
         Check(
             "tool versions",
@@ -178,6 +190,30 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             remediation="Keep docs/rust-native-runtime-evidence.json aligned with Rust runtime smoke, recovery, and release evidence requirements.",
         ),
         Check(
+            "rust native evidence workflow contracts",
+            (python, "tools/check_rust_native_evidence_workflows.py", "--json"),
+            root,
+            remediation="Keep Rust native live-smoke, release-evidence, and promotion-audit workflows aligned with strict promotion evidence gates.",
+        ),
+        Check(
+            "generated evidence source-control guard",
+            (python, "tools/check_generated_evidence_source_control.py", "--json"),
+            root,
+            remediation="Keep generated runtime/release evidence artifacts ignored and out of source control; import fresh evidence from the candidate commit instead.",
+        ),
+        Check(
+            "rust native evidence import audit",
+            (
+                python,
+                "tools/import_rust_native_evidence_artifacts.py",
+                "artifacts/rust-native-runtime-evidence",
+                "release-platform-evidence",
+                "--json",
+            ),
+            root,
+            remediation="Keep downloaded Rust native evidence artifacts valid before importing them into canonical evidence directories.",
+        ),
+        Check(
             "rust native live-smoke preflight",
             (python, "tools/check_rust_native_live_smoke_preflight.py", "--json"),
             root,
@@ -245,7 +281,7 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
         ),
         Check(
             "native c++ build and tests",
-            (python, "tools/check_native_cpp.py", "--json"),
+            native_cpp_command,
             root,
             remediation="Install Qt 6.10.x, CMake, and a C++ compiler before running native C++ checks.",
         ),

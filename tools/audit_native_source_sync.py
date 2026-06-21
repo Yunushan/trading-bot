@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import dataclass
@@ -43,6 +44,10 @@ def _rel(path: Path) -> str:
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _generated_artifacts() -> tuple[GeneratedArtifact, ...]:
@@ -115,28 +120,42 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
     )
 
 
-def _check_generated_artifact(artifact: GeneratedArtifact) -> dict[str, object]:
+def _check_generated_artifact(artifact: GeneratedArtifact, contract_hash: str) -> dict[str, object]:
     report: dict[str, object] = {
         "name": artifact.name,
         "path": _rel(artifact.path),
         "ok": True,
         "expected_bytes": len(artifact.expected.encode("utf-8")),
+        "expected_sha256": _sha256(artifact.expected),
+        "expected_contract_hash": contract_hash,
         "actual_bytes": None,
+        "actual_sha256": None,
+        "embeds_contract_hash": False,
         "issue": "",
+        "issues": [],
     }
     if not artifact.path.exists():
         report["ok"] = False
         report["issue"] = "missing generated artifact"
+        report["issues"] = ["missing generated artifact"]
         return report
 
     actual = _read(artifact.path)
     report["actual_bytes"] = len(actual.encode("utf-8"))
+    report["actual_sha256"] = _sha256(actual)
+    report["embeds_contract_hash"] = contract_hash in actual
+    artifact_issues: list[str] = []
     if actual != artifact.expected:
-        report["ok"] = False
-        report["issue"] = (
+        artifact_issues.append(
             "generated artifact is stale; run "
             "python Languages/Python/tools/generate_native_parity_contracts.py"
         )
+    if not report["embeds_contract_hash"]:
+        artifact_issues.append("generated artifact does not embed the current Python contract hash")
+    if artifact_issues:
+        report["ok"] = False
+        report["issue"] = "; ".join(artifact_issues)
+        report["issues"] = artifact_issues
     return report
 
 
@@ -160,7 +179,8 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
 
 
 def audit_native_source_sync() -> dict[str, object]:
-    generated = [_check_generated_artifact(artifact) for artifact in _generated_artifacts()]
+    contract_hash = native_python_source_contract_hash()
+    generated = [_check_generated_artifact(artifact, contract_hash) for artifact in _generated_artifacts()]
     consumers = [_check_consumer(requirement) for requirement in _consumer_requirements()]
     issues = [
         f"{item['path']}: {item.get('issue') or 'missing consumer wiring'}"
@@ -169,7 +189,7 @@ def audit_native_source_sync() -> dict[str, object]:
     ]
     return {
         "ok": not issues,
-        "contract_hash": native_python_source_contract_hash(),
+        "contract_hash": contract_hash,
         "source": "Languages/Python/app/native_parity.py",
         "generated": generated,
         "consumers": consumers,

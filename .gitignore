@@ -30,3 +30,7 @@ experiments/rust-shells/target/
 .coverage
 .coverage.*
 coverage.xml
+artifacts/rust-native-runtime-evidence/*.json
+artifacts/rust-native-runtime-evidence/*.zip
+artifacts/rust-native-runtime-evidence/downloads/
+release-platform-evidence/*.json

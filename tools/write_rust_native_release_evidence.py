@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_release_assets import _build_expected_assets, _fetch_release, _resolve_default_repo
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, REQUIRED_SUITE_RESULT_NAMES
     from check_release_platform_matrix import _evidence_issues, _load_json, _read_evidence
     from check_release_platform_matrix import _target_evidence_issues, _validate_matrix
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_release_assets import _build_expected_assets, _fetch_release, _resolve_default_repo
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, REQUIRED_SUITE_RESULT_NAMES
     from tools.check_release_platform_matrix import _evidence_issues, _load_json, _read_evidence
@@ -27,10 +29,16 @@ except ModuleNotFoundError:  # pragma: no cover - exercised when imported as too
 
 DEFAULT_OUTPUT_DIR = Path("artifacts/rust-native-runtime-evidence")
 EVIDENCE_ID = "rust-native-release-platform-evidence"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from app.native_parity import native_python_source_contract_hash  # noqa: E402
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 def _repo_path(path: Path) -> Path:
@@ -230,6 +238,7 @@ def preflight_release_evidence_inputs(
     matrix_path = _repo_path(matrix_path)
     platform_evidence_dir = _repo_path(platform_evidence_dir)
     output_dir = _repo_path(output_dir)
+    output_write_guard = generated_evidence_write_guard([output_dir / f"{EVIDENCE_ID}.json"], root=_repo_root())
     version, expected_assets = _build_expected_assets(tag)
     required_rust_assets = sorted(
         asset.name
@@ -284,6 +293,8 @@ def preflight_release_evidence_inputs(
         )
     if invalid_evidence:
         issues.append(f"invalid release platform evidence for {len(invalid_evidence)} target(s)")
+    if not output_write_guard["ok"]:
+        issues.extend(str(issue) for issue in output_write_guard["issues"])
 
     missing_evidence_plan = [
         _target_plan(targets_by_id[target_id])
@@ -312,6 +323,7 @@ def preflight_release_evidence_inputs(
         "platform_evidence_dir": str(platform_evidence_dir),
         "platform_evidence_dir_exists": evidence_dir_exists,
         "source_tree_clean": _source_tree_clean(),
+        "python_source_contract_hash": native_python_source_contract_hash(),
         "platform_target_count": len(platform_targets),
         "browser_target_count": len(browser_targets),
         "required_rust_release_assets": required_rust_assets,
@@ -328,6 +340,7 @@ def preflight_release_evidence_inputs(
         "missing_platform_evidence_plan": missing_evidence_plan,
         "missing_platform_evidence_truncated": missing_limit > 0 and len(missing_evidence) > missing_limit,
         "expected_output_path": str(output_dir / f"{EVIDENCE_ID}.json"),
+        "source_control_write_guard": output_write_guard,
         "preflight_command": (
             "python tools/write_rust_native_release_evidence.py --tag <tag> "
             "--platform-evidence-dir release-platform-evidence --preflight --json"
@@ -389,6 +402,7 @@ def build_release_evidence(
         "generated_at": _current_unix_timestamp_label(),
         "commit": _current_git_commit(),
         "source_tree_clean": _source_tree_clean(),
+        "python_source_contract_hash": native_python_source_contract_hash(),
         "command": command,
         "environment": {
             "tag": tag,
@@ -487,11 +501,32 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- {issue}")
         return 1
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = _repo_path(Path(args.output_dir))
     output_path = output_dir / f"{EVIDENCE_ID}.json"
+    source_control_write_guard = generated_evidence_write_guard([output_path], root=_repo_root())
+    if not source_control_write_guard["ok"]:
+        result = {
+            "ok": False,
+            "issues": [str(issue) for issue in source_control_write_guard["issues"]],
+            "artifact": None,
+            "source_control_write_guard": source_control_write_guard,
+        }
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print("Rust native release evidence was not written:")
+            for issue in result["issues"]:
+                print(f"- {issue}")
+        return 1
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    result = {"ok": True, "artifact": str(output_path), "issues": []}
+    result = {
+        "ok": True,
+        "artifact": str(output_path),
+        "source_control_write_guard": source_control_write_guard,
+        "issues": [],
+    }
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

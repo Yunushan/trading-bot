@@ -1,0 +1,167 @@
+name: Rust Native Runtime Promotion Audit
+
+"on":
+  workflow_dispatch:
+    inputs:
+      live_smoke_run_id:
+        description: "Actions run id that uploaded rust-native-live-smoke-evidence."
+        required: true
+        type: string
+      release_evidence_run_id:
+        description: "Actions run id that uploaded rust-native-release-platform-evidence."
+        required: true
+        type: string
+      evidence_dir:
+        description: "Canonical runtime evidence directory used by the promotion audit."
+        required: true
+        default: "artifacts/rust-native-runtime-evidence"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  promotion-audit:
+    name: Strict Rust Native Runtime Promotion Audit
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      LIVE_SMOKE_RUN_ID: ${{ inputs.live_smoke_run_id }}
+      RELEASE_EVIDENCE_RUN_ID: ${{ inputs.release_evidence_run_id }}
+      RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            Languages/Python/pyproject.toml
+
+      - name: Install Rust native promotion dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            experiments/rust-shells -> target
+
+      - name: Validate promotion audit inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${LIVE_SMOKE_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "live_smoke_run_id must be a numeric GitHub Actions run id." >&2
+            exit 1
+          fi
+          if [[ ! "${RELEASE_EVIDENCE_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "release_evidence_run_id must be a numeric GitHub Actions run id." >&2
+            exit 1
+          fi
+          if [[ -z "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" ]]; then
+            echo "evidence_dir input is required for Rust native promotion audit." >&2
+            exit 1
+          fi
+
+      - name: Download external Rust native evidence artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          download_dir="${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/downloads"
+          mkdir -p "${download_dir}/live-smoke" "${download_dir}/release-evidence"
+          gh run download "${LIVE_SMOKE_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name rust-native-live-smoke-evidence \
+            --dir "${download_dir}/live-smoke"
+          gh run download "${RELEASE_EVIDENCE_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name rust-native-release-platform-evidence \
+            --dir "${download_dir}/release-evidence"
+
+      - name: Import external Rust native evidence artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/import_rust_native_evidence_artifacts.py \
+            "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/downloads" \
+            --apply \
+            --overwrite \
+            --require-current-commit \
+            --require-clean-source \
+            --require-runtime-id rust-native-live-market-data-smoke \
+            --require-runtime-id rust-native-live-account-read-smoke \
+            --require-runtime-id rust-native-release-platform-evidence \
+            --runtime-evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --json
+
+      - name: Generate deterministic local recovery evidence for checked commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_local_recovery_evidence.py \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --json
+
+      - name: Validate complete current-commit runtime evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_runtime_evidence.py \
+            --require-evidence \
+            --require-current-commit \
+            --require-clean-source \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"
+
+      - name: Run strict Rust native runtime promotion readiness audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/audit_rust_native_runtime_readiness.py \
+            --require-ready \
+            --json \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"
+
+      - name: Write final Rust native runtime evidence plan
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"
+          python tools/audit_rust_native_runtime_readiness.py \
+            --json \
+            --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --write-evidence-plan "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/rust-native-runtime-evidence-plan.md"
+
+      - name: Upload final Rust native runtime evidence plan
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-native-promotion-evidence-plan
+          path: ${{ inputs.evidence_dir }}/rust-native-runtime-evidence-plan.md
+          if-no-files-found: warn
+
+      - name: Upload normalized Rust native runtime promotion evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-native-runtime-promotion-evidence
+          path: |
+            ${{ inputs.evidence_dir }}/rust-native-live-market-data-smoke.json
+            ${{ inputs.evidence_dir }}/rust-native-live-account-read-smoke.json
+            ${{ inputs.evidence_dir }}/rust-native-live-stream-recovery.json
+            ${{ inputs.evidence_dir }}/rust-native-order-guard-recovery.json
+            ${{ inputs.evidence_dir }}/rust-native-release-platform-evidence.json
+          if-no-files-found: warn
