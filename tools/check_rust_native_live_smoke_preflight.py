@@ -194,6 +194,12 @@ def _artifact_names(path: Path) -> list[str]:
     return sorted(item.name for item in path.iterdir() if item.is_file())
 
 
+def _missing_clean_source(payload: dict[str, Any] | None) -> set[str]:
+    if isinstance(payload, dict) and payload.get("source_tree_clean") is False:
+        return {"clean source tree"}
+    return set()
+
+
 def _validate_payload(
     payload: dict[str, Any] | None,
     *,
@@ -230,6 +236,8 @@ def _validate_payload(
             "payload python_source_contract_hash must match current Python source contract "
             f"{native_python_source_contract_hash()}"
         )
+    if not isinstance(payload.get("source_tree_clean"), bool):
+        issues.append("payload source_tree_clean must be a boolean")
     if Path(str(payload.get("evidence_dir") or "")) != evidence_dir:
         issues.append("payload evidence_dir must match the isolated preflight directory")
     expected = sorted(expected_artifacts)
@@ -278,14 +286,30 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
         market_confirmed_run = _run_market_preflight(market_confirmed_dir, confirmed=True, timeout=timeout)
 
         issues: list[str] = []
+        missing_expected_missing = {
+            "BINANCE_API_KEY",
+            "BINANCE_API_SECRET",
+            "TRADING_BOT_RUST_LIVE_SMOKE=1",
+        } | _missing_clean_source(missing_run.get("payload"))
+        dummy_expected_missing = _missing_clean_source(dummy_run.get("payload"))
+        market_missing_expected_missing = {
+            "TRADING_BOT_RUST_MARKET_SMOKE=1",
+        } | _missing_clean_source(market_missing_run.get("payload"))
+        market_confirmed_expected_missing = _missing_clean_source(market_confirmed_run.get("payload"))
+
+        dummy_expected_ok = not dummy_expected_missing
+        market_confirmed_expected_ok = not market_confirmed_expected_missing
+
         if missing_run["returncode"] != 1:
             issues.append("missing-env preflight must fail with exit code 1")
-        if dummy_run["returncode"] != 0:
-            issues.append("dummy-env preflight must pass with exit code 0")
+        if dummy_run["returncode"] != (0 if dummy_expected_ok else 1):
+            expected_code = 0 if dummy_expected_ok else 1
+            issues.append(f"dummy-env preflight must exit with code {expected_code}")
         if market_missing_run["returncode"] != 1:
             issues.append("market-missing-env preflight must fail with exit code 1")
-        if market_confirmed_run["returncode"] != 0:
-            issues.append("market-confirmed-env preflight must pass with exit code 0")
+        if market_confirmed_run["returncode"] != (0 if market_confirmed_expected_ok else 1):
+            expected_code = 0 if market_confirmed_expected_ok else 1
+            issues.append(f"market-confirmed-env preflight must exit with code {expected_code}")
         issues.extend(
             f"missing-env: {issue}"
             for issue in _validate_payload(
@@ -293,7 +317,7 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
                 expected_ok=False,
                 expected_mode="native_live_smoke_preflight",
                 expected_artifacts=SIGNED_EXPECTED_ARTIFACTS,
-                expected_missing={"BINANCE_API_KEY", "BINANCE_API_SECRET", "TRADING_BOT_RUST_LIVE_SMOKE=1"},
+                expected_missing=missing_expected_missing,
                 expected_prerequisites={
                     "binance_api_key_present": False,
                     "binance_api_secret_present": False,
@@ -310,10 +334,10 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
             f"dummy-env: {issue}"
             for issue in _validate_payload(
                 dummy_run.get("payload"),
-                expected_ok=True,
+                expected_ok=dummy_expected_ok,
                 expected_mode="native_live_smoke_preflight",
                 expected_artifacts=SIGNED_EXPECTED_ARTIFACTS,
-                expected_missing=set(),
+                expected_missing=dummy_expected_missing,
                 expected_prerequisites={
                     "binance_api_key_present": True,
                     "binance_api_secret_present": True,
@@ -333,7 +357,7 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
                 expected_ok=False,
                 expected_mode="native_live_market_smoke_preflight",
                 expected_artifacts=MARKET_EXPECTED_ARTIFACTS,
-                expected_missing={"TRADING_BOT_RUST_MARKET_SMOKE=1"},
+                expected_missing=market_missing_expected_missing,
                 expected_prerequisites={
                     "market_smoke_confirmation_present": False,
                     "binance_testnet": True,
@@ -348,10 +372,10 @@ def check_live_smoke_preflight(*, timeout: int) -> dict[str, Any]:
             f"market-confirmed-env: {issue}"
             for issue in _validate_payload(
                 market_confirmed_run.get("payload"),
-                expected_ok=True,
+                expected_ok=market_confirmed_expected_ok,
                 expected_mode="native_live_market_smoke_preflight",
                 expected_artifacts=MARKET_EXPECTED_ARTIFACTS,
-                expected_missing=set(),
+                expected_missing=market_confirmed_expected_missing,
                 expected_prerequisites={
                     "market_smoke_confirmation_present": True,
                     "binance_testnet": True,

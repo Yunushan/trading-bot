@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -15,6 +16,10 @@ from typing import Any
 
 try:
     from check_generated_evidence_source_control import generated_evidence_write_guard
+    from release_browser_contract_commands import browser_contract_command_text
+    from release_browser_contract_commands import browser_host_from_observed_platform
+    from release_browser_contract_commands import builtin_browser_contract_targets_for_host
+    from release_browser_contract_commands import has_builtin_browser_contract_command
     from check_release_assets import _build_expected_assets, _fetch_release, _resolve_default_repo
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from check_release_platform_matrix import REQUIRED_SUITE_RESULT_NAMES
@@ -22,6 +27,10 @@ try:
     from check_release_platform_matrix import _target_evidence_issues, _validate_matrix
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
+    from tools.release_browser_contract_commands import browser_contract_command_text
+    from tools.release_browser_contract_commands import browser_host_from_observed_platform
+    from tools.release_browser_contract_commands import builtin_browser_contract_targets_for_host
+    from tools.release_browser_contract_commands import has_builtin_browser_contract_command
     from tools.check_release_assets import _build_expected_assets, _fetch_release, _resolve_default_repo
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from tools.check_release_platform_matrix import REQUIRED_SUITE_RESULT_NAMES
@@ -32,6 +41,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised when imported as too
 DEFAULT_OUTPUT_DIR = Path("artifacts/rust-native-runtime-evidence")
 EVIDENCE_ID = "rust-native-release-platform-evidence"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE = (
+    "source tree must be clean before writing Rust native release-platform evidence"
+)
 PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
@@ -89,6 +101,75 @@ def _source_tree_clean() -> bool:
 
 def _current_unix_timestamp_label() -> str:
     return f"unix:{int(time.time())}"
+
+
+def _os_release() -> dict[str, str]:
+    os_release = Path("/etc/os-release")
+    if not os_release.is_file():
+        return {}
+    parsed: dict[str, str] = {}
+    try:
+        lines = os_release.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        parsed[key.strip()] = value.strip().strip('"')
+    return parsed
+
+
+def _normalize_architecture(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized in {"amd64", "x86_64", "x64"}:
+        return "x64"
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    if normalized in {"x86", "i386", "i686"}:
+        return "x86"
+    if normalized.startswith("armv7") or normalized.startswith("armv6"):
+        return "arm32"
+    return normalized
+
+
+def _observed_platform() -> dict[str, Any]:
+    os_release = _os_release()
+    return {
+        "system": platform.system(),
+        "release": platform.release(),
+        "normalized_architecture": _normalize_architecture(platform.machine()),
+        "os_release_id": os_release.get("ID", ""),
+        "os_release_version_id": os_release.get("VERSION_ID", ""),
+        "macos_version": platform.mac_ver()[0],
+    }
+
+
+def _local_browser_batch_plan(browser_targets: list[dict[str, Any]]) -> dict[str, Any]:
+    host = browser_host_from_observed_platform(_observed_platform())
+    targets = builtin_browser_contract_targets_for_host(browser_targets, host)
+    target_ids = [str(target["id"]) for target in targets]
+    validation_commands = [
+        (
+            "python tools/check_release_platform_matrix.py --require-evidence "
+            "--require-current-commit --require-clean-source "
+            f"--evidence-dir release-platform-evidence --target-filter {target_id}"
+        )
+        for target_id in target_ids
+    ]
+    return {
+        "host": host,
+        "target_count": len(target_ids),
+        "target_ids": target_ids,
+        "list_command": "python tools/run_release_platform_probe.py --list-local-browser-targets",
+        "batch_command": (
+            "python tools/run_release_platform_probe.py "
+            "--local-browser-targets --require-clean-source --output-dir release-platform-evidence"
+        ),
+        "validation_commands": validation_commands,
+        "partial_evidence_only": True,
+        "remaining_matrix_targets_still_required": True,
+    }
 
 
 def _release_asset_names(payload: dict[str, Any]) -> set[str]:
@@ -223,7 +304,7 @@ def _limit_list(values: list[Any], limit: int) -> list[Any]:
 def _required_workflow_inputs(target: dict[str, Any]) -> list[str]:
     suites = {str(item) for item in target.get("test_suites", [])}
     inputs: list[str] = []
-    if target.get("kind") == "browser" or "browser-contract" in suites:
+    if (target.get("kind") == "browser" or "browser-contract" in suites) and not has_builtin_browser_contract_command(target):
         inputs.append("browser_test_command")
     if "desktop-release-smoke" in suites:
         inputs.append("desktop_smoke_command")
@@ -242,7 +323,7 @@ def _workflow_dispatch_example(target: dict[str, Any]) -> str:
     if "desktop_smoke_command" in _required_workflow_inputs(target):
         args.append("-f desktop_smoke_command='<real release desktop smoke command>'")
     if "browser_test_command" in _required_workflow_inputs(target):
-        args.append("-f browser_test_command='<real browser contract command>'")
+        args.append(f"-f browser_test_command='{browser_contract_command_text(target)}'")
     return " ".join(args)
 
 
@@ -250,7 +331,7 @@ def _target_plan(target: dict[str, Any]) -> dict[str, Any]:
     target_id = str(target.get("id") or "")
     runner_labels = target.get("runner_labels")
     runner_labels_list = runner_labels if isinstance(runner_labels, list) else []
-    return {
+    plan = {
         "target_id": target_id,
         "kind": str(target.get("kind") or ""),
         "runner_kind": str(target.get("runner_kind") or ""),
@@ -260,7 +341,7 @@ def _target_plan(target: dict[str, Any]) -> dict[str, Any]:
         "required_workflow_inputs": _required_workflow_inputs(target),
         "probe_command": (
             "python tools/run_release_platform_probe.py "
-            f"--target-id {target_id} --output release-platform-evidence/{target_id}.json"
+            f"--target-id {target_id} --require-clean-source --output release-platform-evidence/{target_id}.json"
         ),
         "target_validation_command": (
             "python tools/check_release_platform_matrix.py --require-evidence "
@@ -269,6 +350,10 @@ def _target_plan(target: dict[str, Any]) -> dict[str, Any]:
         ),
         "workflow_dispatch_example": _workflow_dispatch_example(target),
     }
+    if target.get("kind") == "browser" or "browser-contract" in set(plan["test_suites"]):
+        plan["browser_contract_command"] = browser_contract_command_text(target)
+        plan["browser_contract_command_builtin"] = has_builtin_browser_contract_command(target)
+    return plan
 
 
 def preflight_release_evidence_inputs(
@@ -299,6 +384,9 @@ def preflight_release_evidence_inputs(
         if not asset.required and asset.name.startswith("Trading-Bot-Rust-")
     )
     issues: list[str] = []
+    source_tree_clean = _source_tree_clean()
+    if not source_tree_clean:
+        issues.append(DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE)
     platform_targets: list[dict[str, Any]] = []
     browser_targets: list[dict[str, Any]] = []
     try:
@@ -354,6 +442,7 @@ def preflight_release_evidence_inputs(
         for target_id in _limit_list(missing_evidence, missing_limit)
         if target_id in targets_by_id
     ]
+    local_browser_batch_plan = _local_browser_batch_plan(browser_targets)
     github_token_present = bool(
         str(os.environ.get("GITHUB_TOKEN") or "").strip()
         or str(os.environ.get("GH_TOKEN") or "").strip()
@@ -375,7 +464,7 @@ def preflight_release_evidence_inputs(
         "matrix_path": str(matrix_path),
         "platform_evidence_dir": str(platform_evidence_dir),
         "platform_evidence_dir_exists": evidence_dir_exists,
-        "source_tree_clean": _source_tree_clean(),
+        "source_tree_clean": source_tree_clean,
         "python_source_contract_hash": native_python_source_contract_hash(),
         "platform_target_count": len(platform_targets),
         "browser_target_count": len(browser_targets),
@@ -392,6 +481,7 @@ def preflight_release_evidence_inputs(
         "missing_platform_evidence": _limit_list(missing_evidence, missing_limit),
         "missing_platform_evidence_plan": missing_evidence_plan,
         "missing_platform_evidence_truncated": missing_limit > 0 and len(missing_evidence) > missing_limit,
+        "local_browser_batch_plan": local_browser_batch_plan,
         "expected_output_path": str(output_dir / f"{EVIDENCE_ID}.json"),
         "source_control_write_guard": output_write_guard,
         "preflight_command": (
@@ -418,6 +508,8 @@ def build_release_evidence(
     issues: list[str] = []
     matrix_path = _repo_path(matrix_path)
     platform_evidence_dir = _repo_path(platform_evidence_dir)
+    if not _source_tree_clean():
+        return None, [DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE]
     token = (
         str(os.environ.get("GITHUB_TOKEN") or "").strip()
         or str(os.environ.get("GH_TOKEN") or "").strip()

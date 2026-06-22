@@ -425,6 +425,7 @@ jobs:
         run: |
           set -euo pipefail
           python tools/check_release_platform_matrix.py --schema-only
+          python tools/run_release_platform_probe.py --list-local-browser-targets
 
   native-cpp-smoke:
     name: Native C++ Smoke

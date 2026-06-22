@@ -128,6 +128,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 "read_only": True,
                 "secrets_redacted": True,
                 "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+                "source_tree_clean": True,
                 "evidence_dir": str(evidence_dir),
                 "expected_artifacts": ["rust-native-live-market-data-smoke.json"],
                 "missing": [],
@@ -178,6 +179,68 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(
             any("python_source_contract_hash must match current Python source contract" in issue for issue in stale)
         )
+
+    def test_live_smoke_preflight_payload_models_dirty_source_as_missing_prerequisite(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir)
+            payload = {
+                "ok": False,
+                "mode": "native_live_market_smoke_preflight",
+                "network_access_attempted": False,
+                "order_submission_attempted": False,
+                "runtime_ready_claimed": False,
+                "read_only": True,
+                "secrets_redacted": True,
+                "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+                "source_tree_clean": False,
+                "evidence_dir": str(evidence_dir),
+                "expected_artifacts": ["rust-native-live-market-data-smoke.json"],
+                "missing": ["clean source tree"],
+                "source_control_write_guard": {"ok": True, "issues": []},
+                "prerequisites": {
+                    "market_smoke_confirmation_present": True,
+                    "binance_testnet": True,
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                },
+                "operator_command": "TRADING_BOT_RUST_MARKET_SMOKE=1 cargo run -- --native-live-market-smoke",
+            }
+
+            matching = live_smoke_preflight._validate_payload(
+                payload,
+                expected_ok=False,
+                expected_mode="native_live_market_smoke_preflight",
+                expected_artifacts={"rust-native-live-market-data-smoke.json"},
+                expected_missing={"clean source tree"},
+                expected_prerequisites={
+                    "market_smoke_confirmation_present": True,
+                    "binance_testnet": True,
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                },
+                evidence_dir=evidence_dir,
+                expected_operator_fragments=("TRADING_BOT_RUST_MARKET_SMOKE=1", "--native-live-market-smoke"),
+            )
+
+            payload["missing"] = []
+            stale = live_smoke_preflight._validate_payload(
+                payload,
+                expected_ok=False,
+                expected_mode="native_live_market_smoke_preflight",
+                expected_artifacts={"rust-native-live-market-data-smoke.json"},
+                expected_missing={"clean source tree"},
+                expected_prerequisites={
+                    "market_smoke_confirmation_present": True,
+                    "binance_testnet": True,
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                },
+                evidence_dir=evidence_dir,
+                expected_operator_fragments=("TRADING_BOT_RUST_MARKET_SMOKE=1", "--native-live-market-smoke"),
+            )
+
+        self.assertEqual([], matching)
+        self.assertTrue(any("payload missing must be ['clean source tree']" in issue for issue in stale))
 
     def test_generated_evidence_source_control_guard_rejects_existing_tracked_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -356,6 +419,36 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(guard, result["market_source_control_write_guard"])
         self.assertEqual(guard, result["account_source_control_write_guard"])
 
+    def test_readiness_live_smoke_prerequisites_require_clean_source(self):
+        guard = {
+            "ok": True,
+            "generated_evidence_write_targets": [],
+            "tracked_generated_evidence_write_targets": [],
+            "issues": [],
+        }
+
+        with (
+            patch.dict(
+                runtime_readiness.os.environ,
+                {
+                    "TRADING_BOT_RUST_MARKET_SMOKE": "1",
+                    "TRADING_BOT_RUST_LIVE_SMOKE": "1",
+                    "BINANCE_API_KEY": "test-key",
+                    "BINANCE_API_SECRET": "test-secret",
+                },
+                clear=True,
+            ),
+            patch.object(runtime_readiness, "generated_evidence_write_guard", return_value=guard),
+        ):
+            result = runtime_readiness._live_smoke_prerequisites(
+                REPO_ROOT / "artifacts" / "rust-native-runtime-evidence",
+                source_tree_clean=False,
+            )
+
+        self.assertFalse(result["source_tree_clean"])
+        self.assertFalse(result["can_run_market_smoke"])
+        self.assertFalse(result["can_run_live_smoke"])
+
     def test_release_asset_fetch_uses_windows_cert_store_fallback_for_ssl_errors(self):
         fallback_payload = {
             "html_url": "https://github.com/Yunushan/trading-bot/releases/tag/v1.0.33",
@@ -429,26 +522,42 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         def _read_platform_evidence(path: Path) -> dict[str, object]:
             target = targets_by_id[path.stem]
-            return _target_evidence_payload(target)
-
-        with (
-            patch.object(release_evidence, "_fetch_release", return_value=release_payload),
-            patch.object(release_evidence, "_load_json", return_value={"schema_version": 1}),
-            patch.object(release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])),
-            patch.object(release_evidence, "_evidence_issues", return_value=[]),
-            patch.object(release_evidence, "_read_evidence", side_effect=_read_platform_evidence),
-            patch.object(release_evidence, "_sha256_file", return_value="a" * 64),
-            patch.object(release_evidence, "_current_git_commit", return_value="abc123"),
-            patch.object(release_evidence, "_source_tree_clean", return_value=True),
-        ):
-            artifact, issues = release_evidence.build_release_evidence(
-                tag=tag,
-                owner="Yunushan",
-                repo="trading-bot",
-                timeout=1.0,
-                matrix_path=Path("docs/release-platform-test-matrix.json"),
-                platform_evidence_dir=Path("release-platform-evidence"),
+            payload = _target_evidence_payload(target)
+            payload.update(
+                {
+                    "commit": "abc123",
+                    "source_tree_clean": True,
+                    "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+                    "runtime_ready_claimed": False,
+                    "secrets_redacted": True,
+                }
             )
+            return payload
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            platform_evidence_dir = Path(temp_dir) / "release-platform-evidence"
+            platform_evidence_dir.mkdir()
+            for target in platform_targets + browser_targets:
+                (platform_evidence_dir / f"{target['id']}.json").write_text("{}", encoding="utf-8")
+
+            with (
+                patch.object(release_evidence, "_fetch_release", return_value=release_payload),
+                patch.object(release_evidence, "_load_json", return_value={"schema_version": 1}),
+                patch.object(release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])),
+                patch.object(release_evidence, "_evidence_issues", return_value=[]),
+                patch.object(release_evidence, "_read_evidence", side_effect=_read_platform_evidence),
+                patch.object(release_evidence, "_sha256_file", return_value="a" * 64),
+                patch.object(release_evidence, "_current_git_commit", return_value="abc123"),
+                patch.object(release_evidence, "_source_tree_clean", return_value=True),
+            ):
+                artifact, issues = release_evidence.build_release_evidence(
+                    tag=tag,
+                    owner="Yunushan",
+                    repo="trading-bot",
+                    timeout=1.0,
+                    matrix_path=Path("docs/release-platform-test-matrix.json"),
+                    platform_evidence_dir=platform_evidence_dir,
+                )
 
         self.assertEqual([], issues)
         self.assertIsNotNone(artifact)
@@ -470,7 +579,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         tag = "v1.2.3"
         release_payload = {"assets": []}
 
-        with patch.object(release_evidence, "_fetch_release", return_value=release_payload):
+        with (
+            patch.object(release_evidence, "_source_tree_clean", return_value=True),
+            patch.object(release_evidence, "_fetch_release", return_value=release_payload),
+        ):
             artifact, issues = release_evidence.build_release_evidence(
                 tag=tag,
                 owner="Yunushan",
@@ -482,6 +594,23 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertIsNone(artifact)
         self.assertTrue(any("missing required Rust release assets" in issue for issue in issues))
+
+    def test_build_release_evidence_blocks_dirty_source_before_network(self):
+        with (
+            patch.object(release_evidence, "_source_tree_clean", return_value=False),
+            patch.object(release_evidence, "_fetch_release", side_effect=AssertionError("network forbidden")),
+        ):
+            artifact, issues = release_evidence.build_release_evidence(
+                tag="v1.2.3",
+                owner="Yunushan",
+                repo="trading-bot",
+                timeout=1.0,
+                matrix_path=Path("docs/release-platform-test-matrix.json"),
+                platform_evidence_dir=Path("release-platform-evidence"),
+            )
+
+        self.assertIsNone(artifact)
+        self.assertEqual([release_evidence.DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE], issues)
 
     def test_runtime_release_evidence_requires_required_rust_assets_and_full_platform_matrix(self):
         tag = "v1.2.3"
@@ -707,6 +836,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             {
                 "id": "browser-chrome-windows-11-x64",
                 "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
                 "runner_kind": "real-browser-or-browser-lab",
             }
         ]
@@ -720,6 +851,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 patch.object(release_evidence, "_fetch_release", side_effect=AssertionError("network forbidden")),
                 patch.object(release_evidence, "_load_json", return_value={"schema_version": 1}),
                 patch.object(release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])),
+                patch.object(release_evidence, "_source_tree_clean", return_value=True),
+                patch.object(
+                    release_evidence,
+                    "_observed_platform",
+                    return_value={
+                        "system": "Windows",
+                        "release": "11",
+                        "normalized_architecture": "x64",
+                    },
+                ),
             ):
                 result = release_evidence.preflight_release_evidence_inputs(
                     tag=tag,
@@ -745,7 +886,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(["browser-chrome-windows-11-x64"], result["missing_platform_evidence"])
         self.assertEqual(1, len(result["missing_platform_evidence_plan"]))
         self.assertEqual("browser-chrome-windows-11-x64", result["missing_platform_evidence_plan"][0]["target_id"])
-        self.assertIn("browser_test_command", result["missing_platform_evidence_plan"][0]["required_workflow_inputs"])
+        self.assertNotIn("browser_test_command", result["missing_platform_evidence_plan"][0]["required_workflow_inputs"])
+        self.assertTrue(result["missing_platform_evidence_plan"][0]["browser_contract_command_builtin"])
+        self.assertEqual(
+            "npm --prefix apps/web-dashboard run test:browser -- --browser=chrome",
+            result["missing_platform_evidence_plan"][0]["browser_contract_command"],
+        )
         self.assertIn(
             "tools/check_release_platform_matrix.py",
             result["missing_platform_evidence_plan"][0]["target_validation_command"],
@@ -762,12 +908,92 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "--target-filter browser-chrome-windows-11-x64",
             result["missing_platform_evidence_plan"][0]["target_validation_command"],
         )
-        self.assertIn("gh workflow run release-platform-real-tests.yml", result["missing_platform_evidence_plan"][0]["workflow_dispatch_example"])
+        workflow_example = result["missing_platform_evidence_plan"][0]["workflow_dispatch_example"]
+        self.assertIn("gh workflow run release-platform-real-tests.yml", workflow_example)
+        self.assertNotIn("browser_test_command", workflow_example)
+        self.assertEqual("windows-11-x64", result["local_browser_batch_plan"]["host"])
+        self.assertEqual(["browser-chrome-windows-11-x64"], result["local_browser_batch_plan"]["target_ids"])
+        self.assertEqual(1, result["local_browser_batch_plan"]["target_count"])
+        self.assertIn("--list-local-browser-targets", result["local_browser_batch_plan"]["list_command"])
+        self.assertIn("--local-browser-targets", result["local_browser_batch_plan"]["batch_command"])
+        self.assertIn("--require-clean-source", result["local_browser_batch_plan"]["batch_command"])
+        self.assertIn(
+            "--target-filter browser-chrome-windows-11-x64",
+            result["local_browser_batch_plan"]["validation_commands"][0],
+        )
+        self.assertTrue(result["local_browser_batch_plan"]["partial_evidence_only"])
+        self.assertTrue(result["local_browser_batch_plan"]["remaining_matrix_targets_still_required"])
         self.assertIn("--preflight", result["preflight_command"])
+
+    def test_release_evidence_preflight_blocks_dirty_source_without_network(self):
+        tag = "v1.2.3"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir) / "release-platform-evidence"
+            output_dir = Path(temp_dir) / "runtime-evidence"
+            evidence_dir.mkdir()
+            with (
+                patch.object(release_evidence, "_fetch_release", side_effect=AssertionError("network forbidden")),
+                patch.object(release_evidence, "_load_json", return_value={"schema_version": 1}),
+                patch.object(release_evidence, "_validate_matrix", return_value=([], [], [])),
+                patch.object(release_evidence, "_source_tree_clean", return_value=False),
+            ):
+                result = release_evidence.preflight_release_evidence_inputs(
+                    tag=tag,
+                    owner="Yunushan",
+                    repo="trading-bot",
+                    matrix_path=Path("docs/release-platform-test-matrix.json"),
+                    platform_evidence_dir=evidence_dir,
+                    output_dir=output_dir,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["network_access_attempted"])
+        self.assertFalse(result["artifact_write_attempted"])
+        self.assertFalse(result["source_tree_clean"])
+        self.assertIn(
+            release_evidence.DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE,
+            result["issues"],
+        )
+
+    def test_release_evidence_browser_workflow_examples_use_supported_browser_commands(self):
+        edge_target = {
+            "id": "browser-edge-windows-11-x64",
+            "kind": "browser",
+            "browser": "edge",
+            "runner_labels": ["self-hosted", "tb-browser", "edge-windows-11-x64"],
+            "test_suites": ["browser-contract"],
+        }
+        firefox_target = {
+            "id": "browser-firefox-windows-11-x64",
+            "kind": "browser",
+            "browser": "firefox",
+            "runner_labels": ["self-hosted", "tb-browser", "firefox-windows-11-x64"],
+            "test_suites": ["browser-contract"],
+        }
+
+        edge_plan = release_evidence._target_plan(edge_target)
+        firefox_plan = release_evidence._target_plan(firefox_target)
+
+        self.assertTrue(edge_plan["browser_contract_command_builtin"])
+        self.assertEqual(
+            "npm --prefix apps/web-dashboard run test:browser -- --browser=edge",
+            edge_plan["browser_contract_command"],
+        )
+        self.assertNotIn("browser_test_command", edge_plan["required_workflow_inputs"])
+        self.assertNotIn("browser_test_command", edge_plan["workflow_dispatch_example"])
+
+        self.assertFalse(firefox_plan["browser_contract_command_builtin"])
+        self.assertIn("browser_test_command", firefox_plan["required_workflow_inputs"])
+        self.assertIn(
+            "<real firefox browser contract command from external lab>",
+            firefox_plan["workflow_dispatch_example"],
+        )
 
     def test_readiness_audit_release_prerequisites_include_preflight_coverage(self):
         preflight_result = {
             "ok": False,
+            "source_tree_clean": True,
             "release_asset_presence_verified": False,
             "release_asset_presence_requires_network": True,
             "platform_target_count": 70,
@@ -783,6 +1009,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "missing_platform_evidence_plan": [
                 {
                     "target_id": "browser-chrome-windows-11-x64",
+                    "probe_command": (
+                        "python tools/run_release_platform_probe.py "
+                        "--target-id browser-chrome-windows-11-x64 --require-clean-source "
+                        "--output release-platform-evidence/browser-chrome-windows-11-x64.json"
+                    ),
                     "target_validation_command": (
                         "python tools/check_release_platform_matrix.py --require-evidence "
                         "--require-current-commit --require-clean-source "
@@ -810,6 +1041,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("v9.9.9", result["release_tag"])
         self.assertTrue(result["release_tag_configured"])
         self.assertFalse(result["release_platform_preflight_ok"])
+        self.assertTrue(result["source_tree_clean"])
         self.assertFalse(result["release_asset_presence_verified"])
         self.assertTrue(result["release_asset_presence_requires_network"])
         self.assertEqual(70, result["platform_target_count"])
@@ -823,6 +1055,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(result["missing_platform_evidence_truncated"])
         self.assertEqual(["browser-chrome-windows-11-x64"], result["missing_platform_evidence"])
         self.assertEqual("browser-chrome-windows-11-x64", result["missing_platform_evidence_plan"][0]["target_id"])
+        self.assertIn("--require-clean-source", result["missing_platform_evidence_plan"][0]["probe_command"])
         self.assertIn("--require-current-commit", result["missing_platform_evidence_plan"][0]["target_validation_command"])
         self.assertIn("--require-clean-source", result["missing_platform_evidence_plan"][0]["target_validation_command"])
         self.assertIn("98 of 99", result["release_platform_preflight_issues"][0])
@@ -1454,6 +1687,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             return {"ok": True, "issues": [], "runtime_ready_policy_state": False}
 
         live_prerequisites = {
+            "source_tree_clean": True,
             "can_run_market_smoke": False,
             "can_run_live_smoke": True,
             "market_preflight_command": "market preflight",
@@ -1467,6 +1701,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         }
         release_prerequisites = {
             "release_platform_preflight_ok": False,
+            "source_tree_clean": True,
             "preflight_command": "release preflight",
             "command": "release command",
             "github_workflow": "gh workflow run rust-native-release-evidence.yml",
@@ -1485,6 +1720,25 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     "workflow_dispatch_example": "gh workflow run release-platform-real-tests.yml",
                 }
             ],
+            "local_browser_batch_plan": {
+                "host": "windows-11-x64",
+                "target_count": 2,
+                "target_ids": ["browser-chrome-windows-11-x64", "browser-edge-windows-11-x64"],
+                "list_command": "python tools/run_release_platform_probe.py --list-local-browser-targets",
+                "batch_command": (
+                    "python tools/run_release_platform_probe.py "
+                    "--local-browser-targets --require-clean-source --output-dir release-platform-evidence"
+                ),
+                "validation_commands": [
+                    (
+                        "python tools/check_release_platform_matrix.py --require-evidence "
+                        "--require-current-commit --require-clean-source "
+                        "--evidence-dir release-platform-evidence --target-filter browser-chrome-windows-11-x64"
+                    )
+                ],
+                "partial_evidence_only": True,
+                "remaining_matrix_targets_still_required": True,
+            },
             "release_asset_presence_verified": False,
         }
 
@@ -1536,6 +1790,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(account_row["safety"]["requires_credentials"])
         self.assertFalse(account_row["safety"]["order_submission_attempted"])
         self.assertTrue(account_row["details"]["binance_api_key_present"])
+        self.assertIn("--require-evidence", account_row["validation_command"])
+        self.assertIn("--require-current-commit", account_row["validation_command"])
+        self.assertIn("--require-clean-source", account_row["validation_command"])
+        self.assertIn("--only rust-native-live-market-data-smoke", account_row["validation_command"])
+        self.assertIn("--only rust-native-live-account-read-smoke", account_row["validation_command"])
         self.assertIn("--require-current-commit", account_row["import_command"])
         self.assertIn("--require-clean-source", account_row["import_command"])
         self.assertEqual(
@@ -1558,6 +1817,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("Rust release assets", release_row["required_inputs"])
         self.assertIn("passed release-platform-evidence JSON for every target", release_row["required_inputs"])
         self.assertEqual(["rust-native-release-platform-evidence"], release_row["required_runtime_ids"])
+        self.assertIn("--only rust-native-release-platform-evidence", release_row["validation_command"])
         self.assertIn(
             "--require-runtime-id rust-native-release-platform-evidence",
             release_row["import_command"],
@@ -1565,9 +1825,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(98, release_row["details"]["missing_platform_evidence_count"])
         self.assertEqual(10, release_row["details"]["missing_platform_evidence_limit"])
         self.assertTrue(release_row["details"]["missing_platform_evidence_truncated"])
+        self.assertTrue(release_row["details"]["source_tree_clean"])
         self.assertEqual(
             "browser-chrome-windows-11-x64",
             release_row["details"]["missing_platform_evidence_plan"][0]["target_id"],
+        )
+        self.assertEqual(
+            ["browser-chrome-windows-11-x64", "browser-edge-windows-11-x64"],
+            release_row["details"]["local_browser_batch_plan"]["target_ids"],
         )
         self.assertIn(
             "--require-current-commit",
@@ -1586,9 +1851,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("read_only=true", markdown)
         self.assertIn("requires_credentials=true", markdown)
         self.assertIn("release preflight", markdown)
+        self.assertIn("Source tree clean: true", markdown)
+        self.assertIn("Validation command", markdown)
         self.assertIn("--require-current-commit", markdown)
         self.assertIn("browser-chrome-windows-11-x64", markdown)
         self.assertIn("gh workflow run release-platform-real-tests.yml", markdown)
+        self.assertIn("Local browser batch", markdown)
+        self.assertIn("--local-browser-targets", markdown)
+        self.assertIn("browser-edge-windows-11-x64", markdown)
         self.assertIn("missing target plan is truncated", markdown)
         self.assertIn("Required runtime evidence ids", markdown)
         self.assertIn("--require-runtime-id rust-native-live-account-read-smoke", markdown)
@@ -2258,6 +2528,204 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(PYTHON_SOURCE_CONTRACT_HASH, payload["python_source_contract_hash"])
         self.assertFalse(payload["runtime_ready_claimed"])
         self.assertTrue(payload["secrets_redacted"])
+
+    def test_release_platform_probe_uses_checked_in_chrome_browser_harness_by_default(self):
+        target = {
+            "id": "browser-chrome-windows-11-x64",
+            "kind": "browser",
+            "browser": "chrome",
+            "test_suites": ["browser-contract"],
+        }
+        expected_command = [
+            "npm.cmd",
+            "--prefix",
+            "apps/web-dashboard",
+            "run",
+            "test:browser",
+            "--",
+            "--browser=chrome",
+        ]
+
+        with (
+            patch.dict(release_platform_probe.os.environ, {}, clear=True),
+            patch.object(release_platform_probe.shutil, "which", return_value="npm.cmd"),
+            patch.object(
+                release_platform_probe,
+                "_run_command",
+                return_value={"name": "browser-contract", "status": "passed", "command": expected_command},
+            ) as run_command,
+        ):
+            results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual("passed", results[0]["status"])
+        run_command.assert_called_once()
+        self.assertEqual("browser-contract", run_command.call_args.args[0])
+        self.assertEqual(expected_command, run_command.call_args.args[1])
+
+    def test_release_platform_probe_detects_current_browser_host(self):
+        self.assertEqual(
+            "windows-11-x64",
+            release_platform_probe._current_browser_host(
+                {
+                    "system": "Windows",
+                    "release": "11",
+                    "normalized_architecture": "x64",
+                }
+            ),
+        )
+        self.assertEqual(
+            "ubuntu-24_04-arm64",
+            release_platform_probe._current_browser_host(
+                {
+                    "system": "Linux",
+                    "os_release_id": "ubuntu",
+                    "os_release_version_id": "24.04",
+                    "normalized_architecture": "arm64",
+                }
+            ),
+        )
+        self.assertEqual(
+            "macos-15-arm64",
+            release_platform_probe._current_browser_host(
+                {
+                    "system": "Darwin",
+                    "macos_version": "15.6.1",
+                    "normalized_architecture": "arm64",
+                }
+            ),
+        )
+
+    def test_release_platform_probe_selects_only_current_host_builtin_browser_targets(self):
+        with (
+            patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
+            patch.object(release_platform_probe.shutil, "which", return_value="npm.cmd"),
+        ):
+            targets = release_platform_probe._local_browser_targets(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+
+        self.assertEqual(
+            ["browser-chrome-windows_11_x64", "browser-edge-windows_11_x64"],
+            sorted(str(target["id"]) for target in targets),
+        )
+        self.assertTrue(all(str(target["host"]) == "windows-11-x64" for target in targets))
+        self.assertNotIn("firefox", {str(target.get("browser")) for target in targets})
+        self.assertNotIn("internet-explorer", {str(target.get("browser")) for target in targets})
+
+    def test_release_platform_probe_local_browser_batch_writes_per_target_outputs(self):
+        targets = [
+            {"id": "browser-chrome-windows_11_x64", "kind": "browser", "browser": "chrome"},
+            {"id": "browser-edge-windows_11_x64", "kind": "browser", "browser": "edge"},
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+
+            def _run_probe_stub(target: dict[str, object], *, output: Path, root: Path) -> dict[str, object]:
+                return {"ok": True, "target_id": target["id"], "output": str(output)}
+
+            with (
+                contextlib.redirect_stdout(output),
+                patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
+                patch.object(release_platform_probe, "_local_browser_targets", return_value=targets),
+                patch.object(release_platform_probe, "_run_probe", side_effect=_run_probe_stub) as run_probe,
+            ):
+                exit_code = release_platform_probe.main(
+                    [
+                        "--local-browser-targets",
+                        "--output-dir",
+                        temp_dir,
+                    ]
+                )
+
+            payload = json.loads(output.getvalue())
+
+        self.assertEqual(0, exit_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("windows-11-x64", payload["host"])
+        self.assertEqual(2, payload["count"])
+        self.assertEqual(2, run_probe.call_count)
+        self.assertEqual(
+            [
+                str(Path(temp_dir) / "browser-chrome-windows_11_x64.json"),
+                str(Path(temp_dir) / "browser-edge-windows_11_x64.json"),
+            ],
+            [row["output"] for row in payload["outputs"]],
+        )
+
+    def test_release_platform_probe_local_browser_batch_can_require_clean_source(self):
+        targets = [
+            {"id": "browser-chrome-windows_11_x64", "kind": "browser", "browser": "chrome"},
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+
+            with (
+                contextlib.redirect_stdout(output),
+                patch.object(release_platform_probe, "_source_tree_clean", return_value=False),
+                patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
+                patch.object(release_platform_probe, "_local_browser_targets", return_value=targets),
+                patch.object(release_platform_probe, "_run_probe") as run_probe,
+            ):
+                exit_code = release_platform_probe.main(
+                    [
+                        "--local-browser-targets",
+                        "--require-clean-source",
+                        "--output-dir",
+                        temp_dir,
+                    ]
+                )
+
+            payload = json.loads(output.getvalue())
+
+        self.assertEqual(1, exit_code)
+        self.assertFalse(payload["ok"])
+        self.assertFalse(payload["source_tree_clean"])
+        self.assertEqual("windows-11-x64", payload["host"])
+        self.assertTrue(any("source tree must be clean" in issue for issue in payload["issues"]))
+        run_probe.assert_not_called()
+
+    def test_release_platform_probe_keeps_browser_env_override_for_external_labs(self):
+        target = {
+            "id": "browser-firefox-windows-11-x64",
+            "kind": "browser",
+            "browser": "firefox",
+            "test_suites": ["browser-contract"],
+        }
+        override = "external-firefox-lab --prove-real-browser"
+        expected_command = ["cmd", "/c", override] if sys.platform == "win32" else ["sh", "-lc", override]
+
+        with (
+            patch.dict(release_platform_probe.os.environ, {"TB_BROWSER_TEST_COMMAND": override}, clear=True),
+            patch.object(
+                release_platform_probe,
+                "_run_command",
+                return_value={"name": "browser-contract", "status": "passed", "command": expected_command},
+            ) as run_command,
+        ):
+            results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual("passed", results[0]["status"])
+        run_command.assert_called_once()
+        self.assertEqual(expected_command, run_command.call_args.args[1])
+
+    def test_release_platform_probe_requires_lab_command_for_unsupported_browser_targets(self):
+        target = {
+            "id": "browser-firefox-windows-11-x64",
+            "kind": "browser",
+            "browser": "firefox",
+            "test_suites": ["browser-contract"],
+        }
+
+        with (
+            patch.dict(release_platform_probe.os.environ, {}, clear=True),
+            patch.object(release_platform_probe.shutil, "which", return_value="npm.cmd"),
+            patch.object(release_platform_probe, "_run_command") as run_command,
+        ):
+            results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual("failed", results[0]["status"])
+        self.assertIn("real firefox browser contract command", results[0]["stderr"])
+        run_command.assert_not_called()
 
     def test_release_platform_cli_target_filter_limits_evidence_validation(self):
         payload = {

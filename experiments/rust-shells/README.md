@@ -92,7 +92,9 @@ and open futures positions. It does not submit, modify, or cancel orders. After
 a successful run, it writes `rust-native-live-market-data-smoke.json` and
 `rust-native-live-account-read-smoke.json` under
 `artifacts/rust-native-runtime-evidence/` unless
-`RUST_NATIVE_RUNTIME_EVIDENCE_DIR` points elsewhere.
+`RUST_NATIVE_RUNTIME_EVIDENCE_DIR` points elsewhere. The live smoke command
+refuses to start network clients unless the source tree is clean under the same
+promotion exclusions used by the evidence validators.
 
 ```bash
 TRADING_BOT_RUST_LIVE_SMOKE=1 \
@@ -118,7 +120,9 @@ cargo run -p trading-bot-rust -- --native-live-smoke-preflight
 The preflight prints redacted JSON with explicit prerequisite booleans, does not contact Binance,
 does not write evidence, and exits non-zero until
 `BINANCE_API_KEY`, `BINANCE_API_SECRET`, and `TRADING_BOT_RUST_LIVE_SMOKE=1` are
-present. The local preflight checker also requires the reported
+present. It also reports `source_tree_clean` so operators can see whether the
+live smoke command will refuse promotion evidence collection before any network
+client starts. The local preflight checker also requires the reported
 `python_source_contract_hash` to match the current Python source-of-truth
 contract, so stale Rust preflight output cannot satisfy the evidence gate.
 
@@ -240,7 +244,9 @@ python tools/write_rust_native_release_evidence.py \
 
 The preflight command does not contact GitHub and does not write artifacts. It
 reports the required Rust release asset names, local platform evidence coverage,
-and whether the final evidence writer has enough local inputs to be attempted.
+`source_tree_clean`, and whether the final evidence writer has enough local
+inputs to be attempted. A dirty source tree blocks preflight success and the
+final aggregate writer before any GitHub release request or artifact write.
 
 ```bash
 python tools/write_rust_native_release_evidence.py \
@@ -266,6 +272,22 @@ Each per-target JSON must also come from the same candidate source revision:
 `tools/run_release_platform_probe.py` writes the git commit,
 `source_tree_clean`, and Python source-contract hash, and the release evidence
 writer rejects stale, dirty, or mismatched target artifacts before aggregation.
+The aggregate writer also refuses to write release evidence when the current
+checkout itself is dirty.
+For the current host's supported browser targets, list and collect the local
+subset with:
+
+```bash
+python tools/run_release_platform_probe.py --list-local-browser-targets
+python tools/run_release_platform_probe.py --local-browser-targets --require-clean-source --output-dir release-platform-evidence
+```
+
+This is partial release-platform evidence only: the remaining matrix targets
+still require their declared real runners/labs. The collection command refuses
+dirty source trees, and promotion validation still requires
+`--require-current-commit --require-clean-source`. The release evidence preflight
+also exposes this same subset as `local_browser_batch_plan` with the batch
+command and per-target validation commands.
 While collecting evidence target by target, validate the just-written artifact
 without requiring the rest of the matrix yet:
 

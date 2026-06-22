@@ -161,10 +161,12 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         &evidence_dir,
         &expected_artifacts,
     ))?;
+    let source_tree_clean = current_source_tree_clean();
     let missing: Vec<&str> = [
         (!api_key_present).then_some("BINANCE_API_KEY"),
         (!api_secret_present).then_some("BINANCE_API_SECRET"),
         (!confirmed).then_some("TRADING_BOT_RUST_LIVE_SMOKE=1"),
+        (!source_tree_clean).then_some("clean source tree"),
     ]
     .into_iter()
     .flatten()
@@ -178,6 +180,7 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         "read_only": true,
         "runtime_ready_claimed": false,
         "python_source_contract_hash": python_source_contract_hash(),
+        "source_tree_clean": source_tree_clean,
         "secrets_redacted": true,
         "prerequisites": {
             "binance_api_key_present": api_key_present,
@@ -213,10 +216,14 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         &evidence_dir,
         &expected_artifacts,
     ))?;
-    let missing: Vec<&str> = [(!confirmed).then_some("TRADING_BOT_RUST_MARKET_SMOKE=1")]
-        .into_iter()
-        .flatten()
-        .collect();
+    let source_tree_clean = current_source_tree_clean();
+    let missing: Vec<&str> = [
+        (!confirmed).then_some("TRADING_BOT_RUST_MARKET_SMOKE=1"),
+        (!source_tree_clean).then_some("clean source tree"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let ok = missing.is_empty() && source_control_write_guard.ok;
     let report = json!({
         "ok": ok,
@@ -226,6 +233,7 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         "read_only": true,
         "runtime_ready_claimed": false,
         "python_source_contract_hash": python_source_contract_hash(),
+        "source_tree_clean": source_tree_clean,
         "secrets_redacted": true,
         "prerequisites": {
             "market_smoke_confirmation_present": confirmed,
@@ -249,6 +257,7 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
 
 fn run_native_live_market_smoke() -> Result<(), Box<dyn std::error::Error>> {
     require_market_smoke_confirmation()?;
+    require_clean_source_tree_for_promotion()?;
     let testnet = env_truthy("BINANCE_TESTNET").unwrap_or(true);
     let symbol =
         std::env::var("BINANCE_LIVE_SMOKE_SYMBOL").unwrap_or_else(|_| "BTCUSDT".to_owned());
@@ -287,6 +296,7 @@ fn run_native_live_market_smoke() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
     require_live_smoke_confirmation()?;
+    require_clean_source_tree_for_promotion()?;
     let api_key = env_required("BINANCE_API_KEY")?;
     let api_secret = env_required("BINANCE_API_SECRET")?;
     let credentials = BinanceApiCredentials::new(api_key, api_secret);
@@ -1271,6 +1281,16 @@ fn require_market_smoke_confirmation() -> Result<(), Box<dyn std::error::Error>>
         return Ok(());
     }
     Err("set TRADING_BOT_RUST_MARKET_SMOKE=1 to confirm public market-data smoke execution".into())
+}
+
+fn require_clean_source_tree_for_promotion() -> Result<(), Box<dyn std::error::Error>> {
+    if current_source_tree_clean() {
+        return Ok(());
+    }
+    Err(
+        "source tree must be clean before collecting Rust native promotion evidence; commit or remove source changes first"
+            .into(),
+    )
 }
 
 fn env_required(name: &str) -> Result<String, Box<dyn std::error::Error>> {

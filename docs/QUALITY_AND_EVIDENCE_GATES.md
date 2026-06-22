@@ -149,10 +149,14 @@ diff whitespace.
   `evidence_scope: deterministic_local`, but
   live-smoke artifacts must remain scoped to `live_testnet` or
   `live_production`, and release artifacts must be scoped to
-  `release_platform`. Use `tools/check_rust_native_live_smoke_preflight.py --json`
+  `release_platform`. The Rust `--native-live-market-smoke` and
+  `--native-live-smoke` commands refuse to start network clients unless the
+  source tree is clean under the same promotion evidence exclusions, so dirty
+  checkouts cannot generate invalid live-smoke promotion artifacts. Use
+  `tools/check_rust_native_live_smoke_preflight.py --json`
   to continuously verify the Rust live-smoke preflight remains
   read-only, redacted, artifact-free, and explicit about credential and
-  confirmation prerequisite booleans before any operator supplies real
+  confirmation prerequisite booleans plus `source_tree_clean` before any operator supplies real
   credentials. The same checker rejects preflight output whose
   `python_source_contract_hash` does not match the current Python
   source-of-truth contract, so stale Rust builds cannot satisfy the preflight
@@ -181,6 +185,12 @@ diff whitespace.
   with runner labels, required workflow inputs, probe commands, promotion-grade
   `target_validation_command` values, and `gh workflow run` examples; pass
   `--missing-limit 0` when an operator needs the complete missing-target plan.
+  It also reports `source_tree_clean`; a dirty source tree blocks both preflight
+  success and the final aggregate writer before any network request or artifact
+  write. It also includes `local_browser_batch_plan`, which lists the current
+  host's built-in Chrome/Edge browser targets, the batch collection command, and
+  the per-target validation commands when such local browser evidence can be
+  collected.
   It also distinguishes present files from usable evidence
   with `passed_platform_evidence_count`, `invalid_platform_evidence_count`, and
   `unknown_platform_evidence_count`; only passed evidence can contribute to
@@ -241,6 +251,9 @@ diff whitespace.
   `source_tree_clean: true`, carry the current Python source-contract hash, keep
   `runtime_ready_claimed: false`, and mark `secrets_redacted: true`; stale or
   hand-carried target evidence cannot be aggregated into promotion evidence.
+  The aggregate writer also refuses to write when the current checkout is dirty,
+  so `source_tree_clean: false` aggregate release evidence is not produced for
+  promotion.
   Operators can validate one target artifact while collecting evidence with
   `tools/check_release_platform_matrix.py --require-evidence --require-current-commit --require-clean-source --target-filter <target-id>`.
   Those flags make target-level validation enforce the same current-commit,
@@ -248,7 +261,19 @@ diff whitespace.
   before aggregation or import.
   The manual `release-platform-real-tests.yml` workflow exposes
   `desktop_smoke_command` and `browser_test_command` inputs so external labs can
-  pass the real release binary or browser command for the selected target. Use
+  pass the real release binary or override browser command for the selected
+  target. For supported Chromium-family browser targets, the probe can run
+  `npm --prefix apps/web-dashboard run test:browser -- --browser=chrome` or
+  `npm --prefix apps/web-dashboard run test:browser -- --browser=edge`
+  automatically when `npm` and the matching browser are available; other browser
+  targets need an external lab command that proves the declared browser. Local
+  operators can run
+  `tools/run_release_platform_probe.py --list-local-browser-targets` to see the
+  matching host/browser targets and
+  `tools/run_release_platform_probe.py --local-browser-targets --require-clean-source --output-dir release-platform-evidence`
+  to collect only those partial browser artifacts before validating each target.
+  The collection command refuses dirty source trees because promotion evidence
+  must be bound to the current clean commit. Use
   `tools/check_rust_native_local_recovery_evidence.py --json` to generate and
   validate deterministic local recovery evidence in an isolated artifact
   directory. Use

@@ -23,7 +23,7 @@ on:
         default: ""
         type: string
       browser_test_command:
-        description: "Real browser contract command for browser targets, for example npm test -- --browser=edge"
+        description: "Optional browser contract override; required for unsupported browser labs, for example npm --prefix apps/web-dashboard run test:browser -- --browser=edge"
         required: false
         default: ""
         type: string
@@ -55,6 +55,7 @@ jobs:
           mkdir -p release-platform-evidence
           python tools/run_release_platform_probe.py \
             --target-id "${{ inputs.target_id }}" \
+            --require-clean-source \
             --output "release-platform-evidence/${{ inputs.target_id }}.json"
 
       - name: Validate target evidence

@@ -17,9 +17,15 @@ from typing import Any
 try:
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from check_release_platform_matrix import _load_json, _validate_matrix
+    from release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
+    from release_browser_contract_commands import browser_host_from_observed_platform
+    from release_browser_contract_commands import builtin_browser_contract_targets_for_host
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from tools.check_release_platform_matrix import _load_json, _validate_matrix
+    from tools.release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
+    from tools.release_browser_contract_commands import browser_host_from_observed_platform
+    from tools.release_browser_contract_commands import builtin_browser_contract_targets_for_host
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
@@ -82,6 +88,14 @@ def _find_target(target_id: str, matrix_path: Path) -> dict[str, Any]:
         if target["id"] == target_id:
             return target
     raise RuntimeError(f"unknown target id: {target_id}")
+
+
+def _matrix_targets(matrix_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    matrix = _load_json(matrix_path)
+    platform_targets, browser_targets, issues = _validate_matrix(matrix)
+    if issues:
+        raise RuntimeError("matrix is invalid: " + "; ".join(issues))
+    return platform_targets, browser_targets
 
 
 def _run_command(
@@ -167,6 +181,23 @@ def _observed_platform() -> dict[str, Any]:
         "os_release_version_id": os_release.get("VERSION_ID", ""),
         "macos_version": platform.mac_ver()[0],
     }
+
+
+def _current_browser_host(observed: dict[str, Any] | None = None) -> str:
+    return browser_host_from_observed_platform(dict(observed or _observed_platform()))
+
+
+def _local_browser_targets(matrix_path: Path) -> list[dict[str, Any]]:
+    _platform_targets, browser_targets = _matrix_targets(matrix_path)
+    host = _current_browser_host()
+    npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm")
+    if not host or not npm:
+        return []
+    return [
+        target
+        for target in builtin_browser_contract_targets_for_host(browser_targets, host)
+        if browser_contract_command_args(target, npm_executable=npm) is not None
+    ]
 
 
 def _normalize_architecture(value: str) -> str:
@@ -344,11 +375,15 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
     if "browser-contract" in suites:
         command = _shell_command_from_env("TB_BROWSER_TEST_COMMAND")
         if command is None:
+            npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm")
+            if npm:
+                command = browser_contract_command_args(target, npm_executable=npm)
+        if command is None:
             results.append(
                 {
                     "name": "browser-contract",
                     "status": "failed",
-                    "stderr": "Set TB_BROWSER_TEST_COMMAND to the real browser test command for this target.",
+                    "stderr": browser_contract_missing_command_message(target),
                 }
             )
         else:
@@ -357,20 +392,12 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
     return results
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target-id", required=True, help="Target id from tools/check_release_platform_matrix.py.")
-    parser.add_argument("--matrix", default=str(DEFAULT_MATRIX_PATH), help="Path to release platform matrix JSON.")
-    parser.add_argument("--output", required=True, help="Evidence JSON path to write.")
-    args = parser.parse_args(argv)
-
-    root = _repo_root()
-    target = _find_target(args.target_id, Path(args.matrix))
+def _run_probe(target: dict[str, Any], *, output: Path, root: Path) -> dict[str, Any]:
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     suite_results = _suite_results(target, root=root)
     ok = bool(suite_results) and all(item.get("status") == "passed" for item in suite_results)
     payload = {
-        "target_id": args.target_id,
+        "target_id": str(target.get("id") or ""),
         "status": "passed" if ok else "failed",
         "started_at": started,
         "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -382,10 +409,97 @@ def main(argv: list[str] | None = None) -> int:
         "target": target,
         "suite_results": suite_results,
     }
-    output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps({"ok": ok, "target_id": args.target_id, "output": str(output)}, indent=2))
+    return {"ok": ok, "target_id": payload["target_id"], "output": str(output)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target-id", help="Target id from tools/check_release_platform_matrix.py.")
+    parser.add_argument("--matrix", default=str(DEFAULT_MATRIX_PATH), help="Path to release platform matrix JSON.")
+    parser.add_argument("--output", help="Evidence JSON path to write for a single --target-id run.")
+    parser.add_argument(
+        "--output-dir",
+        default="release-platform-evidence",
+        help="Directory for --local-browser-targets evidence JSON files.",
+    )
+    parser.add_argument(
+        "--list-local-browser-targets",
+        action="store_true",
+        help="Print browser target ids that match this host and have checked-in contract commands.",
+    )
+    parser.add_argument(
+        "--local-browser-targets",
+        action="store_true",
+        help="Run all browser targets that match this host and have checked-in contract commands.",
+    )
+    parser.add_argument(
+        "--require-clean-source",
+        action="store_true",
+        help="Refuse to write evidence unless the source tree is clean for promotion validation.",
+    )
+    args = parser.parse_args(argv)
+
+    root = _repo_root()
+    matrix_path = Path(args.matrix)
+
+    if args.list_local_browser_targets:
+        targets = _local_browser_targets(matrix_path)
+        payload = {
+            "ok": True,
+            "host": _current_browser_host(),
+            "target_ids": [str(target["id"]) for target in targets],
+            "count": len(targets),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if args.require_clean_source and not _source_tree_clean():
+        payload = {
+            "ok": False,
+            "source_tree_clean": False,
+            "issues": [
+                "source tree must be clean when --require-clean-source is used; "
+                "commit or remove source changes before collecting promotion evidence"
+            ],
+        }
+        if args.local_browser_targets:
+            payload["host"] = _current_browser_host()
+        if args.target_id:
+            payload["target_id"] = args.target_id
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1
+
+    if args.local_browser_targets:
+        targets = _local_browser_targets(matrix_path)
+        output_dir = Path(args.output_dir)
+        results = [
+            _run_probe(target, output=output_dir / f"{target['id']}.json", root=root)
+            for target in targets
+        ]
+        ok = bool(results) and all(bool(result.get("ok")) for result in results)
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "host": _current_browser_host(),
+                    "count": len(results),
+                    "outputs": results,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0 if ok else 1
+
+    if not args.target_id or not args.output:
+        parser.error("--target-id and --output are required unless listing or running local browser targets")
+
+    target = _find_target(args.target_id, matrix_path)
+    result = _run_probe(target, output=Path(args.output), root=root)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    ok = bool(result["ok"])
     return 0 if ok else 1
 
 

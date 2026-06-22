@@ -172,6 +172,12 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
             remediation="Keep docs/release-platform-test-matrix.json aligned with requested release OS/browser targets.",
         ),
         Check(
+            "release platform local browser targets",
+            (python, "tools/run_release_platform_probe.py", "--list-local-browser-targets"),
+            root,
+            remediation="Keep local browser target detection aligned with docs/release-platform-test-matrix.json and checked-in browser contract commands.",
+        ),
+        Check(
             "connector support matrix",
             (python, "tools/check_connector_support_matrix.py", "--schema-only"),
             root,

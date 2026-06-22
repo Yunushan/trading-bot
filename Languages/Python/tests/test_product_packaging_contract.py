@@ -1376,6 +1376,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("Release Platform Matrix Contract", ci_workflow)
         self.assertIn("python tools/check_release_platform_matrix.py --schema-only", ci_workflow)
+        self.assertIn("python tools/run_release_platform_probe.py --list-local-browser-targets", ci_workflow)
         self.assertIn("tools/run_release_platform_probe.py", real_test_workflow)
         self.assertIn("--require-evidence", real_test_workflow)
         self.assertGreaterEqual(real_test_workflow.count("--require-current-commit"), 2)

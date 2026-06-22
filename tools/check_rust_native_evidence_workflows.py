@@ -212,6 +212,17 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             ),
         )
     )
+    issues.extend(
+        _ordered(
+            text,
+            (
+                "python tools/run_release_platform_probe.py",
+                "--target-id \"${{ inputs.target_id }}\"",
+                "--require-clean-source",
+                "--output \"release-platform-evidence/${{ inputs.target_id }}.json\"",
+            ),
+        )
+    )
     for fragment in ("--require-current-commit", "--require-clean-source"):
         if text.count(fragment) < 2:
             issues.append(f"release platform workflow must use {fragment} for target and full evidence validation")
