@@ -13,6 +13,16 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+try:
+    from app.native_parity import native_python_source_contract_hash
+except ModuleNotFoundError:  # pragma: no cover - exercised when run from repo root
+    import sys
+
+    PYTHON_ROOT = Path(__file__).resolve().parents[1] / "Languages" / "Python"
+    if str(PYTHON_ROOT) not in sys.path:
+        sys.path.insert(0, str(PYTHON_ROOT))
+    from app.native_parity import native_python_source_contract_hash  # noqa: E402
+
 
 SIGNED_EXPECTED_ARTIFACTS = {
     "rust-native-live-market-data-smoke.json",
@@ -215,6 +225,11 @@ def _validate_payload(
     python_source_contract_hash = str(payload.get("python_source_contract_hash") or "").strip()
     if not re.fullmatch(r"[0-9a-f]{64}", python_source_contract_hash):
         issues.append("payload python_source_contract_hash must be a SHA-256 hex digest")
+    elif python_source_contract_hash != native_python_source_contract_hash():
+        issues.append(
+            "payload python_source_contract_hash must match current Python source contract "
+            f"{native_python_source_contract_hash()}"
+        )
     if Path(str(payload.get("evidence_dir") or "")) != evidence_dir:
         issues.append("payload evidence_dir must match the isolated preflight directory")
     expected = sorted(expected_artifacts)

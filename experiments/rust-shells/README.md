@@ -48,7 +48,8 @@ The C++ experiment already contains native runtime pieces that Rust does not:
 exchangeInfo USDT symbols, optional 24h quote-volume ordering, klines, ticker
 prices, and Binance error payload handling. It also has `BinanceWebSocketClient`
 for Binance book-ticker/kline stream URL construction, tungstenite connection
-entry points, and message parsing; `BinanceSignedRestClient` for signed USDT
+entry points, message parsing, and supervised stream cache/reconnect evidence
+for stale-feed fail-closed planning; `BinanceSignedRestClient` for signed USDT
 balance snapshots, normalized balance rows, open futures position parsing
 with account-position overlays, futures position-mode get/change request
 foundations, and futures margin-type/leverage/multi-assets request and parser
@@ -77,10 +78,10 @@ leverage, and assets mode before signal evaluation, a native account preflight g
 caps, filter headroom, and one-way add-only reduce-only behavior without
 enabling live trading. These paths support Python-source
 parity validation. Before standalone native Rust trading can be enabled, Rust
-still needs live credential-gated smoke coverage, live recovery evidence with
-regression tests, and release evidence. The source-level guard for this is
-`rust_native_trading_runtime_ready() == false` and the capability matrix exposed
-by `rust_native_runtime_capabilities()`.
+still needs imported credential-gated live-smoke artifacts, live recovery
+evidence with regression tests, and release evidence. The source-level guard for
+this is `rust_native_trading_runtime_ready() == false` and the capability matrix
+exposed by `rust_native_runtime_capabilities()`.
 
 ### Guarded native live smoke
 
@@ -117,7 +118,9 @@ cargo run -p trading-bot-rust -- --native-live-smoke-preflight
 The preflight prints redacted JSON with explicit prerequisite booleans, does not contact Binance,
 does not write evidence, and exits non-zero until
 `BINANCE_API_KEY`, `BINANCE_API_SECRET`, and `TRADING_BOT_RUST_LIVE_SMOKE=1` are
-present.
+present. The local preflight checker also requires the reported
+`python_source_contract_hash` to match the current Python source-of-truth
+contract, so stale Rust preflight output cannot satisfy the evidence gate.
 
 The same read-only signed account smoke can be collected in GitHub Actions with
 the manual `.github/workflows/rust-native-live-smoke.yml` workflow. Configure
@@ -158,7 +161,8 @@ reads signed account state. Signed account evidence still requires the guarded
 Local/CI verification also exercises the preflight contract with missing-env
 and dummy-env runs for the signed smoke plus missing/confirmed runs for the
 market-data smoke, confirms dummy secrets are not printed, and confirms no
-evidence artifacts are written:
+evidence artifacts are written. It also rejects preflight output whose
+`python_source_contract_hash` is stale relative to the current Python source:
 
 ```bash
 python tools/check_rust_native_live_smoke_preflight.py --json
@@ -246,8 +250,10 @@ python tools/write_rust_native_release_evidence.py \
 
 That command writes `rust-native-release-platform-evidence.json` only when the
 required Rust release assets are present and
-`tools/check_release_platform_matrix.py --require-evidence` would pass for the
-same evidence directory.
+`tools/check_release_platform_matrix.py --require-evidence
+--require-current-commit --require-clean-source` would pass for the same
+evidence directory. The preflight JSON's `missing_platform_evidence_plan`
+includes the exact `target_validation_command` to run after each target probe.
 The aggregate artifact embeds every target's passed `suite_results`; platform
 targets must carry the `platform-probe.target_match.matched: true` proof in
 that embedded suite list, not only a target count. It also records the
@@ -256,15 +262,25 @@ Each per-target evidence JSON must prove every suite declared for that target in
 `docs/release-platform-test-matrix.json`. A platform probe alone is not enough
 for desktop targets that also require Python service, desktop release, and
 native build smoke coverage.
+Each per-target JSON must also come from the same candidate source revision:
+`tools/run_release_platform_probe.py` writes the git commit,
+`source_tree_clean`, and Python source-contract hash, and the release evidence
+writer rejects stale, dirty, or mismatched target artifacts before aggregation.
 While collecting evidence target by target, validate the just-written artifact
 without requiring the rest of the matrix yet:
 
 ```bash
 python tools/check_release_platform_matrix.py \
   --require-evidence \
+  --require-current-commit \
+  --require-clean-source \
   --evidence-dir release-platform-evidence \
   --target-filter <target-id>
 ```
+
+Those promotion flags make the single-target check reject stale commit,
+dirty-source, mismatched Python source-contract, premature runtime-ready, or
+unredacted target artifacts before they reach the aggregate release writer.
 
 The same aggregation can be run in GitHub Actions with the manual
 `.github/workflows/rust-native-release-evidence.yml` workflow. Provide the
@@ -293,7 +309,13 @@ The main CI workflow writes and uploads the same
 revision-specific runbook before collecting live or release evidence. Each row
 in that runbook includes `required_runtime_ids` plus an import command with the
 matching `--require-runtime-id` flags; for the signed live-smoke artifact, the
-plan requires both market-data and account-read evidence.
+plan requires both market-data and account-read evidence. For release-platform
+evidence, the runbook also carries the bounded `missing_platform_evidence_plan`
+with each missing target's promotion-grade `target_validation_command`.
+`tools/check_rust_native_evidence_workflows.py --json` covers that main CI gate
+and the manual live-smoke, release-platform target, release-evidence, and
+promotion-audit workflows, so the workflow wiring is checked against the same
+commit-bound importer and readiness rules as the runtime evidence validators.
 
 After the manual live-smoke and release-evidence workflows have produced
 artifacts for the same candidate commit, run the manual
@@ -318,11 +340,20 @@ python tools/import_rust_native_evidence_artifacts.py <artifact.zip-or-dir> --ap
 The importer validates runtime artifacts against
 `docs/rust-native-runtime-evidence.json` and release-platform target artifacts
 against `docs/release-platform-test-matrix.json`. In promotion mode it rejects
-stale runtime evidence, dirty-source evidence, evidence collected from a
-different commit, and evidence carrying an older Python source-contract hash
-before it can enter the canonical artifact directories.
+stale runtime and release-platform evidence, dirty-source evidence, evidence
+collected from a different commit, and evidence carrying an older Python
+source-contract hash before it can enter the canonical artifact directories.
+Rust evidence writers stamp `source_tree_clean` with the same clean-source
+scope: untracked source/tool files outside the canonical evidence directories
+make the artifact non-promotion-grade, while generated evidence files under
+`artifacts/rust-native-runtime-evidence/` and `release-platform-evidence/` are
+excluded from that cleanliness decision.
 Those runtime and release-platform evidence JSON/ZIP/download artifacts are
 ignored generated outputs; do not hand-edit or commit them as source.
+The aggregate `tools/verify_all.py` command dry-runs the same strict importer
+against existing local evidence directories. If old ignored evidence remains in
+the workspace, that check should fail until the directories are cleaned or fresh
+candidate-commit artifacts are imported.
 
 After the required artifacts are attached under
 `artifacts/rust-native-runtime-evidence/`, run:

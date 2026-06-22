@@ -48,6 +48,14 @@ class NativeFullParityContractTests(unittest.TestCase):
         rust_main = _read(REPO_ROOT / "experiments" / "rust-shells" / "src" / "main.rs")
         release_evidence_writer = _read(REPO_ROOT / "tools" / "write_rust_native_release_evidence.py")
 
+        self.assertIn("PROMOTION_SOURCE_TREE_IGNORED_PATHS", rust_main)
+        self.assertIn('"artifacts/rust-native-runtime-evidence"', rust_main)
+        self.assertIn('"release-platform-evidence"', rust_main)
+        self.assertIn("fn source_tree_status_command", rust_main)
+        self.assertIn("--untracked-files={untracked_files}", rust_main)
+        self.assertIn(":(exclude){path}", rust_main)
+        self.assertIn('source_tree_status_clean("no") && source_tree_status_clean("all")', rust_main)
+
         market_writer = _section(
             rust_main,
             "fn write_market_smoke_evidence",
@@ -706,13 +714,18 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("clean_source_tree_required_for_promotion", rust_runtime_evidence_manifest)
         self.assertIn("secrets_redacted", rust_runtime_evidence_manifest)
         self.assertIn("runtime_ready_claimed", rust_runtime_evidence_manifest)
+        self.assertIn("source_tree_clean", rust_runtime_evidence_manifest)
         self.assertIn("python_source_contract_hash", rust_runtime_evidence_manifest)
         self.assertIn("evidence_scope", rust_runtime_evidence_manifest)
         self.assertIn("local_recovery_command", rust_runtime_evidence_manifest)
         self.assertIn("RUNTIME_READY_POLICY_STATES", rust_runtime_evidence_checker)
         self.assertIn("runtime_ready_policy_state", rust_runtime_evidence_checker)
         self.assertIn("check_workflows", rust_evidence_workflow_checker)
+        self.assertIn("ci_rust_native_gate", rust_evidence_workflow_checker)
+        self.assertIn(".github/workflows/ci.yml", rust_evidence_workflow_checker)
         self.assertIn("rust-native-live-smoke.yml", rust_evidence_workflow_checker)
+        self.assertIn("release-platform-real-tests.yml", rust_evidence_workflow_checker)
+        self.assertIn("release_platform_real_tests", rust_evidence_workflow_checker)
         self.assertIn("rust-native-release-evidence.yml", rust_evidence_workflow_checker)
         self.assertIn("rust-native-promotion-audit.yml", rust_evidence_workflow_checker)
         self.assertIn("actions/setup-python@v6", rust_evidence_workflow_checker)
@@ -721,12 +734,17 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("--require-clean-source", rust_evidence_workflow_checker)
         self.assertIn("--require-ready", rust_evidence_workflow_checker)
         self.assertIn("rust-native-promotion-evidence-plan", rust_evidence_workflow_checker)
+        self.assertIn("tools/check_generated_evidence_source_control.py", rust_evidence_workflow_checker)
         self.assertIn("REQUIRED_REQUIREMENTS", rust_runtime_evidence_checker)
         self.assertIn("ACCEPTED_EVIDENCE_SCOPES", rust_runtime_evidence_checker)
         self.assertIn("--require-evidence", rust_runtime_evidence_checker)
         self.assertIn("--require-current-commit", rust_runtime_evidence_checker)
         self.assertIn("--require-clean-source", rust_runtime_evidence_checker)
         self.assertIn("commit must match current git commit", rust_runtime_evidence_checker)
+        self.assertIn("RUNTIME_EVIDENCE_STRING_FIELDS", rust_runtime_evidence_checker)
+        self.assertIn("_validate_runtime_evidence_string_fields", rust_runtime_evidence_checker)
+        self.assertIn("must be a string", rust_runtime_evidence_checker)
+        self.assertIn("source_tree_clean must be boolean", rust_runtime_evidence_checker)
         self.assertIn("source_tree_clean must be true for promotion evidence", rust_runtime_evidence_checker)
         self.assertIn("python_source_contract_hash must match current Python source contract", rust_runtime_evidence_checker)
         self.assertIn("_required_artifact_fields_present", rust_runtime_evidence_checker)
@@ -870,6 +888,10 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("runtime_ready_claimed", rust_release_evidence_writer)
         self.assertIn("native_python_source_contract_hash", rust_release_evidence_writer)
         self.assertIn("_source_tree_clean", rust_release_evidence_writer)
+        self.assertIn("PROMOTION_SOURCE_TREE_IGNORED_PATHS", rust_release_evidence_writer)
+        self.assertIn("_source_tree_status_command", rust_release_evidence_writer)
+        self.assertIn("f\"--untracked-files={untracked_files}\"", rust_release_evidence_writer)
+        self.assertIn('_source_tree_status_clean("all")', rust_release_evidence_writer)
         self.assertIn('"source_tree_clean": _source_tree_clean()', rust_release_evidence_writer)
         self.assertIn('"python_source_contract_hash": native_python_source_contract_hash()', rust_release_evidence_writer)
         self.assertIn('"expected_suite_count": len(target.get("test_suites", []))', rust_release_evidence_writer)
@@ -889,6 +911,9 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("existing_sha256", rust_evidence_importer)
         self.assertIn("incoming_sha256", rust_evidence_importer)
         self.assertIn("REQUIRED_SUITE_RESULT_NAMES", release_platform_matrix_checker)
+        self.assertIn("TARGET_EVIDENCE_STRING_FIELDS", release_platform_matrix_checker)
+        self.assertIn("TARGET_EVIDENCE_BOOL_FIELDS", release_platform_matrix_checker)
+        self.assertIn("_target_evidence_type_issues", release_platform_matrix_checker)
         self.assertIn("missing required suite result", release_platform_matrix_checker)
         self.assertIn("_filter_targets", release_platform_matrix_checker)
         self.assertIn("--target-filter", release_platform_matrix_checker)
@@ -896,8 +921,14 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("--target-filter", rust_readme)
         self.assertIn("Validate target evidence", release_platform_real_tests_workflow)
         self.assertIn("--target-filter \"${{ inputs.target_id }}\"", release_platform_real_tests_workflow)
+        self.assertGreaterEqual(release_platform_real_tests_workflow.count("--require-current-commit"), 2)
+        self.assertGreaterEqual(release_platform_real_tests_workflow.count("--require-clean-source"), 2)
         self.assertIn('"native-build-smoke"', release_platform_probe)
         self.assertIn("_run_command(\n                    \"native-build-smoke\"", release_platform_probe)
+        self.assertIn("PROMOTION_SOURCE_TREE_IGNORED_PATHS", release_platform_probe)
+        self.assertIn("_source_tree_status_command", release_platform_probe)
+        self.assertIn("f\"--untracked-files={untracked_files}\"", release_platform_probe)
+        self.assertIn('_source_tree_status_clean("all")', release_platform_probe)
         self.assertIn("RUNTIME_READY_FUNCTION = \"rust_native_trading_runtime_ready\"", rust_readiness_audit)
         self.assertIn("live_smoke_prerequisites", rust_readiness_audit)
         self.assertIn("market_preflight_command", rust_readiness_audit)
@@ -975,6 +1006,19 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("generated evidence source-control guard", verify_all)
         self.assertIn("tools/check_rust_native_evidence_workflows.py", verify_all)
         self.assertIn("tools/import_rust_native_evidence_artifacts.py", verify_all)
+        _assert_contains_in_order(
+            self,
+            verify_all,
+            [
+                '"rust native evidence import audit"',
+                '"tools/import_rust_native_evidence_artifacts.py"',
+                '"artifacts/rust-native-runtime-evidence"',
+                '"release-platform-evidence"',
+                '"--require-current-commit"',
+                '"--require-clean-source"',
+                '"--json"',
+            ],
+        )
         self.assertIn("tools/check_generated_evidence_source_control.py", verify_all)
         self.assertIn("tools/check_rust_native_live_smoke_preflight.py", verify_all)
         self.assertIn("rust native local recovery evidence", verify_all)
@@ -984,10 +1028,29 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("Validate Rust native live-smoke preflight", ci_workflow)
         self.assertIn("tools/check_rust_native_live_smoke_preflight.py --json", ci_workflow)
         self.assertIn("tools/check_rust_native_local_recovery_evidence.py --json", ci_workflow)
+        self.assertIn("Check generated evidence source-control guard", ci_workflow)
+        self.assertIn("tools/check_generated_evidence_source_control.py --json", ci_workflow)
         self.assertIn("Audit Rust native evidence importer", ci_workflow)
         self.assertIn("Check Rust native evidence workflow contracts", ci_workflow)
         self.assertIn("python tools/check_rust_native_evidence_workflows.py --json", ci_workflow)
         self.assertIn("python tools/import_rust_native_evidence_artifacts.py", ci_workflow)
+        ci_importer_audit = _section(
+            ci_workflow,
+            "Audit Rust native evidence importer",
+            "Audit Rust native runtime promotion readiness",
+        )
+        _assert_contains_in_order(
+            self,
+            ci_importer_audit,
+            [
+                "python tools/import_rust_native_evidence_artifacts.py",
+                "artifacts/rust-native-runtime-evidence",
+                "release-platform-evidence",
+                "--require-current-commit",
+                "--require-clean-source",
+                "--json",
+            ],
+        )
         self.assertIn("Audit Rust native runtime promotion readiness", ci_workflow)
         self.assertIn("python tools/audit_rust_native_runtime_readiness.py", ci_workflow)
         self.assertIn("--json", ci_workflow)
@@ -1000,6 +1063,8 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn(".github/workflows/rust-native-live-smoke.yml", evidence_gates)
         self.assertIn(".github/workflows/rust-native-release-evidence.yml", evidence_gates)
         self.assertIn(".github/workflows/rust-native-promotion-audit.yml", evidence_gates)
+        self.assertIn("tools/check_rust_native_evidence_workflows.py --json", evidence_gates)
+        self.assertIn("the main CI Rust evidence gate plus the manual live-smoke", evidence_gates)
         self.assertIn("tools/write_rust_native_release_evidence.py --preflight --json", evidence_gates)
         self.assertIn("tools/import_rust_native_evidence_artifacts.py", evidence_gates)
         self.assertIn("tools/check_rust_native_local_recovery_evidence.py --json", evidence_gates)
@@ -1018,6 +1083,10 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("tools/audit_native_source_sync.py --json", rust_readme)
         self.assertIn("--write-evidence-plan", rust_readme)
         self.assertIn("tools/import_rust_native_evidence_artifacts.py", rust_readme)
+        self.assertIn("tools/check_rust_native_evidence_workflows.py --json", rust_readme)
+        self.assertIn("covers that main CI gate", rust_readme)
+        self.assertIn("untracked source/tool files outside the canonical evidence directories", rust_readme)
+        self.assertIn("excluded from that cleanliness decision", rust_readme)
         self.assertIn("GENERATED_EVIDENCE_PATTERNS", generated_evidence_source_guard)
         self.assertIn("tracked_existing_generated_evidence", generated_evidence_source_guard)
         self.assertIn("tracked_pending_removal_generated_evidence", generated_evidence_source_guard)

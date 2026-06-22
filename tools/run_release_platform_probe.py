@@ -15,13 +15,62 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _validate_matrix
+    from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
+    from check_release_platform_matrix import _load_json, _validate_matrix
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
-    from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _validate_matrix
+    from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
+    from tools.check_release_platform_matrix import _load_json, _validate_matrix
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from app.native_parity import native_python_source_contract_hash  # noqa: E402
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
+
+
+def _current_git_commit() -> str:
+    try:
+        output = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown-local-commit"
+    return output.stdout.strip() or "unknown-local-commit"
+
+
+def _source_tree_status_command(untracked_files: str) -> list[str]:
+    command = ["git", "status", "--porcelain", f"--untracked-files={untracked_files}", "--", "."]
+    command.extend(f":(exclude){path}" for path in PROMOTION_SOURCE_TREE_IGNORED_PATHS)
+    return command
+
+
+def _source_tree_status_clean(untracked_files: str) -> bool:
+    try:
+        output = subprocess.run(
+            _source_tree_status_command(untracked_files),
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not output.stdout.strip()
+
+
+def _source_tree_clean() -> bool:
+    return _source_tree_status_clean("no") and _source_tree_status_clean("all")
 
 
 def _find_target(target_id: str, matrix_path: Path) -> dict[str, Any]:
@@ -325,6 +374,11 @@ def main(argv: list[str] | None = None) -> int:
         "status": "passed" if ok else "failed",
         "started_at": started,
         "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "commit": _current_git_commit(),
+        "source_tree_clean": _source_tree_clean(),
+        "python_source_contract_hash": native_python_source_contract_hash(),
+        "runtime_ready_claimed": False,
+        "secrets_redacted": True,
         "target": target,
         "suite_results": suite_results,
     }

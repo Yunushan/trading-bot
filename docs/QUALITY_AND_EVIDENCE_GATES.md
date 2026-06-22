@@ -88,6 +88,10 @@ diff whitespace.
   `rust-native-live-account-read-smoke`, and
   `rust-native-release-platform-evidence`;
   then run `tools/audit_rust_native_runtime_readiness.py --require-ready --json`.
+  `tools/check_rust_native_evidence_workflows.py --json` structurally checks
+  the main CI Rust evidence gate plus the manual live-smoke, release-platform
+  target, release-evidence, and promotion-audit workflows, so CI/import/readiness
+  wiring cannot silently drift away from the same promotion rules.
   The audit emits a `promotion_model` object with the current phase, failed
   requirement ids, command hints, and the exact evidence directories ignored for
   tracked source cleanliness. When the tracked source tree is dirty, the audit
@@ -102,7 +106,11 @@ diff whitespace.
   artifact already passed, whether prerequisites allow collecting it now, the
   local preflight command, the local collection command, the matching manual
   GitHub workflow command, required environment/input values, safety flags, and
-  the commit-bound importer command operators must use before promotion. The
+  the commit-bound importer command operators must use before promotion. For
+  release-platform evidence, the row also carries the bounded
+  `missing_platform_evidence_plan` with per-target promotion-grade validation
+  commands, so the final audit runbook still shows how to collect and validate
+  missing OS/browser targets. The
   `current_commit_clean_source_evidence` promotion requirement repeats the
   actionable dirty/untracked source issues, so a failed checklist row is enough
   to see what must be committed, removed, or imported before evidence collection.
@@ -145,7 +153,10 @@ diff whitespace.
   to continuously verify the Rust live-smoke preflight remains
   read-only, redacted, artifact-free, and explicit about credential and
   confirmation prerequisite booleans before any operator supplies real
-  credentials. Public market-data evidence may be collected separately with
+  credentials. The same checker rejects preflight output whose
+  `python_source_contract_hash` does not match the current Python
+  source-of-truth contract, so stale Rust builds cannot satisfy the preflight
+  gate. Public market-data evidence may be collected separately with
   `TRADING_BOT_RUST_MARKET_SMOKE=1 cargo run -p trading-bot-rust -- --native-live-market-smoke`;
   signed account evidence still requires the credential-gated
   `--native-live-smoke` command. Operators can also run the manual
@@ -167,9 +178,10 @@ diff whitespace.
   `tools/write_rust_native_release_evidence.py --preflight --json` to inspect
   local release-platform evidence coverage without network access or artifact
   writes. The preflight JSON includes a bounded `missing_platform_evidence_plan`
-  with runner labels, required workflow inputs, probe commands, and `gh workflow
-  run` examples; pass `--missing-limit 0` when an operator needs the complete
-  missing-target plan. It also distinguishes present files from usable evidence
+  with runner labels, required workflow inputs, probe commands, promotion-grade
+  `target_validation_command` values, and `gh workflow run` examples; pass
+  `--missing-limit 0` when an operator needs the complete missing-target plan.
+  It also distinguishes present files from usable evidence
   with `passed_platform_evidence_count`, `invalid_platform_evidence_count`, and
   `unknown_platform_evidence_count`; only passed evidence can contribute to
   release promotion. Use `tools/write_rust_native_release_evidence.py` to create the Rust
@@ -190,8 +202,12 @@ diff whitespace.
   copying anything, and previews by default unless `--apply` is passed. Use
   `--require-current-commit --require-clean-source` and the matching
   `--require-runtime-id` flags when importing evidence for runtime promotion,
-  so stale, dirty-source, or partial artifact bundles are rejected before they
-  enter the canonical evidence directory. The clean-source promotion check ignores
+  so stale, dirty-source, or partial runtime/release-platform artifact bundles
+  are rejected before they enter the canonical evidence directory. The
+  promotion-mode importer also checks release-platform target JSON for the
+  current git commit, `source_tree_clean: true`, the current Python
+  source-contract hash, `runtime_ready_claimed: false`, and
+  `secrets_redacted: true`. The clean-source promotion check ignores
   only the canonical evidence artifact directories
   `artifacts/rust-native-runtime-evidence/` and `release-platform-evidence/`;
   tracked or untracked code, workflow, documentation, tool, or manifest changes
@@ -201,8 +217,13 @@ diff whitespace.
   to satisfy promotion; regenerate/import it from the candidate commit instead.
   `tools/verify_all.py` also checks that generated evidence artifacts are not
   tracked as source, dry-runs the importer over existing local evidence
-  directories, and CI runs the same audits, so source-control or importer
-  regressions fail the normal local and remote gates.
+  directories with `--require-current-commit --require-clean-source`, and CI
+  runs the same strict audits. If ignored local evidence files were produced
+  from a dirty or older checkout, that import audit is supposed to fail; clean
+  the generated evidence directories or import fresh artifacts from the
+  candidate commit before treating the local verification result as promotion
+  evidence. Source-control, workflow-contract, or importer regressions fail the
+  normal local and remote gates.
   The aggregate release evidence artifact must embed each target's passed
   `suite_results` rows, including `platform-probe.target_match.matched: true`
   for platform targets, plus `evidence_file` and `evidence_sha256` for each
@@ -215,9 +236,16 @@ diff whitespace.
   architecture. It also rejects target evidence that omits any suite declared
   for that target in `docs/release-platform-test-matrix.json`, so a target is
   not promotion-ready unless its JSON proves every required matrix suite for
-  that OS/browser target. Operators can validate one target artifact while
-  collecting evidence with
-  `tools/check_release_platform_matrix.py --require-evidence --target-filter <target-id>`.
+  that OS/browser target. The aggregate release evidence writer also requires
+  every per-target JSON to match the current git commit, have
+  `source_tree_clean: true`, carry the current Python source-contract hash, keep
+  `runtime_ready_claimed: false`, and mark `secrets_redacted: true`; stale or
+  hand-carried target evidence cannot be aggregated into promotion evidence.
+  Operators can validate one target artifact while collecting evidence with
+  `tools/check_release_platform_matrix.py --require-evidence --require-current-commit --require-clean-source --target-filter <target-id>`.
+  Those flags make target-level validation enforce the same current-commit,
+  clean-source, Python source-contract, runtime-ready, and redaction binding
+  before aggregation or import.
   The manual `release-platform-real-tests.yml` workflow exposes
   `desktop_smoke_command` and `browser_test_command` inputs so external labs can
   pass the real release binary or browser command for the selected target. Use

@@ -158,6 +158,12 @@ jobs:
           set -euo pipefail
           python tools/check_rust_native_evidence_workflows.py --json
 
+      - name: Check generated evidence source-control guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_generated_evidence_source_control.py --json
+
       - name: Audit Rust native evidence importer
         shell: bash
         run: |
@@ -165,6 +171,8 @@ jobs:
           python tools/import_rust_native_evidence_artifacts.py \
             artifacts/rust-native-runtime-evidence \
             release-platform-evidence \
+            --require-current-commit \
+            --require-clean-source \
             --json
 
       - name: Audit Rust native runtime promotion readiness

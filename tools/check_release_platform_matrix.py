@@ -6,9 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from app.native_parity import native_python_source_contract_hash  # noqa: E402
 
 
 REQUIRED_PLATFORM_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
@@ -25,6 +33,10 @@ REQUIRED_PLATFORM_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ..
 
 REQUIRED_BROWSERS = ("chrome", "firefox", "internet-explorer", "edge")
 DEFAULT_MATRIX_PATH = Path("docs/release-platform-test-matrix.json")
+PROMOTION_SOURCE_TREE_IGNORED_PATHS = (
+    "artifacts/rust-native-runtime-evidence",
+    "release-platform-evidence",
+)
 REQUIRED_SUITE_RESULT_NAMES: dict[str, tuple[str, ...]] = {
     "platform-probe": ("platform-probe",),
     "python-service-contract": ("python-service-contract",),
@@ -33,6 +45,17 @@ REQUIRED_SUITE_RESULT_NAMES: dict[str, tuple[str, ...]] = {
     "mobile-client-contract": ("mobile-client-contract",),
     "browser-contract": ("browser-contract",),
 }
+TARGET_EVIDENCE_STRING_FIELDS = (
+    "target_id",
+    "status",
+    "commit",
+    "python_source_contract_hash",
+)
+TARGET_EVIDENCE_BOOL_FIELDS = (
+    "source_tree_clean",
+    "runtime_ready_claimed",
+    "secrets_redacted",
+)
 
 
 def _slug(value: str) -> str:
@@ -223,13 +246,185 @@ def _read_evidence(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _target_evidence_issues(target: dict[str, Any], evidence_dir: Path) -> list[str]:
+def _repo_root() -> Path:
+    return REPO_ROOT
+
+
+def _current_git_commit() -> str | None:
+    try:
+        output = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = output.stdout.strip()
+    return commit or None
+
+
+def _source_tree_status_command(*, untracked_files: str) -> list[str]:
+    command = ["git", "status", "--porcelain", f"--untracked-files={untracked_files}", "--", "."]
+    command.extend(f":(exclude){path}" for path in PROMOTION_SOURCE_TREE_IGNORED_PATHS)
+    return command
+
+
+def _paths_from_porcelain(output: str, *, untracked_only: bool) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        if untracked_only and not line.startswith("?? "):
+            continue
+        path = line[3:] if len(line) > 3 else line.strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[-1]
+        path = path.strip().strip('"')
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _current_source_tree_dirty_paths() -> list[str] | None:
+    try:
+        output = subprocess.run(
+            _source_tree_status_command(untracked_files="no"),
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _paths_from_porcelain(output.stdout, untracked_only=False)
+
+
+def _current_source_tree_untracked_paths() -> list[str] | None:
+    try:
+        output = subprocess.run(
+            _source_tree_status_command(untracked_files="all"),
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _paths_from_porcelain(output.stdout, untracked_only=True)
+
+
+def _current_source_tree_clean() -> bool | None:
+    dirty_paths = _current_source_tree_dirty_paths()
+    untracked_paths = _current_source_tree_untracked_paths()
+    if dirty_paths is None or untracked_paths is None:
+        return None
+    return not dirty_paths and not untracked_paths
+
+
+def _source_binding_context(
+    *,
+    require_current_commit: bool,
+    require_clean_source: bool,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "require_current_commit": bool(require_current_commit),
+        "require_clean_source": bool(require_clean_source),
+        "current_commit": None,
+        "current_python_source_contract_hash": None,
+        "current_source_tree_clean": None,
+        "current_source_tree_dirty_paths": [],
+        "current_source_tree_untracked_paths": [],
+        "issues": [],
+    }
+    if not require_current_commit and not require_clean_source:
+        return context
+
+    context["current_python_source_contract_hash"] = native_python_source_contract_hash()
+    if require_current_commit:
+        current_commit = _current_git_commit()
+        context["current_commit"] = current_commit
+        if not current_commit:
+            context["issues"].append("current git commit could not be determined for platform evidence validation")
+
+    if require_clean_source:
+        current_source_tree_clean = _current_source_tree_clean()
+        context["current_source_tree_clean"] = current_source_tree_clean
+        if current_source_tree_clean is None:
+            context["issues"].append("current source tree cleanliness could not be determined for platform evidence validation")
+        elif not current_source_tree_clean:
+            dirty_paths = _current_source_tree_dirty_paths() or []
+            untracked_paths = _current_source_tree_untracked_paths() or []
+            context["current_source_tree_dirty_paths"] = dirty_paths
+            context["current_source_tree_untracked_paths"] = untracked_paths
+            if dirty_paths:
+                visible = ", ".join(dirty_paths[:10])
+                suffix = "" if len(dirty_paths) <= 10 else ", ..."
+                context["issues"].append(
+                    "current tracked source tree must be clean for platform evidence validation; "
+                    f"dirty paths: {visible}{suffix}"
+                )
+            if untracked_paths:
+                visible = ", ".join(untracked_paths[:10])
+                suffix = "" if len(untracked_paths) <= 10 else ", ..."
+                context["issues"].append(
+                    "current promotion source tree must not contain untracked source/tool files for platform evidence validation; "
+                    f"untracked paths: {visible}{suffix}"
+                )
+            if not dirty_paths and not untracked_paths:
+                context["issues"].append("current promotion source tree must be clean for platform evidence validation")
+    return context
+
+
+def _target_source_binding_issues(payload: dict[str, Any], path: Path, context: dict[str, Any]) -> list[str]:
+    if not context.get("require_current_commit") and not context.get("require_clean_source"):
+        return []
+
+    issues: list[str] = []
+    current_commit = context.get("current_commit")
+    current_contract_hash = str(context.get("current_python_source_contract_hash") or "")
+    if context.get("require_current_commit") and current_commit:
+        if str(payload.get("commit") or "").strip() != current_commit:
+            issues.append(f"{path} commit must match current git commit {current_commit}")
+    if context.get("require_clean_source") and payload.get("source_tree_clean") is not True:
+        issues.append(f"{path} source_tree_clean must be true for release promotion evidence")
+    if str(payload.get("python_source_contract_hash") or "").strip().lower() != current_contract_hash:
+        issues.append(f"{path} python_source_contract_hash must match current Python source contract")
+    if payload.get("runtime_ready_claimed") is not False:
+        issues.append(f"{path} runtime_ready_claimed must be false")
+    if payload.get("secrets_redacted") is not True:
+        issues.append(f"{path} secrets_redacted must be true")
+    return issues
+
+
+def _target_evidence_type_issues(payload: dict[str, Any], path: Path) -> list[str]:
+    issues: list[str] = []
+    for field in TARGET_EVIDENCE_STRING_FIELDS:
+        if field in payload and not isinstance(payload.get(field), str):
+            issues.append(f"{path} {field} must be a string")
+    for field in TARGET_EVIDENCE_BOOL_FIELDS:
+        if field in payload and not isinstance(payload.get(field), bool):
+            issues.append(f"{path} {field} must be boolean")
+    return issues
+
+
+def _target_evidence_issues(
+    target: dict[str, Any],
+    evidence_dir: Path,
+    *,
+    source_binding_context: dict[str, Any] | None = None,
+) -> list[str]:
     issues: list[str] = []
     target_id = str(target["id"])
     path = evidence_dir / f"{target_id}.json"
     if not path.is_file():
         return [f"missing evidence for {target_id}: {path}"]
     payload = _read_evidence(path)
+    issues.extend(_target_evidence_type_issues(payload, path))
     if payload.get("target_id") != target_id:
         issues.append(f"{path} target_id does not match {target_id}")
     if payload.get("status") != "passed":
@@ -263,13 +458,26 @@ def _target_evidence_issues(target: dict[str, Any], evidence_dir: Path) -> list[
                 target_match = platform_probe.get("target_match")
                 if not isinstance(target_match, dict) or target_match.get("matched") is not True:
                     issues.append(f"{path} platform-probe target_match.matched must be true")
+    if source_binding_context is not None:
+        issues.extend(_target_source_binding_issues(payload, path, source_binding_context))
     return issues
 
 
-def _evidence_issues(targets: list[dict[str, Any]], evidence_dir: Path) -> list[str]:
-    issues: list[str] = []
+def _evidence_issues(
+    targets: list[dict[str, Any]],
+    evidence_dir: Path,
+    *,
+    source_binding_context: dict[str, Any] | None = None,
+) -> list[str]:
+    issues: list[str] = list(source_binding_context.get("issues", []) if source_binding_context else [])
     for target in targets:
-        issues.extend(_target_evidence_issues(target, evidence_dir))
+        issues.extend(
+            _target_evidence_issues(
+                target,
+                evidence_dir,
+                source_binding_context=source_binding_context,
+            )
+        )
     return issues
 
 
@@ -301,6 +509,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--matrix", default=str(DEFAULT_MATRIX_PATH), help="Path to release platform test matrix JSON.")
     parser.add_argument("--schema-only", action="store_true", help="Validate only the matrix schema/coverage contract.")
     parser.add_argument("--require-evidence", action="store_true", help="Require passed evidence JSON for every target.")
+    parser.add_argument(
+        "--require-current-commit",
+        action="store_true",
+        help="With --require-evidence, require target evidence commit to match the current git commit.",
+    )
+    parser.add_argument(
+        "--require-clean-source",
+        action="store_true",
+        help="With --require-evidence, require clean promotion source state and source-clean target evidence.",
+    )
     parser.add_argument("--evidence-dir", default="release-platform-evidence", help="Directory containing target evidence JSON files.")
     parser.add_argument("--emit-github-matrix", action="store_true", help="Print a GitHub Actions matrix JSON object.")
     parser.add_argument("--target-filter", default="", help="Only emit or validate targets whose id contains this text.")
@@ -324,8 +542,21 @@ def main(argv: list[str] | None = None) -> int:
     if target_filter_active and not filtered_targets:
         issues.append(f"target-filter matched no targets: {args.target_filter}")
 
+    source_binding_context = _source_binding_context(
+        require_current_commit=bool(args.require_current_commit),
+        require_clean_source=bool(args.require_clean_source),
+    )
+    if (args.require_current_commit or args.require_clean_source) and not args.require_evidence:
+        issues.append("--require-current-commit and --require-clean-source require --require-evidence")
+
     if args.require_evidence:
-        issues.extend(_evidence_issues(filtered_targets, Path(args.evidence_dir)))
+        issues.extend(
+            _evidence_issues(
+                filtered_targets,
+                Path(args.evidence_dir),
+                source_binding_context=source_binding_context,
+            )
+        )
 
     if args.emit_github_matrix:
         if issues:
@@ -343,6 +574,13 @@ def main(argv: list[str] | None = None) -> int:
         "target_filter": str(args.target_filter).strip(),
         "issues": issues,
         "evidence_required": bool(args.require_evidence),
+        "require_current_commit": bool(args.require_current_commit),
+        "require_clean_source": bool(args.require_clean_source),
+        "current_commit": source_binding_context.get("current_commit"),
+        "current_python_source_contract_hash": source_binding_context.get("current_python_source_contract_hash"),
+        "current_source_tree_clean": source_binding_context.get("current_source_tree_clean"),
+        "current_source_tree_dirty_paths": source_binding_context.get("current_source_tree_dirty_paths"),
+        "current_source_tree_untracked_paths": source_binding_context.get("current_source_tree_untracked_paths"),
     }
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

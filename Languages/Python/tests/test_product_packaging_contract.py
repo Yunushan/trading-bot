@@ -1378,6 +1378,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("python tools/check_release_platform_matrix.py --schema-only", ci_workflow)
         self.assertIn("tools/run_release_platform_probe.py", real_test_workflow)
         self.assertIn("--require-evidence", real_test_workflow)
+        self.assertGreaterEqual(real_test_workflow.count("--require-current-commit"), 2)
+        self.assertGreaterEqual(real_test_workflow.count("--require-clean-source"), 2)
         self.assertIn("desktop_smoke_command", real_test_workflow)
         self.assertIn("TB_RELEASE_DESKTOP_SMOKE_COMMAND", real_test_workflow)
         self.assertIn("browser_test_command", real_test_workflow)

@@ -16,13 +16,15 @@ from typing import Any
 try:
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_release_assets import _build_expected_assets, _fetch_release, _resolve_default_repo
-    from check_release_platform_matrix import DEFAULT_MATRIX_PATH, REQUIRED_SUITE_RESULT_NAMES
+    from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
+    from check_release_platform_matrix import REQUIRED_SUITE_RESULT_NAMES
     from check_release_platform_matrix import _evidence_issues, _load_json, _read_evidence
     from check_release_platform_matrix import _target_evidence_issues, _validate_matrix
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_release_assets import _build_expected_assets, _fetch_release, _resolve_default_repo
-    from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, REQUIRED_SUITE_RESULT_NAMES
+    from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
+    from tools.check_release_platform_matrix import REQUIRED_SUITE_RESULT_NAMES
     from tools.check_release_platform_matrix import _evidence_issues, _load_json, _read_evidence
     from tools.check_release_platform_matrix import _target_evidence_issues, _validate_matrix
 
@@ -60,10 +62,16 @@ def _current_git_commit() -> str:
     return output.stdout.strip() or "unknown-local-commit"
 
 
-def _source_tree_clean() -> bool:
+def _source_tree_status_command(untracked_files: str) -> list[str]:
+    command = ["git", "status", "--porcelain", f"--untracked-files={untracked_files}", "--", "."]
+    command.extend(f":(exclude){path}" for path in PROMOTION_SOURCE_TREE_IGNORED_PATHS)
+    return command
+
+
+def _source_tree_status_clean(untracked_files: str) -> bool:
     try:
         output = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            _source_tree_status_command(untracked_files),
             cwd=_repo_root(),
             check=True,
             capture_output=True,
@@ -73,6 +81,10 @@ def _source_tree_clean() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return not output.stdout.strip()
+
+
+def _source_tree_clean() -> bool:
+    return _source_tree_status_clean("no") and _source_tree_status_clean("all")
 
 
 def _current_unix_timestamp_label() -> str:
@@ -171,6 +183,37 @@ def _platform_results(platform_targets: list[dict[str, Any]], browser_targets: l
     return results
 
 
+def _target_source_binding_issues(payload: dict[str, Any], path: Path) -> list[str]:
+    issues: list[str] = []
+    current_commit = _current_git_commit()
+    current_contract_hash = native_python_source_contract_hash()
+    if str(payload.get("commit") or "").strip() != current_commit:
+        issues.append(f"{path} commit must match current git commit {current_commit}")
+    if payload.get("source_tree_clean") is not True:
+        issues.append(f"{path} source_tree_clean must be true for release promotion evidence")
+    if str(payload.get("python_source_contract_hash") or "").strip() != current_contract_hash:
+        issues.append(f"{path} python_source_contract_hash must match current Python source contract")
+    if payload.get("runtime_ready_claimed") is not False:
+        issues.append(f"{path} runtime_ready_claimed must be false")
+    if payload.get("secrets_redacted") is not True:
+        issues.append(f"{path} secrets_redacted must be true")
+    return issues
+
+
+def _release_platform_source_binding_issues(
+    targets: list[dict[str, Any]], evidence_dir: Path
+) -> list[str]:
+    issues: list[str] = []
+    for target in targets:
+        target_id = str(target["id"])
+        path = evidence_dir / f"{target_id}.json"
+        if not path.is_file():
+            continue
+        payload = _read_evidence(path)
+        issues.extend(_target_source_binding_issues(payload, path))
+    return issues
+
+
 def _limit_list(values: list[Any], limit: int) -> list[Any]:
     if limit <= 0:
         return values
@@ -218,6 +261,11 @@ def _target_plan(target: dict[str, Any]) -> dict[str, Any]:
         "probe_command": (
             "python tools/run_release_platform_probe.py "
             f"--target-id {target_id} --output release-platform-evidence/{target_id}.json"
+        ),
+        "target_validation_command": (
+            "python tools/check_release_platform_matrix.py --require-evidence "
+            "--require-current-commit --require-clean-source "
+            f"--evidence-dir release-platform-evidence --target-filter {target_id}"
         ),
         "workflow_dispatch_example": _workflow_dispatch_example(target),
     }
@@ -276,6 +324,11 @@ def preflight_release_evidence_inputs(
         if target_id not in present_evidence_set:
             continue
         target_issues = _target_evidence_issues(targets_by_id[target_id], platform_evidence_dir)
+        if not target_issues:
+            payload = _read_evidence(platform_evidence_dir / f"{target_id}.json")
+            target_issues.extend(
+                _target_source_binding_issues(payload, platform_evidence_dir / f"{target_id}.json")
+            )
         if target_issues:
             invalid_evidence.append(
                 {
@@ -390,6 +443,13 @@ def build_release_evidence(
     issues.extend(matrix_issues)
     if not matrix_issues:
         issues.extend(_evidence_issues(platform_targets + browser_targets, platform_evidence_dir))
+        if not issues:
+            issues.extend(
+                _release_platform_source_binding_issues(
+                    platform_targets + browser_targets,
+                    platform_evidence_dir,
+                )
+            )
     if issues:
         return None, issues
 

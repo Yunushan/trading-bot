@@ -54,6 +54,15 @@ ACCEPTED_EVIDENCE_SCOPES: dict[str, set[str]] = {
     "live_recovery": {"deterministic_local", "controlled_live", "live_testnet", "live_production"},
     "release_evidence": {"release_platform"},
 }
+RUNTIME_EVIDENCE_STRING_FIELDS = (
+    "evidence_id",
+    "status",
+    "evidence_scope",
+    "generated_at",
+    "commit",
+    "python_source_contract_hash",
+    "command",
+)
 EXPECTED_LIVE_SMOKE_ENDPOINTS: dict[str, set[str]] = {
     "rust-native-live-market-data-smoke": {"exchangeInfo", "klines", "tickerPrice"},
     "rust-native-live-account-read-smoke": {
@@ -260,6 +269,7 @@ def _requirements(manifest: dict[str, Any]) -> tuple[list[dict[str, Any]], list[
             "evidence_scope",
             "generated_at",
             "commit",
+            "source_tree_clean",
             "python_source_contract_hash",
             "command",
             "environment",
@@ -343,6 +353,21 @@ def _required_artifact_fields_present(
             issues.append(f"{artifact_path} required artifact field {field} cannot be empty")
         elif isinstance(value, (list, dict)) and not value:
             issues.append(f"{artifact_path} required artifact field {field} cannot be empty")
+
+
+def _validate_runtime_evidence_string_fields(
+    payload: dict[str, Any],
+    artifact_path: Path,
+    issues: list[str],
+) -> None:
+    for field in RUNTIME_EVIDENCE_STRING_FIELDS:
+        if field not in payload:
+            continue
+        value = payload.get(field)
+        if not isinstance(value, str):
+            issues.append(f"{artifact_path} {field} must be a string")
+        elif not value.strip():
+            issues.append(f"{artifact_path} {field} is required")
 
 
 def _validate_generated_at(payload: dict[str, Any], artifact_path: Path, issues: list[str]) -> None:
@@ -848,6 +873,7 @@ def _validate_artifact(
 
     evidence_id = str(requirement["id"])
     _required_artifact_fields_present(requirement, payload, artifact_path, issues)
+    _validate_runtime_evidence_string_fields(payload, artifact_path, issues)
     _validate_generated_at(payload, artifact_path, issues)
     _validate_python_source_contract_hash(
         payload,
@@ -869,6 +895,8 @@ def _validate_artifact(
             f"{artifact_path} commit must match current git commit {expected_commit}; "
             f"observed {artifact_commit or '<empty>'}"
         )
+    if not isinstance(payload.get("source_tree_clean"), bool):
+        issues.append(f"{artifact_path} source_tree_clean must be boolean")
     if require_clean_source and payload.get("source_tree_clean") is not True:
         issues.append(f"{artifact_path} source_tree_clean must be true for promotion evidence")
     environment = payload.get("environment")

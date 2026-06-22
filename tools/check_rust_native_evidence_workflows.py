@@ -15,7 +15,9 @@ from typing import Any
 
 
 WORKFLOWS = {
+    "ci_rust_native_gate": ".github/workflows/ci.yml",
     "live_smoke": ".github/workflows/rust-native-live-smoke.yml",
+    "release_platform_real_tests": ".github/workflows/release-platform-real-tests.yml",
     "release_evidence": ".github/workflows/rust-native-release-evidence.yml",
     "promotion_audit": ".github/workflows/rust-native-promotion-audit.yml",
 }
@@ -37,7 +39,7 @@ def _ordered(text: str, fragments: tuple[str, ...]) -> list[str]:
     issues: list[str] = []
     cursor = -1
     for fragment in fragments:
-        index = text.find(fragment)
+        index = text.find(fragment, cursor + 1)
         if index == -1:
             issues.append(f"missing ordered fragment: {fragment}")
             continue
@@ -109,6 +111,111 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
         )
     )
     return _workflow_result("live_smoke", path, issues)
+
+
+def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
+    path = WORKFLOWS["ci_rust_native_gate"]
+    text = _read(root, path)
+    issues = _missing_fragments(
+        text,
+        (
+            "Audit native source sync",
+            "python tools/audit_native_source_sync.py --json",
+            "Check Rust native runtime evidence contract",
+            "python tools/check_rust_native_runtime_evidence.py --schema-only",
+            "Check Rust native evidence workflow contracts",
+            "python tools/check_rust_native_evidence_workflows.py --json",
+            "Audit Rust native evidence importer",
+            "python tools/import_rust_native_evidence_artifacts.py",
+            "artifacts/rust-native-runtime-evidence",
+            "release-platform-evidence",
+            "--require-current-commit",
+            "--require-clean-source",
+            "Audit Rust native runtime promotion readiness",
+            "python tools/audit_rust_native_runtime_readiness.py",
+            "--write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md",
+            "Upload Rust native runtime evidence plan",
+            "rust-native-runtime-evidence-plan",
+            "Validate Rust native local recovery evidence",
+            "python3 tools/check_rust_native_local_recovery_evidence.py --json",
+            "Validate Rust native live-smoke preflight",
+            "python3 tools/check_rust_native_live_smoke_preflight.py --json",
+            "generated evidence source-control guard",
+            "python tools/check_generated_evidence_source_control.py --json",
+        ),
+    )
+    issues.extend(
+        _ordered(
+            text,
+            (
+                "Audit native source sync",
+                "Check Rust native runtime evidence contract",
+                "Check Rust native evidence workflow contracts",
+                "Audit Rust native evidence importer",
+                "Audit Rust native runtime promotion readiness",
+                "Upload Rust native runtime evidence plan",
+            ),
+        )
+    )
+    importer_start = text.find("Audit Rust native evidence importer")
+    readiness_start = text.find("Audit Rust native runtime promotion readiness")
+    if importer_start == -1 or readiness_start == -1 or readiness_start <= importer_start:
+        issues.append("CI Rust native importer audit must run before promotion readiness audit")
+    else:
+        importer_section = text[importer_start:readiness_start]
+        for fragment in ("--require-current-commit", "--require-clean-source"):
+            if fragment not in importer_section:
+                issues.append(f"CI Rust native importer audit must use {fragment}")
+    return _workflow_result("ci_rust_native_gate", path, issues)
+
+
+def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
+    path = WORKFLOWS["release_platform_real_tests"]
+    text = _read(root, path)
+    issues = _missing_fragments(
+        text,
+        (
+            "workflow_dispatch:",
+            "target_id:",
+            "runner_labels_json:",
+            "require_all_evidence:",
+            "desktop_smoke_command:",
+            "browser_test_command:",
+            "contents: read",
+            "python tools/check_release_platform_matrix.py --schema-only",
+            "python tools/run_release_platform_probe.py",
+            "--target-id \"${{ inputs.target_id }}\"",
+            "--output \"release-platform-evidence/${{ inputs.target_id }}.json\"",
+            "Validate target evidence",
+            "python tools/check_release_platform_matrix.py",
+            "--require-evidence",
+            "--require-current-commit",
+            "--require-clean-source",
+            "--target-filter \"${{ inputs.target_id }}\"",
+            "name: release-platform-evidence-${{ inputs.target_id }}",
+            "if-no-files-found: error",
+            "Full Evidence Gate",
+            "pattern: release-platform-evidence-*",
+            "merge-multiple: true",
+            "Require passed evidence for every target",
+        ),
+    )
+    issues.extend(
+        _ordered(
+            text,
+            (
+                "Validate matrix contract",
+                "Run real target probe",
+                "Validate target evidence",
+                "Upload target evidence",
+                "Require passed evidence for every target",
+            ),
+        )
+    )
+    for fragment in ("--require-current-commit", "--require-clean-source"):
+        if text.count(fragment) < 2:
+            issues.append(f"release platform workflow must use {fragment} for target and full evidence validation")
+    return _workflow_result("release_platform_real_tests", path, issues)
 
 
 def _check_release_evidence(root: Path) -> dict[str, Any]:
@@ -251,7 +358,9 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
 def check_workflows(root: Path | None = None) -> dict[str, Any]:
     root = root or _repo_root()
     workflow_results = [
+        _check_ci_rust_native_gate(root),
         _check_live_smoke(root),
+        _check_release_platform_real_tests(root),
         _check_release_evidence(root),
         _check_promotion_audit(root),
     ]

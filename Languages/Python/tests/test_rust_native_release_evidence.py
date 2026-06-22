@@ -16,7 +16,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import check_rust_native_local_recovery_evidence as local_recovery  # noqa: E402
+from tools import check_rust_native_live_smoke_preflight as live_smoke_preflight  # noqa: E402
 from tools import check_rust_native_runtime_evidence as runtime_evidence  # noqa: E402
+from tools import check_rust_native_evidence_workflows as evidence_workflows  # noqa: E402
 from tools import check_generated_evidence_source_control as evidence_source_control  # noqa: E402
 from tools import check_release_platform_matrix as release_platform_matrix  # noqa: E402
 from tools import check_release_assets as release_assets  # noqa: E402
@@ -102,6 +104,81 @@ def _json_sha256(payload: dict[str, object]) -> str:
 
 
 class RustNativeReleaseEvidenceTests(unittest.TestCase):
+    def test_evidence_workflow_checker_covers_ci_gate(self):
+        result = evidence_workflows.check_workflows(REPO_ROOT)
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual(5, result["workflow_count"])
+        workflows = {workflow["name"]: workflow for workflow in result["workflows"]}
+        self.assertIn("ci_rust_native_gate", workflows)
+        self.assertEqual(".github/workflows/ci.yml", workflows["ci_rust_native_gate"]["path"])
+        self.assertIn("live_smoke", workflows)
+        self.assertIn("release_platform_real_tests", workflows)
+        self.assertIn("release_evidence", workflows)
+        self.assertIn("promotion_audit", workflows)
+
+    def test_live_smoke_preflight_payload_requires_current_python_source_contract_hash(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir)
+            payload = {
+                "ok": True,
+                "mode": "native_live_market_smoke_preflight",
+                "network_access_attempted": False,
+                "order_submission_attempted": False,
+                "runtime_ready_claimed": False,
+                "read_only": True,
+                "secrets_redacted": True,
+                "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+                "evidence_dir": str(evidence_dir),
+                "expected_artifacts": ["rust-native-live-market-data-smoke.json"],
+                "missing": [],
+                "source_control_write_guard": {"ok": True, "issues": []},
+                "prerequisites": {
+                    "market_smoke_confirmation_present": True,
+                    "binance_testnet": True,
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                },
+                "operator_command": "TRADING_BOT_RUST_MARKET_SMOKE=1 cargo run -- --native-live-market-smoke",
+            }
+
+            matching = live_smoke_preflight._validate_payload(
+                payload,
+                expected_ok=True,
+                expected_mode="native_live_market_smoke_preflight",
+                expected_artifacts={"rust-native-live-market-data-smoke.json"},
+                expected_missing=set(),
+                expected_prerequisites={
+                    "market_smoke_confirmation_present": True,
+                    "binance_testnet": True,
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                },
+                evidence_dir=evidence_dir,
+                expected_operator_fragments=("TRADING_BOT_RUST_MARKET_SMOKE=1", "--native-live-market-smoke"),
+            )
+
+            payload["python_source_contract_hash"] = "0" * 64
+            stale = live_smoke_preflight._validate_payload(
+                payload,
+                expected_ok=True,
+                expected_mode="native_live_market_smoke_preflight",
+                expected_artifacts={"rust-native-live-market-data-smoke.json"},
+                expected_missing=set(),
+                expected_prerequisites={
+                    "market_smoke_confirmation_present": True,
+                    "binance_testnet": True,
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                },
+                evidence_dir=evidence_dir,
+                expected_operator_fragments=("TRADING_BOT_RUST_MARKET_SMOKE=1", "--native-live-market-smoke"),
+            )
+
+        self.assertEqual([], matching)
+        self.assertTrue(
+            any("python_source_contract_hash must match current Python source contract" in issue for issue in stale)
+        )
+
     def test_generated_evidence_source_control_guard_rejects_existing_tracked_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -669,6 +746,22 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(1, len(result["missing_platform_evidence_plan"]))
         self.assertEqual("browser-chrome-windows-11-x64", result["missing_platform_evidence_plan"][0]["target_id"])
         self.assertIn("browser_test_command", result["missing_platform_evidence_plan"][0]["required_workflow_inputs"])
+        self.assertIn(
+            "tools/check_release_platform_matrix.py",
+            result["missing_platform_evidence_plan"][0]["target_validation_command"],
+        )
+        self.assertIn(
+            "--require-current-commit",
+            result["missing_platform_evidence_plan"][0]["target_validation_command"],
+        )
+        self.assertIn(
+            "--require-clean-source",
+            result["missing_platform_evidence_plan"][0]["target_validation_command"],
+        )
+        self.assertIn(
+            "--target-filter browser-chrome-windows-11-x64",
+            result["missing_platform_evidence_plan"][0]["target_validation_command"],
+        )
         self.assertIn("gh workflow run release-platform-real-tests.yml", result["missing_platform_evidence_plan"][0]["workflow_dispatch_example"])
         self.assertIn("--preflight", result["preflight_command"])
 
@@ -690,6 +783,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "missing_platform_evidence_plan": [
                 {
                     "target_id": "browser-chrome-windows-11-x64",
+                    "target_validation_command": (
+                        "python tools/check_release_platform_matrix.py --require-evidence "
+                        "--require-current-commit --require-clean-source "
+                        "--evidence-dir release-platform-evidence --target-filter browser-chrome-windows-11-x64"
+                    ),
                     "workflow_dispatch_example": "gh workflow run release-platform-real-tests.yml",
                 }
             ],
@@ -725,6 +823,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(result["missing_platform_evidence_truncated"])
         self.assertEqual(["browser-chrome-windows-11-x64"], result["missing_platform_evidence"])
         self.assertEqual("browser-chrome-windows-11-x64", result["missing_platform_evidence_plan"][0]["target_id"])
+        self.assertIn("--require-current-commit", result["missing_platform_evidence_plan"][0]["target_validation_command"])
+        self.assertIn("--require-clean-source", result["missing_platform_evidence_plan"][0]["target_validation_command"])
         self.assertIn("98 of 99", result["release_platform_preflight_issues"][0])
         self.assertEqual("v9.9.9", preflight.call_args.kwargs["tag"])
         self.assertEqual(10, preflight.call_args.kwargs["missing_limit"])
@@ -1108,6 +1208,47 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             self.assertIn(":(exclude)release-platform-evidence", command)
             self.assertIn(".", command)
 
+    def test_release_platform_clean_source_check_ignores_canonical_evidence_dirs(self):
+        captured_commands: list[list[str]] = []
+
+        def _run_stub(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured_commands.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch.object(release_platform_matrix.subprocess, "run", side_effect=_run_stub):
+            clean = release_platform_matrix._current_source_tree_clean()
+
+        self.assertTrue(clean)
+        self.assertEqual(2, len(captured_commands))
+        self.assertIn("--untracked-files=no", captured_commands[0])
+        self.assertIn("--untracked-files=all", captured_commands[1])
+        for command in captured_commands:
+            self.assertIn(":(exclude)artifacts/rust-native-runtime-evidence", command)
+            self.assertIn(":(exclude)release-platform-evidence", command)
+            self.assertIn(".", command)
+
+    def test_release_evidence_writers_stamp_source_clean_with_promotion_scope(self):
+        for module in (release_platform_probe, release_evidence):
+            with self.subTest(module=module.__name__):
+                captured_commands: list[list[str]] = []
+
+                def _run_stub(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                    captured_commands.append(command)
+                    stdout = "" if len(captured_commands) == 1 else "?? tools/new-release-probe.py\n"
+                    return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+                with patch.object(module.subprocess, "run", side_effect=_run_stub):
+                    clean = module._source_tree_clean()
+
+                self.assertFalse(clean)
+                self.assertEqual(2, len(captured_commands))
+                self.assertIn("--untracked-files=no", captured_commands[0])
+                self.assertIn("--untracked-files=all", captured_commands[1])
+                for command in captured_commands:
+                    self.assertIn(":(exclude)artifacts/rust-native-runtime-evidence", command)
+                    self.assertIn(":(exclude)release-platform-evidence", command)
+                    self.assertIn(".", command)
+
     def test_promotion_clean_source_reports_dirty_tracked_paths(self):
         dirty_output = (
             " M tools/audit_rust_native_runtime_readiness.py\n"
@@ -1331,6 +1472,19 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "github_workflow": "gh workflow run rust-native-release-evidence.yml",
             "release_tag_configured": False,
             "missing_platform_evidence_count": 98,
+            "missing_platform_evidence_limit": 10,
+            "missing_platform_evidence_truncated": True,
+            "missing_platform_evidence_plan": [
+                {
+                    "target_id": "browser-chrome-windows-11-x64",
+                    "target_validation_command": (
+                        "python tools/check_release_platform_matrix.py --require-evidence "
+                        "--require-current-commit --require-clean-source "
+                        "--evidence-dir release-platform-evidence --target-filter browser-chrome-windows-11-x64"
+                    ),
+                    "workflow_dispatch_example": "gh workflow run release-platform-real-tests.yml",
+                }
+            ],
             "release_asset_presence_verified": False,
         }
 
@@ -1409,6 +1563,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             release_row["import_command"],
         )
         self.assertEqual(98, release_row["details"]["missing_platform_evidence_count"])
+        self.assertEqual(10, release_row["details"]["missing_platform_evidence_limit"])
+        self.assertTrue(release_row["details"]["missing_platform_evidence_truncated"])
+        self.assertEqual(
+            "browser-chrome-windows-11-x64",
+            release_row["details"]["missing_platform_evidence_plan"][0]["target_id"],
+        )
+        self.assertIn(
+            "--require-current-commit",
+            release_row["details"]["missing_platform_evidence_plan"][0]["target_validation_command"],
+        )
         self.assertFalse(release_row["details"]["release_asset_presence_verified"])
 
         markdown = runtime_readiness._render_evidence_collection_markdown(result)
@@ -1423,6 +1587,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("requires_credentials=true", markdown)
         self.assertIn("release preflight", markdown)
         self.assertIn("--require-current-commit", markdown)
+        self.assertIn("browser-chrome-windows-11-x64", markdown)
+        self.assertIn("gh workflow run release-platform-real-tests.yml", markdown)
+        self.assertIn("missing target plan is truncated", markdown)
         self.assertIn("Required runtime evidence ids", markdown)
         self.assertIn("--require-runtime-id rust-native-live-account-read-smoke", markdown)
         self.assertIn("--require-runtime-id rust-native-release-platform-evidence", markdown)
@@ -1562,7 +1729,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "endpoints": _market_smoke_endpoints(),
             "suite_results": _market_smoke_suite_results(),
         }
-        platform_payload = _target_evidence_payload(windows_target)
+        platform_payload = {
+            **_target_evidence_payload(windows_target),
+            "commit": "abc123",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "runtime_ready_claimed": False,
+            "secrets_redacted": True,
+        }
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1644,6 +1818,79 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(all(row["action"] == "copy" for row in imported["copied"]))
         self.assertTrue(runtime_evidence_imported)
         self.assertTrue(platform_evidence_imported)
+
+    def test_importer_rejects_stale_release_platform_evidence_with_promotion_flags(self):
+        matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+        platform_targets, browser_targets, matrix_issues = release_platform_matrix._validate_matrix(matrix)
+        self.assertEqual([], matrix_issues)
+        targets = platform_targets + browser_targets
+        windows_target = next(target for target in targets if target["id"] == "windows-11-x64")
+        payload = {
+            **_target_evidence_payload(windows_target),
+            "commit": "old-commit",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "runtime_ready_claimed": False,
+            "secrets_redacted": True,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence_path = root / "windows-11-x64.json"
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="current-commit"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                stale_commit = evidence_importer.import_evidence_artifacts(
+                    [evidence_path],
+                    platform_evidence_dir=root / "release-platform-evidence",
+                    apply=False,
+                    require_current_commit=True,
+                    require_clean_source=True,
+                )
+
+            payload["commit"] = "current-commit"
+            payload["source_tree_clean"] = False
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="current-commit"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                dirty_artifact = evidence_importer.import_evidence_artifacts(
+                    [evidence_path],
+                    platform_evidence_dir=root / "release-platform-evidence",
+                    apply=False,
+                    require_current_commit=True,
+                    require_clean_source=True,
+                )
+
+            payload["source_tree_clean"] = True
+            payload["python_source_contract_hash"] = "0" * 64
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with (
+                patch.object(runtime_evidence, "_current_git_commit", return_value="current-commit"),
+                patch.object(runtime_evidence, "_current_source_tree_clean", return_value=True),
+            ):
+                stale_contract = evidence_importer.import_evidence_artifacts(
+                    [evidence_path],
+                    platform_evidence_dir=root / "release-platform-evidence",
+                    apply=False,
+                    require_current_commit=True,
+                    require_clean_source=True,
+                )
+
+        self.assertFalse(stale_commit["ok"])
+        self.assertEqual(0, stale_commit["planned_count"])
+        self.assertTrue(any("commit must match current git commit" in issue for issue in stale_commit["issues"]))
+        self.assertFalse(dirty_artifact["ok"])
+        self.assertEqual(0, dirty_artifact["planned_count"])
+        self.assertTrue(any("source_tree_clean must be true" in issue for issue in dirty_artifact["issues"]))
+        self.assertFalse(stale_contract["ok"])
+        self.assertEqual(0, stale_contract["planned_count"])
+        self.assertTrue(
+            any("python_source_contract_hash must match current Python source contract" in issue for issue in stale_contract["issues"])
+        )
 
     def test_importer_reports_overwrite_actions_and_hashes(self):
         account_payload = {
@@ -1914,6 +2161,104 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual([], fixed_issues)
         self.assertEqual([], legacy_alias_issues)
 
+    def test_release_platform_source_binding_rejects_stale_or_dirty_target_artifacts(self):
+        target = {
+            "id": "ubuntu-24_04-x64",
+            "kind": "platform",
+            "test_suites": ["native-build-smoke"],
+        }
+        payload = {
+            **_target_evidence_payload(target),
+            "commit": "current-commit",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "runtime_ready_claimed": False,
+            "secrets_redacted": True,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir)
+            evidence_path = evidence_dir / "ubuntu-24_04-x64.json"
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(release_evidence, "_current_git_commit", return_value="current-commit"):
+                valid = release_evidence._release_platform_source_binding_issues([target], evidence_dir)
+
+            payload["commit"] = "old-commit"
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(release_evidence, "_current_git_commit", return_value="current-commit"):
+                stale_commit = release_evidence._release_platform_source_binding_issues([target], evidence_dir)
+
+            payload["commit"] = "current-commit"
+            payload["source_tree_clean"] = False
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(release_evidence, "_current_git_commit", return_value="current-commit"):
+                dirty_source = release_evidence._release_platform_source_binding_issues([target], evidence_dir)
+
+            payload["source_tree_clean"] = True
+            payload["python_source_contract_hash"] = "0" * 64
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(release_evidence, "_current_git_commit", return_value="current-commit"):
+                stale_contract = release_evidence._release_platform_source_binding_issues([target], evidence_dir)
+
+            payload["python_source_contract_hash"] = PYTHON_SOURCE_CONTRACT_HASH
+            payload["runtime_ready_claimed"] = True
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(release_evidence, "_current_git_commit", return_value="current-commit"):
+                runtime_claim = release_evidence._release_platform_source_binding_issues([target], evidence_dir)
+
+            payload["runtime_ready_claimed"] = False
+            payload["secrets_redacted"] = False
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(release_evidence, "_current_git_commit", return_value="current-commit"):
+                unredacted = release_evidence._release_platform_source_binding_issues([target], evidence_dir)
+
+        self.assertEqual([], valid)
+        self.assertTrue(any("commit must match current git commit" in issue for issue in stale_commit))
+        self.assertTrue(any("source_tree_clean must be true" in issue for issue in dirty_source))
+        self.assertTrue(any("python_source_contract_hash must match" in issue for issue in stale_contract))
+        self.assertTrue(any("runtime_ready_claimed must be false" in issue for issue in runtime_claim))
+        self.assertTrue(any("secrets_redacted must be true" in issue for issue in unredacted))
+
+    def test_release_platform_probe_writes_source_binding_fields(self):
+        target = {
+            "id": "ubuntu-24_04-x64",
+            "kind": "platform",
+            "test_suites": ["native-build-smoke"],
+        }
+        suite_results = [{"name": "native-build-smoke", "status": "passed"}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "ubuntu-24_04-x64.json"
+            stdout = io.StringIO()
+            with (
+                patch.object(release_platform_probe, "_find_target", return_value=target),
+                patch.object(release_platform_probe, "_suite_results", return_value=suite_results),
+                patch.object(release_platform_probe, "_current_git_commit", return_value="abc123"),
+                patch.object(release_platform_probe, "_source_tree_clean", return_value=True),
+                patch.object(
+                    release_platform_probe,
+                    "native_python_source_contract_hash",
+                    return_value=PYTHON_SOURCE_CONTRACT_HASH,
+                ),
+                contextlib.redirect_stdout(stdout),
+            ):
+                returncode = release_platform_probe.main(
+                    [
+                        "--target-id",
+                        "ubuntu-24_04-x64",
+                        "--output",
+                        str(output_path),
+                    ]
+                )
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(0, returncode)
+        self.assertEqual("abc123", payload["commit"])
+        self.assertTrue(payload["source_tree_clean"])
+        self.assertEqual(PYTHON_SOURCE_CONTRACT_HASH, payload["python_source_contract_hash"])
+        self.assertFalse(payload["runtime_ready_claimed"])
+        self.assertTrue(payload["secrets_redacted"])
+
     def test_release_platform_cli_target_filter_limits_evidence_validation(self):
         payload = {
             "target_id": "windows-11-x64",
@@ -1955,6 +2300,90 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertGreater(report["total_target_count"], report["target_count"])
         self.assertEqual("windows-11-x64", report["target_filter"])
 
+    def test_release_platform_cli_promotion_flags_require_source_bound_target_evidence(self):
+        matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+        platform_targets, browser_targets, matrix_issues = release_platform_matrix._validate_matrix(matrix)
+        self.assertEqual([], matrix_issues)
+        targets = platform_targets + browser_targets
+        windows_target = next(target for target in targets if target["id"] == "windows-11-x64")
+        payload = {
+            **_target_evidence_payload(windows_target),
+            "commit": "current-commit",
+            "source_tree_clean": True,
+            "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
+            "runtime_ready_claimed": False,
+            "secrets_redacted": True,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir)
+            evidence_path = evidence_dir / "windows-11-x64.json"
+
+            def run_check() -> tuple[int, dict[str, object]]:
+                evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+                stdout = io.StringIO()
+                with (
+                    patch.object(release_platform_matrix, "_current_git_commit", return_value="current-commit"),
+                    patch.object(release_platform_matrix, "_current_source_tree_clean", return_value=True),
+                    contextlib.redirect_stdout(stdout),
+                ):
+                    returncode = release_platform_matrix.main(
+                        [
+                            "--matrix",
+                            str(REPO_ROOT / "docs" / "release-platform-test-matrix.json"),
+                            "--require-evidence",
+                            "--require-current-commit",
+                            "--require-clean-source",
+                            "--evidence-dir",
+                            str(evidence_dir),
+                            "--target-filter",
+                            "windows-11-x64",
+                            "--json",
+                        ]
+                    )
+                return returncode, json.loads(stdout.getvalue())
+
+            valid_code, valid = run_check()
+            payload["commit"] = "old-commit"
+            stale_code, stale = run_check()
+            payload["commit"] = "current-commit"
+            payload["source_tree_clean"] = False
+            dirty_code, dirty = run_check()
+            payload["source_tree_clean"] = True
+            payload["python_source_contract_hash"] = "0" * 64
+            stale_contract_code, stale_contract = run_check()
+            payload["python_source_contract_hash"] = PYTHON_SOURCE_CONTRACT_HASH
+            payload["commit"] = ["current-commit"]
+            wrong_commit_type_code, wrong_commit_type = run_check()
+            payload["commit"] = "current-commit"
+            payload["secrets_redacted"] = "true"
+            wrong_bool_type_code, wrong_bool_type = run_check()
+
+        self.assertEqual(0, valid_code, valid["issues"])
+        self.assertTrue(valid["ok"], valid["issues"])
+        self.assertTrue(valid["require_current_commit"])
+        self.assertTrue(valid["require_clean_source"])
+        self.assertEqual("current-commit", valid["current_commit"])
+        self.assertEqual(PYTHON_SOURCE_CONTRACT_HASH, valid["current_python_source_contract_hash"])
+        self.assertTrue(valid["current_source_tree_clean"])
+        self.assertEqual(1, stale_code)
+        self.assertFalse(stale["ok"])
+        self.assertTrue(any("commit must match current git commit" in issue for issue in stale["issues"]))
+        self.assertEqual(1, dirty_code)
+        self.assertFalse(dirty["ok"])
+        self.assertTrue(any("source_tree_clean must be true" in issue for issue in dirty["issues"]))
+        self.assertEqual(1, stale_contract_code)
+        self.assertFalse(stale_contract["ok"])
+        self.assertTrue(
+            any("python_source_contract_hash must match current Python source contract" in issue for issue in stale_contract["issues"])
+        )
+        self.assertEqual(1, wrong_commit_type_code)
+        self.assertFalse(wrong_commit_type["ok"])
+        self.assertTrue(any("commit must be a string" in issue for issue in wrong_commit_type["issues"]))
+        self.assertEqual(1, wrong_bool_type_code)
+        self.assertFalse(wrong_bool_type["ok"])
+        self.assertTrue(any("secrets_redacted must be boolean" in issue for issue in wrong_bool_type["issues"]))
+
     def test_release_platform_probe_rejects_wrong_observed_platform(self):
         target = {
             "family": "windows",
@@ -1983,6 +2412,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     "evidence_scope": "deterministic_local",
                     "generated_at": "unix:1",
                     "commit": "abc123",
+                    "source_tree_clean": True,
                     "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
                     "command": "cargo run -p trading-bot-rust -- --write-local-recovery-evidence",
                     "environment": {"scope": "deterministic_local"},
@@ -2136,6 +2566,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "source_tree_clean": True,
             "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
@@ -2170,11 +2601,35 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 requirement_ids={evidence_id},
             )
 
+            payload["command"] = "cargo run -p trading-bot-rust -- --native-live-market-smoke"
+            payload["source_tree_clean"] = "true"
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            wrong_type = runtime_evidence.validate(
+                runtime_evidence.DEFAULT_MANIFEST_PATH,
+                require_evidence=True,
+                evidence_dir_override=evidence_dir,
+                requirement_ids={evidence_id},
+            )
+
+            payload["source_tree_clean"] = True
+            payload["command"] = ["cargo", "run", "-p", "trading-bot-rust"]
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            wrong_string_type = runtime_evidence.validate(
+                runtime_evidence.DEFAULT_MANIFEST_PATH,
+                require_evidence=True,
+                evidence_dir_override=evidence_dir,
+                requirement_ids={evidence_id},
+            )
+
         self.assertTrue(valid["ok"], valid["issues"])
         self.assertFalse(missing_field["ok"])
         self.assertTrue(
             any("missing required artifact field: command" in issue for issue in missing_field["issues"])
         )
+        self.assertFalse(wrong_type["ok"])
+        self.assertTrue(any("source_tree_clean must be boolean" in issue for issue in wrong_type["issues"]))
+        self.assertFalse(wrong_string_type["ok"])
+        self.assertTrue(any("command must be a string" in issue for issue in wrong_string_type["issues"]))
 
     def test_runtime_evidence_requires_machine_readable_generated_at(self):
         evidence_id = "rust-native-live-market-data-smoke"
@@ -2184,6 +2639,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "source_tree_clean": True,
             "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
@@ -2242,6 +2698,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "source_tree_clean": True,
             "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {
@@ -2261,6 +2718,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "source_tree_clean": True,
             "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-smoke",
             "environment": {
@@ -2426,6 +2884,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "evidence_scope": "live_testnet",
             "generated_at": "unix:1",
             "commit": "abc123",
+            "source_tree_clean": True,
             "python_source_contract_hash": PYTHON_SOURCE_CONTRACT_HASH,
             "command": "cargo run -p trading-bot-rust -- --native-live-market-smoke",
             "environment": {

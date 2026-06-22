@@ -3,17 +3,31 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use trading_bot_core::{
-    account::{BinanceApiCredentials, BinanceSignedRestClient},
+    account::{
+        BinanceAccountSnapshot, BinanceApiCredentials, BinanceFuturesMultiAssetsMode,
+        BinanceFuturesPosition, BinanceFuturesPositionMode, BinanceSignedRestClient,
+    },
     app_banner, cpp_entire_python_app_contract_parity_ready, cpp_entire_python_app_parity_ready,
-    market_data::{BinanceMarket, BinanceRestMarketDataClient},
+    market_data::{
+        BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient, BinanceTickerPrice,
+    },
     native_full_python_app_parity_ready, native_python_app_contract_parity_ready,
     native_python_app_parity_domains, python_source_contract_hash,
     rust_entire_python_app_contract_parity_ready, rust_entire_python_app_parity_ready,
     rust_native_runtime_capabilities, rust_native_trading_runtime_ready, supported_frameworks,
 };
+
+const MARKET_SMOKE_MAX_ATTEMPTS: usize = 3;
+const MARKET_SMOKE_RETRY_DELAY: Duration = Duration::from_millis(750);
+const ACCOUNT_SMOKE_MAX_ATTEMPTS: usize = 3;
+const ACCOUNT_SMOKE_RETRY_DELAY: Duration = Duration::from_millis(750);
+const PROMOTION_SOURCE_TREE_IGNORED_PATHS: &[&str] = &[
+    "artifacts/rust-native-runtime-evidence",
+    "release-platform-evidence",
+];
 
 fn main() {
     if std::env::args().any(|arg| arg == "--native-live-smoke-preflight") {
@@ -256,7 +270,14 @@ fn run_native_live_market_smoke() -> Result<(), Box<dyn std::error::Error>> {
         "This smoke is public/read-only; it does not use account credentials or submit orders."
     );
 
-    let evidence = collect_market_smoke_evidence(&market_client, testnet, &symbol, &interval)?;
+    let evidence = collect_market_smoke_evidence_with_retry(
+        &market_client,
+        testnet,
+        &symbol,
+        &interval,
+        MARKET_SMOKE_MAX_ATTEMPTS,
+        MARKET_SMOKE_RETRY_DELAY,
+    )?;
     write_market_smoke_evidence(evidence)?;
     println!(
         "Rust native live market-data smoke completed; signed account and standalone trading evidence remain gated."
@@ -293,46 +314,30 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("This smoke is read-only; it does not submit, modify, or cancel orders.");
 
-    let market_evidence =
-        collect_market_smoke_evidence(&market_client, testnet, &symbol, &interval)?;
+    let market_evidence = collect_market_smoke_evidence_with_retry(
+        &market_client,
+        testnet,
+        &symbol,
+        &interval,
+        MARKET_SMOKE_MAX_ATTEMPTS,
+        MARKET_SMOKE_RETRY_DELAY,
+    )?;
 
-    let position_mode = account_client.fetch_futures_position_mode(&credentials)?;
-    println!(
-        "position mode fetched: {} dual_side={}",
-        position_mode.position_mode, position_mode.dual_side_position
-    );
-    let multi_assets_mode = account_client.fetch_futures_multi_assets_mode(&credentials)?;
-    println!(
-        "multi-assets mode fetched: {}",
-        multi_assets_mode.multi_assets_margin
-    );
-    let balance = account_client.fetch_usdt_balance(&credentials)?;
-    println!(
-        "USDT balance fetched: asset={} totals redacted from smoke output",
-        balance.asset
-    );
-    let positions = account_client.fetch_open_futures_positions(&credentials)?;
-    println!("open futures positions fetched: {}", positions.len());
+    let account_evidence = collect_account_smoke_evidence_with_retry(
+        &account_client,
+        &credentials,
+        ACCOUNT_SMOKE_MAX_ATTEMPTS,
+        ACCOUNT_SMOKE_RETRY_DELAY,
+    )?;
     write_live_smoke_evidence(LiveSmokeEvidence {
         market: market_evidence,
-        account_base_url: account_client.base_url().to_owned(),
-        account_endpoints: vec![
-            (
-                "positionSideDual",
-                account_client.futures_position_mode_url(),
-            ),
-            (
-                "multiAssetsMargin",
-                account_client.futures_multi_assets_margin_url(),
-            ),
-            ("balance", account_client.futures_balance_url()),
-            ("positionRisk", account_client.futures_position_risk_url()),
-        ],
-        position_mode: position_mode.position_mode,
-        dual_side_position: position_mode.dual_side_position,
-        multi_assets_margin: multi_assets_mode.multi_assets_margin,
-        balance_asset: balance.asset,
-        positions_count: positions.len(),
+        account_base_url: account_evidence.account_base_url,
+        account_endpoints: account_evidence.account_endpoints,
+        position_mode: account_evidence.position_mode,
+        dual_side_position: account_evidence.dual_side_position,
+        multi_assets_margin: account_evidence.multi_assets_margin,
+        balance_asset: account_evidence.balance_asset,
+        positions_count: account_evidence.positions_count,
     })?;
     println!(
         "Rust native live smoke completed; standalone native trading execution remains disabled."
@@ -340,6 +345,7 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Debug)]
 struct MarketSmokeEvidence {
     testnet: bool,
     symbol: String,
@@ -351,6 +357,7 @@ struct MarketSmokeEvidence {
     ticker_symbol: String,
 }
 
+#[derive(Debug)]
 struct LiveSmokeEvidence {
     market: MarketSmokeEvidence,
     account_base_url: String,
@@ -362,8 +369,118 @@ struct LiveSmokeEvidence {
     positions_count: usize,
 }
 
-fn collect_market_smoke_evidence(
-    market_client: &BinanceRestMarketDataClient,
+#[derive(Debug)]
+struct AccountSmokeEvidence {
+    account_base_url: String,
+    account_endpoints: Vec<(&'static str, String)>,
+    position_mode: String,
+    dual_side_position: bool,
+    multi_assets_margin: bool,
+    balance_asset: String,
+    positions_count: usize,
+}
+
+trait MarketSmokeClient {
+    fn base_url(&self) -> &str;
+    fn exchange_info_url(&self) -> String;
+    fn klines_url(&self) -> String;
+    fn ticker_price_url(&self) -> String;
+    fn fetch_usdt_symbols(
+        &self,
+        sort_by_volume: bool,
+        top_n: Option<usize>,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>>;
+    fn fetch_klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        limit: usize,
+    ) -> Result<Vec<BinanceKlineCandle>, Box<dyn std::error::Error>>;
+    fn fetch_ticker_price(
+        &self,
+        symbol: &str,
+    ) -> Result<BinanceTickerPrice, Box<dyn std::error::Error>>;
+}
+
+impl MarketSmokeClient for BinanceRestMarketDataClient {
+    fn base_url(&self) -> &str {
+        self.base_url()
+    }
+
+    fn exchange_info_url(&self) -> String {
+        self.exchange_info_url()
+    }
+
+    fn klines_url(&self) -> String {
+        self.klines_url()
+    }
+
+    fn ticker_price_url(&self) -> String {
+        self.ticker_price_url()
+    }
+
+    fn fetch_usdt_symbols(
+        &self,
+        sort_by_volume: bool,
+        top_n: Option<usize>,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        Ok(self.fetch_usdt_symbols(sort_by_volume, top_n)?)
+    }
+
+    fn fetch_klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        limit: usize,
+    ) -> Result<Vec<BinanceKlineCandle>, Box<dyn std::error::Error>> {
+        Ok(self.fetch_klines(symbol, interval, limit)?)
+    }
+
+    fn fetch_ticker_price(
+        &self,
+        symbol: &str,
+    ) -> Result<BinanceTickerPrice, Box<dyn std::error::Error>> {
+        Ok(self.fetch_ticker_price(symbol)?)
+    }
+}
+
+fn collect_market_smoke_evidence_with_retry<C: MarketSmokeClient + ?Sized>(
+    market_client: &C,
+    testnet: bool,
+    symbol: &str,
+    interval: &str,
+    max_attempts: usize,
+    retry_delay: Duration,
+) -> Result<MarketSmokeEvidence, Box<dyn std::error::Error>> {
+    let max_attempts = max_attempts.max(1);
+    let mut last_error = String::new();
+    for attempt in 1..=max_attempts {
+        match collect_market_smoke_evidence(market_client, testnet, symbol, interval) {
+            Ok(evidence) => {
+                if attempt > 1 {
+                    println!("market-data smoke recovered on attempt {attempt}/{max_attempts}");
+                }
+                return Ok(evidence);
+            }
+            Err(error) => {
+                last_error = format_error_chain(error.as_ref());
+                if attempt == max_attempts {
+                    break;
+                }
+                eprintln!(
+                    "market-data smoke attempt {attempt}/{max_attempts} failed: {last_error}; retrying"
+                );
+                if !retry_delay.is_zero() {
+                    std::thread::sleep(retry_delay);
+                }
+            }
+        }
+    }
+    Err(format!("market-data smoke failed after {max_attempts} attempt(s): {last_error}").into())
+}
+
+fn collect_market_smoke_evidence<C: MarketSmokeClient + ?Sized>(
+    market_client: &C,
     testnet: bool,
     symbol: &str,
     interval: &str,
@@ -387,6 +504,156 @@ fn collect_market_smoke_evidence(
         symbols_count: symbols.len(),
         candles_count: candles.len(),
         ticker_symbol: ticker.symbol,
+    })
+}
+
+trait AccountSmokeClient {
+    fn base_url(&self) -> &str;
+    fn futures_position_mode_url(&self) -> String;
+    fn futures_multi_assets_margin_url(&self) -> String;
+    fn futures_balance_url(&self) -> String;
+    fn futures_position_risk_url(&self) -> String;
+    fn fetch_futures_position_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceFuturesPositionMode, Box<dyn std::error::Error>>;
+    fn fetch_futures_multi_assets_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceFuturesMultiAssetsMode, Box<dyn std::error::Error>>;
+    fn fetch_usdt_balance(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceAccountSnapshot, Box<dyn std::error::Error>>;
+    fn fetch_open_futures_positions(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<Vec<BinanceFuturesPosition>, Box<dyn std::error::Error>>;
+}
+
+impl AccountSmokeClient for BinanceSignedRestClient {
+    fn base_url(&self) -> &str {
+        self.base_url()
+    }
+
+    fn futures_position_mode_url(&self) -> String {
+        self.futures_position_mode_url()
+    }
+
+    fn futures_multi_assets_margin_url(&self) -> String {
+        self.futures_multi_assets_margin_url()
+    }
+
+    fn futures_balance_url(&self) -> String {
+        self.futures_balance_url()
+    }
+
+    fn futures_position_risk_url(&self) -> String {
+        self.futures_position_risk_url()
+    }
+
+    fn fetch_futures_position_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceFuturesPositionMode, Box<dyn std::error::Error>> {
+        Ok(self.fetch_futures_position_mode(credentials)?)
+    }
+
+    fn fetch_futures_multi_assets_mode(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceFuturesMultiAssetsMode, Box<dyn std::error::Error>> {
+        Ok(self.fetch_futures_multi_assets_mode(credentials)?)
+    }
+
+    fn fetch_usdt_balance(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<BinanceAccountSnapshot, Box<dyn std::error::Error>> {
+        Ok(self.fetch_usdt_balance(credentials)?)
+    }
+
+    fn fetch_open_futures_positions(
+        &self,
+        credentials: &BinanceApiCredentials,
+    ) -> Result<Vec<BinanceFuturesPosition>, Box<dyn std::error::Error>> {
+        Ok(self.fetch_open_futures_positions(credentials)?)
+    }
+}
+
+fn collect_account_smoke_evidence_with_retry<C: AccountSmokeClient + ?Sized>(
+    account_client: &C,
+    credentials: &BinanceApiCredentials,
+    max_attempts: usize,
+    retry_delay: Duration,
+) -> Result<AccountSmokeEvidence, Box<dyn std::error::Error>> {
+    let max_attempts = max_attempts.max(1);
+    let mut last_error = String::new();
+    for attempt in 1..=max_attempts {
+        match collect_account_smoke_evidence(account_client, credentials) {
+            Ok(evidence) => {
+                if attempt > 1 {
+                    println!("signed account smoke recovered on attempt {attempt}/{max_attempts}");
+                }
+                return Ok(evidence);
+            }
+            Err(error) => {
+                last_error = format_error_chain(error.as_ref());
+                if attempt == max_attempts {
+                    break;
+                }
+                eprintln!(
+                    "signed account smoke attempt {attempt}/{max_attempts} failed: {last_error}; retrying"
+                );
+                if !retry_delay.is_zero() {
+                    std::thread::sleep(retry_delay);
+                }
+            }
+        }
+    }
+    Err(format!("signed account smoke failed after {max_attempts} attempt(s): {last_error}").into())
+}
+
+fn collect_account_smoke_evidence<C: AccountSmokeClient + ?Sized>(
+    account_client: &C,
+    credentials: &BinanceApiCredentials,
+) -> Result<AccountSmokeEvidence, Box<dyn std::error::Error>> {
+    let position_mode = account_client.fetch_futures_position_mode(credentials)?;
+    println!(
+        "position mode fetched: {} dual_side={}",
+        position_mode.position_mode, position_mode.dual_side_position
+    );
+    let multi_assets_mode = account_client.fetch_futures_multi_assets_mode(credentials)?;
+    println!(
+        "multi-assets mode fetched: {}",
+        multi_assets_mode.multi_assets_margin
+    );
+    let balance = account_client.fetch_usdt_balance(credentials)?;
+    println!(
+        "USDT balance fetched: asset={} totals redacted from smoke output",
+        balance.asset
+    );
+    let positions = account_client.fetch_open_futures_positions(credentials)?;
+    println!("open futures positions fetched: {}", positions.len());
+    Ok(AccountSmokeEvidence {
+        account_base_url: account_client.base_url().to_owned(),
+        account_endpoints: vec![
+            (
+                "positionSideDual",
+                account_client.futures_position_mode_url(),
+            ),
+            (
+                "multiAssetsMargin",
+                account_client.futures_multi_assets_margin_url(),
+            ),
+            ("balance", account_client.futures_balance_url()),
+            ("positionRisk", account_client.futures_position_risk_url()),
+        ],
+        position_mode: position_mode.position_mode,
+        dual_side_position: position_mode.dual_side_position,
+        multi_assets_margin: multi_assets_mode.multi_assets_margin,
+        balance_asset: balance.asset,
+        positions_count: positions.len(),
     })
 }
 
@@ -951,9 +1218,26 @@ fn current_git_commit() -> String {
     "unknown-local-commit".to_owned()
 }
 
-fn current_source_tree_clean() -> bool {
+fn source_tree_status_command(untracked_files: &str) -> Vec<String> {
+    let mut args = vec![
+        "status".to_owned(),
+        "--porcelain".to_owned(),
+        format!("--untracked-files={untracked_files}"),
+        "--".to_owned(),
+        ".".to_owned(),
+    ];
+    args.extend(
+        PROMOTION_SOURCE_TREE_IGNORED_PATHS
+            .iter()
+            .map(|path| format!(":(exclude){path}")),
+    );
+    args
+}
+
+fn source_tree_status_clean(untracked_files: &str) -> bool {
+    let args = source_tree_status_command(untracked_files);
     let output = Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=no"])
+        .args(&args)
         .current_dir(repo_root())
         .output();
     if let Ok(output) = output {
@@ -961,6 +1245,10 @@ fn current_source_tree_clean() -> bool {
             && String::from_utf8_lossy(&output.stdout).trim().is_empty();
     }
     false
+}
+
+fn current_source_tree_clean() -> bool {
+    source_tree_status_clean("no") && source_tree_status_clean("all")
 }
 
 fn current_unix_timestamp_label() -> String {
@@ -1005,4 +1293,271 @@ fn env_truthy(name: &str) -> Option<bool> {
     let value = std::env::var(name).ok()?;
     let value = value.trim().to_ascii_lowercase();
     Some(matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct FakeMarketSmokeClient {
+        symbol_failures_remaining: Cell<usize>,
+        symbol_attempts: Cell<usize>,
+    }
+
+    struct FakeAccountSmokeClient {
+        mode_failures_remaining: Cell<usize>,
+        mode_attempts: Cell<usize>,
+    }
+
+    impl FakeMarketSmokeClient {
+        fn new(symbol_failures: usize) -> Self {
+            Self {
+                symbol_failures_remaining: Cell::new(symbol_failures),
+                symbol_attempts: Cell::new(0),
+            }
+        }
+    }
+
+    impl FakeAccountSmokeClient {
+        fn new(mode_failures: usize) -> Self {
+            Self {
+                mode_failures_remaining: Cell::new(mode_failures),
+                mode_attempts: Cell::new(0),
+            }
+        }
+    }
+
+    impl MarketSmokeClient for FakeMarketSmokeClient {
+        fn base_url(&self) -> &str {
+            "https://example.test"
+        }
+
+        fn exchange_info_url(&self) -> String {
+            "https://example.test/fapi/v1/exchangeInfo".to_owned()
+        }
+
+        fn klines_url(&self) -> String {
+            "https://example.test/fapi/v1/klines".to_owned()
+        }
+
+        fn ticker_price_url(&self) -> String {
+            "https://example.test/fapi/v1/ticker/price".to_owned()
+        }
+
+        fn fetch_usdt_symbols(
+            &self,
+            _sort_by_volume: bool,
+            _top_n: Option<usize>,
+        ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            self.symbol_attempts.set(self.symbol_attempts.get() + 1);
+            let failures_remaining = self.symbol_failures_remaining.get();
+            if failures_remaining > 0 {
+                self.symbol_failures_remaining
+                    .set(failures_remaining.saturating_sub(1));
+                return Err("transient exchangeInfo reset".into());
+            }
+            Ok(vec!["BTCUSDT".to_owned(), "ETHUSDT".to_owned()])
+        }
+
+        fn fetch_klines(
+            &self,
+            _symbol: &str,
+            _interval: &str,
+            _limit: usize,
+        ) -> Result<Vec<BinanceKlineCandle>, Box<dyn std::error::Error>> {
+            Ok(vec![BinanceKlineCandle {
+                open_time_ms: 1,
+                open: 1.0,
+                high: 2.0,
+                low: 0.5,
+                close: 1.5,
+                volume: 10.0,
+            }])
+        }
+
+        fn fetch_ticker_price(
+            &self,
+            symbol: &str,
+        ) -> Result<BinanceTickerPrice, Box<dyn std::error::Error>> {
+            Ok(BinanceTickerPrice {
+                symbol: symbol.to_owned(),
+                price: 1.5,
+            })
+        }
+    }
+
+    impl AccountSmokeClient for FakeAccountSmokeClient {
+        fn base_url(&self) -> &str {
+            "https://signed.example.test"
+        }
+
+        fn futures_position_mode_url(&self) -> String {
+            "https://signed.example.test/fapi/v1/positionSide/dual".to_owned()
+        }
+
+        fn futures_multi_assets_margin_url(&self) -> String {
+            "https://signed.example.test/fapi/v1/multiAssetsMargin".to_owned()
+        }
+
+        fn futures_balance_url(&self) -> String {
+            "https://signed.example.test/fapi/v2/balance".to_owned()
+        }
+
+        fn futures_position_risk_url(&self) -> String {
+            "https://signed.example.test/fapi/v2/positionRisk".to_owned()
+        }
+
+        fn fetch_futures_position_mode(
+            &self,
+            _credentials: &BinanceApiCredentials,
+        ) -> Result<BinanceFuturesPositionMode, Box<dyn std::error::Error>> {
+            self.mode_attempts.set(self.mode_attempts.get() + 1);
+            let failures_remaining = self.mode_failures_remaining.get();
+            if failures_remaining > 0 {
+                self.mode_failures_remaining
+                    .set(failures_remaining.saturating_sub(1));
+                return Err("transient signed account reset".into());
+            }
+            Ok(BinanceFuturesPositionMode {
+                dual_side_position: true,
+                position_mode: "Hedge".to_owned(),
+            })
+        }
+
+        fn fetch_futures_multi_assets_mode(
+            &self,
+            _credentials: &BinanceApiCredentials,
+        ) -> Result<BinanceFuturesMultiAssetsMode, Box<dyn std::error::Error>> {
+            Ok(BinanceFuturesMultiAssetsMode {
+                multi_assets_margin: false,
+            })
+        }
+
+        fn fetch_usdt_balance(
+            &self,
+            _credentials: &BinanceApiCredentials,
+        ) -> Result<BinanceAccountSnapshot, Box<dyn std::error::Error>> {
+            Ok(BinanceAccountSnapshot {
+                asset: "USDT".to_owned(),
+                usdt_balance: 100.0,
+                total_usdt_balance: 100.0,
+                available_usdt_balance: 80.0,
+            })
+        }
+
+        fn fetch_open_futures_positions(
+            &self,
+            _credentials: &BinanceApiCredentials,
+        ) -> Result<Vec<BinanceFuturesPosition>, Box<dyn std::error::Error>> {
+            Ok(vec![BinanceFuturesPosition {
+                symbol: "BTCUSDT".to_owned(),
+                position_side: "LONG".to_owned(),
+                position_amt: 0.01,
+                ..Default::default()
+            }])
+        }
+    }
+
+    #[test]
+    fn market_smoke_retry_recovers_after_transient_exchange_info_failure() {
+        let client = FakeMarketSmokeClient::new(1);
+
+        let evidence = collect_market_smoke_evidence_with_retry(
+            &client,
+            true,
+            "BTCUSDT",
+            "1m",
+            2,
+            Duration::ZERO,
+        )
+        .expect("market smoke should recover on second attempt");
+
+        assert_eq!(2, client.symbol_attempts.get());
+        assert_eq!(2, evidence.symbols_count);
+        assert_eq!(1, evidence.candles_count);
+        assert_eq!("BTCUSDT", evidence.ticker_symbol);
+    }
+
+    #[test]
+    fn market_smoke_retry_reports_final_failure_after_attempts() {
+        let client = FakeMarketSmokeClient::new(3);
+
+        let error = collect_market_smoke_evidence_with_retry(
+            &client,
+            true,
+            "BTCUSDT",
+            "1m",
+            2,
+            Duration::ZERO,
+        )
+        .expect_err("market smoke should fail after bounded attempts");
+        let message = format_error_chain(error.as_ref());
+
+        assert_eq!(2, client.symbol_attempts.get());
+        assert!(message.contains("market-data smoke failed after 2 attempt(s)"));
+        assert!(message.contains("transient exchangeInfo reset"));
+    }
+
+    #[test]
+    fn signed_account_smoke_retry_recovers_after_transient_read_failure() {
+        let client = FakeAccountSmokeClient::new(1);
+        let credentials = BinanceApiCredentials::new("key", "secret");
+
+        let evidence =
+            collect_account_smoke_evidence_with_retry(&client, &credentials, 2, Duration::ZERO)
+                .expect("signed account smoke should recover on second attempt");
+
+        assert_eq!(2, client.mode_attempts.get());
+        assert_eq!("Hedge", evidence.position_mode);
+        assert!(evidence.dual_side_position);
+        assert_eq!("USDT", evidence.balance_asset);
+        assert_eq!(1, evidence.positions_count);
+    }
+
+    #[test]
+    fn signed_account_smoke_retry_reports_final_failure_after_attempts() {
+        let client = FakeAccountSmokeClient::new(3);
+        let credentials = BinanceApiCredentials::new("key", "secret");
+
+        let error =
+            collect_account_smoke_evidence_with_retry(&client, &credentials, 2, Duration::ZERO)
+                .expect_err("signed account smoke should fail after bounded attempts");
+        let message = format_error_chain(error.as_ref());
+
+        assert_eq!(2, client.mode_attempts.get());
+        assert!(message.contains("signed account smoke failed after 2 attempt(s)"));
+        assert!(message.contains("transient signed account reset"));
+    }
+
+    #[test]
+    fn source_tree_clean_status_commands_match_promotion_exclusions() {
+        let tracked_args = source_tree_status_command("no");
+        let untracked_args = source_tree_status_command("all");
+
+        assert_eq!(
+            &tracked_args[..5],
+            &[
+                "status".to_owned(),
+                "--porcelain".to_owned(),
+                "--untracked-files=no".to_owned(),
+                "--".to_owned(),
+                ".".to_owned(),
+            ]
+        );
+        assert_eq!(
+            &untracked_args[..5],
+            &[
+                "status".to_owned(),
+                "--porcelain".to_owned(),
+                "--untracked-files=all".to_owned(),
+                "--".to_owned(),
+                ".".to_owned(),
+            ]
+        );
+        for args in [&tracked_args, &untracked_args] {
+            assert!(args.contains(&":(exclude)artifacts/rust-native-runtime-evidence".to_owned()));
+            assert!(args.contains(&":(exclude)release-platform-evidence".to_owned()));
+        }
+    }
 }

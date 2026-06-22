@@ -208,6 +208,8 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
                 "tools/import_rust_native_evidence_artifacts.py",
                 "artifacts/rust-native-runtime-evidence",
                 "release-platform-evidence",
+                "--require-current-commit",
+                "--require-clean-source",
                 "--json",
             ),
             root,

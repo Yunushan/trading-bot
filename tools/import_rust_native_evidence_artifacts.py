@@ -16,15 +16,17 @@ from typing import Any
 try:
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _target_evidence_issues, _validate_matrix
-    from check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, REQUIRED_REQUIREMENTS, validate
+    import check_rust_native_runtime_evidence as runtime_evidence
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _target_evidence_issues, _validate_matrix
-    from tools.check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, REQUIRED_REQUIREMENTS, validate
+    from tools import check_rust_native_runtime_evidence as runtime_evidence
 
 
 DEFAULT_RUNTIME_EVIDENCE_DIR = Path("artifacts/rust-native-runtime-evidence")
 DEFAULT_PLATFORM_EVIDENCE_DIR = Path("release-platform-evidence")
+DEFAULT_MANIFEST_PATH = runtime_evidence.DEFAULT_MANIFEST_PATH
+REQUIRED_REQUIREMENTS = runtime_evidence.REQUIRED_REQUIREMENTS
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,7 @@ def _validate_runtime_candidate(
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / candidate.name
         temp_path.write_text(json.dumps(candidate.payload), encoding="utf-8")
-        result = validate(
+        result = runtime_evidence.validate(
             manifest_path,
             require_evidence=True,
             require_current_commit=require_current_commit,
@@ -127,14 +129,64 @@ def _validate_runtime_candidate(
     return [str(issue) for issue in result.get("issues", [])]
 
 
-def _validate_platform_candidate(candidate: JsonCandidate, target: dict[str, Any]) -> list[str]:
+def _validate_platform_source_binding(
+    candidate: JsonCandidate,
+    *,
+    require_current_commit: bool,
+    require_clean_source: bool,
+) -> list[str]:
+    if not require_current_commit and not require_clean_source:
+        return []
+
+    issues: list[str] = []
+    current_contract_hash = runtime_evidence.native_python_source_contract_hash()
+    if require_current_commit:
+        current_commit = runtime_evidence._current_git_commit()
+        if not current_commit:
+            issues.append(f"{candidate.source} current git commit could not be determined")
+        elif str(candidate.payload.get("commit") or "").strip() != current_commit:
+            issues.append(f"{candidate.source} commit must match current git commit {current_commit}")
+
+    if require_clean_source:
+        current_source_tree_clean = runtime_evidence._current_source_tree_clean()
+        if current_source_tree_clean is None:
+            issues.append(f"{candidate.source} current source tree cleanliness could not be determined")
+        elif not current_source_tree_clean:
+            issues.append(f"{candidate.source} current source tree must be clean for promotion evidence import")
+        if candidate.payload.get("source_tree_clean") is not True:
+            issues.append(f"{candidate.source} source_tree_clean must be true for release promotion evidence")
+
+    if str(candidate.payload.get("python_source_contract_hash") or "").strip().lower() != current_contract_hash:
+        issues.append(f"{candidate.source} python_source_contract_hash must match current Python source contract")
+    if candidate.payload.get("runtime_ready_claimed") is not False:
+        issues.append(f"{candidate.source} runtime_ready_claimed must be false")
+    if candidate.payload.get("secrets_redacted") is not True:
+        issues.append(f"{candidate.source} secrets_redacted must be true")
+    return issues
+
+
+def _validate_platform_candidate(
+    candidate: JsonCandidate,
+    target: dict[str, Any],
+    *,
+    require_current_commit: bool,
+    require_clean_source: bool,
+) -> list[str]:
     target_id = str(target["id"])
     if candidate.name != f"{target_id}.json":
         return [f"{candidate.source} filename must be {target_id}.json"]
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / candidate.name
         temp_path.write_text(json.dumps(candidate.payload), encoding="utf-8")
-        return _target_evidence_issues(target, Path(temp_dir))
+        issues = _target_evidence_issues(target, Path(temp_dir))
+    issues.extend(
+        _validate_platform_source_binding(
+            candidate,
+            require_current_commit=require_current_commit,
+            require_clean_source=require_clean_source,
+        )
+    )
+    return issues
 
 
 def _candidate_destination(
@@ -160,7 +212,12 @@ def _candidate_destination(
     target_id = str(candidate.payload.get("target_id") or Path(candidate.name).stem).strip()
     target = platform_targets.get(target_id)
     if target is not None:
-        issues = _validate_platform_candidate(candidate, target)
+        issues = _validate_platform_candidate(
+            candidate,
+            target,
+            require_current_commit=require_current_commit,
+            require_clean_source=require_clean_source,
+        )
         return "release_platform", platform_evidence_dir / candidate.name, issues
 
     return None

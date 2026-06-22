@@ -63,6 +63,8 @@ jobs:
           set -euo pipefail
           python tools/check_release_platform_matrix.py \
             --require-evidence \
+            --require-current-commit \
+            --require-clean-source \
             --evidence-dir release-platform-evidence \
             --target-filter "${{ inputs.target_id }}"
 
@@ -95,4 +97,6 @@ jobs:
           set -euo pipefail
           python tools/check_release_platform_matrix.py \
             --require-evidence \
+            --require-current-commit \
+            --require-clean-source \
             --evidence-dir release-platform-evidence

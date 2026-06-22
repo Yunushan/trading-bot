@@ -402,6 +402,15 @@ def _evidence_collection_plan(
                         "missing_platform_evidence_count": int(
                             release_evidence_prerequisites.get("missing_platform_evidence_count") or 0
                         ),
+                        "missing_platform_evidence_limit": int(
+                            release_evidence_prerequisites.get("missing_platform_evidence_limit") or 0
+                        ),
+                        "missing_platform_evidence_truncated": bool(
+                            release_evidence_prerequisites.get("missing_platform_evidence_truncated")
+                        ),
+                        "missing_platform_evidence_plan": list(
+                            release_evidence_prerequisites.get("missing_platform_evidence_plan") or []
+                        ),
                         "release_asset_presence_verified": bool(
                             release_evidence_prerequisites.get("release_asset_presence_verified")
                         ),
@@ -869,6 +878,22 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
             lines.append(f"- Safety: {safety_text}")
         for issue in row.get("issues", []):
             lines.append(f"  - issue: {issue}")
+        details = row.get("details") if isinstance(row.get("details"), dict) else {}
+        missing_plan = details.get("missing_platform_evidence_plan")
+        if isinstance(missing_plan, list) and missing_plan:
+            lines.append("- Missing platform evidence plan:")
+            for target in missing_plan:
+                if not isinstance(target, dict):
+                    continue
+                lines.append(f"  - target: `{_format_markdown_value(target.get('target_id'))}`")
+                lines.append(
+                    f"    - validation: {_format_command(target.get('target_validation_command'))}"
+                )
+                lines.append(
+                    f"    - workflow: {_format_command(target.get('workflow_dispatch_example'))}"
+                )
+            if details.get("missing_platform_evidence_truncated"):
+                lines.append("  - note: missing target plan is truncated; rerun preflight with `--missing-limit 0` for all targets")
 
     lines.append("")
     lines.append("## Next Actions")
