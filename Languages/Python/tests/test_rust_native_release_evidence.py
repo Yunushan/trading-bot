@@ -1004,6 +1004,12 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--require-clean-source", result["local_browser_batch_plan"]["batch_command"])
         self.assertIn(
             "--target-filter browser-chrome-windows-11-x64",
+            result["local_browser_batch_plan"]["batch_validation_command"],
+        )
+        self.assertIn("--require-current-commit", result["local_browser_batch_plan"]["batch_validation_command"])
+        self.assertIn("--require-clean-source", result["local_browser_batch_plan"]["batch_validation_command"])
+        self.assertIn(
+            "--target-filter browser-chrome-windows-11-x64",
             result["local_browser_batch_plan"]["validation_commands"][0],
         )
         self.assertTrue(result["local_browser_batch_plan"]["partial_evidence_only"])
@@ -1046,11 +1052,56 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(1, plan["host_builtin_target_count"])
         self.assertEqual(0, plan["target_count"])
         self.assertEqual([], plan["target_ids"])
+        self.assertEqual("", plan["batch_validation_command"])
         self.assertEqual(
             "npm.cmd or node.exe is not on PATH; set TB_BROWSER_NODE_EXECUTABLE to a Node.js executable",
             plan["unavailable_reason"],
         )
         self.assertIn("--list-local-browser-targets", plan["list_command"])
+
+    def test_release_evidence_local_browser_batch_plan_validates_multiple_targets_together(self):
+        browser_targets = [
+            {
+                "id": "browser-chrome-windows-11-x64",
+                "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
+                "runner_kind": "real-browser-or-browser-lab",
+                "test_suites": ["browser-contract"],
+            },
+            {
+                "id": "browser-edge-windows-11-x64",
+                "kind": "browser",
+                "browser": "edge",
+                "host": "windows-11-x64",
+                "runner_kind": "real-browser-or-browser-lab",
+                "test_suites": ["browser-contract"],
+            },
+        ]
+
+        with (
+            patch.dict(release_evidence.os.environ, {}, clear=True),
+            patch.object(release_evidence.shutil, "which", return_value="npm.cmd"),
+            patch.object(
+                release_evidence,
+                "_observed_platform",
+                return_value={
+                    "system": "Windows",
+                    "release": "11",
+                    "normalized_architecture": "x64",
+                },
+            ),
+        ):
+            plan = release_evidence._local_browser_batch_plan(browser_targets)
+
+        self.assertEqual(
+            ["browser-chrome-windows-11-x64", "browser-edge-windows-11-x64"],
+            plan["target_ids"],
+        )
+        self.assertEqual(2, plan["target_count"])
+        self.assertIn("--target-filter browser-chrome-windows-11-x64", plan["batch_validation_command"])
+        self.assertIn("--target-filter browser-edge-windows-11-x64", plan["batch_validation_command"])
+        self.assertEqual(2, len(plan["validation_commands"]))
 
     def test_release_evidence_local_browser_batch_plan_uses_node_env_fallback(self):
         browser_targets = [
@@ -1091,6 +1142,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(plan["npm_available"])
         self.assertEqual(["browser-chrome-windows-11-x64"], plan["target_ids"])
         self.assertEqual(1, plan["target_count"])
+        self.assertIn("--target-filter browser-chrome-windows-11-x64", plan["batch_validation_command"])
         self.assertEqual("", plan["unavailable_reason"])
 
     def test_release_evidence_local_browser_batch_plan_rejects_missing_node_env_fallback(self):
@@ -1133,6 +1185,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(plan["npm_available"])
         self.assertEqual([], plan["target_ids"])
         self.assertEqual(0, plan["target_count"])
+        self.assertEqual("", plan["batch_validation_command"])
         self.assertEqual(
             "TB_BROWSER_NODE_EXECUTABLE must point to an existing executable Node.js file",
             plan["unavailable_reason"],
@@ -2046,6 +2099,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     "python tools/run_release_platform_probe.py "
                     "--local-browser-targets --require-clean-source --output-dir release-platform-evidence"
                 ),
+                "batch_validation_command": (
+                    "python tools/check_release_platform_matrix.py --require-evidence "
+                    "--require-current-commit --require-clean-source "
+                    "--evidence-dir release-platform-evidence "
+                    "--target-filter browser-chrome-windows-11-x64 "
+                    "--target-filter browser-edge-windows-11-x64"
+                ),
                 "validation_commands": [
                     (
                         "python tools/check_release_platform_matrix.py --require-evidence "
@@ -2224,6 +2284,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("host built-in targets", markdown)
         self.assertIn("runnable targets", markdown)
         self.assertIn("--local-browser-targets", markdown)
+        self.assertIn("batch validation", markdown)
+        self.assertIn("--target-filter browser-chrome-windows-11-x64", markdown)
+        self.assertIn("--target-filter browser-edge-windows-11-x64", markdown)
         self.assertIn("browser-edge-windows-11-x64", markdown)
         self.assertIn("missing target plan is truncated", markdown)
         self.assertIn("Required runtime evidence ids", markdown)

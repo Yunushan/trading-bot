@@ -126,7 +126,10 @@ evidence before a PR exists.
   `tools/audit_rust_native_runtime_readiness.py --json --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md`;
   pass `--release-missing-limit 0` when the runbook must list every remaining
   release-platform target instead of the default bounded sample.
-  use that exported plan while collecting current-commit runtime evidence. CI
+  Local browser probe batches include a matching batch validation command that
+  repeats `--target-filter` for every locally generated browser target and
+  still requires current-commit, clean-source evidence.
+  Use that exported plan while collecting current-commit runtime evidence. CI
   writes and uploads the same complete-target runbook with
   `--release-missing-limit 0` as the `rust-native-runtime-evidence-plan`
   artifact for the checked source revision.

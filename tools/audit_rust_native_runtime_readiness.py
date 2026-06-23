@@ -1087,6 +1087,10 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
             lines.append(f"  - list: {_format_command(local_browser_batch.get('list_command'))}")
             if local_browser_batch.get("target_ids"):
                 lines.append(f"  - run: {_format_command(local_browser_batch.get('batch_command'))}")
+            if local_browser_batch.get("batch_validation_command"):
+                lines.append(
+                    f"  - batch validation: {_format_command(local_browser_batch.get('batch_validation_command'))}"
+                )
             for command in local_browser_batch.get("validation_commands", []):
                 lines.append(f"  - validation: {_format_command(command)}")
             if local_browser_batch.get("partial_evidence_only"):

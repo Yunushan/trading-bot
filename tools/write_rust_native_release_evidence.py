@@ -162,6 +162,15 @@ def _browser_contract_command_for_tool(target: dict[str, Any], tool: dict[str, A
     return None
 
 
+def _release_platform_validation_command(target_ids: list[str]) -> str:
+    filter_args = " ".join(f"--target-filter {target_id}" for target_id in target_ids)
+    return (
+        "python tools/check_release_platform_matrix.py --require-evidence "
+        "--require-current-commit --require-clean-source "
+        f"--evidence-dir release-platform-evidence {filter_args}"
+    ).strip()
+
+
 def _local_browser_batch_plan(browser_targets: list[dict[str, Any]]) -> dict[str, Any]:
     host = browser_host_from_observed_platform(_observed_platform())
     tool = _browser_contract_tool()
@@ -182,14 +191,7 @@ def _local_browser_batch_plan(browser_targets: list[dict[str, Any]]) -> dict[str
         unavailable_reason = str(tool["unavailable_reason"])
     elif not targets:
         unavailable_reason = "no built-in browser contract command can be built for this host"
-    validation_commands = [
-        (
-            "python tools/check_release_platform_matrix.py --require-evidence "
-            "--require-current-commit --require-clean-source "
-            f"--evidence-dir release-platform-evidence --target-filter {target_id}"
-        )
-        for target_id in target_ids
-    ]
+    validation_commands = [_release_platform_validation_command([target_id]) for target_id in target_ids]
     return {
         "host": host,
         "required_tool": tool["required_tool"],
@@ -206,6 +208,7 @@ def _local_browser_batch_plan(browser_targets: list[dict[str, Any]]) -> dict[str
             "python tools/run_release_platform_probe.py "
             "--local-browser-targets --require-clean-source --output-dir release-platform-evidence"
         ),
+        "batch_validation_command": _release_platform_validation_command(target_ids) if target_ids else "",
         "validation_commands": validation_commands,
         "partial_evidence_only": True,
         "remaining_matrix_targets_still_required": True,
