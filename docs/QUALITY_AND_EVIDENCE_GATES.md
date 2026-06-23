@@ -292,17 +292,20 @@ evidence before a PR exists.
   clean-source, Python source-contract, runtime-ready, and redaction binding
   before aggregation or import.
   The manual `release-platform-real-tests.yml` workflow exposes
-  `desktop_smoke_command` and `browser_test_command` inputs so external labs can
-  pass the real release binary or override browser command for the selected
-  target. For supported Chromium-family browser targets, the probe can run
+  `desktop_smoke_command`, `browser_test_command`, `browser_observed_browser`,
+  and `browser_observed_host` inputs so external labs can pass the real release
+  binary, override browser command, and declare the browser/host actually proven
+  for the selected target. For supported Chromium-family browser targets, the probe can run
   `npm --prefix apps/web-dashboard run test:browser -- --browser=chrome` or
   `npm --prefix apps/web-dashboard run test:browser -- --browser=edge`
   automatically when `npm` and the matching browser are available. When `npm` is
   unavailable, set `TB_BROWSER_NODE_EXECUTABLE=<path-to-existing-node-executable>` to run
   `node apps/web-dashboard/tests/browser-contract.test.mjs --browser=chrome` or
   `node apps/web-dashboard/tests/browser-contract.test.mjs --browser=edge`
-  directly with the same checked-in harness. Other browser targets need an
-  external lab command that proves the declared browser. Local operators can run
+  directly with the same checked-in harness. Every browser target artifact must
+  include a passed `browser-target-match` suite result whose expected and
+  observed browser/host match the matrix target. Other browser targets need an
+  external lab command that proves the declared browser and host. Local operators can run
   `tools/run_release_platform_probe.py --list-local-browser-targets` to see the
   matching host/browser targets and
   `tools/run_release_platform_probe.py --local-browser-targets --require-clean-source --output-dir release-platform-evidence`

@@ -87,6 +87,27 @@ def _release_platform_suite_results(target: dict[str, object]) -> list[dict[str,
         if suite_name == "platform-probe":
             row["target_match"] = {"matched": True, "issues": []}
         results.append(row)
+    if target.get("kind") == "browser" and "browser-contract" in target.get("test_suites", []):
+        browser = str(target.get("browser") or "").strip().lower()
+        host = str(target.get("host") or "").strip()
+        results.append(
+            {
+                "name": "browser-target-match",
+                "status": "passed",
+                "target_match": {
+                    "matched": True,
+                    "expected": {
+                        "browser": browser,
+                        "host": host,
+                    },
+                    "observed": {
+                        "browser": browser,
+                        "host": host,
+                    },
+                    "issues": [],
+                },
+            }
+        )
     return results
 
 
@@ -580,6 +601,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             {
                 "id": "browser-chrome-windows-11-x64",
                 "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
                 "runner_kind": "real-browser-or-browser-lab",
                 "runner_labels": ["self-hosted", "tb-browser", "chrome-windows-11-x64"],
                 "test_suites": ["browser-contract"],
@@ -695,21 +718,23 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
         platform_targets, browser_targets, matrix_issues = release_platform_matrix._validate_matrix(matrix)
         self.assertEqual([], matrix_issues)
-        platform_results = [
-            {
-                "target_id": target["id"],
-                "kind": target["kind"],
-                "runner_kind": target["runner_kind"],
-                "status": "passed",
-                "evidence_file": f"{target['id']}.json",
-                "evidence_sha256": _json_sha256(_target_evidence_payload(target)),
-                "expected_suite_count": len(target["test_suites"]),
-                "test_suites": [str(item) for item in target["test_suites"]],
-                "suite_count": len(target["test_suites"]),
-                "suite_results": _release_platform_suite_results(target),
-            }
-            for target in platform_targets + browser_targets
-        ]
+        platform_results = []
+        for target in platform_targets + browser_targets:
+            suite_results = _release_platform_suite_results(target)
+            platform_results.append(
+                {
+                    "target_id": target["id"],
+                    "kind": target["kind"],
+                    "runner_kind": target["runner_kind"],
+                    "status": "passed",
+                    "evidence_file": f"{target['id']}.json",
+                    "evidence_sha256": _json_sha256(_target_evidence_payload(target)),
+                    "expected_suite_count": len(target["test_suites"]),
+                    "test_suites": [str(item) for item in target["test_suites"]],
+                    "suite_count": len(suite_results),
+                    "suite_results": suite_results,
+                }
+            )
         payload = {
             "evidence_id": "rust-native-release-platform-evidence",
             "status": "passed",
@@ -1227,6 +1252,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "id": "browser-edge-windows-11-x64",
             "kind": "browser",
             "browser": "edge",
+            "host": "windows-11-x64",
             "runner_labels": ["self-hosted", "tb-browser", "edge-windows-11-x64"],
             "test_suites": ["browser-contract"],
         }
@@ -1234,6 +1260,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "id": "browser-firefox-windows-11-x64",
             "kind": "browser",
             "browser": "firefox",
+            "host": "windows-11-x64",
             "runner_labels": ["self-hosted", "tb-browser", "firefox-windows-11-x64"],
             "test_suites": ["browser-contract"],
         }
@@ -1251,10 +1278,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertFalse(firefox_plan["browser_contract_command_builtin"])
         self.assertIn("browser_test_command", firefox_plan["required_workflow_inputs"])
+        self.assertIn("browser_observed_browser", firefox_plan["required_workflow_inputs"])
+        self.assertIn("browser_observed_host", firefox_plan["required_workflow_inputs"])
+        self.assertEqual("firefox", firefox_plan["browser_expected_browser"])
+        self.assertEqual("windows-11-x64", firefox_plan["browser_expected_host"])
         self.assertIn(
             "<real firefox browser contract command from external lab>",
             firefox_plan["workflow_dispatch_example"],
         )
+        self.assertIn("browser_observed_browser='firefox'", firefox_plan["workflow_dispatch_example"])
+        self.assertIn("browser_observed_host='windows-11-x64'", firefox_plan["workflow_dispatch_example"])
 
     def test_browser_contract_command_args_support_direct_node_harness(self):
         command = release_evidence.browser_contract_command_args(
@@ -3043,6 +3076,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "id": "browser-chrome-windows-11-x64",
             "kind": "browser",
             "browser": "chrome",
+            "host": "windows-11-x64",
             "test_suites": ["browser-contract"],
         }
         expected_command = [
@@ -3060,13 +3094,25 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             patch.object(release_platform_probe.shutil, "which", return_value="npm.cmd"),
             patch.object(
                 release_platform_probe,
+                "_observed_platform",
+                return_value={
+                    "system": "Windows",
+                    "release": "11",
+                    "normalized_architecture": "x64",
+                },
+            ),
+            patch.object(
+                release_platform_probe,
                 "_run_command",
                 return_value={"name": "browser-contract", "status": "passed", "command": expected_command},
             ) as run_command,
         ):
             results = release_platform_probe._suite_results(target, root=REPO_ROOT)
 
+        self.assertEqual("browser-target-match", results[0]["name"])
         self.assertEqual("passed", results[0]["status"])
+        self.assertEqual("browser-contract", results[1]["name"])
+        self.assertEqual("passed", results[1]["status"])
         run_command.assert_called_once()
         self.assertEqual("browser-contract", run_command.call_args.args[0])
         self.assertEqual(expected_command, run_command.call_args.args[1])
@@ -3076,6 +3122,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "id": "browser-chrome-windows-11-x64",
             "kind": "browser",
             "browser": "chrome",
+            "host": "windows-11-x64",
             "test_suites": ["browser-contract"],
         }
 
@@ -3098,13 +3145,25 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 patch.object(release_platform_probe.shutil, "which", return_value=None),
                 patch.object(
                     release_platform_probe,
+                    "_observed_platform",
+                    return_value={
+                        "system": "Windows",
+                        "release": "11",
+                        "normalized_architecture": "x64",
+                    },
+                ),
+                patch.object(
+                    release_platform_probe,
                     "_run_command",
                     return_value={"name": "browser-contract", "status": "passed", "command": expected_command},
                 ) as run_command,
             ):
                 results = release_platform_probe._suite_results(target, root=REPO_ROOT)
 
+        self.assertEqual("browser-target-match", results[0]["name"])
         self.assertEqual("passed", results[0]["status"])
+        self.assertEqual("browser-contract", results[1]["name"])
+        self.assertEqual("passed", results[1]["status"])
         run_command.assert_called_once()
         self.assertEqual("browser-contract", run_command.call_args.args[0])
         self.assertEqual(expected_command, run_command.call_args.args[1])
@@ -3114,6 +3173,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "id": "browser-chrome-windows-11-x64",
             "kind": "browser",
             "browser": "chrome",
+            "host": "windows-11-x64",
             "test_suites": ["browser-contract"],
         }
 
@@ -3126,16 +3186,65 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     clear=True,
                 ),
                 patch.object(release_platform_probe.shutil, "which", return_value=None),
+                patch.object(
+                    release_platform_probe,
+                    "_observed_platform",
+                    return_value={
+                        "system": "Windows",
+                        "release": "11",
+                        "normalized_architecture": "x64",
+                    },
+                ),
                 patch.object(release_platform_probe, "_run_command") as run_command,
             ):
                 results = release_platform_probe._suite_results(target, root=REPO_ROOT)
 
-        self.assertEqual("failed", results[0]["status"])
+        self.assertEqual("browser-target-match", results[0]["name"])
+        self.assertEqual("passed", results[0]["status"])
+        self.assertEqual("browser-contract", results[1]["name"])
+        self.assertEqual("failed", results[1]["status"])
         self.assertEqual(
             "TB_BROWSER_NODE_EXECUTABLE must point to an existing executable Node.js file",
-            results[0]["stderr"],
+            results[1]["stderr"],
         )
         run_command.assert_not_called()
+
+    def test_release_platform_probe_custom_browser_lab_requires_observed_target(self):
+        target = {
+            "id": "browser-firefox-windows-11-x64",
+            "kind": "browser",
+            "browser": "firefox",
+            "host": "windows-11-x64",
+            "test_suites": ["browser-contract"],
+        }
+        custom_command = "npm --prefix apps/web-dashboard run test:browser -- --browser=firefox"
+
+        with (
+            patch.dict(
+                release_platform_probe.os.environ,
+                {
+                    "TB_BROWSER_TEST_COMMAND": custom_command,
+                    "TB_BROWSER_OBSERVED_BROWSER": "firefox",
+                    "TB_BROWSER_OBSERVED_HOST": "windows-11-x64",
+                },
+                clear=True,
+            ),
+            patch.object(
+                release_platform_probe,
+                "_run_command",
+                return_value={"name": "browser-contract", "status": "passed", "command": ["cmd", "/c", custom_command]},
+            ) as run_command,
+        ):
+            results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual("browser-target-match", results[0]["name"])
+        self.assertEqual("passed", results[0]["status"])
+        self.assertTrue(results[0]["target_match"]["matched"])
+        self.assertEqual("firefox", results[0]["target_match"]["observed"]["browser"])
+        self.assertEqual("windows-11-x64", results[0]["target_match"]["observed"]["host"])
+        self.assertEqual("browser-contract", results[1]["name"])
+        self.assertEqual("passed", results[1]["status"])
+        run_command.assert_called_once()
 
     def test_release_platform_probe_detects_current_browser_host(self):
         self.assertEqual(
@@ -3411,13 +3520,22 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "id": "browser-firefox-windows-11-x64",
             "kind": "browser",
             "browser": "firefox",
+            "host": "windows-11-x64",
             "test_suites": ["browser-contract"],
         }
         override = "external-firefox-lab --prove-real-browser"
         expected_command = ["cmd", "/c", override] if sys.platform == "win32" else ["sh", "-lc", override]
 
         with (
-            patch.dict(release_platform_probe.os.environ, {"TB_BROWSER_TEST_COMMAND": override}, clear=True),
+            patch.dict(
+                release_platform_probe.os.environ,
+                {
+                    "TB_BROWSER_TEST_COMMAND": override,
+                    "TB_BROWSER_OBSERVED_BROWSER": "firefox",
+                    "TB_BROWSER_OBSERVED_HOST": "windows-11-x64",
+                },
+                clear=True,
+            ),
             patch.object(
                 release_platform_probe,
                 "_run_command",
@@ -3426,7 +3544,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         ):
             results = release_platform_probe._suite_results(target, root=REPO_ROOT)
 
+        self.assertEqual("browser-target-match", results[0]["name"])
         self.assertEqual("passed", results[0]["status"])
+        self.assertEqual("browser-contract", results[1]["name"])
+        self.assertEqual("passed", results[1]["status"])
         run_command.assert_called_once()
         self.assertEqual(expected_command, run_command.call_args.args[1])
 
@@ -3435,6 +3556,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "id": "browser-firefox-windows-11-x64",
             "kind": "browser",
             "browser": "firefox",
+            "host": "windows-11-x64",
             "test_suites": ["browser-contract"],
         }
 
@@ -3445,8 +3567,11 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         ):
             results = release_platform_probe._suite_results(target, root=REPO_ROOT)
 
+        self.assertEqual("browser-target-match", results[0]["name"])
         self.assertEqual("failed", results[0]["status"])
-        self.assertIn("real firefox browser contract command", results[0]["stderr"])
+        self.assertEqual("browser-contract", results[1]["name"])
+        self.assertEqual("failed", results[1]["status"])
+        self.assertIn("real firefox browser contract command", results[1]["stderr"])
         run_command.assert_not_called()
 
     def test_release_platform_cli_target_filter_limits_evidence_validation(self):
@@ -3529,6 +3654,40 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(2, report["target_count"])
         self.assertEqual(selected_ids, report["target_filters"])
         self.assertEqual(", ".join(selected_ids), report["target_filter"])
+
+    def test_release_platform_browser_evidence_requires_target_match_suite(self):
+        matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+        platform_targets, browser_targets, matrix_issues = release_platform_matrix._validate_matrix(matrix)
+        self.assertEqual([], matrix_issues)
+        target = next(target for target in platform_targets + browser_targets if target["id"] == "browser-chrome-windows_11_x64")
+        payload = {
+            "target_id": target["id"],
+            "status": "passed",
+            "suite_results": [{"name": "browser-contract", "status": "passed"}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir)
+            (evidence_dir / f"{target['id']}.json").write_text(json.dumps(payload), encoding="utf-8")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                returncode = release_platform_matrix.main(
+                    [
+                        "--matrix",
+                        str(REPO_ROOT / "docs" / "release-platform-test-matrix.json"),
+                        "--require-evidence",
+                        "--evidence-dir",
+                        str(evidence_dir),
+                        "--target-filter",
+                        str(target["id"]),
+                        "--json",
+                    ]
+                )
+            report = json.loads(stdout.getvalue())
+
+        self.assertEqual(1, returncode)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("must contain a browser-target-match suite result" in issue for issue in report["issues"]))
 
     def test_release_platform_cli_promotion_flags_require_source_bound_target_evidence(self):
         matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")

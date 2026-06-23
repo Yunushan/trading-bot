@@ -261,6 +261,8 @@ def _release_suite_results(target: dict[str, Any], payload: dict[str, Any]) -> l
         for suite in expected_suites
         for name in REQUIRED_SUITE_RESULT_NAMES.get(suite, (suite,))
     }
+    if target.get("kind") == "browser" and "browser-contract" in expected_suites:
+        accepted_names.add("browser-target-match")
     results: list[dict[str, Any]] = []
     for item in suites:
         if not isinstance(item, dict):
@@ -278,6 +280,10 @@ def _release_suite_results(target: dict[str, Any], payload: dict[str, Any]) -> l
                 "matched": target_match.get("matched") is True,
                 "issues": [str(issue) for issue in target_match.get("issues", []) if str(issue).strip()],
             }
+            for field in ("expected", "observed"):
+                value = target_match.get(field)
+                if isinstance(value, dict):
+                    result["target_match"][field] = value
         results.append(result)
     return results
 
@@ -348,7 +354,7 @@ def _required_workflow_inputs(target: dict[str, Any]) -> list[str]:
     suites = {str(item) for item in target.get("test_suites", [])}
     inputs: list[str] = []
     if (target.get("kind") == "browser" or "browser-contract" in suites) and not has_builtin_browser_contract_command(target):
-        inputs.append("browser_test_command")
+        inputs.extend(["browser_test_command", "browser_observed_browser", "browser_observed_host"])
     if "desktop-release-smoke" in suites:
         inputs.append("desktop_smoke_command")
     return inputs
@@ -367,6 +373,10 @@ def _workflow_dispatch_example(target: dict[str, Any]) -> str:
         args.append("-f desktop_smoke_command='<real release desktop smoke command>'")
     if "browser_test_command" in _required_workflow_inputs(target):
         args.append(f"-f browser_test_command='{browser_contract_command_text(target)}'")
+    if "browser_observed_browser" in _required_workflow_inputs(target):
+        args.append(f"-f browser_observed_browser='{str(target.get('browser') or '').strip().lower()}'")
+    if "browser_observed_host" in _required_workflow_inputs(target):
+        args.append(f"-f browser_observed_host='{str(target.get('host') or '').strip()}'")
     return " ".join(args)
 
 
@@ -396,6 +406,8 @@ def _target_plan(target: dict[str, Any]) -> dict[str, Any]:
     if target.get("kind") == "browser" or "browser-contract" in set(plan["test_suites"]):
         plan["browser_contract_command"] = browser_contract_command_text(target)
         plan["browser_contract_command_builtin"] = has_builtin_browser_contract_command(target)
+        plan["browser_expected_browser"] = str(target.get("browser") or "").strip().lower()
+        plan["browser_expected_host"] = str(target.get("host") or "").strip()
     return plan
 
 

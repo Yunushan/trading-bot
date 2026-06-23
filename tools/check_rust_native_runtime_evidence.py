@@ -729,6 +729,8 @@ def _validate_release_platform_suite_results(
         for names in accepted_names_by_suite.values()
         for accepted_name in names
     }
+    if target.get("kind") == "browser" and "browser-contract" in expected_suites:
+        accepted_names.add("browser-target-match")
     observed_names: list[str] = []
     rows_by_name: dict[str, dict[str, Any]] = {}
     for suite_index, row in enumerate(suite_results):
@@ -771,6 +773,46 @@ def _validate_release_platform_suite_results(
                 issues.append(
                     f"{artifact_path} platform_results[{index}].suite_results[platform-probe].target_match.matched must be true"
                 )
+    if target.get("kind") == "browser" and "browser-contract" in expected_suites:
+        browser_match = rows_by_name.get("browser-target-match")
+        if not isinstance(browser_match, dict):
+            issues.append(f"{artifact_path} platform_results[{index}].suite_results must include browser-target-match")
+        else:
+            target_match = browser_match.get("target_match")
+            if not isinstance(target_match, dict) or target_match.get("matched") is not True:
+                issues.append(
+                    f"{artifact_path} platform_results[{index}].suite_results[browser-target-match].target_match.matched must be true"
+                )
+            expected = target_match.get("expected") if isinstance(target_match, dict) else None
+            observed = target_match.get("observed") if isinstance(target_match, dict) else None
+            expected_browser = str(target.get("browser") or "").strip().lower()
+            expected_host = str(target.get("host") or "").strip()
+            if not isinstance(expected, dict):
+                issues.append(
+                    f"{artifact_path} platform_results[{index}].suite_results[browser-target-match].target_match.expected must be an object"
+                )
+            else:
+                if str(expected.get("browser") or "").strip().lower() != expected_browser:
+                    issues.append(
+                        f"{artifact_path} platform_results[{index}].suite_results[browser-target-match].expected.browser must be {expected_browser}"
+                    )
+                if str(expected.get("host") or "").strip() != expected_host:
+                    issues.append(
+                        f"{artifact_path} platform_results[{index}].suite_results[browser-target-match].expected.host must be {expected_host}"
+                    )
+            if not isinstance(observed, dict):
+                issues.append(
+                    f"{artifact_path} platform_results[{index}].suite_results[browser-target-match].target_match.observed must be an object"
+                )
+            else:
+                if str(observed.get("browser") or "").strip().lower() != expected_browser:
+                    issues.append(
+                        f"{artifact_path} platform_results[{index}].suite_results[browser-target-match].observed.browser must be {expected_browser}"
+                    )
+                if str(observed.get("host") or "").strip() != expected_host:
+                    issues.append(
+                        f"{artifact_path} platform_results[{index}].suite_results[browser-target-match].observed.host must be {expected_host}"
+                    )
 
 
 def _validate_release_platform_results(payload: dict[str, Any], artifact_path: Path, issues: list[str]) -> None:

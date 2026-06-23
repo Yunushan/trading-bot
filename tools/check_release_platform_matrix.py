@@ -458,6 +458,35 @@ def _target_evidence_issues(
                 target_match = platform_probe.get("target_match")
                 if not isinstance(target_match, dict) or target_match.get("matched") is not True:
                     issues.append(f"{path} platform-probe target_match.matched must be true")
+        if target.get("kind") == "browser" and "browser-contract" in target.get("test_suites", []):
+            browser_match = next(
+                (item for item in suites if isinstance(item, dict) and item.get("name") == "browser-target-match"),
+                None,
+            )
+            if not isinstance(browser_match, dict):
+                issues.append(f"{path} must contain a browser-target-match suite result")
+            else:
+                target_match = browser_match.get("target_match")
+                if not isinstance(target_match, dict) or target_match.get("matched") is not True:
+                    issues.append(f"{path} browser-target-match target_match.matched must be true")
+                expected = target_match.get("expected") if isinstance(target_match, dict) else None
+                observed = target_match.get("observed") if isinstance(target_match, dict) else None
+                expected_browser = str(target.get("browser") or "").strip().lower()
+                expected_host = str(target.get("host") or "").strip()
+                if not isinstance(expected, dict):
+                    issues.append(f"{path} browser-target-match target_match.expected must be an object")
+                else:
+                    if str(expected.get("browser") or "").strip().lower() != expected_browser:
+                        issues.append(f"{path} browser-target-match expected.browser must be {expected_browser}")
+                    if str(expected.get("host") or "").strip() != expected_host:
+                        issues.append(f"{path} browser-target-match expected.host must be {expected_host}")
+                if not isinstance(observed, dict):
+                    issues.append(f"{path} browser-target-match target_match.observed must be an object")
+                else:
+                    if str(observed.get("browser") or "").strip().lower() != expected_browser:
+                        issues.append(f"{path} browser-target-match observed.browser must be {expected_browser}")
+                    if str(observed.get("host") or "").strip() != expected_host:
+                        issues.append(f"{path} browser-target-match observed.host must be {expected_host}")
     if source_binding_context is not None:
         issues.extend(_target_source_binding_issues(payload, path, source_binding_context))
     return issues

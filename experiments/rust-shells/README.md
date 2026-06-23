@@ -263,8 +263,10 @@ evidence directory. The preflight JSON's `missing_platform_evidence_plan`
 includes the exact `target_validation_command` to run after each target probe.
 The aggregate artifact embeds every target's passed `suite_results`; platform
 targets must carry the `platform-probe.target_match.matched: true` proof in
-that embedded suite list, not only a target count. It also records the
-`evidence_file` and `evidence_sha256` for each source target JSON.
+that embedded suite list, not only a target count. Browser targets must carry a
+passed `browser-target-match` suite result whose expected and observed browser
+and host match the selected matrix target. It also records the `evidence_file`
+and `evidence_sha256` for each source target JSON.
 Each per-target evidence JSON must prove every suite declared for that target in
 `docs/release-platform-test-matrix.json`. A platform probe alone is not enough
 for desktop targets that also require Python service, desktop release, and
@@ -288,7 +290,10 @@ still require their declared real runners/labs. The collection command refuses
 dirty source trees, and promotion validation still requires
 `--require-current-commit --require-clean-source`. The release evidence preflight
 also exposes this same subset as `local_browser_batch_plan` with the batch
-command and per-target validation commands.
+command and per-target validation commands. Custom browser-lab commands must
+also pass `browser_observed_browser` and `browser_observed_host` through the
+manual release-platform workflow so the probe can write the same
+`browser-target-match` proof.
 While collecting evidence target by target, validate the just-written artifact
 without requiring the rest of the matrix yet:
 

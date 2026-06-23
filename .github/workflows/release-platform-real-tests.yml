@@ -27,6 +27,16 @@ on:
         required: false
         default: ""
         type: string
+      browser_observed_browser:
+        description: "Browser name observed by a custom browser lab command, for example firefox or internet-explorer."
+        required: false
+        default: ""
+        type: string
+      browser_observed_host:
+        description: "Host id observed by a custom browser lab command, for example windows-11-x64 or edge-ie-mode-windows-11-x64."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +60,8 @@ jobs:
         env:
           TB_RELEASE_DESKTOP_SMOKE_COMMAND: ${{ inputs.desktop_smoke_command }}
           TB_BROWSER_TEST_COMMAND: ${{ inputs.browser_test_command }}
+          TB_BROWSER_OBSERVED_BROWSER: ${{ inputs.browser_observed_browser }}
+          TB_BROWSER_OBSERVED_HOST: ${{ inputs.browser_observed_host }}
         run: |
           set -euo pipefail
           mkdir -p release-platform-evidence

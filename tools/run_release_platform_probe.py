@@ -191,6 +191,61 @@ def _current_browser_host(observed: dict[str, Any] | None = None) -> str:
     return browser_host_from_observed_platform(dict(observed or _observed_platform()))
 
 
+def _browser_target_match_result(target: dict[str, Any]) -> dict[str, Any]:
+    expected_browser = str(target.get("browser") or "").strip().lower()
+    expected_host = str(target.get("host") or "").strip()
+    custom_command_present = bool(str(os.environ.get("TB_BROWSER_TEST_COMMAND") or "").strip())
+    uses_builtin_command = has_builtin_browser_contract_command(target) and not custom_command_present
+    observed_platform = _observed_platform()
+
+    if uses_builtin_command:
+        observed_browser = expected_browser
+        observed_host = _current_browser_host(observed_platform)
+        observed_source = "local-built-in-browser-contract"
+    else:
+        observed_browser = str(os.environ.get("TB_BROWSER_OBSERVED_BROWSER") or "").strip().lower()
+        observed_host = str(os.environ.get("TB_BROWSER_OBSERVED_HOST") or "").strip()
+        observed_source = "browser-lab-declaration"
+
+    issues: list[str] = []
+    if not expected_browser:
+        issues.append("browser target is missing expected browser")
+    if not expected_host:
+        issues.append("browser target is missing expected host")
+    if not observed_browser:
+        issues.append(
+            "TB_BROWSER_OBSERVED_BROWSER is required when a custom browser lab command is used"
+        )
+    elif observed_browser != expected_browser:
+        issues.append(f"browser mismatch: expected {expected_browser}, observed {observed_browser}")
+    if not observed_host:
+        if uses_builtin_command:
+            issues.append("current runner host could not be mapped to a release browser host")
+        else:
+            issues.append("TB_BROWSER_OBSERVED_HOST is required when a custom browser lab command is used")
+    elif observed_host != expected_host:
+        issues.append(f"browser host mismatch: expected {expected_host}, observed {observed_host}")
+
+    return {
+        "name": "browser-target-match",
+        "status": "passed" if not issues else "failed",
+        "target_match": {
+            "matched": not issues,
+            "expected": {
+                "browser": expected_browser,
+                "host": expected_host,
+            },
+            "observed": {
+                "browser": observed_browser,
+                "host": observed_host,
+                "source": observed_source,
+                "platform": observed_platform,
+            },
+            "issues": issues,
+        },
+    }
+
+
 def _browser_contract_tool() -> dict[str, Any]:
     return browser_contract_tool(environ=os.environ, which=shutil.which, platform_name=sys.platform)
 
@@ -414,6 +469,7 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
             results.append({"name": "mobile-client-contract", "status": "failed", "stderr": "npm is not on PATH"})
 
     if "browser-contract" in suites:
+        results.append(_browser_target_match_result(target))
         command = _shell_command_from_env("TB_BROWSER_TEST_COMMAND")
         unavailable_reason = ""
         if command is None:
