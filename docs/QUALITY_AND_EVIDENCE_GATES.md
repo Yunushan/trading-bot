@@ -121,8 +121,9 @@ diff whitespace.
   pass `--release-missing-limit 0` when the runbook must list every remaining
   release-platform target instead of the default bounded sample.
   use that exported plan while collecting current-commit runtime evidence. CI
-  writes and uploads the same runbook as the
-  `rust-native-runtime-evidence-plan` artifact for the checked source revision.
+  writes and uploads the same complete-target runbook with
+  `--release-missing-limit 0` as the `rust-native-runtime-evidence-plan`
+  artifact for the checked source revision.
   Live market-data, signed account-read, and release-platform rows include
   explicit `missing_prerequisites` values for dirty source state, missing
   operator confirmation switches, missing Binance credentials, missing release

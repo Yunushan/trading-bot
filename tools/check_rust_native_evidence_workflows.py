@@ -134,6 +134,7 @@ def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
             "--require-clean-source",
             "Audit Rust native runtime promotion readiness",
             "python tools/audit_rust_native_runtime_readiness.py",
+            "--release-missing-limit 0",
             "--write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md",
             "Upload Rust native runtime evidence plan",
             "rust-native-runtime-evidence-plan",
@@ -167,6 +168,8 @@ def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
         for fragment in ("--require-current-commit", "--require-clean-source"):
             if fragment not in importer_section:
                 issues.append(f"CI Rust native importer audit must use {fragment}")
+    if "--release-missing-limit 0" not in text:
+        issues.append("CI runtime evidence plan must list every missing release-platform target")
     return _workflow_result("ci_rust_native_gate", path, issues)
 
 

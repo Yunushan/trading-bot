@@ -1102,6 +1102,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("Audit Rust native runtime promotion readiness", ci_workflow)
         self.assertIn("python tools/audit_rust_native_runtime_readiness.py", ci_workflow)
         self.assertIn("--json", ci_workflow)
+        self.assertIn("--release-missing-limit 0", ci_workflow)
         self.assertIn("--write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md", ci_workflow)
         self.assertIn("Upload Rust native runtime evidence plan", ci_workflow)
         self.assertIn("rust-native-runtime-evidence-plan", ci_workflow)

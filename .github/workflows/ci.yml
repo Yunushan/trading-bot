@@ -182,6 +182,7 @@ jobs:
           mkdir -p artifacts
           python tools/audit_rust_native_runtime_readiness.py \
             --json \
+            --release-missing-limit 0 \
             --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md
 
       - name: Upload Rust native runtime evidence plan
