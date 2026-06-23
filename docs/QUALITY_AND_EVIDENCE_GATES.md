@@ -11,7 +11,7 @@ Run the combined gate from the repository root before publishing changes:
 ```bash
 python tools/clean_workspace_artifacts.py --apply
 python tools/verify_all.py
-python tools/audit_workspace_hygiene.py --json
+python tools/audit_workspace_hygiene.py --json --fail-on-noisy
 ```
 
 `tools/verify_all.py` is the canonical local gate. It checks declared Python and
@@ -30,7 +30,7 @@ evidence before a PR exists.
 | Article | Completion rule | Evidence |
 | --- | --- | --- |
 | 1. Runtime versions | Python and Node match `.python-version` and `.node-version`. | `tools/check_local_tool_versions.py --json` passes. |
-| 2. Workspace hygiene | Generated artifacts do not pollute source audits. | `tools/audit_workspace_hygiene.py --json` reports zero noisy artifacts after cleanup. |
+| 2. Workspace hygiene | Generated artifacts do not pollute source audits. | `tools/audit_workspace_hygiene.py --json --fail-on-noisy` reports zero noisy artifacts after cleanup. |
 | 3. Python dependency health | Python desktop, service, and dev dependencies install under the declared runtime. | `python -m pip install -e "Languages/Python[desktop,service,dev]"` completes. |
 | 4. Python tests and coverage | Full Python tests pass and total coverage does not fall below the configured 38% floor. | `python -m pytest Languages/Python/tests -q` passes with `--cov-fail-under=38`. |
 | 5. Python lint/type contracts | Ruff and mypy pass for the reviewed typed surface. | `tools/verify_all.py` Python lint and type checks pass. |

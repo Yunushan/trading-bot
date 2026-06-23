@@ -57,6 +57,9 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("client dependency locks", check_by_name)
         self.assertFalse(check_by_name["client dependency locks"].required)
         self.assertTrue(check_by_name["tool versions"].blocks_success)
+        self.assertFalse(check_by_name["workspace hygiene"].required)
+        self.assertTrue(check_by_name["workspace hygiene"].blocks_success)
+        self.assertIn("--fail-on-noisy", check_by_name["workspace hygiene"].command)
         self.assertIn("ruff", check_by_name["python lint"].command)
         self.assertIn("--no-cache", check_by_name["python lint"].command)
         self.assertIn("mypy", check_by_name["python type check"].command)
@@ -174,6 +177,24 @@ class DependencyReproducibilityTests(unittest.TestCase):
         remediation = module._remediation_for(check, returncode=0, stdout=stdout, stderr="")
 
         self.assertIn("python tools/clean_workspace_artifacts.py --apply", remediation)
+
+    def test_verify_all_workspace_hygiene_blocks_noisy_artifacts(self):
+        module = _load_verify_all_module()
+        check = module.Check("workspace hygiene", (sys.executable,), REPO_ROOT, required=False, blocks_success=True)
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            1,
+            stdout=json.dumps({"ok": False, "noisy_artifact_count": 1, "noisy_artifacts": [".ruff_cache/"]}),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=True)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocks_success"])
+        self.assertFalse(module._report_ok([result]))
+        self.assertIn("python tools/clean_workspace_artifacts.py --apply", result["remediation"])
 
     def test_verify_all_report_collects_unique_remediations(self):
         module = _load_verify_all_module()

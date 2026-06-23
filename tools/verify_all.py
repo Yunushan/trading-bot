@@ -96,9 +96,10 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
         Check("worktree summary", (python, "tools/summarize_worktree_changes.py", "--json"), root, required=False),
         Check(
             "workspace hygiene",
-            (python, "tools/audit_workspace_hygiene.py", "--json"),
+            (python, "tools/audit_workspace_hygiene.py", "--json", "--fail-on-noisy"),
             root,
             required=False,
+            blocks_success=True,
             remediation="Preview cleanup with: python tools/clean_workspace_artifacts.py --json",
         ),
         Check(

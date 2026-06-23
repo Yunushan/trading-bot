@@ -54,7 +54,7 @@ Before packaging or tagging:
 python tools/check_local_tool_versions.py --json
 python tools/check_client_dependency_locks.py --json --strict
 python tools/summarize_worktree_changes.py
-python tools/audit_workspace_hygiene.py
+python tools/audit_workspace_hygiene.py --fail-on-noisy
 python tools/audit_risky_patterns.py
 python tools/verify_all.py --skip-slow
 cd Languages/Python && python tools/run_python_tests.py
