@@ -20,7 +20,10 @@ regressions, unsupported support/parity claims, Rust native runtime evidence
 declarations, Python-owned C++/Rust source synchronization, Rust native runtime
 promotion readiness with the complete missing release-platform target list,
 Python lint/type/contracts/tests, web and mobile client tests, Rust workspace
-checks, Tauri UI behavior, native C++ build/tests, and diff whitespace.
+checks, Tauri UI behavior, native C++ build/tests, and diff whitespace. The CI
+workflow runs on `main`, pull requests targeting `main`, and pushed
+`codex/**` verification branches so branch work can collect remote check
+evidence before a PR exists.
 
 ## 18-article completion gate
 

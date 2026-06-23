@@ -4,6 +4,7 @@ name: CI
   push:
     branches:
       - main
+      - "codex/**"
   pull_request:
     branches:
       - main

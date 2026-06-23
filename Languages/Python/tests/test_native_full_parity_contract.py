@@ -1043,6 +1043,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("native source sync audit", verify_all)
         self.assertIn("tools/audit_native_source_sync.py", verify_all)
         self.assertIn("Audit native source sync", ci_workflow)
+        self.assertIn('- "codex/**"', ci_workflow)
         self.assertIn("Python-owned C++/Rust source synchronization", evidence_gates)
         self.assertIn("rust native runtime promotion audit", verify_all)
         self.assertIn("rust native live-smoke preflight", verify_all)
