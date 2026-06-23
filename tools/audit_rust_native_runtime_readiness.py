@@ -178,8 +178,9 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
     }
 
 
-def _release_evidence_prerequisites(root: Path) -> dict[str, Any]:
+def _release_evidence_prerequisites(root: Path, *, missing_limit: int = 10) -> dict[str, Any]:
     platform_evidence_dir = root / "release-platform-evidence"
+    missing_limit = max(0, int(missing_limit))
     platform_evidence_count = (
         len(list(platform_evidence_dir.glob("*.json")))
         if platform_evidence_dir.is_dir()
@@ -195,7 +196,7 @@ def _release_evidence_prerequisites(root: Path) -> dict[str, Any]:
         "platform_evidence_json_count": platform_evidence_count,
         "preflight_command": (
             "python tools/write_rust_native_release_evidence.py --tag <tag> "
-            "--platform-evidence-dir release-platform-evidence --preflight --json"
+            f"--platform-evidence-dir release-platform-evidence --preflight --missing-limit {missing_limit} --json"
         ),
         "command": (
             "python tools/write_rust_native_release_evidence.py --tag <tag> "
@@ -217,7 +218,7 @@ def _release_evidence_prerequisites(root: Path) -> dict[str, Any]:
             matrix_path=root / "docs" / "release-platform-test-matrix.json",
             platform_evidence_dir=platform_evidence_dir,
             output_dir=root / "artifacts" / "rust-native-runtime-evidence",
-            missing_limit=10,
+            missing_limit=missing_limit,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         result.update(
@@ -1040,6 +1041,7 @@ def audit(
     manifest_path: Path,
     evidence_dir_override: Path | None,
     require_ready: bool,
+    release_missing_limit: int = 10,
 ) -> dict[str, Any]:
     root = _repo_root()
     source = _source_contract_audit(root)
@@ -1137,7 +1139,10 @@ def audit(
         source_tree_clean=bool(current_commit_evidence.get("current_source_tree_clean")),
     )
     local_recovery_prerequisites = local_recovery_generation_guard(evidence_dir_for_collection)
-    release_evidence_prerequisites = _release_evidence_prerequisites(root)
+    release_evidence_prerequisites = _release_evidence_prerequisites(
+        root,
+        missing_limit=release_missing_limit,
+    )
     evidence_collection_plan = _evidence_collection_plan(
         artifact_status_by_id=artifact_status_by_id,
         live_smoke_prerequisites=live_smoke_prerequisites,
@@ -1198,6 +1203,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-ready", action="store_true", help="Fail unless Rust native runtime is promotion-ready.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument(
+        "--release-missing-limit",
+        type=int,
+        default=10,
+        help=(
+            "Maximum missing release-platform targets to include in readiness JSON and Markdown plans. "
+            "Use 0 for the complete missing-target plan."
+        ),
+    )
+    parser.add_argument(
         "--write-evidence-plan",
         help="Write a Markdown operator plan for collecting and importing Rust native runtime evidence.",
     )
@@ -1207,6 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path=Path(args.manifest),
         evidence_dir_override=Path(args.evidence_dir) if args.evidence_dir else None,
         require_ready=bool(args.require_ready),
+        release_missing_limit=max(0, int(args.release_missing_limit)),
     )
     if args.write_evidence_plan:
         plan_path = Path(args.write_evidence_plan)

@@ -118,6 +118,8 @@ diff whitespace.
   artifact collection rows, commands, safety flags, and next actions to a
   Markdown runbook with
   `tools/audit_rust_native_runtime_readiness.py --json --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md`;
+  pass `--release-missing-limit 0` when the runbook must list every remaining
+  release-platform target instead of the default bounded sample.
   use that exported plan while collecting current-commit runtime evidence. CI
   writes and uploads the same runbook as the
   `rust-native-runtime-evidence-plan` artifact for the checked source revision.
@@ -215,7 +217,9 @@ diff whitespace.
   evidence artifact, uploads it as `rust-native-release-platform-evidence`, and
   uploads a post-release `rust-native-release-platform-evidence-plan` runbook
   artifact on both successful and failed release-evidence attempts once the plan
-  step can run.
+  step can run. That post-release runbook uses `--release-missing-limit 0` so a
+  failed aggregate attempt still names every remaining target and dispatch
+  command.
   Downloaded Actions ZIPs or artifact folders can be imported locally with
   `tools/import_rust_native_evidence_artifacts.py`; the importer validates
   runtime artifacts against `docs/rust-native-runtime-evidence.json` and

@@ -1254,7 +1254,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     return_value=preflight_result,
                 ) as preflight,
             ):
-                result = runtime_readiness._release_evidence_prerequisites(root)
+                result = runtime_readiness._release_evidence_prerequisites(root, missing_limit=0)
 
         self.assertEqual("v9.9.9", result["release_tag"])
         self.assertTrue(result["release_tag_configured"])
@@ -1285,7 +1285,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             result["release_missing_prerequisites"],
         )
         self.assertEqual("v9.9.9", preflight.call_args.kwargs["tag"])
-        self.assertEqual(10, preflight.call_args.kwargs["missing_limit"])
+        self.assertEqual(0, preflight.call_args.kwargs["missing_limit"])
+        self.assertIn("--missing-limit 0", result["preflight_command"])
 
     def test_readiness_audit_requires_native_source_sync(self):
         def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
@@ -1343,6 +1344,52 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("regenerate_python_owned_native_contracts", result["promotion_model"]["phase"])
         self.assertFalse(result["promotion_model"]["can_claim_runtime_complete"])
         self.assertIn("native_source_sync", result["promotion_model"]["failed_requirement_ids"])
+
+    def test_readiness_audit_passes_release_missing_limit_to_release_prerequisites(self):
+        def _validate_stub(*_args: object, **kwargs: object) -> dict[str, object]:
+            if kwargs.get("require_evidence"):
+                return {
+                    "ok": False,
+                    "issues": [],
+                    "artifact_status": [],
+                    "current_commit": "abc123",
+                    "current_source_tree_clean": True,
+                    "current_source_tree_dirty_paths": [],
+                    "current_source_tree_ignored_paths": [
+                        "artifacts/rust-native-runtime-evidence",
+                        "release-platform-evidence",
+                    ],
+                    "current_source_tree_untracked_paths": [],
+                    "evidence_dir": "artifacts/rust-native-runtime-evidence",
+                }
+            return {"ok": True, "issues": [], "runtime_ready_policy_state": False}
+
+        with (
+            patch.object(
+                runtime_readiness,
+                "_source_contract_audit",
+                return_value={"ok": True, "runtime_ready_source_state": False, "issues": []},
+            ),
+            patch.object(
+                runtime_readiness,
+                "audit_native_source_sync",
+                return_value={"ok": True, "contract_hash": "fresh-hash", "issues": []},
+            ),
+            patch.object(runtime_readiness, "validate", side_effect=_validate_stub),
+            patch.object(
+                runtime_readiness,
+                "_release_evidence_prerequisites",
+                return_value={"release_platform_preflight_ok": False},
+            ) as release_prerequisites,
+        ):
+            runtime_readiness.audit(
+                manifest_path=runtime_evidence.DEFAULT_MANIFEST_PATH,
+                evidence_dir_override=None,
+                require_ready=False,
+                release_missing_limit=0,
+            )
+
+        self.assertEqual(0, release_prerequisites.call_args.kwargs["missing_limit"])
 
     def test_runtime_evidence_policy_can_represent_promoted_state(self):
         manifest = json.loads((REPO_ROOT / "docs" / "rust-native-runtime-evidence.json").read_text(encoding="utf-8"))

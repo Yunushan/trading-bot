@@ -264,6 +264,7 @@ def _check_release_evidence(root: Path) -> dict[str, Any]:
             "Write post-release Rust native runtime evidence plan",
             "if: ${{ always() }}",
             'mkdir -p "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"',
+            "--release-missing-limit 0",
             "--write-evidence-plan",
             "name: rust-native-release-platform-evidence",
             "rust-native-release-platform-evidence.json",
@@ -352,17 +353,19 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
                 "Import external Rust native evidence artifacts",
                 "Generate deterministic local recovery evidence for checked commit",
                 "Validate complete current-commit runtime evidence",
-                "Run strict Rust native runtime promotion readiness audit",
-                "Write final Rust native runtime evidence plan",
-                "Upload final Rust native runtime evidence plan",
-                "Upload normalized Rust native runtime promotion evidence",
-            ),
+            "Run strict Rust native runtime promotion readiness audit",
+            "Write final Rust native runtime evidence plan",
+            "Upload final Rust native runtime evidence plan",
+            "Upload normalized Rust native runtime promotion evidence",
+        ),
         )
     )
     if "artifacts/rust-native-runtime-evidence/downloads" not in text and (
         '"${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/downloads"' not in text
     ):
         issues.append("promotion workflow must download artifacts under the ignored runtime evidence directory")
+    if "--release-missing-limit 0" not in text:
+        issues.append("promotion workflow must write complete missing release-platform target plans")
     return _workflow_result("promotion_audit", path, issues)
 
 
