@@ -18,9 +18,9 @@ python tools/audit_workspace_hygiene.py --json
 Node runtimes, workspace hygiene, client dependency locks, risky-pattern
 regressions, unsupported support/parity claims, Rust native runtime evidence
 declarations, Python-owned C++/Rust source synchronization, Rust native runtime
-promotion readiness, Python lint/type/contracts/tests, web and mobile client
-tests, Rust workspace checks, Tauri UI behavior, native C++ build/tests, and
-diff whitespace.
+promotion readiness with the complete missing release-platform target list,
+Python lint/type/contracts/tests, web and mobile client tests, Rust workspace
+checks, Tauri UI behavior, native C++ build/tests, and diff whitespace.
 
 ## 18-article completion gate
 
@@ -306,7 +306,9 @@ diff whitespace.
   flags, redacted live-smoke prerequisites, release evidence prerequisites,
   release platform preflight coverage counts, invalid/unknown evidence counts,
   a bounded `missing_platform_evidence_plan`, Markdown evidence plan export
-  support, and next actions. Use
+  support, and next actions. The canonical `tools/verify_all.py` and CI runbook
+  paths pass `--release-missing-limit 0` so full verification reports every
+  missing release-platform target. Use
   `--require-ready` only when intentionally promoting standalone Rust native
   trading after all evidence artifacts exist.
 - Clean generated build, coverage, cache, and target directories after local

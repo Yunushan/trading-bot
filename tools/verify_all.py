@@ -229,7 +229,7 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
         ),
         Check(
             "rust native runtime promotion audit",
-            (python, "tools/audit_rust_native_runtime_readiness.py", "--json"),
+            (python, "tools/audit_rust_native_runtime_readiness.py", "--json", "--release-missing-limit", "0"),
             root,
             remediation="Keep Rust native runtime readiness false until source parity plus live/release evidence artifacts are complete.",
         ),
