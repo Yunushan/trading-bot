@@ -113,7 +113,10 @@ evidence before a PR exists.
   release-platform evidence, the row also carries the bounded
   `missing_platform_evidence_plan` with per-target promotion-grade validation
   commands, so the final audit runbook still shows how to collect and validate
-  missing OS/browser targets. The
+  missing OS/browser targets. The release row also reports total release
+  evidence target count plus platform/browser present, passed, and missing
+  splits, so a partial lab result cannot hide which target family remains
+  unproven. The
   `current_commit_clean_source_evidence` promotion requirement repeats the
   actionable dirty/untracked source issues, so a failed checklist row is enough
   to see what must be committed, removed, or imported before evidence collection.

@@ -436,6 +436,8 @@ def preflight_release_evidence_inputs(
     except ValueError as exc:
         issues.append(str(exc))
 
+    platform_target_ids = {str(target["id"]) for target in platform_targets}
+    browser_target_ids = {str(target["id"]) for target in browser_targets}
     targets_by_id = {str(target["id"]): target for target in platform_targets + browser_targets}
     target_ids = list(targets_by_id)
     evidence_dir_exists = platform_evidence_dir.is_dir()
@@ -468,6 +470,7 @@ def preflight_release_evidence_inputs(
         else:
             passed_evidence.append(target_id)
     unknown_evidence = sorted(target_id for target_id in present_evidence if target_id not in set(target_ids))
+    present_target_evidence = sorted(target_id for target_id in present_evidence if target_id in targets_by_id)
     if target_ids and missing_evidence:
         issues.append(
             f"missing release platform evidence for {len(missing_evidence)} of {len(target_ids)} target(s)"
@@ -508,15 +511,23 @@ def preflight_release_evidence_inputs(
         "python_source_contract_hash": native_python_source_contract_hash(),
         "platform_target_count": len(platform_targets),
         "browser_target_count": len(browser_targets),
+        "release_evidence_target_count": len(target_ids),
+        "present_target_evidence_count": len(present_target_evidence),
+        "present_platform_target_evidence_count": sum(1 for target_id in present_target_evidence if target_id in platform_target_ids),
+        "present_browser_target_evidence_count": sum(1 for target_id in present_target_evidence if target_id in browser_target_ids),
         "required_rust_release_assets": required_rust_assets,
         "optional_rust_release_assets": optional_rust_assets,
         "present_platform_evidence_count": len(present_evidence),
         "passed_platform_evidence_count": len(passed_evidence),
+        "passed_platform_target_evidence_count": sum(1 for target_id in passed_evidence if target_id in platform_target_ids),
+        "passed_browser_target_evidence_count": sum(1 for target_id in passed_evidence if target_id in browser_target_ids),
         "invalid_platform_evidence_count": len(invalid_evidence),
         "invalid_platform_evidence": _limit_list(invalid_evidence, missing_limit),
         "unknown_platform_evidence_count": len(unknown_evidence),
         "unknown_platform_evidence": _limit_list(unknown_evidence, missing_limit),
         "missing_platform_evidence_count": len(missing_evidence),
+        "missing_platform_target_evidence_count": sum(1 for target_id in missing_evidence if target_id in platform_target_ids),
+        "missing_browser_target_evidence_count": sum(1 for target_id in missing_evidence if target_id in browser_target_ids),
         "missing_platform_evidence_limit": missing_limit,
         "missing_platform_evidence": _limit_list(missing_evidence, missing_limit),
         "missing_platform_evidence_plan": missing_evidence_plan,

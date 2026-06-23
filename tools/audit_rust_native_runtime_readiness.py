@@ -244,19 +244,41 @@ def _release_evidence_prerequisites(root: Path, *, missing_limit: int = 10) -> d
     if preflight_issues and len(release_missing_prerequisites) == preflight_prerequisite_start:
         release_missing_prerequisites.append("release evidence preflight issues")
 
+    platform_target_count = int(preflight.get("platform_target_count") or 0)
+    browser_target_count = int(preflight.get("browser_target_count") or 0)
+    release_evidence_target_count = int(
+        preflight.get("release_evidence_target_count") or (platform_target_count + browser_target_count)
+    )
+
     result.update(
         {
             "release_platform_preflight_ok": bool(preflight.get("ok")),
             "source_tree_clean": bool(preflight.get("source_tree_clean")),
             "release_asset_presence_verified": bool(preflight.get("release_asset_presence_verified")),
             "release_asset_presence_requires_network": bool(preflight.get("release_asset_presence_requires_network")),
-            "platform_target_count": int(preflight.get("platform_target_count") or 0),
-            "browser_target_count": int(preflight.get("browser_target_count") or 0),
+            "platform_target_count": platform_target_count,
+            "browser_target_count": browser_target_count,
+            "release_evidence_target_count": release_evidence_target_count,
+            "present_target_evidence_count": int(preflight.get("present_target_evidence_count") or 0),
+            "present_platform_target_evidence_count": int(
+                preflight.get("present_platform_target_evidence_count") or 0
+            ),
+            "present_browser_target_evidence_count": int(preflight.get("present_browser_target_evidence_count") or 0),
             "present_platform_evidence_count": int(preflight.get("present_platform_evidence_count") or 0),
             "passed_platform_evidence_count": int(preflight.get("passed_platform_evidence_count") or 0),
+            "passed_platform_target_evidence_count": int(
+                preflight.get("passed_platform_target_evidence_count") or 0
+            ),
+            "passed_browser_target_evidence_count": int(preflight.get("passed_browser_target_evidence_count") or 0),
             "invalid_platform_evidence_count": int(preflight.get("invalid_platform_evidence_count") or 0),
             "unknown_platform_evidence_count": int(preflight.get("unknown_platform_evidence_count") or 0),
             "missing_platform_evidence_count": int(preflight.get("missing_platform_evidence_count") or 0),
+            "missing_platform_target_evidence_count": int(
+                preflight.get("missing_platform_target_evidence_count") or 0
+            ),
+            "missing_browser_target_evidence_count": int(
+                preflight.get("missing_browser_target_evidence_count") or 0
+            ),
             "missing_platform_evidence_limit": int(preflight.get("missing_platform_evidence_limit") or 0),
             "missing_platform_evidence_truncated": bool(preflight.get("missing_platform_evidence_truncated")),
             "missing_platform_evidence": list(preflight.get("missing_platform_evidence") or []),
@@ -488,8 +510,36 @@ def _evidence_collection_plan(
                         ),
                         "missing_prerequisites": release_missing_prerequisites,
                         "source_tree_clean": bool(release_evidence_prerequisites.get("source_tree_clean")),
+                        "platform_target_count": int(
+                            release_evidence_prerequisites.get("platform_target_count") or 0
+                        ),
+                        "browser_target_count": int(release_evidence_prerequisites.get("browser_target_count") or 0),
+                        "release_evidence_target_count": int(
+                            release_evidence_prerequisites.get("release_evidence_target_count") or 0
+                        ),
+                        "present_target_evidence_count": int(
+                            release_evidence_prerequisites.get("present_target_evidence_count") or 0
+                        ),
+                        "present_platform_target_evidence_count": int(
+                            release_evidence_prerequisites.get("present_platform_target_evidence_count") or 0
+                        ),
+                        "present_browser_target_evidence_count": int(
+                            release_evidence_prerequisites.get("present_browser_target_evidence_count") or 0
+                        ),
+                        "passed_platform_target_evidence_count": int(
+                            release_evidence_prerequisites.get("passed_platform_target_evidence_count") or 0
+                        ),
+                        "passed_browser_target_evidence_count": int(
+                            release_evidence_prerequisites.get("passed_browser_target_evidence_count") or 0
+                        ),
                         "missing_platform_evidence_count": int(
                             release_evidence_prerequisites.get("missing_platform_evidence_count") or 0
+                        ),
+                        "missing_platform_target_evidence_count": int(
+                            release_evidence_prerequisites.get("missing_platform_target_evidence_count") or 0
+                        ),
+                        "missing_browser_target_evidence_count": int(
+                            release_evidence_prerequisites.get("missing_browser_target_evidence_count") or 0
                         ),
                         "missing_platform_evidence_limit": int(
                             release_evidence_prerequisites.get("missing_platform_evidence_limit") or 0
@@ -975,6 +1025,25 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
         details = row.get("details") if isinstance(row.get("details"), dict) else {}
         if "source_tree_clean" in details:
             lines.append(f"- Source tree clean: {_format_markdown_value(details.get('source_tree_clean'))}")
+        if "release_evidence_target_count" in details:
+            release_target_count = _format_markdown_value(details.get("release_evidence_target_count"))
+            platform_target_count = _format_markdown_value(details.get("platform_target_count"))
+            browser_target_count = _format_markdown_value(details.get("browser_target_count"))
+            lines.append(
+                "- Release evidence targets: "
+                f"{release_target_count} total "
+                f"({platform_target_count} platform, {browser_target_count} browser)"
+            )
+            lines.append(
+                "- Release evidence progress: "
+                f"{_format_markdown_value(details.get('present_target_evidence_count'))} present, "
+                f"{_format_markdown_value(details.get('missing_platform_evidence_count'))} missing"
+            )
+            lines.append(
+                "- Missing target split: "
+                f"{_format_markdown_value(details.get('missing_platform_target_evidence_count'))} platform, "
+                f"{_format_markdown_value(details.get('missing_browser_target_evidence_count'))} browser"
+            )
         missing_plan = details.get("missing_platform_evidence_plan")
         if isinstance(missing_plan, list) and missing_plan:
             lines.append("- Missing platform evidence plan:")

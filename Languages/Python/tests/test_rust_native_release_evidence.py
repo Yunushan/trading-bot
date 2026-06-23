@@ -946,11 +946,21 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(result["release_asset_presence_requires_network"])
         self.assertTrue(result["secrets_redacted"])
         self.assertGreaterEqual(len(result["required_rust_release_assets"]), 1)
+        self.assertEqual(1, result["platform_target_count"])
+        self.assertEqual(1, result["browser_target_count"])
+        self.assertEqual(2, result["release_evidence_target_count"])
+        self.assertEqual(1, result["present_target_evidence_count"])
+        self.assertEqual(1, result["present_platform_target_evidence_count"])
+        self.assertEqual(0, result["present_browser_target_evidence_count"])
         self.assertEqual(1, result["present_platform_evidence_count"])
         self.assertEqual(0, result["passed_platform_evidence_count"])
+        self.assertEqual(0, result["passed_platform_target_evidence_count"])
+        self.assertEqual(0, result["passed_browser_target_evidence_count"])
         self.assertEqual(1, result["invalid_platform_evidence_count"])
         self.assertEqual("windows-11-x64", result["invalid_platform_evidence"][0]["target_id"])
         self.assertEqual(1, result["missing_platform_evidence_count"])
+        self.assertEqual(0, result["missing_platform_target_evidence_count"])
+        self.assertEqual(1, result["missing_browser_target_evidence_count"])
         self.assertEqual(["browser-chrome-windows-11-x64"], result["missing_platform_evidence"])
         self.assertEqual(1, len(result["missing_platform_evidence_plan"]))
         self.assertEqual("browser-chrome-windows-11-x64", result["missing_platform_evidence_plan"][0]["target_id"])
@@ -1216,11 +1226,19 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "release_asset_presence_requires_network": True,
             "platform_target_count": 70,
             "browser_target_count": 29,
+            "release_evidence_target_count": 99,
+            "present_target_evidence_count": 1,
+            "present_platform_target_evidence_count": 0,
+            "present_browser_target_evidence_count": 1,
             "present_platform_evidence_count": 1,
             "passed_platform_evidence_count": 0,
+            "passed_platform_target_evidence_count": 0,
+            "passed_browser_target_evidence_count": 0,
             "invalid_platform_evidence_count": 1,
             "unknown_platform_evidence_count": 1,
             "missing_platform_evidence_count": 98,
+            "missing_platform_target_evidence_count": 70,
+            "missing_browser_target_evidence_count": 28,
             "missing_platform_evidence_limit": 10,
             "missing_platform_evidence_truncated": True,
             "missing_platform_evidence": ["browser-chrome-windows-11-x64"],
@@ -1264,11 +1282,19 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(result["release_asset_presence_requires_network"])
         self.assertEqual(70, result["platform_target_count"])
         self.assertEqual(29, result["browser_target_count"])
+        self.assertEqual(99, result["release_evidence_target_count"])
+        self.assertEqual(1, result["present_target_evidence_count"])
+        self.assertEqual(0, result["present_platform_target_evidence_count"])
+        self.assertEqual(1, result["present_browser_target_evidence_count"])
         self.assertEqual(1, result["present_platform_evidence_count"])
         self.assertEqual(0, result["passed_platform_evidence_count"])
+        self.assertEqual(0, result["passed_platform_target_evidence_count"])
+        self.assertEqual(0, result["passed_browser_target_evidence_count"])
         self.assertEqual(1, result["invalid_platform_evidence_count"])
         self.assertEqual(1, result["unknown_platform_evidence_count"])
         self.assertEqual(98, result["missing_platform_evidence_count"])
+        self.assertEqual(70, result["missing_platform_target_evidence_count"])
+        self.assertEqual(28, result["missing_browser_target_evidence_count"])
         self.assertEqual(10, result["missing_platform_evidence_limit"])
         self.assertTrue(result["missing_platform_evidence_truncated"])
         self.assertEqual(["browser-chrome-windows-11-x64"], result["missing_platform_evidence"])
@@ -1980,7 +2006,17 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "command": "release command",
             "github_workflow": "gh workflow run rust-native-release-evidence.yml",
             "release_tag_configured": False,
+            "platform_target_count": 70,
+            "browser_target_count": 29,
+            "release_evidence_target_count": 99,
+            "present_target_evidence_count": 1,
+            "present_platform_target_evidence_count": 0,
+            "present_browser_target_evidence_count": 1,
+            "passed_platform_target_evidence_count": 0,
+            "passed_browser_target_evidence_count": 0,
             "missing_platform_evidence_count": 98,
+            "missing_platform_target_evidence_count": 70,
+            "missing_browser_target_evidence_count": 28,
             "missing_platform_evidence_limit": 10,
             "missing_platform_evidence_truncated": True,
             "missing_platform_evidence_plan": [
@@ -2128,6 +2164,16 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             release_row["import_command"],
         )
         self.assertEqual(98, release_row["details"]["missing_platform_evidence_count"])
+        self.assertEqual(70, release_row["details"]["platform_target_count"])
+        self.assertEqual(29, release_row["details"]["browser_target_count"])
+        self.assertEqual(99, release_row["details"]["release_evidence_target_count"])
+        self.assertEqual(1, release_row["details"]["present_target_evidence_count"])
+        self.assertEqual(0, release_row["details"]["present_platform_target_evidence_count"])
+        self.assertEqual(1, release_row["details"]["present_browser_target_evidence_count"])
+        self.assertEqual(0, release_row["details"]["passed_platform_target_evidence_count"])
+        self.assertEqual(0, release_row["details"]["passed_browser_target_evidence_count"])
+        self.assertEqual(70, release_row["details"]["missing_platform_target_evidence_count"])
+        self.assertEqual(28, release_row["details"]["missing_browser_target_evidence_count"])
         self.assertEqual(10, release_row["details"]["missing_platform_evidence_limit"])
         self.assertTrue(release_row["details"]["missing_platform_evidence_truncated"])
         self.assertTrue(release_row["details"]["source_tree_clean"])
@@ -2164,6 +2210,9 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         )
         self.assertIn("Source tree clean: true", markdown)
         self.assertIn("Validation command", markdown)
+        self.assertIn("Release evidence targets: 99 total (70 platform, 29 browser)", markdown)
+        self.assertIn("Release evidence progress: 1 present, 98 missing", markdown)
+        self.assertIn("Missing target split: 70 platform, 28 browser", markdown)
         self.assertIn("--require-current-commit", markdown)
         self.assertIn("browser-chrome-windows-11-x64", markdown)
         self.assertIn("gh workflow run release-platform-real-tests.yml", markdown)
