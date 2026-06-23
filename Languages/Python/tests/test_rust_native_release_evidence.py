@@ -3426,6 +3426,46 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(1, report["target_count"])
         self.assertGreater(report["total_target_count"], report["target_count"])
         self.assertEqual("windows-11-x64", report["target_filter"])
+        self.assertEqual(["windows-11-x64"], report["target_filters"])
+
+    def test_release_platform_cli_target_filter_repeats_to_validate_target_set(self):
+        matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+        platform_targets, browser_targets, matrix_issues = release_platform_matrix._validate_matrix(matrix)
+        self.assertEqual([], matrix_issues)
+        targets_by_id = {str(target["id"]): target for target in platform_targets + browser_targets}
+        selected_ids = [
+            "browser-chrome-windows_11_x64",
+            "browser-edge-windows_11_x64",
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir)
+            for target_id in selected_ids:
+                payload = _target_evidence_payload(targets_by_id[target_id])
+                (evidence_dir / f"{target_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                returncode = release_platform_matrix.main(
+                    [
+                        "--matrix",
+                        str(REPO_ROOT / "docs" / "release-platform-test-matrix.json"),
+                        "--require-evidence",
+                        "--evidence-dir",
+                        str(evidence_dir),
+                        "--target-filter",
+                        selected_ids[0],
+                        "--target-filter",
+                        selected_ids[1],
+                        "--json",
+                    ]
+                )
+            report = json.loads(stdout.getvalue())
+
+        self.assertEqual(0, returncode)
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertEqual(2, report["target_count"])
+        self.assertEqual(selected_ids, report["target_filters"])
+        self.assertEqual(", ".join(selected_ids), report["target_filter"])
 
     def test_release_platform_cli_promotion_flags_require_source_bound_target_evidence(self):
         matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")

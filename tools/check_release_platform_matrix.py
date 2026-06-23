@@ -481,11 +481,33 @@ def _evidence_issues(
     return issues
 
 
-def _filter_targets(targets: list[dict[str, Any]], *, target_filter: str) -> list[dict[str, Any]]:
-    needle = target_filter.strip().lower()
-    if not needle:
+def _target_filter_terms(raw_filters: list[str] | tuple[str, ...] | str | None) -> list[str]:
+    if raw_filters is None:
+        return []
+    values = [raw_filters] if isinstance(raw_filters, str) else list(raw_filters)
+    terms: list[str] = []
+    for value in values:
+        for term in str(value).split(","):
+            normalized = term.strip().lower()
+            if normalized and normalized not in terms:
+                terms.append(normalized)
+    return terms
+
+
+def _filter_targets(targets: list[dict[str, Any]], *, target_filters: list[str] | tuple[str, ...] | str | None) -> list[dict[str, Any]]:
+    needles = _target_filter_terms(target_filters)
+    if not needles:
         return targets
-    return [target for target in targets if needle in str(target["id"]).lower()]
+    return [
+        target
+        for target in targets
+        if any(needle in str(target["id"]).lower() for needle in needles)
+    ]
+
+
+def _unmatched_target_filters(targets: list[dict[str, Any]], filters: list[str]) -> list[str]:
+    target_ids = [str(target["id"]).lower() for target in targets]
+    return [needle for needle in filters if not any(needle in target_id for target_id in target_ids)]
 
 
 def _emit_matrix(targets: list[dict[str, Any]]) -> str:
@@ -521,7 +543,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--evidence-dir", default="release-platform-evidence", help="Directory containing target evidence JSON files.")
     parser.add_argument("--emit-github-matrix", action="store_true", help="Print a GitHub Actions matrix JSON object.")
-    parser.add_argument("--target-filter", default="", help="Only emit or validate targets whose id contains this text.")
+    parser.add_argument(
+        "--target-filter",
+        action="append",
+        default=[],
+        help="Only emit or validate targets whose id contains this text. Repeat or comma-separate to validate a target set.",
+    )
     parser.add_argument("--json", action="store_true", help="Print validation report as JSON.")
     args = parser.parse_args(argv)
 
@@ -537,10 +564,11 @@ def main(argv: list[str] | None = None) -> int:
 
     platform_targets, browser_targets, issues = _validate_matrix(matrix)
     targets = platform_targets + browser_targets
-    filtered_targets = _filter_targets(targets, target_filter=args.target_filter)
-    target_filter_active = bool(str(args.target_filter).strip())
-    if target_filter_active and not filtered_targets:
-        issues.append(f"target-filter matched no targets: {args.target_filter}")
+    target_filters = _target_filter_terms(args.target_filter)
+    filtered_targets = _filter_targets(targets, target_filters=target_filters)
+    target_filter_active = bool(target_filters)
+    for unmatched in _unmatched_target_filters(targets, target_filters):
+        issues.append(f"target-filter matched no targets: {unmatched}")
 
     source_binding_context = _source_binding_context(
         require_current_commit=bool(args.require_current_commit),
@@ -571,7 +599,8 @@ def main(argv: list[str] | None = None) -> int:
         "browser_target_count": len(browser_targets),
         "target_count": len(filtered_targets) if target_filter_active else len(targets),
         "total_target_count": len(targets),
-        "target_filter": str(args.target_filter).strip(),
+        "target_filter": ", ".join(target_filters),
+        "target_filters": target_filters,
         "issues": issues,
         "evidence_required": bool(args.require_evidence),
         "require_current_commit": bool(args.require_current_commit),
