@@ -1225,6 +1225,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("python tools/clean_workspace_artifacts.py --apply", workflow)
         self.assertIn("Native C++ Smoke", workflow)
         self.assertIn("python tools/check_native_cpp.py", workflow)
+        self.assertIn("audit_native_source_sync", native_cpp_checker)
+        self.assertIn('"native_source_sync"', native_cpp_checker)
         self.assertIn('"desktop release smoke"', native_cpp_checker)
         self.assertIn('"--smoke"', native_cpp_checker)
         self.assertIn("--no-require-webengine", workflow)

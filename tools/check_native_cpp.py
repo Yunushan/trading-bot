@@ -8,6 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from audit_native_source_sync import audit_native_source_sync
+except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.audit_native_source_sync import audit_native_source_sync
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -130,19 +135,42 @@ def check_native_cpp(
     timeout: int,
 ) -> dict[str, object]:
     root = _repo_root()
+    native_source_sync = audit_native_source_sync()
+    base_report: dict[str, object] = {
+        "build_dir": str(build_dir),
+        "native_source_sync": native_source_sync,
+    }
+    if not bool(native_source_sync.get("ok")):
+        return {
+            **base_report,
+            "ok": False,
+            "steps": [],
+            "remediation": (
+                "Regenerate Python-owned native contracts before running native C++ checks: "
+                "python Languages/Python/tools/generate_native_parity_contracts.py"
+            ),
+        }
     cmake = shutil.which("cmake")
     ctest = shutil.which("ctest")
+    toolchain = {
+        "cmake": cmake or "",
+        "ctest": ctest or "",
+        "cmake_found": bool(cmake),
+        "ctest_found": bool(ctest),
+    }
     if not cmake:
         return {
+            **base_report,
             "ok": False,
-            "build_dir": str(build_dir),
+            "toolchain": toolchain,
             "steps": [],
             "remediation": "Install CMake before running native C++ checks.",
         }
     if not ctest:
         return {
+            **base_report,
             "ok": False,
-            "build_dir": str(build_dir),
+            "toolchain": toolchain,
             "steps": [],
             "remediation": "Install CTest/CMake before running native C++ checks.",
         }
@@ -196,13 +224,14 @@ def check_native_cpp(
     steps.append(_run_step("test", tests, cwd=root, timeout=timeout))
     ok = all(bool(step.get("ok")) for step in steps)
     report: dict[str, object] = {
+        **base_report,
         "ok": ok,
-        "build_dir": str(build_dir),
         "config": config,
         "enable_qt_deploy_script": enable_qt_deploy_script,
         "require_webengine": require_webengine,
         "smoke_targets_only": smoke_targets_only,
         "qt_version": qt_version or "",
+        "toolchain": toolchain,
         "steps": steps,
     }
     if not ok:
@@ -264,6 +293,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(f"native C++ check: {'ok' if report['ok'] else 'failed'}")
+        native_source_sync = report.get("native_source_sync")
+        if isinstance(native_source_sync, dict):
+            status = "ok" if native_source_sync.get("ok") else "failed"
+            print(f"- native source sync: {status}")
+            for issue in native_source_sync.get("issues", []):
+                print(f"  - {issue}")
         for step in report["steps"]:
             status = "ok" if step["ok"] else "failed"
             print(f"- {step['name']}: {status}")

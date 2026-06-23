@@ -66,7 +66,10 @@ evidence before a PR exists.
   `python Languages/Python/tools/generate_native_parity_contracts.py`. The audit
   reports expected and actual SHA-256 values for each generated Rust, C++, and
   Tauri artifact and verifies that each artifact embeds the current Python
-  contract hash.
+  contract hash. `tools/check_native_cpp.py` also runs this source-sync audit
+  before any CMake configure/build/test work, so stale Python-owned generated
+  contracts block the native C++ health gate even when the local C++ toolchain
+  is otherwise available.
 - Rust native runtime promotion is controlled by
   `docs/rust-native-runtime-evidence.json` and
   `tools/check_rust_native_runtime_evidence.py`. The schema check belongs in
