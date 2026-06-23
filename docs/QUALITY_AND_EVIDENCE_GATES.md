@@ -134,9 +134,10 @@ diff whitespace.
   artifact bundle cannot be accidentally treated as the required live or release
   proof.
   The manual live-smoke and release-evidence workflows also upload post-run
-  plan artifacts with `always()` after checkout/tooling reaches the plan step,
-  so operators can see the remaining promotion blockers even when a subset
-  evidence collection attempt fails before validation finishes.
+  plan artifacts with `always()` after checkout/tooling reaches the plan step.
+  Those workflow runbooks use `--release-missing-limit 0`, so operators can see
+  every remaining release-platform target and promotion blocker even when a
+  subset evidence collection attempt fails before validation finishes.
   After the live-smoke and release-evidence workflow artifacts exist for the
   candidate commit, operators can run
   `.github/workflows/rust-native-promotion-audit.yml` with those two Actions run
@@ -178,7 +179,10 @@ diff whitespace.
   `rust-native-live-market-data-smoke.json` and
   `rust-native-live-account-read-smoke.json`, uploads them as artifacts, and
   uploads a post-smoke `rust-native-live-smoke-evidence-plan` runbook artifact
-  on both successful and failed smoke attempts once the plan step can run.
+  on both successful and failed smoke attempts once the plan step can run. That
+  post-smoke runbook uses `--release-missing-limit 0` so a failed signed smoke
+  attempt still names every remaining release-platform target and dispatch
+  command.
   Live-smoke artifacts must include both endpoint rows and operation-level
   suite rows: market data evidence must prove symbols, klines, and ticker price
   fetches; signed account evidence must prove position mode, multi-assets mode,

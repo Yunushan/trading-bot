@@ -114,6 +114,7 @@ jobs:
           python tools/audit_rust_native_runtime_readiness.py \
             --json \
             --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --release-missing-limit 0 \
             --write-evidence-plan "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/rust-native-runtime-evidence-plan.md"
 
       - name: Upload signed account-read smoke evidence

@@ -134,10 +134,11 @@ workflow with the desired testnet flag, symbol, and interval, and download the
 first, executes `--native-live-smoke`, validates only the two live-smoke
 artifacts, and uploads `rust-native-live-market-data-smoke.json` plus
 `rust-native-live-account-read-smoke.json`. It also uploads
-`rust-native-live-smoke-evidence-plan`, a post-smoke runbook showing remaining
-promotion blockers for that source revision. The plan upload uses `always()`
-and `if-no-files-found: warn`, so a failed smoke attempt still leaves the
-operator runbook when checkout and Python tooling reached the plan step.
+`rust-native-live-smoke-evidence-plan`, a post-smoke runbook showing every
+remaining release-platform target and promotion blocker for that source
+revision. The plan upload uses `always()` and `if-no-files-found: warn`, so a
+failed smoke attempt still leaves the operator runbook when checkout and Python
+tooling reached the plan step.
 
 Those artifacts are valid only when they include the expected endpoint rows and
 operation-level suite results. Market data evidence must prove USDT symbol,
@@ -323,7 +324,7 @@ collection plan:
 
 ```bash
 python tools/audit_native_source_sync.py --json
-python tools/audit_rust_native_runtime_readiness.py --json --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md
+python tools/audit_rust_native_runtime_readiness.py --json --release-missing-limit 0 --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md
 ```
 
 The main CI workflow writes and uploads the same

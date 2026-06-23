@@ -87,6 +87,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
             "Write post-smoke Rust native runtime evidence plan",
             "if: ${{ always() }}",
             'mkdir -p "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"',
+            "--release-missing-limit 0",
             "--write-evidence-plan",
             "name: rust-native-live-smoke-evidence",
             "rust-native-live-market-data-smoke.json",

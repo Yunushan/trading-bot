@@ -821,6 +821,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("if: ${{ always() }}", rust_live_smoke_workflow)
         self.assertIn('mkdir -p "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}"', rust_live_smoke_workflow)
         self.assertIn("--write-evidence-plan", rust_live_smoke_workflow)
+        self.assertIn("--release-missing-limit 0", rust_live_smoke_workflow)
         self.assertIn("rust-native-live-smoke-evidence-plan", rust_live_smoke_workflow)
         self.assertIn("if-no-files-found: warn", rust_live_smoke_workflow)
         self.assertIn("actions/upload-artifact@v7", rust_live_smoke_workflow)
