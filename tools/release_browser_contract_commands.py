@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 
 SUPPORTED_BROWSER_CONTRACT_COMMANDS = {
@@ -67,25 +70,116 @@ def builtin_browser_contract_targets_for_host(targets: list[dict[str, Any]], hos
     ]
 
 
-def browser_contract_command_args(target: dict[str, Any], *, npm_executable: str | Path) -> list[str] | None:
+def browser_contract_command_args(
+    target: dict[str, Any],
+    *,
+    npm_executable: str | Path | None = None,
+    node_executable: str | Path | None = None,
+) -> list[str] | None:
     browser = browser_name_from_target(target)
     if browser not in SUPPORTED_BROWSER_CONTRACT_COMMANDS:
         return None
-    return [
-        str(npm_executable),
-        "--prefix",
-        "apps/web-dashboard",
-        "run",
-        "test:browser",
-        "--",
-        f"--browser={browser}",
-    ]
+    if npm_executable:
+        return [
+            str(npm_executable),
+            "--prefix",
+            "apps/web-dashboard",
+            "run",
+            "test:browser",
+            "--",
+            f"--browser={browser}",
+        ]
+    if node_executable:
+        return [
+            str(node_executable),
+            "apps/web-dashboard/tests/browser-contract.test.mjs",
+            f"--browser={browser}",
+        ]
+    return None
+
+
+def browser_contract_tool(
+    *,
+    environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    platform_name: str | None = None,
+    path_is_file: Callable[[Path], bool] | None = None,
+    path_is_executable: Callable[[Path], bool] | None = None,
+) -> dict[str, Any]:
+    platform_name = platform_name or sys.platform
+    environ = environ or os.environ
+    which = which or shutil.which
+    path_is_file = path_is_file or (lambda path: path.is_file())
+    path_is_executable = path_is_executable or (
+        lambda path: True if platform_name == "win32" else os.access(path, os.X_OK)
+    )
+    npm_name = "npm.cmd" if platform_name == "win32" else "npm"
+    node_name = "node.exe" if platform_name == "win32" else "node"
+
+    npm = which(npm_name)
+    if npm:
+        return {
+            "kind": "npm",
+            "required_tool": npm_name,
+            "executable": npm,
+            "npm_available": True,
+            "tool_available": True,
+            "unavailable_reason": "",
+        }
+
+    node_env = str(environ.get("TB_BROWSER_NODE_EXECUTABLE") or "").strip()
+    if node_env:
+        node_path = Path(node_env).expanduser()
+        if path_is_file(node_path) and path_is_executable(node_path):
+            return {
+                "kind": "node",
+                "required_tool": "TB_BROWSER_NODE_EXECUTABLE",
+                "executable": str(node_path),
+                "npm_available": False,
+                "tool_available": True,
+                "unavailable_reason": "",
+            }
+        return {
+            "kind": "",
+            "required_tool": "TB_BROWSER_NODE_EXECUTABLE",
+            "executable": node_env,
+            "npm_available": False,
+            "tool_available": False,
+            "unavailable_reason": (
+                "TB_BROWSER_NODE_EXECUTABLE must point to an existing executable Node.js file"
+            ),
+        }
+
+    node = which(node_name)
+    if node:
+        return {
+            "kind": "node",
+            "required_tool": node_name,
+            "executable": node,
+            "npm_available": False,
+            "tool_available": True,
+            "unavailable_reason": "",
+        }
+    return {
+        "kind": "",
+        "required_tool": f"{npm_name} or {node_name}",
+        "executable": "",
+        "npm_available": False,
+        "tool_available": False,
+        "unavailable_reason": (
+            f"{npm_name} or {node_name} is not on PATH; "
+            "set TB_BROWSER_NODE_EXECUTABLE to a Node.js executable"
+        ),
+    }
 
 
 def browser_contract_missing_command_message(target: dict[str, Any]) -> str:
     browser = browser_name_from_target(target)
     if browser in SUPPORTED_BROWSER_CONTRACT_COMMANDS:
-        return f"npm is not on PATH; cannot run {browser} browser contract command."
+        return (
+            f"npm or node is not on PATH; cannot run {browser} browser contract command. "
+            "Set TB_BROWSER_NODE_EXECUTABLE to a Node.js executable for the direct Node harness."
+        )
     if browser:
         return f"Set TB_BROWSER_TEST_COMMAND to the real {browser} browser contract command for this target."
     return "Set TB_BROWSER_TEST_COMMAND to the real browser contract command for this target."

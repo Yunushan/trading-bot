@@ -861,10 +861,14 @@ class ProductPackagingContractTests(unittest.TestCase):
         service_contract_test_script = (
             dashboard_dir / "tests" / "service-contract.test.mjs"
         ).read_text(encoding="utf-8")
+        browser_contract_test_script = (
+            dashboard_dir / "tests" / "browser-contract.test.mjs"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("node tests/render-preflight.test.mjs", package_json)
         self.assertIn("node tests/auth-storage-stream.test.mjs", package_json)
         self.assertIn("node tests/service-contract.test.mjs", package_json)
+        self.assertIn("node tests/browser-contract.test.mjs", package_json)
         self.assertIn("await import(\"../modules/render.js\")", test_script)
         self.assertIn("blocked start disables the Request Lifecycle Start button", test_script)
         self.assertIn("idle live preflight keeps Request Lifecycle Start ready", test_script)
@@ -879,6 +883,9 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("dashboard stream helper sends auth header without query token", auth_test_script)
         self.assertIn("serviceApiRoute", service_contract_test_script)
         self.assertIn("Unknown service API route", service_contract_test_script)
+        self.assertIn("--edge-skip-compat-layer-relaunch", browser_contract_test_script)
+        self.assertIn('browser === "edge" ? ["--headless=new", "--headless"]', browser_contract_test_script)
+        self.assertIn("maxRetries: 5", browser_contract_test_script)
 
     def test_service_api_contract_artifact_matches_python_constants(self):
         contract_path = REPO_ROOT / "apps" / "service-api" / "contracts" / "service-api-contract.json"

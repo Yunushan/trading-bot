@@ -129,6 +129,26 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
     )
     market_write_guard_ok = bool(market_source_control_write_guard.get("ok"))
     account_write_guard_ok = bool(account_source_control_write_guard.get("ok"))
+    market_missing_prerequisites = []
+    if not source_tree_clean:
+        market_missing_prerequisites.append("clean source tree")
+    if not market_confirmed:
+        market_missing_prerequisites.append("TRADING_BOT_RUST_MARKET_SMOKE=1")
+    if not market_write_guard_ok:
+        market_missing_prerequisites.append("generated evidence write guard")
+
+    account_missing_prerequisites = []
+    if not source_tree_clean:
+        account_missing_prerequisites.append("clean source tree")
+    if not api_key_present:
+        account_missing_prerequisites.append("BINANCE_API_KEY")
+    if not api_secret_present:
+        account_missing_prerequisites.append("BINANCE_API_SECRET")
+    if not confirmed:
+        account_missing_prerequisites.append("TRADING_BOT_RUST_LIVE_SMOKE=1")
+    if not account_write_guard_ok:
+        account_missing_prerequisites.append("generated evidence write guard")
+
     return {
         "binance_api_key_present": api_key_present,
         "binance_api_secret_present": api_secret_present,
@@ -140,6 +160,8 @@ def _live_smoke_prerequisites(evidence_dir: Path, *, source_tree_clean: bool = T
             source_tree_clean and api_key_present and api_secret_present and confirmed and account_write_guard_ok
         ),
         "can_run_market_smoke": source_tree_clean and market_confirmed and market_write_guard_ok,
+        "market_missing_prerequisites": market_missing_prerequisites,
+        "account_missing_prerequisites": account_missing_prerequisites,
         "market_source_control_write_guard": market_source_control_write_guard,
         "account_source_control_write_guard": account_source_control_write_guard,
         "market_command": (
@@ -184,6 +206,9 @@ def _release_evidence_prerequisites(root: Path) -> dict[str, Any]:
             "-f platform_evidence_run_id=<actions-run-id>"
         ),
     }
+    release_missing_prerequisites: list[str] = []
+    if not result["release_tag_configured"]:
+        release_missing_prerequisites.append("TRADING_BOT_RELEASE_TAG")
     try:
         preflight = preflight_release_evidence_inputs(
             tag=release_tag,
@@ -199,9 +224,24 @@ def _release_evidence_prerequisites(root: Path) -> dict[str, Any]:
             {
                 "release_platform_preflight_ok": False,
                 "release_platform_preflight_issues": [f"release evidence preflight failed: {exc}"],
+                "release_missing_prerequisites": release_missing_prerequisites + ["release evidence preflight"],
             }
         )
         return result
+
+    preflight_issues = [str(issue) for issue in preflight.get("issues") or []]
+    preflight_prerequisite_start = len(release_missing_prerequisites)
+    if not bool(preflight.get("source_tree_clean")):
+        release_missing_prerequisites.append("clean source tree")
+    if int(preflight.get("missing_platform_evidence_count") or 0) > 0:
+        release_missing_prerequisites.append("passed release-platform-evidence JSON for every target")
+    if int(preflight.get("invalid_platform_evidence_count") or 0) > 0:
+        release_missing_prerequisites.append("valid release-platform-evidence JSON for present targets")
+    source_control_write_guard = preflight.get("source_control_write_guard") or {}
+    if not bool(source_control_write_guard.get("ok", True)):
+        release_missing_prerequisites.append("generated evidence write guard")
+    if preflight_issues and len(release_missing_prerequisites) == preflight_prerequisite_start:
+        release_missing_prerequisites.append("release evidence preflight issues")
 
     result.update(
         {
@@ -221,8 +261,9 @@ def _release_evidence_prerequisites(root: Path) -> dict[str, Any]:
             "missing_platform_evidence": list(preflight.get("missing_platform_evidence") or []),
             "missing_platform_evidence_plan": list(preflight.get("missing_platform_evidence_plan") or []),
             "local_browser_batch_plan": dict(preflight.get("local_browser_batch_plan") or {}),
-            "source_control_write_guard": preflight.get("source_control_write_guard") or {},
-            "release_platform_preflight_issues": list(preflight.get("issues") or []),
+            "source_control_write_guard": source_control_write_guard,
+            "release_platform_preflight_issues": preflight_issues,
+            "release_missing_prerequisites": release_missing_prerequisites,
         }
     )
     return result
@@ -254,6 +295,7 @@ def _collection_row(
     required_environment: list[str] | None = None,
     required_inputs: list[str] | None = None,
     required_runtime_ids: list[str] | None = None,
+    missing_prerequisites: list[str] | None = None,
     safety: dict[str, Any] | None = None,
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -276,6 +318,7 @@ def _collection_row(
         "required_runtime_ids": required_runtime_ids,
         "required_environment": list(required_environment or []),
         "required_inputs": list(required_inputs or []),
+        "missing_prerequisites": [str(item) for item in missing_prerequisites or []],
         "safety": dict(safety or {}),
         "details": dict(details or {}),
         "issues": [str(issue) for issue in status.get("issues", [])],
@@ -296,6 +339,9 @@ def _evidence_collection_plan(
         if evidence_id == LIVE_MARKET_EVIDENCE_ID:
             market_guard = dict(live_smoke_prerequisites.get("market_source_control_write_guard") or {})
             source_tree_clean = bool(live_smoke_prerequisites.get("source_tree_clean"))
+            market_missing_prerequisites = [
+                str(item) for item in live_smoke_prerequisites.get("market_missing_prerequisites") or []
+            ]
             rows.append(
                 _collection_row(
                     evidence_id=evidence_id,
@@ -308,6 +354,7 @@ def _evidence_collection_plan(
                     github_workflow=str(live_smoke_prerequisites.get("github_workflow") or ""),
                     required_environment=["TRADING_BOT_RUST_MARKET_SMOKE=1", "BINANCE_TESTNET=true"],
                     required_runtime_ids=[LIVE_MARKET_EVIDENCE_ID],
+                    missing_prerequisites=market_missing_prerequisites,
                     safety={
                         "read_only": True,
                         "requires_credentials": False,
@@ -315,6 +362,7 @@ def _evidence_collection_plan(
                     },
                     details={
                         "source_tree_clean": source_tree_clean,
+                        "missing_prerequisites": market_missing_prerequisites,
                         "source_control_write_guard": market_guard,
                     },
                 )
@@ -327,6 +375,9 @@ def _evidence_collection_plan(
         elif evidence_id == LIVE_ACCOUNT_EVIDENCE_ID:
             account_guard = dict(live_smoke_prerequisites.get("account_source_control_write_guard") or {})
             source_tree_clean = bool(live_smoke_prerequisites.get("source_tree_clean"))
+            account_missing_prerequisites = [
+                str(item) for item in live_smoke_prerequisites.get("account_missing_prerequisites") or []
+            ]
             rows.append(
                 _collection_row(
                     evidence_id=evidence_id,
@@ -344,6 +395,7 @@ def _evidence_collection_plan(
                         "BINANCE_TESTNET=true",
                     ],
                     required_runtime_ids=[LIVE_MARKET_EVIDENCE_ID, LIVE_ACCOUNT_EVIDENCE_ID],
+                    missing_prerequisites=account_missing_prerequisites,
                     safety={
                         "read_only": True,
                         "requires_credentials": True,
@@ -356,6 +408,7 @@ def _evidence_collection_plan(
                         "live_smoke_confirmation_present": bool(
                             live_smoke_prerequisites.get("live_smoke_confirmation_present")
                         ),
+                        "missing_prerequisites": account_missing_prerequisites,
                         "source_control_write_guard": account_guard,
                     },
                 )
@@ -402,12 +455,16 @@ def _evidence_collection_plan(
             release_preflight_issues = [
                 str(issue) for issue in release_evidence_prerequisites.get("release_platform_preflight_issues", [])
             ]
+            release_missing_prerequisites = [
+                str(item) for item in release_evidence_prerequisites.get("release_missing_prerequisites", [])
+            ]
             rows.append(
                 _collection_row(
                     evidence_id=evidence_id,
                     status=status,
                     collection_kind="release_platform_evidence",
-                    prerequisites_ok=bool(release_evidence_prerequisites.get("release_platform_preflight_ok")),
+                    prerequisites_ok=bool(release_evidence_prerequisites.get("release_platform_preflight_ok"))
+                    and not release_missing_prerequisites,
                     expected_artifact=expected_artifact,
                     local_preflight_command=str(release_evidence_prerequisites.get("preflight_command") or ""),
                     local_command=str(release_evidence_prerequisites.get("command") or ""),
@@ -415,6 +472,7 @@ def _evidence_collection_plan(
                     required_environment=["TRADING_BOT_RELEASE_TAG", "GITHUB_TOKEN or GH_TOKEN"],
                     required_inputs=["Rust release assets", "passed release-platform-evidence JSON for every target"],
                     required_runtime_ids=[RELEASE_EVIDENCE_ID],
+                    missing_prerequisites=release_missing_prerequisites,
                     safety={
                         "read_only": True,
                         "requires_credentials": False,
@@ -427,6 +485,7 @@ def _evidence_collection_plan(
                         "release_platform_preflight_ok": bool(
                             release_evidence_prerequisites.get("release_platform_preflight_ok")
                         ),
+                        "missing_prerequisites": release_missing_prerequisites,
                         "source_tree_clean": bool(release_evidence_prerequisites.get("source_tree_clean")),
                         "missing_platform_evidence_count": int(
                             release_evidence_prerequisites.get("missing_platform_evidence_count") or 0
@@ -898,6 +957,7 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
                 f"- Validation command: {_format_command(row.get('validation_command'))}",
                 f"- Required environment: {_format_markdown_list(row.get('required_environment'))}",
                 f"- Required inputs: {_format_markdown_list(row.get('required_inputs'))}",
+                f"- Missing prerequisites: {_format_markdown_list(row.get('missing_prerequisites'))}",
                 f"- Required runtime evidence ids: {_format_markdown_list(row.get('required_runtime_ids'))}",
                 f"- Import command: {_format_command(row.get('import_command'))}",
             ]
@@ -930,12 +990,33 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
             if details.get("missing_platform_evidence_truncated"):
                 lines.append("  - note: missing target plan is truncated; rerun preflight with `--missing-limit 0` for all targets")
         local_browser_batch = details.get("local_browser_batch_plan")
-        if isinstance(local_browser_batch, dict) and local_browser_batch.get("target_ids"):
+        if isinstance(local_browser_batch, dict) and (
+            local_browser_batch.get("target_ids")
+            or local_browser_batch.get("host_builtin_target_ids")
+            or local_browser_batch.get("unavailable_reason")
+        ):
             lines.append("- Local browser batch:")
             lines.append(f"  - host: `{_format_markdown_value(local_browser_batch.get('host'))}`")
-            lines.append(f"  - targets: {_format_markdown_list(local_browser_batch.get('target_ids'))}")
+            if local_browser_batch.get("required_tool"):
+                lines.append(f"  - required tool: `{_format_markdown_value(local_browser_batch.get('required_tool'))}`")
+            if local_browser_batch.get("tool_kind"):
+                lines.append(f"  - tool kind: `{_format_markdown_value(local_browser_batch.get('tool_kind'))}`")
+            if "tool_available" in local_browser_batch:
+                lines.append(f"  - tool available: {_format_markdown_value(local_browser_batch.get('tool_available'))}")
+            if "npm_available" in local_browser_batch:
+                lines.append(f"  - npm available: {_format_markdown_value(local_browser_batch.get('npm_available'))}")
+            if local_browser_batch.get("host_builtin_target_ids"):
+                lines.append(
+                    f"  - host built-in targets: {_format_markdown_list(local_browser_batch.get('host_builtin_target_ids'))}"
+                )
+            lines.append(f"  - runnable targets: {_format_markdown_list(local_browser_batch.get('target_ids'))}")
+            if local_browser_batch.get("unavailable_reason"):
+                lines.append(
+                    f"  - unavailable reason: {_format_markdown_value(local_browser_batch.get('unavailable_reason'))}"
+                )
             lines.append(f"  - list: {_format_command(local_browser_batch.get('list_command'))}")
-            lines.append(f"  - run: {_format_command(local_browser_batch.get('batch_command'))}")
+            if local_browser_batch.get("target_ids"):
+                lines.append(f"  - run: {_format_command(local_browser_batch.get('batch_command'))}")
             for command in local_browser_batch.get("validation_commands", []):
                 lines.append(f"  - validation: {_format_command(command)}")
             if local_browser_batch.get("partial_evidence_only"):

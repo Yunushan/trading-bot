@@ -41,6 +41,12 @@ def _run_manual_smoke_with_mocked_healthcheck(*args: str) -> tuple[int, str, str
 
 
 class ManualSmokeScriptTests(unittest.TestCase):
+    def test_manual_smoke_default_timeout_covers_slow_service_startup(self):
+        module = _load_manual_smoke_module()
+
+        self.assertGreaterEqual(module.DEFAULT_TIMEOUT_SECONDS, 60.0)
+        self.assertEqual(module.DEFAULT_TIMEOUT_SECONDS, module._build_parser().get_default("timeout"))
+
     def test_manual_smoke_cli_runs_non_http_checks_as_json(self):
         returncode, stdout, stderr = _run_manual_smoke_with_mocked_healthcheck("--skip-http", "--json")
 

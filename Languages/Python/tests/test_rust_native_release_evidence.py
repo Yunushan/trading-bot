@@ -416,6 +416,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertFalse(result["can_run_market_smoke"])
         self.assertFalse(result["can_run_live_smoke"])
+        self.assertEqual(["generated evidence write guard"], result["market_missing_prerequisites"])
+        self.assertEqual(["generated evidence write guard"], result["account_missing_prerequisites"])
         self.assertEqual(guard, result["market_source_control_write_guard"])
         self.assertEqual(guard, result["account_source_control_write_guard"])
 
@@ -448,6 +450,71 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(result["source_tree_clean"])
         self.assertFalse(result["can_run_market_smoke"])
         self.assertFalse(result["can_run_live_smoke"])
+        self.assertEqual(["clean source tree"], result["market_missing_prerequisites"])
+        self.assertEqual(["clean source tree"], result["account_missing_prerequisites"])
+
+    def test_readiness_live_smoke_prerequisites_report_missing_operator_inputs(self):
+        guard = {
+            "ok": True,
+            "generated_evidence_write_targets": [],
+            "tracked_generated_evidence_write_targets": [],
+            "issues": [],
+        }
+
+        with (
+            patch.dict(runtime_readiness.os.environ, {}, clear=True),
+            patch.object(runtime_readiness, "generated_evidence_write_guard", return_value=guard),
+        ):
+            result = runtime_readiness._live_smoke_prerequisites(
+                REPO_ROOT / "artifacts" / "rust-native-runtime-evidence",
+                source_tree_clean=False,
+            )
+
+        self.assertFalse(result["can_run_market_smoke"])
+        self.assertFalse(result["can_run_live_smoke"])
+        self.assertEqual(
+            ["clean source tree", "TRADING_BOT_RUST_MARKET_SMOKE=1"],
+            result["market_missing_prerequisites"],
+        )
+        self.assertEqual(
+            [
+                "clean source tree",
+                "BINANCE_API_KEY",
+                "BINANCE_API_SECRET",
+                "TRADING_BOT_RUST_LIVE_SMOKE=1",
+            ],
+            result["account_missing_prerequisites"],
+        )
+
+    def test_readiness_live_smoke_prerequisites_clear_when_all_inputs_are_present(self):
+        guard = {
+            "ok": True,
+            "generated_evidence_write_targets": [],
+            "tracked_generated_evidence_write_targets": [],
+            "issues": [],
+        }
+
+        with (
+            patch.dict(
+                runtime_readiness.os.environ,
+                {
+                    "TRADING_BOT_RUST_MARKET_SMOKE": "1",
+                    "TRADING_BOT_RUST_LIVE_SMOKE": "1",
+                    "BINANCE_API_KEY": "test-key",
+                    "BINANCE_API_SECRET": "test-secret",
+                },
+                clear=True,
+            ),
+            patch.object(runtime_readiness, "generated_evidence_write_guard", return_value=guard),
+        ):
+            result = runtime_readiness._live_smoke_prerequisites(
+                REPO_ROOT / "artifacts" / "rust-native-runtime-evidence"
+            )
+
+        self.assertTrue(result["can_run_market_smoke"])
+        self.assertTrue(result["can_run_live_smoke"])
+        self.assertEqual([], result["market_missing_prerequisites"])
+        self.assertEqual([], result["account_missing_prerequisites"])
 
     def test_release_asset_fetch_uses_windows_cert_store_fallback_for_ssl_errors(self):
         fallback_payload = {
@@ -852,6 +919,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 patch.object(release_evidence, "_load_json", return_value={"schema_version": 1}),
                 patch.object(release_evidence, "_validate_matrix", return_value=(platform_targets, browser_targets, [])),
                 patch.object(release_evidence, "_source_tree_clean", return_value=True),
+                patch.object(release_evidence.shutil, "which", return_value="npm.cmd"),
                 patch.object(
                     release_evidence,
                     "_observed_platform",
@@ -912,8 +980,15 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("gh workflow run release-platform-real-tests.yml", workflow_example)
         self.assertNotIn("browser_test_command", workflow_example)
         self.assertEqual("windows-11-x64", result["local_browser_batch_plan"]["host"])
+        self.assertEqual("npm.cmd", result["local_browser_batch_plan"]["required_tool"])
+        self.assertEqual("npm", result["local_browser_batch_plan"]["tool_kind"])
+        self.assertTrue(result["local_browser_batch_plan"]["tool_available"])
+        self.assertTrue(result["local_browser_batch_plan"]["npm_available"])
+        self.assertEqual(["browser-chrome-windows-11-x64"], result["local_browser_batch_plan"]["host_builtin_target_ids"])
+        self.assertEqual(1, result["local_browser_batch_plan"]["host_builtin_target_count"])
         self.assertEqual(["browser-chrome-windows-11-x64"], result["local_browser_batch_plan"]["target_ids"])
         self.assertEqual(1, result["local_browser_batch_plan"]["target_count"])
+        self.assertEqual("", result["local_browser_batch_plan"]["unavailable_reason"])
         self.assertIn("--list-local-browser-targets", result["local_browser_batch_plan"]["list_command"])
         self.assertIn("--local-browser-targets", result["local_browser_batch_plan"]["batch_command"])
         self.assertIn("--require-clean-source", result["local_browser_batch_plan"]["batch_command"])
@@ -924,6 +999,134 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(result["local_browser_batch_plan"]["partial_evidence_only"])
         self.assertTrue(result["local_browser_batch_plan"]["remaining_matrix_targets_still_required"])
         self.assertIn("--preflight", result["preflight_command"])
+
+    def test_release_evidence_local_browser_batch_plan_reports_missing_browser_tool(self):
+        browser_targets = [
+            {
+                "id": "browser-chrome-windows-11-x64",
+                "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
+                "runner_kind": "real-browser-or-browser-lab",
+                "test_suites": ["browser-contract"],
+            }
+        ]
+
+        with (
+            patch.dict(release_evidence.os.environ, {}, clear=True),
+            patch.object(release_evidence.shutil, "which", return_value=None),
+            patch.object(
+                release_evidence,
+                "_observed_platform",
+                return_value={
+                    "system": "Windows",
+                    "release": "11",
+                    "normalized_architecture": "x64",
+                },
+            ),
+        ):
+            plan = release_evidence._local_browser_batch_plan(browser_targets)
+
+        self.assertEqual("windows-11-x64", plan["host"])
+        self.assertEqual("npm.cmd or node.exe", plan["required_tool"])
+        self.assertEqual("", plan["tool_kind"])
+        self.assertFalse(plan["tool_available"])
+        self.assertFalse(plan["npm_available"])
+        self.assertEqual(["browser-chrome-windows-11-x64"], plan["host_builtin_target_ids"])
+        self.assertEqual(1, plan["host_builtin_target_count"])
+        self.assertEqual(0, plan["target_count"])
+        self.assertEqual([], plan["target_ids"])
+        self.assertEqual(
+            "npm.cmd or node.exe is not on PATH; set TB_BROWSER_NODE_EXECUTABLE to a Node.js executable",
+            plan["unavailable_reason"],
+        )
+        self.assertIn("--list-local-browser-targets", plan["list_command"])
+
+    def test_release_evidence_local_browser_batch_plan_uses_node_env_fallback(self):
+        browser_targets = [
+            {
+                "id": "browser-chrome-windows-11-x64",
+                "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
+                "runner_kind": "real-browser-or-browser-lab",
+                "test_suites": ["browser-contract"],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            node_path = Path(temp_dir) / "node.exe"
+            node_path.write_text("", encoding="utf-8")
+            node_path.chmod(0o755)
+
+            with (
+                patch.dict(release_evidence.os.environ, {"TB_BROWSER_NODE_EXECUTABLE": str(node_path)}, clear=True),
+                patch.object(release_evidence.shutil, "which", return_value=None),
+                patch.object(
+                    release_evidence,
+                    "_observed_platform",
+                    return_value={
+                        "system": "Windows",
+                        "release": "11",
+                        "normalized_architecture": "x64",
+                    },
+                ),
+            ):
+                plan = release_evidence._local_browser_batch_plan(browser_targets)
+
+        self.assertEqual("windows-11-x64", plan["host"])
+        self.assertEqual("TB_BROWSER_NODE_EXECUTABLE", plan["required_tool"])
+        self.assertEqual("node", plan["tool_kind"])
+        self.assertTrue(plan["tool_available"])
+        self.assertFalse(plan["npm_available"])
+        self.assertEqual(["browser-chrome-windows-11-x64"], plan["target_ids"])
+        self.assertEqual(1, plan["target_count"])
+        self.assertEqual("", plan["unavailable_reason"])
+
+    def test_release_evidence_local_browser_batch_plan_rejects_missing_node_env_fallback(self):
+        browser_targets = [
+            {
+                "id": "browser-chrome-windows-11-x64",
+                "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
+                "runner_kind": "real-browser-or-browser-lab",
+                "test_suites": ["browser-contract"],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_node = Path(temp_dir) / "missing-node.exe"
+            with (
+                patch.dict(
+                    release_evidence.os.environ,
+                    {"TB_BROWSER_NODE_EXECUTABLE": str(missing_node)},
+                    clear=True,
+                ),
+                patch.object(release_evidence.shutil, "which", return_value=None),
+                patch.object(
+                    release_evidence,
+                    "_observed_platform",
+                    return_value={
+                        "system": "Windows",
+                        "release": "11",
+                        "normalized_architecture": "x64",
+                    },
+                ),
+            ):
+                plan = release_evidence._local_browser_batch_plan(browser_targets)
+
+        self.assertEqual("windows-11-x64", plan["host"])
+        self.assertEqual("TB_BROWSER_NODE_EXECUTABLE", plan["required_tool"])
+        self.assertEqual("", plan["tool_kind"])
+        self.assertFalse(plan["tool_available"])
+        self.assertFalse(plan["npm_available"])
+        self.assertEqual([], plan["target_ids"])
+        self.assertEqual(0, plan["target_count"])
+        self.assertEqual(
+            "TB_BROWSER_NODE_EXECUTABLE must point to an existing executable Node.js file",
+            plan["unavailable_reason"],
+        )
 
     def test_release_evidence_preflight_blocks_dirty_source_without_network(self):
         tag = "v1.2.3"
@@ -988,6 +1191,21 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn(
             "<real firefox browser contract command from external lab>",
             firefox_plan["workflow_dispatch_example"],
+        )
+
+    def test_browser_contract_command_args_support_direct_node_harness(self):
+        command = release_evidence.browser_contract_command_args(
+            {"id": "browser-chrome-windows-11-x64", "browser": "chrome"},
+            node_executable="C:\\Node\\node.exe",
+        )
+
+        self.assertEqual(
+            [
+                "C:\\Node\\node.exe",
+                "apps/web-dashboard/tests/browser-contract.test.mjs",
+                "--browser=chrome",
+            ],
+            command,
         )
 
     def test_readiness_audit_release_prerequisites_include_preflight_coverage(self):
@@ -1059,6 +1277,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--require-current-commit", result["missing_platform_evidence_plan"][0]["target_validation_command"])
         self.assertIn("--require-clean-source", result["missing_platform_evidence_plan"][0]["target_validation_command"])
         self.assertIn("98 of 99", result["release_platform_preflight_issues"][0])
+        self.assertEqual(
+            [
+                "passed release-platform-evidence JSON for every target",
+                "valid release-platform-evidence JSON for present targets",
+            ],
+            result["release_missing_prerequisites"],
+        )
         self.assertEqual("v9.9.9", preflight.call_args.kwargs["tag"])
         self.assertEqual(10, preflight.call_args.kwargs["missing_limit"])
 
@@ -1698,6 +1923,8 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             "binance_api_key_present": True,
             "binance_api_secret_present": True,
             "live_smoke_confirmation_present": True,
+            "market_missing_prerequisites": ["TRADING_BOT_RUST_MARKET_SMOKE=1"],
+            "account_missing_prerequisites": [],
         }
         release_prerequisites = {
             "release_platform_preflight_ok": False,
@@ -1722,8 +1949,15 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             ],
             "local_browser_batch_plan": {
                 "host": "windows-11-x64",
+                "required_tool": "npm.cmd",
+                "tool_kind": "npm",
+                "tool_available": True,
+                "npm_available": True,
+                "host_builtin_target_count": 2,
+                "host_builtin_target_ids": ["browser-chrome-windows-11-x64", "browser-edge-windows-11-x64"],
                 "target_count": 2,
                 "target_ids": ["browser-chrome-windows-11-x64", "browser-edge-windows-11-x64"],
+                "unavailable_reason": "",
                 "list_command": "python tools/run_release_platform_probe.py --list-local-browser-targets",
                 "batch_command": (
                     "python tools/run_release_platform_probe.py "
@@ -1740,6 +1974,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 "remaining_matrix_targets_still_required": True,
             },
             "release_asset_presence_verified": False,
+            "release_missing_prerequisites": [
+                "TRADING_BOT_RELEASE_TAG",
+                "passed release-platform-evidence JSON for every target",
+            ],
         }
 
         with (
@@ -1781,8 +2019,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertEqual("passed", market_row["status"])
         self.assertFalse(market_row["ready_to_collect"])
+        self.assertEqual(["TRADING_BOT_RUST_MARKET_SMOKE=1"], market_row["missing_prerequisites"])
+        self.assertEqual(
+            ["TRADING_BOT_RUST_MARKET_SMOKE=1"],
+            market_row["details"]["missing_prerequisites"],
+        )
         self.assertEqual("live_signed_account_read_smoke", account_row["collection_kind"])
         self.assertTrue(account_row["ready_to_collect"])
+        self.assertEqual([], account_row["missing_prerequisites"])
         self.assertEqual("account preflight", account_row["local_preflight_command"])
         self.assertEqual("account command", account_row["local_command"])
         self.assertIn("BINANCE_API_KEY", account_row["required_environment"])
@@ -1813,6 +2057,20 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
         self.assertEqual("release_platform_evidence", release_row["collection_kind"])
         self.assertFalse(release_row["ready_to_collect"])
+        self.assertEqual(
+            [
+                "TRADING_BOT_RELEASE_TAG",
+                "passed release-platform-evidence JSON for every target",
+            ],
+            release_row["missing_prerequisites"],
+        )
+        self.assertEqual(
+            [
+                "TRADING_BOT_RELEASE_TAG",
+                "passed release-platform-evidence JSON for every target",
+            ],
+            release_row["details"]["missing_prerequisites"],
+        )
         self.assertEqual("release preflight", release_row["local_preflight_command"])
         self.assertIn("Rust release assets", release_row["required_inputs"])
         self.assertIn("passed release-platform-evidence JSON for every target", release_row["required_inputs"])
@@ -1848,15 +2106,27 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("rust-native-live-account-read-smoke", markdown)
         self.assertIn("account preflight", markdown)
         self.assertIn("account command", markdown)
+        self.assertIn("Missing prerequisites: `TRADING_BOT_RUST_MARKET_SMOKE=1`", markdown)
         self.assertIn("read_only=true", markdown)
         self.assertIn("requires_credentials=true", markdown)
         self.assertIn("release preflight", markdown)
+        self.assertIn(
+            "Missing prerequisites: `TRADING_BOT_RELEASE_TAG`, "
+            "`passed release-platform-evidence JSON for every target`",
+            markdown,
+        )
         self.assertIn("Source tree clean: true", markdown)
         self.assertIn("Validation command", markdown)
         self.assertIn("--require-current-commit", markdown)
         self.assertIn("browser-chrome-windows-11-x64", markdown)
         self.assertIn("gh workflow run release-platform-real-tests.yml", markdown)
         self.assertIn("Local browser batch", markdown)
+        self.assertIn("required tool: `npm.cmd`", markdown)
+        self.assertIn("tool kind: `npm`", markdown)
+        self.assertIn("tool available: true", markdown)
+        self.assertIn("npm available: true", markdown)
+        self.assertIn("host built-in targets", markdown)
+        self.assertIn("runnable targets", markdown)
         self.assertIn("--local-browser-targets", markdown)
         self.assertIn("browser-edge-windows-11-x64", markdown)
         self.assertIn("missing target plan is truncated", markdown)
@@ -1865,6 +2135,86 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--require-runtime-id rust-native-release-platform-evidence", markdown)
         self.assertIn("## Next Actions", markdown)
         self.assertIn("gh workflow run rust-native-promotion-audit.yml", markdown)
+
+    def test_readiness_evidence_plan_markdown_reports_unavailable_local_browser_batch(self):
+        result = {
+            "promotion_ready": False,
+            "current_commit": "abc123",
+            "runtime_ready_source_state": False,
+            "python_rust_standalone_runtime_ready": False,
+            "runtime_ready_policy_state": False,
+            "remaining_evidence_ids": ["rust-native-release-platform-evidence"],
+            "promotion_model": {
+                "evidence_import_command": "python tools/import_rust_native_evidence_artifacts.py",
+                "github_promotion_audit_workflow_command": "gh workflow run rust-native-promotion-audit.yml",
+                "clean_source_scope": {
+                    "ignored_paths": ["release-platform-evidence"],
+                    "dirty_paths": [],
+                    "untracked_paths": [],
+                },
+            },
+            "promotion_requirements": [],
+            "evidence_collection_plan": [
+                {
+                    "id": "rust-native-release-platform-evidence",
+                    "status": "missing_or_failing",
+                    "collection_kind": "release_platform_evidence",
+                    "ready_to_collect": False,
+                    "expected_artifact": "rust-native-release-platform-evidence.json",
+                    "canonical_path": "artifacts/rust-native-runtime-evidence/rust-native-release-platform-evidence.json",
+                    "local_preflight_command": "python tools/write_rust_native_release_evidence.py --preflight --json",
+                    "local_command": "python tools/write_rust_native_release_evidence.py --tag <tag>",
+                    "github_workflow": "gh workflow run rust-native-release-evidence.yml",
+                    "validation_command": "python tools/check_rust_native_runtime_evidence.py --only rust-native-release-platform-evidence",
+                    "required_environment": [],
+                    "required_inputs": ["Rust release assets"],
+                    "required_runtime_ids": ["rust-native-release-platform-evidence"],
+                    "import_command": "python tools/import_rust_native_evidence_artifacts.py --require-runtime-id rust-native-release-platform-evidence",
+                    "details": {
+                        "local_browser_batch_plan": {
+                            "host": "windows-11-x64",
+                            "required_tool": "npm.cmd or node.exe",
+                            "tool_kind": "",
+                            "tool_available": False,
+                            "npm_available": False,
+                            "host_builtin_target_count": 2,
+                            "host_builtin_target_ids": [
+                                "browser-chrome-windows_11_x64",
+                                "browser-edge-windows_11_x64",
+                            ],
+                            "target_count": 0,
+                            "target_ids": [],
+                            "unavailable_reason": (
+                                "npm.cmd or node.exe is not on PATH; "
+                                "set TB_BROWSER_NODE_EXECUTABLE to a Node.js executable"
+                            ),
+                            "list_command": "python tools/run_release_platform_probe.py --list-local-browser-targets",
+                            "batch_command": "python tools/run_release_platform_probe.py --local-browser-targets",
+                            "validation_commands": [],
+                            "partial_evidence_only": True,
+                        }
+                    },
+                    "issues": [],
+                }
+            ],
+            "next_actions": [],
+        }
+
+        markdown = runtime_readiness._render_evidence_collection_markdown(result)
+
+        self.assertIn("Local browser batch", markdown)
+        self.assertIn("host built-in targets", markdown)
+        self.assertIn("browser-chrome-windows_11_x64", markdown)
+        self.assertIn("runnable targets: none", markdown)
+        self.assertIn("tool available: false", markdown)
+        self.assertIn("npm available: false", markdown)
+        self.assertIn(
+            "unavailable reason: npm.cmd or node.exe is not on PATH; "
+            "set TB_BROWSER_NODE_EXECUTABLE to a Node.js executable",
+            markdown,
+        )
+        self.assertIn("--list-local-browser-targets", markdown)
+        self.assertNotIn("--local-browser-targets`", markdown)
 
     def test_readiness_audit_blocks_local_recovery_collection_when_targets_are_tracked(self):
         tracked_targets = [
@@ -2562,6 +2912,72 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("browser-contract", run_command.call_args.args[0])
         self.assertEqual(expected_command, run_command.call_args.args[1])
 
+    def test_release_platform_probe_uses_direct_node_browser_harness_when_npm_missing(self):
+        target = {
+            "id": "browser-chrome-windows-11-x64",
+            "kind": "browser",
+            "browser": "chrome",
+            "test_suites": ["browser-contract"],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            node_path = Path(temp_dir) / "node.exe"
+            node_path.write_text("", encoding="utf-8")
+            node_path.chmod(0o755)
+            expected_command = [
+                str(node_path),
+                "apps/web-dashboard/tests/browser-contract.test.mjs",
+                "--browser=chrome",
+            ]
+
+            with (
+                patch.dict(
+                    release_platform_probe.os.environ,
+                    {"TB_BROWSER_NODE_EXECUTABLE": str(node_path)},
+                    clear=True,
+                ),
+                patch.object(release_platform_probe.shutil, "which", return_value=None),
+                patch.object(
+                    release_platform_probe,
+                    "_run_command",
+                    return_value={"name": "browser-contract", "status": "passed", "command": expected_command},
+                ) as run_command,
+            ):
+                results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual("passed", results[0]["status"])
+        run_command.assert_called_once()
+        self.assertEqual("browser-contract", run_command.call_args.args[0])
+        self.assertEqual(expected_command, run_command.call_args.args[1])
+
+    def test_release_platform_probe_reports_invalid_node_env_for_builtin_browser_harness(self):
+        target = {
+            "id": "browser-chrome-windows-11-x64",
+            "kind": "browser",
+            "browser": "chrome",
+            "test_suites": ["browser-contract"],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_node = Path(temp_dir) / "missing-node.exe"
+            with (
+                patch.dict(
+                    release_platform_probe.os.environ,
+                    {"TB_BROWSER_NODE_EXECUTABLE": str(missing_node)},
+                    clear=True,
+                ),
+                patch.object(release_platform_probe.shutil, "which", return_value=None),
+                patch.object(release_platform_probe, "_run_command") as run_command,
+            ):
+                results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual("failed", results[0]["status"])
+        self.assertEqual(
+            "TB_BROWSER_NODE_EXECUTABLE must point to an existing executable Node.js file",
+            results[0]["stderr"],
+        )
+        run_command.assert_not_called()
+
     def test_release_platform_probe_detects_current_browser_host(self):
         self.assertEqual(
             "windows-11-x64",
@@ -2597,6 +3013,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
     def test_release_platform_probe_selects_only_current_host_builtin_browser_targets(self):
         with (
+            patch.dict(release_platform_probe.os.environ, {}, clear=True),
             patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
             patch.object(release_platform_probe.shutil, "which", return_value="npm.cmd"),
         ):
@@ -2609,6 +3026,129 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertTrue(all(str(target["host"]) == "windows-11-x64" for target in targets))
         self.assertNotIn("firefox", {str(target.get("browser")) for target in targets})
         self.assertNotIn("internet-explorer", {str(target.get("browser")) for target in targets})
+
+    def test_release_platform_probe_list_local_browser_targets_reports_missing_browser_tool(self):
+        output = io.StringIO()
+        browser_targets = [
+            {
+                "id": "browser-chrome-windows_11_x64",
+                "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
+                "test_suites": ["browser-contract"],
+            }
+        ]
+
+        with (
+            contextlib.redirect_stdout(output),
+            patch.dict(release_platform_probe.os.environ, {}, clear=True),
+            patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
+            patch.object(release_platform_probe, "_matrix_targets", return_value=([], browser_targets)),
+            patch.object(release_platform_probe.shutil, "which", return_value=None),
+        ):
+            exit_code = release_platform_probe.main(["--list-local-browser-targets"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, exit_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("windows-11-x64", payload["host"])
+        self.assertEqual("npm.cmd or node.exe", payload["required_tool"])
+        self.assertEqual("", payload["tool_kind"])
+        self.assertFalse(payload["tool_available"])
+        self.assertFalse(payload["npm_available"])
+        self.assertEqual(["browser-chrome-windows_11_x64"], payload["host_builtin_target_ids"])
+        self.assertEqual(1, payload["host_builtin_target_count"])
+        self.assertEqual([], payload["target_ids"])
+        self.assertEqual(0, payload["count"])
+        self.assertEqual(
+            "npm.cmd or node.exe is not on PATH; set TB_BROWSER_NODE_EXECUTABLE to a Node.js executable",
+            payload["unavailable_reason"],
+        )
+
+    def test_release_platform_probe_list_local_browser_targets_uses_node_env_fallback(self):
+        output = io.StringIO()
+        browser_targets = [
+            {
+                "id": "browser-chrome-windows_11_x64",
+                "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
+                "test_suites": ["browser-contract"],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            node_path = Path(temp_dir) / "node.exe"
+            node_path.write_text("", encoding="utf-8")
+            node_path.chmod(0o755)
+
+            with (
+                contextlib.redirect_stdout(output),
+                patch.dict(
+                    release_platform_probe.os.environ,
+                    {"TB_BROWSER_NODE_EXECUTABLE": str(node_path)},
+                    clear=True,
+                ),
+                patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
+                patch.object(release_platform_probe, "_matrix_targets", return_value=([], browser_targets)),
+                patch.object(release_platform_probe.shutil, "which", return_value=None),
+            ):
+                exit_code = release_platform_probe.main(["--list-local-browser-targets"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, exit_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("windows-11-x64", payload["host"])
+        self.assertEqual("TB_BROWSER_NODE_EXECUTABLE", payload["required_tool"])
+        self.assertEqual("node", payload["tool_kind"])
+        self.assertTrue(payload["tool_available"])
+        self.assertFalse(payload["npm_available"])
+        self.assertEqual(["browser-chrome-windows_11_x64"], payload["target_ids"])
+        self.assertEqual(1, payload["count"])
+        self.assertEqual("", payload["unavailable_reason"])
+
+    def test_release_platform_probe_list_local_browser_targets_rejects_missing_node_env_fallback(self):
+        output = io.StringIO()
+        browser_targets = [
+            {
+                "id": "browser-chrome-windows_11_x64",
+                "kind": "browser",
+                "browser": "chrome",
+                "host": "windows-11-x64",
+                "test_suites": ["browser-contract"],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_node = Path(temp_dir) / "missing-node.exe"
+            with (
+                contextlib.redirect_stdout(output),
+                patch.dict(
+                    release_platform_probe.os.environ,
+                    {"TB_BROWSER_NODE_EXECUTABLE": str(missing_node)},
+                    clear=True,
+                ),
+                patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
+                patch.object(release_platform_probe, "_matrix_targets", return_value=([], browser_targets)),
+                patch.object(release_platform_probe.shutil, "which", return_value=None),
+            ):
+                exit_code = release_platform_probe.main(["--list-local-browser-targets"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, exit_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("windows-11-x64", payload["host"])
+        self.assertEqual("TB_BROWSER_NODE_EXECUTABLE", payload["required_tool"])
+        self.assertEqual("", payload["tool_kind"])
+        self.assertFalse(payload["tool_available"])
+        self.assertFalse(payload["npm_available"])
+        self.assertEqual(["browser-chrome-windows_11_x64"], payload["host_builtin_target_ids"])
+        self.assertEqual([], payload["target_ids"])
+        self.assertEqual(0, payload["count"])
+        self.assertEqual(
+            "TB_BROWSER_NODE_EXECUTABLE must point to an existing executable Node.js file",
+            payload["unavailable_reason"],
+        )
 
     def test_release_platform_probe_local_browser_batch_writes_per_target_outputs(self):
         targets = [
@@ -2624,8 +3164,23 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
 
             with (
                 contextlib.redirect_stdout(output),
-                patch.object(release_platform_probe, "_current_browser_host", return_value="windows-11-x64"),
-                patch.object(release_platform_probe, "_local_browser_targets", return_value=targets),
+                patch.object(
+                    release_platform_probe,
+                    "_local_browser_target_diagnostics",
+                    return_value={
+                        "host": "windows-11-x64",
+                        "required_tool": "npm.cmd",
+                        "tool_kind": "npm",
+                        "tool_available": True,
+                        "npm_available": True,
+                        "host_builtin_target_ids": [str(target["id"]) for target in targets],
+                        "host_builtin_target_count": len(targets),
+                        "target_ids": [str(target["id"]) for target in targets],
+                        "target_count": len(targets),
+                        "unavailable_reason": "",
+                        "targets": targets,
+                    },
+                ),
                 patch.object(release_platform_probe, "_run_probe", side_effect=_run_probe_stub) as run_probe,
             ):
                 exit_code = release_platform_probe.main(
@@ -2641,6 +3196,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertTrue(payload["ok"])
         self.assertEqual("windows-11-x64", payload["host"])
+        self.assertEqual("npm.cmd", payload["required_tool"])
+        self.assertTrue(payload["npm_available"])
+        self.assertEqual(
+            ["browser-chrome-windows_11_x64", "browser-edge-windows_11_x64"],
+            payload["host_builtin_target_ids"],
+        )
+        self.assertEqual(2, payload["host_builtin_target_count"])
+        self.assertEqual("", payload["unavailable_reason"])
         self.assertEqual(2, payload["count"])
         self.assertEqual(2, run_probe.call_count)
         self.assertEqual(

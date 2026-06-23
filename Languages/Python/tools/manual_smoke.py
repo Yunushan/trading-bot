@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parents[1]
+DEFAULT_TIMEOUT_SECONDS = 60.0
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
@@ -431,7 +432,7 @@ def run_manual_smoke(
     host: str = "127.0.0.1",
     port: int = 0,
     api_token: str = "manual-smoke-token",
-    timeout: float = 10.0,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
     skip_http: bool = False,
     skip_fake_order: bool = False,
 ) -> SmokeReport:
@@ -460,7 +461,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="manual-smoke-token",
         help="Temporary bearer token for the service API smoke run.",
     )
-    parser.add_argument("--timeout", type=float, default=10.0, help="Timeout in seconds for each external check.")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help="Timeout in seconds for each external check.",
+    )
     parser.add_argument("--skip-http", action="store_true", help="Skip launching the temporary HTTP API server.")
     parser.add_argument("--skip-fake-order", action="store_true", help="Skip the in-memory fake exchange order path.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output.")

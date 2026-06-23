@@ -121,6 +121,12 @@ diff whitespace.
   use that exported plan while collecting current-commit runtime evidence. CI
   writes and uploads the same runbook as the
   `rust-native-runtime-evidence-plan` artifact for the checked source revision.
+  Live market-data, signed account-read, and release-platform rows include
+  explicit `missing_prerequisites` values for dirty source state, missing
+  operator confirmation switches, missing Binance credentials, missing release
+  tags, missing or invalid platform evidence, and generated-evidence write-guard
+  blockers, so a `ready_to_collect: false` row always names the next concrete
+  prerequisite.
   Each evidence row in that plan includes the exact `required_runtime_ids` and
   an import command with matching `--require-runtime-id` flags, so a partial
   artifact bundle cannot be accidentally treated as the required live or release
@@ -188,9 +194,14 @@ diff whitespace.
   It also reports `source_tree_clean`; a dirty source tree blocks both preflight
   success and the final aggregate writer before any network request or artifact
   write. It also includes `local_browser_batch_plan`, which lists the current
-  host's built-in Chrome/Edge browser targets, the batch collection command, and
-  the per-target validation commands when such local browser evidence can be
-  collected.
+  host's built-in Chrome/Edge browser targets, whether a local browser-contract
+  tool is available, whether `npm` is available, the runnable target subset, an
+  `unavailable_reason` when local collection is not currently possible, the
+  batch collection command, and the per-target validation commands when such
+  local browser evidence can be collected. If `npm` is not on `PATH`, operators
+  can set `TB_BROWSER_NODE_EXECUTABLE=<path-to-existing-node-executable>` to use
+  the checked-in direct Node browser-contract harness; preflight rejects missing
+  or non-executable paths instead of treating the env var as evidence.
   It also distinguishes present files from usable evidence
   with `passed_platform_evidence_count`, `invalid_platform_evidence_count`, and
   `unknown_platform_evidence_count`; only passed evidence can contribute to
@@ -265,9 +276,12 @@ diff whitespace.
   target. For supported Chromium-family browser targets, the probe can run
   `npm --prefix apps/web-dashboard run test:browser -- --browser=chrome` or
   `npm --prefix apps/web-dashboard run test:browser -- --browser=edge`
-  automatically when `npm` and the matching browser are available; other browser
-  targets need an external lab command that proves the declared browser. Local
-  operators can run
+  automatically when `npm` and the matching browser are available. When `npm` is
+  unavailable, set `TB_BROWSER_NODE_EXECUTABLE=<path-to-existing-node-executable>` to run
+  `node apps/web-dashboard/tests/browser-contract.test.mjs --browser=chrome` or
+  `node apps/web-dashboard/tests/browser-contract.test.mjs --browser=edge`
+  directly with the same checked-in harness. Other browser targets need an
+  external lab command that proves the declared browser. Local operators can run
   `tools/run_release_platform_probe.py --list-local-browser-targets` to see the
   matching host/browser targets and
   `tools/run_release_platform_probe.py --local-browser-targets --require-clean-source --output-dir release-platform-evidence`

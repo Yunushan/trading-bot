@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -16,7 +17,9 @@ from typing import Any
 
 try:
     from check_generated_evidence_source_control import generated_evidence_write_guard
+    from release_browser_contract_commands import browser_contract_command_args
     from release_browser_contract_commands import browser_contract_command_text
+    from release_browser_contract_commands import browser_contract_tool
     from release_browser_contract_commands import browser_host_from_observed_platform
     from release_browser_contract_commands import builtin_browser_contract_targets_for_host
     from release_browser_contract_commands import has_builtin_browser_contract_command
@@ -27,7 +30,9 @@ try:
     from check_release_platform_matrix import _target_evidence_issues, _validate_matrix
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
+    from tools.release_browser_contract_commands import browser_contract_command_args
     from tools.release_browser_contract_commands import browser_contract_command_text
+    from tools.release_browser_contract_commands import browser_contract_tool
     from tools.release_browser_contract_commands import browser_host_from_observed_platform
     from tools.release_browser_contract_commands import builtin_browser_contract_targets_for_host
     from tools.release_browser_contract_commands import has_builtin_browser_contract_command
@@ -145,10 +150,38 @@ def _observed_platform() -> dict[str, Any]:
     }
 
 
+def _browser_contract_tool() -> dict[str, Any]:
+    return browser_contract_tool(environ=os.environ, which=shutil.which, platform_name=sys.platform)
+
+
+def _browser_contract_command_for_tool(target: dict[str, Any], tool: dict[str, Any]) -> list[str] | None:
+    if tool.get("kind") == "npm":
+        return browser_contract_command_args(target, npm_executable=str(tool.get("executable") or ""))
+    if tool.get("kind") == "node":
+        return browser_contract_command_args(target, node_executable=str(tool.get("executable") or ""))
+    return None
+
+
 def _local_browser_batch_plan(browser_targets: list[dict[str, Any]]) -> dict[str, Any]:
     host = browser_host_from_observed_platform(_observed_platform())
-    targets = builtin_browser_contract_targets_for_host(browser_targets, host)
+    tool = _browser_contract_tool()
+    host_targets = builtin_browser_contract_targets_for_host(browser_targets, host)
+    targets = [
+        target
+        for target in host_targets
+        if tool["tool_available"] and _browser_contract_command_for_tool(target, tool) is not None
+    ]
+    host_target_ids = [str(target["id"]) for target in host_targets]
     target_ids = [str(target["id"]) for target in targets]
+    unavailable_reason = ""
+    if not host:
+        unavailable_reason = "current host is not a supported release browser host"
+    elif not host_targets:
+        unavailable_reason = "no built-in browser contract targets match this host"
+    elif not tool["tool_available"]:
+        unavailable_reason = str(tool["unavailable_reason"])
+    elif not targets:
+        unavailable_reason = "no built-in browser contract command can be built for this host"
     validation_commands = [
         (
             "python tools/check_release_platform_matrix.py --require-evidence "
@@ -159,8 +192,15 @@ def _local_browser_batch_plan(browser_targets: list[dict[str, Any]]) -> dict[str
     ]
     return {
         "host": host,
+        "required_tool": tool["required_tool"],
+        "tool_kind": tool["kind"],
+        "tool_available": tool["tool_available"],
+        "npm_available": tool["npm_available"],
+        "host_builtin_target_count": len(host_target_ids),
+        "host_builtin_target_ids": host_target_ids,
         "target_count": len(target_ids),
         "target_ids": target_ids,
+        "unavailable_reason": unavailable_reason,
         "list_command": "python tools/run_release_platform_probe.py --list-local-browser-targets",
         "batch_command": (
             "python tools/run_release_platform_probe.py "

@@ -272,6 +272,49 @@ function parseBrowserResult(stdout) {
   return JSON.parse(decodeURIComponent(match[1]));
 }
 
+function browserCommandArgs({ browser, headlessFlag, profileDir, targetUrl }) {
+  const args = [
+    headlessFlag,
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--no-default-browser-check",
+    "--no-first-run",
+    "--virtual-time-budget=5000",
+    `--user-data-dir=${profileDir}`,
+    "--dump-dom",
+    targetUrl,
+  ];
+  if (browser === "edge") {
+    args.splice(1, 0, "--edge-skip-compat-layer-relaunch");
+  }
+  return args;
+}
+
+async function runBrowserContract({ executable, browser, profileDir, targetUrl }) {
+  const headlessFlags = browser === "edge" ? ["--headless=new", "--headless"] : ["--headless=new"];
+  let lastError = null;
+  for (const headlessFlag of headlessFlags) {
+    const result = await runProcess(
+      executable,
+      browserCommandArgs({ browser, headlessFlag, profileDir, targetUrl }),
+      { timeoutMs: 30000 },
+    );
+    if (!result.ok) {
+      lastError = new Error(
+        `${browser} browser contract failed to launch or exited non-zero (${result.returncode}). ${result.stderr}`,
+      );
+      continue;
+    }
+    try {
+      return parseBrowserResult(result.stdout);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const executable = await resolveBrowserExecutable(args.browser, args.executable);
@@ -279,23 +322,12 @@ async function main() {
   const { server, port } = await serveDashboard();
   const targetUrl = `http://127.0.0.1:${port}/__browser_contract_harness__.html`;
   try {
-    const commandArgs = [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--virtual-time-budget=5000",
-      `--user-data-dir=${profileDir}`,
-      "--dump-dom",
+    const payload = await runBrowserContract({
+      executable,
+      browser: args.browser,
+      profileDir,
       targetUrl,
-    ];
-    const result = await runProcess(executable, commandArgs, { timeoutMs: 30000 });
-    if (!result.ok) {
-      throw new Error(
-        `${args.browser} browser contract failed to launch or exited non-zero (${result.returncode}). ${result.stderr}`,
-      );
-    }
-    const payload = parseBrowserResult(result.stdout);
+    });
     if (!payload.ok) {
       throw new Error(`${args.browser} browser contract failed in page: ${payload.error}`);
     }
@@ -315,7 +347,7 @@ async function main() {
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(profileDir, { recursive: true, force: true });
+    await rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 

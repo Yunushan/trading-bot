@@ -18,14 +18,18 @@ try:
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from check_release_platform_matrix import _load_json, _validate_matrix
     from release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
+    from release_browser_contract_commands import browser_contract_tool
     from release_browser_contract_commands import browser_host_from_observed_platform
     from release_browser_contract_commands import builtin_browser_contract_targets_for_host
+    from release_browser_contract_commands import has_builtin_browser_contract_command
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from tools.check_release_platform_matrix import _load_json, _validate_matrix
     from tools.release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
+    from tools.release_browser_contract_commands import browser_contract_tool
     from tools.release_browser_contract_commands import browser_host_from_observed_platform
     from tools.release_browser_contract_commands import builtin_browser_contract_targets_for_host
+    from tools.release_browser_contract_commands import has_builtin_browser_contract_command
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
@@ -187,17 +191,54 @@ def _current_browser_host(observed: dict[str, Any] | None = None) -> str:
     return browser_host_from_observed_platform(dict(observed or _observed_platform()))
 
 
-def _local_browser_targets(matrix_path: Path) -> list[dict[str, Any]]:
+def _browser_contract_tool() -> dict[str, Any]:
+    return browser_contract_tool(environ=os.environ, which=shutil.which, platform_name=sys.platform)
+
+
+def _browser_contract_command_for_tool(target: dict[str, Any], tool: dict[str, Any]) -> list[str] | None:
+    if tool.get("kind") == "npm":
+        return browser_contract_command_args(target, npm_executable=str(tool.get("executable") or ""))
+    if tool.get("kind") == "node":
+        return browser_contract_command_args(target, node_executable=str(tool.get("executable") or ""))
+    return None
+
+
+def _local_browser_target_diagnostics(matrix_path: Path) -> dict[str, Any]:
     _platform_targets, browser_targets = _matrix_targets(matrix_path)
     host = _current_browser_host()
-    npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm")
-    if not host or not npm:
-        return []
-    return [
+    tool = _browser_contract_tool()
+    host_targets = builtin_browser_contract_targets_for_host(browser_targets, host)
+    runnable_targets = [
         target
-        for target in builtin_browser_contract_targets_for_host(browser_targets, host)
-        if browser_contract_command_args(target, npm_executable=npm) is not None
+        for target in host_targets
+        if tool["tool_available"] and _browser_contract_command_for_tool(target, tool) is not None
     ]
+    unavailable_reason = ""
+    if not host:
+        unavailable_reason = "current host is not a supported release browser host"
+    elif not host_targets:
+        unavailable_reason = "no built-in browser contract targets match this host"
+    elif not tool["tool_available"]:
+        unavailable_reason = str(tool["unavailable_reason"])
+    elif not runnable_targets:
+        unavailable_reason = "no built-in browser contract command can be built for this host"
+    return {
+        "host": host,
+        "required_tool": tool["required_tool"],
+        "tool_kind": tool["kind"],
+        "tool_available": tool["tool_available"],
+        "npm_available": tool["npm_available"],
+        "host_builtin_target_ids": [str(target["id"]) for target in host_targets],
+        "host_builtin_target_count": len(host_targets),
+        "target_ids": [str(target["id"]) for target in runnable_targets],
+        "target_count": len(runnable_targets),
+        "unavailable_reason": unavailable_reason,
+        "targets": runnable_targets,
+    }
+
+
+def _local_browser_targets(matrix_path: Path) -> list[dict[str, Any]]:
+    return list(_local_browser_target_diagnostics(matrix_path)["targets"])
 
 
 def _normalize_architecture(value: str) -> str:
@@ -374,16 +415,19 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
 
     if "browser-contract" in suites:
         command = _shell_command_from_env("TB_BROWSER_TEST_COMMAND")
+        unavailable_reason = ""
         if command is None:
-            npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm")
-            if npm:
-                command = browser_contract_command_args(target, npm_executable=npm)
+            tool = _browser_contract_tool()
+            if tool["tool_available"]:
+                command = _browser_contract_command_for_tool(target, tool)
+            elif has_builtin_browser_contract_command(target):
+                unavailable_reason = str(tool.get("unavailable_reason") or "")
         if command is None:
             results.append(
                 {
                     "name": "browser-contract",
                     "status": "failed",
-                    "stderr": browser_contract_missing_command_message(target),
+                    "stderr": unavailable_reason or browser_contract_missing_command_message(target),
                 }
             )
         else:
@@ -445,12 +489,19 @@ def main(argv: list[str] | None = None) -> int:
     matrix_path = Path(args.matrix)
 
     if args.list_local_browser_targets:
-        targets = _local_browser_targets(matrix_path)
+        diagnostics = _local_browser_target_diagnostics(matrix_path)
         payload = {
             "ok": True,
-            "host": _current_browser_host(),
-            "target_ids": [str(target["id"]) for target in targets],
-            "count": len(targets),
+            "host": diagnostics["host"],
+            "required_tool": diagnostics["required_tool"],
+            "tool_kind": diagnostics["tool_kind"],
+            "tool_available": diagnostics["tool_available"],
+            "npm_available": diagnostics["npm_available"],
+            "host_builtin_target_ids": diagnostics["host_builtin_target_ids"],
+            "host_builtin_target_count": diagnostics["host_builtin_target_count"],
+            "target_ids": diagnostics["target_ids"],
+            "count": diagnostics["target_count"],
+            "unavailable_reason": diagnostics["unavailable_reason"],
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
@@ -472,7 +523,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.local_browser_targets:
-        targets = _local_browser_targets(matrix_path)
+        diagnostics = _local_browser_target_diagnostics(matrix_path)
+        targets = list(diagnostics["targets"])
         output_dir = Path(args.output_dir)
         results = [
             _run_probe(target, output=output_dir / f"{target['id']}.json", root=root)
@@ -483,8 +535,15 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "ok": ok,
-                    "host": _current_browser_host(),
+                    "host": diagnostics["host"],
+                    "required_tool": diagnostics["required_tool"],
+                    "tool_kind": diagnostics["tool_kind"],
+                    "tool_available": diagnostics["tool_available"],
+                    "npm_available": diagnostics["npm_available"],
+                    "host_builtin_target_ids": diagnostics["host_builtin_target_ids"],
+                    "host_builtin_target_count": diagnostics["host_builtin_target_count"],
                     "count": len(results),
+                    "unavailable_reason": diagnostics["unavailable_reason"],
                     "outputs": results,
                 },
                 indent=2,
