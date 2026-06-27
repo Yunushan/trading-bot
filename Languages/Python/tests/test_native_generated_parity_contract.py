@@ -85,6 +85,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         rust_core = _read(REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "lib.rs")
         cpp_support_header = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.h")
         cpp_support_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindowSupport.cpp")
+        cpp_chart_source = _read(REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.chart.cpp")
         tauri_html = _read(REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html")
         cmake = _read(REPO_ROOT / "experiments" / "native-cpp" / "CMakeLists.txt")
 
@@ -171,6 +172,11 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("pythonSourceConnectorLabels", cpp_support_header)
         self.assertIn("pythonSourceBacktestIntervals", cpp_support_source)
         self.assertIn("pythonSourceDefaultChartSymbols", cpp_support_header)
+        self.assertIn("pythonSourceDefaultChartSymbols", cpp_chart_source)
+        self.assertIn("pythonSourceTradingViewIntervalKeys", cpp_support_header)
+        self.assertIn("pythonSourceTradingViewIntervalKeys", cpp_chart_source)
+        self.assertIn("pythonSourceTradingViewIntervalCodes", cpp_support_source)
+        self.assertIn("pythonSourceTradingViewIntervalCodes", cpp_chart_source)
         self.assertIn("pythonSourceDefaultExecutionSymbols", cpp_support_source)
         self.assertIn("pythonSourceDefaultBacktestSymbols", cpp_support_source)
         self.assertIn("pythonSourceDashboardLoopChoiceLabels", cpp_support_header)
@@ -260,6 +266,51 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertTrue(artifact["embeds_contract_hash"], artifact)
             self.assertEqual(artifact["expected_sha256"], artifact["actual_sha256"])
             self.assertEqual(64, len(artifact["actual_sha256"]))
+        consumer_names = {str(consumer["name"]) for consumer in report["consumers"]}
+        consumers = {str(consumer["name"]): consumer for consumer in report["consumers"]}
+        self.assertIn("rust_strategy_runtime_uses_python_source_options", consumer_names)
+        self.assertIn("rust_config_persistence_uses_python_source_options", consumer_names)
+        self.assertIn("cpp_config_persistence_uses_python_source_options", consumer_names)
+        self.assertIn("cpp_dashboard_uses_python_source_surface", consumer_names)
+        self.assertIn("cpp_backtest_uses_python_source_surface", consumer_names)
+        self.assertIn("cpp_backtest_service_api_uses_python_source_routes", consumer_names)
+        self.assertIn("cpp_dashboard_llm_service_api_uses_python_source_routes", consumer_names)
+        self.assertIn("cpp_config_service_api_uses_python_source_routes", consumer_names)
+        self.assertIn("cpp_chart_uses_python_source_surface", consumer_names)
+        self.assertIn("cpp_native_chart_heatmap_uses_python_source_surface", consumer_names)
+        self.assertIn("cpp_positions_uses_python_source_surface", consumer_names)
+        self.assertIn("cpp_account_symbols_use_python_source_fallbacks", consumer_names)
+        self.assertIn("cpp_native_exchange_connectors_use_python_source_connectors", consumer_names)
+        self.assertIn("cpp_native_strategy_runtime_uses_python_source_options", consumer_names)
+        self.assertIn("tauri_browser_consumes_generated_contract", consumer_names)
+        self.assertIn("tauri_browser_service_api_uses_python_source_routes", consumer_names)
+        self.assertTrue(all(consumer["ok"] for consumer in report["consumers"]), report["consumers"])
+        for consumer in report["consumers"]:
+            self.assertEqual([], consumer["unknown_service_routes"], consumer)
+            self.assertEqual([], consumer["unknown_route_extractors"], consumer)
+        self.assertEqual(
+            ["backtest_run", "backtest", "backtest_stop"],
+            consumers["cpp_backtest_service_api_uses_python_source_routes"]["extracted_service_route_names"],
+        )
+        self.assertEqual(
+            [
+                "llm_config",
+                "llm_prompt",
+                "llm_local_model_status",
+                "llm_local_model_start",
+                "llm_local_model_pull",
+                "llm_local_model_delete",
+            ],
+            consumers["cpp_dashboard_llm_service_api_uses_python_source_routes"]["extracted_service_route_names"],
+        )
+        self.assertIn(
+            "control_start",
+            consumers["tauri_browser_service_api_uses_python_source_routes"]["extracted_service_route_names"],
+        )
+        self.assertIn(
+            "llm_prompt",
+            consumers["tauri_browser_service_api_uses_python_source_routes"]["extracted_service_route_names"],
+        )
         self.assertIn("native source sync audit", verify_all)
         self.assertIn("tools/audit_native_source_sync.py", verify_all)
         self.assertIn("Audit native source sync", ci_workflow)

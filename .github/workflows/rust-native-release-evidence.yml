@@ -73,6 +73,12 @@ jobs:
             exit 1
           fi
 
+      - name: Audit native source sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/audit_native_source_sync.py --json
+
       - name: Collect release platform evidence
         shell: bash
         run: |

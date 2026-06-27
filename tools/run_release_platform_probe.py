@@ -15,12 +15,14 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from check_release_platform_matrix import _load_json, _validate_matrix
     from release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
     from release_browser_contract_commands import browser_host_from_observed_platform
     from release_browser_contract_commands import builtin_browser_contract_targets_for_host
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from tools.check_release_platform_matrix import _load_json, _validate_matrix
     from tools.release_browser_contract_commands import browser_contract_command_args, browser_contract_missing_command_message
@@ -393,6 +395,21 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
 
 
 def _run_probe(target: dict[str, Any], *, output: Path, root: Path) -> dict[str, Any]:
+    output = output if output.is_absolute() else root / output
+    source_control_write_guard = generated_evidence_write_guard(
+        [output],
+        root=root,
+        require_generated_destinations=True,
+    )
+    if not source_control_write_guard["ok"]:
+        return {
+            "ok": False,
+            "target_id": str(target.get("id") or ""),
+            "output": str(output),
+            "source_control_write_guard": source_control_write_guard,
+            "issues": [str(issue) for issue in source_control_write_guard["issues"]],
+        }
+
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     suite_results = _suite_results(target, root=root)
     ok = bool(suite_results) and all(item.get("status") == "passed" for item in suite_results)
@@ -411,7 +428,12 @@ def _run_probe(target: dict[str, Any], *, output: Path, root: Path) -> dict[str,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return {"ok": ok, "target_id": payload["target_id"], "output": str(output)}
+    return {
+        "ok": ok,
+        "target_id": payload["target_id"],
+        "output": str(output),
+        "source_control_write_guard": source_control_write_guard,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

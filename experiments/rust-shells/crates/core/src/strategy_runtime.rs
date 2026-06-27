@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::exchange_connectors::normalize_connector_backend;
+use crate::generated_python_parity::{
+    PYTHON_ACCOUNT_MODE_OPTIONS, PYTHON_ASSETS_MODE_OPTIONS, PYTHON_SIDE_OPTIONS,
+    PYTHON_SIGNAL_LOGIC_OPTIONS, PYTHON_STOP_LOSS_MODES, PYTHON_STOP_LOSS_SCOPES, PythonUiOption,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct IndicatorRule {
@@ -699,9 +703,8 @@ pub fn normalize_strategy_controls(kind: &str, controls: &Value) -> Value {
             out.insert("account_mode".to_owned(), Value::String(account_mode));
         }
     } else if kind == "backtest" {
-        if let Some(logic) = string_value(input.get("logic"))
-            .map(|value| value.to_uppercase())
-            .filter(|value| matches!(value.as_str(), "AND" | "OR" | "SEPARATE"))
+        if let Some(logic) =
+            normalize_python_ui_option_key(input.get("logic"), PYTHON_SIGNAL_LOGIC_OPTIONS)
         {
             out.insert("logic".to_owned(), Value::String(logic));
         }
@@ -1223,6 +1226,102 @@ fn string_value(value: Option<&Value>) -> Option<String> {
     }
 }
 
+fn normalize_python_ui_option_key(
+    value: Option<&Value>,
+    options: &[PythonUiOption],
+) -> Option<String> {
+    let raw = string_value(value)?;
+    if raw.is_empty() {
+        return None;
+    }
+    options
+        .iter()
+        .find(|option| {
+            raw.eq_ignore_ascii_case(option.key) || raw.eq_ignore_ascii_case(option.label)
+        })
+        .map(|option| option.key.to_owned())
+}
+
+fn normalize_python_ui_option_key_fuzzy(
+    value: Option<&Value>,
+    options: &[PythonUiOption],
+    fallback_index: usize,
+) -> Option<String> {
+    if let Some(normalized) = normalize_python_ui_option_key(value, options) {
+        return Some(normalized);
+    }
+    let raw = string_value(value)?;
+    if raw.is_empty() {
+        return None;
+    }
+    let raw_lower = raw.to_lowercase();
+    let raw_first_token = first_alnum_token(&raw_lower);
+    options
+        .iter()
+        .find(|option| {
+            let key_lower = option.key.to_lowercase();
+            let label_lower = option.label.to_lowercase();
+            key_lower.starts_with(&raw_lower)
+                || label_lower.starts_with(&raw_lower)
+                || label_lower.contains(&raw_lower)
+                || raw_first_token.as_ref().is_some_and(|token| {
+                    token != &raw_lower
+                        && (key_lower.starts_with(token)
+                            || label_lower.starts_with(token)
+                            || label_lower.contains(token))
+                })
+        })
+        .or_else(|| options.get(fallback_index))
+        .map(|option| option.key.to_owned())
+}
+
+fn normalize_python_ui_option_key_or_default(
+    value: Option<&Value>,
+    options: &[PythonUiOption],
+    default_value: &str,
+) -> String {
+    normalize_python_ui_option_key(value, options).unwrap_or_else(|| default_value.to_owned())
+}
+
+fn normalize_python_string_option_fuzzy(
+    value: Option<&Value>,
+    options: &[&str],
+    fallback_index: usize,
+) -> Option<String> {
+    let raw = string_value(value)?;
+    if raw.is_empty() {
+        return None;
+    }
+    let raw_lower = raw.to_lowercase();
+    let raw_first_token = first_alnum_token(&raw_lower);
+    options
+        .iter()
+        .find(|option| {
+            let option_lower = option.to_lowercase();
+            option_lower == raw_lower
+                || option_lower.starts_with(&raw_lower)
+                || option_lower.contains(&raw_lower)
+                || raw_first_token.as_ref().is_some_and(|token| {
+                    token != &raw_lower
+                        && (option_lower.starts_with(token) || option_lower.contains(token))
+                })
+        })
+        .or_else(|| options.get(fallback_index))
+        .map(|option| (*option).to_owned())
+}
+
+fn first_alnum_token(value: &str) -> Option<String> {
+    let mut token = String::new();
+    for ch in value.chars() {
+        if ch.is_alphanumeric() {
+            token.push(ch);
+        } else if !token.is_empty() {
+            break;
+        }
+    }
+    (!token.is_empty()).then_some(token)
+}
+
 fn float_value(value: Option<&Value>) -> Option<f64> {
     match value? {
         Value::Number(number) => number.as_f64(),
@@ -1248,21 +1347,7 @@ fn insert_float(input: &Map<String, Value>, out: &mut Map<String, Value>, key: &
 }
 
 fn canonical_side(value: Option<&Value>) -> Option<String> {
-    let text = string_value(value)?;
-    let upper = text.to_uppercase();
-    if matches!(upper.as_str(), "BUY" | "SELL" | "BOTH") {
-        return Some(upper);
-    }
-    let lower = text.to_lowercase();
-    if lower.starts_with("buy") {
-        Some("BUY".to_owned())
-    } else if lower.starts_with("sell") {
-        Some("SELL".to_owned())
-    } else if !lower.is_empty() {
-        Some("BOTH".to_owned())
-    } else {
-        None
-    }
+    normalize_python_ui_option_key_fuzzy(value, PYTHON_SIDE_OPTIONS, 2)
 }
 
 fn normalize_position_pct_units(value: Option<&Value>) -> Option<String> {
@@ -1295,25 +1380,11 @@ fn normalize_loop_override(value: Option<&Value>) -> Option<String> {
 }
 
 fn normalize_account_mode(value: Option<&Value>) -> Option<String> {
-    let lower = string_value(value)?.to_lowercase();
-    if lower.is_empty() {
-        None
-    } else if lower.contains("portfolio") {
-        Some("Portfolio Margin".to_owned())
-    } else {
-        Some("Classic Trading".to_owned())
-    }
+    normalize_python_string_option_fuzzy(value, PYTHON_ACCOUNT_MODE_OPTIONS, 0)
 }
 
 fn normalize_assets_mode(value: Option<&Value>) -> Option<String> {
-    let lower = string_value(value)?.to_lowercase();
-    if lower.is_empty() {
-        None
-    } else if lower.contains("multi") {
-        Some("Multi-Assets".to_owned())
-    } else {
-        Some("Single-Asset".to_owned())
-    }
+    normalize_python_ui_option_key_fuzzy(value, PYTHON_ASSETS_MODE_OPTIONS, 0)
 }
 
 fn normalize_stop_loss(value: &Value) -> Value {
@@ -1321,21 +1392,16 @@ fn normalize_stop_loss(value: &Value) -> Value {
         return json!({});
     };
     let enabled = coerce_strategy_bool(object.get("enabled"), false);
-    let mut mode = string_value(object.get("mode"))
-        .unwrap_or_else(|| "usdt".to_owned())
-        .to_lowercase();
-    if !matches!(mode.as_str(), "usdt" | "percent" | "both") {
-        mode = "usdt".to_owned();
-    }
-    let mut scope = string_value(object.get("scope"))
-        .unwrap_or_else(|| "per_trade".to_owned())
-        .to_lowercase();
-    if !matches!(
-        scope.as_str(),
-        "per_trade" | "directional" | "cumulative" | "entire_account"
-    ) {
-        scope = "per_trade".to_owned();
-    }
+    let mode = normalize_python_ui_option_key_or_default(
+        object.get("mode"),
+        PYTHON_STOP_LOSS_MODES,
+        "usdt",
+    );
+    let scope = normalize_python_ui_option_key_or_default(
+        object.get("scope"),
+        PYTHON_STOP_LOSS_SCOPES,
+        "per_trade",
+    );
     json!({
         "enabled": enabled,
         "mode": mode,

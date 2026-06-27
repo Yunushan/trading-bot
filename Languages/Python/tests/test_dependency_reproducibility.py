@@ -121,6 +121,65 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         self.assertFalse(module._check_ok_from_output(check=check, returncode=1, stdout='{"ok": true}'))
 
+    def test_verify_all_downgrades_only_dirty_source_promotion_import_failure(self):
+        module = _load_verify_all_module()
+        check = module.Check(
+            "rust native evidence import audit",
+            (sys.executable,),
+            REPO_ROOT,
+        )
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            1,
+            stdout=json.dumps(
+                {
+                    "ok": False,
+                    "require_clean_source": True,
+                    "issues": [
+                        "artifact.json: current tracked source tree must be clean for promotion evidence validation; dirty paths: tools/verify_all.py",
+                        "platform.json: current source tree must be clean for promotion evidence import",
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=True)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["required"])
+        self.assertFalse(result["blocks_success"])
+        self.assertIn("clean candidate source tree", result["advisory_reason"])
+        self.assertTrue(module._report_ok([result]))
+
+    def test_verify_all_keeps_non_dirty_import_failure_required(self):
+        module = _load_verify_all_module()
+        check = module.Check(
+            "rust native evidence import audit",
+            (sys.executable,),
+            REPO_ROOT,
+        )
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            1,
+            stdout=json.dumps(
+                {
+                    "ok": False,
+                    "require_clean_source": True,
+                    "issues": ["artifact.json has unknown runtime evidence_id: stale"],
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=True)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["required"])
+        self.assertFalse(module._report_ok([result]))
+
     def test_verify_all_client_lock_remediation_names_missing_lockfile_command(self):
         module = _load_verify_all_module()
         stdout = json.dumps(

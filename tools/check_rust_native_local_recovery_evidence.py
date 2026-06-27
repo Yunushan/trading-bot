@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, validate
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, validate
 
 
@@ -81,19 +83,20 @@ def _tracked_recovery_evidence_targets(
 
 
 def _source_control_generation_guard(evidence_dir: Path) -> dict[str, Any]:
-    tracked_targets = _tracked_recovery_evidence_targets(evidence_dir)
-    issues = []
-    if tracked_targets:
-        joined = ", ".join(tracked_targets)
-        issues.append(
-            "refusing to write local Rust recovery evidence over tracked generated evidence "
-            f"artifact path(s): {joined}. Commit the removal of generated evidence artifacts "
-            "first, then regenerate/import evidence from a clean candidate source commit."
-        )
+    root = _repo_root()
+    target_paths = [evidence_dir / filename for filename in RECOVERY_EVIDENCE_FILENAMES]
+    write_guard = generated_evidence_write_guard(
+        target_paths,
+        root=root,
+        require_generated_destinations=True,
+    )
+    tracked_targets = list(write_guard.get("tracked_generated_evidence_write_targets") or [])
     return {
-        "ok": not issues,
+        "ok": bool(write_guard.get("ok")),
+        "generated_evidence_write_targets": list(write_guard.get("generated_evidence_write_targets") or []),
+        "non_generated_in_repo_write_targets": list(write_guard.get("non_generated_in_repo_write_targets") or []),
         "tracked_generated_evidence_targets": tracked_targets,
-        "issues": issues,
+        "issues": [str(issue) for issue in write_guard.get("issues", [])],
     }
 
 

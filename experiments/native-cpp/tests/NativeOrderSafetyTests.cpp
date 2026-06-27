@@ -1019,8 +1019,64 @@ int main(int argc, char **argv) {
         NativeConfigPersistence::validateServiceRuntimeConfig(QJsonObject{
             {QStringLiteral("symbols"), QJsonArray{QStringLiteral("ethusdt"), QStringLiteral("ETHUSDT")}},
             {QStringLiteral("intervals"), QJsonArray{QStringLiteral("1M"), QStringLiteral("2 hours")}},
+            {QStringLiteral("mode"), QStringLiteral("live")},
             {QStringLiteral("account_type"), QStringLiteral("futures")},
+            {QStringLiteral("margin_mode"), QStringLiteral("cross")},
+            {QStringLiteral("position_mode"), QStringLiteral("oneway")},
+            {QStringLiteral("assets_mode"), QStringLiteral("multi-asset")},
+            {QStringLiteral("account_mode"), QStringLiteral("portfolio margin")},
+            {QStringLiteral("side"), QStringLiteral("sell")},
+            {QStringLiteral("order_type"), QStringLiteral("limit")},
+            {QStringLiteral("tif"), QStringLiteral("ioc")},
             {QStringLiteral("position_pct"), QStringLiteral("2.5")},
+            {QStringLiteral("connector_backend"), QStringLiteral("CCXT (Unified)")},
+            {QStringLiteral("indicator_source"), QStringLiteral("tradingview")},
+            {QStringLiteral("theme"), QStringLiteral("green")},
+            {QStringLiteral("design"), QStringLiteral("workstation")},
+            {QStringLiteral("selected_exchange"), QStringLiteral("kucoin")},
+            {QStringLiteral("llm_provider"), QStringLiteral("chatgpt")},
+            {QStringLiteral("llm_use_for"), QStringLiteral("Risk review")},
+            {QStringLiteral("llm_reasoning_effort"), QStringLiteral("extra-high")},
+            {QStringLiteral("chart"), QJsonObject{
+                {QStringLiteral("market"), QStringLiteral("spot")},
+                {QStringLiteral("view_mode"), QStringLiteral("TradingView Lightweight")},
+                {QStringLiteral("symbol"), QStringLiteral("ethusdt")},
+                {QStringLiteral("interval"), QStringLiteral("1M")},
+                {QStringLiteral("auto_follow"), QStringLiteral("yes")},
+            }},
+            {QStringLiteral("backtest"), QJsonObject{
+                {QStringLiteral("symbols"), QJsonArray{QStringLiteral("btcusdt"), QStringLiteral("BTCUSDT")}},
+                {QStringLiteral("intervals"), QJsonArray{QStringLiteral("15 minutes"), QStringLiteral("1M")}},
+                {QStringLiteral("capital"), QStringLiteral("1000")},
+                {QStringLiteral("execution_backend"), QStringLiteral("desktop-local")},
+                {QStringLiteral("logic"), QStringLiteral("or")},
+                {QStringLiteral("symbol_source"), QStringLiteral("futures")},
+                {QStringLiteral("start_date"), QStringLiteral("2026-01-01")},
+                {QStringLiteral("end_date"), QStringLiteral("2026-02-01")},
+                {QStringLiteral("position_pct"), QStringLiteral("2.0")},
+                {QStringLiteral("side"), QStringLiteral("both")},
+                {QStringLiteral("margin_mode"), QStringLiteral("isolated")},
+                {QStringLiteral("position_mode"), QStringLiteral("hedge")},
+                {QStringLiteral("assets_mode"), QStringLiteral("single-asset mode")},
+                {QStringLiteral("account_mode"), QStringLiteral("classic trading")},
+                {QStringLiteral("connector_backend"), QStringLiteral("binance-sdk-spot")},
+                {QStringLiteral("leverage"), 20},
+                {QStringLiteral("mdd_logic"), QStringLiteral("Per Trade MDD")},
+                {QStringLiteral("scan_scope"), QStringLiteral("top_n")},
+                {QStringLiteral("scan_top_n"), 200},
+                {QStringLiteral("scan_mdd_limit"), 20},
+                {QStringLiteral("scan_auto_apply"), QStringLiteral("false")},
+                {QStringLiteral("optimizer_mode"), QStringLiteral("pairs")},
+                {QStringLiteral("optimizer_metric"), QStringLiteral("roi-percent-mdd")},
+                {QStringLiteral("optimizer_combo_size"), 2},
+                {QStringLiteral("optimizer_min_trades"), 1},
+                {QStringLiteral("template"), QJsonObject{}},
+                {QStringLiteral("indicators"), QJsonObject{}},
+                {QStringLiteral("stop_loss"), QJsonObject{
+                    {QStringLiteral("mode"), QStringLiteral("Percentage Based Stop Loss")},
+                    {QStringLiteral("scope"), QStringLiteral("Entire Account Stop Loss")},
+                }},
+            }},
             {QStringLiteral("runtime_symbol_interval_pairs"), QJsonArray{
                 QJsonObject{
                     {QStringLiteral("symbol"), QStringLiteral("btcusdt")},
@@ -1041,6 +1097,100 @@ int main(int argc, char **argv) {
           QStringLiteral("native service config validation should uppercase symbols like Python"));
     check(normalizedConfig.config.value(QStringLiteral("intervals")).toArray().at(0).toString() == QStringLiteral("1mo"),
           QStringLiteral("native service config validation should normalize uppercase month intervals like Python"));
+    check(normalizedConfig.config.value(QStringLiteral("mode")).toString() == QStringLiteral("Live"),
+          QStringLiteral("native service config validation should normalize mode choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("account_type")).toString() == QStringLiteral("Futures"),
+          QStringLiteral("native service config validation should normalize account type choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("margin_mode")).toString() == QStringLiteral("Cross"),
+          QStringLiteral("native service config validation should normalize margin mode choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("position_mode")).toString() == QStringLiteral("One-way"),
+          QStringLiteral("native service config validation should normalize position mode aliases from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("assets_mode")).toString() == QStringLiteral("Multi-Assets"),
+          QStringLiteral("native service config validation should normalize assets mode aliases from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("account_mode")).toString() == QStringLiteral("Portfolio Margin"),
+          QStringLiteral("native service config validation should normalize account mode choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("side")).toString() == QStringLiteral("SELL"),
+          QStringLiteral("native service config validation should normalize side choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("order_type")).toString() == QStringLiteral("LIMIT"),
+          QStringLiteral("native service config validation should normalize order type choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("tif")).toString() == QStringLiteral("IOC"),
+          QStringLiteral("native service config validation should normalize time-in-force choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("connector_backend")).toString() == QStringLiteral("ccxt"),
+          QStringLiteral("native service config validation should normalize connector backend labels from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("indicator_source")).toString() == QStringLiteral("TradingView"),
+          QStringLiteral("native service config validation should normalize indicator source choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("theme")).toString() == QStringLiteral("Green"),
+          QStringLiteral("native service config validation should normalize theme choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("design")).toString() == QStringLiteral("Workstation"),
+          QStringLiteral("native service config validation should normalize design choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("selected_exchange")).toString() == QStringLiteral("KuCoin"),
+          QStringLiteral("native service config validation should normalize exchange choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("llm_provider")).toString() == QStringLiteral("openai"),
+          QStringLiteral("native service config validation should normalize LLM provider aliases from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("llm_use_for")).toString() == QStringLiteral("risk_review"),
+          QStringLiteral("native service config validation should normalize LLM use choices from Python source"));
+    check(normalizedConfig.config.value(QStringLiteral("llm_reasoning_effort")).toString() == QStringLiteral("xhigh"),
+          QStringLiteral("native service config validation should normalize LLM reasoning aliases from Python source"));
+    const QJsonObject normalizedChart = normalizedConfig.config.value(QStringLiteral("chart")).toObject();
+    check(normalizedChart.value(QStringLiteral("market")).toString() == QStringLiteral("Spot"),
+          QStringLiteral("native service config validation should normalize chart market choices from Python source"));
+    check(normalizedChart.value(QStringLiteral("view_mode")).toString() == QStringLiteral("lightweight"),
+          QStringLiteral("native service config validation should normalize chart view choices from Python source"));
+    check(normalizedChart.value(QStringLiteral("symbol")).toString() == QStringLiteral("ETHUSDT"),
+          QStringLiteral("native service config validation should normalize chart symbol values"));
+    check(normalizedChart.value(QStringLiteral("interval")).toString() == QStringLiteral("1mo"),
+          QStringLiteral("native service config validation should normalize chart intervals"));
+    check(normalizedChart.value(QStringLiteral("auto_follow")).toBool(false),
+          QStringLiteral("native service config validation should coerce chart booleans"));
+    const QJsonObject normalizedBacktest = normalizedConfig.config.value(QStringLiteral("backtest")).toObject();
+    check(normalizedBacktest.value(QStringLiteral("symbols")).toArray().size() == 1,
+          QStringLiteral("native service config validation should de-duplicate backtest symbols"));
+    check(normalizedBacktest.value(QStringLiteral("symbols")).toArray().at(0).toString() == QStringLiteral("BTCUSDT"),
+          QStringLiteral("native service config validation should uppercase backtest symbols"));
+    check(normalizedBacktest.value(QStringLiteral("intervals")).toArray().at(0).toString() == QStringLiteral("15m"),
+          QStringLiteral("native service config validation should normalize backtest intervals"));
+    check(normalizedBacktest.value(QStringLiteral("execution_backend")).toString() == QStringLiteral("local"),
+          QStringLiteral("native service config validation should normalize backtest execution backend aliases"));
+    check(normalizedBacktest.value(QStringLiteral("logic")).toString() == QStringLiteral("OR"),
+          QStringLiteral("native service config validation should normalize backtest signal logic choices"));
+    check(normalizedBacktest.value(QStringLiteral("symbol_source")).toString() == QStringLiteral("Futures"),
+          QStringLiteral("native service config validation should normalize backtest symbol source choices"));
+    check(normalizedBacktest.value(QStringLiteral("side")).toString() == QStringLiteral("BOTH"),
+          QStringLiteral("native service config validation should normalize backtest side choices"));
+    check(normalizedBacktest.value(QStringLiteral("margin_mode")).toString() == QStringLiteral("Isolated"),
+          QStringLiteral("native service config validation should normalize backtest margin mode choices"));
+    check(normalizedBacktest.value(QStringLiteral("position_mode")).toString() == QStringLiteral("Hedge"),
+          QStringLiteral("native service config validation should normalize backtest position mode choices"));
+    check(normalizedBacktest.value(QStringLiteral("assets_mode")).toString() == QStringLiteral("Single-Asset"),
+          QStringLiteral("native service config validation should normalize backtest assets mode labels"));
+    check(normalizedBacktest.value(QStringLiteral("account_mode")).toString() == QStringLiteral("Classic Trading"),
+          QStringLiteral("native service config validation should normalize backtest account mode choices"));
+    check(normalizedBacktest.value(QStringLiteral("connector_backend")).toString() == QStringLiteral("binance-sdk-spot"),
+          QStringLiteral("native service config validation should normalize backtest connector choices"));
+    check(normalizedBacktest.value(QStringLiteral("mdd_logic")).toString() == QStringLiteral("per_trade"),
+          QStringLiteral("native service config validation should normalize backtest MDD logic labels"));
+    check(normalizedBacktest.value(QStringLiteral("scan_scope")).toString() == QStringLiteral("top_n"),
+          QStringLiteral("native service config validation should normalize optimizer scan scope choices"));
+    check(!normalizedBacktest.value(QStringLiteral("scan_auto_apply")).toBool(true),
+          QStringLiteral("native service config validation should coerce optimizer scan booleans"));
+    check(normalizedBacktest.value(QStringLiteral("optimizer_mode")).toString() == QStringLiteral("pairs"),
+          QStringLiteral("native service config validation should normalize optimizer mode choices"));
+    check(normalizedBacktest.value(QStringLiteral("optimizer_metric")).toString() == QStringLiteral("roi_percent_mdd"),
+          QStringLiteral("native service config validation should normalize optimizer metric aliases"));
+    const QJsonObject normalizedBacktestStop = normalizedBacktest.value(QStringLiteral("stop_loss")).toObject();
+    check(normalizedBacktestStop.value(QStringLiteral("mode")).toString() == QStringLiteral("percent"),
+          QStringLiteral("native service config validation should normalize backtest stop-loss modes from Python source"));
+    check(normalizedBacktestStop.value(QStringLiteral("scope")).toString() == QStringLiteral("entire_account"),
+          QStringLiteral("native service config validation should normalize backtest stop-loss scopes from Python source"));
+    const QJsonObject normalizedPairControls =
+        normalizedConfig.config.value(QStringLiteral("runtime_symbol_interval_pairs")).toArray().at(0).toObject()
+            .value(QStringLiteral("strategy_controls")).toObject();
+    check(normalizedPairControls.value(QStringLiteral("side")).toString() == QStringLiteral("BUY"),
+          QStringLiteral("native service config validation should normalize symbol-pair side choices"));
+    check(normalizedPairControls.value(QStringLiteral("loop_interval_override")).toString() == QStringLiteral("1h"),
+          QStringLiteral("native service config validation should normalize symbol-pair loop interval overrides"));
+    check(normalizedPairControls.value(QStringLiteral("stop_loss")).toObject().value(QStringLiteral("scope")).toString() == QStringLiteral("per_trade"),
+          QStringLiteral("native service config validation should normalize symbol-pair stop-loss scopes"));
 
     const NativeConfigPersistence::ServiceConfigValidationResult invalidConfig =
         NativeConfigPersistence::validateServiceRuntimeConfig(QJsonObject{
@@ -1049,6 +1199,9 @@ int main(int argc, char **argv) {
             {QStringLiteral("intervals"), QJsonArray{QStringLiteral("0m")}},
             {QStringLiteral("leverage"), 126},
             {QStringLiteral("stop_loss"), QStringLiteral("not-object")},
+            {QStringLiteral("llm_provider"), QStringLiteral("ghost-ai")},
+            {QStringLiteral("chart"), QJsonObject{{QStringLiteral("view_mode"), QStringLiteral("external")}}},
+            {QStringLiteral("backtest"), QJsonObject{{QStringLiteral("symbol_source"), QStringLiteral("margin")}}},
         });
     check(!invalidConfig.ok,
           QStringLiteral("native service config validation should reject values Python validate_runtime_config rejects"));
@@ -1057,6 +1210,12 @@ int main(int argc, char **argv) {
           QStringLiteral("native config validation should report unsupported keys"));
     check(invalidMessage.contains(QStringLiteral("leverage: must be between 1 and 125")),
           QStringLiteral("native config validation should report leverage bounds"));
+    check(invalidMessage.contains(QStringLiteral("llm_provider: must be one of:")),
+          QStringLiteral("native config validation should report invalid LLM providers"));
+    check(invalidMessage.contains(QStringLiteral("chart.view_mode: must be one of:")),
+          QStringLiteral("native config validation should report invalid chart view choices"));
+    check(invalidMessage.contains(QStringLiteral("backtest.symbol_source: must be one of:")),
+          QStringLiteral("native config validation should report invalid backtest symbol source choices"));
 
     NativeOrderSafety::OrderAuditLogConfig config;
     config.path = dir.filePath(QStringLiteral("order_audit.jsonl"));

@@ -263,26 +263,12 @@ bool exchangeUsesBinanceApi(const QString &exchangeKey) {
 }
 
 QStringList placeholderSymbolsForExchange(const QString &exchangeKey, bool futures) {
+    const QStringList pythonDefaults = pythonSourceDefaultExecutionSymbols();
+    if (!pythonDefaults.isEmpty()) {
+        return pythonDefaults;
+    }
+    Q_UNUSED(exchangeKey);
     Q_UNUSED(futures);
-    const QString normalized = normalizeExchangeKey(exchangeKey);
-    if (normalized == QStringLiteral("Bybit")) {
-        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"};
-    }
-    if (normalized == QStringLiteral("OKX")) {
-        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LTCUSDT"};
-    }
-    if (normalized == QStringLiteral("Gate")) {
-        return {"BTCUSDT", "ETHUSDT", "XRPUSDT", "TRXUSDT", "ETCUSDT"};
-    }
-    if (normalized == QStringLiteral("Bitget")) {
-        return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOTUSDT"};
-    }
-    if (normalized == QStringLiteral("MEXC")) {
-        return {"BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT"};
-    }
-    if (normalized == QStringLiteral("KuCoin")) {
-        return {"BTCUSDT", "ETHUSDT", "XRPUSDT", "ADAUSDT", "LINKUSDT"};
-    }
     return {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"};
 }
 

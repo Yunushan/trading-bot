@@ -81,6 +81,12 @@ jobs:
           workspaces: |
             experiments/rust-shells -> target
 
+      - name: Audit native source sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/audit_native_source_sync.py --json
+
       - name: Run guarded signed account-read smoke
         shell: bash
         working-directory: experiments/rust-shells

@@ -33,4 +33,6 @@ coverage.xml
 artifacts/rust-native-runtime-evidence/*.json
 artifacts/rust-native-runtime-evidence/*.zip
 artifacts/rust-native-runtime-evidence/downloads/
+artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md
+artifacts/rust-native-runtime-evidence-plan.md
 release-platform-evidence/*.json

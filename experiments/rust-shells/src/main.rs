@@ -161,6 +161,7 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         &evidence_dir,
         &expected_artifacts,
     ))?;
+    let commit = current_git_commit();
     let source_tree_clean = current_source_tree_clean();
     let missing: Vec<&str> = [
         (!api_key_present).then_some("BINANCE_API_KEY"),
@@ -179,6 +180,7 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         "order_submission_attempted": false,
         "read_only": true,
         "runtime_ready_claimed": false,
+        "commit": commit,
         "python_source_contract_hash": python_source_contract_hash(),
         "source_tree_clean": source_tree_clean,
         "secrets_redacted": true,
@@ -216,6 +218,7 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         &evidence_dir,
         &expected_artifacts,
     ))?;
+    let commit = current_git_commit();
     let source_tree_clean = current_source_tree_clean();
     let missing: Vec<&str> = [
         (!confirmed).then_some("TRADING_BOT_RUST_MARKET_SMOKE=1"),
@@ -232,6 +235,7 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         "order_submission_attempted": false,
         "read_only": true,
         "runtime_ready_claimed": false,
+        "commit": commit,
         "python_source_contract_hash": python_source_contract_hash(),
         "source_tree_clean": source_tree_clean,
         "secrets_redacted": true,
@@ -1063,6 +1067,7 @@ fn endpoint_rows(endpoints: &[(&'static str, String)]) -> Vec<Value> {
 struct GeneratedEvidenceWriteGuard {
     ok: bool,
     generated_evidence_write_targets: Vec<String>,
+    non_generated_in_repo_write_targets: Vec<String>,
     tracked_generated_evidence_write_targets: Vec<String>,
     issues: Vec<String>,
 }
@@ -1072,6 +1077,7 @@ impl GeneratedEvidenceWriteGuard {
         json!({
             "ok": self.ok,
             "generated_evidence_write_targets": self.generated_evidence_write_targets,
+            "non_generated_in_repo_write_targets": self.non_generated_in_repo_write_targets,
             "tracked_generated_evidence_write_targets": self.tracked_generated_evidence_write_targets,
             "issues": self.issues
         })
@@ -1100,47 +1106,58 @@ fn generated_evidence_write_guard(
     paths: &[PathBuf],
 ) -> Result<GeneratedEvidenceWriteGuard, Box<dyn std::error::Error>> {
     let root = repo_root();
-    let generated_targets: Vec<String> = paths
-        .iter()
-        .filter_map(|path| repo_relative_generated_evidence_path(path, &root))
-        .collect();
+    let mut generated_targets = Vec::new();
+    let mut non_generated_in_repo_targets = Vec::new();
+    for path in paths {
+        if let Some(relative) = repo_relative_path(path, &root) {
+            if is_generated_evidence_path(&relative) {
+                generated_targets.push(relative);
+            } else {
+                non_generated_in_repo_targets.push(relative);
+            }
+        }
+    }
     let tracked_targets = tracked_git_files(&generated_targets, &root)?;
-    let issues = if tracked_targets.is_empty() {
-        Vec::new()
-    } else {
-        vec![format!(
+    let mut issues = Vec::new();
+    if !non_generated_in_repo_targets.is_empty() {
+        issues.push(format!(
+            "refusing to write generated evidence artifact outside generated evidence directories inside the repository: {}. Use artifacts/rust-native-runtime-evidence, release-platform-evidence, or an absolute path outside the repository.",
+            non_generated_in_repo_targets.join(", ")
+        ));
+    }
+    if !tracked_targets.is_empty() {
+        issues.push(format!(
             "refusing to write generated evidence artifact over tracked source path(s): {}. Commit the removal of generated evidence artifacts first, then regenerate/import evidence from a clean candidate source commit.",
             tracked_targets.join(", ")
-        )]
-    };
+        ));
+    }
     Ok(GeneratedEvidenceWriteGuard {
         ok: issues.is_empty(),
         generated_evidence_write_targets: generated_targets,
+        non_generated_in_repo_write_targets: non_generated_in_repo_targets,
         tracked_generated_evidence_write_targets: tracked_targets,
         issues,
     })
 }
 
-fn repo_relative_generated_evidence_path(path: &Path, root: &Path) -> Option<String> {
+fn repo_relative_path(path: &Path, root: &Path) -> Option<String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir().ok()?.join(path)
     };
     let relative = absolute.strip_prefix(root).ok()?;
-    let normalized = relative.to_string_lossy().replace('\\', "/");
-    if is_generated_evidence_path(&normalized) {
-        Some(normalized)
-    } else {
-        None
-    }
+    Some(relative.to_string_lossy().replace('\\', "/"))
 }
 
 fn is_generated_evidence_path(path: &str) -> bool {
     (path.starts_with("artifacts/rust-native-runtime-evidence/")
         && (path.ends_with(".json")
             || path.ends_with(".zip")
+            || path
+                == "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md"
             || path.starts_with("artifacts/rust-native-runtime-evidence/downloads/")))
+        || path == "artifacts/rust-native-runtime-evidence-plan.md"
         || (path.starts_with("release-platform-evidence/") && path.ends_with(".json"))
 }
 
@@ -1579,5 +1596,52 @@ mod tests {
             assert!(args.contains(&":(exclude)artifacts/rust-native-runtime-evidence".to_owned()));
             assert!(args.contains(&":(exclude)release-platform-evidence".to_owned()));
         }
+    }
+
+    #[test]
+    fn generated_evidence_path_classifier_covers_runtime_plan_artifacts() {
+        for path in [
+            "artifacts/rust-native-runtime-evidence/rust-native-live-account-read-smoke.json",
+            "artifacts/rust-native-runtime-evidence/live-smoke.zip",
+            "artifacts/rust-native-runtime-evidence/downloads/artifact.json",
+            "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md",
+            "artifacts/rust-native-runtime-evidence-plan.md",
+            "release-platform-evidence/browser-chrome-windows_11_x64.json",
+        ] {
+            assert!(
+                is_generated_evidence_path(path),
+                "{path} should be generated evidence"
+            );
+        }
+
+        for path in [
+            "docs/rust-native-runtime-evidence.json",
+            "artifacts/rust-native-runtime-evidence/readme.md",
+            "release-platform-evidence/readme.md",
+        ] {
+            assert!(
+                !is_generated_evidence_path(path),
+                "{path} should remain source-controlled or non-evidence"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_evidence_write_guard_rejects_in_repo_nongenerated_destinations() {
+        let destination = repo_root()
+            .join("docs")
+            .join("rust-native-live-account-read-smoke.json");
+        let guard = generated_evidence_write_guard(&[destination]).expect("guard should run");
+
+        assert!(!guard.ok);
+        assert_eq!(
+            guard.non_generated_in_repo_write_targets,
+            vec!["docs/rust-native-live-account-read-smoke.json".to_owned()]
+        );
+        assert!(
+            guard.issues.iter().any(|issue| issue
+                .contains("outside generated evidence directories inside the repository")),
+            "guard should explain noncanonical in-repo destinations"
+        );
     }
 }

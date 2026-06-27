@@ -340,6 +340,7 @@ def import_evidence_artifacts(
     source_control_write_guard = generated_evidence_write_guard(
         [Path(row["destination"]) for row in planned],
         root=_repo_root(),
+        require_generated_destinations=True,
     )
     if apply and not source_control_write_guard["ok"]:
         issues.extend(str(issue) for issue in source_control_write_guard["issues"])

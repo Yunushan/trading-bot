@@ -400,6 +400,30 @@ def _check_ok_from_output(*, check: Check, returncode: int, stdout: str) -> bool
     return True
 
 
+_PROMOTION_IMPORT_CLEAN_SOURCE_ISSUE_MARKERS = (
+    "current tracked source tree must be clean for promotion evidence validation",
+    "current source tree must be clean for promotion evidence import",
+)
+
+
+def _is_promotion_import_clean_source_issue(issue: object) -> bool:
+    return isinstance(issue, str) and any(
+        marker in issue for marker in _PROMOTION_IMPORT_CLEAN_SOURCE_ISSUE_MARKERS
+    )
+
+
+def _is_dirty_source_promotion_importer_failure(check: Check, *, returncode: int, stdout: str) -> bool:
+    if check.name != "rust native evidence import audit" or returncode == 0:
+        return False
+    payload = _load_json_object(stdout)
+    if payload.get("require_clean_source") is not True:
+        return False
+    issues = payload.get("issues")
+    if not isinstance(issues, list) or not issues:
+        return False
+    return all(_is_promotion_import_clean_source_issue(issue) for issue in issues)
+
+
 def _missing_python_dependency_remediation(output: str, *, extra: str = "service,dev") -> str:
     missing_modules = ("No module named", "ModuleNotFoundError")
     dependency_names = ("PyQt6", "httpx", "requests", "fastapi", "uvicorn", "pydantic")
@@ -450,15 +474,27 @@ def _run_check(check: Check, *, verbose: bool) -> dict[str, object]:
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
     ok = _check_ok_from_output(check=check, returncode=result.returncode, stdout=stdout)
+    required = check.required
+    blocks_success = check.blocks_success
+    advisory_reason = ""
+    if _is_dirty_source_promotion_importer_failure(check, returncode=result.returncode, stdout=stdout):
+        required = False
+        blocks_success = False
+        advisory_reason = (
+            "strict promotion evidence import requires a clean candidate source tree; "
+            "this local development checkout is dirty"
+        )
     payload = {
         "name": check.name,
-        "required": check.required,
-        "blocks_success": check.blocks_success,
+        "required": required,
+        "blocks_success": blocks_success,
         "ok": ok,
         "returncode": result.returncode,
         "stdout": stdout,
         "stderr": stderr,
     }
+    if advisory_reason:
+        payload["advisory_reason"] = advisory_reason
     remediation = _remediation_for(check, returncode=result.returncode, stdout=stdout, stderr=stderr)
     if remediation:
         payload["remediation"] = remediation

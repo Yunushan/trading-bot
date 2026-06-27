@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.native_parity import native_python_source_contract_hash  # noqa: E402
+from app.service.api_contract import SERVICE_API_ROUTE_PATHS  # noqa: E402
 from tools.generate_native_parity_contracts import (  # noqa: E402
     CPP_OUTPUT,
     RUST_OUTPUT,
@@ -36,6 +38,26 @@ class ConsumerRequirement:
     name: str
     path: Path
     required_text: tuple[str, ...]
+    service_route_names: tuple[str, ...] = ()
+    route_extractors: tuple[str, ...] = ()
+
+
+CPP_SERVICE_API_EXTRACTOR = "cpp_service_api"
+TAURI_REQUEST_AND_REPORT_EXTRACTOR = "tauri_request_and_report"
+CPP_SERVICE_API_ROUTE_RE = re.compile(
+    r"TradingBotWindowSupport::serviceApiRequestJson\s*\(\s*"
+    r"QStringLiteral\(\"[A-Z]+\"\)\s*,\s*QStringLiteral\(\"([a-z0-9_]+)\"\)",
+    re.DOTALL,
+)
+CPP_ROUTED_ACTION_RE = re.compile(
+    r"runLocalModelAction\s*\(\s*"
+    r"QStringLiteral\(\"[^\"]+\"\)\s*,\s*QStringLiteral\(\"([a-z0-9_]+)\"\)",
+    re.DOTALL,
+)
+TAURI_REQUEST_AND_REPORT_ROUTE_RE = re.compile(
+    r"requestAndReport\s*\(\s*(?:\"[^\"]+\"|[A-Za-z_$][\w$]*)\s*,\s*\"([a-z0-9_]+)\"",
+    re.DOTALL,
+)
 
 
 def _rel(path: Path) -> str:
@@ -48,6 +70,30 @@ def _read(path: Path) -> str:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _ordered_unique(values: list[str] | tuple[str, ...]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return unique
+
+
+def _extract_service_routes(text: str, extractors: tuple[str, ...]) -> tuple[list[str], list[str]]:
+    route_names: list[str] = []
+    unknown_extractors: list[str] = []
+    for extractor in extractors:
+        if extractor == CPP_SERVICE_API_EXTRACTOR:
+            route_names.extend(CPP_SERVICE_API_ROUTE_RE.findall(text))
+            route_names.extend(CPP_ROUTED_ACTION_RE.findall(text))
+        elif extractor == TAURI_REQUEST_AND_REPORT_EXTRACTOR:
+            route_names.extend(TAURI_REQUEST_AND_REPORT_ROUTE_RE.findall(text))
+        else:
+            unknown_extractors.append(extractor)
+    return _ordered_unique(route_names), unknown_extractors
 
 
 def _generated_artifacts() -> tuple[GeneratedArtifact, ...]:
@@ -73,6 +119,72 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "generated_python_parity::PYTHON_LLM_PROVIDERS",
                 "generated_python_parity::PYTHON_CONNECTOR_OPTIONS",
                 "generated_python_parity::PYTHON_BACKTEST_INTERVALS",
+                "python_source_indicator_catalog",
+                "python_source_llm_provider_keys",
+                "python_source_connector_keys",
+                "python_source_backtest_templates",
+                "python_source_dashboard_strategy_templates",
+                "python_source_chart_view_options",
+                "python_source_positions_view_options",
+                "python_source_rust_contract_parity_ready",
+                "python_source_rust_standalone_runtime_ready",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_strategy_runtime_uses_python_source_options",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "strategy_runtime.rs",
+            (
+                "PYTHON_ACCOUNT_MODE_OPTIONS",
+                "PYTHON_ASSETS_MODE_OPTIONS",
+                "PYTHON_SIDE_OPTIONS",
+                "PYTHON_SIGNAL_LOGIC_OPTIONS",
+                "PYTHON_STOP_LOSS_MODES",
+                "PYTHON_STOP_LOSS_SCOPES",
+                "normalize_python_ui_option_key",
+                "normalize_python_ui_option_key_fuzzy",
+                "normalize_python_string_option_fuzzy",
+                "canonical_side",
+                "normalize_account_mode",
+                "normalize_assets_mode",
+                "normalize_strategy_controls",
+                "normalize_stop_loss",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_config_persistence_uses_python_source_options",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "config_persistence.rs",
+            (
+                "PYTHON_ACCOUNT_MODE_OPTIONS",
+                "PYTHON_ACCOUNT_TYPE_OPTIONS",
+                "PYTHON_ASSETS_MODE_OPTIONS",
+                "PYTHON_BACKTEST_EXECUTION_BACKEND_OPTIONS",
+                "PYTHON_CHART_MARKET_OPTIONS",
+                "PYTHON_CHART_VIEW_OPTIONS",
+                "PYTHON_CONFIG_MODE_OPTIONS",
+                "PYTHON_CONNECTOR_OPTIONS",
+                "PYTHON_DESIGN_OPTIONS",
+                "PYTHON_EXCHANGE_OPTIONS",
+                "PYTHON_INDICATOR_SOURCE_OPTIONS",
+                "PYTHON_LLM_PROVIDERS",
+                "PYTHON_LLM_USE_FOR_OPTIONS",
+                "PYTHON_MARGIN_MODE_OPTIONS",
+                "PYTHON_MDD_LOGIC_OPTIONS",
+                "PYTHON_OPTIMIZER_METRIC_OPTIONS",
+                "PYTHON_OPTIMIZER_MODE_OPTIONS",
+                "PYTHON_ORDER_TYPE_OPTIONS",
+                "PYTHON_POSITION_MODE_OPTIONS",
+                "PYTHON_SCAN_SCOPE_OPTIONS",
+                "PYTHON_SIDE_OPTIONS",
+                "PYTHON_SIGNAL_LOGIC_OPTIONS",
+                "PYTHON_STOP_LOSS_MODES",
+                "PYTHON_STOP_LOSS_SCOPES",
+                "PYTHON_THEME_OPTIONS",
+                "PYTHON_TIME_IN_FORCE_OPTIONS",
+                "ChoiceList",
+                "choice_value_from_text",
+                "validate_choice",
+                "validate_optional_choice",
+                "normalize_stop_loss_value",
             ),
         ),
         ConsumerRequirement(
@@ -88,6 +200,12 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonLlmProviders",
                 "PythonParityContract::kPythonConnectorOptions",
                 "PythonParityContract::kPythonBacktestIntervals",
+                "PythonParityContract::kPythonBacktestTemplates",
+                "PythonParityContract::kPythonChartViewOptions",
+                "PythonParityContract::kPythonPositionsViewOptions",
+                "PythonParityContract::kPythonSignalLogicOptions",
+                "PythonParityContract::kPythonMddLogicOptions",
+                "PythonParityContract::kPythonStopLossModes",
             ),
         ),
         ConsumerRequirement(
@@ -102,6 +220,200 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "pythonSourceLlmProviderKeys",
                 "pythonSourceConnectorKeys",
                 "pythonSourceBacktestIntervals",
+                "pythonSourceBacktestTemplateKeys",
+                "pythonSourceDashboardStrategyTemplateLabels",
+                "pythonSourceChartViewOptionLabels",
+                "pythonSourcePositionsViewOptionLabels",
+                "pythonSourceSignalLogicOptionLabels",
+                "pythonSourceMddLogicOptionLabels",
+                "pythonSourceStopLossModeLabels",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_config_persistence_uses_python_source_options",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeConfigPersistence.cpp",
+            (
+                '#include "generated/PythonParityContract.h"',
+                "PythonParityContract::kPythonAccountModeOptions",
+                "PythonParityContract::kPythonAccountTypeOptions",
+                "PythonParityContract::kPythonAssetsModeOptions",
+                "PythonParityContract::kPythonBacktestExecutionBackendOptions",
+                "PythonParityContract::kPythonChartMarketOptions",
+                "PythonParityContract::kPythonChartViewOptions",
+                "PythonParityContract::kPythonConfigModeOptions",
+                "PythonParityContract::kPythonConnectorOptions",
+                "PythonParityContract::kPythonDesignOptions",
+                "PythonParityContract::kPythonExchangeOptions",
+                "PythonParityContract::kPythonIndicatorSourceOptions",
+                "PythonParityContract::kPythonLlmProviders",
+                "PythonParityContract::kPythonLlmUseForOptions",
+                "PythonParityContract::kPythonMarginModeOptions",
+                "PythonParityContract::kPythonMddLogicOptions",
+                "PythonParityContract::kPythonOptimizerMetricOptions",
+                "PythonParityContract::kPythonOptimizerModeOptions",
+                "PythonParityContract::kPythonOrderTypeOptions",
+                "PythonParityContract::kPythonPositionModeOptions",
+                "PythonParityContract::kPythonScanScopeOptions",
+                "PythonParityContract::kPythonSideOptions",
+                "PythonParityContract::kPythonSignalLogicOptions",
+                "PythonParityContract::kPythonStopLossModes",
+                "PythonParityContract::kPythonStopLossScopes",
+                "PythonParityContract::kPythonThemeOptions",
+                "PythonParityContract::kPythonTimeInForceOptions",
+                "ChoicePairs",
+                "choiceCandidateMatches",
+                "validateOptionalChoice",
+                "llmReasoningEffortChoicesFromSource",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_dashboard_uses_python_source_surface",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_ui.cpp",
+            (
+                "pythonSourceDefaultExecutionSymbols",
+                "pythonSourceBacktestIntervals",
+                "pythonSourceIndicatorDisplayNames",
+                "pythonSourceDefaultEnabledIndicatorKeys",
+                "pythonSourceDashboardLoopChoiceLabels",
+                "pythonSourceDashboardStrategyTemplateLabels",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_backtest_uses_python_source_surface",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.backtest.cpp",
+            (
+                "pythonSourceDefaultBacktestSymbols",
+                "pythonSourceBacktestIntervals",
+                "pythonSourceIndicatorDisplayNames",
+                "pythonSourceBacktestTemplateLabels",
+                "pythonSourceSignalLogicOptionLabels",
+                "pythonSourceMddLogicOptionLabels",
+                "rebuildConnectorComboForAccount",
+                "resolveConnectorConfig",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_backtest_service_api_uses_python_source_routes",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.backtest.cpp",
+            (
+                "TradingBotWindowSupport::serviceApiRequestJson",
+                'QStringLiteral("backtest_run")',
+                'QStringLiteral("backtest")',
+                'QStringLiteral("backtest_stop")',
+            ),
+            ("backtest_run", "backtest", "backtest_stop"),
+            (CPP_SERVICE_API_EXTRACTOR,),
+        ),
+        ConsumerRequirement(
+            "cpp_dashboard_llm_service_api_uses_python_source_routes",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_ui.cpp",
+            (
+                "TradingBotWindowSupport::serviceApiRequestJson",
+                'QStringLiteral("llm_config")',
+                'QStringLiteral("llm_prompt")',
+                'QStringLiteral("llm_local_model_status")',
+                'QStringLiteral("llm_local_model_start")',
+                'QStringLiteral("llm_local_model_pull")',
+                'QStringLiteral("llm_local_model_delete")',
+            ),
+            (
+                "llm_config",
+                "llm_prompt",
+                "llm_local_model_status",
+                "llm_local_model_start",
+                "llm_local_model_pull",
+                "llm_local_model_delete",
+            ),
+            (CPP_SERVICE_API_EXTRACTOR,),
+        ),
+        ConsumerRequirement(
+            "cpp_config_service_api_uses_python_source_routes",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.dashboard_overrides.cpp",
+            (
+                "TradingBotWindowSupport::serviceApiRequestJson",
+                'QStringLiteral("config")',
+                'QStringLiteral("config_save")',
+                'QStringLiteral("config_load")',
+            ),
+            ("config", "config_save", "config_load"),
+            (CPP_SERVICE_API_EXTRACTOR,),
+        ),
+        ConsumerRequirement(
+            "cpp_chart_uses_python_source_surface",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.chart.cpp",
+            (
+                "pythonSourceChartMarketOptions",
+                "pythonSourceBacktestIntervals",
+                "pythonSourceTradingViewIntervalKeys",
+                "pythonSourceTradingViewIntervalCodes",
+                "pythonSourceChartViewOptionKeys",
+                "pythonSourceDefaultChartSymbols",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_chart_heatmap_uses_python_source_surface",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeChartHeatmap.cpp",
+            (
+                '#include "generated/PythonParityContract.h"',
+                "PythonParityContract::kPythonTradingViewIntervalMap",
+                "PythonParityContract::kPythonDefaultChartSymbols",
+                "mapTradingViewInterval",
+                "buildChartStatePayload",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_positions_uses_python_source_surface",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.positions.cpp",
+            (
+                "populateComboFromPythonSourceOptions",
+                "pythonSourcePositionsViewOptionKeys",
+                "pythonSourcePositionsViewOptionLabels",
+                "applyPositionsViewMode",
+                "positionsCumulativeView_",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_account_symbols_use_python_source_fallbacks",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "TradingBotWindow.account.cpp",
+            (
+                "placeholderSymbolsForExchange",
+                "resolveConnectorConfig",
+                "fetchUsdtSymbols",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_exchange_connectors_use_python_source_connectors",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeExchangeConnectors.cpp",
+            (
+                '#include "generated/PythonParityContract.h"',
+                "PythonParityContract::kPythonConnectorOptions",
+                "supportedConnectorBackends",
+                "buildExchangeSupportPayload",
+                "buildConnectorHealthSnapshot",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_native_strategy_runtime_uses_python_source_options",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeStrategyRuntime.cpp",
+            (
+                '#include "generated/PythonParityContract.h"',
+                "PythonParityContract::kPythonAccountModeOptions",
+                "PythonParityContract::kPythonAssetsModeOptions",
+                "PythonParityContract::kPythonSideOptions",
+                "PythonParityContract::kPythonSignalLogicOptions",
+                "PythonParityContract::kPythonStopLossModes",
+                "PythonParityContract::kPythonStopLossScopes",
+                "normalizePythonUiOptionKey",
+                "normalizePythonStringOption",
+                "pythonUiOptionKeyAt",
+                "pythonStringOptionAt",
+                "canonicalSide",
+                "normalizeAccountMode",
+                "normalizeAssetsMode",
+                "normalizeSignalLogic",
+                "normalizeStopLossMode",
+                "normalizeStopLossScope",
+                "normalizeStrategyControls",
             ),
         ),
         ConsumerRequirement(
@@ -115,7 +427,76 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "pythonParityContract.connectorOptions",
                 "pythonParityContract.backtestIntervals",
                 "pythonParityContract.serviceRoutePaths",
+                "pythonParityContract.defaultExecution",
+                "pythonParityContract.defaultBacktest",
+                "pythonParityContract.defaultChartSymbols",
+                "pythonParityContract.dashboardLoopChoices",
+                "pythonParityContract.dashboardStrategyTemplates",
+                "pythonParityContract.backtestTemplates",
+                "pythonParityContract.tradingviewIntervalMap",
+                "pythonParityContract.chartViewOptions",
+                "pythonParityContract.positionsViewOptions",
+                "pythonParityContract.signalLogicOptions",
+                "pythonParityContract.mddLogicOptions",
+                "pythonParityContract.stopLossModes",
             ),
+        ),
+        ConsumerRequirement(
+            "tauri_browser_service_api_uses_python_source_routes",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html",
+            (
+                "requestAndReport",
+                "serviceRouteSupportsMethod",
+                '"operational_preflight"',
+                '"config_persistence"',
+                '"connector_order_circuit_breaker"',
+                '"connector_order_circuit_incidents"',
+                '"account"',
+                '"portfolio"',
+                '"exchange_connector"',
+                '"dashboard"',
+                '"logs"',
+                '"llm_local_model_status"',
+                '"llm_local_model_start"',
+                '"llm_local_model_pull"',
+                '"llm_local_model_delete"',
+                '"llm_config"',
+                '"llm_prompt"',
+                '"connector_order_circuit_breaker_reset"',
+                '"config"',
+                '"control_start"',
+                '"control_stop"',
+                '"config_save"',
+                '"config_load"',
+                '"backtest_run"',
+                '"backtest_stop"',
+            ),
+            (
+                "operational_preflight",
+                "config_persistence",
+                "connector_order_circuit_breaker",
+                "connector_order_circuit_incidents",
+                "account",
+                "portfolio",
+                "exchange_connector",
+                "dashboard",
+                "logs",
+                "llm_local_model_status",
+                "llm_local_model_start",
+                "llm_local_model_pull",
+                "llm_local_model_delete",
+                "llm_config",
+                "llm_prompt",
+                "connector_order_circuit_breaker_reset",
+                "config",
+                "control_start",
+                "control_stop",
+                "config_save",
+                "config_load",
+                "backtest_run",
+                "backtest_stop",
+            ),
+            (TAURI_REQUEST_AND_REPORT_EXTRACTOR,),
         ),
     )
 
@@ -165,6 +546,12 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
         "path": _rel(requirement.path),
         "ok": True,
         "missing_text": [],
+        "declared_service_route_names": list(requirement.service_route_names),
+        "extracted_service_route_names": [],
+        "service_route_extractors": list(requirement.route_extractors),
+        "service_route_names": [],
+        "unknown_service_routes": [],
+        "unknown_route_extractors": [],
     }
     if not requirement.path.exists():
         report["ok"] = False
@@ -173,8 +560,23 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
 
     text = _read(requirement.path)
     missing = [needle for needle in requirement.required_text if needle not in text]
+    extracted_service_routes, unknown_route_extractors = _extract_service_routes(text, requirement.route_extractors)
+    service_route_names = _ordered_unique([*requirement.service_route_names, *extracted_service_routes])
+    unknown_service_routes = [
+        route_name
+        for route_name in service_route_names
+        if route_name not in SERVICE_API_ROUTE_PATHS
+    ]
     report["missing_text"] = missing
-    report["ok"] = not missing
+    report["extracted_service_route_names"] = extracted_service_routes
+    report["service_route_names"] = service_route_names
+    report["unknown_service_routes"] = unknown_service_routes
+    report["unknown_route_extractors"] = unknown_route_extractors
+    report["ok"] = not missing and not unknown_service_routes and not unknown_route_extractors
+    if unknown_service_routes or unknown_route_extractors:
+        report["issue"] = "consumer references service routes missing from Python Service API contract"
+        if unknown_route_extractors:
+            report["issue"] = "consumer has unknown service route extractor configuration"
     return report
 
 

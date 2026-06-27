@@ -356,6 +356,62 @@ def _target_plan(target: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
+def _workflow_dispatch_batch_plan(targets: list[dict[str, Any]], *, limit: int) -> dict[str, Any]:
+    def _workflow_inputs_for_plan(plan: dict[str, Any]) -> dict[str, Any]:
+        inputs: dict[str, Any] = {
+            "target_id": str(plan.get("target_id") or ""),
+            "runner_labels_json": str(plan.get("runner_labels_json") or "[]"),
+        }
+        required_inputs = set(str(item) for item in plan.get("required_workflow_inputs") or [])
+        if "desktop_smoke_command" in required_inputs:
+            inputs["desktop_smoke_command"] = "<real release desktop smoke command>"
+        if "browser_test_command" in required_inputs:
+            inputs["browser_test_command"] = str(plan.get("browser_contract_command") or "")
+        return inputs
+
+    target_plans = [_target_plan(target) for target in targets]
+    limited_plans = _limit_list(target_plans, limit)
+    workflow_dispatch_inputs = [_workflow_inputs_for_plan(plan) for plan in limited_plans]
+    manual_input_targets = [
+        {
+            "target_id": str(plan.get("target_id") or ""),
+            "required_workflow_inputs": list(plan.get("required_workflow_inputs") or []),
+            "workflow_dispatch_inputs": {
+                key: value
+                for key, value in _workflow_inputs_for_plan(plan).items()
+                if key not in {"target_id", "runner_labels_json"}
+            },
+            "workflow_dispatch_example": str(plan.get("workflow_dispatch_example") or ""),
+        }
+        for plan in target_plans
+        if plan.get("required_workflow_inputs")
+    ]
+    limited_manual_input_targets = _limit_list(manual_input_targets, limit)
+    return {
+        "workflow": "release-platform-real-tests.yml",
+        "target_count": len(target_plans),
+        "target_ids": [str(plan.get("target_id") or "") for plan in target_plans],
+        "command_limit": limit,
+        "command_count": len(limited_plans),
+        "command_target_ids": [str(plan.get("target_id") or "") for plan in limited_plans],
+        "commands": [str(plan.get("workflow_dispatch_example") or "") for plan in limited_plans],
+        "workflow_dispatch_inputs": workflow_dispatch_inputs,
+        "commands_truncated": limit > 0 and len(target_plans) > limit,
+        "manual_input_target_count": len(manual_input_targets),
+        "manual_input_targets": limited_manual_input_targets,
+        "manual_input_targets_truncated": limit > 0 and len(manual_input_targets) > limit,
+        "artifact_name_pattern": "release-platform-evidence-<target_id>",
+        "validation_command": (
+            "python tools/check_release_platform_matrix.py --require-evidence "
+            "--require-current-commit --require-clean-source --evidence-dir release-platform-evidence"
+        ),
+        "aggregate_write_command": (
+            "python tools/write_rust_native_release_evidence.py --tag <tag> "
+            "--platform-evidence-dir release-platform-evidence"
+        ),
+    }
+
+
 def preflight_release_evidence_inputs(
     *,
     tag: str,
@@ -371,7 +427,11 @@ def preflight_release_evidence_inputs(
     matrix_path = _repo_path(matrix_path)
     platform_evidence_dir = _repo_path(platform_evidence_dir)
     output_dir = _repo_path(output_dir)
-    output_write_guard = generated_evidence_write_guard([output_dir / f"{EVIDENCE_ID}.json"], root=_repo_root())
+    output_write_guard = generated_evidence_write_guard(
+        [output_dir / f"{EVIDENCE_ID}.json"],
+        root=_repo_root(),
+        require_generated_destinations=True,
+    )
     version, expected_assets = _build_expected_assets(tag)
     required_rust_assets = sorted(
         asset.name
@@ -437,11 +497,9 @@ def preflight_release_evidence_inputs(
     if not output_write_guard["ok"]:
         issues.extend(str(issue) for issue in output_write_guard["issues"])
 
-    missing_evidence_plan = [
-        _target_plan(targets_by_id[target_id])
-        for target_id in _limit_list(missing_evidence, missing_limit)
-        if target_id in targets_by_id
-    ]
+    missing_targets = [targets_by_id[target_id] for target_id in missing_evidence if target_id in targets_by_id]
+    missing_evidence_plan = [_target_plan(target) for target in _limit_list(missing_targets, missing_limit)]
+    workflow_dispatch_batch_plan = _workflow_dispatch_batch_plan(missing_targets, limit=missing_limit)
     local_browser_batch_plan = _local_browser_batch_plan(browser_targets)
     github_token_present = bool(
         str(os.environ.get("GITHUB_TOKEN") or "").strip()
@@ -466,6 +524,7 @@ def preflight_release_evidence_inputs(
         "platform_evidence_dir_exists": evidence_dir_exists,
         "source_tree_clean": source_tree_clean,
         "python_source_contract_hash": native_python_source_contract_hash(),
+        "release_evidence_target_count": len(target_ids),
         "platform_target_count": len(platform_targets),
         "browser_target_count": len(browser_targets),
         "required_rust_release_assets": required_rust_assets,
@@ -478,9 +537,11 @@ def preflight_release_evidence_inputs(
         "unknown_platform_evidence": _limit_list(unknown_evidence, missing_limit),
         "missing_platform_evidence_count": len(missing_evidence),
         "missing_platform_evidence_limit": missing_limit,
+        "missing_platform_evidence_all": missing_evidence,
         "missing_platform_evidence": _limit_list(missing_evidence, missing_limit),
         "missing_platform_evidence_plan": missing_evidence_plan,
         "missing_platform_evidence_truncated": missing_limit > 0 and len(missing_evidence) > missing_limit,
+        "workflow_dispatch_batch_plan": workflow_dispatch_batch_plan,
         "local_browser_batch_plan": local_browser_batch_plan,
         "expected_output_path": str(output_dir / f"{EVIDENCE_ID}.json"),
         "source_control_write_guard": output_write_guard,
@@ -655,7 +716,11 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = _repo_path(Path(args.output_dir))
     output_path = output_dir / f"{EVIDENCE_ID}.json"
-    source_control_write_guard = generated_evidence_write_guard([output_path], root=_repo_root())
+    source_control_write_guard = generated_evidence_write_guard(
+        [output_path],
+        root=_repo_root(),
+        require_generated_destinations=True,
+    )
     if not source_control_write_guard["ok"]:
         result = {
             "ok": False,

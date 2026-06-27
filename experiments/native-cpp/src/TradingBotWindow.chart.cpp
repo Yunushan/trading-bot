@@ -209,24 +209,18 @@ private:
 
 QString tradingViewIntervalFor(QString interval) {
     interval = interval.trimmed().toLower();
-    static const QMap<QString, QString> mapping = {
-        {"1m", "1"},
-        {"3m", "3"},
-        {"5m", "5"},
-        {"15m", "15"},
-        {"30m", "30"},
-        {"1h", "60"},
-        {"2h", "120"},
-        {"4h", "240"},
-        {"6h", "360"},
-        {"8h", "480"},
-        {"12h", "720"},
-        {"1d", "1D"},
-        {"3d", "3D"},
-        {"1w", "1W"},
-        {"1mo", "1M"},
-    };
-    return mapping.value(interval, "60");
+    const QStringList keys = TradingBotWindowSupport::pythonSourceTradingViewIntervalKeys();
+    const QStringList codes = TradingBotWindowSupport::pythonSourceTradingViewIntervalCodes();
+    const int count = std::max(keys.size(), codes.size());
+    for (int i = 0; i < count; ++i) {
+        if (keys.value(i).trimmed().toLower() == interval) {
+            const QString code = codes.value(i).trimmed();
+            if (!code.isEmpty()) {
+                return code;
+            }
+        }
+    }
+    return QStringLiteral("60");
 }
 
 QString normalizeChartSymbol(QString symbol) {
@@ -503,7 +497,10 @@ QWidget *TradingBotWindow::createChartTab() {
             symbols = result.symbols;
             status->setText(QString("Loaded %1 symbols.").arg(symbols.size()));
         } else {
-            symbols = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"};
+            symbols = TradingBotWindowSupport::pythonSourceDefaultChartSymbols();
+            if (symbols.isEmpty()) {
+                symbols = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"};
+            }
             status->setText(result.error.isEmpty()
                                 ? "Using fallback symbol list."
                                 : QString("Using fallback symbols: %1").arg(result.error));

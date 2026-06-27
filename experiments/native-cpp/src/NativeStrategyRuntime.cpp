@@ -1,12 +1,14 @@
 #include "NativeStrategyRuntime.h"
 
 #include "NativeExchangeConnectors.h"
+#include "generated/PythonParityContract.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <tuple>
@@ -24,6 +26,117 @@ QString textOf(const QJsonValue &value) {
         return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
     }
     return {};
+}
+
+QString parityString(std::string_view value) {
+    return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
+}
+
+template <std::size_t N>
+QString normalizePythonUiOptionKey(
+    const QJsonValue &value,
+    const std::array<PythonParityContract::PythonUiOption, N> &options,
+    const QString &fallback = {}) {
+    const QString raw = textOf(value).trimmed();
+    if (raw.isEmpty()) {
+        return fallback;
+    }
+    const QString rawLower = raw.toLower();
+    QString rawFirstToken;
+    for (const QChar ch : rawLower) {
+        if (ch.isLetterOrNumber()) {
+            rawFirstToken.append(ch);
+        } else if (!rawFirstToken.isEmpty()) {
+            break;
+        }
+    }
+    for (const auto &option : options) {
+        const QString key = parityString(option.key);
+        const QString label = parityString(option.label);
+        const QString keyLower = key.toLower();
+        const QString labelLower = label.toLower();
+        if (raw.compare(key, Qt::CaseInsensitive) == 0
+            || raw.compare(label, Qt::CaseInsensitive) == 0
+            || keyLower.startsWith(rawLower)
+            || labelLower.startsWith(rawLower)
+            || labelLower.contains(rawLower)
+            || (!rawFirstToken.isEmpty()
+                && rawFirstToken != rawLower
+                && (keyLower.startsWith(rawFirstToken)
+                    || labelLower.startsWith(rawFirstToken)
+                    || labelLower.contains(rawFirstToken)))) {
+            return key;
+        }
+    }
+    return fallback;
+}
+
+template <std::size_t N>
+QString normalizePythonStringOption(
+    const QJsonValue &value,
+    const std::array<std::string_view, N> &options,
+    const QString &fallback = {}) {
+    const QString raw = textOf(value).trimmed();
+    if (raw.isEmpty()) {
+        return fallback;
+    }
+    const QString rawLower = raw.toLower();
+    QString rawFirstToken;
+    for (const QChar ch : rawLower) {
+        if (ch.isLetterOrNumber()) {
+            rawFirstToken.append(ch);
+        } else if (!rawFirstToken.isEmpty()) {
+            break;
+        }
+    }
+    for (std::string_view optionView : options) {
+        const QString option = parityString(optionView);
+        const QString optionLower = option.toLower();
+        if (raw.compare(option, Qt::CaseInsensitive) == 0
+            || optionLower.startsWith(rawLower)
+            || optionLower.contains(rawLower)
+            || (!rawFirstToken.isEmpty()
+                && rawFirstToken != rawLower
+                && (optionLower.startsWith(rawFirstToken)
+                    || optionLower.contains(rawFirstToken)))) {
+            return option;
+        }
+    }
+    return fallback;
+}
+
+template <std::size_t N>
+QString pythonUiOptionKeyAt(
+    const std::array<PythonParityContract::PythonUiOption, N> &options,
+    std::size_t index,
+    const QString &fallback = {}) {
+    if (index < options.size()) {
+        return parityString(options.at(index).key);
+    }
+    return fallback;
+}
+
+template <std::size_t N>
+QString pythonStringOptionAt(
+    const std::array<std::string_view, N> &options,
+    std::size_t index,
+    const QString &fallback = {}) {
+    if (index < options.size()) {
+        return parityString(options.at(index));
+    }
+    return fallback;
+}
+
+QString normalizeSignalLogic(const QJsonValue &value) {
+    return normalizePythonUiOptionKey(value, PythonParityContract::kPythonSignalLogicOptions);
+}
+
+QString normalizeStopLossMode(const QJsonValue &value) {
+    return normalizePythonUiOptionKey(value, PythonParityContract::kPythonStopLossModes, QStringLiteral("usdt"));
+}
+
+QString normalizeStopLossScope(const QJsonValue &value) {
+    return normalizePythonUiOptionKey(value, PythonParityContract::kPythonStopLossScopes, QStringLiteral("per_trade"));
 }
 
 std::optional<double> numberOf(const QJsonValue &value) {
@@ -246,51 +359,35 @@ QString normalizePositionPctUnits(const QJsonValue &value) {
 }
 
 QString canonicalSide(const QJsonValue &value) {
-    const QString text = textOf(value);
-    const QString upper = text.toUpper();
-    if (upper == QStringLiteral("BUY") || upper == QStringLiteral("SELL") || upper == QStringLiteral("BOTH")) {
-        return upper;
-    }
-    const QString lower = text.toLower();
-    if (lower.startsWith(QStringLiteral("buy"))) {
-        return QStringLiteral("BUY");
-    }
-    if (lower.startsWith(QStringLiteral("sell"))) {
-        return QStringLiteral("SELL");
-    }
-    return lower.isEmpty() ? QString() : QStringLiteral("BOTH");
+    return normalizePythonUiOptionKey(
+        value,
+        PythonParityContract::kPythonSideOptions,
+        textOf(value).trimmed().isEmpty()
+            ? QString()
+            : pythonUiOptionKeyAt(PythonParityContract::kPythonSideOptions, 2));
 }
 
 QString normalizeAccountMode(const QJsonValue &value) {
-    const QString lower = textOf(value).toLower();
-    if (lower.isEmpty()) {
-        return {};
-    }
-    return lower.contains(QStringLiteral("portfolio")) ? QStringLiteral("Portfolio Margin") : QStringLiteral("Classic Trading");
+    return normalizePythonStringOption(
+        value,
+        PythonParityContract::kPythonAccountModeOptions,
+        textOf(value).trimmed().isEmpty()
+            ? QString()
+            : pythonStringOptionAt(PythonParityContract::kPythonAccountModeOptions, 0));
 }
 
 QString normalizeAssetsMode(const QJsonValue &value) {
-    const QString lower = textOf(value).toLower();
-    if (lower.isEmpty()) {
-        return {};
-    }
-    return lower.contains(QStringLiteral("multi")) ? QStringLiteral("Multi-Assets") : QStringLiteral("Single-Asset");
+    return normalizePythonUiOptionKey(
+        value,
+        PythonParityContract::kPythonAssetsModeOptions,
+        textOf(value).trimmed().isEmpty()
+            ? QString()
+            : pythonUiOptionKeyAt(PythonParityContract::kPythonAssetsModeOptions, 0));
 }
 
 QJsonObject normalizeStopLoss(const QJsonObject &input) {
-    QString mode = textOf(input.value(QStringLiteral("mode"))).toLower();
-    if (mode != QStringLiteral("usdt") && mode != QStringLiteral("percent") && mode != QStringLiteral("both")) {
-        mode = QStringLiteral("usdt");
-    }
-    QString scope = textOf(input.value(QStringLiteral("scope"))).toLower();
-    if (!QStringList{
-            QStringLiteral("per_trade"),
-            QStringLiteral("directional"),
-            QStringLiteral("cumulative"),
-            QStringLiteral("entire_account"),
-        }.contains(scope)) {
-        scope = QStringLiteral("per_trade");
-    }
+    const QString mode = normalizeStopLossMode(input.value(QStringLiteral("mode")));
+    const QString scope = normalizeStopLossScope(input.value(QStringLiteral("scope")));
     return {
         {QStringLiteral("enabled"), NativeStrategyRuntime::coerceStrategyBool(input.value(QStringLiteral("enabled")))},
         {QStringLiteral("mode"), mode},
@@ -696,8 +793,8 @@ QJsonObject normalizeStrategyControls(const QString &kind, const QJsonObject &co
         const QString account = normalizeAccountMode(controls.value(QStringLiteral("account_mode")));
         if (!account.isEmpty()) out.insert(QStringLiteral("account_mode"), account);
     } else if (kindNorm == QStringLiteral("backtest")) {
-        const QString logic = textOf(controls.value(QStringLiteral("logic"))).toUpper();
-        if (QStringList{QStringLiteral("AND"), QStringLiteral("OR"), QStringLiteral("SEPARATE")}.contains(logic)) out.insert(QStringLiteral("logic"), logic);
+        const QString logic = normalizeSignalLogic(controls.value(QStringLiteral("logic")));
+        if (!logic.isEmpty()) out.insert(QStringLiteral("logic"), logic);
         if (auto value = numberOf(controls.value(QStringLiteral("capital")))) out.insert(QStringLiteral("capital"), *value);
         if (auto value = numberOf(controls.value(QStringLiteral("position_pct")))) out.insert(QStringLiteral("position_pct"), *value);
         const QString units = normalizePositionPctUnits(controls.value(QStringLiteral("position_pct_units")));

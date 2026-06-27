@@ -47,6 +47,25 @@ def _tail(text: str, max_chars: int = 4000) -> str:
     return text[-max_chars:]
 
 
+def _current_git_commit() -> str:
+    for name in ("GITHUB_SHA", "TRADING_BOT_COMMIT"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    try:
+        output = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_repo_root(),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown-local-commit"
+    return output.stdout.strip() or "unknown-local-commit"
+
+
 def _parse_stdout_json(stdout: str) -> tuple[dict[str, Any] | None, str]:
     try:
         payload = json.loads(stdout)
@@ -236,6 +255,12 @@ def _validate_payload(
             "payload python_source_contract_hash must match current Python source contract "
             f"{native_python_source_contract_hash()}"
         )
+    commit = str(payload.get("commit") or "").strip()
+    current_commit = _current_git_commit()
+    if not commit:
+        issues.append("payload commit must be present")
+    elif commit != current_commit:
+        issues.append(f"payload commit must match current git commit {current_commit}")
     if not isinstance(payload.get("source_tree_clean"), bool):
         issues.append("payload source_tree_clean must be a boolean")
     if Path(str(payload.get("evidence_dir") or "")) != evidence_dir:

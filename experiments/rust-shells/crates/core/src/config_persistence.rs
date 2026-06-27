@@ -6,6 +6,19 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use crate::generated_python_parity::{
+    PYTHON_ACCOUNT_MODE_OPTIONS, PYTHON_ACCOUNT_TYPE_OPTIONS, PYTHON_ASSETS_MODE_OPTIONS,
+    PYTHON_BACKTEST_EXECUTION_BACKEND_OPTIONS, PYTHON_CHART_MARKET_OPTIONS,
+    PYTHON_CHART_VIEW_OPTIONS, PYTHON_CONFIG_MODE_OPTIONS, PYTHON_CONNECTOR_OPTIONS,
+    PYTHON_DESIGN_OPTIONS, PYTHON_EXCHANGE_OPTIONS, PYTHON_INDICATOR_SOURCE_OPTIONS,
+    PYTHON_LLM_PROVIDERS, PYTHON_LLM_USE_FOR_OPTIONS, PYTHON_MARGIN_MODE_OPTIONS,
+    PYTHON_MDD_LOGIC_OPTIONS, PYTHON_OPTIMIZER_METRIC_OPTIONS, PYTHON_OPTIMIZER_MODE_OPTIONS,
+    PYTHON_ORDER_TYPE_OPTIONS, PYTHON_POSITION_MODE_OPTIONS, PYTHON_SCAN_SCOPE_OPTIONS,
+    PYTHON_SIDE_OPTIONS, PYTHON_SIGNAL_LOGIC_OPTIONS, PYTHON_STOP_LOSS_MODES,
+    PYTHON_STOP_LOSS_SCOPES, PYTHON_THEME_OPTIONS, PYTHON_TIME_IN_FORCE_OPTIONS,
+    PythonConnectorOption, PythonLlmProvider, PythonUiOption,
+};
+
 pub const SERVICE_CONFIG_FILE_KIND: &str = "trading-bot-service-config";
 pub const SERVICE_CONFIG_FORMAT_VERSION: i64 = 1;
 pub const SERVICE_CONFIG_ENV_PATH: &str = "BOT_SERVICE_CONFIG_PATH";
@@ -128,20 +141,36 @@ pub fn format_service_config_validation_issues(issues: &[ServiceConfigValidation
 }
 
 pub fn validate_service_runtime_config(config: &Value) -> Result<Value, String> {
-    let issues = service_config_validation_issues(config);
+    let (validated, issues) = validate_service_runtime_config_state(config);
     if issues.is_empty() {
-        Ok(normalize_service_runtime_config(config))
+        let Some(validated) = validated else {
+            return Err(format_service_config_validation_issues(&issues));
+        };
+        Ok(normalize_service_runtime_config(&Value::Object(validated)))
     } else {
         Err(format_service_config_validation_issues(&issues))
     }
 }
 
 pub fn service_config_validation_issues(config: &Value) -> Vec<ServiceConfigValidationIssue> {
+    let (_, issues) = validate_service_runtime_config_state(config);
+    issues
+}
+
+fn validate_service_runtime_config_state(
+    config: &Value,
+) -> (
+    Option<Map<String, Value>>,
+    Vec<ServiceConfigValidationIssue>,
+) {
     let Some(object) = config.as_object() else {
-        return vec![ServiceConfigValidationIssue::new(
-            "config",
-            "must be an object",
-        )];
+        return (
+            None,
+            vec![ServiceConfigValidationIssue::new(
+                "config",
+                "must be an object",
+            )],
+        );
     };
     let mut cfg = object.clone();
     let mut issues = Vec::new();
@@ -149,7 +178,7 @@ pub fn service_config_validation_issues(config: &Value) -> Vec<ServiceConfigVali
     validate_allowed_keys(&cfg, RUNTIME_ALLOWED_KEYS, &mut issues, "");
     validate_text(&mut cfg, "api_key", &mut issues, "", true);
     validate_text(&mut cfg, "api_secret", &mut issues, "", true);
-    validate_text(&mut cfg, "mode", &mut issues, "", false);
+    validate_choice(&mut cfg, "mode", CONFIG_MODE_CHOICES, &mut issues, "");
     validate_choice(
         &mut cfg,
         "account_type",
@@ -359,13 +388,31 @@ pub fn service_config_validation_issues(config: &Value) -> Vec<ServiceConfigVali
         validate_float_range(&mut cfg, key, &mut issues, "", min, max, false);
     }
 
-    validate_text(&mut cfg, "connector_backend", &mut issues, "", false);
-    validate_text(&mut cfg, "indicator_source", &mut issues, "", false);
+    validate_choice(
+        &mut cfg,
+        "connector_backend",
+        CONNECTOR_BACKEND_CHOICES,
+        &mut issues,
+        "",
+    );
+    validate_choice(
+        &mut cfg,
+        "indicator_source",
+        INDICATOR_SOURCE_CHOICES,
+        &mut issues,
+        "",
+    );
     validate_text(&mut cfg, "code_language", &mut issues, "", false);
-    validate_text(&mut cfg, "theme", &mut issues, "", true);
-    validate_text(&mut cfg, "design", &mut issues, "", true);
+    validate_optional_choice(&mut cfg, "theme", THEME_CHOICES, &mut issues, "");
+    validate_optional_choice(&mut cfg, "design", DESIGN_CHOICES, &mut issues, "");
     validate_text(&mut cfg, "selected_rust_framework", &mut issues, "", true);
-    validate_text(&mut cfg, "selected_exchange", &mut issues, "", false);
+    validate_choice(
+        &mut cfg,
+        "selected_exchange",
+        EXCHANGE_CHOICES,
+        &mut issues,
+        "",
+    );
     validate_text(&mut cfg, "selected_forex_broker", &mut issues, "", true);
     validate_bool(&mut cfg, "llm_enabled", &mut issues, "", false);
     validate_choice(
@@ -399,7 +446,7 @@ pub fn service_config_validation_issues(config: &Value) -> Vec<ServiceConfigVali
     validate_chart_config(&mut cfg, &mut issues);
     validate_backtest_config(&mut cfg, &mut issues);
 
-    issues
+    (Some(cfg), issues)
 }
 
 fn normalize_service_runtime_config(config: &Value) -> Value {
@@ -1039,119 +1086,84 @@ const BACKTEST_ALLOWED_KEYS: &[&str] = &[
     "symbols",
     "template",
 ];
-const ACCOUNT_TYPE_CHOICES: &[(&str, &str)] = &[("spot", "Spot"), ("futures", "Futures")];
-const MARGIN_MODE_CHOICES: &[(&str, &str)] = &[("isolated", "Isolated"), ("cross", "Cross")];
-const POSITION_MODE_CHOICES: &[(&str, &str)] = &[
-    ("hedge", "Hedge"),
-    ("one-way", "One-way"),
-    ("oneway", "One-way"),
-];
-const ASSETS_MODE_CHOICES: &[(&str, &str)] = &[
-    ("single-asset", "Single-Asset"),
-    ("single-asset mode", "Single-Asset"),
-    ("multi-assets", "Multi-Assets"),
-    ("multi-asset", "Multi-Assets"),
-    ("multi-assets mode", "Multi-Assets"),
-];
-const ACCOUNT_MODE_CHOICES: &[(&str, &str)] = &[
-    ("classic trading", "Classic Trading"),
-    ("portfolio margin", "Portfolio Margin"),
-];
-const SIDE_CHOICES: &[(&str, &str)] = &[("both", "BOTH"), ("buy", "BUY"), ("sell", "SELL")];
-const ORDER_TYPE_CHOICES: &[(&str, &str)] = &[("market", "MARKET"), ("limit", "LIMIT")];
-const TIF_CHOICES: &[(&str, &str)] = &[
-    ("gtc", "GTC"),
-    ("ioc", "IOC"),
-    ("fok", "FOK"),
-    ("gtd", "GTD"),
-];
-const LOGIC_CHOICES: &[(&str, &str)] = &[("and", "AND"), ("or", "OR"), ("separate", "SEPARATE")];
-const SCAN_SCOPE_CHOICES: &[(&str, &str)] = &[
-    ("selected", "selected"),
-    ("top_n", "top_n"),
-    ("top-n", "top_n"),
-    ("all_loaded", "all_loaded"),
-    ("all-loaded", "all_loaded"),
-];
-const OPTIMIZER_MODE_CHOICES: &[(&str, &str)] = &[
-    ("current", "current"),
-    ("single", "single"),
-    ("pairs", "pairs"),
-    ("combinations", "combinations"),
-];
-const OPTIMIZER_METRIC_CHOICES: &[(&str, &str)] = &[
-    ("roi_percent", "roi_percent"),
-    ("roi-percent", "roi_percent"),
-    ("roi_percent_mdd", "roi_percent_mdd"),
-    ("roi-percent-mdd", "roi_percent_mdd"),
-    ("roi_drawdown", "roi_drawdown"),
-    ("roi-drawdown", "roi_drawdown"),
-    ("roi_value", "roi_value"),
-    ("roi-value", "roi_value"),
-];
-const BACKTEST_EXECUTION_BACKEND_CHOICES: &[(&str, &str)] = &[
+#[derive(Clone, Copy)]
+enum ChoiceList {
+    UiOptions(&'static [PythonUiOption]),
+    UiOptionsWithAliases(
+        &'static [PythonUiOption],
+        &'static [(&'static str, &'static str)],
+    ),
+    StringOptions(&'static [&'static str]),
+    LlmProvidersWithAliases(
+        &'static [PythonLlmProvider],
+        &'static [(&'static str, &'static str)],
+    ),
+    LlmReasoningEfforts(
+        &'static [PythonLlmProvider],
+        &'static [(&'static str, &'static str)],
+    ),
+    ConnectorOptions(&'static [PythonConnectorOption]),
+}
+
+const CONFIG_MODE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_CONFIG_MODE_OPTIONS);
+const THEME_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_THEME_OPTIONS);
+const DESIGN_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_DESIGN_OPTIONS);
+const INDICATOR_SOURCE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_INDICATOR_SOURCE_OPTIONS);
+const EXCHANGE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_EXCHANGE_OPTIONS);
+const CONNECTOR_BACKEND_CHOICES: ChoiceList =
+    ChoiceList::ConnectorOptions(PYTHON_CONNECTOR_OPTIONS);
+const CHART_MARKET_CHOICES: ChoiceList = ChoiceList::StringOptions(PYTHON_CHART_MARKET_OPTIONS);
+const ACCOUNT_TYPE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_ACCOUNT_TYPE_OPTIONS);
+const MARGIN_MODE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_MARGIN_MODE_OPTIONS);
+const POSITION_MODE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_POSITION_MODE_OPTIONS);
+const ASSETS_MODE_ALIASES: &[(&str, &str)] = &[("multi-asset", "Multi-Assets")];
+const ASSETS_MODE_CHOICES: ChoiceList =
+    ChoiceList::UiOptionsWithAliases(PYTHON_ASSETS_MODE_OPTIONS, ASSETS_MODE_ALIASES);
+const ACCOUNT_MODE_CHOICES: ChoiceList = ChoiceList::StringOptions(PYTHON_ACCOUNT_MODE_OPTIONS);
+const SIDE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_SIDE_OPTIONS);
+const ORDER_TYPE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_ORDER_TYPE_OPTIONS);
+const TIF_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_TIME_IN_FORCE_OPTIONS);
+const LOGIC_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_SIGNAL_LOGIC_OPTIONS);
+const MDD_LOGIC_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_MDD_LOGIC_OPTIONS);
+const STOP_LOSS_MODE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_STOP_LOSS_MODES);
+const STOP_LOSS_SCOPE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_STOP_LOSS_SCOPES);
+const SCAN_SCOPE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_SCAN_SCOPE_OPTIONS);
+const OPTIMIZER_MODE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_OPTIMIZER_MODE_OPTIONS);
+const OPTIMIZER_METRIC_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_OPTIMIZER_METRIC_OPTIONS);
+const BACKTEST_EXECUTION_BACKEND_ALIASES: &[(&str, &str)] = &[
     ("desktop", "local"),
     ("desktop-local", "local"),
-    ("local", "local"),
     ("remote", "service"),
-    ("service", "service"),
     ("service-api", "service"),
 ];
-const CHART_VIEW_MODE_CHOICES: &[(&str, &str)] = &[
-    ("tradingview", "tradingview"),
-    ("original", "original"),
-    ("lightweight", "lightweight"),
-    ("tradingview lightweight", "lightweight"),
-];
-const LLM_PROVIDER_CHOICES: &[(&str, &str)] = &[
+const BACKTEST_EXECUTION_BACKEND_CHOICES: ChoiceList = ChoiceList::UiOptionsWithAliases(
+    PYTHON_BACKTEST_EXECUTION_BACKEND_OPTIONS,
+    BACKTEST_EXECUTION_BACKEND_ALIASES,
+);
+const CHART_VIEW_MODE_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_CHART_VIEW_OPTIONS);
+const LLM_PROVIDER_ALIASES: &[(&str, &str)] = &[
     ("alibaba", "qwen"),
     ("alibaba-qwen", "qwen"),
-    ("anthropic", "anthropic"),
     ("anthropic-claude", "anthropic"),
     ("chatgpt", "openai"),
     ("claude", "anthropic"),
     ("custom", "local"),
     ("dashscope", "qwen"),
-    ("deepseek", "deepseek"),
-    ("gemini", "gemini"),
     ("google", "gemini"),
     ("google-gemini", "gemini"),
-    ("grok", "grok"),
-    ("local", "local"),
     ("local-openai", "local"),
     ("local-openai-compatible", "local"),
-    ("ollama", "local"),
-    ("openai", "openai"),
     ("openai-chatgpt", "openai"),
-    ("qwen", "qwen"),
     ("xai", "grok"),
     ("xai-grok", "grok"),
 ];
-const LLM_USE_FOR_CHOICES: &[(&str, &str)] = &[
-    ("advisory", "advisory"),
-    ("backtest_explanation", "backtest_explanation"),
-    ("risk_review", "risk_review"),
-    ("signal_confirmation", "signal_confirmation"),
-];
-const LLM_REASONING_EFFORT_CHOICES: &[(&str, &str)] = &[
-    ("default", "default"),
-    ("disabled", "disabled"),
-    ("enabled", "enabled"),
-    ("extra-high", "xhigh"),
-    ("extra_high", "xhigh"),
-    ("high", "high"),
-    ("low", "low"),
-    ("max", "max"),
-    ("medium", "medium"),
-    ("minimal", "minimal"),
-    ("none", "none"),
-    ("xhigh", "xhigh"),
-];
-const MDD_LOGIC_CHOICES: &[(&str, &str)] = &[
-    ("per_trade", "per_trade"),
-    ("cumulative", "cumulative"),
-    ("entire_account", "entire_account"),
-];
+const LLM_PROVIDER_CHOICES: ChoiceList =
+    ChoiceList::LlmProvidersWithAliases(PYTHON_LLM_PROVIDERS, LLM_PROVIDER_ALIASES);
+const LLM_USE_FOR_CHOICES: ChoiceList = ChoiceList::UiOptions(PYTHON_LLM_USE_FOR_OPTIONS);
+const LLM_REASONING_EFFORT_ALIASES: &[(&str, &str)] =
+    &[("extra-high", "xhigh"), ("extra_high", "xhigh")];
+const LLM_REASONING_EFFORT_CHOICES: ChoiceList =
+    ChoiceList::LlmReasoningEfforts(PYTHON_LLM_PROVIDERS, LLM_REASONING_EFFORT_ALIASES);
 const RISK_BOOL_KEYS: &[&str] = &[
     "add_only",
     "indicator_use_live_values",
@@ -1326,28 +1338,121 @@ fn validate_nullable_text(
     }
 }
 
-fn choice_value(value: &Value, choices: &[(&str, &str)]) -> Option<String> {
-    let text = text_value(value, false)?;
-    let key = text.trim().to_ascii_lowercase();
-    choices
-        .iter()
-        .find_map(|(raw, normalized)| (*raw == key).then(|| (*normalized).to_owned()))
+fn choice_token(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
 }
 
-fn allowed_choice_text(choices: &[(&str, &str)]) -> String {
-    choices
-        .iter()
-        .map(|(_, value)| *value)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>()
-        .join(", ")
+fn choice_candidate_matches(raw_lower: &str, raw_token: &str, candidate: &str) -> bool {
+    let candidate_lower = candidate.trim().to_ascii_lowercase();
+    let candidate_token = choice_token(candidate);
+    raw_lower == candidate_lower
+        || raw_token == candidate_token
+        || (raw_token.len() >= 3
+            && (candidate_token.starts_with(raw_token) || candidate_token.contains(raw_token)))
+}
+
+fn choice_from_pairs(raw_lower: &str, raw_token: &str, choices: &[(&str, &str)]) -> Option<String> {
+    choices.iter().find_map(|(raw, normalized)| {
+        choice_candidate_matches(raw_lower, raw_token, raw).then(|| (*normalized).to_owned())
+    })
+}
+
+fn choice_value_from_text(text: &str, choices: ChoiceList) -> Option<String> {
+    let raw_lower = text.trim().to_ascii_lowercase();
+    let raw_token = choice_token(text);
+    if raw_lower.is_empty() {
+        return None;
+    }
+    match choices {
+        ChoiceList::UiOptions(options) => options
+            .iter()
+            .find(|option| {
+                choice_candidate_matches(&raw_lower, &raw_token, option.key)
+                    || choice_candidate_matches(&raw_lower, &raw_token, option.label)
+            })
+            .map(|option| option.key.to_owned()),
+        ChoiceList::UiOptionsWithAliases(options, aliases) => {
+            choice_from_pairs(&raw_lower, &raw_token, aliases)
+                .or_else(|| choice_value_from_text(text, ChoiceList::UiOptions(options)))
+        }
+        ChoiceList::StringOptions(options) => options
+            .iter()
+            .find(|option| choice_candidate_matches(&raw_lower, &raw_token, option))
+            .map(|option| (*option).to_owned()),
+        ChoiceList::LlmProvidersWithAliases(providers, aliases) => {
+            choice_from_pairs(&raw_lower, &raw_token, aliases).or_else(|| {
+                providers
+                    .iter()
+                    .find(|provider| {
+                        choice_candidate_matches(&raw_lower, &raw_token, provider.key)
+                            || choice_candidate_matches(&raw_lower, &raw_token, provider.label)
+                    })
+                    .map(|provider| provider.key.to_owned())
+            })
+        }
+        ChoiceList::LlmReasoningEfforts(providers, aliases) => {
+            choice_from_pairs(&raw_lower, &raw_token, aliases).or_else(|| {
+                providers
+                    .iter()
+                    .flat_map(|provider| provider.reasoning_efforts.iter().copied())
+                    .map(str::trim)
+                    .filter(|effort| !effort.is_empty())
+                    .find(|effort| choice_candidate_matches(&raw_lower, &raw_token, effort))
+                    .map(str::to_owned)
+            })
+        }
+        ChoiceList::ConnectorOptions(options) => options
+            .iter()
+            .find(|option| {
+                choice_candidate_matches(&raw_lower, &raw_token, option.key)
+                    || choice_candidate_matches(&raw_lower, &raw_token, option.label)
+            })
+            .map(|option| option.key.to_owned()),
+    }
+}
+
+fn choice_value(value: &Value, choices: ChoiceList) -> Option<String> {
+    choice_value_from_text(&text_value(value, false)?, choices)
+}
+
+fn allowed_choice_text(choices: ChoiceList) -> String {
+    let mut values = BTreeSet::new();
+    match choices {
+        ChoiceList::UiOptions(options) | ChoiceList::UiOptionsWithAliases(options, _) => {
+            values.extend(options.iter().map(|option| option.key));
+        }
+        ChoiceList::StringOptions(options) => {
+            values.extend(options.iter().copied());
+        }
+        ChoiceList::LlmProvidersWithAliases(providers, _) => {
+            values.extend(providers.iter().map(|provider| provider.key));
+        }
+        ChoiceList::LlmReasoningEfforts(providers, aliases) => {
+            values.extend(aliases.iter().map(|(_, value)| *value));
+            values.extend(
+                providers
+                    .iter()
+                    .flat_map(|provider| provider.reasoning_efforts.iter().copied())
+                    .map(str::trim)
+                    .filter(|effort| !effort.is_empty()),
+            );
+        }
+        ChoiceList::ConnectorOptions(options) => {
+            values.extend(options.iter().map(|option| option.key));
+        }
+    }
+    values.into_iter().collect::<Vec<_>>().join(", ")
 }
 
 fn validate_choice(
     cfg: &mut Map<String, Value>,
     key: &str,
-    choices: &[(&str, &str)],
+    choices: ChoiceList,
     issues: &mut Vec<ServiceConfigValidationIssue>,
     prefix: &str,
 ) {
@@ -1362,6 +1467,24 @@ fn validate_choice(
             format!("must be one of: {}", allowed_choice_text(choices)),
         ));
     }
+}
+
+fn validate_optional_choice(
+    cfg: &mut Map<String, Value>,
+    key: &str,
+    choices: ChoiceList,
+    issues: &mut Vec<ServiceConfigValidationIssue>,
+    prefix: &str,
+) {
+    let Some(value) = cfg.get(key) else {
+        return;
+    };
+    let text = value_to_text(value).trim().to_owned();
+    if text.is_empty() {
+        cfg.insert(key.to_owned(), Value::String(String::new()));
+        return;
+    }
+    validate_choice(cfg, key, choices, issues, prefix);
 }
 
 fn validate_int_range(
@@ -1664,35 +1787,33 @@ fn validate_stop_loss(
             field(prefix, key),
             "must be an object",
         ));
+        return;
     }
+    cfg.insert(key.to_owned(), normalize_stop_loss_value(value));
 }
 
 fn normalize_stop_loss_value(value: &Value) -> Value {
     let raw = value.as_object().cloned().unwrap_or_default();
-    let mode = match raw
+    let default_mode = PYTHON_STOP_LOSS_MODES
+        .first()
+        .map(|item| item.key)
+        .unwrap_or("usdt");
+    let mode_text = raw
         .get("mode")
         .map(value_to_text)
-        .unwrap_or_else(|| "usdt".to_owned())
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "percent" => "percent",
-        "both" => "both",
-        _ => "usdt",
-    };
-    let scope = match raw
+        .unwrap_or_else(|| default_mode.to_owned());
+    let mode = choice_value_from_text(&mode_text, STOP_LOSS_MODE_CHOICES)
+        .unwrap_or_else(|| default_mode.to_owned());
+    let default_scope = PYTHON_STOP_LOSS_SCOPES
+        .first()
+        .map(|item| item.key)
+        .unwrap_or("per_trade");
+    let scope_text = raw
         .get("scope")
         .map(value_to_text)
-        .unwrap_or_else(|| "per_trade".to_owned())
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "cumulative" => "cumulative",
-        "entire_account" => "entire_account",
-        _ => "per_trade",
-    };
+        .unwrap_or_else(|| default_scope.to_owned());
+    let scope = choice_value_from_text(&scope_text, STOP_LOSS_SCOPE_CHOICES)
+        .unwrap_or_else(|| default_scope.to_owned());
     let usdt = raw
         .get("usdt")
         .and_then(finite_float)
@@ -1731,6 +1852,7 @@ fn validate_pair_list(
         ));
         return;
     };
+    let mut normalized_entries = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let entry_field = format!("{}[{index}]", field(prefix, key));
         let Some(entry_object) = entry.as_object() else {
@@ -1740,6 +1862,7 @@ fn validate_pair_list(
             ));
             continue;
         };
+        let mut normalized_entry = entry_object.clone();
         let symbol = entry_object
             .get("symbol")
             .and_then(|value| text_value(value, false))
@@ -1754,17 +1877,18 @@ fn validate_pair_list(
             ));
             continue;
         }
-        if entry_object
-            .get("interval")
-            .and_then(normalize_interval)
-            .is_none()
-        {
+        let Some(interval) = entry_object.get("interval").and_then(normalize_interval) else {
             issues.push(ServiceConfigValidationIssue::new(
                 format!("{entry_field}.interval"),
                 "must be a valid interval",
             ));
             continue;
-        }
+        };
+        normalized_entry.insert(
+            "symbol".to_owned(),
+            Value::String(symbol.unwrap_or_default()),
+        );
+        normalized_entry.insert("interval".to_owned(), Value::String(interval));
         if let Some(controls) = entry_object.get("strategy_controls") {
             if let Some(control_object) = controls.as_object() {
                 let mut controls_copy = control_object.clone();
@@ -1791,6 +1915,9 @@ fn validate_pair_list(
                             format!("{entry_field}.strategy_controls.loop_interval_override"),
                             "must be a valid interval",
                         ));
+                    } else if let Some(interval) = normalize_interval(loop_value) {
+                        controls_copy
+                            .insert("loop_interval_override".to_owned(), Value::String(interval));
                     }
                 }
                 validate_stop_loss(
@@ -1799,6 +1926,8 @@ fn validate_pair_list(
                     issues,
                     &format!("{entry_field}.strategy_controls"),
                 );
+                normalized_entry
+                    .insert("strategy_controls".to_owned(), Value::Object(controls_copy));
             } else if !controls.is_null() {
                 issues.push(ServiceConfigValidationIssue::new(
                     format!("{entry_field}.strategy_controls"),
@@ -1806,7 +1935,9 @@ fn validate_pair_list(
                 ));
             }
         }
+        normalized_entries.push(Value::Object(normalized_entry));
     }
+    cfg.insert(key.to_owned(), Value::Array(normalized_entries));
 }
 
 fn validate_mapping(
@@ -1841,7 +1972,7 @@ fn validate_chart_config(
     };
     let mut chart = chart_object.clone();
     validate_allowed_keys(&chart, CHART_ALLOWED_KEYS, issues, "chart");
-    validate_choice(&mut chart, "market", ACCOUNT_TYPE_CHOICES, issues, "chart");
+    validate_choice(&mut chart, "market", CHART_MARKET_CHOICES, issues, "chart");
     validate_choice(
         &mut chart,
         "view_mode",
@@ -1851,24 +1982,30 @@ fn validate_chart_config(
     );
     validate_bool(&mut chart, "auto_follow", issues, "chart", true);
     if let Some(symbol) = chart.get("symbol") {
-        let valid = text_value(symbol, false)
-            .map(|value| !value.chars().any(char::is_whitespace))
-            .unwrap_or(false);
-        if !valid {
+        let normalized = text_value(symbol, false).map(|value| value.to_ascii_uppercase());
+        if normalized
+            .as_ref()
+            .is_none_or(|value| value.is_empty() || value.chars().any(char::is_whitespace))
+        {
             issues.push(ServiceConfigValidationIssue::new(
                 "chart.symbol",
                 "must be a non-empty symbol",
             ));
+        } else if let Some(normalized) = normalized {
+            chart.insert("symbol".to_owned(), Value::String(normalized));
         }
     }
     if let Some(interval) = chart.get("interval") {
-        if normalize_interval(interval).is_none() {
+        if let Some(normalized) = normalize_interval(interval) {
+            chart.insert("interval".to_owned(), Value::String(normalized));
+        } else {
             issues.push(ServiceConfigValidationIssue::new(
                 "chart.interval",
                 "must be a valid interval",
             ));
         }
     }
+    cfg.insert("chart".to_owned(), Value::Object(chart));
 }
 
 fn validate_backtest_config(
@@ -1906,7 +2043,13 @@ fn validate_backtest_config(
         "backtest",
     );
     validate_choice(&mut backtest, "logic", LOGIC_CHOICES, issues, "backtest");
-    validate_text(&mut backtest, "symbol_source", issues, "backtest", false);
+    validate_choice(
+        &mut backtest,
+        "symbol_source",
+        CHART_MARKET_CHOICES,
+        issues,
+        "backtest",
+    );
     validate_datetime_text(&mut backtest, "start_date", issues, "backtest");
     validate_datetime_text(&mut backtest, "end_date", issues, "backtest");
     validate_float_range(
@@ -1947,12 +2090,12 @@ fn validate_backtest_config(
         issues,
         "backtest",
     );
-    validate_text(
+    validate_choice(
         &mut backtest,
         "connector_backend",
+        CONNECTOR_BACKEND_CHOICES,
         issues,
         "backtest",
-        false,
     );
     validate_int_range(&mut backtest, "leverage", issues, "backtest", 1, 125);
     validate_choice(
@@ -2013,6 +2156,7 @@ fn validate_backtest_config(
     validate_mapping(&backtest, "template", issues, "backtest");
     validate_mapping(&backtest, "indicators", issues, "backtest");
     validate_stop_loss(&mut backtest, "stop_loss", issues, "backtest");
+    cfg.insert("backtest".to_owned(), Value::Object(backtest));
 }
 
 fn validate_datetime_text(
@@ -2284,11 +2428,27 @@ mod tests {
 
     #[test]
     fn validates_runtime_config_like_python_service_load() {
-        let config = json!({
+        let mut config = json!({
             "symbols": ["ethusdt", "ETHUSDT"],
             "intervals": ["1M", "2 hours"],
+            "mode": "live",
             "account_type": "futures",
+            "margin_mode": "cross",
+            "position_mode": "oneway",
+            "assets_mode": "multi-asset",
+            "account_mode": "portfolio margin",
+            "side": "sell",
+            "order_type": "limit",
+            "tif": "ioc",
             "position_pct": "2.5",
+            "connector_backend": "CCXT (Unified)",
+            "indicator_source": "tradingview",
+            "theme": "green",
+            "design": "workstation",
+            "selected_exchange": "kucoin",
+            "llm_provider": "chatgpt",
+            "llm_use_for": "Risk review",
+            "llm_reasoning_effort": "extra-high",
             "runtime_symbol_interval_pairs": [{
                 "symbol": "btcusdt",
                 "interval": "15 minutes",
@@ -2300,13 +2460,111 @@ mod tests {
                 }
             }]
         });
+        config["chart"] = json!({
+            "market": "spot",
+            "view_mode": "TradingView Lightweight",
+            "symbol": "ethusdt",
+            "interval": "1 month",
+            "auto_follow": "yes"
+        });
+        config["backtest"] = json!({
+            "symbols": ["btcusdt", "BTCUSDT"],
+            "intervals": ["15 minutes", "1M"],
+            "capital": "1000",
+            "execution_backend": "desktop-local",
+            "logic": "or",
+            "symbol_source": "futures",
+            "start_date": "2026-01-01",
+            "end_date": "2026-02-01",
+            "position_pct": "2.0",
+            "side": "both",
+            "margin_mode": "isolated",
+            "position_mode": "hedge",
+            "assets_mode": "single-asset mode",
+            "account_mode": "classic trading",
+            "connector_backend": "binance-sdk-spot",
+            "leverage": 20,
+            "mdd_logic": "Per Trade MDD",
+            "scan_scope": "top_n",
+            "scan_top_n": 200,
+            "scan_mdd_limit": 20,
+            "scan_auto_apply": "false",
+            "optimizer_mode": "pairs",
+            "optimizer_metric": "roi-percent-mdd",
+            "optimizer_combo_size": 2,
+            "optimizer_min_trades": 1,
+            "template": {},
+            "indicators": {},
+            "stop_loss": {
+                "mode": "Percentage Based Stop Loss",
+                "scope": "Entire Account Stop Loss"
+            }
+        });
         let validated = validate_service_runtime_config(&config)
             .expect("Python-compatible runtime config should validate");
         assert_eq!(validated["symbols"], json!(["ETHUSDT"]));
         assert_eq!(validated["intervals"], json!(["1mo", "2h"]));
+        assert_eq!(validated["mode"], "Live");
+        assert_eq!(validated["account_type"], "Futures");
+        assert_eq!(validated["margin_mode"], "Cross");
+        assert_eq!(validated["position_mode"], "One-way");
+        assert_eq!(validated["assets_mode"], "Multi-Assets");
+        assert_eq!(validated["account_mode"], "Portfolio Margin");
+        assert_eq!(validated["side"], "SELL");
+        assert_eq!(validated["order_type"], "LIMIT");
+        assert_eq!(validated["tif"], "IOC");
+        assert_eq!(validated["connector_backend"], "ccxt");
+        assert_eq!(validated["indicator_source"], "TradingView");
+        assert_eq!(validated["theme"], "Green");
+        assert_eq!(validated["design"], "Workstation");
+        assert_eq!(validated["selected_exchange"], "KuCoin");
+        assert_eq!(validated["llm_provider"], "openai");
+        assert_eq!(validated["llm_use_for"], "risk_review");
+        assert_eq!(validated["llm_reasoning_effort"], "xhigh");
+        assert_eq!(validated["chart"]["market"], "Spot");
+        assert_eq!(validated["chart"]["view_mode"], "lightweight");
+        assert_eq!(validated["chart"]["symbol"], "ETHUSDT");
+        assert_eq!(validated["chart"]["interval"], "1mo");
+        assert_eq!(validated["chart"]["auto_follow"], true);
+        assert_eq!(validated["backtest"]["symbols"], json!(["BTCUSDT"]));
+        assert_eq!(validated["backtest"]["intervals"], json!(["15m", "1mo"]));
+        assert_eq!(validated["backtest"]["execution_backend"], "local");
+        assert_eq!(validated["backtest"]["logic"], "OR");
+        assert_eq!(validated["backtest"]["symbol_source"], "Futures");
+        assert_eq!(validated["backtest"]["side"], "BOTH");
+        assert_eq!(validated["backtest"]["margin_mode"], "Isolated");
+        assert_eq!(validated["backtest"]["position_mode"], "Hedge");
+        assert_eq!(validated["backtest"]["assets_mode"], "Single-Asset");
+        assert_eq!(validated["backtest"]["account_mode"], "Classic Trading");
+        assert_eq!(
+            validated["backtest"]["connector_backend"],
+            "binance-sdk-spot"
+        );
+        assert_eq!(validated["backtest"]["mdd_logic"], "per_trade");
+        assert_eq!(validated["backtest"]["scan_scope"], "top_n");
+        assert_eq!(validated["backtest"]["scan_auto_apply"], false);
+        assert_eq!(validated["backtest"]["optimizer_mode"], "pairs");
+        assert_eq!(validated["backtest"]["optimizer_metric"], "roi_percent_mdd");
+        assert_eq!(validated["backtest"]["stop_loss"]["mode"], "percent");
+        assert_eq!(
+            validated["backtest"]["stop_loss"]["scope"],
+            "entire_account"
+        );
         assert_eq!(
             validated["runtime_symbol_interval_pairs"][0]["symbol"],
             "BTCUSDT"
+        );
+        assert_eq!(
+            validated["runtime_symbol_interval_pairs"][0]["interval"],
+            "15m"
+        );
+        assert_eq!(
+            validated["runtime_symbol_interval_pairs"][0]["strategy_controls"]["side"],
+            "BUY"
+        );
+        assert_eq!(
+            validated["runtime_symbol_interval_pairs"][0]["strategy_controls"]["loop_interval_override"],
+            "1h"
         );
         assert_eq!(
             validated["runtime_symbol_interval_pairs"][0]["strategy_controls"]["stop_loss"]["scope"],
@@ -2318,13 +2576,19 @@ mod tests {
             "symbols": ["BAD SYMBOL"],
             "intervals": ["0m"],
             "leverage": 126,
-            "stop_loss": "not-object"
+            "stop_loss": "not-object",
+            "llm_provider": "ghost-ai",
+            "chart": {"view_mode": "external"},
+            "backtest": {"symbol_source": "margin"}
         });
         let issues = service_config_validation_issues(&invalid);
         let message = format_service_config_validation_issues(&issues);
         assert!(message.contains("unknown_key: is not a supported config key"));
         assert!(message.contains("leverage: must be between 1 and 125"));
         assert!(message.contains("stop_loss: must be an object"));
+        assert!(message.contains("llm_provider: must be one of:"));
+        assert!(message.contains("chart.view_mode: must be one of:"));
+        assert!(message.contains("backtest.symbol_source: must be one of:"));
     }
 
     #[test]

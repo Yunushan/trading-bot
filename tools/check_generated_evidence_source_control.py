@@ -14,11 +14,14 @@ GENERATED_EVIDENCE_PATTERNS = (
     "artifacts/rust-native-runtime-evidence/*.json",
     "artifacts/rust-native-runtime-evidence/*.zip",
     "artifacts/rust-native-runtime-evidence/downloads/*",
+    "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md",
+    "artifacts/rust-native-runtime-evidence-plan.md",
     "release-platform-evidence/*.json",
 )
 
 EVIDENCE_SCAN_ROOTS = (
     "artifacts/rust-native-runtime-evidence",
+    "artifacts/rust-native-runtime-evidence-plan.md",
     "release-platform-evidence",
 )
 
@@ -42,14 +45,17 @@ def _git_ls_files(root: Path, paths: list[str] | None = None) -> list[str]:
         args.extend(["--", *paths])
     else:
         return []
-    result = subprocess.run(
-        args,
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            args,
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return []
     return [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -87,20 +93,33 @@ def generated_evidence_write_guard(
     *,
     root: Path | None = None,
     tracked_files: list[str] | None = None,
+    require_generated_destinations: bool = False,
 ) -> dict[str, object]:
     root = (root or _repo_root()).resolve()
     generated_destinations = []
+    non_generated_in_repo_destinations = []
     for raw_path in destination_paths:
         path = raw_path if raw_path.is_absolute() else root / raw_path
         relative = _repo_relative(path, root=root)
-        if relative and _matches_generated_evidence_artifact(relative):
+        if not relative:
+            continue
+        if _matches_generated_evidence_artifact(relative):
             generated_destinations.append(relative)
+        elif require_generated_destinations:
+            non_generated_in_repo_destinations.append(relative)
 
     if tracked_files is None:
         tracked_files = _git_ls_files(root, generated_destinations)
     tracked = {path.replace("\\", "/") for path in tracked_files}
     tracked_targets = [path for path in generated_destinations if path in tracked]
     issues = []
+    if non_generated_in_repo_destinations:
+        joined = ", ".join(non_generated_in_repo_destinations)
+        issues.append(
+            "refusing to write generated evidence artifact outside generated evidence "
+            f"directories inside the repository: {joined}. Use artifacts/rust-native-runtime-evidence, "
+            "release-platform-evidence, or an absolute path outside the repository."
+        )
     if tracked_targets:
         joined = ", ".join(tracked_targets)
         issues.append(
@@ -111,6 +130,7 @@ def generated_evidence_write_guard(
     return {
         "ok": not issues,
         "generated_evidence_write_targets": generated_destinations,
+        "non_generated_in_repo_write_targets": non_generated_in_repo_destinations,
         "tracked_generated_evidence_write_targets": tracked_targets,
         "issues": issues,
     }
