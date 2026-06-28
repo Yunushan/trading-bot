@@ -77,7 +77,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python tools/audit_native_source_sync.py --json
+          mkdir -p artifacts/native-source-sync
+          python tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json
+
+      - name: Upload native source sync audit
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-source-sync-audit
+          path: artifacts/native-source-sync/native-source-sync-audit.json
+          if-no-files-found: warn
 
       - name: Collect release platform evidence
         shell: bash

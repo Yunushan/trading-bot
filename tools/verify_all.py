@@ -185,7 +185,13 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
         ),
         Check(
             "native source sync audit",
-            (python, "tools/audit_native_source_sync.py", "--json"),
+            (
+                python,
+                "tools/audit_native_source_sync.py",
+                "--json",
+                "--output",
+                "artifacts/native-source-sync/native-source-sync-audit.json",
+            ),
             root,
             remediation="Regenerate Python-owned C++/Rust parity contracts with: python Languages/Python/tools/generate_native_parity_contracts.py.",
         ),
@@ -214,8 +220,10 @@ def _checks(root: Path, *, skip_slow: bool) -> list[Check]:
                 "tools/import_rust_native_evidence_artifacts.py",
                 "artifacts/rust-native-runtime-evidence",
                 "release-platform-evidence",
+                "artifacts/native-source-sync",
                 "--require-current-commit",
                 "--require-clean-source",
+                "--require-native-source-sync-audit",
                 "--json",
             ),
             root,
@@ -400,28 +408,31 @@ def _check_ok_from_output(*, check: Check, returncode: int, stdout: str) -> bool
     return True
 
 
-_PROMOTION_IMPORT_CLEAN_SOURCE_ISSUE_MARKERS = (
+_PROMOTION_IMPORT_SOURCE_BINDING_ISSUE_MARKERS = (
     "current tracked source tree must be clean for promotion evidence validation",
     "current source tree must be clean for promotion evidence import",
+    "commit must match current git commit",
+    "python_source_contract_hash must match current Python source contract",
+    "source_tree_clean must be true for release promotion evidence",
 )
 
 
-def _is_promotion_import_clean_source_issue(issue: object) -> bool:
+def _is_promotion_import_source_binding_issue(issue: object) -> bool:
     return isinstance(issue, str) and any(
-        marker in issue for marker in _PROMOTION_IMPORT_CLEAN_SOURCE_ISSUE_MARKERS
+        marker in issue for marker in _PROMOTION_IMPORT_SOURCE_BINDING_ISSUE_MARKERS
     )
 
 
-def _is_dirty_source_promotion_importer_failure(check: Check, *, returncode: int, stdout: str) -> bool:
+def _is_local_source_binding_promotion_importer_failure(check: Check, *, returncode: int, stdout: str) -> bool:
     if check.name != "rust native evidence import audit" or returncode == 0:
         return False
     payload = _load_json_object(stdout)
-    if payload.get("require_clean_source") is not True:
+    if payload.get("require_clean_source") is not True and payload.get("require_current_commit") is not True:
         return False
     issues = payload.get("issues")
     if not isinstance(issues, list) or not issues:
         return False
-    return all(_is_promotion_import_clean_source_issue(issue) for issue in issues)
+    return all(_is_promotion_import_source_binding_issue(issue) for issue in issues)
 
 
 def _missing_python_dependency_remediation(output: str, *, extra: str = "service,dev") -> str:
@@ -477,12 +488,12 @@ def _run_check(check: Check, *, verbose: bool) -> dict[str, object]:
     required = check.required
     blocks_success = check.blocks_success
     advisory_reason = ""
-    if _is_dirty_source_promotion_importer_failure(check, returncode=result.returncode, stdout=stdout):
+    if _is_local_source_binding_promotion_importer_failure(check, returncode=result.returncode, stdout=stdout):
         required = False
         blocks_success = False
         advisory_reason = (
-            "strict promotion evidence import requires a clean candidate source tree; "
-            "this local development checkout is dirty"
+            "strict promotion evidence import requires current-commit artifacts from a clean candidate source tree; "
+            "this local development checkout has stale or dirty-source local evidence"
         )
     payload = {
         "name": check.name,

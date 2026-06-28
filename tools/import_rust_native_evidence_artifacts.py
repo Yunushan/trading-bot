@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 import zipfile
@@ -25,6 +26,36 @@ except ModuleNotFoundError:  # pragma: no cover - exercised when imported as too
 
 DEFAULT_RUNTIME_EVIDENCE_DIR = Path("artifacts/rust-native-runtime-evidence")
 DEFAULT_PLATFORM_EVIDENCE_DIR = Path("release-platform-evidence")
+SOURCE_SYNC_AUDIT_FILENAME = "native-source-sync-audit.json"
+SOURCE_SYNC_AUDIT_RELATIVE_PATH = Path("artifacts/native-source-sync") / SOURCE_SYNC_AUDIT_FILENAME
+SOURCE_SYNC_AUDIT_SOURCE = "Languages/Python/app/native_parity.py"
+SOURCE_SYNC_REQUIRED_GENERATED_ARTIFACTS = (
+    "rust_core_generated_contract",
+    "cpp_generated_contract",
+    "tauri_browser_generated_contract",
+)
+SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES = (
+    "rust_core_consumes_generated_contract",
+    "rust_strategy_runtime_uses_python_source_options",
+    "rust_config_persistence_uses_python_source_options",
+    "cpp_support_consumes_generated_contract",
+    "cpp_support_exposes_generated_contract",
+    "cpp_config_persistence_uses_python_source_options",
+    "cpp_dashboard_uses_python_source_surface",
+    "cpp_backtest_uses_python_source_surface",
+    "cpp_backtest_service_api_uses_python_source_routes",
+    "cpp_dashboard_llm_service_api_uses_python_source_routes",
+    "cpp_config_service_api_uses_python_source_routes",
+    "cpp_chart_uses_python_source_surface",
+    "cpp_native_chart_heatmap_uses_python_source_surface",
+    "cpp_positions_uses_python_source_surface",
+    "cpp_account_symbols_use_python_source_fallbacks",
+    "cpp_native_exchange_connectors_use_python_source_connectors",
+    "cpp_native_strategy_runtime_uses_python_source_options",
+    "tauri_browser_consumes_generated_contract",
+    "tauri_browser_service_api_uses_python_source_routes",
+)
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_MANIFEST_PATH = runtime_evidence.DEFAULT_MANIFEST_PATH
 REQUIRED_REQUIREMENTS = runtime_evidence.REQUIRED_REQUIREMENTS
 
@@ -189,6 +220,100 @@ def _validate_platform_candidate(
     return issues
 
 
+def _is_native_source_sync_audit_candidate(candidate: JsonCandidate) -> bool:
+    return candidate.name == SOURCE_SYNC_AUDIT_FILENAME
+
+
+def _is_current_checkout_source_sync_audit(candidate: JsonCandidate) -> bool:
+    if "!" in candidate.source:
+        return False
+    try:
+        return Path(candidate.source).resolve() == _repo_path(SOURCE_SYNC_AUDIT_RELATIVE_PATH).resolve()
+    except OSError:
+        return False
+
+
+def _validate_native_source_sync_audit_candidate(candidate: JsonCandidate) -> list[str]:
+    issues: list[str] = []
+    if candidate.name != SOURCE_SYNC_AUDIT_FILENAME:
+        issues.append(f"{candidate.source} filename must be {SOURCE_SYNC_AUDIT_FILENAME}")
+    if candidate.payload.get("ok") is not True:
+        issues.append(f"{candidate.source} native source sync audit ok must be true")
+    if candidate.payload.get("issues"):
+        issues.append(f"{candidate.source} native source sync audit issues must be empty")
+    if str(candidate.payload.get("source") or "").strip() != SOURCE_SYNC_AUDIT_SOURCE:
+        issues.append(f"{candidate.source} source must be {SOURCE_SYNC_AUDIT_SOURCE}")
+    current_contract_hash = runtime_evidence.native_python_source_contract_hash()
+    if str(candidate.payload.get("contract_hash") or "").strip().lower() != current_contract_hash:
+        issues.append(f"{candidate.source} contract_hash must match current Python source contract")
+    generated = candidate.payload.get("generated")
+    if not isinstance(generated, list) or not generated:
+        issues.append(f"{candidate.source} must include generated contract artifact checks")
+    else:
+        generated_names = {
+            str(row.get("name") or "")
+            for row in generated
+            if isinstance(row, dict) and str(row.get("name") or "").strip()
+        }
+        for required_name in SOURCE_SYNC_REQUIRED_GENERATED_ARTIFACTS:
+            if required_name not in generated_names:
+                issues.append(f"{candidate.source} missing generated artifact check: {required_name}")
+        for index, row in enumerate(generated):
+            if not isinstance(row, dict):
+                issues.append(f"{candidate.source} generated artifact check #{index + 1} must be an object")
+                continue
+            row_name = str(row.get("name") or f"#{index + 1}")
+            if row.get("ok") is not True:
+                issues.append(f"{candidate.source} generated artifact check failed: {row_name}")
+            row_issues = row.get("issues")
+            if row_issues:
+                issues.append(f"{candidate.source} generated artifact issues must be empty: {row_name}")
+            if row.get("embeds_contract_hash") is not True:
+                issues.append(f"{candidate.source} generated artifact must embed current contract hash: {row_name}")
+            if str(row.get("expected_contract_hash") or "").strip().lower() != current_contract_hash:
+                issues.append(f"{candidate.source} generated artifact expected_contract_hash is stale: {row_name}")
+            actual_sha = str(row.get("actual_sha256") or "").strip().lower()
+            expected_sha = str(row.get("expected_sha256") or "").strip().lower()
+            if not SHA256_RE.fullmatch(actual_sha):
+                issues.append(f"{candidate.source} generated artifact actual_sha256 is invalid: {row_name}")
+            if not SHA256_RE.fullmatch(expected_sha):
+                issues.append(f"{candidate.source} generated artifact expected_sha256 is invalid: {row_name}")
+            if actual_sha and expected_sha and actual_sha != expected_sha:
+                issues.append(f"{candidate.source} generated artifact SHA-256 mismatch: {row_name}")
+            actual_bytes = row.get("actual_bytes")
+            expected_bytes = row.get("expected_bytes")
+            if not isinstance(actual_bytes, int) or actual_bytes <= 0:
+                issues.append(f"{candidate.source} generated artifact actual_bytes is invalid: {row_name}")
+            if not isinstance(expected_bytes, int) or expected_bytes <= 0:
+                issues.append(f"{candidate.source} generated artifact expected_bytes is invalid: {row_name}")
+            if isinstance(actual_bytes, int) and isinstance(expected_bytes, int) and actual_bytes != expected_bytes:
+                issues.append(f"{candidate.source} generated artifact byte count mismatch: {row_name}")
+    consumers = candidate.payload.get("consumers")
+    if not isinstance(consumers, list) or not consumers:
+        issues.append(f"{candidate.source} must include native consumer surface checks")
+    else:
+        consumer_names = {
+            str(row.get("name") or "")
+            for row in consumers
+            if isinstance(row, dict) and str(row.get("name") or "").strip()
+        }
+        for required_name in SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES:
+            if required_name not in consumer_names:
+                issues.append(f"{candidate.source} missing consumer surface check: {required_name}")
+        for index, row in enumerate(consumers):
+            if not isinstance(row, dict):
+                issues.append(f"{candidate.source} consumer surface check #{index + 1} must be an object")
+                continue
+            row_name = str(row.get("name") or f"#{index + 1}")
+            if row.get("ok") is not True:
+                issues.append(f"{candidate.source} consumer surface check failed: {row_name}")
+            for field_name in ("missing_text", "unknown_service_routes", "unknown_route_extractors"):
+                value = row.get(field_name)
+                if value not in ([], ()):
+                    issues.append(f"{candidate.source} consumer surface {field_name} must be empty: {row_name}")
+    return issues
+
+
 def _candidate_destination(
     candidate: JsonCandidate,
     *,
@@ -256,6 +381,7 @@ def import_evidence_artifacts(
     require_current_commit: bool = False,
     require_clean_source: bool = False,
     required_runtime_ids: set[str] | None = None,
+    require_native_source_sync_audit: bool = False,
 ) -> dict[str, Any]:
     runtime_evidence_dir = _repo_path(runtime_evidence_dir)
     platform_evidence_dir = _repo_path(platform_evidence_dir)
@@ -271,12 +397,39 @@ def import_evidence_artifacts(
     platform_targets, target_issues = _load_release_targets(matrix_path)
     issues.extend(target_issues)
 
+    source_sync_candidates = [
+        candidate for candidate in candidates if _is_native_source_sync_audit_candidate(candidate)
+    ]
+    valid_source_sync_audit_sources: list[str] = []
+    valid_current_source_sync_audit_sources: list[str] = []
+    for candidate in source_sync_candidates:
+        validation_issues = _validate_native_source_sync_audit_candidate(candidate)
+        if validation_issues:
+            issues.extend(validation_issues)
+        else:
+            valid_source_sync_audit_sources.append(candidate.source)
+            if _is_current_checkout_source_sync_audit(candidate):
+                valid_current_source_sync_audit_sources.append(candidate.source)
+    if require_native_source_sync_audit:
+        if not valid_source_sync_audit_sources:
+            issues.append(
+                f"missing required native source sync audit artifact in scanned inputs: {SOURCE_SYNC_AUDIT_FILENAME}"
+            )
+        if not valid_current_source_sync_audit_sources:
+            issues.append(
+                "missing required current-checkout native source sync audit artifact: "
+                f"{SOURCE_SYNC_AUDIT_RELATIVE_PATH.as_posix()}"
+            )
+    source_sync_sources = {candidate.source for candidate in source_sync_candidates}
+
     planned: list[dict[str, Any]] = []
     skipped_existing: list[dict[str, Any]] = []
     ignored: list[str] = []
     valid_runtime_ids: set[str] = set()
     seen_destinations: set[Path] = set()
     for candidate in candidates:
+        if candidate.source in source_sync_sources:
+            continue
         resolved = _candidate_destination(
             candidate,
             runtime_evidence_dir=runtime_evidence_dir,
@@ -366,8 +519,14 @@ def import_evidence_artifacts(
         "applied": bool(apply),
         "require_current_commit": bool(require_current_commit),
         "require_clean_source": bool(require_clean_source),
+        "require_native_source_sync_audit": bool(require_native_source_sync_audit),
         "required_runtime_ids": sorted(required_runtime_ids),
         "valid_runtime_ids": sorted(valid_runtime_ids),
+        "native_source_sync_audit_count": len(source_sync_candidates),
+        "valid_native_source_sync_audit_sources": sorted(valid_source_sync_audit_sources),
+        "valid_current_checkout_native_source_sync_audit_sources": sorted(
+            valid_current_source_sync_audit_sources
+        ),
         "candidate_count": len(candidates),
         "planned_count": len(planned),
         "copied_count": len(copied),
@@ -411,6 +570,14 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Require a specific runtime evidence id to be present and valid in the scanned artifact inputs.",
     )
+    parser.add_argument(
+        "--require-native-source-sync-audit",
+        action="store_true",
+        help=(
+            "Require a native-source-sync-audit.json artifact proving generated C++/Rust/Tauri "
+            "surfaces match the current Python source contract."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args(argv)
     result = import_evidence_artifacts(
@@ -424,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
         require_current_commit=bool(args.require_current_commit),
         require_clean_source=bool(args.require_clean_source),
         required_runtime_ids=set(args.require_runtime_id or []),
+        require_native_source_sync_audit=bool(args.require_native_source_sync_audit),
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))

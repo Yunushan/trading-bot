@@ -63,7 +63,10 @@ diff whitespace.
   `python Languages/Python/tools/generate_native_parity_contracts.py`. The audit
   reports expected and actual SHA-256 values for each generated Rust, C++, and
   Tauri artifact and verifies that each artifact embeds the current Python
-  contract hash.
+  contract hash. CI and the native evidence workflows write the same report to
+  `artifacts/native-source-sync/native-source-sync-audit.json` and upload it as
+  `native-source-sync-audit`, so reviewers can download the proof instead of
+  relying only on console logs.
 - Rust native runtime promotion is controlled by
   `docs/rust-native-runtime-evidence.json` and
   `tools/check_rust_native_runtime_evidence.py`. The schema check belongs in
@@ -83,7 +86,7 @@ diff whitespace.
   The promotion flow is intentionally commit-bound: create a candidate source
   commit where the Rust guard, manifest policy, and desktop text agree; run the
   evidence workflows from that exact commit; import the downloaded artifacts with
-  `tools/import_rust_native_evidence_artifacts.py --apply --require-current-commit --require-clean-source`
+  `tools/import_rust_native_evidence_artifacts.py <artifact.zip-or-dir> artifacts/native-source-sync --apply --require-current-commit --require-clean-source --require-native-source-sync-audit`
   plus `--require-runtime-id` for `rust-native-live-market-data-smoke`,
   `rust-native-live-account-read-smoke`, and
   `rust-native-release-platform-evidence`;
@@ -93,9 +96,10 @@ diff whitespace.
   target, release-evidence, and promotion-audit workflows, so CI/import/readiness
   wiring cannot silently drift away from the same promotion rules. The
   live-smoke, release-evidence, and promotion-audit workflows must also run
-  `tools/audit_native_source_sync.py --json` before collecting or importing
-  runtime promotion evidence, keeping every evidence-producing path bound to
-  the current Python-owned native contract.
+  `tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json`
+  before collecting or importing runtime promotion evidence, then upload the
+  `native-source-sync-audit` artifact. This keeps every evidence-producing path
+  bound to the current Python-owned native contract with durable JSON proof.
   The audit emits a `source_sync_claim` object for the narrower Python-owned
   native contract surface. `source_sync_claim.can_claim` is true only when the
   Rust source markers are present, `tools/audit_native_source_sync.py --json`
@@ -123,8 +127,10 @@ diff whitespace.
   source tree is dirty, the audit also reports `current_source_tree_dirty_paths`
   so promotion blockers are actionable instead of just a boolean failure. The audit also reports
   `current_source_tree_untracked_paths`; untracked source or tool files outside
-  the canonical evidence directories block strict promotion because operators
-  must collect evidence from the exact committed source revision. Reusing
+  the canonical evidence directories (`artifacts/rust-native-runtime-evidence/`,
+  `artifacts/native-source-sync/`, and `release-platform-evidence/`) block
+  strict promotion because operators must collect evidence from the exact
+  committed source revision. Reusing
   evidence from an older commit or an older Python source contract must fail.
   The audit `next_actions` list mirrors failed promotion requirements, including
   native contract regeneration, Python/manifest policy alignment, clean candidate
@@ -135,8 +141,9 @@ diff whitespace.
   `ready_to_run`, `blocked_by`, and details for automation. Evidence-collection
   actions embed compact `evidence_rows` snapshots with the preflight command,
   collection command, import command, validation command, required environment,
-  safety flags, `workflow_source_sync_audit`, and release-platform target counts
-  needed to run the action without parsing prose.
+  safety flags, `workflow_source_sync_audit`, the source-sync JSON artifact
+  location, and release-platform target counts needed to run the action without
+  parsing prose.
   Evidence collection actions that are blocked by dirty or untracked source
   paths list `create_clean_candidate_source_revision` in
   `depends_on_action_ids`, so automation can order source cleanup before
@@ -201,14 +208,16 @@ diff whitespace.
   `github_promotion_audit_workflow_inputs` fields and names the
   `rust-native-promotion-evidence-plan` artifact before dispatch. It also
   exposes `github_promotion_audit_source_sync_audit`, proving the promotion
-  workflow must run `tools/audit_native_source_sync.py --json` before importing
-  external runtime artifacts. That workflow
+  workflow must run `tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json`
+  and upload `native-source-sync-audit` before importing external runtime
+  artifacts. That workflow
   downloads the external evidence under the ignored runtime
   evidence directory, imports it with
-  `--apply --overwrite --require-current-commit --require-clean-source` and
-  the three required runtime evidence IDs, and logs the importer's JSON report
-  so reviewers can see copy versus overwrite actions plus existing/incoming
-  evidence hashes,
+  `artifacts/native-source-sync`, `--apply --overwrite`,
+  `--require-current-commit`, `--require-clean-source`,
+  `--require-native-source-sync-audit`, and the three required runtime evidence
+  IDs, and logs the importer's JSON report so reviewers can see copy versus
+  overwrite actions plus existing/incoming evidence hashes,
   regenerates deterministic local recovery evidence for the checked commit,
   validates the complete evidence set, and runs
   `tools/audit_rust_native_runtime_readiness.py --require-ready --json`. It
@@ -282,7 +291,7 @@ diff whitespace.
   `.github/workflows/rust-native-release-evidence.yml` workflow with a release
   tag and a platform-evidence Actions run id; it downloads
   `release-platform-evidence-*` artifacts after the native source-sync audit
-  passes, runs the preflight, writes
+  passes and uploads `native-source-sync-audit`, runs the preflight, writes
   `rust-native-release-platform-evidence.json`, validates only that release
   evidence artifact, uploads it as `rust-native-release-platform-evidence`, and
   uploads a post-release `rust-native-release-platform-evidence-plan` runbook
@@ -293,24 +302,33 @@ diff whitespace.
   runtime artifacts against `docs/rust-native-runtime-evidence.json` and
   platform artifacts against `docs/release-platform-test-matrix.json` before
   copying anything, and previews by default unless `--apply` is passed. Use
-  `--require-current-commit --require-clean-source` and the matching
+  `artifacts/native-source-sync`, `--require-native-source-sync-audit`,
+  `--require-current-commit --require-clean-source`, and the matching
   `--require-runtime-id` flags when importing evidence for runtime promotion,
-  so stale, dirty-source, or partial runtime/release-platform artifact bundles
-  are rejected before they enter the canonical evidence directory. The
+  so missing parity-audit proof, stale, dirty-source, or partial
+  runtime/release-platform artifact bundles are rejected before they enter the
+  canonical evidence directory. In promotion mode, the source-sync audit must be
+  the current checkout's canonical
+  `artifacts/native-source-sync/native-source-sync-audit.json`; an audit bundled
+  inside a downloaded runtime or release artifact ZIP is not accepted as proof of
+  current source parity. The
   promotion-mode importer also checks release-platform target JSON for the
   current git commit, `source_tree_clean: true`, the current Python
   source-contract hash, `runtime_ready_claimed: false`, and
   `secrets_redacted: true`. The clean-source promotion check ignores
   only the canonical evidence artifact directories
-  `artifacts/rust-native-runtime-evidence/` and `release-platform-evidence/`;
-  tracked or untracked code, workflow, documentation, tool, or manifest changes
-  outside those directories still block promotion evidence validation. Runtime
-  and release-platform evidence JSON/ZIP/download artifacts are ignored
-  generated outputs, not source files. Do not hand-edit or commit stale evidence
-  to satisfy promotion; regenerate/import it from the candidate commit instead.
+  `artifacts/rust-native-runtime-evidence/`, `artifacts/native-source-sync/`,
+  and `release-platform-evidence/`; tracked or untracked code, workflow,
+  documentation, tool, or manifest changes outside those directories still block
+  promotion evidence validation. Runtime, source-sync audit, and release-platform
+  evidence JSON/ZIP/download artifacts are ignored generated outputs, not source
+  files. Do not hand-edit or commit stale evidence to satisfy promotion;
+  regenerate/import it from the candidate commit instead.
   `tools/verify_all.py` also checks that generated evidence artifacts are not
-  tracked as source, dry-runs the importer over existing local evidence
-  directories with `--require-current-commit --require-clean-source`, and CI
+  tracked as source, writes the current checkout's canonical native source-sync
+  audit, dry-runs the importer over existing local evidence directories plus
+  `artifacts/native-source-sync` with `--require-current-commit`,
+  `--require-clean-source`, and `--require-native-source-sync-audit`, and CI
   runs the same strict audits. In a dirty local development checkout,
   `verify_all.py` reports the importer result as a non-blocking promotion-only
   advisory when every importer issue is the clean-source promotion precondition;

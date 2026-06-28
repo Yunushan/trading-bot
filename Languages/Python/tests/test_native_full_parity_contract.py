@@ -44,6 +44,7 @@ class NativeFullParityContractTests(unittest.TestCase):
         self.assertIn("artifacts/rust-native-runtime-evidence/downloads/", gitignore)
         self.assertIn("artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md", gitignore)
         self.assertIn("artifacts/rust-native-runtime-evidence-plan.md", gitignore)
+        self.assertIn("artifacts/native-source-sync/*.json", gitignore)
         self.assertIn("release-platform-evidence/*.json", gitignore)
 
     def test_rust_runtime_evidence_writers_snapshot_source_state_before_artifact_writes(self):
@@ -52,6 +53,7 @@ class NativeFullParityContractTests(unittest.TestCase):
 
         self.assertIn("PROMOTION_SOURCE_TREE_IGNORED_PATHS", rust_main)
         self.assertIn('"artifacts/rust-native-runtime-evidence"', rust_main)
+        self.assertIn('"artifacts/native-source-sync"', rust_main)
         self.assertIn('"release-platform-evidence"', rust_main)
         self.assertIn("fn source_tree_status_command", rust_main)
         self.assertIn("--untracked-files={untracked_files}", rust_main)
@@ -1134,8 +1136,10 @@ class NativeFullParityContractTests(unittest.TestCase):
                 '"tools/import_rust_native_evidence_artifacts.py"',
                 '"artifacts/rust-native-runtime-evidence"',
                 '"release-platform-evidence"',
+                '"artifacts/native-source-sync"',
                 '"--require-current-commit"',
                 '"--require-clean-source"',
+                '"--require-native-source-sync-audit"',
                 '"--json"',
             ],
         )

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -317,6 +320,15 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
         self.assertIn("tools/audit_native_source_sync.py", ci_workflow)
         self.assertIn("tools/audit_native_source_sync.py", hardening_checker)
         self.assertIn("Python-owned C++/Rust source synchronization", evidence_gates)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "native-source-sync-audit.json"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = audit.main(["--json", "--output", str(output_path)])
+
+            self.assertEqual(0, exit_code)
+            self.assertTrue(output_path.exists())
+            self.assertEqual(json.loads(stdout.getvalue()), json.loads(output_path.read_text(encoding="utf-8")))
 
     def test_generated_parity_domains_match_python_source_contract(self):
         summary = native_python_source_contract_summary()

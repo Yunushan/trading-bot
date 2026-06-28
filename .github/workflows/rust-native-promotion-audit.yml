@@ -80,7 +80,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python tools/audit_native_source_sync.py --json
+          mkdir -p artifacts/native-source-sync
+          python tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json
+
+      - name: Upload native source sync audit
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-source-sync-audit
+          path: artifacts/native-source-sync/native-source-sync-audit.json
+          if-no-files-found: warn
 
       - name: Download external Rust native evidence artifacts
         shell: bash
@@ -103,10 +112,12 @@ jobs:
           set -euo pipefail
           python tools/import_rust_native_evidence_artifacts.py \
             "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/downloads" \
+            artifacts/native-source-sync \
             --apply \
             --overwrite \
             --require-current-commit \
             --require-clean-source \
+            --require-native-source-sync-audit \
             --require-runtime-id rust-native-live-market-data-smoke \
             --require-runtime-id rust-native-live-account-read-smoke \
             --require-runtime-id rust-native-release-platform-evidence \
@@ -170,4 +181,5 @@ jobs:
             ${{ inputs.evidence_dir }}/rust-native-live-stream-recovery.json
             ${{ inputs.evidence_dir }}/rust-native-order-guard-recovery.json
             ${{ inputs.evidence_dir }}/rust-native-release-platform-evidence.json
+            artifacts/native-source-sync/native-source-sync-audit.json
           if-no-files-found: warn

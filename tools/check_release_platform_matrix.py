@@ -35,6 +35,7 @@ REQUIRED_BROWSERS = ("chrome", "firefox", "internet-explorer", "edge")
 DEFAULT_MATRIX_PATH = Path("docs/release-platform-test-matrix.json")
 PROMOTION_SOURCE_TREE_IGNORED_PATHS = (
     "artifacts/rust-native-runtime-evidence",
+    "artifacts/native-source-sync",
     "release-platform-evidence",
 )
 REQUIRED_SUITE_RESULT_NAMES: dict[str, tuple[str, ...]] = {

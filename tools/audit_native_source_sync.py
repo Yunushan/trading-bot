@@ -603,8 +603,16 @@ def audit_native_source_sync() -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit Python-owned native C++/Rust source synchronization.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Write the machine-readable audit JSON to this path before returning.",
+    )
     args = parser.parse_args(argv)
     report = audit_native_source_sync()
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

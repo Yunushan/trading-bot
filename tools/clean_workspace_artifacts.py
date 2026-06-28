@@ -11,6 +11,11 @@ from pathlib import Path
 from audit_workspace_hygiene import is_noisy_ignored_path
 
 
+EXPLICIT_GENERATED_ARTIFACT_GLOBS = (
+    "artifacts/native-source-sync/*.json",
+)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -35,6 +40,38 @@ def _is_noisy_artifact(path: str) -> bool:
     return is_noisy_ignored_path(path)
 
 
+def _normalize_repo_path(path: str) -> str:
+    return path.replace("\\", "/").strip()
+
+
+def _explicit_generated_artifacts(root: Path) -> list[str]:
+    paths: list[str] = []
+    for pattern in EXPLICIT_GENERATED_ARTIFACT_GLOBS:
+        for target in root.glob(pattern):
+            if not target.exists():
+                continue
+            try:
+                relative = target.relative_to(root)
+            except ValueError:
+                continue
+            path = relative.as_posix()
+            if _is_noisy_artifact(path):
+                paths.append(path)
+    return sorted(paths)
+
+
+def _cleanup_plan(root: Path) -> list[str]:
+    planned: list[str] = []
+    seen: set[str] = set()
+    for path in [*_ignored_paths(), *_explicit_generated_artifacts(root)]:
+        normalized = _normalize_repo_path(path)
+        if normalized in seen or not _is_noisy_artifact(normalized):
+            continue
+        seen.add(normalized)
+        planned.append(normalized)
+    return planned
+
+
 def _is_inside_repo(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -50,7 +87,7 @@ def _make_writable_and_retry(function, path: str, _exc_info) -> None:
 
 def clean_workspace_artifacts(*, apply: bool = False) -> dict[str, object]:
     root = _repo_root()
-    planned = [path for path in _ignored_paths() if _is_noisy_artifact(path)]
+    planned = _cleanup_plan(root)
     removed: list[str] = []
     skipped: list[dict[str, str]] = []
 

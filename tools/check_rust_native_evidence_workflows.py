@@ -21,6 +21,19 @@ WORKFLOWS = {
     "release_evidence": ".github/workflows/rust-native-release-evidence.yml",
     "promotion_audit": ".github/workflows/rust-native-promotion-audit.yml",
 }
+SOURCE_SYNC_AUDIT_COMMAND = (
+    "python tools/audit_native_source_sync.py --json "
+    "--output artifacts/native-source-sync/native-source-sync-audit.json"
+)
+SOURCE_SYNC_AUDIT_FRAGMENTS = (
+    "Audit native source sync",
+    "mkdir -p artifacts/native-source-sync",
+    SOURCE_SYNC_AUDIT_COMMAND,
+    "Upload native source sync audit",
+    "name: native-source-sync-audit",
+    "path: artifacts/native-source-sync/native-source-sync-audit.json",
+    "if-no-files-found: warn",
+)
 
 
 def _repo_root() -> Path:
@@ -76,8 +89,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
             "symbol input is required for Rust native live smoke evidence.",
             "interval input is required for Rust native live smoke evidence.",
             "evidence_dir input is required for Rust native live smoke evidence.",
-            "Audit native source sync",
-            "python tools/audit_native_source_sync.py --json",
+            *SOURCE_SYNC_AUDIT_FRAGMENTS,
             "cargo run -p trading-bot-rust -- --native-live-smoke-preflight",
             "cargo run -p trading-bot-rust -- --native-live-smoke",
             "python tools/check_rust_native_runtime_evidence.py",
@@ -105,6 +117,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
                 "Set up Python",
                 "Validate signed smoke inputs",
                 "Audit native source sync",
+                "Upload native source sync audit",
                 "Run guarded signed account-read smoke",
                 "Validate signed account-read smoke evidence",
                 "Write post-smoke Rust native runtime evidence plan",
@@ -122,8 +135,7 @@ def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
     issues = _missing_fragments(
         text,
         (
-            "Audit native source sync",
-            "python tools/audit_native_source_sync.py --json",
+            *SOURCE_SYNC_AUDIT_FRAGMENTS,
             "Check Rust native runtime evidence contract",
             "python tools/check_rust_native_runtime_evidence.py --schema-only",
             "Check Rust native evidence workflow contracts",
@@ -132,8 +144,10 @@ def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
             "python tools/import_rust_native_evidence_artifacts.py",
             "artifacts/rust-native-runtime-evidence",
             "release-platform-evidence",
+            "artifacts/native-source-sync",
             "--require-current-commit",
             "--require-clean-source",
+            "--require-native-source-sync-audit",
             "Audit Rust native runtime promotion readiness",
             "python tools/audit_rust_native_runtime_readiness.py",
             "--write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md",
@@ -152,6 +166,7 @@ def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
             text,
             (
                 "Audit native source sync",
+                "Upload native source sync audit",
                 "Check Rust native runtime evidence contract",
                 "Check Rust native evidence workflow contracts",
                 "Audit Rust native evidence importer",
@@ -166,7 +181,12 @@ def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
         issues.append("CI Rust native importer audit must run before promotion readiness audit")
     else:
         importer_section = text[importer_start:readiness_start]
-        for fragment in ("--require-current-commit", "--require-clean-source"):
+        for fragment in (
+            "artifacts/native-source-sync",
+            "--require-current-commit",
+            "--require-clean-source",
+            "--require-native-source-sync-audit",
+        ):
             if fragment not in importer_section:
                 issues.append(f"CI Rust native importer audit must use {fragment}")
     return _workflow_result("ci_rust_native_gate", path, issues)
@@ -253,8 +273,7 @@ def _check_release_evidence(root: Path) -> dict[str, Any]:
             "platform_evidence_artifact_pattern input is required for Rust native release evidence.",
             "platform_evidence_run_id must be a numeric GitHub Actions run id.",
             "evidence_dir input is required for Rust native release evidence.",
-            "Audit native source sync",
-            "python tools/audit_native_source_sync.py --json",
+            *SOURCE_SYNC_AUDIT_FRAGMENTS,
             "gh run download",
             "release-platform-evidence",
             "python tools/write_rust_native_release_evidence.py",
@@ -284,6 +303,7 @@ def _check_release_evidence(root: Path) -> dict[str, Any]:
                 "Set up Python",
                 "Validate release evidence inputs",
                 "Audit native source sync",
+                "Upload native source sync audit",
                 "Collect release platform evidence",
                 "Preflight Rust native release evidence inputs",
                 "Write Rust native release evidence",
@@ -317,17 +337,18 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
             "live_smoke_run_id must be a numeric GitHub Actions run id.",
             "release_evidence_run_id must be a numeric GitHub Actions run id.",
             "evidence_dir input is required for Rust native promotion audit.",
-            "Audit native source sync",
-            "python tools/audit_native_source_sync.py --json",
+            *SOURCE_SYNC_AUDIT_FRAGMENTS,
             'download_dir="${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/downloads"',
             "--name rust-native-live-smoke-evidence",
             "--name rust-native-release-platform-evidence",
             "python tools/import_rust_native_evidence_artifacts.py",
             '"${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}/downloads"',
+            "artifacts/native-source-sync",
             "--apply",
             "--overwrite",
             "--require-current-commit",
             "--require-clean-source",
+            "--require-native-source-sync-audit",
             "--require-runtime-id rust-native-live-market-data-smoke",
             "--require-runtime-id rust-native-live-account-read-smoke",
             "--require-runtime-id rust-native-release-platform-evidence",
@@ -348,6 +369,7 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
             "rust-native-live-stream-recovery.json",
             "rust-native-order-guard-recovery.json",
             "rust-native-release-platform-evidence.json",
+            "native-source-sync-audit.json",
             "if-no-files-found: warn",
         ),
     )
@@ -357,6 +379,7 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
             (
                 "Validate promotion audit inputs",
                 "Audit native source sync",
+                "Upload native source sync audit",
                 "Download external Rust native evidence artifacts",
                 "Import external Rust native evidence artifacts",
                 "Generate deterministic local recovery evidence for checked commit",

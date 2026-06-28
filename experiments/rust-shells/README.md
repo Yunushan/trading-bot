@@ -134,8 +134,8 @@ the repository secrets `BINANCE_API_KEY` and `BINANCE_API_SECRET`, dispatch the
 workflow with the desired testnet flag, symbol, and interval, and download the
 `rust-native-live-smoke-evidence` artifact. The workflow runs the preflight
 first, audits native source synchronization against the Python source contract,
-executes `--native-live-smoke`, validates only the two live-smoke artifacts, and
-uploads `rust-native-live-market-data-smoke.json` plus
+uploads `native-source-sync-audit`, executes `--native-live-smoke`, validates
+only the two live-smoke artifacts, and uploads `rust-native-live-market-data-smoke.json` plus
 `rust-native-live-account-read-smoke.json`. It also uploads
 `rust-native-live-smoke-evidence-plan`, a post-smoke runbook showing remaining
 promotion blockers for that source revision. The plan upload uses `always()`
@@ -322,8 +322,8 @@ The same aggregation can be run in GitHub Actions with the manual
 `.github/workflows/rust-native-release-evidence.yml` workflow. Provide the
 release tag and, when the per-target evidence was produced by Actions, the run
 id containing `release-platform-evidence-*` artifacts. The workflow downloads
-those JSON artifacts only after the native source-sync audit passes, runs the
-preflight, writes and validates
+those JSON artifacts only after the native source-sync audit passes and uploads
+`native-source-sync-audit`, runs the preflight, writes and validates
 `rust-native-release-platform-evidence.json`, and uploads the
 `rust-native-release-platform-evidence` artifact. It also uploads
 `rust-native-release-platform-evidence-plan`, a post-release runbook showing
@@ -337,7 +337,7 @@ C++/Rust/Tauri source catalogs are synchronized and export the current evidence
 collection plan:
 
 ```bash
-python tools/audit_native_source_sync.py --json
+python tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json
 python tools/audit_rust_native_runtime_readiness.py --json --write-evidence-plan artifacts/rust-native-runtime-evidence-plan.md
 ```
 
@@ -375,14 +375,17 @@ Actions run ids. The readiness audit exposes those values as structured
 `rust-native-promotion-evidence-plan` artifact name and the required runtime
 evidence IDs. The promotion workflow downloads the artifacts under
 `artifacts/rust-native-runtime-evidence/downloads/` only after the native
-source-sync audit passes, imports them with
-`--apply --overwrite --require-current-commit --require-clean-source` plus the
-three required `--require-runtime-id` flags, logs copy versus overwrite actions
-with existing/incoming evidence hashes, generates deterministic local recovery
-evidence for the checked commit, validates the full runtime evidence set, and runs
-`tools/audit_rust_native_runtime_readiness.py --require-ready --json`. It also
-uploads `rust-native-promotion-evidence-plan` and
-`rust-native-runtime-promotion-evidence` artifacts for review.
+source-sync audit passes and uploads `native-source-sync-audit`, imports them
+with `artifacts/native-source-sync`, `--apply --overwrite`,
+`--require-current-commit`, `--require-clean-source`, and
+`--require-native-source-sync-audit` plus the three required
+`--require-runtime-id` flags, logs copy versus overwrite actions with
+existing/incoming evidence hashes, generates deterministic local recovery
+evidence for the checked commit, validates the full runtime evidence set, and
+runs `tools/audit_rust_native_runtime_readiness.py --require-ready --json`. It
+also uploads `rust-native-promotion-evidence-plan` and
+`rust-native-runtime-promotion-evidence` artifacts for review, including the
+promotion run's `native-source-sync-audit.json`.
 
 The readiness audit emits `source_sync_claim` for the narrower Python-owned
 native contract surface. `source_sync_claim.can_claim: true` means generated
@@ -410,12 +413,12 @@ requirement ids, evidence ids, commands, workflow hints, dependency ids,
 `ready_to_run`, `blocked_by`, and details without parsing the prose
 `next_actions` strings. Evidence collection actions embed compact
 `evidence_rows` snapshots with preflight, collection, import, validation,
-required environment, safety, `workflow_source_sync_audit`, and
-release-platform target-count details.
+required environment, safety, `workflow_source_sync_audit`, source-sync JSON
+artifact path/name, and release-platform target-count details.
 The promotion model and completion claim also expose
 `github_promotion_audit_source_sync_audit`, so automation can verify that the
 remote promotion workflow gates artifact import on the current Python-owned
-native contract.
+native contract and uploads the `native-source-sync-audit` JSON proof.
 Evidence collection actions blocked by dirty or untracked source paths depend
 on `create_clean_candidate_source_revision`, so promotion automation can order
 source cleanup before commit-bound evidence collection.
@@ -428,30 +431,37 @@ Download the live-smoke and release-evidence workflow artifact ZIPs or folders,
 then import them through the validator instead of copying them manually:
 
 ```bash
-python tools/import_rust_native_evidence_artifacts.py <artifact.zip-or-dir> --apply --require-current-commit --require-clean-source --require-runtime-id rust-native-live-market-data-smoke --require-runtime-id rust-native-live-account-read-smoke --require-runtime-id rust-native-release-platform-evidence
+python tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json
+python tools/import_rust_native_evidence_artifacts.py <artifact.zip-or-dir> artifacts/native-source-sync --apply --require-current-commit --require-clean-source --require-native-source-sync-audit --require-runtime-id rust-native-live-market-data-smoke --require-runtime-id rust-native-live-account-read-smoke --require-runtime-id rust-native-release-platform-evidence
 ```
 
 The importer validates runtime artifacts against
 `docs/rust-native-runtime-evidence.json` and release-platform target artifacts
 against `docs/release-platform-test-matrix.json`. In promotion mode it rejects
 stale runtime and release-platform evidence, dirty-source evidence, evidence
-collected from a different commit, and evidence carrying an older Python
+collected from a different commit, missing current-checkout
+`native-source-sync-audit.json` proof, and evidence carrying an older Python
 source-contract hash before it can enter the canonical artifact directories.
+The source-sync audit must be generated at
+`artifacts/native-source-sync/native-source-sync-audit.json` from the checkout
+being promoted; an audit bundled inside a downloaded Actions ZIP does not
+satisfy `--require-native-source-sync-audit`.
 Rust evidence writers stamp `source_tree_clean` with the same clean-source
 scope: untracked source/tool files outside the canonical evidence directories
 make the artifact non-promotion-grade, while generated evidence files under
-`artifacts/rust-native-runtime-evidence/` and `release-platform-evidence/` are
-excluded from that cleanliness decision.
-Those runtime and release-platform evidence JSON/ZIP/download artifacts are
-ignored generated outputs; do not hand-edit or commit them as source.
+`artifacts/rust-native-runtime-evidence/`, `artifacts/native-source-sync/`, and
+`release-platform-evidence/` are excluded from that cleanliness decision.
+Those runtime, source-sync audit, and release-platform evidence JSON/ZIP/download
+artifacts are ignored generated outputs; do not hand-edit or commit them as
+source.
 The aggregate `tools/verify_all.py` command dry-runs the same strict importer
 against existing local evidence directories. In a dirty local development
 checkout, that aggregate command reports the importer result as a non-blocking
 promotion-only advisory only when every importer issue is the clean-source
-promotion precondition. Importer schema, source-control, stale-commit, or
-unsupported-artifact issues remain blocking failures. Clean the generated
-evidence directories or import fresh candidate-commit artifacts before treating
-any local verification result as promotion evidence.
+or current-commit/source-contract promotion precondition. Importer schema,
+source-control, or unsupported-artifact issues remain blocking failures. Clean
+the generated evidence directories or import fresh candidate-commit artifacts
+before treating any local verification result as promotion evidence.
 
 After the required artifacts are attached under
 `artifacts/rust-native-runtime-evidence/`, run:

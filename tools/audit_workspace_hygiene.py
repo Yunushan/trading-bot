@@ -15,6 +15,7 @@ NOISY_IGNORED_PREFIXES = (
     "dist_enduser/",
     "Languages/Python/build/",
     "Languages/Rust/target/",
+    "artifacts/native-source-sync/",
     "experiments/rust-shells/target/",
 )
 

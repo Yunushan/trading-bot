@@ -36,6 +36,7 @@ from app.native_parity import native_python_source_contract_hash  # noqa: E402
 
 PROMOTION_SOURCE_TREE_IGNORED_PATHS = (
     "artifacts/rust-native-runtime-evidence",
+    "artifacts/native-source-sync",
     "release-platform-evidence",
 )
 RUNTIME_READY_POLICY_STATES = {

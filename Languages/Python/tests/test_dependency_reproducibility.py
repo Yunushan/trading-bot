@@ -153,6 +153,39 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("clean candidate source tree", result["advisory_reason"])
         self.assertTrue(module._report_ok([result]))
 
+    def test_verify_all_downgrades_stale_commit_promotion_import_failure(self):
+        module = _load_verify_all_module()
+        check = module.Check(
+            "rust native evidence import audit",
+            (sys.executable,),
+            REPO_ROOT,
+        )
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            1,
+            stdout=json.dumps(
+                {
+                    "ok": False,
+                    "require_clean_source": True,
+                    "require_current_commit": True,
+                    "issues": [
+                        "artifact.json: artifact.json commit must match current git commit abc123",
+                        "artifact.json: artifact.json current source tree must be clean for promotion evidence import",
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=True)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["required"])
+        self.assertFalse(result["blocks_success"])
+        self.assertIn("current-commit artifacts", result["advisory_reason"])
+        self.assertTrue(module._report_ok([result]))
+
     def test_verify_all_keeps_non_dirty_import_failure_required(self):
         module = _load_verify_all_module()
         check = module.Check(
@@ -428,6 +461,34 @@ class DependencyReproducibilityTests(unittest.TestCase):
             self.assertEqual([".vcpkg/"], payload["removed"])
             self.assertFalse((root / ".vcpkg").exists())
 
+    def test_workspace_cleanup_tool_expands_collapsed_native_source_sync_artifacts(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            audit_path = root / "artifacts" / "native-source-sync" / "native-source-sync-audit.json"
+            audit_path.parent.mkdir(parents=True)
+            audit_path.write_text('{"ok": true}', encoding="utf-8")
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_ignored_paths", return_value=["artifacts/"]),
+            ):
+                dry_run = module.clean_workspace_artifacts(apply=False)
+
+            expected_path = "artifacts/native-source-sync/native-source-sync-audit.json"
+            self.assertEqual([expected_path], dry_run["planned"])
+            self.assertEqual(1, dry_run["planned_count"])
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_ignored_paths", return_value=["artifacts/"]),
+            ):
+                payload = module.clean_workspace_artifacts(apply=True)
+
+            self.assertEqual([expected_path], payload["removed"])
+            self.assertFalse(audit_path.exists())
+            self.assertTrue((root / "artifacts").exists())
+
     def test_workspace_hygiene_classifier_includes_generated_caches_not_editor_settings(self):
         module = _load_script_module("audit_workspace_hygiene", REPO_ROOT / "tools" / "audit_workspace_hygiene.py")
 
@@ -440,6 +501,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
             ".coverage",
             "coverage.xml",
             "aqtinstall.log",
+            "artifacts/native-source-sync/native-source-sync-audit.json",
         ]
         for path in noisy_paths:
             with self.subTest(path=path):

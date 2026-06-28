@@ -43,7 +43,8 @@ LOCAL_RECOVERY_EVIDENCE_IDS = {
 RELEASE_EVIDENCE_ID = "rust-native-release-platform-evidence"
 EVIDENCE_IMPORT_COMMAND = (
     "python tools/import_rust_native_evidence_artifacts.py <artifact.zip-or-dir> "
-    "--apply --require-current-commit --require-clean-source"
+    "artifacts/native-source-sync --apply --require-current-commit --require-clean-source "
+    "--require-native-source-sync-audit"
 )
 
 
@@ -77,7 +78,12 @@ GITHUB_PROMOTION_AUDIT_WORKFLOW_COMMAND = (
     "-f release_evidence_run_id=<release-evidence-actions-run-id>"
 )
 SOURCE_SYNC_AUDIT_STEP = "Audit native source sync"
-SOURCE_SYNC_AUDIT_COMMAND = "python tools/audit_native_source_sync.py --json"
+SOURCE_SYNC_AUDIT_OUTPUT_PATH = "artifacts/native-source-sync/native-source-sync-audit.json"
+SOURCE_SYNC_AUDIT_ARTIFACT = "native-source-sync-audit"
+SOURCE_SYNC_AUDIT_COMMAND = (
+    "python tools/audit_native_source_sync.py --json "
+    f"--output {SOURCE_SYNC_AUDIT_OUTPUT_PATH}"
+)
 EVIDENCE_COLLECTION_ORDER = (
     LIVE_MARKET_EVIDENCE_ID,
     LIVE_ACCOUNT_EVIDENCE_ID,
@@ -106,6 +112,8 @@ def _workflow_source_sync_audit() -> dict[str, Any]:
     return {
         "step": SOURCE_SYNC_AUDIT_STEP,
         "command": SOURCE_SYNC_AUDIT_COMMAND,
+        "output_path": SOURCE_SYNC_AUDIT_OUTPUT_PATH,
+        "github_workflow_artifact": SOURCE_SYNC_AUDIT_ARTIFACT,
         "required_before_evidence_collection": True,
         "python_source_of_truth": "Languages/Python/app/native_parity.py",
     }
@@ -1705,6 +1713,8 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
         f"- GitHub promotion audit workflow inputs: {_format_markdown_mapping(model.get('github_promotion_audit_workflow_inputs'))}",
         f"- GitHub promotion audit plan artifact: `{_format_markdown_value(model.get('github_promotion_audit_workflow_plan_artifact'))}`",
         f"- GitHub promotion audit source-sync gate: {_format_command(promotion_source_sync.get('command'))}",
+        f"- GitHub promotion audit source-sync JSON: `{_format_markdown_value(promotion_source_sync.get('output_path'))}`",
+        f"- GitHub promotion audit source-sync artifact: `{_format_markdown_value(promotion_source_sync.get('github_workflow_artifact'))}`",
         f"- Promotion required runtime evidence ids: {_format_markdown_list(model.get('promotion_required_runtime_ids'))}",
         "",
         "## Promotion Requirements",
@@ -1788,6 +1798,12 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
                 "- GitHub workflow source-sync gate: "
                 f"{_format_command(workflow_source_sync.get('command'))}"
             )
+            output_path = str(workflow_source_sync.get("output_path") or "").strip()
+            if output_path:
+                lines.append(f"- GitHub workflow source-sync JSON: `{output_path}`")
+            source_sync_artifact = str(workflow_source_sync.get("github_workflow_artifact") or "").strip()
+            if source_sync_artifact:
+                lines.append(f"- GitHub workflow source-sync artifact: `{source_sync_artifact}`")
         workflow_secrets = details.get("github_workflow_requires_secrets")
         if isinstance(workflow_secrets, list) and workflow_secrets:
             lines.append(f"- GitHub workflow required secrets: {_format_markdown_list(workflow_secrets)}")

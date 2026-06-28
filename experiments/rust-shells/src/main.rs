@@ -26,6 +26,7 @@ const ACCOUNT_SMOKE_MAX_ATTEMPTS: usize = 3;
 const ACCOUNT_SMOKE_RETRY_DELAY: Duration = Duration::from_millis(750);
 const PROMOTION_SOURCE_TREE_IGNORED_PATHS: &[&str] = &[
     "artifacts/rust-native-runtime-evidence",
+    "artifacts/native-source-sync",
     "release-platform-evidence",
 ];
 
@@ -1121,7 +1122,7 @@ fn generated_evidence_write_guard(
     let mut issues = Vec::new();
     if !non_generated_in_repo_targets.is_empty() {
         issues.push(format!(
-            "refusing to write generated evidence artifact outside generated evidence directories inside the repository: {}. Use artifacts/rust-native-runtime-evidence, release-platform-evidence, or an absolute path outside the repository.",
+            "refusing to write generated evidence artifact outside generated evidence directories inside the repository: {}. Use artifacts/rust-native-runtime-evidence, artifacts/native-source-sync, release-platform-evidence, or an absolute path outside the repository.",
             non_generated_in_repo_targets.join(", ")
         ));
     }
@@ -1158,6 +1159,7 @@ fn is_generated_evidence_path(path: &str) -> bool {
                 == "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md"
             || path.starts_with("artifacts/rust-native-runtime-evidence/downloads/")))
         || path == "artifacts/rust-native-runtime-evidence-plan.md"
+        || (path.starts_with("artifacts/native-source-sync/") && path.ends_with(".json"))
         || (path.starts_with("release-platform-evidence/") && path.ends_with(".json"))
 }
 
@@ -1594,6 +1596,7 @@ mod tests {
         );
         for args in [&tracked_args, &untracked_args] {
             assert!(args.contains(&":(exclude)artifacts/rust-native-runtime-evidence".to_owned()));
+            assert!(args.contains(&":(exclude)artifacts/native-source-sync".to_owned()));
             assert!(args.contains(&":(exclude)release-platform-evidence".to_owned()));
         }
     }
@@ -1606,6 +1609,7 @@ mod tests {
             "artifacts/rust-native-runtime-evidence/downloads/artifact.json",
             "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md",
             "artifacts/rust-native-runtime-evidence-plan.md",
+            "artifacts/native-source-sync/native-source-sync-audit.json",
             "release-platform-evidence/browser-chrome-windows_11_x64.json",
         ] {
             assert!(
@@ -1617,6 +1621,7 @@ mod tests {
         for path in [
             "docs/rust-native-runtime-evidence.json",
             "artifacts/rust-native-runtime-evidence/readme.md",
+            "artifacts/native-source-sync/readme.md",
             "release-platform-evidence/readme.md",
         ] {
             assert!(
