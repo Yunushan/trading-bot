@@ -57,6 +57,9 @@ TARGET_EVIDENCE_BOOL_FIELDS = (
     "runtime_ready_claimed",
     "secrets_redacted",
 )
+NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT = "native-source-sync-audit"
+NATIVE_SOURCE_SYNC_AUDIT_PATH = "artifacts/native-source-sync/native-source-sync-audit.json"
+NATIVE_SOURCE_SYNC_SOURCE = "Languages/Python/app/native_parity.py"
 
 
 def _slug(value: str) -> str:
@@ -395,6 +398,25 @@ def _target_source_binding_issues(payload: dict[str, Any], path: Path, context: 
         issues.append(f"{path} source_tree_clean must be true for release promotion evidence")
     if str(payload.get("python_source_contract_hash") or "").strip().lower() != current_contract_hash:
         issues.append(f"{path} python_source_contract_hash must match current Python source contract")
+    native_source_sync = payload.get("native_source_sync")
+    if not isinstance(native_source_sync, dict) or not native_source_sync:
+        issues.append(f"{path} native_source_sync must be a non-empty object")
+    else:
+        if native_source_sync.get("required") is not True:
+            issues.append(f"{path} native_source_sync.required must be true")
+        if str(native_source_sync.get("audit_artifact") or "").strip() != NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT:
+            issues.append(f"{path} native_source_sync.audit_artifact must be {NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT}")
+        if str(native_source_sync.get("audit_path") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_AUDIT_PATH:
+            issues.append(f"{path} native_source_sync.audit_path must be {NATIVE_SOURCE_SYNC_AUDIT_PATH}")
+        if str(native_source_sync.get("python_source_of_truth") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_SOURCE:
+            issues.append(f"{path} native_source_sync.python_source_of_truth must be {NATIVE_SOURCE_SYNC_SOURCE}")
+        binding_hash = str(native_source_sync.get("contract_hash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", binding_hash):
+            issues.append(f"{path} native_source_sync.contract_hash must be a SHA-256 hex digest")
+        elif binding_hash != current_contract_hash:
+            issues.append(f"{path} native_source_sync.contract_hash must match current Python source contract")
+        if native_source_sync.get("surface_contract_required") is not True:
+            issues.append(f"{path} native_source_sync.surface_contract_required must be true")
     if payload.get("runtime_ready_claimed") is not False:
         issues.append(f"{path} runtime_ready_claimed must be false")
     if payload.get("secrets_redacted") is not True:

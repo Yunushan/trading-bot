@@ -132,10 +132,12 @@ The same read-only signed account smoke can be collected in GitHub Actions with
 the manual `.github/workflows/rust-native-live-smoke.yml` workflow. Configure
 the repository secrets `BINANCE_API_KEY` and `BINANCE_API_SECRET`, dispatch the
 workflow with the desired testnet flag, symbol, and interval, and download the
-`rust-native-live-smoke-evidence` artifact. The workflow runs the preflight
-first, audits native source synchronization against the Python source contract,
-uploads `native-source-sync-audit`, executes `--native-live-smoke`, validates
-only the two live-smoke artifacts, and uploads `rust-native-live-market-data-smoke.json` plus
+`rust-native-live-smoke-evidence` artifact. The workflow audits native source
+synchronization against the Python source contract, uploads
+`native-source-sync-audit`, validates the Rust live-smoke preflight with
+`tools/check_rust_native_live_smoke_preflight.py --json --timeout 180`, executes
+`--native-live-smoke`, validates only the two live-smoke artifacts, and uploads
+`rust-native-live-market-data-smoke.json` plus
 `rust-native-live-account-read-smoke.json`. It also uploads
 `rust-native-live-smoke-evidence-plan`, a post-smoke runbook showing remaining
 promotion blockers for that source revision. The plan upload uses `always()`
@@ -211,6 +213,14 @@ manifest:
 python tools/check_rust_native_local_recovery_evidence.py --json
 ```
 
+Promotion-grade local recovery collection additionally requires a clean source
+tree and a current native source-sync audit before the Rust evidence command is
+allowed to run:
+
+```bash
+python tools/check_rust_native_local_recovery_evidence.py --evidence-dir artifacts/rust-native-runtime-evidence --require-clean-source --require-native-source-sync --json
+```
+
 The required evidence contract lives at
 `docs/rust-native-runtime-evidence.json`. Validate the declaration with:
 
@@ -252,9 +262,10 @@ python tools/write_rust_native_release_evidence.py \
 
 The preflight command does not contact GitHub and does not write artifacts. It
 reports the required Rust release asset names, local platform evidence coverage,
-`source_tree_clean`, and whether the final evidence writer has enough local
-inputs to be attempted. A dirty source tree blocks preflight success and the
-final aggregate writer before any GitHub release request or artifact write.
+`source_tree_clean`, `native_source_sync_guard`, and whether the final evidence
+writer has enough local inputs to be attempted. A dirty source tree or failed
+native source-sync audit blocks preflight success and the final aggregate writer
+before any GitHub release request or artifact write.
 
 ```bash
 python tools/write_rust_native_release_evidence.py \
@@ -287,21 +298,22 @@ Each per-target JSON must also come from the same candidate source revision:
 `source_tree_clean`, and Python source-contract hash, and the release evidence
 writer rejects stale, dirty, or mismatched target artifacts before aggregation.
 The aggregate writer also refuses to write release evidence when the current
-checkout itself is dirty.
+checkout itself is dirty or when the Python-owned native source-sync audit fails.
 For the current host's supported browser targets, list and collect the local
 subset with:
 
 ```bash
 python tools/run_release_platform_probe.py --list-local-browser-targets
-python tools/run_release_platform_probe.py --local-browser-targets --require-clean-source --output-dir release-platform-evidence
+python tools/run_release_platform_probe.py --local-browser-targets --require-clean-source --require-native-source-sync --output-dir release-platform-evidence
 ```
 
 This is partial release-platform evidence only: the remaining matrix targets
 still require their declared real runners/labs. The collection command refuses
-dirty source trees, and promotion validation still requires
-`--require-current-commit --require-clean-source`. The release evidence preflight
-also exposes this same subset as `local_browser_batch_plan` with the batch
-command and per-target validation commands.
+dirty source trees and failed native source-sync audits, and promotion
+validation still requires `--require-current-commit --require-clean-source`.
+The release evidence preflight also exposes this same subset as
+`local_browser_batch_plan` with the batch command and per-target validation
+commands.
 While collecting evidence target by target, validate the just-written artifact
 without requiring the rest of the matrix yet:
 
@@ -316,7 +328,12 @@ python tools/check_release_platform_matrix.py \
 
 Those promotion flags make the single-target check reject stale commit,
 dirty-source, mismatched Python source-contract, premature runtime-ready, or
-unredacted target artifacts before they reach the aggregate release writer.
+unredacted target artifacts before they reach the aggregate release writer. The
+same validation also rejects target artifacts whose `native_source_sync` object
+does not point at the current checkout's canonical native source-sync audit.
+The aggregate release writer and promotion importer enforce the same full
+binding shape, including the audit artifact/path, Python source-of-truth path,
+current contract hash, and surface-contract requirement flag.
 
 The same aggregation can be run in GitHub Actions with the manual
 `.github/workflows/rust-native-release-evidence.yml` workflow. Provide the
@@ -331,6 +348,10 @@ remaining promotion blockers for that source revision. The plan upload uses
 `always()` and `if-no-files-found: warn`, so a failed release-evidence attempt
 still leaves the operator runbook when checkout and Python tooling reached the
 plan step.
+The manual `.github/workflows/release-platform-real-tests.yml` target workflow
+also uploads `native-source-sync-audit` before the selected
+`release-platform-evidence-<target_id>` artifact, so reviewers can prove the
+target evidence came from a Python-synchronized native source surface.
 
 Before any standalone native Rust runtime promotion, first prove the Python-owned
 C++/Rust/Tauri source catalogs are synchronized and export the current evidence
@@ -378,18 +399,23 @@ evidence IDs. The promotion workflow downloads the artifacts under
 source-sync audit passes and uploads `native-source-sync-audit`, imports them
 with `artifacts/native-source-sync`, `--apply --overwrite`,
 `--require-current-commit`, `--require-clean-source`, and
-`--require-native-source-sync-audit` plus the three required
+`--require-native-source-sync-audit` plus the three externally downloaded
 `--require-runtime-id` flags, logs copy versus overwrite actions with
-existing/incoming evidence hashes, generates deterministic local recovery
-evidence for the checked commit, validates the full runtime evidence set, and
-runs `tools/audit_rust_native_runtime_readiness.py --require-ready --json`. It
+existing/incoming evidence hashes, generates the two deterministic local
+recovery evidence IDs for the checked commit only after `--require-clean-source`
+and `--require-native-source-sync` pass, validates the full five-artifact
+runtime evidence set, and runs
+`tools/audit_rust_native_runtime_readiness.py --require-ready --json`. It
 also uploads `rust-native-promotion-evidence-plan` and
 `rust-native-runtime-promotion-evidence` artifacts for review, including the
 promotion run's `native-source-sync-audit.json`.
 
 The readiness audit emits `source_sync_claim` for the narrower Python-owned
 native contract surface. `source_sync_claim.can_claim: true` means generated
-C++/Rust/Tauri contracts match `Languages/Python/app/native_parity.py` and the
+C++/Rust/Tauri contracts match `Languages/Python/app/native_parity.py`,
+`source_sync_claim.surface_contract_ok: true`, the required generated artifact names
+exactly match the actual generated artifact names, the required consumer surface names
+exactly match the actual consumer surface names, and the
 native C++ dashboard/backtest/chart/positions/account symbol surfaces, C++
 chart-heatmap, exchange-connector, strategy-runtime option-normalization support
 modules, C++ config-persistence choice validation, Rust strategy-runtime
@@ -446,6 +472,10 @@ The source-sync audit must be generated at
 `artifacts/native-source-sync/native-source-sync-audit.json` from the checkout
 being promoted; an audit bundled inside a downloaded Actions ZIP does not
 satisfy `--require-native-source-sync-audit`.
+Each runtime evidence JSON must also include `native_source_sync` pointing at
+that canonical audit, naming `Languages/Python/app/native_parity.py` as the
+source of truth, embedding the current Python contract hash, and requiring the
+surface contract proof.
 Rust evidence writers stamp `source_tree_clean` with the same clean-source
 scope: untracked source/tool files outside the canonical evidence directories
 make the artifact non-promotion-grade, while generated evidence files under

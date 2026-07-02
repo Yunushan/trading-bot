@@ -15,10 +15,18 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from audit_native_source_sync import (
+        REQUIRED_CONSUMER_SURFACE_NAMES,
+        REQUIRED_GENERATED_ARTIFACT_NAMES,
+    )
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _target_evidence_issues, _validate_matrix
     import check_rust_native_runtime_evidence as runtime_evidence
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.audit_native_source_sync import (
+        REQUIRED_CONSUMER_SURFACE_NAMES,
+        REQUIRED_GENERATED_ARTIFACT_NAMES,
+    )
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, _load_json, _target_evidence_issues, _validate_matrix
     from tools import check_rust_native_runtime_evidence as runtime_evidence
@@ -26,35 +34,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised when imported as too
 
 DEFAULT_RUNTIME_EVIDENCE_DIR = Path("artifacts/rust-native-runtime-evidence")
 DEFAULT_PLATFORM_EVIDENCE_DIR = Path("release-platform-evidence")
+SOURCE_SYNC_AUDIT_ARTIFACT = "native-source-sync-audit"
 SOURCE_SYNC_AUDIT_FILENAME = "native-source-sync-audit.json"
 SOURCE_SYNC_AUDIT_RELATIVE_PATH = Path("artifacts/native-source-sync") / SOURCE_SYNC_AUDIT_FILENAME
 SOURCE_SYNC_AUDIT_SOURCE = "Languages/Python/app/native_parity.py"
-SOURCE_SYNC_REQUIRED_GENERATED_ARTIFACTS = (
-    "rust_core_generated_contract",
-    "cpp_generated_contract",
-    "tauri_browser_generated_contract",
-)
-SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES = (
-    "rust_core_consumes_generated_contract",
-    "rust_strategy_runtime_uses_python_source_options",
-    "rust_config_persistence_uses_python_source_options",
-    "cpp_support_consumes_generated_contract",
-    "cpp_support_exposes_generated_contract",
-    "cpp_config_persistence_uses_python_source_options",
-    "cpp_dashboard_uses_python_source_surface",
-    "cpp_backtest_uses_python_source_surface",
-    "cpp_backtest_service_api_uses_python_source_routes",
-    "cpp_dashboard_llm_service_api_uses_python_source_routes",
-    "cpp_config_service_api_uses_python_source_routes",
-    "cpp_chart_uses_python_source_surface",
-    "cpp_native_chart_heatmap_uses_python_source_surface",
-    "cpp_positions_uses_python_source_surface",
-    "cpp_account_symbols_use_python_source_fallbacks",
-    "cpp_native_exchange_connectors_use_python_source_connectors",
-    "cpp_native_strategy_runtime_uses_python_source_options",
-    "tauri_browser_consumes_generated_contract",
-    "tauri_browser_service_api_uses_python_source_routes",
-)
+SOURCE_SYNC_REQUIRED_GENERATED_ARTIFACTS = REQUIRED_GENERATED_ARTIFACT_NAMES
+SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES = REQUIRED_CONSUMER_SURFACE_NAMES
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_MANIFEST_PATH = runtime_evidence.DEFAULT_MANIFEST_PATH
 REQUIRED_REQUIREMENTS = runtime_evidence.REQUIRED_REQUIREMENTS
@@ -189,6 +174,28 @@ def _validate_platform_source_binding(
 
     if str(candidate.payload.get("python_source_contract_hash") or "").strip().lower() != current_contract_hash:
         issues.append(f"{candidate.source} python_source_contract_hash must match current Python source contract")
+    binding = candidate.payload.get("native_source_sync")
+    if not isinstance(binding, dict) or not binding:
+        issues.append(f"{candidate.source} native_source_sync must be a non-empty object")
+    else:
+        if binding.get("required") is not True:
+            issues.append(f"{candidate.source} native_source_sync.required must be true")
+        if str(binding.get("audit_artifact") or "").strip() != SOURCE_SYNC_AUDIT_ARTIFACT:
+            issues.append(f"{candidate.source} native_source_sync.audit_artifact must be {SOURCE_SYNC_AUDIT_ARTIFACT}")
+        if str(binding.get("audit_path") or "").strip().replace("\\", "/") != SOURCE_SYNC_AUDIT_RELATIVE_PATH.as_posix():
+            issues.append(
+                f"{candidate.source} native_source_sync.audit_path must be "
+                f"{SOURCE_SYNC_AUDIT_RELATIVE_PATH.as_posix()}"
+            )
+        if str(binding.get("python_source_of_truth") or "").strip().replace("\\", "/") != SOURCE_SYNC_AUDIT_SOURCE:
+            issues.append(f"{candidate.source} native_source_sync.python_source_of_truth must be {SOURCE_SYNC_AUDIT_SOURCE}")
+        binding_hash = str(binding.get("contract_hash") or "").strip().lower()
+        if not SHA256_RE.fullmatch(binding_hash):
+            issues.append(f"{candidate.source} native_source_sync.contract_hash must be a SHA-256 hex digest")
+        elif binding_hash != current_contract_hash:
+            issues.append(f"{candidate.source} native_source_sync.contract_hash must match current Python source contract")
+        if binding.get("surface_contract_required") is not True:
+            issues.append(f"{candidate.source} native_source_sync.surface_contract_required must be true")
     if candidate.payload.get("runtime_ready_claimed") is not False:
         issues.append(f"{candidate.source} runtime_ready_claimed must be false")
     if candidate.payload.get("secrets_redacted") is not True:
@@ -246,6 +253,24 @@ def _validate_native_source_sync_audit_candidate(candidate: JsonCandidate) -> li
     current_contract_hash = runtime_evidence.native_python_source_contract_hash()
     if str(candidate.payload.get("contract_hash") or "").strip().lower() != current_contract_hash:
         issues.append(f"{candidate.source} contract_hash must match current Python source contract")
+    surface_contract = candidate.payload.get("surface_contract")
+    if not isinstance(surface_contract, dict):
+        issues.append(f"{candidate.source} must include native source sync surface_contract")
+    else:
+        if surface_contract.get("ok") is not True:
+            issues.append(f"{candidate.source} surface_contract ok must be true")
+        if surface_contract.get("issues"):
+            issues.append(f"{candidate.source} surface_contract issues must be empty")
+        expected_generated_names = list(SOURCE_SYNC_REQUIRED_GENERATED_ARTIFACTS)
+        expected_consumer_names = list(SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES)
+        if surface_contract.get("required_generated_artifact_names") != expected_generated_names:
+            issues.append(f"{candidate.source} surface_contract required_generated_artifact_names mismatch")
+        if surface_contract.get("actual_generated_artifact_names") != expected_generated_names:
+            issues.append(f"{candidate.source} surface_contract actual_generated_artifact_names mismatch")
+        if surface_contract.get("required_consumer_surface_names") != expected_consumer_names:
+            issues.append(f"{candidate.source} surface_contract required_consumer_surface_names mismatch")
+        if surface_contract.get("actual_consumer_surface_names") != expected_consumer_names:
+            issues.append(f"{candidate.source} surface_contract actual_consumer_surface_names mismatch")
     generated = candidate.payload.get("generated")
     if not isinstance(generated, list) or not generated:
         issues.append(f"{candidate.source} must include generated contract artifact checks")

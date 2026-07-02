@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from audit_native_source_sync import audit_native_source_sync
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from check_release_platform_matrix import _load_json, _validate_matrix
@@ -22,6 +23,7 @@ try:
     from release_browser_contract_commands import browser_host_from_observed_platform
     from release_browser_contract_commands import builtin_browser_contract_targets_for_host
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.audit_native_source_sync import audit_native_source_sync
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_release_platform_matrix import DEFAULT_MATRIX_PATH, PROMOTION_SOURCE_TREE_IGNORED_PATHS
     from tools.check_release_platform_matrix import _load_json, _validate_matrix
@@ -79,6 +81,43 @@ def _source_tree_status_clean(untracked_files: str) -> bool:
 
 def _source_tree_clean() -> bool:
     return _source_tree_status_clean("no") and _source_tree_status_clean("all")
+
+
+def _native_source_sync_binding() -> dict[str, object]:
+    return {
+        "required": True,
+        "audit_artifact": "native-source-sync-audit",
+        "audit_path": "artifacts/native-source-sync/native-source-sync-audit.json",
+        "python_source_of_truth": "Languages/Python/app/native_parity.py",
+        "contract_hash": native_python_source_contract_hash(),
+        "surface_contract_required": True,
+    }
+
+
+def _native_source_sync_guard() -> dict[str, Any]:
+    audit = audit_native_source_sync()
+    surface_contract = audit.get("surface_contract")
+    surface_contract_ok = isinstance(surface_contract, dict) and surface_contract.get("ok") is True
+    surface_contract_issues = (
+        [str(issue) for issue in surface_contract.get("issues", []) if str(issue).strip()]
+        if isinstance(surface_contract, dict)
+        else ["native source sync surface_contract is missing"]
+    )
+    audit_issues = [str(issue) for issue in audit.get("issues", []) if str(issue).strip()]
+    issues = [*audit_issues]
+    if not surface_contract_ok:
+        issues.extend(surface_contract_issues)
+    return {
+        "ok": bool(audit.get("ok")) and surface_contract_ok,
+        "audit_artifact": "native-source-sync-audit",
+        "audit_path": "artifacts/native-source-sync/native-source-sync-audit.json",
+        "python_source_of_truth": "Languages/Python/app/native_parity.py",
+        "contract_hash": audit.get("contract_hash"),
+        "surface_contract_ok": surface_contract_ok,
+        "generated_artifact_count": len(audit.get("generated", []) or []),
+        "consumer_surface_count": len(audit.get("consumers", []) or []),
+        "issues": issues,
+    }
 
 
 def _find_target(target_id: str, matrix_path: Path) -> dict[str, Any]:
@@ -421,6 +460,7 @@ def _run_probe(target: dict[str, Any], *, output: Path, root: Path) -> dict[str,
         "commit": _current_git_commit(),
         "source_tree_clean": _source_tree_clean(),
         "python_source_contract_hash": native_python_source_contract_hash(),
+        "native_source_sync": _native_source_sync_binding(),
         "runtime_ready_claimed": False,
         "secrets_redacted": True,
         "target": target,
@@ -461,6 +501,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Refuse to write evidence unless the source tree is clean for promotion validation.",
     )
+    parser.add_argument(
+        "--require-native-source-sync",
+        action="store_true",
+        help="Refuse to write evidence unless the Python-owned native source-sync audit passes.",
+    )
     args = parser.parse_args(argv)
 
     root = _repo_root()
@@ -492,6 +537,27 @@ def main(argv: list[str] | None = None) -> int:
             payload["target_id"] = args.target_id
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 1
+
+    if args.require_native_source_sync:
+        native_source_sync_guard = _native_source_sync_guard()
+        if not native_source_sync_guard["ok"]:
+            payload = {
+                "ok": False,
+                "source_tree_clean": _source_tree_clean(),
+                "native_source_sync_guard": native_source_sync_guard,
+                "issues": [
+                    "native source sync audit must pass when --require-native-source-sync is used; "
+                    "regenerate C++/Rust/Tauri parity artifacts from Languages/Python/app/native_parity.py "
+                    "before collecting promotion evidence",
+                    *[str(issue) for issue in native_source_sync_guard["issues"]],
+                ],
+            }
+            if args.local_browser_targets:
+                payload["host"] = _current_browser_host()
+            if args.target_id:
+                payload["target_id"] = args.target_id
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 1
 
     if args.local_browser_targets:
         targets = _local_browser_targets(matrix_path)

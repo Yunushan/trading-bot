@@ -45,6 +45,21 @@ jobs:
           set -euo pipefail
           python tools/check_release_platform_matrix.py --schema-only
 
+      - name: Audit native source sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/native-source-sync
+          python tools/audit_native_source_sync.py --json --output artifacts/native-source-sync/native-source-sync-audit.json
+
+      - name: Upload native source sync audit
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-source-sync-audit
+          path: artifacts/native-source-sync/native-source-sync-audit.json
+          if-no-files-found: warn
+
       - name: Run real target probe
         shell: bash
         env:
@@ -56,6 +71,7 @@ jobs:
           python tools/run_release_platform_probe.py \
             --target-id "${{ inputs.target_id }}" \
             --require-clean-source \
+            --require-native-source-sync \
             --output "release-platform-evidence/${{ inputs.target_id }}.json"
 
       - name: Validate target evidence

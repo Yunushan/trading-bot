@@ -30,6 +30,9 @@ SIGNED_EXPECTED_ARTIFACTS = {
 }
 MARKET_EXPECTED_ARTIFACTS = {"rust-native-live-market-data-smoke.json"}
 SECRET_SENTINELS = ("dummy-rust-preflight-key", "dummy-rust-preflight-secret")
+NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT = "native-source-sync-audit"
+NATIVE_SOURCE_SYNC_AUDIT_PATH = "artifacts/native-source-sync/native-source-sync-audit.json"
+NATIVE_SOURCE_SYNC_SOURCE = "Languages/Python/app/native_parity.py"
 
 
 def _repo_root() -> Path:
@@ -219,6 +222,32 @@ def _missing_clean_source(payload: dict[str, Any] | None) -> set[str]:
     return set()
 
 
+def _validate_native_source_sync_binding(payload: dict[str, Any], issues: list[str]) -> None:
+    binding = payload.get("native_source_sync")
+    expected_hash = native_python_source_contract_hash()
+    if not isinstance(binding, dict) or not binding:
+        issues.append("payload native_source_sync must be a non-empty object")
+        return
+    if binding.get("required") is not True:
+        issues.append("payload native_source_sync.required must be true")
+    if str(binding.get("audit_artifact") or "").strip() != NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT:
+        issues.append(f"payload native_source_sync.audit_artifact must be {NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT}")
+    if str(binding.get("audit_path") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_AUDIT_PATH:
+        issues.append(f"payload native_source_sync.audit_path must be {NATIVE_SOURCE_SYNC_AUDIT_PATH}")
+    if str(binding.get("python_source_of_truth") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_SOURCE:
+        issues.append(f"payload native_source_sync.python_source_of_truth must be {NATIVE_SOURCE_SYNC_SOURCE}")
+    binding_hash = str(binding.get("contract_hash") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", binding_hash):
+        issues.append("payload native_source_sync.contract_hash must be a SHA-256 hex digest")
+    elif binding_hash != expected_hash:
+        issues.append(
+            "payload native_source_sync.contract_hash must match current Python source contract "
+            f"{expected_hash}"
+        )
+    if binding.get("surface_contract_required") is not True:
+        issues.append("payload native_source_sync.surface_contract_required must be true")
+
+
 def _validate_payload(
     payload: dict[str, Any] | None,
     *,
@@ -255,6 +284,7 @@ def _validate_payload(
             "payload python_source_contract_hash must match current Python source contract "
             f"{native_python_source_contract_hash()}"
         )
+    _validate_native_source_sync_binding(payload, issues)
     commit = str(payload.get("commit") or "").strip()
     current_commit = _current_git_commit()
     if not commit:

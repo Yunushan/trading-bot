@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -264,6 +265,15 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
 
         self.assertTrue(report["ok"], report["issues"])
         self.assertEqual(native_python_source_contract_hash(), report["contract_hash"])
+        self.assertTrue(report["surface_contract"]["ok"], report["surface_contract"])
+        self.assertEqual(
+            list(audit.REQUIRED_GENERATED_ARTIFACT_NAMES),
+            report["surface_contract"]["actual_generated_artifact_names"],
+        )
+        self.assertEqual(
+            list(audit.REQUIRED_CONSUMER_SURFACE_NAMES),
+            report["surface_contract"]["actual_consumer_surface_names"],
+        )
         for artifact in report["generated"]:
             self.assertEqual(report["contract_hash"], artifact["expected_contract_hash"])
             self.assertTrue(artifact["embeds_contract_hash"], artifact)
@@ -329,6 +339,59 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             self.assertEqual(0, exit_code)
             self.assertTrue(output_path.exists())
             self.assertEqual(json.loads(stdout.getvalue()), json.loads(output_path.read_text(encoding="utf-8")))
+
+    def test_native_source_sync_audit_rejects_surface_contract_drift(self):
+        audit = _load_repo_tool(
+            "audit_native_source_sync",
+            REPO_ROOT / "tools" / "audit_native_source_sync.py",
+        )
+        generated_artifacts = audit._generated_artifacts()
+        consumer_requirements = audit._consumer_requirements()
+
+        with patch.object(audit, "_generated_artifacts", return_value=generated_artifacts[:-1]):
+            missing_artifact_report = audit.audit_native_source_sync()
+        self.assertFalse(missing_artifact_report["ok"])
+        self.assertIn(
+            "missing required generated artifact(s): tauri_browser_generated_contract",
+            missing_artifact_report["surface_contract"]["issues"],
+        )
+
+        with patch.object(audit, "_consumer_requirements", return_value=consumer_requirements[:-1]):
+            missing_consumer_report = audit.audit_native_source_sync()
+        self.assertFalse(missing_consumer_report["ok"])
+        self.assertIn(
+            "missing required consumer surface(s): tauri_browser_service_api_uses_python_source_routes",
+            missing_consumer_report["surface_contract"]["issues"],
+        )
+
+        with patch.object(
+            audit,
+            "_consumer_requirements",
+            return_value=(*consumer_requirements, consumer_requirements[-1]),
+        ):
+            duplicate_consumer_report = audit.audit_native_source_sync()
+        self.assertFalse(duplicate_consumer_report["ok"])
+        self.assertIn(
+            "duplicate consumer surface(s): tauri_browser_service_api_uses_python_source_routes",
+            duplicate_consumer_report["surface_contract"]["issues"],
+        )
+
+        unexpected_consumer = audit.ConsumerRequirement(
+            "unexpected_native_surface",
+            consumer_requirements[0].path,
+            consumer_requirements[0].required_text,
+        )
+        with patch.object(
+            audit,
+            "_consumer_requirements",
+            return_value=(*consumer_requirements, unexpected_consumer),
+        ):
+            unexpected_consumer_report = audit.audit_native_source_sync()
+        self.assertFalse(unexpected_consumer_report["ok"])
+        self.assertIn(
+            "unexpected consumer surface(s): unexpected_native_surface",
+            unexpected_consumer_report["surface_contract"]["issues"],
+        )
 
     def test_generated_parity_domains_match_python_source_contract(self):
         summary = native_python_source_contract_summary()

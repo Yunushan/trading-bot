@@ -90,6 +90,8 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
             "interval input is required for Rust native live smoke evidence.",
             "evidence_dir input is required for Rust native live smoke evidence.",
             *SOURCE_SYNC_AUDIT_FRAGMENTS,
+            "Validate Rust native live-smoke preflight",
+            "python tools/check_rust_native_live_smoke_preflight.py --json --timeout 180",
             "cargo run -p trading-bot-rust -- --native-live-smoke-preflight",
             "cargo run -p trading-bot-rust -- --native-live-smoke",
             "python tools/check_rust_native_runtime_evidence.py",
@@ -118,6 +120,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
                 "Validate signed smoke inputs",
                 "Audit native source sync",
                 "Upload native source sync audit",
+                "Validate Rust native live-smoke preflight",
                 "Run guarded signed account-read smoke",
                 "Validate signed account-read smoke evidence",
                 "Write post-smoke Rust native runtime evidence plan",
@@ -206,8 +209,10 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             "browser_test_command:",
             "contents: read",
             "python tools/check_release_platform_matrix.py --schema-only",
+            *SOURCE_SYNC_AUDIT_FRAGMENTS,
             "python tools/run_release_platform_probe.py",
             "--target-id \"${{ inputs.target_id }}\"",
+            "--require-native-source-sync",
             "--output \"release-platform-evidence/${{ inputs.target_id }}.json\"",
             "Validate target evidence",
             "python tools/check_release_platform_matrix.py",
@@ -228,6 +233,8 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             text,
             (
                 "Validate matrix contract",
+                "Audit native source sync",
+                "Upload native source sync audit",
                 "Run real target probe",
                 "Validate target evidence",
                 "Upload target evidence",
@@ -242,6 +249,7 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
                 "python tools/run_release_platform_probe.py",
                 "--target-id \"${{ inputs.target_id }}\"",
                 "--require-clean-source",
+                "--require-native-source-sync",
                 "--output \"release-platform-evidence/${{ inputs.target_id }}.json\"",
             ),
         )
@@ -249,6 +257,8 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
     for fragment in ("--require-current-commit", "--require-clean-source"):
         if text.count(fragment) < 2:
             issues.append(f"release platform workflow must use {fragment} for target and full evidence validation")
+    if text.count("--require-native-source-sync") < 1:
+        issues.append("release platform workflow must use --require-native-source-sync for target evidence collection")
     return _workflow_result("release_platform_real_tests", path, issues)
 
 
@@ -355,6 +365,8 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
             "--runtime-evidence-dir \"${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}\"",
             "python tools/check_rust_native_local_recovery_evidence.py",
             "--evidence-dir \"${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}\"",
+            "--require-clean-source",
+            "--require-native-source-sync",
             "python tools/check_rust_native_runtime_evidence.py",
             "--require-evidence",
             "python tools/audit_rust_native_runtime_readiness.py",

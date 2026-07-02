@@ -11,18 +11,26 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from audit_native_source_sync import audit_native_source_sync
+    from audit_native_source_sync import (
+        REQUIRED_CONSUMER_SURFACE_NAMES,
+        REQUIRED_GENERATED_ARTIFACT_NAMES,
+        audit_native_source_sync,
+    )
     from app.native_parity import native_python_source_contract_summary
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from check_rust_native_local_recovery_evidence import local_recovery_generation_guard
-    from check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, validate
+    from check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, REQUIRED_REQUIREMENTS, validate
     from write_rust_native_release_evidence import preflight_release_evidence_inputs
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
-    from tools.audit_native_source_sync import audit_native_source_sync
+    from tools.audit_native_source_sync import (
+        REQUIRED_CONSUMER_SURFACE_NAMES,
+        REQUIRED_GENERATED_ARTIFACT_NAMES,
+        audit_native_source_sync,
+    )
     from app.native_parity import native_python_source_contract_summary
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.check_rust_native_local_recovery_evidence import local_recovery_generation_guard
-    from tools.check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, validate
+    from tools.check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, REQUIRED_REQUIREMENTS, validate
     from tools.write_rust_native_release_evidence import preflight_release_evidence_inputs
 
 
@@ -41,6 +49,11 @@ LOCAL_RECOVERY_EVIDENCE_IDS = {
     "rust-native-order-guard-recovery",
 }
 RELEASE_EVIDENCE_ID = "rust-native-release-platform-evidence"
+PROMOTION_EXTERNAL_EVIDENCE_IMPORT_IDS = (
+    LIVE_MARKET_EVIDENCE_ID,
+    LIVE_ACCOUNT_EVIDENCE_ID,
+    RELEASE_EVIDENCE_ID,
+)
 EVIDENCE_IMPORT_COMMAND = (
     "python tools/import_rust_native_evidence_artifacts.py <artifact.zip-or-dir> "
     "artifacts/native-source-sync --apply --require-current-commit --require-clean-source "
@@ -63,13 +76,7 @@ def _runtime_evidence_validation_command(required_runtime_ids: list[str] | tuple
     ).strip()
 
 
-PROMOTION_EVIDENCE_IMPORT_COMMAND = _runtime_evidence_import_command(
-    (
-        LIVE_MARKET_EVIDENCE_ID,
-        LIVE_ACCOUNT_EVIDENCE_ID,
-        RELEASE_EVIDENCE_ID,
-    )
-)
+PROMOTION_EVIDENCE_IMPORT_COMMAND = _runtime_evidence_import_command(PROMOTION_EXTERNAL_EVIDENCE_IMPORT_IDS)
 GITHUB_PROMOTION_AUDIT_WORKFLOW = "rust-native-promotion-audit.yml"
 GITHUB_PROMOTION_AUDIT_WORKFLOW_PLAN_ARTIFACT = "rust-native-promotion-evidence-plan"
 GITHUB_PROMOTION_AUDIT_WORKFLOW_COMMAND = (
@@ -101,11 +108,34 @@ def _promotion_audit_workflow_inputs() -> dict[str, str]:
 
 
 def _promotion_required_runtime_ids() -> list[str]:
-    return [
-        LIVE_MARKET_EVIDENCE_ID,
-        LIVE_ACCOUNT_EVIDENCE_ID,
-        RELEASE_EVIDENCE_ID,
-    ]
+    return list(EVIDENCE_COLLECTION_ORDER)
+
+
+def _promotion_local_recovery_runtime_ids() -> list[str]:
+    return [evidence_id for evidence_id in EVIDENCE_COLLECTION_ORDER if evidence_id in LOCAL_RECOVERY_EVIDENCE_IDS]
+
+
+def _runtime_evidence_id_contract_issues() -> list[str]:
+    configured = list(EVIDENCE_COLLECTION_ORDER)
+    configured_set = set(configured)
+    required_set = set(REQUIRED_REQUIREMENTS)
+    issues: list[str] = []
+    duplicates = sorted({evidence_id for evidence_id in configured if configured.count(evidence_id) > 1})
+    if duplicates:
+        issues.append(f"EVIDENCE_COLLECTION_ORDER contains duplicate evidence ids: {', '.join(duplicates)}")
+    missing = sorted(required_set - configured_set)
+    if missing:
+        issues.append(
+            "EVIDENCE_COLLECTION_ORDER is missing manifest-required runtime evidence ids: "
+            f"{', '.join(missing)}"
+        )
+    unexpected = sorted(configured_set - required_set)
+    if unexpected:
+        issues.append(
+            "EVIDENCE_COLLECTION_ORDER contains runtime evidence ids not declared in the manifest: "
+            f"{', '.join(unexpected)}"
+        )
+    return issues
 
 
 def _workflow_source_sync_audit() -> dict[str, Any]:
@@ -401,6 +431,8 @@ def _evidence_collection_plan(
     live_smoke_prerequisites: dict[str, Any],
     local_recovery_prerequisites: dict[str, Any],
     release_evidence_prerequisites: dict[str, Any],
+    native_source_sync: dict[str, Any],
+    source_tree_clean: bool,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for evidence_id in EVIDENCE_COLLECTION_ORDER:
@@ -408,7 +440,7 @@ def _evidence_collection_plan(
         expected_artifact = f"{evidence_id}.json"
         if evidence_id == LIVE_MARKET_EVIDENCE_ID:
             market_guard = dict(live_smoke_prerequisites.get("market_source_control_write_guard") or {})
-            source_tree_clean = bool(live_smoke_prerequisites.get("source_tree_clean"))
+            market_source_tree_clean = bool(live_smoke_prerequisites.get("source_tree_clean"))
             rows.append(
                 _collection_row(
                     evidence_id=evidence_id,
@@ -430,7 +462,7 @@ def _evidence_collection_plan(
                         "order_submission_attempted": False,
                     },
                     details={
-                        "source_tree_clean": source_tree_clean,
+                        "source_tree_clean": market_source_tree_clean,
                         "missing_prerequisites": list(
                             live_smoke_prerequisites.get("market_missing_prerequisites") or []
                         ),
@@ -458,13 +490,13 @@ def _evidence_collection_plan(
                 )
             )
             rows[-1]["issues"].extend(str(issue) for issue in market_guard.get("issues", []))
-            if not source_tree_clean:
+            if not market_source_tree_clean:
                 rows[-1]["issues"].append(
                     "source tree must be clean before collecting Rust native live market-data evidence"
                 )
         elif evidence_id == LIVE_ACCOUNT_EVIDENCE_ID:
             account_guard = dict(live_smoke_prerequisites.get("account_source_control_write_guard") or {})
-            source_tree_clean = bool(live_smoke_prerequisites.get("source_tree_clean"))
+            account_source_tree_clean = bool(live_smoke_prerequisites.get("source_tree_clean"))
             rows.append(
                 _collection_row(
                     evidence_id=evidence_id,
@@ -488,7 +520,7 @@ def _evidence_collection_plan(
                         "order_submission_attempted": False,
                     },
                     details={
-                        "source_tree_clean": source_tree_clean,
+                        "source_tree_clean": account_source_tree_clean,
                         "binance_api_key_present": bool(live_smoke_prerequisites.get("binance_api_key_present")),
                         "binance_api_secret_present": bool(live_smoke_prerequisites.get("binance_api_secret_present")),
                         "live_smoke_confirmation_present": bool(
@@ -524,25 +556,40 @@ def _evidence_collection_plan(
                 )
             )
             rows[-1]["issues"].extend(str(issue) for issue in account_guard.get("issues", []))
-            if not source_tree_clean:
+            if not account_source_tree_clean:
                 rows[-1]["issues"].append(
                     "source tree must be clean before collecting Rust native signed account-read evidence"
                 )
         elif evidence_id in LOCAL_RECOVERY_EVIDENCE_IDS:
             local_recovery_guard_ok = bool(local_recovery_prerequisites.get("ok"))
             local_recovery_issues = [str(issue) for issue in local_recovery_prerequisites.get("issues", [])]
+            native_source_sync_surface_contract = _source_sync_surface_contract_state(native_source_sync)
+            native_source_sync_issues = [
+                *[str(issue) for issue in native_source_sync.get("issues", [])],
+                *[str(issue) for issue in native_source_sync_surface_contract["issues"]],
+            ]
+            native_source_sync_ok = bool(native_source_sync.get("ok")) and bool(
+                native_source_sync_surface_contract["ok"]
+            )
+            local_recovery_missing_prerequisites = []
+            if not source_tree_clean:
+                local_recovery_missing_prerequisites.append("clean source tree")
+            if not native_source_sync_ok:
+                local_recovery_missing_prerequisites.append("native source sync audit")
+            local_recovery_ready = local_recovery_guard_ok and source_tree_clean and native_source_sync_ok
             rows.append(
                 _collection_row(
                     evidence_id=evidence_id,
                     status=status,
                     collection_kind="deterministic_local_recovery",
-                    prerequisites_ok=local_recovery_guard_ok,
+                    prerequisites_ok=local_recovery_ready,
                     expected_artifact=expected_artifact,
                     local_preflight_command="",
                     local_command=(
                         "cargo run -p trading-bot-rust -- --write-local-recovery-evidence && "
                         "python tools/check_rust_native_local_recovery_evidence.py "
-                        "--evidence-dir artifacts/rust-native-runtime-evidence --json"
+                        "--evidence-dir artifacts/rust-native-runtime-evidence "
+                        "--require-clean-source --require-native-source-sync --json"
                     ),
                     required_environment=[],
                     required_runtime_ids=[evidence_id],
@@ -552,8 +599,17 @@ def _evidence_collection_plan(
                         "order_submission_attempted": False,
                     },
                     details={
+                        "source_tree_clean": source_tree_clean,
+                        "missing_prerequisites": local_recovery_missing_prerequisites,
                         "source_control_guard": dict(local_recovery_prerequisites),
                         "source_control_guard_ok": local_recovery_guard_ok,
+                        "native_source_sync_ok": native_source_sync_ok,
+                        "native_source_sync_contract_hash": str(native_source_sync.get("contract_hash") or ""),
+                        "native_source_sync_surface_contract_ok": bool(
+                            native_source_sync_surface_contract["ok"]
+                        ),
+                        "native_source_sync_issues": native_source_sync_issues,
+                        "workflow_source_sync_audit": _workflow_source_sync_audit(),
                         "generated_evidence_write_targets": list(
                             local_recovery_prerequisites.get("generated_evidence_write_targets") or []
                         ),
@@ -568,6 +624,19 @@ def _evidence_collection_plan(
             )
             if local_recovery_issues:
                 rows[-1]["issues"].extend(local_recovery_issues)
+            if native_source_sync_issues:
+                rows[-1]["issues"].extend(
+                    f"native source sync must pass before local recovery evidence collection: {issue}"
+                    for issue in native_source_sync_issues
+                )
+            if not source_tree_clean:
+                rows[-1]["issues"].append(
+                    "source tree must be clean before collecting Rust native deterministic local recovery evidence"
+                )
+            if not native_source_sync_ok:
+                rows[-1]["issues"].append(
+                    "native source sync audit must pass before collecting Rust native deterministic local recovery evidence"
+                )
         elif evidence_id == RELEASE_EVIDENCE_ID:
             release_preflight_issues = [
                 str(issue) for issue in release_evidence_prerequisites.get("release_platform_preflight_issues", [])
@@ -929,12 +998,15 @@ def _next_action_plan(
             title="Collect deterministic Rust native local recovery evidence",
             summary=(
                 "Run python tools/check_rust_native_local_recovery_evidence.py "
-                "--evidence-dir artifacts/rust-native-runtime-evidence --json."
+                "--evidence-dir artifacts/rust-native-runtime-evidence "
+                "--require-clean-source --require-native-source-sync --json."
             ),
             requirement_ids=["required_runtime_evidence"],
             evidence_ids=recovery_ids,
             commands=[
-                "python tools/check_rust_native_local_recovery_evidence.py --evidence-dir artifacts/rust-native-runtime-evidence --json"
+                "python tools/check_rust_native_local_recovery_evidence.py "
+                "--evidence-dir artifacts/rust-native-runtime-evidence "
+                "--require-clean-source --require-native-source-sync --json"
             ],
             details=recovery_details,
             depends_on_action_ids=clean_source_dependency,
@@ -1059,6 +1131,8 @@ def _next_action_plan(
                 "github_workflow_plan_artifact": GITHUB_PROMOTION_AUDIT_WORKFLOW_PLAN_ARTIFACT,
                 "workflow_source_sync_audit": _workflow_source_sync_audit(),
                 "required_runtime_ids": _promotion_required_runtime_ids(),
+                "external_import_runtime_ids": list(PROMOTION_EXTERNAL_EVIDENCE_IMPORT_IDS),
+                "local_recovery_runtime_ids": _promotion_local_recovery_runtime_ids(),
                 "evidence_import_command": PROMOTION_EVIDENCE_IMPORT_COMMAND,
             },
             depends_on_action_ids=prerequisite_action_ids,
@@ -1213,6 +1287,45 @@ def _python_runtime_readiness_contract() -> dict[str, Any]:
     }
 
 
+def _source_sync_surface_contract_state(native_source_sync: dict[str, Any]) -> dict[str, Any]:
+    expected_generated_artifact_names = list(REQUIRED_GENERATED_ARTIFACT_NAMES)
+    expected_consumer_surface_names = list(REQUIRED_CONSUMER_SURFACE_NAMES)
+    surface_contract = native_source_sync.get("surface_contract")
+    issues: list[str] = []
+    actual_generated_artifact_names: list[str] = []
+    actual_consumer_surface_names: list[str] = []
+    if not isinstance(surface_contract, dict):
+        issues.append("native source sync surface_contract is missing.")
+    else:
+        issues.extend(str(issue) for issue in surface_contract.get("issues", []) or [])
+        actual_generated_artifact_names = [
+            str(name)
+            for name in surface_contract.get("actual_generated_artifact_names", []) or []
+        ]
+        actual_consumer_surface_names = [
+            str(name)
+            for name in surface_contract.get("actual_consumer_surface_names", []) or []
+        ]
+        if surface_contract.get("ok") is not True:
+            issues.append("surface_contract ok must be true.")
+        if surface_contract.get("required_generated_artifact_names") != expected_generated_artifact_names:
+            issues.append("surface_contract required_generated_artifact_names mismatch.")
+        if actual_generated_artifact_names != expected_generated_artifact_names:
+            issues.append("surface_contract actual_generated_artifact_names mismatch.")
+        if surface_contract.get("required_consumer_surface_names") != expected_consumer_surface_names:
+            issues.append("surface_contract required_consumer_surface_names mismatch.")
+        if actual_consumer_surface_names != expected_consumer_surface_names:
+            issues.append("surface_contract actual_consumer_surface_names mismatch.")
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "required_generated_artifact_names": expected_generated_artifact_names,
+        "actual_generated_artifact_names": actual_generated_artifact_names,
+        "required_consumer_surface_names": expected_consumer_surface_names,
+        "actual_consumer_surface_names": actual_consumer_surface_names,
+    }
+
+
 def _source_sync_claim(
     *,
     source: dict[str, Any],
@@ -1224,6 +1337,9 @@ def _source_sync_claim(
         issues.extend(str(issue) for issue in source.get("issues", []))
     if not bool(native_source_sync.get("ok")):
         issues.extend(f"native source sync: {issue}" for issue in native_source_sync.get("issues", []))
+    surface_contract_state = _source_sync_surface_contract_state(native_source_sync)
+    surface_contract_issues = [str(issue) for issue in surface_contract_state["issues"]]
+    issues.extend(f"native source sync: {issue}" for issue in surface_contract_issues)
     if python_runtime_readiness.get("cpp_contract_parity") is not True:
         issues.append("Python native parity summary does not approve C++ contract parity.")
     if python_runtime_readiness.get("rust_contract_parity") is not True:
@@ -1247,6 +1363,12 @@ def _source_sync_claim(
         "source_contract_markers_ok": bool(source.get("ok")),
         "native_source_sync_ok": bool(native_source_sync.get("ok")),
         "native_source_sync_contract_hash": native_source_sync.get("contract_hash"),
+        "surface_contract_ok": bool(surface_contract_state["ok"]),
+        "surface_contract_issues": surface_contract_issues,
+        "required_generated_artifact_names": list(surface_contract_state["required_generated_artifact_names"]),
+        "actual_generated_artifact_names": list(surface_contract_state["actual_generated_artifact_names"]),
+        "required_consumer_surface_names": list(surface_contract_state["required_consumer_surface_names"]),
+        "actual_consumer_surface_names": list(surface_contract_state["actual_consumer_surface_names"]),
         "generated_artifact_count": len(native_source_sync.get("generated", []) or []),
         "consumer_surface_count": len(native_source_sync.get("consumers", []) or []),
         "consumer_surface_names": [
@@ -1257,6 +1379,32 @@ def _source_sync_claim(
         "issues": issues,
         "audit_command": "python tools/audit_native_source_sync.py --json",
         "regenerate_command": "python Languages/Python/tools/generate_native_parity_contracts.py",
+    }
+
+
+def _native_source_sync_summary(source_sync_claim: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": bool(source_sync_claim.get("can_claim")),
+        "status": source_sync_claim.get("status"),
+        "reason": source_sync_claim.get("reason"),
+        "contract_hash": source_sync_claim.get("native_source_sync_contract_hash"),
+        "python_source_of_truth": source_sync_claim.get("python_source_of_truth"),
+        "surface_contract_ok": bool(source_sync_claim.get("surface_contract_ok")),
+        "surface_contract_issues": list(source_sync_claim.get("surface_contract_issues") or []),
+        "required_generated_artifact_names": list(
+            source_sync_claim.get("required_generated_artifact_names") or []
+        ),
+        "actual_generated_artifact_names": list(source_sync_claim.get("actual_generated_artifact_names") or []),
+        "required_consumer_surface_names": list(source_sync_claim.get("required_consumer_surface_names") or []),
+        "actual_consumer_surface_names": list(source_sync_claim.get("actual_consumer_surface_names") or []),
+        "generated_artifact_count": int(source_sync_claim.get("generated_artifact_count") or 0),
+        "consumer_surface_count": int(source_sync_claim.get("consumer_surface_count") or 0),
+        "consumer_surface_names": list(source_sync_claim.get("consumer_surface_names") or []),
+        "issues": list(source_sync_claim.get("issues") or []),
+        "audit_command": source_sync_claim.get("audit_command"),
+        "audit_output_path": SOURCE_SYNC_AUDIT_OUTPUT_PATH,
+        "audit_artifact": SOURCE_SYNC_AUDIT_ARTIFACT,
+        "regenerate_command": source_sync_claim.get("regenerate_command"),
     }
 
 
@@ -1306,9 +1454,16 @@ def _promotion_requirements(
     declaration_source_match_issues: list[str],
 ) -> list[dict[str, Any]]:
     source_ok = bool(source["ok"])
-    native_source_sync_ok = bool(native_source_sync["ok"])
+    source_sync_surface_contract = _source_sync_surface_contract_state(native_source_sync)
+    native_source_sync_issues = [
+        *[str(issue) for issue in native_source_sync.get("issues", [])],
+        *[str(issue) for issue in source_sync_surface_contract["issues"]],
+    ]
+    native_source_sync_ok = bool(native_source_sync["ok"]) and bool(source_sync_surface_contract["ok"])
     python_runtime_readiness_ok = bool(python_runtime_readiness.get("ok")) and not python_source_match_issues
     declaration_ok = bool(declaration["ok"]) and not declaration_source_match_issues
+    runtime_evidence_id_contract_issues = _runtime_evidence_id_contract_issues()
+    runtime_evidence_id_contract_ok = not runtime_evidence_id_contract_issues
     runtime_ready_ok = runtime_ready is True
     current_commit_evidence_ok = bool(evidence_complete and promotion_evidence_ok)
 
@@ -1350,7 +1505,7 @@ def _promotion_requirements(
                 if native_source_sync_ok
                 else "Generated native contracts are stale or incomplete compared with Python."
             ),
-            issues=[str(issue) for issue in native_source_sync.get("issues", [])],
+            issues=native_source_sync_issues,
         ),
         _promotion_requirement(
             requirement_id="python_runtime_readiness_source",
@@ -1373,6 +1528,17 @@ def _promotion_requirements(
                 else "Rust runtime evidence manifest declaration is invalid or inconsistent with source."
             ),
             issues=[str(issue) for issue in declaration.get("issues", [])] + declaration_source_match_issues,
+        ),
+        _promotion_requirement(
+            requirement_id="runtime_evidence_id_contract",
+            title="Runtime evidence ID contract",
+            ok=runtime_evidence_id_contract_ok,
+            summary=(
+                "Readiness audit required evidence IDs match the runtime evidence manifest."
+                if runtime_evidence_id_contract_ok
+                else "Readiness audit required evidence IDs are out of sync with the runtime evidence manifest."
+            ),
+            issues=runtime_evidence_id_contract_issues,
         ),
         _promotion_requirement(
             requirement_id="required_runtime_evidence",
@@ -1418,9 +1584,11 @@ def _promotion_model(
     declaration_source_match_issues: list[str],
 ) -> dict[str, Any]:
     failed_requirement_ids = [str(row["id"]) for row in promotion_requirements if not bool(row["ok"])]
+    source_sync_surface_contract = _source_sync_surface_contract_state(native_source_sync)
+    native_source_sync_ok = bool(native_source_sync.get("ok")) and bool(source_sync_surface_contract["ok"])
     if promotion_ready:
         phase = "runtime_complete"
-    elif not bool(native_source_sync.get("ok")):
+    elif not native_source_sync_ok:
         phase = "regenerate_python_owned_native_contracts"
     elif python_source_match_issues:
         phase = "align_rust_runtime_guard_with_python_source_of_truth"
@@ -1448,6 +1616,8 @@ def _promotion_model(
         "github_promotion_audit_workflow_plan_artifact": GITHUB_PROMOTION_AUDIT_WORKFLOW_PLAN_ARTIFACT,
         "github_promotion_audit_source_sync_audit": _workflow_source_sync_audit(),
         "promotion_required_runtime_ids": _promotion_required_runtime_ids(),
+        "promotion_external_import_runtime_ids": list(PROMOTION_EXTERNAL_EVIDENCE_IMPORT_IDS),
+        "promotion_local_recovery_runtime_ids": _promotion_local_recovery_runtime_ids(),
         "evidence_import_command": PROMOTION_EVIDENCE_IMPORT_COMMAND,
         "evidence_commit_binding": "each runtime evidence artifact commit must match current git rev-parse HEAD",
         "clean_source_scope": {
@@ -1643,6 +1813,12 @@ def _completion_claim(
             promotion_model.get("github_promotion_audit_source_sync_audit") or {}
         ),
         "promotion_required_runtime_ids": list(promotion_model.get("promotion_required_runtime_ids") or []),
+        "promotion_external_import_runtime_ids": list(
+            promotion_model.get("promotion_external_import_runtime_ids") or []
+        ),
+        "promotion_local_recovery_runtime_ids": list(
+            promotion_model.get("promotion_local_recovery_runtime_ids") or []
+        ),
     }
 
 
@@ -1695,6 +1871,7 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
         "",
         f"- Source sync claim: {_format_markdown_value(source_sync_claim.get('status'))}",
         f"- Source sync can be claimed: {_format_markdown_value(source_sync_claim.get('can_claim'))}",
+        f"- Source sync surface contract: {_format_markdown_value(source_sync_claim.get('surface_contract_ok'))}",
         f"- Source sync claim reason: {_format_markdown_value(source_sync_claim.get('reason'))}",
         f"- Promotion ready: {_format_markdown_value(result.get('promotion_ready'))}",
         f"- Runtime completion claim: {_format_markdown_value(completion_claim.get('status'))}",
@@ -1716,9 +1893,17 @@ def _render_evidence_collection_markdown(result: dict[str, Any]) -> str:
         f"- GitHub promotion audit source-sync JSON: `{_format_markdown_value(promotion_source_sync.get('output_path'))}`",
         f"- GitHub promotion audit source-sync artifact: `{_format_markdown_value(promotion_source_sync.get('github_workflow_artifact'))}`",
         f"- Promotion required runtime evidence ids: {_format_markdown_list(model.get('promotion_required_runtime_ids'))}",
+        f"- External import runtime evidence ids: {_format_markdown_list(model.get('promotion_external_import_runtime_ids'))}",
+        f"- Local recovery runtime evidence ids: {_format_markdown_list(model.get('promotion_local_recovery_runtime_ids'))}",
         "",
-        "## Promotion Requirements",
     ]
+    surface_issues = source_sync_claim.get("surface_contract_issues")
+    if isinstance(surface_issues, list) and surface_issues:
+        lines.extend(["Source sync surface contract issues:"])
+        for issue in surface_issues:
+            lines.append(f"- {issue}")
+        lines.append("")
+    lines.append("## Promotion Requirements")
 
     for row in result.get("promotion_requirements", []):
         if not isinstance(row, dict):
@@ -1947,6 +2132,12 @@ def audit(
         issues.extend(str(issue) for issue in source["issues"])
     if not native_source_sync["ok"]:
         issues.extend(f"native source sync: {issue}" for issue in native_source_sync["issues"])
+    native_source_sync_surface_contract = _source_sync_surface_contract_state(native_source_sync)
+    if not bool(native_source_sync_surface_contract["ok"]):
+        issues.extend(
+            f"native source sync: {issue}"
+            for issue in native_source_sync_surface_contract["issues"]
+        )
     if not declaration["ok"]:
         issues.extend(str(issue) for issue in declaration["issues"])
     if not evidence["ok"]:
@@ -2025,12 +2216,15 @@ def audit(
         live_smoke_prerequisites=live_smoke_prerequisites,
         local_recovery_prerequisites=local_recovery_prerequisites,
         release_evidence_prerequisites=release_evidence_prerequisites,
+        native_source_sync=native_source_sync,
+        source_tree_clean=bool(current_commit_evidence.get("current_source_tree_clean")),
     )
     source_sync_claim = _source_sync_claim(
         source=source,
         native_source_sync=native_source_sync,
         python_runtime_readiness=python_runtime_readiness,
     )
+    native_source_sync_summary = _native_source_sync_summary(source_sync_claim)
     completion_claim = _completion_claim(
         promotion_ready=promotion_ready,
         promotion_model=promotion_model,
@@ -2045,6 +2239,7 @@ def audit(
         "ok": ok,
         "promotion_ready": promotion_ready,
         "source_sync_claim": source_sync_claim,
+        "native_source_sync": native_source_sync_summary,
         "completion_claim": completion_claim,
         "require_ready": require_ready,
         "runtime_ready_source_state": runtime_ready,
@@ -2056,9 +2251,12 @@ def audit(
         "runtime_ready_policy_state": runtime_ready_policy_state,
         "runtime_ready_policy_matches_source": not declaration_source_match_issues,
         "source_contract_ok": bool(source["ok"]),
-        "native_source_sync_ok": bool(native_source_sync["ok"]),
+        "native_source_sync_ok": bool(native_source_sync["ok"]) and bool(native_source_sync_surface_contract["ok"]),
         "native_source_sync_contract_hash": native_source_sync.get("contract_hash"),
-        "native_source_sync_issues": list(native_source_sync.get("issues", [])),
+        "native_source_sync_issues": [
+            *[str(issue) for issue in native_source_sync.get("issues", [])],
+            *[str(issue) for issue in native_source_sync_surface_contract["issues"]],
+        ],
         "evidence_declaration_ok": bool(declaration["ok"]),
         "evidence_complete": evidence_complete,
         "current_commit": current_commit_evidence.get("current_commit"),

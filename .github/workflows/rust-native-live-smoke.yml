@@ -96,6 +96,12 @@ jobs:
           path: artifacts/native-source-sync/native-source-sync-audit.json
           if-no-files-found: warn
 
+      - name: Validate Rust native live-smoke preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/check_rust_native_live_smoke_preflight.py --json --timeout 180
+
       - name: Run guarded signed account-read smoke
         shell: bash
         working-directory: experiments/rust-shells

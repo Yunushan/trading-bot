@@ -13,11 +13,27 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from audit_native_source_sync import audit_native_source_sync
     from check_generated_evidence_source_control import generated_evidence_write_guard
-    from check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, validate
+    from check_rust_native_runtime_evidence import (
+        DEFAULT_MANIFEST_PATH,
+        PROMOTION_SOURCE_TREE_IGNORED_PATHS,
+        _current_source_tree_clean,
+        _current_source_tree_dirty_paths,
+        _current_source_tree_untracked_paths,
+        validate,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.audit_native_source_sync import audit_native_source_sync
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
-    from tools.check_rust_native_runtime_evidence import DEFAULT_MANIFEST_PATH, validate
+    from tools.check_rust_native_runtime_evidence import (
+        DEFAULT_MANIFEST_PATH,
+        PROMOTION_SOURCE_TREE_IGNORED_PATHS,
+        _current_source_tree_clean,
+        _current_source_tree_dirty_paths,
+        _current_source_tree_untracked_paths,
+        validate,
+    )
 
 
 RECOVERY_EVIDENCE_IDS = {
@@ -106,6 +122,88 @@ def local_recovery_generation_guard(evidence_dir: Path) -> dict[str, Any]:
     return _source_control_generation_guard(evidence_dir)
 
 
+def _promotion_source_guard() -> dict[str, Any]:
+    source_tree_clean = _current_source_tree_clean()
+    dirty_paths = _current_source_tree_dirty_paths() or []
+    untracked_paths = _current_source_tree_untracked_paths() or []
+    issues: list[str] = []
+    if source_tree_clean is None:
+        issues.append("could not check current source tree cleanliness before local recovery promotion evidence")
+    elif not source_tree_clean:
+        issues.append(
+            "source tree must be clean before generating Rust native deterministic local recovery promotion evidence"
+        )
+        if dirty_paths:
+            visible = ", ".join(dirty_paths[:10])
+            suffix = "" if len(dirty_paths) <= 10 else ", ..."
+            issues.append(f"dirty paths: {visible}{suffix}")
+        if untracked_paths:
+            visible = ", ".join(untracked_paths[:10])
+            suffix = "" if len(untracked_paths) <= 10 else ", ..."
+            issues.append(f"untracked paths: {visible}{suffix}")
+    return {
+        "ok": not issues,
+        "source_tree_clean": source_tree_clean,
+        "dirty_paths": dirty_paths,
+        "untracked_paths": untracked_paths,
+        "ignored_paths": list(PROMOTION_SOURCE_TREE_IGNORED_PATHS),
+        "issues": issues,
+    }
+
+
+def _native_source_sync_not_required() -> dict[str, Any]:
+    return {
+        "required": False,
+        "ok": True,
+        "audit_command": "python tools/audit_native_source_sync.py --json",
+        "contract_hash": "",
+        "surface_contract_ok": None,
+        "generated_artifact_count": 0,
+        "consumer_surface_count": 0,
+        "issues": [],
+    }
+
+
+def _native_source_sync_guard() -> dict[str, Any]:
+    try:
+        audit = audit_native_source_sync()
+    except (OSError, UnicodeDecodeError) as exc:  # pragma: no cover - defensive CLI boundary
+        return {
+            "required": True,
+            "ok": False,
+            "audit_command": "python tools/audit_native_source_sync.py --json",
+            "contract_hash": "",
+            "surface_contract_ok": False,
+            "generated_artifact_count": 0,
+            "consumer_surface_count": 0,
+            "issues": [f"native source sync audit failed before local recovery evidence generation: {exc}"],
+        }
+
+    surface_contract = audit.get("surface_contract")
+    surface_contract_ok = bool(isinstance(surface_contract, dict) and surface_contract.get("ok") is True)
+    issues = [str(issue) for issue in audit.get("issues", [])]
+    if audit.get("ok") is not True and not issues:
+        issues.append("native source sync audit failed before local recovery evidence generation")
+    if not isinstance(surface_contract, dict):
+        issues.append("native source sync audit must include surface_contract before local recovery evidence generation")
+    elif surface_contract.get("ok") is not True:
+        issues.extend(
+            f"native source sync surface contract issue before local recovery evidence generation: {issue}"
+            for issue in surface_contract.get("issues", [])
+        )
+
+    return {
+        "required": True,
+        "ok": not issues,
+        "audit_command": "python tools/audit_native_source_sync.py --json",
+        "contract_hash": str(audit.get("contract_hash") or ""),
+        "surface_contract_ok": surface_contract_ok,
+        "generated_artifact_count": len(audit.get("generated", []) or []),
+        "consumer_surface_count": len(audit.get("consumers", []) or []),
+        "issues": issues,
+    }
+
+
 def _run_recovery_evidence_command(evidence_dir: Path, *, timeout: int) -> dict[str, Any]:
     cargo = shutil.which("cargo")
     if not cargo:
@@ -153,9 +251,48 @@ def check_local_recovery_evidence(
     evidence_dir: Path,
     validate_only: bool,
     timeout: int,
+    require_clean_source: bool = False,
+    require_native_source_sync: bool = False,
 ) -> dict[str, Any]:
     if not evidence_dir.is_absolute():
         evidence_dir = (_repo_root() / evidence_dir).resolve()
+    promotion_source_guard = _promotion_source_guard() if require_clean_source else {
+        "ok": True,
+        "source_tree_clean": None,
+        "dirty_paths": [],
+        "untracked_paths": [],
+        "ignored_paths": list(PROMOTION_SOURCE_TREE_IGNORED_PATHS),
+        "issues": [],
+    }
+    native_source_sync_guard = (
+        _native_source_sync_guard() if require_native_source_sync else _native_source_sync_not_required()
+    )
+    pre_run_issues: list[str] = []
+    if require_clean_source and not promotion_source_guard["ok"]:
+        pre_run_issues.extend(str(issue) for issue in promotion_source_guard["issues"])
+    if require_native_source_sync and not native_source_sync_guard["ok"]:
+        pre_run_issues.extend(str(issue) for issue in native_source_sync_guard["issues"])
+    if pre_run_issues:
+        return {
+            "ok": False,
+            "evidence_dir": str(evidence_dir),
+            "validate_only": validate_only,
+            "require_clean_source": require_clean_source,
+            "require_native_source_sync": require_native_source_sync,
+            "recovery_evidence_ids": sorted(RECOVERY_EVIDENCE_IDS),
+            "command": {
+                "ok": False,
+                "returncode": None,
+                "command": "blocked-before-run",
+                "stdout_tail": "",
+                "stderr_tail": "",
+            },
+            "source_control_guard": {},
+            "promotion_source_guard": promotion_source_guard,
+            "native_source_sync_guard": native_source_sync_guard,
+            "validation": {},
+            "issues": pre_run_issues,
+        }
     command_result = {
         "ok": True,
         "returncode": 0,
@@ -170,6 +307,8 @@ def check_local_recovery_evidence(
                 "ok": False,
                 "evidence_dir": str(evidence_dir),
                 "validate_only": validate_only,
+                "require_clean_source": require_clean_source,
+                "require_native_source_sync": require_native_source_sync,
                 "recovery_evidence_ids": sorted(RECOVERY_EVIDENCE_IDS),
                 "command": {
                     "ok": False,
@@ -179,6 +318,8 @@ def check_local_recovery_evidence(
                     "stderr_tail": "",
                 },
                 "source_control_guard": source_control_guard,
+                "promotion_source_guard": promotion_source_guard,
+                "native_source_sync_guard": native_source_sync_guard,
                 "validation": {},
                 "issues": list(source_control_guard["issues"]),
             }
@@ -190,6 +331,8 @@ def check_local_recovery_evidence(
     validation = validate(
         manifest_path,
         require_evidence=True,
+        require_current_commit=require_clean_source,
+        require_clean_source=require_clean_source,
         evidence_dir_override=evidence_dir,
         requirement_ids=RECOVERY_EVIDENCE_IDS,
     )
@@ -201,9 +344,13 @@ def check_local_recovery_evidence(
         "ok": not issues,
         "evidence_dir": str(evidence_dir),
         "validate_only": validate_only,
+        "require_clean_source": require_clean_source,
+        "require_native_source_sync": require_native_source_sync,
         "recovery_evidence_ids": sorted(RECOVERY_EVIDENCE_IDS),
         "command": command_result,
         "source_control_guard": source_control_guard,
+        "promotion_source_guard": promotion_source_guard,
+        "native_source_sync_guard": native_source_sync_guard,
         "validation": validation,
         "issues": issues,
     }
@@ -217,6 +364,8 @@ def _run_with_managed_evidence_dir(args: argparse.Namespace) -> dict[str, Any]:
             evidence_dir=Path(args.evidence_dir),
             validate_only=bool(args.validate_only),
             timeout=int(args.timeout),
+            require_clean_source=bool(args.require_clean_source),
+            require_native_source_sync=bool(args.require_native_source_sync),
         )
     if args.validate_only:
         default_dir = _repo_root() / "artifacts" / "rust-native-runtime-evidence"
@@ -225,6 +374,8 @@ def _run_with_managed_evidence_dir(args: argparse.Namespace) -> dict[str, Any]:
             evidence_dir=default_dir,
             validate_only=True,
             timeout=int(args.timeout),
+            require_clean_source=bool(args.require_clean_source),
+            require_native_source_sync=bool(args.require_native_source_sync),
         )
     with tempfile.TemporaryDirectory(prefix="trading-bot-rust-recovery-") as temp_dir:
         return check_local_recovery_evidence(
@@ -232,6 +383,8 @@ def _run_with_managed_evidence_dir(args: argparse.Namespace) -> dict[str, Any]:
             evidence_dir=Path(temp_dir),
             validate_only=False,
             timeout=int(args.timeout),
+            require_clean_source=bool(args.require_clean_source),
+            require_native_source_sync=bool(args.require_native_source_sync),
         )
 
 
@@ -240,6 +393,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST_PATH), help="Rust runtime evidence manifest path.")
     parser.add_argument("--evidence-dir", help="Directory to write or validate recovery evidence artifacts.")
     parser.add_argument("--validate-only", action="store_true", help="Validate existing recovery evidence without running cargo.")
+    parser.add_argument(
+        "--require-clean-source",
+        action="store_true",
+        help="Require the current checkout and generated artifacts to satisfy promotion clean-source rules.",
+    )
+    parser.add_argument(
+        "--require-native-source-sync",
+        action="store_true",
+        help="Require the current Python-owned C++/Rust/Tauri native source-sync audit before local recovery evidence.",
+    )
     parser.add_argument("--timeout", type=int, default=240, help="Maximum seconds for the Rust recovery evidence command.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args(argv)

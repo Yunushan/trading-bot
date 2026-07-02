@@ -50,6 +50,9 @@ REQUIRED_REQUIREMENTS: dict[str, str] = {
     "rust-native-order-guard-recovery": "live_recovery",
     "rust-native-release-platform-evidence": "release_evidence",
 }
+NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT = "native-source-sync-audit"
+NATIVE_SOURCE_SYNC_AUDIT_PATH = "artifacts/native-source-sync/native-source-sync-audit.json"
+NATIVE_SOURCE_SYNC_SOURCE = "Languages/Python/app/native_parity.py"
 ACCEPTED_EVIDENCE_SCOPES: dict[str, set[str]] = {
     "live_smoke": {"live_testnet", "live_production"},
     "live_recovery": {"deterministic_local", "controlled_live", "live_testnet", "live_production"},
@@ -272,6 +275,7 @@ def _requirements(manifest: dict[str, Any]) -> tuple[list[dict[str, Any]], list[
             "commit",
             "source_tree_clean",
             "python_source_contract_hash",
+            "native_source_sync",
             "command",
             "environment",
             "secrets_redacted",
@@ -400,6 +404,39 @@ def _validate_python_source_contract_hash(
             f"{artifact_path} python_source_contract_hash must match current Python source contract "
             f"{expected_hash}; observed {artifact_hash}"
         )
+
+
+def _validate_native_source_sync_binding(
+    payload: dict[str, Any],
+    artifact_path: Path,
+    issues: list[str],
+    *,
+    expected_hash: str,
+) -> None:
+    binding = payload.get("native_source_sync")
+    if not isinstance(binding, dict) or not binding:
+        issues.append(f"{artifact_path} native_source_sync must be a non-empty object")
+        return
+    if binding.get("required") is not True:
+        issues.append(f"{artifact_path} native_source_sync.required must be true")
+    if str(binding.get("audit_artifact") or "").strip() != NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT:
+        issues.append(
+            f"{artifact_path} native_source_sync.audit_artifact must be {NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT}"
+        )
+    if str(binding.get("audit_path") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_AUDIT_PATH:
+        issues.append(f"{artifact_path} native_source_sync.audit_path must be {NATIVE_SOURCE_SYNC_AUDIT_PATH}")
+    if str(binding.get("python_source_of_truth") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_SOURCE:
+        issues.append(f"{artifact_path} native_source_sync.python_source_of_truth must be {NATIVE_SOURCE_SYNC_SOURCE}")
+    binding_hash = str(binding.get("contract_hash") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", binding_hash):
+        issues.append(f"{artifact_path} native_source_sync.contract_hash must be a SHA-256 hex digest")
+    elif binding_hash != expected_hash:
+        issues.append(
+            f"{artifact_path} native_source_sync.contract_hash must match current Python source contract "
+            f"{expected_hash}; observed {binding_hash}"
+        )
+    if binding.get("surface_contract_required") is not True:
+        issues.append(f"{artifact_path} native_source_sync.surface_contract_required must be true")
 
 
 def _is_safe_redacted_value(value: Any) -> bool:
@@ -877,6 +914,12 @@ def _validate_artifact(
     _validate_runtime_evidence_string_fields(payload, artifact_path, issues)
     _validate_generated_at(payload, artifact_path, issues)
     _validate_python_source_contract_hash(
+        payload,
+        artifact_path,
+        issues,
+        expected_hash=expected_python_source_contract_hash,
+    )
+    _validate_native_source_sync_binding(
         payload,
         artifact_path,
         issues,

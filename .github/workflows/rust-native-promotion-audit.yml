@@ -130,6 +130,8 @@ jobs:
           set -euo pipefail
           python tools/check_rust_native_local_recovery_evidence.py \
             --evidence-dir "${RUST_NATIVE_RUNTIME_EVIDENCE_DIR}" \
+            --require-clean-source \
+            --require-native-source-sync \
             --json
 
       - name: Validate complete current-commit runtime evidence

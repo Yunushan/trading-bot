@@ -151,6 +151,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertFalse(result["required"])
         self.assertFalse(result["blocks_success"])
         self.assertIn("clean candidate source tree", result["advisory_reason"])
+        self.assertIn("--stale-promotion-evidence --apply", result["remediation"])
         self.assertTrue(module._report_ok([result]))
 
     def test_verify_all_downgrades_stale_commit_promotion_import_failure(self):
@@ -184,7 +185,79 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertFalse(result["required"])
         self.assertFalse(result["blocks_success"])
         self.assertIn("current-commit artifacts", result["advisory_reason"])
+        self.assertIn("--stale-promotion-evidence --apply", result["remediation"])
         self.assertTrue(module._report_ok([result]))
+
+    def test_verify_all_downgrades_stale_release_platform_promotion_import_failure(self):
+        module = _load_verify_all_module()
+        check = module.Check(
+            "rust native evidence import audit",
+            (sys.executable,),
+            REPO_ROOT,
+        )
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            1,
+            stdout=json.dumps(
+                {
+                    "ok": False,
+                    "require_clean_source": True,
+                    "require_current_commit": True,
+                    "issues": [
+                        "release-platform-evidence/browser-chrome-windows_11_x64.json: "
+                        "release-platform-evidence/browser-chrome-windows_11_x64.json "
+                        "commit must match current git commit abc123",
+                        "release-platform-evidence/browser-chrome-windows_11_x64.json: "
+                        "release-platform-evidence/browser-chrome-windows_11_x64.json "
+                        "native_source_sync must be a non-empty object",
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=True)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["required"])
+        self.assertFalse(result["blocks_success"])
+        self.assertIn("runtime/release evidence", result["advisory_reason"])
+        self.assertIn("--stale-promotion-evidence --apply", result["remediation"])
+        self.assertTrue(module._report_ok([result]))
+
+    def test_verify_all_keeps_missing_source_sync_import_failure_required(self):
+        module = _load_verify_all_module()
+        check = module.Check(
+            "rust native evidence import audit",
+            (sys.executable,),
+            REPO_ROOT,
+        )
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            1,
+            stdout=json.dumps(
+                {
+                    "ok": False,
+                    "require_clean_source": True,
+                    "require_current_commit": True,
+                    "require_native_source_sync_audit": True,
+                    "issues": [
+                        "missing required current-checkout native source sync audit artifact: "
+                        "artifacts/native-source-sync/native-source-sync-audit.json"
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=True)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["required"])
+        self.assertNotIn("advisory_reason", result)
+        self.assertFalse(module._report_ok([result]))
 
     def test_verify_all_keeps_non_dirty_import_failure_required(self):
         module = _load_verify_all_module()
@@ -211,6 +284,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertTrue(result["required"])
+        self.assertNotIn("--stale-runtime-evidence", result.get("remediation", ""))
         self.assertFalse(module._report_ok([result]))
 
     def test_verify_all_client_lock_remediation_names_missing_lockfile_command(self):
@@ -426,7 +500,7 @@ class DependencyReproducibilityTests(unittest.TestCase):
                 ".vscode/",
                 "README.md",
             ],
-        ):
+        ), mock.patch.object(module, "_explicit_generated_artifacts", return_value=[]):
             payload = module.clean_workspace_artifacts(apply=False)
         self.assertFalse(payload["applied"])
         self.assertEqual(5, payload["planned_count"])
@@ -461,6 +535,33 @@ class DependencyReproducibilityTests(unittest.TestCase):
             self.assertEqual([".vcpkg/"], payload["removed"])
             self.assertFalse((root / ".vcpkg").exists())
 
+    def test_workspace_cleanup_tool_tolerates_paths_removed_during_apply(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / ".ruff_cache"
+            cache_dir.mkdir()
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_ignored_paths", return_value=[".ruff_cache/"]),
+                mock.patch.object(module.shutil, "rmtree", side_effect=FileNotFoundError("already gone")),
+            ):
+                payload = module.clean_workspace_artifacts(apply=True)
+
+            self.assertEqual([], payload["removed"])
+            self.assertEqual([{"path": ".ruff_cache/", "reason": "already removed"}], payload["skipped"])
+
+    def test_workspace_cleanup_retry_ignores_disappearing_children(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        retry = mock.Mock(side_effect=FileNotFoundError("already gone"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_path = str(Path(temp_dir) / ".ruff_cache" / ".gitignore")
+
+            module._make_writable_and_retry(retry, missing_path, None)
+
+        retry.assert_not_called()
+
     def test_workspace_cleanup_tool_expands_collapsed_native_source_sync_artifacts(self):
         module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -468,6 +569,16 @@ class DependencyReproducibilityTests(unittest.TestCase):
             audit_path = root / "artifacts" / "native-source-sync" / "native-source-sync-audit.json"
             audit_path.parent.mkdir(parents=True)
             audit_path.write_text('{"ok": true}', encoding="utf-8")
+            nested_plan_path = (
+                root
+                / "artifacts"
+                / "rust-native-runtime-evidence"
+                / "rust-native-runtime-evidence-plan.md"
+            )
+            nested_plan_path.parent.mkdir(parents=True)
+            nested_plan_path.write_text("# Rust native runtime evidence plan\n", encoding="utf-8")
+            legacy_plan_path = root / "artifacts" / "rust-native-runtime-evidence-plan.md"
+            legacy_plan_path.write_text("# Rust native runtime evidence plan\n", encoding="utf-8")
 
             with (
                 mock.patch.object(module, "_repo_root", return_value=root),
@@ -475,9 +586,13 @@ class DependencyReproducibilityTests(unittest.TestCase):
             ):
                 dry_run = module.clean_workspace_artifacts(apply=False)
 
-            expected_path = "artifacts/native-source-sync/native-source-sync-audit.json"
-            self.assertEqual([expected_path], dry_run["planned"])
-            self.assertEqual(1, dry_run["planned_count"])
+            expected_paths = [
+                "artifacts/native-source-sync/native-source-sync-audit.json",
+                "artifacts/rust-native-runtime-evidence-plan.md",
+                "artifacts/rust-native-runtime-evidence/rust-native-runtime-evidence-plan.md",
+            ]
+            self.assertEqual(expected_paths, dry_run["planned"])
+            self.assertEqual(3, dry_run["planned_count"])
 
             with (
                 mock.patch.object(module, "_repo_root", return_value=root),
@@ -485,9 +600,107 @@ class DependencyReproducibilityTests(unittest.TestCase):
             ):
                 payload = module.clean_workspace_artifacts(apply=True)
 
-            self.assertEqual([expected_path], payload["removed"])
+            self.assertEqual(expected_paths, payload["removed"])
             self.assertFalse(audit_path.exists())
+            self.assertFalse(nested_plan_path.exists())
+            self.assertFalse(legacy_plan_path.exists())
             self.assertTrue((root / "artifacts").exists())
+
+    def test_workspace_cleanup_tool_can_opt_in_to_stale_rust_runtime_evidence(self):
+        module = _load_script_module("clean_workspace_artifacts", CLEAN_WORKSPACE_SCRIPT)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence_dir = root / "artifacts" / "rust-native-runtime-evidence"
+            evidence_dir.mkdir(parents=True)
+            release_evidence_dir = root / "release-platform-evidence"
+            release_evidence_dir.mkdir()
+            stale_path = evidence_dir / "rust-native-live-market-data-smoke.json"
+            current_path = evidence_dir / "rust-native-live-stream-recovery.json"
+            unknown_path = evidence_dir / "custom-runtime-evidence.json"
+            stale_release_path = release_evidence_dir / "browser-chrome-windows_11_x64.json"
+            current_release_path = release_evidence_dir / "browser-edge-windows_11_x64.json"
+            current_hash = "b" * 64
+            stale_path.write_text(
+                json.dumps(
+                    {
+                        "evidence_id": "rust-native-live-market-data-smoke",
+                        "commit": "old-commit",
+                        "python_source_contract_hash": "a" * 64,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            current_path.write_text(
+                json.dumps(
+                    {
+                        "evidence_id": "rust-native-live-stream-recovery",
+                        "commit": "current-commit",
+                        "python_source_contract_hash": current_hash,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unknown_path.write_text(
+                json.dumps(
+                    {
+                        "evidence_id": "custom-runtime-evidence",
+                        "commit": "old-commit",
+                        "python_source_contract_hash": "a" * 64,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stale_release_path.write_text(
+                json.dumps(
+                    {
+                        "target_id": "browser-chrome-windows_11_x64",
+                        "commit": "old-commit",
+                        "source_tree_clean": False,
+                        "python_source_contract_hash": "a" * 64,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            current_release_path.write_text(
+                json.dumps(
+                    {
+                        "target_id": "browser-edge-windows_11_x64",
+                        "commit": "current-commit",
+                        "source_tree_clean": True,
+                        "python_source_contract_hash": current_hash,
+                        "native_source_sync": {"contract_hash": current_hash},
+                        "runtime_ready_claimed": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(module, "_repo_root", return_value=root),
+                mock.patch.object(module, "_ignored_paths", return_value=["artifacts/", "release-platform-evidence/"]),
+                mock.patch.object(module, "_current_runtime_evidence_binding", return_value=("current-commit", current_hash)),
+            ):
+                default_dry_run = module.clean_workspace_artifacts(apply=False)
+                stale_dry_run = module.clean_workspace_artifacts(
+                    apply=False,
+                    include_stale_runtime_evidence=True,
+                )
+                payload = module.clean_workspace_artifacts(
+                    apply=True,
+                    include_stale_runtime_evidence=True,
+                )
+
+            expected_path = "artifacts/rust-native-runtime-evidence/rust-native-live-market-data-smoke.json"
+            expected_release_path = "release-platform-evidence/browser-chrome-windows_11_x64.json"
+            self.assertNotIn(expected_path, default_dry_run["planned"])
+            self.assertNotIn(expected_release_path, default_dry_run["planned"])
+            self.assertEqual([expected_path, expected_release_path], stale_dry_run["planned"])
+            self.assertEqual([expected_path, expected_release_path], payload["removed"])
+            self.assertFalse(stale_path.exists())
+            self.assertFalse(stale_release_path.exists())
+            self.assertTrue(current_path.exists())
+            self.assertTrue(current_release_path.exists())
+            self.assertTrue(unknown_path.exists())
 
     def test_workspace_hygiene_classifier_includes_generated_caches_not_editor_settings(self):
         module = _load_script_module("audit_workspace_hygiene", REPO_ROOT / "tools" / "audit_workspace_hygiene.py")

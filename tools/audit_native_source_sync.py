@@ -40,6 +40,7 @@ class ConsumerRequirement:
     required_text: tuple[str, ...]
     service_route_names: tuple[str, ...] = ()
     route_extractors: tuple[str, ...] = ()
+    forbidden_text: tuple[str, ...] = ()
 
 
 CPP_SERVICE_API_EXTRACTOR = "cpp_service_api"
@@ -57,6 +58,47 @@ CPP_ROUTED_ACTION_RE = re.compile(
 TAURI_REQUEST_AND_REPORT_ROUTE_RE = re.compile(
     r"requestAndReport\s*\(\s*(?:\"[^\"]+\"|[A-Za-z_$][\w$]*)\s*,\s*\"([a-z0-9_]+)\"",
     re.DOTALL,
+)
+PYTHON_OWNED_OPTION_VALUE_FRAGMENTS = (
+    "Provider: OpenAI / ChatGPT",
+    "Model: gpt-5.5, gpt-5.4",
+    "Connector: Binance SDK Derivatives Trading USD-S Futures",
+    "Indicator Source: Binance spot, Binance futures",
+    "Default symbols: BTCUSDT, ETHUSDT",
+    "Default intervals: 1m, 3m",
+    "Default intervals: 1m, 5m",
+    "Loop Interval Override: 30 seconds",
+    "Symbol Source: Futures, Spot",
+    "Signal Logic: AND, OR, SEPARATE",
+    "MDD Logic: Per Trade MDD",
+    "Side: Buy (Long), Sell (Short)",
+    "Template: Enable, First 50 Highest Volume",
+)
+REQUIRED_GENERATED_ARTIFACT_NAMES = (
+    "rust_core_generated_contract",
+    "cpp_generated_contract",
+    "tauri_browser_generated_contract",
+)
+REQUIRED_CONSUMER_SURFACE_NAMES = (
+    "rust_core_consumes_generated_contract",
+    "rust_strategy_runtime_uses_python_source_options",
+    "rust_config_persistence_uses_python_source_options",
+    "cpp_support_consumes_generated_contract",
+    "cpp_support_exposes_generated_contract",
+    "cpp_config_persistence_uses_python_source_options",
+    "cpp_dashboard_uses_python_source_surface",
+    "cpp_backtest_uses_python_source_surface",
+    "cpp_backtest_service_api_uses_python_source_routes",
+    "cpp_dashboard_llm_service_api_uses_python_source_routes",
+    "cpp_config_service_api_uses_python_source_routes",
+    "cpp_chart_uses_python_source_surface",
+    "cpp_native_chart_heatmap_uses_python_source_surface",
+    "cpp_positions_uses_python_source_surface",
+    "cpp_account_symbols_use_python_source_fallbacks",
+    "cpp_native_exchange_connectors_use_python_source_connectors",
+    "cpp_native_strategy_runtime_uses_python_source_options",
+    "tauri_browser_consumes_generated_contract",
+    "tauri_browser_service_api_uses_python_source_routes",
 )
 
 
@@ -80,6 +122,60 @@ def _ordered_unique(values: list[str] | tuple[str, ...]) -> list[str]:
             seen.add(value)
             unique.append(value)
     return unique
+
+
+def _duplicate_names(values: tuple[str, ...]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
+def _name_contract_issues(label: str, required_names: tuple[str, ...], actual_names: tuple[str, ...]) -> list[str]:
+    actual_name_set = set(actual_names)
+    required_name_set = set(required_names)
+    issues: list[str] = []
+    missing = [name for name in required_names if name not in actual_name_set]
+    unexpected = [name for name in actual_names if name not in required_name_set]
+    duplicates = _duplicate_names(actual_names)
+    if missing:
+        issues.append(f"missing required {label}(s): {', '.join(missing)}")
+    if unexpected:
+        issues.append(f"unexpected {label}(s): {', '.join(unexpected)}")
+    if duplicates:
+        issues.append(f"duplicate {label}(s): {', '.join(duplicates)}")
+    return issues
+
+
+def _surface_contract(
+    generated_artifacts: tuple[GeneratedArtifact, ...],
+    consumers: tuple[ConsumerRequirement, ...],
+) -> dict[str, object]:
+    generated_artifact_names = tuple(artifact.name for artifact in generated_artifacts)
+    consumer_surface_names = tuple(consumer.name for consumer in consumers)
+    issues = [
+        *_name_contract_issues(
+            "generated artifact",
+            REQUIRED_GENERATED_ARTIFACT_NAMES,
+            generated_artifact_names,
+        ),
+        *_name_contract_issues(
+            "consumer surface",
+            REQUIRED_CONSUMER_SURFACE_NAMES,
+            consumer_surface_names,
+        ),
+    ]
+    return {
+        "ok": not issues,
+        "required_generated_artifact_names": list(REQUIRED_GENERATED_ARTIFACT_NAMES),
+        "actual_generated_artifact_names": list(generated_artifact_names),
+        "required_consumer_surface_names": list(REQUIRED_CONSUMER_SURFACE_NAMES),
+        "actual_consumer_surface_names": list(consumer_surface_names),
+        "issues": issues,
+    }
 
 
 def _extract_service_routes(text: str, extractors: tuple[str, ...]) -> tuple[list[str], list[str]]:
@@ -129,6 +225,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "python_source_rust_contract_parity_ready",
                 "python_source_rust_standalone_runtime_ready",
             ),
+            forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
         ),
         ConsumerRequirement(
             "rust_strategy_runtime_uses_python_source_options",
@@ -207,6 +304,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonMddLogicOptions",
                 "PythonParityContract::kPythonStopLossModes",
             ),
+            forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
         ),
         ConsumerRequirement(
             "cpp_support_exposes_generated_contract",
@@ -265,6 +363,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "validateOptionalChoice",
                 "llmReasoningEffortChoicesFromSource",
             ),
+            forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
         ),
         ConsumerRequirement(
             "cpp_dashboard_uses_python_source_surface",
@@ -277,6 +376,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "pythonSourceDashboardLoopChoiceLabels",
                 "pythonSourceDashboardStrategyTemplateLabels",
             ),
+            forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
         ),
         ConsumerRequirement(
             "cpp_backtest_uses_python_source_surface",
@@ -291,6 +391,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "rebuildConnectorComboForAccount",
                 "resolveConnectorConfig",
             ),
+            forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
         ),
         ConsumerRequirement(
             "cpp_backtest_service_api_uses_python_source_routes",
@@ -440,6 +541,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "pythonParityContract.mddLogicOptions",
                 "pythonParityContract.stopLossModes",
             ),
+            forbidden_text=PYTHON_OWNED_OPTION_VALUE_FRAGMENTS,
         ),
         ConsumerRequirement(
             "tauri_browser_service_api_uses_python_source_routes",
@@ -546,6 +648,7 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
         "path": _rel(requirement.path),
         "ok": True,
         "missing_text": [],
+        "forbidden_text": [],
         "declared_service_route_names": list(requirement.service_route_names),
         "extracted_service_route_names": [],
         "service_route_extractors": list(requirement.route_extractors),
@@ -560,6 +663,7 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
 
     text = _read(requirement.path)
     missing = [needle for needle in requirement.required_text if needle not in text]
+    forbidden = [needle for needle in requirement.forbidden_text if needle in text]
     extracted_service_routes, unknown_route_extractors = _extract_service_routes(text, requirement.route_extractors)
     service_route_names = _ordered_unique([*requirement.service_route_names, *extracted_service_routes])
     unknown_service_routes = [
@@ -568,11 +672,14 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
         if route_name not in SERVICE_API_ROUTE_PATHS
     ]
     report["missing_text"] = missing
+    report["forbidden_text"] = forbidden
     report["extracted_service_route_names"] = extracted_service_routes
     report["service_route_names"] = service_route_names
     report["unknown_service_routes"] = unknown_service_routes
     report["unknown_route_extractors"] = unknown_route_extractors
-    report["ok"] = not missing and not unknown_service_routes and not unknown_route_extractors
+    report["ok"] = not missing and not forbidden and not unknown_service_routes and not unknown_route_extractors
+    if forbidden:
+        report["issue"] = "consumer contains Python-owned option values instead of generated parity sources"
     if unknown_service_routes or unknown_route_extractors:
         report["issue"] = "consumer references service routes missing from Python Service API contract"
         if unknown_route_extractors:
@@ -582,17 +689,26 @@ def _check_consumer(requirement: ConsumerRequirement) -> dict[str, object]:
 
 def audit_native_source_sync() -> dict[str, object]:
     contract_hash = native_python_source_contract_hash()
-    generated = [_check_generated_artifact(artifact, contract_hash) for artifact in _generated_artifacts()]
-    consumers = [_check_consumer(requirement) for requirement in _consumer_requirements()]
-    issues = [
+    generated_artifact_requirements = _generated_artifacts()
+    consumer_requirements = _consumer_requirements()
+    surface_contract = _surface_contract(generated_artifact_requirements, consumer_requirements)
+    generated = [
+        _check_generated_artifact(artifact, contract_hash)
+        for artifact in generated_artifact_requirements
+    ]
+    consumers = [_check_consumer(requirement) for requirement in consumer_requirements]
+    surface_contract_issues = [str(issue) for issue in surface_contract["issues"]]
+    surface_wiring_issues = [
         f"{item['path']}: {item.get('issue') or 'missing consumer wiring'}"
         for item in [*generated, *consumers]
         if not bool(item["ok"])
     ]
+    issues = [*surface_contract_issues, *surface_wiring_issues]
     return {
         "ok": not issues,
         "contract_hash": contract_hash,
         "source": "Languages/Python/app/native_parity.py",
+        "surface_contract": surface_contract,
         "generated": generated,
         "consumers": consumers,
         "issues": issues,

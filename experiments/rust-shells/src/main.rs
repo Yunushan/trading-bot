@@ -145,6 +145,17 @@ fn format_error_chain(error: &dyn std::error::Error) -> String {
     parts.join(": ")
 }
 
+fn native_source_sync_binding() -> Value {
+    json!({
+        "required": true,
+        "audit_artifact": "native-source-sync-audit",
+        "audit_path": "artifacts/native-source-sync/native-source-sync-audit.json",
+        "python_source_of_truth": "Languages/Python/app/native_parity.py",
+        "contract_hash": python_source_contract_hash(),
+        "surface_contract_required": true
+    })
+}
+
 fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
     let api_key_present = env_non_empty("BINANCE_API_KEY");
     let api_secret_present = env_non_empty("BINANCE_API_SECRET");
@@ -183,6 +194,7 @@ fn run_native_live_smoke_preflight() -> Result<(), Box<dyn std::error::Error>> {
         "runtime_ready_claimed": false,
         "commit": commit,
         "python_source_contract_hash": python_source_contract_hash(),
+        "native_source_sync": native_source_sync_binding(),
         "source_tree_clean": source_tree_clean,
         "secrets_redacted": true,
         "prerequisites": {
@@ -238,6 +250,7 @@ fn run_native_live_market_smoke_preflight() -> Result<(), Box<dyn std::error::Er
         "runtime_ready_claimed": false,
         "commit": commit,
         "python_source_contract_hash": python_source_contract_hash(),
+        "native_source_sync": native_source_sync_binding(),
         "source_tree_clean": source_tree_clean,
         "secrets_redacted": true,
         "prerequisites": {
@@ -717,6 +730,7 @@ fn build_market_smoke_payload(
         "commit": commit,
         "source_tree_clean": source_tree_clean,
         "python_source_contract_hash": python_source_contract_hash(),
+        "native_source_sync": native_source_sync_binding(),
         "command": command,
         "environment": environment,
         "read_only": true,
@@ -788,6 +802,7 @@ fn write_live_smoke_evidence(
         "commit": commit,
         "source_tree_clean": source_tree_clean,
         "python_source_contract_hash": python_source_contract_hash(),
+        "native_source_sync": native_source_sync_binding(),
         "command": command,
         "environment": account_environment,
         "read_only": true,
@@ -931,6 +946,7 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
         "commit": commit.clone(),
         "source_tree_clean": source_tree_clean,
         "python_source_contract_hash": python_source_contract_hash(),
+        "native_source_sync": native_source_sync_binding(),
         "command": command.clone(),
         "environment": environment.clone(),
         "secrets_redacted": true,
@@ -952,6 +968,7 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
         "commit": commit,
         "source_tree_clean": source_tree_clean,
         "python_source_contract_hash": python_source_contract_hash(),
+        "native_source_sync": native_source_sync_binding(),
         "command": command,
         "environment": environment,
         "secrets_redacted": true,

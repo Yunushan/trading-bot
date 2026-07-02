@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from audit_native_source_sync import audit_native_source_sync
     from check_generated_evidence_source_control import generated_evidence_write_guard
     from release_browser_contract_commands import browser_contract_command_text
     from release_browser_contract_commands import browser_host_from_observed_platform
@@ -26,6 +28,7 @@ try:
     from check_release_platform_matrix import _evidence_issues, _load_json, _read_evidence
     from check_release_platform_matrix import _target_evidence_issues, _validate_matrix
 except ModuleNotFoundError:  # pragma: no cover - exercised when imported as tools.*
+    from tools.audit_native_source_sync import audit_native_source_sync
     from tools.check_generated_evidence_source_control import generated_evidence_write_guard
     from tools.release_browser_contract_commands import browser_contract_command_text
     from tools.release_browser_contract_commands import browser_host_from_observed_platform
@@ -41,8 +44,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised when imported as too
 DEFAULT_OUTPUT_DIR = Path("artifacts/rust-native-runtime-evidence")
 EVIDENCE_ID = "rust-native-release-platform-evidence"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT = "native-source-sync-audit"
+NATIVE_SOURCE_SYNC_AUDIT_PATH = "artifacts/native-source-sync/native-source-sync-audit.json"
+NATIVE_SOURCE_SYNC_SOURCE = "Languages/Python/app/native_parity.py"
 DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE = (
     "source tree must be clean before writing Rust native release-platform evidence"
+)
+FAILED_SOURCE_SYNC_RELEASE_EVIDENCE_ISSUE = (
+    "native source sync audit must pass before writing Rust native release-platform evidence"
 )
 PYTHON_ROOT = REPO_ROOT / "Languages" / "Python"
 if str(PYTHON_ROOT) not in sys.path:
@@ -97,6 +106,43 @@ def _source_tree_status_clean(untracked_files: str) -> bool:
 
 def _source_tree_clean() -> bool:
     return _source_tree_status_clean("no") and _source_tree_status_clean("all")
+
+
+def _native_source_sync_binding() -> dict[str, Any]:
+    return {
+        "required": True,
+        "audit_artifact": "native-source-sync-audit",
+        "audit_path": "artifacts/native-source-sync/native-source-sync-audit.json",
+        "python_source_of_truth": "Languages/Python/app/native_parity.py",
+        "contract_hash": native_python_source_contract_hash(),
+        "surface_contract_required": True,
+    }
+
+
+def _native_source_sync_guard() -> dict[str, Any]:
+    audit = audit_native_source_sync()
+    surface_contract = audit.get("surface_contract")
+    surface_contract_ok = isinstance(surface_contract, dict) and surface_contract.get("ok") is True
+    surface_contract_issues = (
+        [str(issue) for issue in surface_contract.get("issues", []) if str(issue).strip()]
+        if isinstance(surface_contract, dict)
+        else ["native source sync surface_contract is missing"]
+    )
+    audit_issues = [str(issue) for issue in audit.get("issues", []) if str(issue).strip()]
+    issues = [*audit_issues]
+    if not surface_contract_ok:
+        issues.extend(surface_contract_issues)
+    return {
+        "ok": bool(audit.get("ok")) and surface_contract_ok,
+        "audit_artifact": "native-source-sync-audit",
+        "audit_path": "artifacts/native-source-sync/native-source-sync-audit.json",
+        "python_source_of_truth": "Languages/Python/app/native_parity.py",
+        "contract_hash": audit.get("contract_hash"),
+        "surface_contract_ok": surface_contract_ok,
+        "generated_artifact_count": len(audit.get("generated", []) or []),
+        "consumer_surface_count": len(audit.get("consumers", []) or []),
+        "issues": issues,
+    }
 
 
 def _current_unix_timestamp_label() -> str:
@@ -164,7 +210,8 @@ def _local_browser_batch_plan(browser_targets: list[dict[str, Any]]) -> dict[str
         "list_command": "python tools/run_release_platform_probe.py --list-local-browser-targets",
         "batch_command": (
             "python tools/run_release_platform_probe.py "
-            "--local-browser-targets --require-clean-source --output-dir release-platform-evidence"
+            "--local-browser-targets --require-clean-source --require-native-source-sync "
+            "--output-dir release-platform-evidence"
         ),
         "validation_commands": validation_commands,
         "partial_evidence_only": True,
@@ -267,13 +314,32 @@ def _platform_results(platform_targets: list[dict[str, Any]], browser_targets: l
 def _target_source_binding_issues(payload: dict[str, Any], path: Path) -> list[str]:
     issues: list[str] = []
     current_commit = _current_git_commit()
-    current_contract_hash = native_python_source_contract_hash()
+    current_contract_hash = native_python_source_contract_hash().lower()
     if str(payload.get("commit") or "").strip() != current_commit:
         issues.append(f"{path} commit must match current git commit {current_commit}")
     if payload.get("source_tree_clean") is not True:
         issues.append(f"{path} source_tree_clean must be true for release promotion evidence")
-    if str(payload.get("python_source_contract_hash") or "").strip() != current_contract_hash:
+    if str(payload.get("python_source_contract_hash") or "").strip().lower() != current_contract_hash:
         issues.append(f"{path} python_source_contract_hash must match current Python source contract")
+    native_source_sync = payload.get("native_source_sync")
+    if not isinstance(native_source_sync, dict) or not native_source_sync:
+        issues.append(f"{path} native_source_sync must be a non-empty object")
+    else:
+        if native_source_sync.get("required") is not True:
+            issues.append(f"{path} native_source_sync.required must be true")
+        if str(native_source_sync.get("audit_artifact") or "").strip() != NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT:
+            issues.append(f"{path} native_source_sync.audit_artifact must be {NATIVE_SOURCE_SYNC_AUDIT_ARTIFACT}")
+        if str(native_source_sync.get("audit_path") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_AUDIT_PATH:
+            issues.append(f"{path} native_source_sync.audit_path must be {NATIVE_SOURCE_SYNC_AUDIT_PATH}")
+        if str(native_source_sync.get("python_source_of_truth") or "").strip().replace("\\", "/") != NATIVE_SOURCE_SYNC_SOURCE:
+            issues.append(f"{path} native_source_sync.python_source_of_truth must be {NATIVE_SOURCE_SYNC_SOURCE}")
+        binding_hash = str(native_source_sync.get("contract_hash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", binding_hash):
+            issues.append(f"{path} native_source_sync.contract_hash must be a SHA-256 hex digest")
+        elif binding_hash != current_contract_hash:
+            issues.append(f"{path} native_source_sync.contract_hash must match current Python source contract")
+        if native_source_sync.get("surface_contract_required") is not True:
+            issues.append(f"{path} native_source_sync.surface_contract_required must be true")
     if payload.get("runtime_ready_claimed") is not False:
         issues.append(f"{path} runtime_ready_claimed must be false")
     if payload.get("secrets_redacted") is not True:
@@ -341,7 +407,8 @@ def _target_plan(target: dict[str, Any]) -> dict[str, Any]:
         "required_workflow_inputs": _required_workflow_inputs(target),
         "probe_command": (
             "python tools/run_release_platform_probe.py "
-            f"--target-id {target_id} --require-clean-source --output release-platform-evidence/{target_id}.json"
+            f"--target-id {target_id} --require-clean-source --require-native-source-sync "
+            f"--output release-platform-evidence/{target_id}.json"
         ),
         "target_validation_command": (
             "python tools/check_release_platform_matrix.py --require-evidence "
@@ -447,6 +514,10 @@ def preflight_release_evidence_inputs(
     source_tree_clean = _source_tree_clean()
     if not source_tree_clean:
         issues.append(DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE)
+    native_source_sync_guard = _native_source_sync_guard()
+    if not native_source_sync_guard["ok"]:
+        issues.append(FAILED_SOURCE_SYNC_RELEASE_EVIDENCE_ISSUE)
+        issues.extend(str(issue) for issue in native_source_sync_guard["issues"])
     platform_targets: list[dict[str, Any]] = []
     browser_targets: list[dict[str, Any]] = []
     try:
@@ -524,6 +595,8 @@ def preflight_release_evidence_inputs(
         "platform_evidence_dir_exists": evidence_dir_exists,
         "source_tree_clean": source_tree_clean,
         "python_source_contract_hash": native_python_source_contract_hash(),
+        "native_source_sync": _native_source_sync_binding(),
+        "native_source_sync_guard": native_source_sync_guard,
         "release_evidence_target_count": len(target_ids),
         "platform_target_count": len(platform_targets),
         "browser_target_count": len(browser_targets),
@@ -571,6 +644,12 @@ def build_release_evidence(
     platform_evidence_dir = _repo_path(platform_evidence_dir)
     if not _source_tree_clean():
         return None, [DIRTY_SOURCE_RELEASE_EVIDENCE_ISSUE]
+    native_source_sync_guard = _native_source_sync_guard()
+    if not native_source_sync_guard["ok"]:
+        return None, [
+            FAILED_SOURCE_SYNC_RELEASE_EVIDENCE_ISSUE,
+            *[str(issue) for issue in native_source_sync_guard["issues"]],
+        ]
     token = (
         str(os.environ.get("GITHUB_TOKEN") or "").strip()
         or str(os.environ.get("GH_TOKEN") or "").strip()
@@ -616,6 +695,7 @@ def build_release_evidence(
         "commit": _current_git_commit(),
         "source_tree_clean": _source_tree_clean(),
         "python_source_contract_hash": native_python_source_contract_hash(),
+        "native_source_sync": _native_source_sync_binding(),
         "command": command,
         "environment": {
             "tag": tag,

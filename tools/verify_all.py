@@ -413,7 +413,11 @@ _PROMOTION_IMPORT_SOURCE_BINDING_ISSUE_MARKERS = (
     "current source tree must be clean for promotion evidence import",
     "commit must match current git commit",
     "python_source_contract_hash must match current Python source contract",
+    "native_source_sync must be a non-empty object",
+    "native_source_sync.contract_hash must match current Python source contract",
+    "native_source_sync.surface_contract_required must be true",
     "source_tree_clean must be true for release promotion evidence",
+    "runtime_ready_claimed must be false",
 )
 
 
@@ -435,6 +439,20 @@ def _is_local_source_binding_promotion_importer_failure(check: Check, *, returnc
     return all(_is_promotion_import_source_binding_issue(issue) for issue in issues)
 
 
+def _rust_native_evidence_import_remediation(stdout: str) -> str:
+    payload = _load_json_object(stdout)
+    issues = payload.get("issues")
+    if not isinstance(issues, list) or not issues:
+        return ""
+    if not any(_is_promotion_import_source_binding_issue(issue) for issue in issues):
+        return ""
+    return (
+        "Remove stale ignored Rust runtime/release promotion evidence with: "
+        "python tools/clean_workspace_artifacts.py --stale-promotion-evidence --apply. "
+        "Then collect/import runtime evidence from a clean candidate source commit."
+    )
+
+
 def _missing_python_dependency_remediation(output: str, *, extra: str = "service,dev") -> str:
     missing_modules = ("No module named", "ModuleNotFoundError")
     dependency_names = ("PyQt6", "httpx", "requests", "fastapi", "uvicorn", "pydantic")
@@ -452,6 +470,8 @@ def _remediation_for(check: Check, *, returncode: int | None, stdout: str, stder
         return _client_lock_remediation(stdout) or (check.remediation if returncode not in (0, None) else "")
     if check.name == "workspace hygiene":
         return _workspace_hygiene_remediation(stdout) or (check.remediation if returncode not in (0, None) else "")
+    if check.name == "rust native evidence import audit":
+        return _rust_native_evidence_import_remediation(stdout) or (check.remediation if returncode not in (0, None) else "")
     if returncode == 0:
         return ""
     python_extra = "desktop,service,dev" if check.name == "python tests" else "service,dev"
@@ -493,7 +513,7 @@ def _run_check(check: Check, *, verbose: bool) -> dict[str, object]:
         blocks_success = False
         advisory_reason = (
             "strict promotion evidence import requires current-commit artifacts from a clean candidate source tree; "
-            "this local development checkout has stale or dirty-source local evidence"
+            "this local development checkout has stale or dirty-source local runtime/release evidence"
         )
     payload = {
         "name": check.name,
