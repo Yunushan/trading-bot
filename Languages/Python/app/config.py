@@ -5,9 +5,10 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     _APP_DIR = Path(__file__).resolve().parent
-    if str(_APP_DIR) not in sys.path:
-        sys.path.insert(0, str(_APP_DIR))
-    from settings import (  # type: ignore[no-redef]
+    _PYTHON_ROOT = _APP_DIR.parent
+    if str(_PYTHON_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PYTHON_ROOT))
+    from app.settings import (  # type: ignore[no-redef]
         AVAILABLE_INDICATORS,
         AISettings,
         BACKTEST_TEMPLATE_DEFAULT,

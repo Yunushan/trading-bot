@@ -31,6 +31,7 @@ from tools.generate_native_parity_contracts import (  # noqa: E402
     CPP_OUTPUT,
     RUST_OUTPUT,
     TAURI_BROWSER_OUTPUT,
+    _cpp_string,
     _rust_string,
     render_cpp_header,
     render_rust_module,
@@ -358,9 +359,10 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
 
         with patch.object(audit, "_consumer_requirements", return_value=consumer_requirements[:-1]):
             missing_consumer_report = audit.audit_native_source_sync()
+        expected_last_consumer_name = consumer_requirements[-1].name
         self.assertFalse(missing_consumer_report["ok"])
         self.assertIn(
-            "missing required consumer surface(s): tauri_browser_service_api_uses_python_source_routes",
+            f"missing required consumer surface(s): {expected_last_consumer_name}",
             missing_consumer_report["surface_contract"]["issues"],
         )
 
@@ -372,7 +374,7 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             duplicate_consumer_report = audit.audit_native_source_sync()
         self.assertFalse(duplicate_consumer_report["ok"])
         self.assertIn(
-            "duplicate consumer surface(s): tauri_browser_service_api_uses_python_source_routes",
+            f"duplicate consumer surface(s): {expected_last_consumer_name}",
             duplicate_consumer_report["surface_contract"]["issues"],
         )
 
@@ -550,12 +552,21 @@ class NativeGeneratedParityContractTests(unittest.TestCase):
             cpp_enabled = rust_enabled
             js_key = json.dumps(key)
             js_name = json.dumps(display_name)
+            cpp_runtime_config = _cpp_string(
+                json.dumps(indicator["runtime_config"], ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            )
+            cpp_runtime_output_keys = _cpp_string(
+                ",".join(str(value) for value in indicator["runtime_output_keys"])
+            )
 
             self.assertIn(f"key: {js_key}", rust_generated)
             self.assertIn(f"display_name: {js_name}", rust_generated)
             self.assertIn(f"default_enabled: {rust_enabled}", rust_generated)
             self.assertIn(
-                f"PythonIndicator{{{js_key}, {js_name}, {cpp_enabled}}}",
+                (
+                    f"PythonIndicator{{{_cpp_string(key)}, {_cpp_string(display_name)}, {cpp_enabled}, "
+                    f"{cpp_runtime_config}, {cpp_runtime_output_keys}}}"
+                ),
                 cpp_generated,
             )
             self.assertIn(f'"key": {js_key}', tauri_generated)

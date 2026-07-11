@@ -187,7 +187,7 @@ class ProductPackagingContractTests(unittest.TestCase):
         for parity_text in (
             "Alibaba Qwen / DashScope",
             "Bybit (ccxt order routing)",
-            "Default intervals: 1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d",
+            "PYTHON_BACKTEST_INTERVALS",
             "Open In Browser URL",
             "Max MDD Scanner Top N",
             "Max MDD Scanner Max MDD %",
