@@ -5,8 +5,9 @@ use serde_json::{Map, Value, json};
 
 use crate::exchange_connectors::normalize_connector_backend;
 use crate::generated_python_parity::{
-    PYTHON_ACCOUNT_MODE_OPTIONS, PYTHON_ASSETS_MODE_OPTIONS, PYTHON_SIDE_OPTIONS,
-    PYTHON_SIGNAL_LOGIC_OPTIONS, PYTHON_STOP_LOSS_MODES, PYTHON_STOP_LOSS_SCOPES, PythonUiOption,
+    PYTHON_ACCOUNT_MODE_OPTIONS, PYTHON_ASSETS_MODE_OPTIONS, PYTHON_INDICATOR_CATALOG,
+    PYTHON_SIDE_OPTIONS, PYTHON_SIGNAL_LOGIC_OPTIONS, PYTHON_STOP_LOSS_MODES,
+    PYTHON_STOP_LOSS_SCOPES, PythonUiOption,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -94,45 +95,11 @@ pub fn indicator_output_keys_from_config(indicators: &Value) -> Vec<String> {
         if !coerce_strategy_bool(config.get("enabled"), false) {
             continue;
         }
-        match key.as_str() {
-            "ma" => add(&["ma"]),
-            "ema" => add(&["ema"]),
-            "bb" => add(&["bb_upper", "bb_mid", "bb_lower"]),
-            "bbw" => add(&["bbw"]),
-            "keltner" => add(&["keltner_upper", "keltner_mid", "keltner_lower"]),
-            "ichimoku" => add(&[
-                "ichimoku_tenkan",
-                "ichimoku_kijun",
-                "ichimoku_span_a",
-                "ichimoku_span_b",
-                "ichimoku_chikou",
-                "ichimoku",
-            ]),
-            "rsi" => add(&["rsi"]),
-            "stoch_rsi" => add(&["stoch_rsi", "stoch_rsi_k", "stoch_rsi_d"]),
-            "willr" => add(&["willr"]),
-            "atr" => add(&["atr"]),
-            "natr" => add(&["natr"]),
-            "vwap" => add(&["vwap"]),
-            "mfi" => add(&["mfi"]),
-            "obv" => add(&["obv"]),
-            "rvol" => add(&["rvol"]),
-            "cmf" => add(&["cmf"]),
-            "cci" => add(&["cci"]),
-            "roc" => add(&["roc"]),
-            "trix" => add(&["trix"]),
-            "ppo" => add(&["ppo", "ppo_signal", "ppo_hist"]),
-            "ao" => add(&["ao"]),
-            "kst" => add(&["kst", "kst_signal", "kst_hist"]),
-            "aroon" => add(&["aroon_up", "aroon_down", "aroon"]),
-            "chop" => add(&["chop"]),
-            "macd" => add(&["macd_line", "macd_signal"]),
-            "uo" => add(&["uo"]),
-            "adx" => add(&["adx"]),
-            "dmi" => add(&["dmi_plus", "dmi_minus", "dmi"]),
-            "supertrend" => add(&["supertrend"]),
-            "stochastic" => add(&["stochastic", "stochastic_k", "stochastic_d"]),
-            _ => {}
+        if let Some(indicator) = PYTHON_INDICATOR_CATALOG
+            .iter()
+            .find(|indicator| indicator.key == key)
+        {
+            add(indicator.runtime_output_keys);
         }
     }
     keys
@@ -1631,6 +1598,32 @@ mod tests {
             "stochastic_d",
         ] {
             assert!(keys.contains(&key.to_owned()), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn indicator_output_keys_cover_every_generated_python_indicator() {
+        let config = Value::Object(
+            crate::generated_python_parity::PYTHON_INDICATOR_CATALOG
+                .iter()
+                .map(|indicator| (indicator.key.to_owned(), json!({"enabled": true})))
+                .collect(),
+        );
+        let output_keys = indicator_output_keys_from_config(&config);
+
+        for indicator in crate::generated_python_parity::PYTHON_INDICATOR_CATALOG {
+            assert!(
+                !indicator.runtime_output_keys.is_empty(),
+                "{} must declare at least one Python runtime output key",
+                indicator.key
+            );
+            for output_key in indicator.runtime_output_keys {
+                assert!(
+                    output_keys.iter().any(|actual| actual == output_key),
+                    "{} output {output_key} is missing from the native strategy contract",
+                    indicator.key
+                );
+            }
         }
     }
 

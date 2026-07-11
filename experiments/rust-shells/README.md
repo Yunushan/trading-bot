@@ -88,8 +88,10 @@ exposed by `rust_native_runtime_capabilities()`.
 The Rust workspace includes a read-only, credential-gated smoke command for
 operators who can access Binance futures testnet or production from their own
 machine. It fetches market data, account mode, multi-assets mode, USDT balance,
-and open futures positions. It does not submit, modify, or cancel orders. After
-a successful run, it writes `rust-native-live-market-data-smoke.json` and
+and open futures positions. Those reads are also passed through the native
+runtime's read-only account bootstrap, which records the reconciled preflight
+result without exposing balances or credentials. It does not submit, modify,
+or cancel orders. After a successful run, it writes `rust-native-live-market-data-smoke.json` and
 `rust-native-live-account-read-smoke.json` under
 `artifacts/rust-native-runtime-evidence/` unless
 `RUST_NATIVE_RUNTIME_EVIDENCE_DIR` points elsewhere. The live smoke command
@@ -151,11 +153,31 @@ collection, CI collection, and promotion import checks on the same source data.
 
 Those artifacts are valid only when they include the expected endpoint rows and
 operation-level suite results. Market data evidence must prove USDT symbol,
-kline, and ticker fetches. Signed account evidence must prove position mode,
+kline, and ticker fetches, then hydrate a read-only native runtime market cycle.
+That cycle requests enough candles to warm the Python-owned default RSI, drops the
+potentially in-progress final REST candle, computes every current Python catalog
+indicator from the generated Python runtime configuration, updates native stream health,
+evaluates the native strategy decision path, and records both the computed indicator
+keys and any unsupported enabled indicator keys. A promotion artifact is rejected
+unless the native cycle reports default `rsi` computation and no unsupported keys;
+the Rust core has a catalog-coverage regression test so a newly added Python indicator
+cannot silently become unsupported. It also compares every native series against a
+Python-generated reference fixture for canonical candles and enabled configurations;
+the source-sync audit rejects a stale fixture. Native order execution remains disabled.
+Signed account evidence must prove position mode,
+
+The Tauri desktop exposes `evaluate_native_runtime_preview` for a local,
+read-only evaluation of Python Service API configuration plus caller-supplied candles.
+It returns computed indicator keys, unsupported keys, and the native strategy decision;
+it does not create a network client or submit an order.
 multi-assets mode, USDT balance with `balances_redacted: true`, and open
 position reads. It must also include redacted environment metadata with
 `api_key_present: true`, `api_secret_present: true`, `signed_account_read: true`,
-and `secrets_in_artifact: false`.
+and `secrets_in_artifact: false`. The account artifact also requires a
+`native_runtime_read_only_account_bootstrap` suite result with a redacted
+preflight message and a boolean signal-readiness state. A false readiness state
+is valid evidence: it proves the runtime failed closed when exchange settings
+could not be reconciled; it never turns on native order execution.
 
 Market-data evidence can also be collected separately without account
 credentials:

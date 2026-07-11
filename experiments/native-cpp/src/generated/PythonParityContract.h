@@ -9,7 +9,7 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "56a331ef6ae380d032033028a663dd52e3992ed901c8e328d8c9350fb61fe28d";
+inline constexpr std::string_view kPythonSourceContractHash = "6ccbf8888f5fa7bf26e658f235849e4f4d5f4d82c6def19f93202b22d87ed373";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
@@ -254,42 +254,44 @@ struct PythonIndicator {
     std::string_view key;
     std::string_view displayName;
     bool defaultEnabled;
+    std::string_view runtimeConfigJson;
+    std::string_view runtimeOutputKeysCsv;
 };
 
 inline constexpr std::array<PythonIndicator, 33> kPythonIndicatorCatalog = {
-    PythonIndicator{"ma", "Moving Average (MA)", false},
-    PythonIndicator{"donchian", "Donchian Channels (DC)", false},
-    PythonIndicator{"psar", "Parabolic SAR (PSAR)", false},
-    PythonIndicator{"bb", "Bollinger Bands (BB)", false},
-    PythonIndicator{"bbw", "Bollinger Band Width (BBW)", false},
-    PythonIndicator{"keltner", "Keltner Channels (KC)", false},
-    PythonIndicator{"ichimoku", "Ichimoku Cloud (IC)", false},
-    PythonIndicator{"rsi", "Relative Strength Index (RSI)", true},
-    PythonIndicator{"volume", "Volume", false},
-    PythonIndicator{"obv", "On-Balance Volume (OBV)", false},
-    PythonIndicator{"rvol", "Relative Volume (RVOL)", false},
-    PythonIndicator{"cmf", "Chaikin Money Flow (CMF)", false},
-    PythonIndicator{"cci", "Commodity Channel Index (CCI)", false},
-    PythonIndicator{"roc", "Rate of Change (ROC)", false},
-    PythonIndicator{"trix", "Triple Exponential Average (TRIX)", false},
-    PythonIndicator{"ppo", "Percentage Price Oscillator (PPO)", false},
-    PythonIndicator{"ao", "Awesome Oscillator (AO)", false},
-    PythonIndicator{"kst", "Know Sure Thing (KST)", false},
-    PythonIndicator{"aroon", "Aroon Oscillator (AROON)", false},
-    PythonIndicator{"chop", "Choppiness Index (CHOP)", false},
-    PythonIndicator{"atr", "Average True Range (ATR)", false},
-    PythonIndicator{"natr", "Normalized Average True Range (NATR)", false},
-    PythonIndicator{"vwap", "Volume Weighted Average Price (VWAP)", false},
-    PythonIndicator{"mfi", "Money Flow Index (MFI)", false},
-    PythonIndicator{"stoch_rsi", "Stochastic RSI (SRSI)", false},
-    PythonIndicator{"willr", "Williams %R", false},
-    PythonIndicator{"macd", "Moving Average Convergence/Divergence (MACD)", false},
-    PythonIndicator{"uo", "Ultimate Oscillator (UO)", false},
-    PythonIndicator{"adx", "Average Directional Index (ADX)", false},
-    PythonIndicator{"dmi", "Directional Movement Index (DMI)", false},
-    PythonIndicator{"supertrend", "SuperTrend (ST)", false},
-    PythonIndicator{"ema", "Exponential Moving Average (EMA)", false},
-    PythonIndicator{"stochastic", "Stochastic Oscillator", false},
+    PythonIndicator{"ma", "Moving Average (MA)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"type\":\"SMA\"}", "ma"},
+    PythonIndicator{"donchian", "Donchian Channels (DC)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "donchian_high,donchian_low,donchian"},
+    PythonIndicator{"psar", "Parabolic SAR (PSAR)", false, "{\"af\":0.02,\"buy_value\":null,\"enabled\":false,\"max_af\":0.2,\"sell_value\":null}", "psar"},
+    PythonIndicator{"bb", "Bollinger Bands (BB)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}", "bb_upper,bb_mid,bb_lower"},
+    PythonIndicator{"bbw", "Bollinger Band Width (BBW)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null,\"std\":2}", "bbw"},
+    PythonIndicator{"keltner", "Keltner Channels (KC)", false, "{\"atr_length\":10,\"buy_value\":null,\"enabled\":false,\"length\":20,\"multiplier\":2.0,\"sell_value\":null}", "keltner_upper,keltner_mid,keltner_lower"},
+    PythonIndicator{"ichimoku", "Ichimoku Cloud (IC)", false, "{\"base_length\":26,\"buy_value\":null,\"conversion_length\":9,\"displacement\":26,\"enabled\":false,\"sell_value\":null,\"span_b_length\":52}", "ichimoku_tenkan,ichimoku_kijun,ichimoku_span_a,ichimoku_span_b,ichimoku_chikou,ichimoku"},
+    PythonIndicator{"rsi", "Relative Strength Index (RSI)", true, "{\"buy_value\":null,\"enabled\":true,\"length\":14,\"sell_value\":null}", "rsi"},
+    PythonIndicator{"volume", "Volume", false, "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}", "volume"},
+    PythonIndicator{"obv", "On-Balance Volume (OBV)", false, "{\"buy_value\":null,\"enabled\":false,\"sell_value\":null}", "obv"},
+    PythonIndicator{"rvol", "Relative Volume (RVOL)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "rvol"},
+    PythonIndicator{"cmf", "Chaikin Money Flow (CMF)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "cmf"},
+    PythonIndicator{"cci", "Commodity Channel Index (CCI)", false, "{\"buy_value\":null,\"constant\":0.015,\"enabled\":false,\"length\":20,\"sell_value\":null}", "cci"},
+    PythonIndicator{"roc", "Rate of Change (ROC)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":12,\"sell_value\":null}", "roc"},
+    PythonIndicator{"trix", "Triple Exponential Average (TRIX)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":15,\"sell_value\":null}", "trix"},
+    PythonIndicator{"ppo", "Percentage Price Oscillator (PPO)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}", "ppo,ppo_signal,ppo_hist"},
+    PythonIndicator{"ao", "Awesome Oscillator (AO)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":5,\"sell_value\":null,\"slow\":34}", "ao"},
+    PythonIndicator{"kst", "Know Sure Thing (KST)", false, "{\"buy_value\":null,\"enabled\":false,\"roc1\":10,\"roc2\":15,\"roc3\":20,\"roc4\":30,\"sell_value\":null,\"signal\":9,\"sma1\":10,\"sma2\":10,\"sma3\":10,\"sma4\":15}", "kst,kst_signal,kst_hist"},
+    PythonIndicator{"aroon", "Aroon Oscillator (AROON)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":25,\"sell_value\":null}", "aroon_up,aroon_down,aroon"},
+    PythonIndicator{"chop", "Choppiness Index (CHOP)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "chop"},
+    PythonIndicator{"atr", "Average True Range (ATR)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "atr"},
+    PythonIndicator{"natr", "Normalized Average True Range (NATR)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "natr"},
+    PythonIndicator{"vwap", "Volume Weighted Average Price (VWAP)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "vwap"},
+    PythonIndicator{"mfi", "Money Flow Index (MFI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "mfi"},
+    PythonIndicator{"stoch_rsi", "Stochastic RSI (SRSI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}", "stoch_rsi,stoch_rsi_k,stoch_rsi_d"},
+    PythonIndicator{"willr", "Williams %R", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "willr"},
+    PythonIndicator{"macd", "Moving Average Convergence/Divergence (MACD)", false, "{\"buy_value\":null,\"enabled\":false,\"fast\":12,\"sell_value\":null,\"signal\":9,\"slow\":26}", "macd_line,macd_signal"},
+    PythonIndicator{"uo", "Ultimate Oscillator (UO)", false, "{\"buy_value\":null,\"enabled\":false,\"long\":28,\"medium\":14,\"sell_value\":null,\"short\":7}", "uo"},
+    PythonIndicator{"adx", "Average Directional Index (ADX)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "adx"},
+    PythonIndicator{"dmi", "Directional Movement Index (DMI)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null}", "dmi_plus,dmi_minus,dmi"},
+    PythonIndicator{"supertrend", "SuperTrend (ST)", false, "{\"atr_period\":10,\"buy_value\":null,\"enabled\":false,\"multiplier\":3.0,\"sell_value\":null}", "supertrend"},
+    PythonIndicator{"ema", "Exponential Moving Average (EMA)", false, "{\"buy_value\":null,\"enabled\":false,\"length\":20,\"sell_value\":null}", "ema"},
+    PythonIndicator{"stochastic", "Stochastic Oscillator", false, "{\"buy_value\":null,\"enabled\":false,\"length\":14,\"sell_value\":null,\"smooth_d\":3,\"smooth_k\":3}", "stochastic,stochastic_k,stochastic_d"},
 };
 
 inline constexpr std::array<std::string_view, 14> kPythonLlmProviderKeys = {

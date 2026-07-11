@@ -18,9 +18,11 @@ from app.native_parity import native_python_source_contract_hash  # noqa: E402
 from app.service.api_contract import SERVICE_API_ROUTE_PATHS  # noqa: E402
 from tools.generate_native_parity_contracts import (  # noqa: E402
     CPP_OUTPUT,
+    RUST_INDICATOR_REFERENCE_OUTPUT,
     RUST_OUTPUT,
     TAURI_BROWSER_OUTPUT,
     render_cpp_header,
+    render_rust_indicator_reference_module,
     render_rust_module,
     render_tauri_browser_contract,
 )
@@ -76,6 +78,7 @@ PYTHON_OWNED_OPTION_VALUE_FRAGMENTS = (
 )
 REQUIRED_GENERATED_ARTIFACT_NAMES = (
     "rust_core_generated_contract",
+    "rust_indicator_reference_fixture",
     "cpp_generated_contract",
     "tauri_browser_generated_contract",
 )
@@ -99,6 +102,8 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_native_strategy_runtime_uses_python_source_options",
     "tauri_browser_consumes_generated_contract",
     "tauri_browser_service_api_uses_python_source_routes",
+    "tauri_native_runtime_preview_backend",
+    "tauri_native_runtime_preview_browser_bridge",
 )
 
 
@@ -195,6 +200,11 @@ def _extract_service_routes(text: str, extractors: tuple[str, ...]) -> tuple[lis
 def _generated_artifacts() -> tuple[GeneratedArtifact, ...]:
     return (
         GeneratedArtifact("rust_core_generated_contract", RUST_OUTPUT, render_rust_module()),
+        GeneratedArtifact(
+            "rust_indicator_reference_fixture",
+            RUST_INDICATOR_REFERENCE_OUTPUT,
+            render_rust_indicator_reference_module(),
+        ),
         GeneratedArtifact("cpp_generated_contract", CPP_OUTPUT, render_cpp_header()),
         GeneratedArtifact("tauri_browser_generated_contract", TAURI_BROWSER_OUTPUT, render_tauri_browser_contract()),
     )
@@ -237,9 +247,11 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PYTHON_SIGNAL_LOGIC_OPTIONS",
                 "PYTHON_STOP_LOSS_MODES",
                 "PYTHON_STOP_LOSS_SCOPES",
+                "PYTHON_INDICATOR_CATALOG",
                 "normalize_python_ui_option_key",
                 "normalize_python_ui_option_key_fuzzy",
                 "normalize_python_string_option_fuzzy",
+                "runtime_output_keys",
                 "canonical_side",
                 "normalize_account_mode",
                 "normalize_assets_mode",
@@ -504,6 +516,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "PythonParityContract::kPythonSignalLogicOptions",
                 "PythonParityContract::kPythonStopLossModes",
                 "PythonParityContract::kPythonStopLossScopes",
+                "PythonParityContract::kPythonIndicatorCatalog",
                 "normalizePythonUiOptionKey",
                 "normalizePythonStringOption",
                 "pythonUiOptionKeyAt",
@@ -515,6 +528,7 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "normalizeStopLossMode",
                 "normalizeStopLossScope",
                 "normalizeStrategyControls",
+                "runtimeOutputKeysCsv",
             ),
         ),
         ConsumerRequirement(
@@ -599,6 +613,26 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "backtest_stop",
             ),
             (TAURI_REQUEST_AND_REPORT_EXTRACTOR,),
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_preview_backend",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "src" / "main.rs",
+            (
+                "fn evaluate_native_runtime_preview",
+                "NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config",
+                "NativeRuntimeLoop::new",
+                "trading_execution_supported",
+                "evaluate_native_runtime_preview,",
+            ),
+        ),
+        ConsumerRequirement(
+            "tauri_native_runtime_preview_browser_bridge",
+            REPO_ROOT / "experiments" / "rust-shells" / "apps" / "tauri-desktop" / "ui" / "index.html",
+            (
+                'invoke("evaluate_native_runtime_preview"',
+                "window.TradingBotNativeRuntime",
+                "evaluateReadOnly",
+            ),
         ),
     )
 

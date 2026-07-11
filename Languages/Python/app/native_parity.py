@@ -92,6 +92,48 @@ DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS = {
     "top100": {"label": "Top 100 %1 per trade 1x"},
 }
 
+# Canonical runtime-series keys for every user-selectable indicator.  Python's
+# chart, backtest, and native destinations consume these names, so emit them
+# with the catalog instead of maintaining separate C++ and Rust switch lists.
+INDICATOR_RUNTIME_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
+    "ma": ("ma",),
+    "donchian": ("donchian_high", "donchian_low", "donchian"),
+    "psar": ("psar",),
+    "bb": ("bb_upper", "bb_mid", "bb_lower"),
+    "bbw": ("bbw",),
+    "keltner": ("keltner_upper", "keltner_mid", "keltner_lower"),
+    "ichimoku": (
+        "ichimoku_tenkan", "ichimoku_kijun", "ichimoku_span_a",
+        "ichimoku_span_b", "ichimoku_chikou", "ichimoku",
+    ),
+    "rsi": ("rsi",),
+    "volume": ("volume",),
+    "obv": ("obv",),
+    "rvol": ("rvol",),
+    "cmf": ("cmf",),
+    "cci": ("cci",),
+    "roc": ("roc",),
+    "trix": ("trix",),
+    "ppo": ("ppo", "ppo_signal", "ppo_hist"),
+    "ao": ("ao",),
+    "kst": ("kst", "kst_signal", "kst_hist"),
+    "aroon": ("aroon_up", "aroon_down", "aroon"),
+    "chop": ("chop",),
+    "atr": ("atr",),
+    "natr": ("natr",),
+    "vwap": ("vwap",),
+    "mfi": ("mfi",),
+    "stoch_rsi": ("stoch_rsi", "stoch_rsi_k", "stoch_rsi_d"),
+    "willr": ("willr",),
+    "macd": ("macd_line", "macd_signal"),
+    "uo": ("uo",),
+    "adx": ("adx",),
+    "dmi": ("dmi_plus", "dmi_minus", "dmi"),
+    "supertrend": ("supertrend",),
+    "ema": ("ema",),
+    "stochastic": ("stochastic", "stochastic_k", "stochastic_d"),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class NativeParityDomain:
@@ -226,11 +268,25 @@ def _domain_payload(domain: NativeParityDomain) -> dict[str, Any]:
 
 def _indicator_payload() -> list[dict[str, object]]:
     runtime_defaults = build_runtime_indicator_defaults()
+    catalog_keys = {definition.key for definition in INDICATOR_CATALOG}
+    output_keys = set(INDICATOR_RUNTIME_OUTPUT_KEYS)
+    if catalog_keys != output_keys:
+        missing = ", ".join(sorted(catalog_keys - output_keys))
+        unexpected = ", ".join(sorted(output_keys - catalog_keys))
+        raise RuntimeError(
+            "INDICATOR_RUNTIME_OUTPUT_KEYS must exactly match INDICATOR_CATALOG "
+            f"(missing: {missing or '-'}; unexpected: {unexpected or '-'})"
+        )
     return [
         {
             "key": definition.key,
             "display_name": definition.display_name,
             "default_enabled": bool(runtime_defaults.get(definition.key, {}).get("enabled")),
+            # Native destinations need the canonical runtime parameters as well as the
+            # display catalog. Keep this JSON-shaped so new Python-only parameters do
+            # not require a parallel destination schema migration.
+            "runtime_config": runtime_defaults.get(definition.key, {}),
+            "runtime_output_keys": list(INDICATOR_RUNTIME_OUTPUT_KEYS[definition.key]),
         }
         for definition in INDICATOR_CATALOG
     ]

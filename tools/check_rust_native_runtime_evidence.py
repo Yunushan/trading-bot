@@ -81,12 +81,14 @@ EXPECTED_LIVE_SMOKE_SUITE_RESULTS: dict[str, set[str]] = {
         "fetch_usdt_symbols",
         "fetch_klines",
         "fetch_ticker_price",
+        "native_runtime_read_only_market_cycle",
     },
     "rust-native-live-account-read-smoke": {
         "fetch_futures_position_mode",
         "fetch_futures_multi_assets_mode",
         "fetch_usdt_balance",
         "fetch_open_futures_positions",
+        "native_runtime_read_only_account_bootstrap",
     },
 }
 LIVE_SMOKE_SCOPE_BASE_URLS: dict[str, str] = {
@@ -602,6 +604,34 @@ def _validate_live_smoke_suite_evidence(
         ticker_row = rows_by_name.get("fetch_ticker_price")
         if ticker_row is not None and not str(ticker_row.get("symbol") or "").strip():
             issues.append(f"{artifact_path} suite_results[fetch_ticker_price].symbol is required")
+        market_cycle_row = rows_by_name.get("native_runtime_read_only_market_cycle")
+        if market_cycle_row is not None:
+            if market_cycle_row.get("stream_connected") is not True:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].stream_connected must be true"
+                )
+            if market_cycle_row.get("strategy_evaluated") is not True:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].strategy_evaluated must be true"
+                )
+            if market_cycle_row.get("trading_execution_supported") is not False:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].trading_execution_supported must be false"
+                )
+            computed_indicator_keys = market_cycle_row.get("computed_indicator_keys")
+            if not isinstance(computed_indicator_keys, list) or "rsi" not in computed_indicator_keys:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].computed_indicator_keys must include rsi"
+                )
+            unsupported_indicator_keys = market_cycle_row.get("unsupported_indicator_keys")
+            if not isinstance(unsupported_indicator_keys, list) or unsupported_indicator_keys:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].unsupported_indicator_keys must be an empty list"
+                )
+            if not str(market_cycle_row.get("status_message") or "").strip():
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_market_cycle].status_message is required"
+                )
     elif evidence_id == "rust-native-live-account-read-smoke":
         position_row = rows_by_name.get("fetch_futures_position_mode")
         if position_row is not None:
@@ -625,6 +655,24 @@ def _validate_live_smoke_suite_evidence(
         positions_row = rows_by_name.get("fetch_open_futures_positions")
         if positions_row is not None and not isinstance(positions_row.get("observed_count"), int):
             issues.append(f"{artifact_path} suite_results[fetch_open_futures_positions].observed_count must be an integer")
+        bootstrap_row = rows_by_name.get("native_runtime_read_only_account_bootstrap")
+        if bootstrap_row is not None:
+            if not isinstance(bootstrap_row.get("signal_evaluation_allowed"), bool):
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_account_bootstrap].signal_evaluation_allowed must be boolean"
+                )
+            if bootstrap_row.get("trading_execution_supported") is not False:
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_account_bootstrap].trading_execution_supported must be false"
+                )
+            if not str(bootstrap_row.get("preflight_message") or "").strip():
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_account_bootstrap].preflight_message is required"
+                )
+            if not str(bootstrap_row.get("status_message") or "").strip():
+                issues.append(
+                    f"{artifact_path} suite_results[native_runtime_read_only_account_bootstrap].status_message is required"
+                )
 
 
 def _release_evidence_environment(payload: dict[str, Any], artifact_path: Path, issues: list[str]) -> dict[str, Any]:

@@ -8,6 +8,7 @@
 #include "../src/NativePortfolio.h"
 #include "../src/NativeStartupPackaging.h"
 #include "../src/NativeStrategyRuntime.h"
+#include "../src/generated/PythonParityContract.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -431,6 +432,30 @@ int main(int argc, char **argv) {
              QStringLiteral("stochastic_d"),
          }) {
         check(indicatorKeys.contains(key), QStringLiteral("native strategy indicator output keys should include %1").arg(key));
+    }
+
+    QJsonObject allEnabledIndicatorConfigs;
+    for (const auto &indicator : PythonParityContract::kPythonIndicatorCatalog) {
+        const QString key = QString::fromUtf8(
+            indicator.key.data(), static_cast<qsizetype>(indicator.key.size()));
+        allEnabledIndicatorConfigs.insert(key, QJsonObject{{QStringLiteral("enabled"), true}});
+    }
+    const QStringList allIndicatorOutputKeys =
+        NativeStrategyRuntime::indicatorOutputKeysFromConfig(allEnabledIndicatorConfigs);
+    for (const auto &indicator : PythonParityContract::kPythonIndicatorCatalog) {
+        const QString indicatorKey = QString::fromUtf8(
+            indicator.key.data(), static_cast<qsizetype>(indicator.key.size()));
+        const QStringList expectedOutputKeys = QString::fromUtf8(
+            indicator.runtimeOutputKeysCsv.data(),
+            static_cast<qsizetype>(indicator.runtimeOutputKeysCsv.size()))
+            .split(QLatin1Char(','), Qt::SkipEmptyParts);
+        check(!expectedOutputKeys.isEmpty(),
+              QStringLiteral("Python indicator '%1' should declare runtime output keys").arg(indicatorKey));
+        for (const QString &outputKey : expectedOutputKeys) {
+            check(allIndicatorOutputKeys.contains(outputKey),
+                  QStringLiteral("native strategy output keys should cover %1 -> %2")
+                      .arg(indicatorKey, outputKey));
+        }
     }
 
     NativeStrategyRuntime::StrategySignalInput signalInput;

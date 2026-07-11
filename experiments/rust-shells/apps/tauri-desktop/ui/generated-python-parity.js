@@ -222,7 +222,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "56a331ef6ae380d032033028a663dd52e3992ed901c8e328d8c9350fb61fe28d",
+  "contractHash": "6ccbf8888f5fa7bf26e658f235849e4f4d5f4d82c6def19f93202b22d87ed373",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -753,199 +753,322 @@
       "defaultEnabled": false,
       "displayName": "Moving Average (MA)",
       "key": "ma",
-      "name": "Moving Average (MA)"
+      "name": "Moving Average (MA)",
+      "runtimeOutputKeys": [
+        "ma"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Donchian Channels (DC)",
       "key": "donchian",
-      "name": "Donchian Channels (DC)"
+      "name": "Donchian Channels (DC)",
+      "runtimeOutputKeys": [
+        "donchian_high",
+        "donchian_low",
+        "donchian"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Parabolic SAR (PSAR)",
       "key": "psar",
-      "name": "Parabolic SAR (PSAR)"
+      "name": "Parabolic SAR (PSAR)",
+      "runtimeOutputKeys": [
+        "psar"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Bollinger Bands (BB)",
       "key": "bb",
-      "name": "Bollinger Bands (BB)"
+      "name": "Bollinger Bands (BB)",
+      "runtimeOutputKeys": [
+        "bb_upper",
+        "bb_mid",
+        "bb_lower"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Bollinger Band Width (BBW)",
       "key": "bbw",
-      "name": "Bollinger Band Width (BBW)"
+      "name": "Bollinger Band Width (BBW)",
+      "runtimeOutputKeys": [
+        "bbw"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Keltner Channels (KC)",
       "key": "keltner",
-      "name": "Keltner Channels (KC)"
+      "name": "Keltner Channels (KC)",
+      "runtimeOutputKeys": [
+        "keltner_upper",
+        "keltner_mid",
+        "keltner_lower"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Ichimoku Cloud (IC)",
       "key": "ichimoku",
-      "name": "Ichimoku Cloud (IC)"
+      "name": "Ichimoku Cloud (IC)",
+      "runtimeOutputKeys": [
+        "ichimoku_tenkan",
+        "ichimoku_kijun",
+        "ichimoku_span_a",
+        "ichimoku_span_b",
+        "ichimoku_chikou",
+        "ichimoku"
+      ]
     },
     {
       "defaultEnabled": true,
       "displayName": "Relative Strength Index (RSI)",
       "key": "rsi",
-      "name": "Relative Strength Index (RSI)"
+      "name": "Relative Strength Index (RSI)",
+      "runtimeOutputKeys": [
+        "rsi"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Volume",
       "key": "volume",
-      "name": "Volume"
+      "name": "Volume",
+      "runtimeOutputKeys": [
+        "volume"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "On-Balance Volume (OBV)",
       "key": "obv",
-      "name": "On-Balance Volume (OBV)"
+      "name": "On-Balance Volume (OBV)",
+      "runtimeOutputKeys": [
+        "obv"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Relative Volume (RVOL)",
       "key": "rvol",
-      "name": "Relative Volume (RVOL)"
+      "name": "Relative Volume (RVOL)",
+      "runtimeOutputKeys": [
+        "rvol"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Chaikin Money Flow (CMF)",
       "key": "cmf",
-      "name": "Chaikin Money Flow (CMF)"
+      "name": "Chaikin Money Flow (CMF)",
+      "runtimeOutputKeys": [
+        "cmf"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Commodity Channel Index (CCI)",
       "key": "cci",
-      "name": "Commodity Channel Index (CCI)"
+      "name": "Commodity Channel Index (CCI)",
+      "runtimeOutputKeys": [
+        "cci"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Rate of Change (ROC)",
       "key": "roc",
-      "name": "Rate of Change (ROC)"
+      "name": "Rate of Change (ROC)",
+      "runtimeOutputKeys": [
+        "roc"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Triple Exponential Average (TRIX)",
       "key": "trix",
-      "name": "Triple Exponential Average (TRIX)"
+      "name": "Triple Exponential Average (TRIX)",
+      "runtimeOutputKeys": [
+        "trix"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Percentage Price Oscillator (PPO)",
       "key": "ppo",
-      "name": "Percentage Price Oscillator (PPO)"
+      "name": "Percentage Price Oscillator (PPO)",
+      "runtimeOutputKeys": [
+        "ppo",
+        "ppo_signal",
+        "ppo_hist"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Awesome Oscillator (AO)",
       "key": "ao",
-      "name": "Awesome Oscillator (AO)"
+      "name": "Awesome Oscillator (AO)",
+      "runtimeOutputKeys": [
+        "ao"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Know Sure Thing (KST)",
       "key": "kst",
-      "name": "Know Sure Thing (KST)"
+      "name": "Know Sure Thing (KST)",
+      "runtimeOutputKeys": [
+        "kst",
+        "kst_signal",
+        "kst_hist"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Aroon Oscillator (AROON)",
       "key": "aroon",
-      "name": "Aroon Oscillator (AROON)"
+      "name": "Aroon Oscillator (AROON)",
+      "runtimeOutputKeys": [
+        "aroon_up",
+        "aroon_down",
+        "aroon"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Choppiness Index (CHOP)",
       "key": "chop",
-      "name": "Choppiness Index (CHOP)"
+      "name": "Choppiness Index (CHOP)",
+      "runtimeOutputKeys": [
+        "chop"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Average True Range (ATR)",
       "key": "atr",
-      "name": "Average True Range (ATR)"
+      "name": "Average True Range (ATR)",
+      "runtimeOutputKeys": [
+        "atr"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Normalized Average True Range (NATR)",
       "key": "natr",
-      "name": "Normalized Average True Range (NATR)"
+      "name": "Normalized Average True Range (NATR)",
+      "runtimeOutputKeys": [
+        "natr"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Volume Weighted Average Price (VWAP)",
       "key": "vwap",
-      "name": "Volume Weighted Average Price (VWAP)"
+      "name": "Volume Weighted Average Price (VWAP)",
+      "runtimeOutputKeys": [
+        "vwap"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Money Flow Index (MFI)",
       "key": "mfi",
-      "name": "Money Flow Index (MFI)"
+      "name": "Money Flow Index (MFI)",
+      "runtimeOutputKeys": [
+        "mfi"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Stochastic RSI (SRSI)",
       "key": "stoch_rsi",
-      "name": "Stochastic RSI (SRSI)"
+      "name": "Stochastic RSI (SRSI)",
+      "runtimeOutputKeys": [
+        "stoch_rsi",
+        "stoch_rsi_k",
+        "stoch_rsi_d"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Williams %R",
       "key": "willr",
-      "name": "Williams %R"
+      "name": "Williams %R",
+      "runtimeOutputKeys": [
+        "willr"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Moving Average Convergence/Divergence (MACD)",
       "key": "macd",
-      "name": "Moving Average Convergence/Divergence (MACD)"
+      "name": "Moving Average Convergence/Divergence (MACD)",
+      "runtimeOutputKeys": [
+        "macd_line",
+        "macd_signal"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Ultimate Oscillator (UO)",
       "key": "uo",
-      "name": "Ultimate Oscillator (UO)"
+      "name": "Ultimate Oscillator (UO)",
+      "runtimeOutputKeys": [
+        "uo"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Average Directional Index (ADX)",
       "key": "adx",
-      "name": "Average Directional Index (ADX)"
+      "name": "Average Directional Index (ADX)",
+      "runtimeOutputKeys": [
+        "adx"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Directional Movement Index (DMI)",
       "key": "dmi",
-      "name": "Directional Movement Index (DMI)"
+      "name": "Directional Movement Index (DMI)",
+      "runtimeOutputKeys": [
+        "dmi_plus",
+        "dmi_minus",
+        "dmi"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "SuperTrend (ST)",
       "key": "supertrend",
-      "name": "SuperTrend (ST)"
+      "name": "SuperTrend (ST)",
+      "runtimeOutputKeys": [
+        "supertrend"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Exponential Moving Average (EMA)",
       "key": "ema",
-      "name": "Exponential Moving Average (EMA)"
+      "name": "Exponential Moving Average (EMA)",
+      "runtimeOutputKeys": [
+        "ema"
+      ]
     },
     {
       "defaultEnabled": false,
       "displayName": "Stochastic Oscillator",
       "key": "stochastic",
-      "name": "Stochastic Oscillator"
+      "name": "Stochastic Oscillator",
+      "runtimeOutputKeys": [
+        "stochastic",
+        "stochastic_k",
+        "stochastic_d"
+      ]
     }
   ],
   "indicatorKeys": [

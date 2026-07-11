@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::env;
@@ -10,7 +10,14 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
-use trading_bot_core::{app_banner, service_api_route_path};
+use trading_bot_core::{
+    app_banner,
+    market_data::BinanceKlineCandle,
+    native_runtime::{
+        NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeReadOnlyMarketCycleInput,
+    },
+    service_api_route_path,
+};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -105,6 +112,44 @@ struct DesktopLanguageLaunchResponse {
     pid: Option<u32>,
     message: String,
     error: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeRuntimeCandleInput {
+    open_time_ms: i64,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    volume: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRuntimePreviewResponse {
+    ok: bool,
+    computed_indicator_keys: Vec<String>,
+    unsupported_indicator_keys: Vec<String>,
+    strategy_evaluated: bool,
+    signal: Option<String>,
+    trading_execution_supported: bool,
+    status_message: String,
+    error: String,
+}
+
+impl NativeRuntimePreviewResponse {
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            computed_indicator_keys: Vec::new(),
+            unsupported_indicator_keys: Vec::new(),
+            strategy_evaluated: false,
+            signal: None,
+            trading_execution_supported: false,
+            status_message: String::new(),
+            error: error.into(),
+        }
+    }
 }
 
 impl DesktopLanguageLaunchResponse {
@@ -605,6 +650,58 @@ async fn service_api_request(
 }
 
 #[tauri::command]
+fn evaluate_native_runtime_preview(
+    config: Value,
+    candles: Vec<NativeRuntimeCandleInput>,
+    symbol: String,
+    interval: String,
+    now_ms: i64,
+    last_candle_is_closed: bool,
+) -> NativeRuntimePreviewResponse {
+    let candles = candles
+        .into_iter()
+        .map(|candle| BinanceKlineCandle {
+            open_time_ms: candle.open_time_ms,
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+            volume: candle.volume,
+        })
+        .collect::<Vec<_>>();
+    let input = match NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
+        now_ms,
+        candles,
+        &config,
+        last_candle_is_closed,
+    ) {
+        Ok(input) => input,
+        Err(error) => return NativeRuntimePreviewResponse::error(error.to_string()),
+    };
+    let mut runtime = NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
+        symbol: symbol.trim().to_ascii_uppercase(),
+        interval: interval.trim().to_owned(),
+        ..NativeRuntimeLoopConfig::default()
+    });
+    runtime.start();
+    match runtime.run_read_only_market_cycle(input) {
+        Ok(snapshot) => NativeRuntimePreviewResponse {
+            ok: true,
+            computed_indicator_keys: snapshot.computed_indicator_keys,
+            unsupported_indicator_keys: snapshot.unsupported_indicator_keys,
+            strategy_evaluated: snapshot.strategy_evaluated,
+            signal: snapshot
+                .strategy_decision
+                .and_then(|decision| decision.signal),
+            trading_execution_supported: snapshot.trading_execution_supported,
+            status_message: snapshot.status_message,
+            error: String::new(),
+        },
+        Err(error) => NativeRuntimePreviewResponse::error(error.to_string()),
+    }
+}
+
+#[tauri::command]
 fn launch_desktop_language(app: AppHandle, language: String) -> DesktopLanguageLaunchResponse {
     let language = language.trim();
     let Some(repo_root) = find_repo_root(&app) else {
@@ -828,6 +925,7 @@ fn main() {
         .manage(ServiceProcessState::default())
         .invoke_handler(tauri::generate_handler![
             launch_desktop_language,
+            evaluate_native_runtime_preview,
             service_api_request,
             service_process_status,
             start_service_api,
@@ -841,4 +939,68 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run Tauri desktop shell");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candles(count: i64) -> Vec<NativeRuntimeCandleInput> {
+        (0..count)
+            .map(|index| {
+                let close = 100.0 + index as f64;
+                NativeRuntimeCandleInput {
+                    open_time_ms: index * 60_000,
+                    open: close - 0.5,
+                    high: close + 1.0,
+                    low: close - 1.0,
+                    close,
+                    volume: 1_000.0 + index as f64,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_runtime_preview_calculates_python_configured_indicators_read_only() {
+        let response = evaluate_native_runtime_preview(
+            json!({
+                "indicators": {
+                    "rsi": {
+                        "enabled": true,
+                        "length": 14,
+                        "buy_value": 30.0,
+                        "sell_value": 70.0
+                    }
+                }
+            }),
+            candles(64),
+            "btcusdt".to_owned(),
+            "1m".to_owned(),
+            64 * 60_000,
+            true,
+        );
+
+        assert!(response.ok, "{}", response.error);
+        assert!(response.strategy_evaluated);
+        assert!(response.computed_indicator_keys.iter().any(|key| key == "rsi"));
+        assert!(response.unsupported_indicator_keys.is_empty());
+        assert!(!response.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_preview_rejects_malformed_python_indicator_config() {
+        let response = evaluate_native_runtime_preview(
+            json!({"indicators": {"rsi": "not-an-object"}}),
+            candles(64),
+            "BTCUSDT".to_owned(),
+            "1m".to_owned(),
+            64 * 60_000,
+            true,
+        );
+
+        assert!(!response.ok);
+        assert!(!response.error.is_empty());
+        assert!(!response.trading_execution_supported);
+    }
 }

@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -15,13 +16,19 @@ use trading_bot_core::{
         BinanceKlineCandle, BinanceMarket, BinanceRestMarketDataClient, BinanceTickerPrice,
     },
     native_full_python_app_parity_ready, native_python_app_contract_parity_ready,
-    native_python_app_parity_domains, python_source_contract_hash,
-    rust_entire_python_app_contract_parity_ready, rust_entire_python_app_parity_ready,
-    rust_native_runtime_capabilities, rust_native_trading_runtime_ready, supported_frameworks,
+    native_python_app_parity_domains,
+    native_runtime::{
+        NativeRuntimeLoop, NativeRuntimeLoopConfig, NativeRuntimeReadOnlyMarketCycleInput,
+    },
+    python_source_contract_hash, rust_entire_python_app_contract_parity_ready,
+    rust_entire_python_app_parity_ready, rust_native_runtime_capabilities,
+    rust_native_trading_runtime_ready, supported_frameworks,
 };
 
 const MARKET_SMOKE_MAX_ATTEMPTS: usize = 3;
 const MARKET_SMOKE_RETRY_DELAY: Duration = Duration::from_millis(750);
+// The Python-owned default RSI needs a meaningful completed-candle history.
+const NATIVE_RUNTIME_MARKET_CYCLE_CANDLE_LIMIT: usize = 64;
 const ACCOUNT_SMOKE_MAX_ATTEMPTS: usize = 3;
 const ACCOUNT_SMOKE_RETRY_DELAY: Duration = Duration::from_millis(750);
 const PROMOTION_SOURCE_TREE_IGNORED_PATHS: &[&str] = &[
@@ -354,6 +361,8 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let account_evidence = collect_account_smoke_evidence_with_retry(
         &account_client,
         &credentials,
+        &symbol,
+        &interval,
         ACCOUNT_SMOKE_MAX_ATTEMPTS,
         ACCOUNT_SMOKE_RETRY_DELAY,
     )?;
@@ -366,6 +375,12 @@ fn run_native_live_smoke() -> Result<(), Box<dyn std::error::Error>> {
         multi_assets_margin: account_evidence.multi_assets_margin,
         balance_asset: account_evidence.balance_asset,
         positions_count: account_evidence.positions_count,
+        native_runtime_preflight_message: account_evidence.native_runtime_preflight_message,
+        native_runtime_signal_evaluation_allowed: account_evidence
+            .native_runtime_signal_evaluation_allowed,
+        native_runtime_trading_execution_supported: account_evidence
+            .native_runtime_trading_execution_supported,
+        native_runtime_status_message: account_evidence.native_runtime_status_message,
     })?;
     println!(
         "Rust native live smoke completed; standalone native trading execution remains disabled."
@@ -383,6 +398,12 @@ struct MarketSmokeEvidence {
     symbols_count: usize,
     candles_count: usize,
     ticker_symbol: String,
+    native_runtime_stream_connected: bool,
+    native_runtime_strategy_evaluated: bool,
+    native_runtime_trading_execution_supported: bool,
+    native_runtime_computed_indicator_keys: Vec<String>,
+    native_runtime_unsupported_indicator_keys: Vec<String>,
+    native_runtime_status_message: String,
 }
 
 #[derive(Debug)]
@@ -395,6 +416,10 @@ struct LiveSmokeEvidence {
     multi_assets_margin: bool,
     balance_asset: String,
     positions_count: usize,
+    native_runtime_preflight_message: String,
+    native_runtime_signal_evaluation_allowed: bool,
+    native_runtime_trading_execution_supported: bool,
+    native_runtime_status_message: String,
 }
 
 #[derive(Debug)]
@@ -406,6 +431,10 @@ struct AccountSmokeEvidence {
     multi_assets_margin: bool,
     balance_asset: String,
     positions_count: usize,
+    native_runtime_preflight_message: String,
+    native_runtime_signal_evaluation_allowed: bool,
+    native_runtime_trading_execution_supported: bool,
+    native_runtime_status_message: String,
 }
 
 trait MarketSmokeClient {
@@ -515,10 +544,31 @@ fn collect_market_smoke_evidence<C: MarketSmokeClient + ?Sized>(
 ) -> Result<MarketSmokeEvidence, Box<dyn std::error::Error>> {
     let symbols = market_client.fetch_usdt_symbols(false, Some(5))?;
     println!("market symbols fetched: {}", symbols.len());
-    let candles = market_client.fetch_klines(symbol, interval, 10)?;
+    let candles =
+        market_client.fetch_klines(symbol, interval, NATIVE_RUNTIME_MARKET_CYCLE_CANDLE_LIMIT)?;
     println!("klines fetched: {}", candles.len());
     let ticker = market_client.fetch_ticker_price(symbol)?;
     println!("ticker fetched: {} @ {}", ticker.symbol, ticker.price);
+    let mut native_runtime = NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
+        symbol: symbol.trim().to_ascii_uppercase(),
+        interval: interval.trim().to_owned(),
+        ..NativeRuntimeLoopConfig::default()
+    });
+    native_runtime.start();
+    let native_cycle =
+        native_runtime.run_read_only_market_cycle(NativeRuntimeReadOnlyMarketCycleInput {
+            now_ms: current_unix_timestamp_ms(),
+            candles: candles.clone(),
+            indicator_configs: BTreeMap::new(),
+            indicators: BTreeMap::new(),
+            rules: BTreeMap::new(),
+            side: "BOTH".to_owned(),
+            last_candle_is_closed: false,
+        })?;
+    println!(
+        "native runtime read-only market cycle: strategy_evaluated={}",
+        native_cycle.strategy_evaluated
+    );
     Ok(MarketSmokeEvidence {
         testnet,
         symbol: symbol.to_owned(),
@@ -532,6 +582,12 @@ fn collect_market_smoke_evidence<C: MarketSmokeClient + ?Sized>(
         symbols_count: symbols.len(),
         candles_count: candles.len(),
         ticker_symbol: ticker.symbol,
+        native_runtime_stream_connected: native_cycle.cycle.stream.connected,
+        native_runtime_strategy_evaluated: native_cycle.strategy_evaluated,
+        native_runtime_trading_execution_supported: native_cycle.trading_execution_supported,
+        native_runtime_computed_indicator_keys: native_cycle.computed_indicator_keys,
+        native_runtime_unsupported_indicator_keys: native_cycle.unsupported_indicator_keys,
+        native_runtime_status_message: native_cycle.status_message,
     })
 }
 
@@ -612,13 +668,15 @@ impl AccountSmokeClient for BinanceSignedRestClient {
 fn collect_account_smoke_evidence_with_retry<C: AccountSmokeClient + ?Sized>(
     account_client: &C,
     credentials: &BinanceApiCredentials,
+    symbol: &str,
+    interval: &str,
     max_attempts: usize,
     retry_delay: Duration,
 ) -> Result<AccountSmokeEvidence, Box<dyn std::error::Error>> {
     let max_attempts = max_attempts.max(1);
     let mut last_error = String::new();
     for attempt in 1..=max_attempts {
-        match collect_account_smoke_evidence(account_client, credentials) {
+        match collect_account_smoke_evidence(account_client, credentials, symbol, interval) {
             Ok(evidence) => {
                 if attempt > 1 {
                     println!("signed account smoke recovered on attempt {attempt}/{max_attempts}");
@@ -645,6 +703,8 @@ fn collect_account_smoke_evidence_with_retry<C: AccountSmokeClient + ?Sized>(
 fn collect_account_smoke_evidence<C: AccountSmokeClient + ?Sized>(
     account_client: &C,
     credentials: &BinanceApiCredentials,
+    symbol: &str,
+    interval: &str,
 ) -> Result<AccountSmokeEvidence, Box<dyn std::error::Error>> {
     let position_mode = account_client.fetch_futures_position_mode(credentials)?;
     println!(
@@ -663,6 +723,25 @@ fn collect_account_smoke_evidence<C: AccountSmokeClient + ?Sized>(
     );
     let positions = account_client.fetch_open_futures_positions(credentials)?;
     println!("open futures positions fetched: {}", positions.len());
+    let runtime = NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
+        symbol: symbol.trim().to_ascii_uppercase(),
+        interval: interval.trim().to_owned(),
+        position_mode: position_mode.position_mode.clone(),
+        margin_mode: "ISOLATED".to_owned(),
+        leverage: 5,
+        multi_assets_mode: multi_assets_mode.multi_assets_margin,
+        ..NativeRuntimeLoopConfig::default()
+    });
+    let native_runtime = runtime.bootstrap_read_only_account(
+        &balance,
+        &positions,
+        Some(&position_mode),
+        Some(&multi_assets_mode),
+    );
+    println!(
+        "native runtime read-only account bootstrap: signal_evaluation_allowed={}",
+        native_runtime.signal_evaluation_allowed
+    );
     Ok(AccountSmokeEvidence {
         account_base_url: account_client.base_url().to_owned(),
         account_endpoints: vec![
@@ -682,6 +761,10 @@ fn collect_account_smoke_evidence<C: AccountSmokeClient + ?Sized>(
         multi_assets_margin: multi_assets_mode.multi_assets_margin,
         balance_asset: balance.asset,
         positions_count: positions.len(),
+        native_runtime_preflight_message: native_runtime.account_preflight.status_message,
+        native_runtime_signal_evaluation_allowed: native_runtime.signal_evaluation_allowed,
+        native_runtime_trading_execution_supported: native_runtime.trading_execution_supported,
+        native_runtime_status_message: native_runtime.status_message,
     })
 }
 
@@ -753,6 +836,16 @@ fn build_market_smoke_payload(
                 "name": "fetch_ticker_price",
                 "status": "passed",
                 "symbol": evidence.ticker_symbol.as_str()
+            },
+            {
+                "name": "native_runtime_read_only_market_cycle",
+                "status": "passed",
+                "stream_connected": evidence.native_runtime_stream_connected,
+                "strategy_evaluated": evidence.native_runtime_strategy_evaluated,
+                "trading_execution_supported": evidence.native_runtime_trading_execution_supported,
+                "computed_indicator_keys": evidence.native_runtime_computed_indicator_keys,
+                "unsupported_indicator_keys": evidence.native_runtime_unsupported_indicator_keys,
+                "status_message": evidence.native_runtime_status_message
             }
         ]
     })
@@ -832,6 +925,14 @@ fn write_live_smoke_evidence(
                 "name": "fetch_open_futures_positions",
                 "status": "passed",
                 "observed_count": evidence.positions_count
+            },
+            {
+                "name": "native_runtime_read_only_account_bootstrap",
+                "status": "passed",
+                "signal_evaluation_allowed": evidence.native_runtime_signal_evaluation_allowed,
+                "trading_execution_supported": evidence.native_runtime_trading_execution_supported,
+                "preflight_message": evidence.native_runtime_preflight_message,
+                "status_message": evidence.native_runtime_status_message
             }
         ]
     });
@@ -1297,6 +1398,13 @@ fn current_source_tree_clean() -> bool {
     source_tree_status_clean("no") && source_tree_status_clean("all")
 }
 
+fn current_unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 fn current_unix_timestamp_label() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1422,14 +1530,16 @@ mod tests {
             _interval: &str,
             _limit: usize,
         ) -> Result<Vec<BinanceKlineCandle>, Box<dyn std::error::Error>> {
-            Ok(vec![BinanceKlineCandle {
-                open_time_ms: 1,
-                open: 1.0,
-                high: 2.0,
-                low: 0.5,
-                close: 1.5,
-                volume: 10.0,
-            }])
+            Ok((0..4)
+                .map(|index| BinanceKlineCandle {
+                    open_time_ms: 1 + index * 60_000,
+                    open: 1.0 + index as f64,
+                    high: 2.0 + index as f64,
+                    low: 0.5 + index as f64,
+                    close: 1.5 + index as f64,
+                    volume: 10.0,
+                })
+                .collect())
         }
 
         fn fetch_ticker_price(
@@ -1531,8 +1641,12 @@ mod tests {
 
         assert_eq!(2, client.symbol_attempts.get());
         assert_eq!(2, evidence.symbols_count);
-        assert_eq!(1, evidence.candles_count);
+        assert_eq!(4, evidence.candles_count);
         assert_eq!("BTCUSDT", evidence.ticker_symbol);
+        assert!(evidence.native_runtime_stream_connected);
+        assert!(evidence.native_runtime_strategy_evaluated);
+        assert!(!evidence.native_runtime_trading_execution_supported);
+        assert_eq!(evidence.native_runtime_computed_indicator_keys, vec!["rsi"]);
     }
 
     #[test]
@@ -1560,15 +1674,28 @@ mod tests {
         let client = FakeAccountSmokeClient::new(1);
         let credentials = BinanceApiCredentials::new("key", "secret");
 
-        let evidence =
-            collect_account_smoke_evidence_with_retry(&client, &credentials, 2, Duration::ZERO)
-                .expect("signed account smoke should recover on second attempt");
+        let evidence = collect_account_smoke_evidence_with_retry(
+            &client,
+            &credentials,
+            "BTCUSDT",
+            "1m",
+            2,
+            Duration::ZERO,
+        )
+        .expect("signed account smoke should recover on second attempt");
 
         assert_eq!(2, client.mode_attempts.get());
         assert_eq!("Hedge", evidence.position_mode);
         assert!(evidence.dual_side_position);
         assert_eq!("USDT", evidence.balance_asset);
         assert_eq!(1, evidence.positions_count);
+        assert!(!evidence.native_runtime_signal_evaluation_allowed);
+        assert!(!evidence.native_runtime_trading_execution_supported);
+        assert!(
+            evidence
+                .native_runtime_status_message
+                .contains("safe but not signal-ready")
+        );
     }
 
     #[test]
@@ -1576,9 +1703,15 @@ mod tests {
         let client = FakeAccountSmokeClient::new(3);
         let credentials = BinanceApiCredentials::new("key", "secret");
 
-        let error =
-            collect_account_smoke_evidence_with_retry(&client, &credentials, 2, Duration::ZERO)
-                .expect_err("signed account smoke should fail after bounded attempts");
+        let error = collect_account_smoke_evidence_with_retry(
+            &client,
+            &credentials,
+            "BTCUSDT",
+            "1m",
+            2,
+            Duration::ZERO,
+        )
+        .expect_err("signed account smoke should fail after bounded attempts");
         let message = format_error_chain(error.as_ref());
 
         assert_eq!(2, client.mode_attempts.get());

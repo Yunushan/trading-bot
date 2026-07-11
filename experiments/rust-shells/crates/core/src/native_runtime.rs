@@ -1,24 +1,34 @@
-use anyhow::Result;
+use std::collections::BTreeMap;
+
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::account::{
-    BinanceFuturesMarginMode, BinanceFuturesMultiAssetsMode, BinanceFuturesPosition,
-    BinanceFuturesPositionMode, normalize_futures_margin_type,
+    BinanceAccountSnapshot, BinanceFuturesMarginMode, BinanceFuturesMultiAssetsMode,
+    BinanceFuturesPosition, BinanceFuturesPositionMode, normalize_futures_margin_type,
+};
+use crate::native_indicators::{
+    compute_configured_indicator_series, default_runtime_indicator_configs,
+    unsupported_enabled_indicator_keys,
 };
 use crate::order_audit::redact_text;
 use crate::position_close::{BinanceFuturesCloseDirective, plan_futures_position_close};
 use crate::strategy_runtime::{StrategyWorkerLifecycleInput, build_worker_lifecycle_snapshot};
 use crate::streams::{
-    BinanceStreamEvent, BinanceWebSocket, BinanceWebSocketClient, StreamReconnectPolicy,
-    StreamSupervisor, StreamSupervisorSnapshot,
+    BinanceKlineStreamCandle, BinanceStreamEvent, BinanceWebSocket, BinanceWebSocketClient,
+    StreamReconnectPolicy, StreamSupervisor, StreamSupervisorSnapshot,
 };
 use crate::{
+    market_data::BinanceKlineCandle,
     runtime_control::{
         RuntimeStopGuardInput, RuntimeStopGuardResult, build_runtime_idle_after_stop_result,
         build_runtime_stop_guard_result,
     },
     rust_trading_execution_supported,
+    strategy_runtime::{
+        IndicatorRule, StrategySignalDecision, StrategySignalInput, build_signal_decision,
+    },
 };
 
 const NATIVE_POSITION_EPSILON: f64 = 1e-10;
@@ -141,6 +151,134 @@ pub struct NativeRuntimeAccountPreflightSnapshot {
     pub signal_evaluation_allowed: bool,
     pub status_message: String,
     pub trading_execution_supported: bool,
+}
+
+/// Read-only account state consumed by the native runtime before it can evaluate signals.
+///
+/// This deliberately contains no credentials and performs no exchange mutation. The caller
+/// supplies values read from Binance so the runtime and live-smoke path share the same
+/// reconciliation logic instead of proving their pieces independently.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRuntimeReadOnlyAccountBootstrapSnapshot {
+    pub balance_asset: String,
+    pub open_positions_count: usize,
+    pub configured_symbol_position_found: bool,
+    pub configured_symbol_open_position_amt: f64,
+    pub account_preflight: NativeRuntimeAccountPreflightSnapshot,
+    pub signal_evaluation_allowed: bool,
+    pub trading_execution_supported: bool,
+    pub status_message: String,
+}
+
+/// Input for a no-order native runtime cycle hydrated from REST candles.
+///
+/// REST responses can include an in-progress last candle. Unless explicitly
+/// marked closed, the coordinator excludes that candle from signal evaluation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRuntimeReadOnlyMarketCycleInput {
+    pub now_ms: i64,
+    pub candles: Vec<BinanceKlineCandle>,
+    /// Python-shaped runtime indicator configuration. Used when callers do not
+    /// provide precomputed series, allowing the native loop to calculate the
+    /// supported enabled indicators from the Python source contract.
+    pub indicator_configs: BTreeMap<String, Value>,
+    pub indicators: BTreeMap<String, Vec<f64>>,
+    pub rules: BTreeMap<String, IndicatorRule>,
+    pub side: String,
+    pub last_candle_is_closed: bool,
+}
+
+impl NativeRuntimeReadOnlyMarketCycleInput {
+    /// Build a native read-only cycle from the validated Python Service API
+    /// configuration payload (or its persisted `{ "config": ... }` wrapper).
+    ///
+    /// The Python service remains the validation owner. This adapter preserves
+    /// the indicator objects and derives the same enabled/buy/sell rule shape
+    /// that the native strategy evaluator consumes.
+    pub fn from_python_service_config(
+        now_ms: i64,
+        candles: Vec<BinanceKlineCandle>,
+        payload: &Value,
+        last_candle_is_closed: bool,
+    ) -> Result<Self> {
+        let config = if payload.get("indicators").is_some() {
+            payload
+        } else {
+            payload
+                .get("config")
+                .filter(|value| value.is_object())
+                .ok_or_else(|| anyhow::anyhow!("Python Service API payload has no config object"))?
+        };
+        let indicator_object = config
+            .get("indicators")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow::anyhow!("Python Service API config has no indicators object"))?;
+        let mut indicator_configs = BTreeMap::new();
+        let mut rules = BTreeMap::new();
+        for (key, indicator_config) in indicator_object {
+            let Some(indicator) = indicator_config.as_object() else {
+                bail!("Python Service API indicator {key} must be an object");
+            };
+            indicator_configs.insert(key.clone(), indicator_config.clone());
+            rules.insert(
+                key.clone(),
+                IndicatorRule {
+                    enabled: native_config_bool(indicator.get("enabled")),
+                    buy_value: native_config_number(indicator.get("buy_value")),
+                    sell_value: native_config_number(indicator.get("sell_value")),
+                },
+            );
+        }
+        let side = config
+            .get("side")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("BOTH")
+            .to_owned();
+        Ok(Self {
+            now_ms,
+            candles,
+            indicator_configs,
+            indicators: BTreeMap::new(),
+            rules,
+            side,
+            last_candle_is_closed,
+        })
+    }
+}
+
+fn native_config_bool(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_f64().is_some_and(|value| value != 0.0),
+        Some(Value::String(value)) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "y"
+        ),
+        _ => false,
+    }
+}
+
+fn native_config_number(value: Option<&Value>) -> Option<f64> {
+    match value {
+        Some(Value::Number(value)) => value.as_f64(),
+        Some(Value::String(value)) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRuntimeReadOnlyMarketCycleSnapshot {
+    pub closed_candle_count: usize,
+    pub latest_closed_open_time_ms: i64,
+    pub computed_indicator_keys: Vec<String>,
+    pub unsupported_indicator_keys: Vec<String>,
+    pub cycle: NativeRuntimeCycleSnapshot,
+    pub strategy_evaluated: bool,
+    pub strategy_decision: Option<StrategySignalDecision>,
+    pub trading_execution_supported: bool,
+    pub status_message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,6 +637,204 @@ impl NativeRuntimeLoop {
             self.config.multi_assets_mode,
             input,
         )
+    }
+
+    /// Bind a freshly read account snapshot to this runtime's configured symbol and safety
+    /// preflight. It is intentionally read-only; callers retain ownership of all exchange I/O.
+    pub fn bootstrap_read_only_account(
+        &self,
+        balance: &BinanceAccountSnapshot,
+        positions: &[BinanceFuturesPosition],
+        exchange_position_mode: Option<&BinanceFuturesPositionMode>,
+        exchange_multi_assets_mode: Option<&BinanceFuturesMultiAssetsMode>,
+    ) -> NativeRuntimeReadOnlyAccountBootstrapSnapshot {
+        let configured_symbol = self.config.symbol.trim().to_ascii_uppercase();
+        let matching_positions: Vec<&BinanceFuturesPosition> = positions
+            .iter()
+            .filter(|position| {
+                position
+                    .symbol
+                    .trim()
+                    .eq_ignore_ascii_case(&configured_symbol)
+            })
+            .collect();
+        let configured_symbol_open_position_amt = matching_positions
+            .iter()
+            .map(|position| position.position_amt)
+            .filter(|amount| amount.is_finite())
+            .map(f64::abs)
+            .sum();
+        let mut margin_modes = Vec::new();
+        let mut leverages = Vec::new();
+        for position in &matching_positions {
+            if let Ok(margin_mode) = normalize_futures_margin_type(&position.margin_type) {
+                if !margin_modes.contains(&margin_mode) {
+                    margin_modes.push(margin_mode);
+                }
+            }
+            if position.leverage.is_finite()
+                && position.leverage >= 1.0
+                && position.leverage <= 125.0
+            {
+                let leverage = position.leverage.round() as i64;
+                if !leverages.contains(&leverage) {
+                    leverages.push(leverage);
+                }
+            }
+        }
+        let exchange_margin_mode = (margin_modes.len() == 1).then(|| BinanceFuturesMarginMode {
+            symbol: configured_symbol.clone(),
+            margin_type: margin_modes[0].clone(),
+        });
+        let exchange_leverage = (leverages.len() == 1).then(|| leverages[0]);
+        let account_preflight =
+            self.reconcile_account_preflight(NativeRuntimeAccountPreflightInput {
+                exchange_position_mode: exchange_position_mode.cloned(),
+                futures_settings: NativeRuntimeFuturesSettingsInput {
+                    exchange_margin_mode,
+                    exchange_leverage,
+                    exchange_multi_assets_mode: exchange_multi_assets_mode.cloned(),
+                    open_position_amt: configured_symbol_open_position_amt,
+                },
+            });
+        let signal_evaluation_allowed = account_preflight.signal_evaluation_allowed;
+        let status_message = if signal_evaluation_allowed {
+            "Read-only native account bootstrap passed reconciliation.".to_owned()
+        } else {
+            format!(
+                "Read-only native account bootstrap is safe but not signal-ready: {}",
+                account_preflight.status_message
+            )
+        };
+
+        NativeRuntimeReadOnlyAccountBootstrapSnapshot {
+            balance_asset: balance.asset.trim().to_ascii_uppercase(),
+            open_positions_count: positions.len(),
+            configured_symbol_position_found: !matching_positions.is_empty(),
+            configured_symbol_open_position_amt,
+            account_preflight,
+            signal_evaluation_allowed,
+            trading_execution_supported: rust_trading_execution_supported(),
+            status_message,
+        }
+    }
+
+    /// Feed read-only REST candles through the same stream health and strategy
+    /// decision path used by the native runtime. This does not submit orders.
+    pub fn run_read_only_market_cycle(
+        &mut self,
+        input: NativeRuntimeReadOnlyMarketCycleInput,
+    ) -> Result<NativeRuntimeReadOnlyMarketCycleSnapshot> {
+        let NativeRuntimeReadOnlyMarketCycleInput {
+            now_ms,
+            candles: input_candles,
+            indicator_configs,
+            indicators: input_indicators,
+            rules,
+            side,
+            last_candle_is_closed,
+        } = input;
+        let discard_last_candle = !last_candle_is_closed;
+        let mut candles: Vec<BinanceKlineCandle> = input_candles
+            .into_iter()
+            .filter(|candle| {
+                candle.open_time_ms >= 0
+                    && [
+                        candle.open,
+                        candle.high,
+                        candle.low,
+                        candle.close,
+                        candle.volume,
+                    ]
+                    .iter()
+                    .all(|value| value.is_finite())
+            })
+            .collect();
+        candles.sort_by_key(|candle| candle.open_time_ms);
+        candles.dedup_by_key(|candle| candle.open_time_ms);
+        if discard_last_candle {
+            let _ = candles.pop();
+        }
+        let Some(latest_closed) = candles.last() else {
+            bail!("no completed finite candles available for native runtime cycle");
+        };
+        let closed_candle_count = candles.len();
+        let latest_closed_open_time_ms = latest_closed.open_time_ms;
+        let cycle = self.run_cycle(NativeRuntimeCycleInput {
+            now_ms: now_ms.max(0),
+            stream_event: Some(BinanceStreamEvent::Kline(BinanceKlineStreamCandle {
+                symbol: self.config.symbol.trim().to_ascii_uppercase(),
+                interval: self.config.interval.clone(),
+                open_time_ms: latest_closed.open_time_ms,
+                open: latest_closed.open,
+                high: latest_closed.high,
+                low: latest_closed.low,
+                close: latest_closed.close,
+                volume: latest_closed.volume,
+                is_closed: true,
+                // The REST hydration happened now; stream freshness should reflect ingestion,
+                // not the old candle open timestamp.
+                event_time_ms: now_ms.max(0),
+            })),
+            stream_disconnected: false,
+        });
+        let (source_indicators, unsupported_indicator_keys) = if input_indicators.is_empty() {
+            let configs = if indicator_configs.is_empty() {
+                default_runtime_indicator_configs()
+            } else {
+                indicator_configs
+            };
+            (
+                compute_configured_indicator_series(&candles, &configs),
+                unsupported_enabled_indicator_keys(&configs),
+            )
+        } else {
+            (input_indicators, Vec::new())
+        };
+        let indicators: BTreeMap<String, Vec<f64>> = source_indicators
+            .into_iter()
+            .map(|(key, mut values)| {
+                if discard_last_candle {
+                    let _ = values.pop();
+                }
+                (key, values)
+            })
+            .collect();
+        let computed_indicator_keys = indicators.keys().cloned().collect();
+        let strategy_decision =
+            (cycle.signal_evaluation_allowed && unsupported_indicator_keys.is_empty()).then(|| {
+                build_signal_decision(StrategySignalInput {
+                    closes: candles.iter().map(|candle| candle.close).collect(),
+                    indicators,
+                    rules,
+                    side,
+                    use_live_values: false,
+                })
+            });
+        let strategy_evaluated = strategy_decision.is_some();
+        let status_message = if let Some(decision) = &strategy_decision {
+            let signal = decision.signal.as_deref().unwrap_or("none");
+            format!("Read-only native market cycle evaluated strategy; signal={signal}.")
+        } else if !unsupported_indicator_keys.is_empty() {
+            format!(
+                "Read-only native market cycle withheld strategy evaluation; unsupported indicators: {}.",
+                unsupported_indicator_keys.join(", ")
+            )
+        } else {
+            "Read-only native market cycle cached data but signal evaluation is blocked.".to_owned()
+        };
+
+        Ok(NativeRuntimeReadOnlyMarketCycleSnapshot {
+            closed_candle_count,
+            latest_closed_open_time_ms,
+            computed_indicator_keys,
+            unsupported_indicator_keys,
+            cycle,
+            strategy_evaluated,
+            strategy_decision,
+            trading_execution_supported: rust_trading_execution_supported(),
+            status_message,
+        })
     }
 
     pub fn build_operational_preflight(
@@ -1419,6 +1755,17 @@ mod tests {
         })
     }
 
+    fn market_candle(open_time_ms: i64, close: f64) -> BinanceKlineCandle {
+        BinanceKlineCandle {
+            open_time_ms,
+            open: close - 0.5,
+            high: close + 0.5,
+            low: close - 1.0,
+            close,
+            volume: 100.0,
+        }
+    }
+
     #[test]
     fn native_runtime_loop_wires_stream_supervision_to_lifecycle_snapshot() {
         let mut runtime = loop_under_test();
@@ -1524,6 +1871,180 @@ mod tests {
         assert_eq!(shutdown.lifecycle["lifecycle_phase"], "shutdown");
         assert!(!shutdown.signal_evaluation_allowed);
         assert!(!shutdown.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_read_only_market_cycle_uses_completed_rest_candles_without_orders() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let snapshot = runtime
+            .run_read_only_market_cycle(NativeRuntimeReadOnlyMarketCycleInput {
+                now_ms: 1_700_000_010_000,
+                candles: vec![
+                    market_candle(1_700_000_000_000, 10.0),
+                    market_candle(1_700_000_060_000, 11.0),
+                    market_candle(1_700_000_120_000, 12.0),
+                    market_candle(1_700_000_180_000, 13.0),
+                ],
+                indicator_configs: std::collections::BTreeMap::new(),
+                indicators: std::collections::BTreeMap::from([(
+                    "rsi".to_owned(),
+                    // The fourth value belongs to the in-progress REST candle and
+                    // must be discarded with that candle. Without lockstep trimming,
+                    // the closed-candle strategy would incorrectly emit SELL.
+                    vec![50.0, 20.0, 80.0, 90.0],
+                )]),
+                rules: std::collections::BTreeMap::from([(
+                    "rsi".to_owned(),
+                    IndicatorRule {
+                        enabled: true,
+                        buy_value: Some(30.0),
+                        sell_value: Some(70.0),
+                    },
+                )]),
+                side: "BOTH".to_owned(),
+                last_candle_is_closed: false,
+            })
+            .expect("read-only market cycle");
+
+        assert_eq!(snapshot.closed_candle_count, 3);
+        assert_eq!(snapshot.latest_closed_open_time_ms, 1_700_000_120_000);
+        assert!(snapshot.cycle.stream.connected);
+        assert!(!snapshot.cycle.stream.kline_cache_health.stale);
+        assert!(snapshot.strategy_evaluated);
+        assert_eq!(
+            snapshot
+                .strategy_decision
+                .as_ref()
+                .and_then(|decision| decision.signal.as_deref()),
+            Some("BUY")
+        );
+        assert!(snapshot.status_message.contains("signal=BUY"));
+        assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_cycle_input_hydrates_python_service_config_payload_and_rules() {
+        let input = NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
+            1_700_000_010_000,
+            vec![market_candle(1_700_000_000_000, 10.0)],
+            &serde_json::json!({
+                "config": {
+                    "side": "BUY",
+                    "indicators": {
+                        "rsi": {"enabled": "true", "length": 3, "buy_value": "30", "sell_value": 70},
+                        "volume": {"enabled": false, "buy_value": 1.0}
+                    }
+                }
+            }),
+            true,
+        )
+        .expect("Python service config should hydrate native cycle input");
+
+        assert_eq!(input.side, "BUY");
+        assert_eq!(input.indicator_configs.len(), 2);
+        assert!(input.rules["rsi"].enabled);
+        assert_eq!(input.rules["rsi"].buy_value, Some(30.0));
+        assert_eq!(input.rules["rsi"].sell_value, Some(70.0));
+        assert!(!input.rules["volume"].enabled);
+    }
+
+    #[test]
+    fn native_runtime_cycle_input_rejects_malformed_python_service_config() {
+        let error = NativeRuntimeReadOnlyMarketCycleInput::from_python_service_config(
+            1_700_000_010_000,
+            Vec::new(),
+            &serde_json::json!({"config": {"indicators": {"rsi": true}}}),
+            true,
+        )
+        .expect_err("non-object indicator config must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("indicator rsi must be an object")
+        );
+    }
+
+    #[test]
+    fn native_runtime_read_only_market_cycle_rejects_unclosed_or_invalid_candle_sets() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let error = runtime
+            .run_read_only_market_cycle(NativeRuntimeReadOnlyMarketCycleInput {
+                now_ms: 1_700_000_010_000,
+                candles: vec![market_candle(1_700_000_000_000, 10.0)],
+                indicator_configs: std::collections::BTreeMap::new(),
+                indicators: std::collections::BTreeMap::new(),
+                rules: std::collections::BTreeMap::new(),
+                side: "BOTH".to_owned(),
+                last_candle_is_closed: false,
+            })
+            .expect_err("last open candle must not be evaluated");
+        assert!(error.to_string().contains("no completed finite candles"));
+    }
+
+    #[test]
+    fn native_runtime_read_only_market_cycle_computes_caller_selected_python_configs() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let snapshot = runtime
+            .run_read_only_market_cycle(NativeRuntimeReadOnlyMarketCycleInput {
+                now_ms: 1_700_000_010_000,
+                candles: vec![
+                    market_candle(1_700_000_000_000, 10.0),
+                    market_candle(1_700_000_060_000, 11.0),
+                    market_candle(1_700_000_120_000, 12.0),
+                ],
+                indicator_configs: std::collections::BTreeMap::from([(
+                    "ma".to_owned(),
+                    serde_json::json!({"enabled": true, "length": 2, "type": "SMA"}),
+                )]),
+                indicators: std::collections::BTreeMap::new(),
+                rules: std::collections::BTreeMap::new(),
+                side: "BOTH".to_owned(),
+                last_candle_is_closed: true,
+            })
+            .expect("read-only market cycle should calculate supported Python config");
+
+        assert_eq!(snapshot.computed_indicator_keys, vec!["ma"]);
+        assert!(snapshot.strategy_evaluated);
+        assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_read_only_market_cycle_withholds_unknown_enabled_python_indicator() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let snapshot = runtime
+            .run_read_only_market_cycle(NativeRuntimeReadOnlyMarketCycleInput {
+                now_ms: 1_700_000_010_000,
+                candles: vec![
+                    market_candle(1_700_000_000_000, 10.0),
+                    market_candle(1_700_000_060_000, 11.0),
+                ],
+                indicator_configs: std::collections::BTreeMap::from([(
+                    "future_python_indicator".to_owned(),
+                    serde_json::json!({"enabled": true}),
+                )]),
+                indicators: std::collections::BTreeMap::new(),
+                rules: std::collections::BTreeMap::new(),
+                side: "BOTH".to_owned(),
+                last_candle_is_closed: true,
+            })
+            .expect("unsupported configs should fail closed without failing the read-only cycle");
+
+        assert_eq!(
+            snapshot.unsupported_indicator_keys,
+            vec!["future_python_indicator"]
+        );
+        assert!(!snapshot.strategy_evaluated);
+        assert!(snapshot.strategy_decision.is_none());
+        assert!(
+            snapshot
+                .status_message
+                .contains("unsupported indicators: future_python_indicator")
+        );
+        assert!(!snapshot.trading_execution_supported);
     }
 
     #[test]
@@ -1789,6 +2310,110 @@ mod tests {
         );
         assert!(!blocked_settings.signal_evaluation_allowed);
         assert!(blocked_settings.status_message.contains("open position"));
+    }
+
+    #[test]
+    fn native_runtime_read_only_account_bootstrap_reuses_account_preflight_without_orders() {
+        let runtime = loop_under_test();
+        let balance = BinanceAccountSnapshot {
+            asset: "USDT".to_owned(),
+            usdt_balance: 1_000.0,
+            total_usdt_balance: 1_000.0,
+            available_usdt_balance: 900.0,
+        };
+        let mut configured_position = position("BTCUSDT", 0.25, "LONG");
+        configured_position.margin_type = "isolated".to_owned();
+        configured_position.leverage = 5.0;
+        let mut other_position = position("ETHUSDT", 1.0, "LONG");
+        other_position.margin_type = "cross".to_owned();
+        other_position.leverage = 20.0;
+
+        let snapshot = runtime.bootstrap_read_only_account(
+            &balance,
+            &[configured_position, other_position],
+            Some(&position_mode(true)),
+            Some(&multi_assets_mode(false)),
+        );
+
+        assert_eq!(snapshot.balance_asset, "USDT");
+        assert_eq!(snapshot.open_positions_count, 2);
+        assert!(snapshot.configured_symbol_position_found);
+        assert_eq!(snapshot.configured_symbol_open_position_amt, 0.25);
+        assert!(snapshot.account_preflight.signal_evaluation_allowed);
+        assert!(snapshot.signal_evaluation_allowed);
+        assert!(snapshot.status_message.contains("passed reconciliation"));
+        assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_read_only_account_bootstrap_fails_closed_without_symbol_settings() {
+        let runtime = loop_under_test();
+        let balance = BinanceAccountSnapshot {
+            asset: "USDT".to_owned(),
+            usdt_balance: 1_000.0,
+            total_usdt_balance: 1_000.0,
+            available_usdt_balance: 900.0,
+        };
+
+        let snapshot = runtime.bootstrap_read_only_account(
+            &balance,
+            &[position("ETHUSDT", 1.0, "LONG")],
+            Some(&position_mode(true)),
+            Some(&multi_assets_mode(false)),
+        );
+
+        assert!(!snapshot.configured_symbol_position_found);
+        assert!(!snapshot.signal_evaluation_allowed);
+        assert!(
+            snapshot
+                .status_message
+                .contains("safe but not signal-ready")
+        );
+        assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn native_runtime_read_only_account_bootstrap_keeps_hedged_exposure_and_conflicts_fail_closed()
+    {
+        let runtime = loop_under_test();
+        let balance = BinanceAccountSnapshot {
+            asset: "USDT".to_owned(),
+            usdt_balance: 1_000.0,
+            total_usdt_balance: 1_000.0,
+            available_usdt_balance: 900.0,
+        };
+        let mut long = position("BTCUSDT", 0.25, "LONG");
+        long.margin_type = "isolated".to_owned();
+        long.leverage = 5.0;
+        let mut short = position("BTCUSDT", -0.25, "SHORT");
+        short.margin_type = "isolated".to_owned();
+        short.leverage = 5.0;
+
+        let reconciled = runtime.bootstrap_read_only_account(
+            &balance,
+            &[long.clone(), short.clone()],
+            Some(&position_mode(true)),
+            Some(&multi_assets_mode(false)),
+        );
+        assert_eq!(reconciled.configured_symbol_open_position_amt, 0.5);
+        assert!(reconciled.signal_evaluation_allowed);
+
+        short.leverage = 20.0;
+        let conflicting = runtime.bootstrap_read_only_account(
+            &balance,
+            &[long, short],
+            Some(&position_mode(true)),
+            Some(&multi_assets_mode(false)),
+        );
+        assert_eq!(conflicting.configured_symbol_open_position_amt, 0.5);
+        assert!(!conflicting.signal_evaluation_allowed);
+        assert!(
+            conflicting
+                .account_preflight
+                .futures_settings
+                .status_message
+                .contains("Futures settings unknown")
+        );
     }
 
     #[test]

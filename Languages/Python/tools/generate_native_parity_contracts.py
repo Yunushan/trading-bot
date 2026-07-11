@@ -11,9 +11,13 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.native_parity import (  # noqa: E402
+    INDICATOR_RUNTIME_OUTPUT_KEYS,
     native_python_source_contract_hash,
     native_python_source_contract_summary,
 )
+from app.core import indicators as indicator_math  # noqa: E402
+
+import pandas as pd  # noqa: E402
 
 
 RUST_OUTPUT = (
@@ -24,6 +28,15 @@ RUST_OUTPUT = (
     / "core"
     / "src"
     / "generated_python_parity.rs"
+)
+RUST_INDICATOR_REFERENCE_OUTPUT = (
+    REPO_ROOT
+    / "experiments"
+    / "rust-shells"
+    / "crates"
+    / "core"
+    / "src"
+    / "generated_python_indicator_reference.rs"
 )
 CPP_OUTPUT = (
     REPO_ROOT
@@ -104,6 +117,133 @@ def _cpp_array(name: str, values: list[str]) -> str:
 
 def _rust_bool(value: object) -> str:
     return str(bool(value)).lower()
+
+
+def _contract_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _json_series(series: object) -> list[float | None]:
+    values = series.tolist() if hasattr(series, "tolist") else list(series)
+    return [None if pd.isna(value) else float(value) for value in values]
+
+
+def _indicator_reference_payload() -> dict[str, object]:
+    closes = [100.0, 103.0, 101.0, 106.0, 104.0, 109.0, 105.0, 111.0, 108.0, 114.0, 110.0, 116.0]
+    highs = [101.0, 104.5, 102.5, 107.5, 105.0, 110.5, 106.0, 112.5, 109.5, 115.0, 111.5, 117.0]
+    lows = [98.5, 101.0, 99.0, 103.5, 102.0, 107.0, 103.0, 109.0, 106.0, 112.0, 108.0, 114.0]
+    volumes = [18.0, 31.0, 24.0, 42.0, 29.0, 47.0, 35.0, 53.0, 38.0, 59.0, 44.0, 63.0]
+    frame = pd.DataFrame({"open": closes, "high": highs, "low": lows, "close": closes, "volume": volumes})
+    configs: dict[str, dict[str, object]] = {
+        "ma": {"enabled": True, "length": 3, "type": "SMA"},
+        "donchian": {"enabled": True, "length": 3},
+        "psar": {"enabled": True, "af": 0.02, "max_af": 0.2},
+        "bb": {"enabled": True, "length": 3, "std": 2.0},
+        "bbw": {"enabled": True, "length": 3, "std": 2.0},
+        "keltner": {"enabled": True, "length": 3, "atr_length": 2, "multiplier": 2.0},
+        "ichimoku": {"enabled": True, "conversion_length": 2, "base_length": 3, "span_b_length": 4, "displacement": 2},
+        "rsi": {"enabled": True, "length": 3},
+        "volume": {"enabled": True},
+        "obv": {"enabled": True},
+        "rvol": {"enabled": True, "length": 3},
+        "cmf": {"enabled": True, "length": 3},
+        "cci": {"enabled": True, "length": 3, "constant": 0.015},
+        "roc": {"enabled": True, "length": 3},
+        "trix": {"enabled": True, "length": 3},
+        "ppo": {"enabled": True, "fast": 2, "slow": 3, "signal": 2},
+        "ao": {"enabled": True, "fast": 2, "slow": 3},
+        "kst": {"enabled": True, "roc1": 1, "roc2": 2, "roc3": 3, "roc4": 4, "sma1": 2, "sma2": 2, "sma3": 2, "sma4": 2, "signal": 2},
+        "aroon": {"enabled": True, "length": 3},
+        "chop": {"enabled": True, "length": 3},
+        "atr": {"enabled": True, "length": 3},
+        "natr": {"enabled": True, "length": 3},
+        "vwap": {"enabled": True, "length": 3},
+        "mfi": {"enabled": True, "length": 3},
+        "stoch_rsi": {"enabled": True, "length": 3, "smooth_k": 2, "smooth_d": 2},
+        "willr": {"enabled": True, "length": 3},
+        "macd": {"enabled": True, "fast": 2, "slow": 3, "signal": 2},
+        "uo": {"enabled": True, "short": 2, "medium": 3, "long": 4},
+        "adx": {"enabled": True, "length": 3},
+        "dmi": {"enabled": True, "length": 3},
+        "supertrend": {"enabled": True, "atr_period": 2, "multiplier": 3.0},
+        "ema": {"enabled": True, "length": 3},
+        "stochastic": {"enabled": True, "length": 3, "smooth_k": 2, "smooth_d": 2},
+    }
+    bb_upper, bb_mid, bb_lower = indicator_math.bollinger_bands(frame, length=3, std=2.0)
+    keltner_upper, keltner_mid, keltner_lower = indicator_math.keltner_channels(frame, length=3, atr_length=2, multiplier=2.0)
+    ichimoku_tenkan, ichimoku_kijun, ichimoku_span_a, ichimoku_span_b, ichimoku_chikou = indicator_math.ichimoku_cloud(frame, conversion_length=2, base_length=3, span_b_length=4, displacement=2)
+    ppo_line, ppo_signal, ppo_hist = indicator_math.ppo(frame["close"], fast=2, slow=3, signal=2)
+    kst_line, kst_signal, kst_hist = indicator_math.kst(frame["close"], roc1=1, roc2=2, roc3=3, roc4=4, sma1=2, sma2=2, sma3=2, sma4=2, signal=2)
+    aroon_up, aroon_down, aroon = indicator_math.aroon(frame, length=3)
+    stoch_rsi, stoch_rsi_d = indicator_math.stoch_rsi(frame["close"], length=3, smooth_k=2, smooth_d=2)
+    macd_line, macd_signal, _macd_hist = indicator_math.macd(frame["close"], fast=2, slow=3, signal=2)
+    dmi_plus, dmi_minus, adx = indicator_math.dmi(frame, length=3)
+    stochastic, stochastic_d = indicator_math.stochastic(frame, length=3, smooth_k=2, smooth_d=2)
+    donchian_high = indicator_math.donchian_high(frame, 3)
+    donchian_low = indicator_math.donchian_low(frame, 3)
+    expected = {
+        "ma": indicator_math.sma(frame["close"], 3),
+        "donchian_high": donchian_high,
+        "donchian_low": donchian_low,
+        "donchian": (donchian_high + donchian_low) / 2.0,
+        "psar": indicator_math.parabolic_sar(frame, af=0.02, max_af=0.2),
+        "bb_upper": bb_upper, "bb_mid": bb_mid, "bb_lower": bb_lower,
+        "bbw": indicator_math.bollinger_band_width(frame, length=3, std=2.0),
+        "keltner_upper": keltner_upper, "keltner_mid": keltner_mid, "keltner_lower": keltner_lower,
+        "ichimoku_tenkan": ichimoku_tenkan, "ichimoku_kijun": ichimoku_kijun, "ichimoku_span_a": ichimoku_span_a, "ichimoku_span_b": ichimoku_span_b, "ichimoku_chikou": ichimoku_chikou,
+        "ichimoku": ichimoku_tenkan - ichimoku_kijun,
+        "rsi": indicator_math.rsi(frame["close"], length=3),
+        "volume": frame["volume"], "obv": indicator_math.obv(frame), "rvol": indicator_math.relative_volume(frame, length=3),
+        "cmf": indicator_math.chaikin_money_flow(frame, length=3), "cci": indicator_math.cci(frame, length=3, constant=0.015),
+        "roc": indicator_math.roc(frame["close"], length=3), "trix": indicator_math.trix(frame["close"], length=3),
+        "ppo": ppo_line, "ppo_signal": ppo_signal, "ppo_hist": ppo_hist,
+        "ao": indicator_math.awesome_oscillator(frame, fast=2, slow=3),
+        "kst": kst_line, "kst_signal": kst_signal, "kst_hist": kst_hist,
+        "aroon_up": aroon_up, "aroon_down": aroon_down, "aroon": aroon,
+        "chop": indicator_math.choppiness_index(frame, length=3),
+        "atr": indicator_math.atr(frame, length=3), "natr": indicator_math.natr(frame, length=3),
+        "vwap": indicator_math.vwap(frame, length=3), "mfi": indicator_math.mfi(frame, length=3),
+        "stoch_rsi": stoch_rsi, "stoch_rsi_k": stoch_rsi, "stoch_rsi_d": stoch_rsi_d,
+        "willr": indicator_math.williams_r(frame, length=3),
+        "macd_line": macd_line, "macd_signal": macd_signal,
+        "uo": indicator_math.ultimate_oscillator(frame, short=2, medium=3, long=4),
+        "adx": adx, "dmi_plus": dmi_plus, "dmi_minus": dmi_minus, "dmi": dmi_plus - dmi_minus,
+        "supertrend": indicator_math.supertrend(frame, atr_period=2, multiplier=3.0),
+        "ema": indicator_math.ema(frame["close"], 3),
+        "stochastic": stochastic, "stochastic_k": stochastic, "stochastic_d": stochastic_d,
+    }
+    declared_output_keys = {
+        output_key
+        for output_keys in INDICATOR_RUNTIME_OUTPUT_KEYS.values()
+        for output_key in output_keys
+    }
+    expected_output_keys = set(expected)
+    if declared_output_keys != expected_output_keys:
+        missing = ", ".join(sorted(expected_output_keys - declared_output_keys))
+        unexpected = ", ".join(sorted(declared_output_keys - expected_output_keys))
+        raise RuntimeError(
+            "INDICATOR_RUNTIME_OUTPUT_KEYS must exactly match the Python numerical "
+            f"indicator fixture (missing: {missing or '-'}; unexpected: {unexpected or '-'})"
+        )
+    return {
+        "python_source_contract_hash": native_python_source_contract_hash(),
+        "candles": frame.to_dict(orient="records"),
+        "configs": configs,
+        "expected": {key: _json_series(series) for key, series in expected.items()},
+    }
+
+
+def render_rust_indicator_reference_module() -> str:
+    payload = _contract_json(_indicator_reference_payload())
+    return "\n".join([
+        "// This file is generated from Python indicator implementations.",
+        "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
+        "#[rustfmt::skip]",
+        f"pub const PYTHON_INDICATOR_REFERENCE_CONTRACT_HASH: &str = {_rust_string(native_python_source_contract_hash())};",
+        "#[rustfmt::skip]",
+        f"pub const PYTHON_INDICATOR_REFERENCE_JSON: &str = {_rust_string(payload)};",
+        "",
+    ])
 
 
 def _domain_required_list(domain: dict[str, object], key: str) -> list[str]:
@@ -259,17 +399,24 @@ def _rust_indicator_catalog(indicators: list[dict[str, object]]) -> str:
         "    pub key: &'static str,",
         "    pub display_name: &'static str,",
         "    pub default_enabled: bool,",
+        "    pub runtime_config_json: &'static str,",
+        "    pub runtime_output_keys: &'static [&'static str],",
         "}",
         "",
         "pub const PYTHON_INDICATOR_CATALOG: &[PythonIndicator] = &[",
     ]
     for indicator in indicators:
+        runtime_output_keys = ", ".join(
+            _rust_string(str(key)) for key in indicator["runtime_output_keys"]
+        )
         lines.extend(
             [
                 "    PythonIndicator {",
                 f"        key: {_rust_string(indicator['key'])},",
                 f"        display_name: {_rust_string(indicator['display_name'])},",
                 f"        default_enabled: {_rust_bool(indicator['default_enabled'])},",
+                f"        runtime_config_json: {_rust_string(_contract_json(indicator['runtime_config']))},",
+                f"        runtime_output_keys: &[{runtime_output_keys}],",
                 "    },",
             ]
         )
@@ -475,16 +622,23 @@ def _cpp_indicator_catalog(indicators: list[dict[str, object]]) -> str:
         "    std::string_view key;",
         "    std::string_view displayName;",
         "    bool defaultEnabled;",
+        "    std::string_view runtimeConfigJson;",
+        "    std::string_view runtimeOutputKeysCsv;",
         "};",
         "",
         f"inline constexpr std::array<PythonIndicator, {len(indicators)}> kPythonIndicatorCatalog = {{",
     ]
     for indicator in indicators:
+        runtime_output_keys = ",".join(
+            str(key) for key in indicator["runtime_output_keys"]
+        )
         lines.append(
             "    PythonIndicator{"
             f"{_cpp_string(indicator['key'])}, "
             f"{_cpp_string(indicator['display_name'])}, "
-            f"{str(bool(indicator['default_enabled'])).lower()}"
+            f"{str(bool(indicator['default_enabled'])).lower()}, "
+            f"{_cpp_string(_contract_json(indicator['runtime_config']))}, "
+            f"{_cpp_string(runtime_output_keys)}"
             "},"
         )
     lines.append("};")
@@ -822,6 +976,7 @@ def render_tauri_browser_contract() -> str:
                 "name": str(indicator["display_name"]),
                 "displayName": str(indicator["display_name"]),
                 "defaultEnabled": bool(indicator["default_enabled"]),
+                "runtimeOutputKeys": list(indicator["runtime_output_keys"]),
             }
             for indicator in summary["indicators"]
         ],
@@ -904,6 +1059,7 @@ def write_if_changed(path: Path, content: str) -> bool:
 def main() -> int:
     changed = [
         write_if_changed(RUST_OUTPUT, render_rust_module()),
+        write_if_changed(RUST_INDICATOR_REFERENCE_OUTPUT, render_rust_indicator_reference_module()),
         write_if_changed(CPP_OUTPUT, render_cpp_header()),
         write_if_changed(TAURI_BROWSER_OUTPUT, render_tauri_browser_contract()),
     ]

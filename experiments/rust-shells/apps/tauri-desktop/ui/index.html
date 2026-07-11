@@ -2169,6 +2169,51 @@
         };
       }
     };
+    const evaluateNativeRuntimePreview = async ({
+      config,
+      candles,
+      symbol = "BTCUSDT",
+      interval = "1m",
+      nowMs = Date.now(),
+      lastCandleIsClosed = false
+    } = {}) => {
+      if (!invoke) {
+        return {
+          ok: false,
+          computed_indicator_keys: [],
+          unsupported_indicator_keys: [],
+          strategy_evaluated: false,
+          signal: null,
+          trading_execution_supported: false,
+          status_message: "",
+          error: "Tauri invoke bridge is unavailable; run this page inside the Tauri desktop shell."
+        };
+      }
+      try {
+        return await invoke("evaluate_native_runtime_preview", {
+          config: config || {},
+          candles: Array.isArray(candles) ? candles : [],
+          symbol,
+          interval,
+          nowMs,
+          lastCandleIsClosed
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          computed_indicator_keys: [],
+          unsupported_indicator_keys: [],
+          strategy_evaluated: false,
+          signal: null,
+          trading_execution_supported: false,
+          status_message: "",
+          error: String(error)
+        };
+      }
+    };
+    window.TradingBotNativeRuntime = Object.freeze({
+      evaluateReadOnly: evaluateNativeRuntimePreview
+    });
     const servicePort = () => Math.max(1, Math.min(65535, Number($("service-port")?.value || 8000)));
     const startServiceApi = async () => {
       if (!invoke) {

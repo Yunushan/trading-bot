@@ -65,6 +65,16 @@ def _market_smoke_suite_results(symbol: str = "BTCUSDT") -> list[dict[str, objec
         {"name": "fetch_usdt_symbols", "status": "passed", "observed_count": 5},
         {"name": "fetch_klines", "status": "passed", "observed_count": 10},
         {"name": "fetch_ticker_price", "status": "passed", "symbol": symbol},
+        {
+            "name": "native_runtime_read_only_market_cycle",
+            "status": "passed",
+            "stream_connected": True,
+            "strategy_evaluated": True,
+            "trading_execution_supported": False,
+            "computed_indicator_keys": ["rsi"],
+            "unsupported_indicator_keys": [],
+            "status_message": "Read-only native market cycle evaluated strategy; signal=none.",
+        },
     ]
 
 
@@ -88,6 +98,14 @@ def _account_smoke_suite_results() -> list[dict[str, object]]:
             "balances_redacted": True,
         },
         {"name": "fetch_open_futures_positions", "status": "passed", "observed_count": 0},
+        {
+            "name": "native_runtime_read_only_account_bootstrap",
+            "status": "passed",
+            "signal_evaluation_allowed": False,
+            "trading_execution_supported": False,
+            "preflight_message": "Native account preflight blocked: Futures settings unknown.",
+            "status_message": "Read-only native account bootstrap is safe but not signal-ready.",
+        },
     ]
 
 
@@ -5982,6 +6000,26 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                 requirement_ids={market_id},
             )
 
+            market_payload["suite_results"] = _market_smoke_suite_results()
+            market_payload["suite_results"][-1]["computed_indicator_keys"] = []
+            market_path.write_text(json.dumps(market_payload), encoding="utf-8")
+            missing_native_rsi = runtime_evidence.validate(
+                runtime_evidence.DEFAULT_MANIFEST_PATH,
+                require_evidence=True,
+                evidence_dir_override=evidence_dir,
+                requirement_ids={market_id},
+            )
+
+            market_payload["suite_results"] = _market_smoke_suite_results()
+            market_payload["suite_results"][-1]["unsupported_indicator_keys"] = ["supertrend"]
+            market_path.write_text(json.dumps(market_payload), encoding="utf-8")
+            unsupported_native_indicator = runtime_evidence.validate(
+                runtime_evidence.DEFAULT_MANIFEST_PATH,
+                require_evidence=True,
+                evidence_dir_override=evidence_dir,
+                requirement_ids={market_id},
+            )
+
             account_payload["endpoints"] = _account_smoke_endpoints()
             account_payload["suite_results"] = _account_smoke_suite_results()
             account_payload["suite_results"][2]["balances_redacted"] = False
@@ -6039,6 +6077,14 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(missing_market_suite["ok"])
         self.assertTrue(
             any("missing live-smoke suite results: fetch_klines" in issue for issue in missing_market_suite["issues"])
+        )
+        self.assertFalse(missing_native_rsi["ok"])
+        self.assertTrue(
+            any("computed_indicator_keys must include rsi" in issue for issue in missing_native_rsi["issues"])
+        )
+        self.assertFalse(unsupported_native_indicator["ok"])
+        self.assertTrue(
+            any("unsupported_indicator_keys must be an empty list" in issue for issue in unsupported_native_indicator["issues"])
         )
         self.assertFalse(unredacted_balance["ok"])
         self.assertTrue(

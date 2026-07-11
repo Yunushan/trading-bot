@@ -575,36 +575,19 @@ QStringList indicatorOutputKeysFromConfig(const QJsonObject &indicators) {
             continue;
         }
         const QString key = it.key();
-        if (key == QStringLiteral("ma")) appendUnique(keys, {QStringLiteral("ma")});
-        else if (key == QStringLiteral("ema")) appendUnique(keys, {QStringLiteral("ema")});
-        else if (key == QStringLiteral("bb")) appendUnique(keys, {QStringLiteral("bb_upper"), QStringLiteral("bb_mid"), QStringLiteral("bb_lower")});
-        else if (key == QStringLiteral("bbw")) appendUnique(keys, {QStringLiteral("bbw")});
-        else if (key == QStringLiteral("keltner")) appendUnique(keys, {QStringLiteral("keltner_upper"), QStringLiteral("keltner_mid"), QStringLiteral("keltner_lower")});
-        else if (key == QStringLiteral("ichimoku")) appendUnique(keys, {QStringLiteral("ichimoku_tenkan"), QStringLiteral("ichimoku_kijun"), QStringLiteral("ichimoku_span_a"), QStringLiteral("ichimoku_span_b"), QStringLiteral("ichimoku_chikou"), QStringLiteral("ichimoku")});
-        else if (key == QStringLiteral("rsi")) appendUnique(keys, {QStringLiteral("rsi")});
-        else if (key == QStringLiteral("stoch_rsi")) appendUnique(keys, {QStringLiteral("stoch_rsi"), QStringLiteral("stoch_rsi_k"), QStringLiteral("stoch_rsi_d")});
-        else if (key == QStringLiteral("willr")) appendUnique(keys, {QStringLiteral("willr")});
-        else if (key == QStringLiteral("atr")) appendUnique(keys, {QStringLiteral("atr")});
-        else if (key == QStringLiteral("natr")) appendUnique(keys, {QStringLiteral("natr")});
-        else if (key == QStringLiteral("vwap")) appendUnique(keys, {QStringLiteral("vwap")});
-        else if (key == QStringLiteral("mfi")) appendUnique(keys, {QStringLiteral("mfi")});
-        else if (key == QStringLiteral("obv")) appendUnique(keys, {QStringLiteral("obv")});
-        else if (key == QStringLiteral("rvol")) appendUnique(keys, {QStringLiteral("rvol")});
-        else if (key == QStringLiteral("cmf")) appendUnique(keys, {QStringLiteral("cmf")});
-        else if (key == QStringLiteral("cci")) appendUnique(keys, {QStringLiteral("cci")});
-        else if (key == QStringLiteral("roc")) appendUnique(keys, {QStringLiteral("roc")});
-        else if (key == QStringLiteral("trix")) appendUnique(keys, {QStringLiteral("trix")});
-        else if (key == QStringLiteral("ppo")) appendUnique(keys, {QStringLiteral("ppo"), QStringLiteral("ppo_signal"), QStringLiteral("ppo_hist")});
-        else if (key == QStringLiteral("ao")) appendUnique(keys, {QStringLiteral("ao")});
-        else if (key == QStringLiteral("kst")) appendUnique(keys, {QStringLiteral("kst"), QStringLiteral("kst_signal"), QStringLiteral("kst_hist")});
-        else if (key == QStringLiteral("aroon")) appendUnique(keys, {QStringLiteral("aroon_up"), QStringLiteral("aroon_down"), QStringLiteral("aroon")});
-        else if (key == QStringLiteral("chop")) appendUnique(keys, {QStringLiteral("chop")});
-        else if (key == QStringLiteral("macd")) appendUnique(keys, {QStringLiteral("macd_line"), QStringLiteral("macd_signal")});
-        else if (key == QStringLiteral("uo")) appendUnique(keys, {QStringLiteral("uo")});
-        else if (key == QStringLiteral("adx")) appendUnique(keys, {QStringLiteral("adx")});
-        else if (key == QStringLiteral("dmi")) appendUnique(keys, {QStringLiteral("dmi_plus"), QStringLiteral("dmi_minus"), QStringLiteral("dmi")});
-        else if (key == QStringLiteral("supertrend")) appendUnique(keys, {QStringLiteral("supertrend")});
-        else if (key == QStringLiteral("stochastic")) appendUnique(keys, {QStringLiteral("stochastic"), QStringLiteral("stochastic_k"), QStringLiteral("stochastic_d")});
+        const auto definition = std::find_if(
+            PythonParityContract::kPythonIndicatorCatalog.cbegin(),
+            PythonParityContract::kPythonIndicatorCatalog.cend(),
+            [&key](const PythonParityContract::PythonIndicator &candidate) {
+                return parityString(candidate.key) == key;
+            });
+        if (definition == PythonParityContract::kPythonIndicatorCatalog.cend()) {
+            continue;
+        }
+        appendUnique(
+            keys,
+            parityString(definition->runtimeOutputKeysCsv).split(
+                QLatin1Char(','), Qt::SkipEmptyParts));
     }
     return keys;
 }
