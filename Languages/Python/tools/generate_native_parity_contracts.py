@@ -56,6 +56,8 @@ TAURI_BROWSER_OUTPUT = (
     / "generated-python-parity.js"
 )
 
+INDICATOR_REFERENCE_DECIMAL_PLACES = 12
+
 
 def _rust_string(value: object) -> str:
     escaped = []
@@ -125,7 +127,15 @@ def _contract_json(value: object) -> str:
 
 def _json_series(series: object) -> list[float | None]:
     values = series.tolist() if hasattr(series, "tolist") else list(series)
-    return [None if pd.isna(value) else float(value) for value in values]
+    normalized: list[float | None] = []
+    for value in values:
+        if pd.isna(value):
+            normalized.append(None)
+            continue
+
+        rounded = round(float(value), INDICATOR_REFERENCE_DECIMAL_PLACES)
+        normalized.append(0.0 if rounded == 0.0 else rounded)
+    return normalized
 
 
 def _indicator_reference_payload() -> dict[str, object]:
