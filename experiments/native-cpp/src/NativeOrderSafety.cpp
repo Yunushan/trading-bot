@@ -9,6 +9,8 @@
 #include <QSet>
 #include <QtGlobal>
 
+#include "generated/PythonParityContract.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -583,20 +585,30 @@ QStringList validateLiveTradingSafety(const LiveOrderGuardInput &input) {
 
 LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
     const int currentCount = std::max(0, input.liveSubmitAttemptCount);
-    if (!isLiveTradingMode(input.mode)) {
-        return {true, {}, currentCount};
+    const bool liveMode = isLiveTradingMode(input.mode);
+    QStringList errors;
+    if (liveMode) {
+        errors.append(validateLiveTradingSafety(input));
     }
-    QStringList errors = validateLiveTradingSafety(input);
-    if (!input.orderAuditEnabled) {
-        errors.append(QStringLiteral("order audit is disabled"));
+    if (liveMode || PythonParityContract::kPythonOrderGuardValidateAuditEnabledAllModes) {
+        if (!input.orderAuditEnabled) {
+            errors.append(QStringLiteral("order audit is disabled"));
+        }
     }
-    if (!input.orderAuditWritable) {
-        errors.append(QStringLiteral("order audit is not writable"));
+    if (liveMode || PythonParityContract::kPythonOrderGuardValidateAuditWritableAllModes) {
+        if (!input.orderAuditWritable) {
+            errors.append(QStringLiteral("order audit is not writable"));
+        }
     }
-    errors.append(connectorHealthErrors(input.connectorState, input.connectorHealth));
+    if (liveMode || PythonParityContract::kPythonOrderGuardValidateConnectorHealthAllModes) {
+        errors.append(connectorHealthErrors(input.connectorState, input.connectorHealth));
+    }
     const OrderSubmitIntent intent = orderSubmitIntentFromParams(input.market, input.params);
-    errors.append(validateOrderSubmitIntent(intent));
-    if (!intent.symbol.isEmpty()
+    if (liveMode || PythonParityContract::kPythonOrderGuardValidateIntentAllModes) {
+        errors.append(validateOrderSubmitIntent(intent));
+    }
+    if ((liveMode || PythonParityContract::kPythonOrderGuardValidateExchangeFiltersAllModes)
+        && !intent.symbol.isEmpty()
         && intent.hasQuantity
         && (intent.market == QStringLiteral("futures") || intent.market == QStringLiteral("spot"))) {
         if (input.hasFilters) {
@@ -605,11 +617,11 @@ LiveOrderGuardResult guardLiveOrderSubmit(const LiveOrderGuardInput &input) {
             errors.append(QStringLiteral("%1 symbol filters unavailable for %2").arg(intent.market, intent.symbol));
         }
     }
-    if (currentCount >= input.config.liveTradingMaxSessionOrders) {
+    if (liveMode && currentCount >= input.config.liveTradingMaxSessionOrders) {
         errors.append(QStringLiteral("live session order cap %1 reached").arg(input.config.liveTradingMaxSessionOrders));
     }
     const bool allowed = errors.isEmpty();
-    return {allowed, errors, allowed ? currentCount + 1 : currentCount};
+    return {allowed, errors, allowed && liveMode ? currentCount + 1 : currentCount};
 }
 
 QJsonObject buildOrderAuditEvent(

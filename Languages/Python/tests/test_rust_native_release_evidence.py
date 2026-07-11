@@ -1157,6 +1157,33 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
                     token=None,
                 )
 
+    def test_required_rust_release_assets_match_tier_one_desktop_targets(self):
+        version, assets = release_assets._build_expected_assets("v1.2.3")
+        required_rust_assets = {
+            asset.name
+            for asset in assets
+            if asset.required and asset.name.startswith("Trading-Bot-Rust-")
+        }
+        matrix = release_platform_matrix._load_json(
+            REPO_ROOT / "docs" / "release-platform-test-matrix.json"
+        )
+        platform_targets, _browser_targets, issues = release_platform_matrix._validate_matrix(matrix)
+
+        self.assertEqual("1.2.3", version)
+        self.assertEqual([], issues)
+        self.assertEqual(
+            {"windows-11-x64", "macos-15-arm64", "ubuntu-24_04-x64"},
+            {str(target["id"]) for target in platform_targets},
+        )
+        self.assertEqual(
+            {
+                "Trading-Bot-Rust-windows-x64-1.2.3.exe",
+                "Trading-Bot-Rust-linux-x86_64-1.2.3.tar.gz",
+                "Trading-Bot-Rust-macos-15-arm64-1.2.3.zip",
+            },
+            required_rust_assets,
+        )
+
     def test_build_release_evidence_requires_rust_assets_and_platform_results(self):
         tag = "v1.2.3"
         _, expected_assets = release_evidence._build_expected_assets(tag)

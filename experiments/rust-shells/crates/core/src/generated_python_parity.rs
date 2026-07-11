@@ -5,13 +5,25 @@
 mod generated {
     pub const PYTHON_SOURCE: &str = "Languages/Python";
     pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = 1;
-    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "6ccbf8888f5fa7bf26e658f235849e4f4d5f4d82c6def19f93202b22d87ed373";
+    pub const PYTHON_SOURCE_CONTRACT_HASH: &str = "4b49f21a5fa13384e71765def83a2e09404a1685c430d85c611770898b48f128";
     pub const CPP_CONTRACT_PARITY_READY: bool = true;
     pub const RUST_CONTRACT_PARITY_READY: bool = true;
     pub const CPP_STANDALONE_RUNTIME_READY: bool = false;
     pub const RUST_STANDALONE_RUNTIME_READY: bool = false;
     pub const CPP_FULL_PARITY_READY: bool = false;
     pub const RUST_FULL_PARITY_READY: bool = false;
+    pub const PYTHON_ORDER_GUARD_BEHAVIOR_JSON: &str = "{\"live_only_requirements\":[\"credentials\",\"live_acknowledgement\",\"session_order_cap\",\"session_order_count_increment\"],\"validate_audit_enabled_all_modes\":true,\"validate_audit_writable_all_modes\":true,\"validate_connector_health_all_modes\":true,\"validate_exchange_filters_all_modes\":true,\"validate_intent_all_modes\":true}";
+    pub const PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES: bool = true;
+    pub const PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES: bool = true;
+    pub const PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES: bool = true;
+    pub const PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES: bool = true;
+    pub const PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES: bool = true;
+    pub const PYTHON_ORDER_GUARD_LIVE_ONLY_REQUIREMENTS: &[&str] = &[
+    "credentials",
+    "live_acknowledgement",
+    "session_order_cap",
+    "session_order_count_increment",
+];
 
     pub struct PythonParityDomain {
     pub key: &'static str,

@@ -15,27 +15,23 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 
 | Platform | Desktop PyQt GUI | Headless Service API | Thin Web GUI | Native Mobile Client |
 | --- | --- | --- | --- | --- |
-| Windows 10/11 | Official | Official | Official through service host or standalone API | N/A |
-| macOS (Intel / Apple Silicon) | Official | Official | Official through standalone API | N/A |
-| Linux (major distros) | Official | Official | Official through standalone API | N/A |
-| FreeBSD | Evidence-gated via self-hosted workflow | Evidence-gated via source/manual setup | Official through service API when backend is running | N/A |
-| BSD family (OpenBSD / NetBSD / DragonFly BSD / others) | Evidence-gated | Evidence-gated | Evidence-gated | N/A |
-| Solaris / illumos | Evidence-gated | Evidence-gated | Evidence-gated | N/A |
-| Android | N/A | N/A | Browser access available | Scaffolded and evidence-gated native thin client via Expo |
-| iOS | N/A | N/A | Browser access available | Scaffolded and evidence-gated native thin client via Expo |
+| Windows 11 x64 | Evidence-gated | Supported through service host or standalone API | Supported through service host or standalone API | N/A |
+| macOS 15 ARM64 | Evidence-gated | Supported through standalone API | Supported through standalone API | N/A |
+| Ubuntu 24.04 x64 | Evidence-gated | Supported through standalone API | Supported through standalone API | N/A |
+| Other Windows, macOS, and Linux variants | Experimental | Experimental | Browser access where supported | N/A |
+| BSD / Solaris | Not targeted for desktop release | Experimental source/manual service path only | Browser access requires an externally operated backend | N/A |
+| Android | N/A | N/A | Browser access available | Scaffolded native thin client via Expo |
+| iOS | N/A | N/A | Browser access available | Scaffolded native thin client via Expo |
 
 ## Architecture coverage
 
 | Architecture | Current status | Notes |
 | --- | --- | --- |
-| Windows x64 | Official | Release workflow builds Windows x64 binaries |
-| Windows ARM64 | Official | Release workflow builds Windows ARM64 binaries |
-| Linux x64 | Official | Release workflow builds on Ubuntu 24.04 x64 |
-| Linux ARM64 | Official | Release workflow builds on Ubuntu 24.04 ARM |
-| macOS Intel | Official | Release workflow includes Intel runners |
-| macOS ARM64 | Official | Release workflow includes Apple Silicon runners |
-| FreeBSD runner architecture (`uname -m`) | Evidence-gated | Packaging follows the architecture of the available self-hosted runner and must emit release-platform evidence |
-| 32-bit x86 desktop | Evidence-gated test target | No official release artifact until matching x86 evidence exists |
+| Windows 11 x64 | Evidence-gated | Tier-1 release target; official status requires current release evidence |
+| Ubuntu 24.04 x64 | Evidence-gated | Tier-1 release target; official status requires current release evidence |
+| macOS 15 ARM64 | Evidence-gated | Tier-1 release target; official status requires current release evidence |
+| Windows ARM64 / x86, Linux ARM64, macOS Intel | Experimental | No release claim until explicitly added to the matrix with passing evidence |
+| FreeBSD and other BSD architectures | Not targeted for desktop release | Source/manual service path does not imply a packaged desktop release |
 
 ## Market coverage
 
@@ -59,8 +55,8 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 
 ## Practical interpretation
 
-- The current desktop-first user path is still Windows, macOS, Linux, and FreeBSD.
-- The headless backend and service API are the portability layer for BSD family and Solaris/illumos expansion.
+- The current release-eligible desktop path is Windows 11 x64, macOS 15 ARM64, and Ubuntu 24.04 x64; each remains evidence-gated until a matching release artifact is verified.
+- Other platforms may work through the source/manual service path, but are not release-supported until the matrix and real evidence are expanded.
 - Android and iOS support means a native thin client that talks to the backend API only. It does not move trading execution or exchange/broker credentials onto the phone.
 - Multi-exchange crypto support currently means ccxt market/account/order-routing support with official live support gated on venue evidence.
 
@@ -69,5 +65,5 @@ This repository now spans multiple runtime shapes, so platform support is not a 
 - Main CI now includes a lightweight Windows/macOS/Linux service/runtime smoke in addition to the full Ubuntu quality jobs.
 - `docs/release-platform-test-matrix.json` and `tools/check_release_platform_matrix.py` are the source of truth for OS/browser evidence targets.
 - `docs/connector-support-matrix.json` and `tools/check_connector_support_matrix.py` are the source of truth for venue/broker connector evidence targets.
-- FreeBSD and other non-hosted platforms depend on matching self-hosted or external-lab runners before they can be called official.
+- The matrix intentionally excludes legacy operating systems, Internet Explorer, mobile device releases, and unprovisioned external labs; they must be explicitly reintroduced with matching evidence before any support claim is made.
 - Android and iOS currently start from the Expo app in `apps/mobile-client/`.

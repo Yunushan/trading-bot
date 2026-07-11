@@ -13,7 +13,14 @@ use crate::native_indicators::{
     unsupported_enabled_indicator_keys,
 };
 use crate::order_audit::redact_text;
+use crate::order_guard::OrderSymbolFilters;
+use crate::orders::{
+    BinanceFuturesOrderParams, BinanceFuturesOrderResult, build_futures_market_order_params,
+};
 use crate::position_close::{BinanceFuturesCloseDirective, plan_futures_position_close};
+use crate::runtime_order_engine::{
+    RuntimeOrderEngine, RuntimeOrderSubmitInput, RuntimeOrderSubmitResult,
+};
 use crate::strategy_runtime::{StrategyWorkerLifecycleInput, build_worker_lifecycle_snapshot};
 use crate::streams::{
     BinanceKlineStreamCandle, BinanceStreamEvent, BinanceWebSocket, BinanceWebSocketClient,
@@ -392,6 +399,30 @@ pub struct NativeRuntimeExposureGuardSnapshot {
     pub quantity_estimate: f64,
     pub reduce_only: bool,
     pub desired_position_side: Option<String>,
+    pub trading_execution_supported: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeRuntimeGuardedExecutionCycleInput {
+    pub market_cycle: NativeRuntimeReadOnlyMarketCycleInput,
+    pub exposure: NativeRuntimeExposureGuardInput,
+    pub filters: Option<OrderSymbolFilters>,
+    pub market: String,
+    pub connector_state: String,
+    pub connector_health: String,
+    pub operational_preflight: NativeRuntimeOperationalPreflightSnapshot,
+    pub now_iso: String,
+    pub now_epoch_seconds: f64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRuntimeGuardedExecutionCycleSnapshot {
+    pub market_cycle: NativeRuntimeReadOnlyMarketCycleSnapshot,
+    pub exposure: Option<NativeRuntimeExposureGuardSnapshot>,
+    pub order: Option<RuntimeOrderSubmitResult>,
+    pub state: String,
+    pub status_message: String,
     pub trading_execution_supported: bool,
 }
 
@@ -835,6 +866,131 @@ impl NativeRuntimeLoop {
             trading_execution_supported: rust_trading_execution_supported(),
             status_message,
         })
+    }
+
+    /// Run a Python-shaped strategy decision through operational preflight,
+    /// allocation, exchange-filter, audit, and order-engine guards. A real
+    /// submit remains fail-closed until the runtime-ready policy is promoted.
+    pub fn run_guarded_execution_cycle<F>(
+        &mut self,
+        engine: &mut RuntimeOrderEngine,
+        input: NativeRuntimeGuardedExecutionCycleInput,
+        mut execute: F,
+    ) -> Result<NativeRuntimeGuardedExecutionCycleSnapshot>
+    where
+        F: FnMut(&BinanceFuturesOrderParams) -> Result<BinanceFuturesOrderResult>,
+    {
+        let market_cycle = self.run_read_only_market_cycle(input.market_cycle)?;
+        let Some(decision) = market_cycle.strategy_decision.as_ref() else {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "idle",
+                "No actionable native strategy decision; no order was considered.",
+            ));
+        };
+        let Some(signal) = decision.signal.as_deref() else {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "idle",
+                "Native strategy returned no BUY or SELL signal; no order was considered.",
+            ));
+        };
+        if !matches!(signal, "BUY" | "SELL") {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "blocked",
+                "Native strategy emitted an unsupported signal; no order was considered.",
+            ));
+        }
+        if !operational_preflight_orders_allowed(&input.operational_preflight) {
+            let reason = if input.operational_preflight.orders.reasons.is_empty() {
+                "Native operational preflight blocked order submission.".to_owned()
+            } else {
+                format!(
+                    "Native operational preflight blocked order submission: {}",
+                    input.operational_preflight.orders.reasons.join("; ")
+                )
+            };
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                None,
+                None,
+                "blocked",
+                &reason,
+            ));
+        }
+
+        let mut exposure_input = input.exposure;
+        exposure_input.side = signal.to_owned();
+        let last_price = exposure_input.price;
+        let exposure = self.evaluate_exposure_guard(exposure_input);
+        if !exposure.allowed {
+            let message = format!("Native exposure guard blocked order: {}", exposure.reason);
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                Some(exposure),
+                None,
+                "blocked",
+                &message,
+            ));
+        }
+        if !engine.dry_run && !rust_trading_execution_supported() {
+            return Ok(guarded_execution_snapshot(
+                market_cycle,
+                Some(exposure),
+                None,
+                "blocked",
+                "Standalone native execution is not runtime-ready; refusing to submit an order.",
+            ));
+        }
+
+        let order = build_futures_market_order_params(
+            &self.config.symbol,
+            signal,
+            exposure.quantity_estimate,
+            exposure.reduce_only,
+            exposure.desired_position_side.as_deref().unwrap_or(""),
+        )?;
+        let submit = engine.submit_futures_order(
+            RuntimeOrderSubmitInput {
+                order: &order,
+                market: non_empty_or(&input.market, "futures"),
+                filters: input.filters,
+                last_price: Some(last_price),
+                connector_state: input.connector_state,
+                connector_health: input.connector_health,
+                interval: self.config.interval.clone(),
+                now_iso: input.now_iso,
+                now_epoch_seconds: input.now_epoch_seconds,
+                source: non_empty_or(&input.source, "native-runtime-guarded-cycle"),
+            },
+            |params| execute(params),
+        );
+        let state = if submit.allowed {
+            "accepted"
+        } else {
+            "blocked"
+        };
+        let status_message = if submit.allowed && engine.dry_run {
+            "Native guarded execution cycle completed as a validated dry run.".to_owned()
+        } else if submit.allowed {
+            "Native guarded execution cycle submitted an order.".to_owned()
+        } else {
+            format!("Native order engine blocked order: {}", submit.error)
+        };
+        Ok(guarded_execution_snapshot(
+            market_cycle,
+            Some(exposure),
+            Some(submit),
+            state,
+            &status_message,
+        ))
     }
 
     pub fn build_operational_preflight(
@@ -1592,13 +1748,35 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
     }
 }
 
+fn guarded_execution_snapshot(
+    market_cycle: NativeRuntimeReadOnlyMarketCycleSnapshot,
+    exposure: Option<NativeRuntimeExposureGuardSnapshot>,
+    order: Option<RuntimeOrderSubmitResult>,
+    state: &str,
+    status_message: &str,
+) -> NativeRuntimeGuardedExecutionCycleSnapshot {
+    NativeRuntimeGuardedExecutionCycleSnapshot {
+        market_cycle,
+        exposure,
+        order,
+        state: state.to_owned(),
+        status_message: status_message.to_owned(),
+        trading_execution_supported: rust_trading_execution_supported(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::account::BinanceFuturesPosition;
+    use crate::order_audit::{ConnectorOrderCircuitBreakerConfig, OrderAuditConfig};
+    use crate::order_guard::OrderSymbolFilters;
     use crate::position_close::BinanceFuturesCloseMethod;
+    use crate::runtime_order_engine::RuntimeOrderEngine;
     use crate::streams::{BinanceKlineStreamCandle, BinanceStreamEvent};
     use anyhow::anyhow;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn loop_under_test() -> NativeRuntimeLoop {
         NativeRuntimeLoop::new(NativeRuntimeLoopConfig {
@@ -1738,6 +1916,79 @@ mod tests {
             dual_side: true,
             net_position_amt: 0.0,
         }
+    }
+
+    fn guarded_market_cycle_input() -> NativeRuntimeReadOnlyMarketCycleInput {
+        NativeRuntimeReadOnlyMarketCycleInput {
+            now_ms: 1_700_000_010_000,
+            candles: vec![
+                market_candle(1_700_000_000_000, 10.0),
+                market_candle(1_700_000_060_000, 11.0),
+                market_candle(1_700_000_120_000, 12.0),
+                market_candle(1_700_000_180_000, 13.0),
+            ],
+            indicator_configs: BTreeMap::new(),
+            indicators: BTreeMap::from([("rsi".to_owned(), vec![50.0, 20.0, 80.0, 90.0])]),
+            rules: BTreeMap::from([(
+                "rsi".to_owned(),
+                IndicatorRule {
+                    enabled: true,
+                    buy_value: Some(30.0),
+                    sell_value: Some(70.0),
+                },
+            )]),
+            side: "BOTH".to_owned(),
+            last_candle_is_closed: false,
+        }
+    }
+
+    fn guarded_execution_input(
+        runtime: &NativeRuntimeLoop,
+    ) -> NativeRuntimeGuardedExecutionCycleInput {
+        NativeRuntimeGuardedExecutionCycleInput {
+            market_cycle: guarded_market_cycle_input(),
+            exposure: exposure_input(),
+            filters: Some(OrderSymbolFilters {
+                step_size: 0.001,
+                tick_size: 0.1,
+                min_qty: 0.001,
+                min_notional: 5.0,
+            }),
+            market: "futures".to_owned(),
+            connector_state: "ready".to_owned(),
+            connector_health: "ok".to_owned(),
+            operational_preflight: runtime.build_operational_preflight(
+                fresh_operational_preflight_input(runtime, 1_700_000_010_000),
+            ),
+            now_iso: "2026-07-11T00:00:00Z".to_owned(),
+            now_epoch_seconds: 1_783_728_000.0,
+            source: "native-runtime-guarded-cycle-test".to_owned(),
+        }
+    }
+
+    fn dry_run_engine() -> (RuntimeOrderEngine, std::path::PathBuf) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("trading-bot-guarded-cycle-{stamp}"));
+        fs::create_dir_all(&directory).expect("audit directory");
+        let engine = RuntimeOrderEngine::new(
+            "paper",
+            OrderAuditConfig {
+                enabled: true,
+                path: directory.join("audit.jsonl").display().to_string(),
+                max_bytes: 64 * 1024,
+                backup_count: 1,
+            },
+            ConnectorOrderCircuitBreakerConfig {
+                enabled: true,
+                block_threshold: 1,
+                block_window_seconds: 60.0,
+            },
+            "bootstrap",
+        );
+        (engine, directory)
     }
 
     fn closed_kline(event_time_ms: i64) -> BinanceStreamEvent {
@@ -1921,6 +2172,85 @@ mod tests {
         );
         assert!(snapshot.status_message.contains("signal=BUY"));
         assert!(!snapshot.trading_execution_supported);
+    }
+
+    #[test]
+    fn guarded_execution_cycle_audits_a_valid_paper_signal_without_calling_executor() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, guarded_execution_input(&runtime), |_| {
+                panic!("dry-run cycle must not invoke the exchange executor")
+            })
+            .expect("guarded cycle");
+
+        assert_eq!(snapshot.state, "accepted");
+        assert!(!snapshot.trading_execution_supported);
+        assert_eq!(
+            snapshot
+                .market_cycle
+                .strategy_decision
+                .as_ref()
+                .and_then(|decision| decision.signal.as_deref()),
+            Some("BUY")
+        );
+        assert!(snapshot.exposure.as_ref().expect("exposure").allowed);
+        let order = snapshot.order.as_ref().expect("order result");
+        assert!(order.allowed, "{}", order.error);
+        assert_eq!(
+            order.order_result.as_ref().expect("dry run").status,
+            "DRY_RUN"
+        );
+        let audit = fs::read_to_string(directory.join("audit.jsonl")).expect("audit");
+        assert!(audit.contains("order_dry_run"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn guarded_execution_cycle_refuses_non_dry_run_without_runtime_promotion() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+        engine.dry_run = false;
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, guarded_execution_input(&runtime), |_| {
+                panic!("runtime policy must block native exchange execution")
+            })
+            .expect("guarded cycle");
+
+        assert_eq!(snapshot.state, "blocked");
+        assert!(snapshot.order.is_none());
+        assert!(snapshot.status_message.contains("not runtime-ready"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn guarded_execution_cycle_cannot_bypass_blocked_operational_preflight() {
+        let mut runtime = loop_under_test();
+        runtime.start();
+        let (mut engine, directory) = dry_run_engine();
+        let mut input = guarded_execution_input(&runtime);
+        let mut preflight_input = fresh_operational_preflight_input(&runtime, 1_700_000_010_000);
+        preflight_input.health = "error".to_owned();
+        input.operational_preflight = runtime.build_operational_preflight(preflight_input);
+
+        let snapshot = runtime
+            .run_guarded_execution_cycle(&mut engine, input, |_| {
+                panic!("blocked preflight must not reach the exchange executor")
+            })
+            .expect("guarded cycle");
+
+        assert_eq!(snapshot.state, "blocked");
+        assert!(snapshot.order.is_none());
+        assert!(
+            snapshot
+                .status_message
+                .contains("operational health is error")
+        );
+        fs::remove_dir_all(directory).ok();
     }
 
     #[test]

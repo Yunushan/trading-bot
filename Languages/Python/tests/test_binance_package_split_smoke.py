@@ -16,6 +16,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from app.integrations.exchanges import binance as binance_pkg
+from app.native_parity import ORDER_GUARD_BEHAVIOR
 from app.integrations.exchanges.binance import (
     BinanceWrapper,
     MAX_FUTURES_LEVERAGE,
@@ -548,6 +549,29 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
             self.assertEqual("primary", via)
             self.assertEqual(99, order["orderId"])
             self.assertEqual([{"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}], wrapper.client.orders)
+
+    def test_demo_futures_submit_guard_validates_order_without_live_credentials_or_session_count(self):
+        self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_intent_all_modes"])
+        self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_exchange_filters_all_modes"])
+        self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_connector_health_all_modes"])
+        self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_audit_enabled_all_modes"])
+        self.assertTrue(ORDER_GUARD_BEHAVIOR["validate_audit_writable_all_modes"])
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config={})
+        wrapper.mode = "Demo/Testnet"
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "order symbol is required"):
+            wrapper._guard_live_order_submit(
+                market="futures",
+                params={"symbol": "", "side": "HOLD", "type": "STOP_MARKET", "quantity": "0.1"},
+                source="demo-unit-test",
+            )
+
+        wrapper._guard_live_order_submit(
+            market="futures",
+            params={"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"},
+            source="demo-unit-test",
+        )
+        self.assertEqual(0, getattr(wrapper, "_live_order_submit_attempt_count", 0))
 
     def test_live_futures_submit_guard_blocks_after_session_order_cap(self):
         with tempfile.TemporaryDirectory() as tmp:

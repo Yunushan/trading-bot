@@ -96,26 +96,21 @@ connector targets are declared in `docs/connector-support-matrix.json`.
 
 | Area | Target | Status | Notes |
 | --- | --- | --- | --- |
-| Desktop GUI | Windows 10/11 | Supported now | Primary desktop path |
-| Desktop GUI | macOS (Intel and Apple Silicon) | Supported now | Intel and Apple Silicon release coverage |
-| Desktop GUI | Linux (major distros) | Supported now | Docs cover Ubuntu, Debian, Fedora, and Arch |
-| Desktop GUI | FreeBSD | Evidence-gated | Source/manual path is documented; release automation depends on a self-hosted runner |
-| Desktop GUI | BSD family (OpenBSD / NetBSD / DragonFly BSD / others) | Evidence-gated | Better fit today for the headless backend/service path than the full PyQt GUI |
-| Desktop GUI | Solaris / illumos | Evidence-gated | Better fit today for the headless backend/service path than the full PyQt GUI |
+| Desktop GUI | Windows 11 x64 | Evidence-gated | Tier-1 release target; current release evidence is required before an official support claim |
+| Desktop GUI | macOS 15 ARM64 | Evidence-gated | Tier-1 release target; current release evidence is required before an official support claim |
+| Desktop GUI | Ubuntu 24.04 x64 | Evidence-gated | Tier-1 release target; current release evidence is required before an official support claim |
+| Desktop GUI | Other Windows, macOS, and Linux variants | Experimental | No release claim until explicitly added to the release matrix with evidence |
+| Desktop GUI | BSD / Solaris | Not targeted for desktop release | Source/manual service use does not imply a packaged desktop release |
 | Thin web GUI | Modern browser via service API | Supported now | Current shipped web path is the built-in service dashboard |
 | Native mobile | Android | Evidence-gated scaffold | Expo-based native thin client scaffold exists; backend-connected |
 | Native mobile | iOS | Evidence-gated scaffold | Expo-based native thin client scaffold exists; backend-connected |
 
 | Architecture | Status | Notes |
 | --- | --- | --- |
-| Windows x64 | Supported now | Release workflow builds binaries |
-| Windows ARM64 | Supported now | Release workflow builds binaries |
-| Linux x64 | Supported now | Release workflow uses Ubuntu 24.04 x64 |
-| Linux ARM64 | Supported now | Release workflow uses Ubuntu 24.04 ARM |
-| macOS Intel | Supported now | Release workflow includes Intel runners |
-| macOS ARM64 | Supported now | Release workflow includes Apple Silicon runners |
-| FreeBSD runner architecture (`uname -m`) | Evidence-gated | Release packaging follows the matching self-hosted runner architecture |
-| 32-bit x86 desktop | Evidence-gated test target | No official release artifact until matching x86 evidence exists |
+| Windows 11 x64 | Evidence-gated | Tier-1 release target requiring current release evidence |
+| Ubuntu 24.04 x64 | Evidence-gated | Tier-1 release target requiring current release evidence |
+| macOS 15 ARM64 | Evidence-gated | Tier-1 release target requiring current release evidence |
+| Windows ARM64 / x86, Linux ARM64, macOS Intel | Experimental | No release claim until matching evidence is added |
 
 | Market / connector scope | Status | Notes |
 | --- | --- | --- |

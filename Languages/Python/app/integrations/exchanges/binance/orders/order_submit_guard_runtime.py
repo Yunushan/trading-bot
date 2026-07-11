@@ -6,6 +6,7 @@ from typing import Any
 
 from trading_core.orders import order_submit_intent_from_params, validate_order_submit_intent
 
+from app.native_parity import ORDER_GUARD_BEHAVIOR
 from app.settings.live_safety import (
     LiveTradingSafetyError,
     is_live_trading_mode,
@@ -59,6 +60,10 @@ def _guard_config(self) -> Mapping[str, object]:
 
 def _live_submit_attempt_count(self) -> int:
     return max(0, _int_value(getattr(self, "_live_order_submit_attempt_count", 0), 0))
+
+
+def _policy_applies_to_mode(rule: str, *, live_mode: bool) -> bool:
+    return live_mode or bool(ORDER_GUARD_BEHAVIOR.get(rule, False))
 
 
 def _order_health_errors(self) -> list[str]:
@@ -148,10 +153,9 @@ def _guard_live_order_submit(
     margin_mode: object | None = None,
     position_pct: object | None = None,
 ) -> None:
-    """Fail closed immediately before a live exchange order is submitted."""
+    """Validate every exchange order; apply credential/session gates only in live mode."""
     mode = getattr(self, "mode", "")
-    if not is_live_trading_mode(mode):
-        return
+    live_mode = is_live_trading_mode(mode)
 
     cfg = _guard_config(self)
     market_text = str(market or "").strip().lower()
@@ -173,36 +177,44 @@ def _guard_live_order_submit(
         pct_value = cfg.get("position_pct")
 
     errors: list[str] = []
-    try:
-        validate_live_trading_safety(
-            mode=mode,
-            api_key=getattr(self, "api_key", ""),
-            api_secret=getattr(self, "api_secret", ""),
-            account_type=account_type,
-            leverage=_int_value(leverage_value, 1),
-            margin_mode=margin_value,
-            position_pct=pct_value,
-            config=cfg,
-        )
-    except LiveTradingSafetyError as exc:
-        errors.append(str(exc))
+    if live_mode:
+        try:
+            validate_live_trading_safety(
+                mode=mode,
+                api_key=getattr(self, "api_key", ""),
+                api_secret=getattr(self, "api_secret", ""),
+                account_type=account_type,
+                leverage=_int_value(leverage_value, 1),
+                margin_mode=margin_value,
+                position_pct=pct_value,
+                config=cfg,
+            )
+        except LiveTradingSafetyError as exc:
+            errors.append(str(exc))
 
-    if not bool(getattr(self, "_order_audit_enabled", True)):
-        errors.append("order audit is disabled")
-    if getattr(self, "_order_audit_last_write_error", None):
-        errors.append("order audit is not writable")
+    if _policy_applies_to_mode("validate_audit_enabled_all_modes", live_mode=live_mode):
+        if not bool(getattr(self, "_order_audit_enabled", True)):
+            errors.append("order audit is disabled")
+    if _policy_applies_to_mode("validate_audit_writable_all_modes", live_mode=live_mode):
+        if getattr(self, "_order_audit_last_write_error", None):
+            errors.append("order audit is not writable")
 
-    errors.extend(_order_health_errors(self))
+    if _policy_applies_to_mode("validate_connector_health_all_modes", live_mode=live_mode):
+        errors.extend(_order_health_errors(self))
     intent = order_submit_intent_from_params(market_text, order_params)
-    errors.extend(validate_order_submit_intent(intent))
-    errors.extend(_order_filter_errors(self, market_text, order_params))
-    max_session_orders = resolve_live_session_order_cap(cfg)
+    if _policy_applies_to_mode("validate_intent_all_modes", live_mode=live_mode):
+        errors.extend(validate_order_submit_intent(intent))
+    if _policy_applies_to_mode("validate_exchange_filters_all_modes", live_mode=live_mode):
+        errors.extend(_order_filter_errors(self, market_text, order_params))
     submit_attempt_count = _live_submit_attempt_count(self)
-    if submit_attempt_count >= max_session_orders:
-        errors.append(f"live session order cap {max_session_orders} reached")
+    if live_mode:
+        max_session_orders = resolve_live_session_order_cap(cfg)
+        if submit_attempt_count >= max_session_orders:
+            errors.append(f"live session order cap {max_session_orders} reached")
 
     if not errors:
-        setattr(self, "_live_order_submit_attempt_count", submit_attempt_count + 1)
+        if live_mode:
+            setattr(self, "_live_order_submit_attempt_count", submit_attempt_count + 1)
         return
 
     audit = getattr(self, "_audit_order_event", None)
@@ -221,7 +233,8 @@ def _guard_live_order_submit(
             logger = getattr(self, "_log", None)
             if callable(logger):
                 logger(f"Live order block audit write failed: {exc}", lvl="error")
-    raise LiveTradingSafetyError(f"Live order submit blocked by {source}: {'; '.join(errors)}.")
+    label = "Live order" if live_mode else "Order"
+    raise LiveTradingSafetyError(f"{label} submit blocked by {source}: {'; '.join(errors)}.")
 
 
 def bind_binance_order_submit_guard_runtime(wrapper_cls) -> None:

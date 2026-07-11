@@ -222,7 +222,7 @@
       "label": "python-binance (Community)"
     }
   ],
-  "contractHash": "6ccbf8888f5fa7bf26e658f235849e4f4d5f4d82c6def19f93202b22d87ed373",
+  "contractHash": "4b49f21a5fa13384e71765def83a2e09404a1685c430d85c611770898b48f128",
   "cppContractParityReady": true,
   "cppFullParityReady": false,
   "cppStandaloneRuntimeReady": false,
@@ -3464,6 +3464,19 @@
       "value": "combinations"
     }
   ],
+  "orderGuardBehavior": {
+    "live_only_requirements": [
+      "credentials",
+      "live_acknowledgement",
+      "session_order_cap",
+      "session_order_count_increment"
+    ],
+    "validate_audit_enabled_all_modes": true,
+    "validate_audit_writable_all_modes": true,
+    "validate_connector_health_all_modes": true,
+    "validate_exchange_filters_all_modes": true,
+    "validate_intent_all_modes": true
+  },
   "orderTypeOptions": [
     {
       "key": "MARKET",

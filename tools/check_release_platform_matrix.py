@@ -20,18 +20,12 @@ from app.native_parity import native_python_source_contract_hash  # noqa: E402
 
 
 REQUIRED_PLATFORM_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("windows", ("xp", "vista", "7", "8", "8.1", "10", "11"), ("x86", "x64", "arm32", "arm64")),
-    ("macos", ("14", "15", "26"), ("x64", "arm64")),
-    ("rhel", ("7", "8", "9", "10"), ("x64", "arm64")),
-    ("ubuntu", ("20.04", "22.04", "24.04", "26.04"), ("x64", "arm64")),
-    ("freebsd", ("release",), ("x64", "arm64")),
-    ("openbsd", ("release",), ("x64", "arm64")),
-    ("netbsd", ("release",), ("x64", "arm64")),
-    ("android", ("14", "15", "16"), ("x86_64-emulator", "arm64-device")),
-    ("ios", ("15", "16", "18", "26"), ("simulator-arm64", "device-arm64")),
+    ("windows", ("11",), ("x64",)),
+    ("macos", ("15",), ("arm64",)),
+    ("ubuntu", ("24.04",), ("x64",)),
 )
 
-REQUIRED_BROWSERS = ("chrome", "firefox", "internet-explorer", "edge")
+REQUIRED_BROWSERS = ("chrome", "firefox", "edge")
 DEFAULT_MATRIX_PATH = Path("docs/release-platform-test-matrix.json")
 PROMOTION_SOURCE_TREE_IGNORED_PATHS = (
     "artifacts/rust-native-runtime-evidence",

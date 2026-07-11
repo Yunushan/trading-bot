@@ -92,6 +92,23 @@ DASHBOARD_STRATEGY_TEMPLATE_DEFINITIONS = {
     "top100": {"label": "Top 100 %1 per trade 1x"},
 }
 
+# Exchange order requests must be structurally safe in every mode. Live mode
+# adds credential acknowledgement and session budget gates; it does not own the
+# basic request, filter, connector, or audit validation contract.
+ORDER_GUARD_BEHAVIOR = {
+    "validate_intent_all_modes": True,
+    "validate_exchange_filters_all_modes": True,
+    "validate_connector_health_all_modes": True,
+    "validate_audit_enabled_all_modes": True,
+    "validate_audit_writable_all_modes": True,
+    "live_only_requirements": (
+        "credentials",
+        "live_acknowledgement",
+        "session_order_cap",
+        "session_order_count_increment",
+    ),
+}
+
 # Canonical runtime-series keys for every user-selectable indicator.  Python's
 # chart, backtest, and native destinations consume these names, so emit them
 # with the catalog instead of maintaining separate C++ and Rust switch lists.
@@ -395,6 +412,10 @@ def native_python_source_contract_payload() -> dict[str, Any]:
             "cpp": cpp_contract_parity and CPP_STANDALONE_RUNTIME_READY,
             "rust": rust_contract_parity and RUST_STANDALONE_RUNTIME_READY,
         },
+        "order_guard_behavior": {
+            **ORDER_GUARD_BEHAVIOR,
+            "live_only_requirements": list(ORDER_GUARD_BEHAVIOR["live_only_requirements"]),
+        },
         "domains": [_domain_payload(domain) for domain in NATIVE_PARITY_DOMAINS],
         "service_api": {
             **service_api_contract_payload(),
@@ -508,6 +529,7 @@ def native_python_source_contract_summary() -> dict[str, object]:
         "schema_version": payload["schema_version"],
         "source": payload["source"],
         "contract_hash": native_python_source_contract_hash(),
+        "order_guard_behavior": dict(payload["order_guard_behavior"]),
         "domains": list(payload["domains"]),
         "domain_keys": [domain["key"] for domain in payload["domains"]],
         "route_names": list(SERVICE_API_ROUTE_SUFFIXES),

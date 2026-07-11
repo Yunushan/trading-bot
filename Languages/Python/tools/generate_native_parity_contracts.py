@@ -789,6 +789,7 @@ def _cpp_tradingview_interval_map(interval_map: dict[str, object]) -> str:
 
 def render_rust_module() -> str:
     summary = native_python_source_contract_summary()
+    order_guard_behavior = dict(summary["order_guard_behavior"])
     parts = [
         f"pub const PYTHON_SOURCE: &str = {_rust_string(summary['source'])};",
         f"pub const PYTHON_SOURCE_SCHEMA_VERSION: u32 = {int(summary['schema_version'])};",
@@ -805,6 +806,34 @@ def render_rust_module() -> str:
         ),
         f"pub const CPP_FULL_PARITY_READY: bool = {_rust_bool(summary['cpp_full_parity'])};",
         f"pub const RUST_FULL_PARITY_READY: bool = {_rust_bool(summary['rust_full_parity'])};",
+        (
+            "pub const PYTHON_ORDER_GUARD_BEHAVIOR_JSON: &str = "
+            f"{_rust_string(_contract_json(order_guard_behavior))};"
+        ),
+        (
+            "pub const PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES: bool = "
+            f"{_rust_bool(order_guard_behavior['validate_intent_all_modes'])};"
+        ),
+        (
+            "pub const PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES: bool = "
+            f"{_rust_bool(order_guard_behavior['validate_exchange_filters_all_modes'])};"
+        ),
+        (
+            "pub const PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES: bool = "
+            f"{_rust_bool(order_guard_behavior['validate_connector_health_all_modes'])};"
+        ),
+        (
+            "pub const PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES: bool = "
+            f"{_rust_bool(order_guard_behavior['validate_audit_enabled_all_modes'])};"
+        ),
+        (
+            "pub const PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES: bool = "
+            f"{_rust_bool(order_guard_behavior['validate_audit_writable_all_modes'])};"
+        ),
+        _rust_array(
+            "PYTHON_ORDER_GUARD_LIVE_ONLY_REQUIREMENTS",
+            list(order_guard_behavior["live_only_requirements"]),
+        ),
         "",
         _rust_parity_domains(list(summary["domains"])),
         "",
@@ -870,6 +899,7 @@ def render_rust_module() -> str:
 
 def render_cpp_header() -> str:
     summary = native_python_source_contract_summary()
+    order_guard_behavior = dict(summary["order_guard_behavior"])
     parts = [
         "// This file is generated from Languages/Python/app/native_parity.py.",
         "// Do not edit manually; run Languages/Python/tools/generate_native_parity_contracts.py.",
@@ -895,6 +925,34 @@ def render_cpp_header() -> str:
         ),
         f"inline constexpr bool kCppFullParityReady = {str(bool(summary['cpp_full_parity'])).lower()};",
         f"inline constexpr bool kRustFullParityReady = {str(bool(summary['rust_full_parity'])).lower()};",
+        (
+            "inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "
+            f"{_cpp_string(_contract_json(order_guard_behavior))};"
+        ),
+        (
+            "inline constexpr bool kPythonOrderGuardValidateIntentAllModes = "
+            f"{_rust_bool(order_guard_behavior['validate_intent_all_modes'])};"
+        ),
+        (
+            "inline constexpr bool kPythonOrderGuardValidateExchangeFiltersAllModes = "
+            f"{_rust_bool(order_guard_behavior['validate_exchange_filters_all_modes'])};"
+        ),
+        (
+            "inline constexpr bool kPythonOrderGuardValidateConnectorHealthAllModes = "
+            f"{_rust_bool(order_guard_behavior['validate_connector_health_all_modes'])};"
+        ),
+        (
+            "inline constexpr bool kPythonOrderGuardValidateAuditEnabledAllModes = "
+            f"{_rust_bool(order_guard_behavior['validate_audit_enabled_all_modes'])};"
+        ),
+        (
+            "inline constexpr bool kPythonOrderGuardValidateAuditWritableAllModes = "
+            f"{_rust_bool(order_guard_behavior['validate_audit_writable_all_modes'])};"
+        ),
+        _cpp_array(
+            "kPythonOrderGuardLiveOnlyRequirements",
+            list(order_guard_behavior["live_only_requirements"]),
+        ),
         "",
         _cpp_parity_domains(list(summary["domains"])),
         "",
@@ -980,6 +1038,7 @@ def render_tauri_browser_contract() -> str:
         "rustStandaloneRuntimeReady": bool(summary["rust_standalone_runtime_ready"]),
         "cppFullParityReady": bool(summary["cpp_full_parity"]),
         "rustFullParityReady": bool(summary["rust_full_parity"]),
+        "orderGuardBehavior": dict(summary["order_guard_behavior"]),
         "indicatorCatalog": [
             {
                 "key": str(indicator["key"]),

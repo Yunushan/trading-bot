@@ -983,7 +983,12 @@ mod tests {
 
         assert!(response.ok, "{}", response.error);
         assert!(response.strategy_evaluated);
-        assert!(response.computed_indicator_keys.iter().any(|key| key == "rsi"));
+        assert!(
+            response
+                .computed_indicator_keys
+                .iter()
+                .any(|key| key == "rsi")
+        );
         assert!(response.unsupported_indicator_keys.is_empty());
         assert!(!response.trading_execution_supported);
     }

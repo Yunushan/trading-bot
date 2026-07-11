@@ -1,3 +1,10 @@
+use crate::generated_python_parity::{
+    PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
+    PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES,
+    PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES,
+    PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES,
+    PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES,
+};
 use crate::orders::{BinanceFuturesSymbolFilters, format_decimal_for_order};
 
 pub const LIVE_TRADING_ACKNOWLEDGEMENT: &str = "I_UNDERSTAND_LIVE_TRADING_RISK";
@@ -377,39 +384,48 @@ pub fn guard_live_order_submit(
     input: &BinanceOrderSubmitGuardInput,
 ) -> BinanceOrderSubmitGuardResult {
     let current_count = input.live_submit_attempt_count.max(0);
-    if !is_live_trading_mode(&input.mode) {
-        return BinanceOrderSubmitGuardResult {
-            allowed: true,
-            errors: Vec::new(),
-            next_submit_attempt_count: current_count,
-        };
+    let live_mode = is_live_trading_mode(&input.mode);
+    let mut errors = Vec::new();
+
+    // Dry-run mode must still validate the order shape, exchange filters,
+    // connector health, and audit path. Credential/acknowledgement checks are
+    // specific to an actual live submission.
+    if live_mode {
+        errors.extend(validate_live_trading_safety(&LiveTradingSafetyInput {
+            mode: input.mode.clone(),
+            api_key: input.api_key.clone(),
+            api_secret: input.api_secret.clone(),
+            account_type: input.account_type.clone(),
+            leverage: input.leverage,
+            margin_mode: input.margin_mode.clone(),
+            position_pct: input.position_pct,
+            config: input.config.clone(),
+        }));
     }
 
-    let mut errors = validate_live_trading_safety(&LiveTradingSafetyInput {
-        mode: input.mode.clone(),
-        api_key: input.api_key.clone(),
-        api_secret: input.api_secret.clone(),
-        account_type: input.account_type.clone(),
-        leverage: input.leverage,
-        margin_mode: input.margin_mode.clone(),
-        position_pct: input.position_pct,
-        config: input.config.clone(),
-    });
-
-    if !input.order_audit_enabled {
-        errors.push("order audit is disabled".to_owned());
+    if live_mode || PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES {
+        if !input.order_audit_enabled {
+            errors.push("order audit is disabled".to_owned());
+        }
     }
-    if !input.order_audit_writable {
-        errors.push("order audit is not writable".to_owned());
+    if live_mode || PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES {
+        if !input.order_audit_writable {
+            errors.push("order audit is not writable".to_owned());
+        }
     }
-    errors.extend(connector_health_errors(
-        &input.connector_state,
-        &input.connector_health,
-    ));
+    if live_mode || PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES {
+        errors.extend(connector_health_errors(
+            &input.connector_state,
+            &input.connector_health,
+        ));
+    }
 
     let intent = order_submit_intent_from_param_pairs(&input.market, &input.params);
-    errors.extend(validate_order_submit_intent(&intent));
-    if !intent.symbol.is_empty()
+    if live_mode || PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES {
+        errors.extend(validate_order_submit_intent(&intent));
+    }
+    if (live_mode || PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES)
+        && !intent.symbol.is_empty()
         && intent.quantity.is_some()
         && matches!(intent.market.as_str(), "futures" | "spot")
     {
@@ -426,18 +442,20 @@ pub fn guard_live_order_submit(
         }
     }
 
-    let max_session_orders = input.config.live_trading_max_session_orders;
-    if current_count >= max_session_orders {
-        errors.push(format!(
-            "live session order cap {max_session_orders} reached"
-        ));
+    if live_mode {
+        let max_session_orders = input.config.live_trading_max_session_orders;
+        if current_count >= max_session_orders {
+            errors.push(format!(
+                "live session order cap {max_session_orders} reached"
+            ));
+        }
     }
 
     let allowed = errors.is_empty();
     BinanceOrderSubmitGuardResult {
         allowed,
         errors,
-        next_submit_attempt_count: if allowed {
+        next_submit_attempt_count: if allowed && live_mode {
             current_count + 1
         } else {
             current_count
@@ -533,6 +551,13 @@ fn decimal_text(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generated_python_parity::{
+        PYTHON_ORDER_GUARD_BEHAVIOR_JSON, PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES,
+        PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES,
+        PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES,
+        PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES,
+        PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES,
+    };
     use crate::orders::{
         BinanceFuturesSymbolFilters, build_futures_limit_order_params,
         build_futures_market_order_params,
@@ -742,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn live_order_guard_blocks_session_cap_and_demo_mode_short_circuits() {
+    fn live_order_guard_blocks_session_cap_and_demo_mode_keeps_structural_guards() {
         let params = vec![
             ("symbol".to_owned(), "ETHUSDT".to_owned()),
             ("side".to_owned(), "BUY".to_owned()),
@@ -774,9 +799,43 @@ mod tests {
             live_submit_attempt_count: 3,
             ..Default::default()
         });
-        assert!(demo.allowed);
-        assert!(demo.errors.is_empty());
+        assert!(!demo.allowed);
+        assert!(
+            demo.errors
+                .contains(&"futures symbol filters unavailable for ETHUSDT".to_owned())
+        );
         assert_eq!(demo.next_submit_attempt_count, 3);
+    }
+
+    #[test]
+    fn paper_order_guard_allows_valid_dry_run_without_live_credentials() {
+        assert!(PYTHON_ORDER_GUARD_VALIDATE_INTENT_ALL_MODES);
+        assert!(PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES);
+        assert!(PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES);
+        assert!(PYTHON_ORDER_GUARD_VALIDATE_AUDIT_ENABLED_ALL_MODES);
+        assert!(PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES);
+        assert!(
+            PYTHON_ORDER_GUARD_BEHAVIOR_JSON.contains("validate_exchange_filters_all_modes\":true")
+        );
+        assert!(PYTHON_ORDER_GUARD_BEHAVIOR_JSON.contains("session_order_count_increment"));
+        let params = build_futures_market_order_params("ETHUSDT", "BUY", 0.25, false, "")
+            .expect("order params")
+            .params
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect();
+        let result = guard_live_order_submit(&BinanceOrderSubmitGuardInput {
+            mode: "paper".to_owned(),
+            market: "futures".to_owned(),
+            params,
+            filters: Some(futures_filters()),
+            last_price: Some(2_000.0),
+            connector_state: "ready".to_owned(),
+            connector_health: "ok".to_owned(),
+            ..Default::default()
+        });
+        assert!(result.allowed, "{:?}", result.errors);
+        assert_eq!(result.next_submit_attempt_count, 0);
     }
 
     #[test]

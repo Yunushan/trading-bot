@@ -9,13 +9,25 @@ namespace PythonParityContract {
 
 inline constexpr std::string_view kPythonSource = "Languages/Python";
 inline constexpr unsigned kPythonSourceSchemaVersion = 1;
-inline constexpr std::string_view kPythonSourceContractHash = "6ccbf8888f5fa7bf26e658f235849e4f4d5f4d82c6def19f93202b22d87ed373";
+inline constexpr std::string_view kPythonSourceContractHash = "4b49f21a5fa13384e71765def83a2e09404a1685c430d85c611770898b48f128";
 inline constexpr bool kCppContractParityReady = true;
 inline constexpr bool kRustContractParityReady = true;
 inline constexpr bool kCppStandaloneRuntimeReady = false;
 inline constexpr bool kRustStandaloneRuntimeReady = false;
 inline constexpr bool kCppFullParityReady = false;
 inline constexpr bool kRustFullParityReady = false;
+inline constexpr std::string_view kPythonOrderGuardBehaviorJson = "{\"live_only_requirements\":[\"credentials\",\"live_acknowledgement\",\"session_order_cap\",\"session_order_count_increment\"],\"validate_audit_enabled_all_modes\":true,\"validate_audit_writable_all_modes\":true,\"validate_connector_health_all_modes\":true,\"validate_exchange_filters_all_modes\":true,\"validate_intent_all_modes\":true}";
+inline constexpr bool kPythonOrderGuardValidateIntentAllModes = true;
+inline constexpr bool kPythonOrderGuardValidateExchangeFiltersAllModes = true;
+inline constexpr bool kPythonOrderGuardValidateConnectorHealthAllModes = true;
+inline constexpr bool kPythonOrderGuardValidateAuditEnabledAllModes = true;
+inline constexpr bool kPythonOrderGuardValidateAuditWritableAllModes = true;
+inline constexpr std::array<std::string_view, 4> kPythonOrderGuardLiveOnlyRequirements = {
+    "credentials",
+    "live_acknowledgement",
+    "session_order_cap",
+    "session_order_count_increment",
+};
 
 struct PythonParityDomain {
     std::string_view key;

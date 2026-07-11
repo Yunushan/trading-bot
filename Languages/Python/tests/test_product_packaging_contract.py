@@ -1365,11 +1365,18 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         report = json.loads(result.stdout)
 
-        self.assertEqual(70, report["platform_target_count"])
-        self.assertEqual(29, report["browser_target_count"])
+        self.assertEqual(3, report["platform_target_count"])
+        self.assertEqual(9, report["browser_target_count"])
         self.assertTrue(matrix["policy"]["no_assumed_passes"])
-        self.assertIn("windows", {item["family"] for item in matrix["target_groups"]})
-        self.assertIn("internet-explorer", {item["browser"] for item in matrix["browser_groups"]})
+        self.assertEqual("tier-1-release", matrix["policy"]["support_tier"])
+        self.assertEqual(
+            {"windows", "macos", "ubuntu"},
+            {item["family"] for item in matrix["target_groups"]},
+        )
+        self.assertEqual(
+            {"chrome", "edge", "firefox"},
+            {item["browser"] for item in matrix["browser_groups"]},
+        )
 
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         real_test_workflow = (

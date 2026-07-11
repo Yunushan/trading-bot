@@ -88,6 +88,8 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "rust_core_consumes_generated_contract",
     "rust_strategy_runtime_uses_python_source_options",
     "rust_config_persistence_uses_python_source_options",
+    "python_order_guard_implements_behavior_contract",
+    "rust_order_guard_uses_python_behavior_contract",
     "cpp_support_consumes_generated_contract",
     "cpp_support_exposes_generated_contract",
     "cpp_config_persistence_uses_python_source_options",
@@ -102,6 +104,7 @@ REQUIRED_CONSUMER_SURFACE_NAMES = (
     "cpp_account_symbols_use_python_source_fallbacks",
     "cpp_native_exchange_connectors_use_python_source_connectors",
     "cpp_native_strategy_runtime_uses_python_source_options",
+    "cpp_order_guard_uses_python_behavior_contract",
     "tauri_browser_consumes_generated_contract",
     "tauri_browser_service_api_uses_python_source_routes",
     "tauri_native_runtime_preview_backend",
@@ -296,6 +299,34 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "validate_choice",
                 "validate_optional_choice",
                 "normalize_stop_loss_value",
+            ),
+        ),
+        ConsumerRequirement(
+            "python_order_guard_implements_behavior_contract",
+            REPO_ROOT
+            / "Languages"
+            / "Python"
+            / "app"
+            / "integrations"
+            / "exchanges"
+            / "binance"
+            / "orders"
+            / "order_submit_guard_runtime.py",
+            (
+                "ORDER_GUARD_BEHAVIOR",
+                "_policy_applies_to_mode",
+                "validate_exchange_filters_all_modes",
+                "validate_connector_health_all_modes",
+                "validate_audit_writable_all_modes",
+            ),
+        ),
+        ConsumerRequirement(
+            "rust_order_guard_uses_python_behavior_contract",
+            REPO_ROOT / "experiments" / "rust-shells" / "crates" / "core" / "src" / "order_guard.rs",
+            (
+                "PYTHON_ORDER_GUARD_VALIDATE_EXCHANGE_FILTERS_ALL_MODES",
+                "PYTHON_ORDER_GUARD_VALIDATE_CONNECTOR_HEALTH_ALL_MODES",
+                "PYTHON_ORDER_GUARD_VALIDATE_AUDIT_WRITABLE_ALL_MODES",
             ),
         ),
         ConsumerRequirement(
@@ -531,6 +562,15 @@ def _consumer_requirements() -> tuple[ConsumerRequirement, ...]:
                 "normalizeStopLossScope",
                 "normalizeStrategyControls",
                 "runtimeOutputKeysCsv",
+            ),
+        ),
+        ConsumerRequirement(
+            "cpp_order_guard_uses_python_behavior_contract",
+            REPO_ROOT / "experiments" / "native-cpp" / "src" / "NativeOrderSafety.cpp",
+            (
+                "PythonParityContract::kPythonOrderGuardValidateExchangeFiltersAllModes",
+                "PythonParityContract::kPythonOrderGuardValidateConnectorHealthAllModes",
+                "PythonParityContract::kPythonOrderGuardValidateAuditWritableAllModes",
             ),
         ),
         ConsumerRequirement(

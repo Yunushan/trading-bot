@@ -979,6 +979,17 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
             "--nocapture",
         ],
     )?;
+    let guarded_execution_cycle = run_cargo_test(
+        "guarded_execution_cycle",
+        &[
+            "test",
+            "-p",
+            "trading-bot-core",
+            "guarded_execution_cycle",
+            "--",
+            "--nocapture",
+        ],
+    )?;
     let order_guard = run_cargo_test(
         "order_guard",
         &[
@@ -1016,6 +1027,7 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
     let all_results = [
         &stream_recovery,
         &order_engine,
+        &guarded_execution_cycle,
         &order_guard,
         &order_audit,
         &risk,
@@ -1081,6 +1093,11 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
                 "source": order_engine.name.as_str()
             },
             {
+                "name": "guarded_strategy_to_order_dry_run_and_runtime_policy_recovery",
+                "status": "passed",
+                "source": guarded_execution_cycle.name.as_str()
+            },
+            {
                 "name": "live_order_guard_fail_closed_recovery",
                 "status": "passed",
                 "source": order_guard.name.as_str()
@@ -1098,6 +1115,7 @@ fn run_local_recovery_evidence() -> Result<(), Box<dyn std::error::Error>> {
         ],
         "suite_results": [
             order_engine.as_json(),
+            guarded_execution_cycle.as_json(),
             order_guard.as_json(),
             order_audit.as_json(),
             risk.as_json()

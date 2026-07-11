@@ -59,6 +59,54 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    const QString pythonOrderGuardBehavior = QString::fromUtf8(
+        PythonParityContract::kPythonOrderGuardBehaviorJson.data(),
+        static_cast<qsizetype>(PythonParityContract::kPythonOrderGuardBehaviorJson.size()));
+    check(PythonParityContract::kPythonOrderGuardValidateIntentAllModes,
+          QStringLiteral("generated Python contract should validate order intent in every mode"));
+    check(PythonParityContract::kPythonOrderGuardValidateExchangeFiltersAllModes,
+          QStringLiteral("generated Python contract should validate exchange filters in every mode"));
+    check(PythonParityContract::kPythonOrderGuardValidateConnectorHealthAllModes,
+          QStringLiteral("generated Python contract should validate connector health in every mode"));
+    check(PythonParityContract::kPythonOrderGuardValidateAuditEnabledAllModes,
+          QStringLiteral("generated Python contract should require enabled audit in every mode"));
+    check(PythonParityContract::kPythonOrderGuardValidateAuditWritableAllModes,
+          QStringLiteral("generated Python contract should require writable audit in every mode"));
+    check(pythonOrderGuardBehavior.contains(QStringLiteral("\"validate_exchange_filters_all_modes\":true")),
+          QStringLiteral("generated Python contract should require exchange filter validation in paper mode"));
+    check(pythonOrderGuardBehavior.contains(QStringLiteral("session_order_count_increment")),
+          QStringLiteral("generated Python contract should identify live-only session accounting"));
+
+    NativeOrderSafety::LiveOrderGuardInput paperInvalidOrder;
+    paperInvalidOrder.mode = QStringLiteral("Demo/Testnet");
+    paperInvalidOrder.params = {
+        {QStringLiteral("symbol"), QStringLiteral("ETHUSDT")},
+        {QStringLiteral("side"), QStringLiteral("BUY")},
+        {QStringLiteral("type"), QStringLiteral("MARKET")},
+        {QStringLiteral("quantity"), QStringLiteral("0.1")},
+    };
+    const NativeOrderSafety::LiveOrderGuardResult paperInvalidResult =
+        NativeOrderSafety::guardLiveOrderSubmit(paperInvalidOrder);
+    check(!paperInvalidResult.allowed,
+          QStringLiteral("paper order guard should keep exchange filter validation enabled"));
+    check(paperInvalidResult.errors.contains(QStringLiteral("futures symbol filters unavailable for ETHUSDT")),
+          QStringLiteral("paper order guard should report unavailable exchange filters"));
+    check(paperInvalidResult.nextSubmitAttemptCount == 0,
+          QStringLiteral("paper order guard should not consume the live session order count"));
+
+    NativeOrderSafety::LiveOrderGuardInput paperValidOrder = paperInvalidOrder;
+    paperValidOrder.hasFilters = true;
+    paperValidOrder.filters = {0.001, 0.1, 0.001, 5.0};
+    paperValidOrder.hasLastPrice = true;
+    paperValidOrder.lastPrice = 100.0;
+    paperValidOrder.liveSubmitAttemptCount = 3;
+    const NativeOrderSafety::LiveOrderGuardResult paperValidResult =
+        NativeOrderSafety::guardLiveOrderSubmit(paperValidOrder);
+    check(paperValidResult.allowed,
+          QStringLiteral("paper order guard should allow a valid structurally safe order"));
+    check(paperValidResult.nextSubmitAttemptCount == 3,
+          QStringLiteral("paper order guard should preserve the live session order count"));
+
     const QJsonObject desktopEntrypoint = NativeStartupPackaging::desktopEntrypointContract();
     check(desktopEntrypoint.value(QStringLiteral("canonical_repo_path")).toString() == QStringLiteral("apps/desktop-pyqt/main.py"),
           QStringLiteral("native startup contract should mirror Python desktop canonical wrapper"));

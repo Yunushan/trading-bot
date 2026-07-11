@@ -1,128 +1,53 @@
 {
   "schema_version": 1,
-  "generated_for_request_date": "2026-06-19",
+  "generated_for_request_date": "2026-07-11",
   "policy": {
-    "real_test_definition": "A target is considered tested only when commands execute on a runner, VM, emulator, device, or browser instance matching the declared OS/version/architecture/browser and the run writes a passed evidence JSON artifact.",
+    "support_tier": "tier-1-release",
+    "real_test_definition": "A target is considered release-tested only when commands execute on a runner, VM, or browser instance matching the declared OS/version/architecture/browser and the run writes a passed evidence JSON artifact.",
     "no_assumed_passes": true,
-    "legacy_targets_require_external_lab": true,
-    "evidence_artifact_dir": "release-platform-evidence"
+    "evidence_artifact_dir": "release-platform-evidence",
+    "scope_note": "This matrix declares the product's current release-supported desktop and browser targets. Platforms outside this matrix are not release-supported until explicitly added with matching evidence automation."
   },
   "test_suites": {
     "platform-probe": "Collect OS, version, architecture, runtime, and toolchain evidence.",
     "python-service-contract": "Compile and smoke-check the canonical Python service/API surface.",
-    "desktop-release-smoke": "Run release binary or desktop launch smoke checks where the platform supports the product runtime.",
-    "native-build-smoke": "Build or run native C++/Rust release smoke checks where toolchains are present.",
-    "mobile-client-contract": "Run mobile thin-client service contract and app logic checks.",
+    "desktop-release-smoke": "Run release binary or desktop launch smoke checks on the declared desktop runtime.",
+    "native-build-smoke": "Build and run native C++/Rust release smoke checks.",
     "browser-contract": "Run dashboard/service client browser compatibility checks in the declared browser."
   },
   "target_groups": [
     {
       "family": "windows",
-      "versions": ["xp", "vista", "7", "8", "8.1", "10", "11"],
-      "architectures": ["x86", "x64", "arm32", "arm64"],
-      "runner_kind": "external-lab",
-      "runner_labels_template": ["self-hosted", "tb-release-platform", "windows-{version_slug}-{arch}"],
+      "versions": ["11"],
+      "architectures": ["x64"],
+      "runner_kind": "github-hosted-or-self-hosted",
+      "runner_labels_template": ["windows-2025"],
       "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
-      "evidence_required": true,
-      "notes": "Legacy Windows and 32-bit/ARM targets require owned VMs/devices or a vendor lab. They must not be marked passed from a modern Windows Server runner."
+      "evidence_required": true
     },
     {
       "family": "macos",
-      "versions": ["14", "15", "26"],
-      "architectures": ["x64", "arm64"],
+      "versions": ["15"],
+      "architectures": ["arm64"],
       "runner_kind": "github-hosted-or-self-hosted",
-      "runner_label_map": {
-        "14:x64": ["macos-14-large"],
-        "14:arm64": ["macos-14"],
-        "15:x64": ["macos-15-intel"],
-        "15:arm64": ["macos-15"],
-        "26:x64": ["macos-26-intel"],
-        "26:arm64": ["macos-26"]
-      },
+      "runner_labels_template": ["macos-15"],
       "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
       "evidence_required": true
-    },
-    {
-      "family": "rhel",
-      "versions": ["7", "8", "9", "10"],
-      "architectures": ["x64", "arm64"],
-      "runner_kind": "external-lab",
-      "runner_labels_template": ["self-hosted", "tb-release-platform", "rhel-{version_slug}-{arch}"],
-      "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
-      "evidence_required": true,
-      "notes": "Use real RHEL-compatible hosts or vendor images; Ubuntu container runs do not count as RHEL evidence."
     },
     {
       "family": "ubuntu",
-      "versions": ["20.04", "22.04", "24.04", "26.04"],
-      "architectures": ["x64", "arm64"],
-      "runner_kind": "github-hosted-or-self-hosted",
-      "runner_label_map": {
-        "20.04:x64": ["self-hosted", "tb-release-platform", "ubuntu-20_04-x64"],
-        "20.04:arm64": ["self-hosted", "tb-release-platform", "ubuntu-20_04-arm64"],
-        "22.04:x64": ["ubuntu-22.04"],
-        "22.04:arm64": ["ubuntu-22.04-arm"],
-        "24.04:x64": ["ubuntu-24.04"],
-        "24.04:arm64": ["ubuntu-24.04-arm"],
-        "26.04:x64": ["ubuntu-26.04"],
-        "26.04:arm64": ["ubuntu-26.04-arm"]
-      },
-      "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
-      "evidence_required": true,
-      "notes": "Ubuntu 20.04 is not a current GitHub-hosted label and needs self-hosted evidence."
-    },
-    {
-      "family": "freebsd",
-      "versions": ["release"],
-      "architectures": ["x64", "arm64"],
-      "runner_kind": "external-lab",
-      "runner_labels_template": ["self-hosted", "tb-release-platform", "freebsd-{arch}"],
+      "versions": ["24.04"],
+      "architectures": ["x64"],
+      "runner_kind": "github-hosted",
+      "runner_labels_template": ["ubuntu-24.04"],
       "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
       "evidence_required": true
-    },
-    {
-      "family": "openbsd",
-      "versions": ["release"],
-      "architectures": ["x64", "arm64"],
-      "runner_kind": "external-lab",
-      "runner_labels_template": ["self-hosted", "tb-release-platform", "openbsd-{arch}"],
-      "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
-      "evidence_required": true
-    },
-    {
-      "family": "netbsd",
-      "versions": ["release"],
-      "architectures": ["x64", "arm64"],
-      "runner_kind": "external-lab",
-      "runner_labels_template": ["self-hosted", "tb-release-platform", "netbsd-{arch}"],
-      "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
-      "evidence_required": true
-    },
-    {
-      "family": "android",
-      "versions": ["14", "15", "16"],
-      "architectures": ["x86_64-emulator", "arm64-device"],
-      "runner_kind": "device-or-emulator-lab",
-      "runner_labels_template": ["self-hosted", "tb-release-platform", "android-{version_slug}-{arch}"],
-      "test_suites": ["platform-probe", "mobile-client-contract"],
-      "evidence_required": true,
-      "notes": "A contract-only Node run on Linux is not Android evidence; this target requires an Android API-level emulator/device run."
-    },
-    {
-      "family": "ios",
-      "versions": ["15", "16", "18", "26"],
-      "architectures": ["simulator-arm64", "device-arm64"],
-      "runner_kind": "device-or-simulator-lab",
-      "runner_labels_template": ["self-hosted", "tb-release-platform", "ios-{version_slug}-{arch}"],
-      "test_suites": ["platform-probe", "mobile-client-contract"],
-      "evidence_required": true,
-      "notes": "Each iOS version requires a matching simulator runtime or physical device. A macOS-only Node contract run is not iOS evidence."
     }
   ],
   "browser_groups": [
     {
       "browser": "chrome",
-      "hosts": ["windows-10-x64", "windows-11-x64", "ubuntu-22_04-x64", "ubuntu-24_04-x64", "macos-14-arm64", "macos-15-arm64", "macos-26-arm64"],
+      "hosts": ["windows-11-x64", "ubuntu-24_04-x64", "macos-15-arm64"],
       "runner_kind": "real-browser-or-browser-lab",
       "runner_labels_template": ["self-hosted", "tb-browser", "chrome-{host}"],
       "test_suites": ["browser-contract"],
@@ -130,7 +55,7 @@
     },
     {
       "browser": "firefox",
-      "hosts": ["windows-10-x64", "windows-11-x64", "ubuntu-22_04-x64", "ubuntu-24_04-x64", "macos-14-arm64", "macos-15-arm64", "macos-26-arm64"],
+      "hosts": ["windows-11-x64", "ubuntu-24_04-x64", "macos-15-arm64"],
       "runner_kind": "real-browser-or-browser-lab",
       "runner_labels_template": ["self-hosted", "tb-browser", "firefox-{host}"],
       "test_suites": ["browser-contract"],
@@ -138,20 +63,11 @@
     },
     {
       "browser": "edge",
-      "hosts": ["windows-10-x64", "windows-11-x64", "ubuntu-22_04-x64", "ubuntu-24_04-x64", "macos-14-arm64", "macos-15-arm64", "macos-26-arm64"],
+      "hosts": ["windows-11-x64", "ubuntu-24_04-x64", "macos-15-arm64"],
       "runner_kind": "real-browser-or-browser-lab",
       "runner_labels_template": ["self-hosted", "tb-browser", "edge-{host}"],
       "test_suites": ["browser-contract"],
       "evidence_required": true
-    },
-    {
-      "browser": "internet-explorer",
-      "hosts": ["windows-7-x86", "windows-7-x64", "windows-8_1-x86", "windows-8_1-x64", "windows-10-x86", "windows-10-x64", "edge-ie-mode-windows-10-x64", "edge-ie-mode-windows-11-x64"],
-      "runner_kind": "legacy-browser-lab",
-      "runner_labels_template": ["self-hosted", "tb-browser", "internet-explorer-{host}"],
-      "test_suites": ["browser-contract"],
-      "evidence_required": true,
-      "notes": "Internet Explorer desktop is retired on many Windows versions; Edge IE mode evidence must be kept separate from real IE desktop evidence."
     }
   ]
 }
