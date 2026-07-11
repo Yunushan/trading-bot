@@ -160,38 +160,20 @@ def _valid_source_sync_audit_payload(contract_hash: str = PYTHON_SOURCE_CONTRACT
         },
         "generated": [
             {
-                "name": "rust_core_generated_contract",
+                "name": name,
                 "ok": True,
                 "embeds_contract_hash": True,
                 "expected_contract_hash": contract_hash,
-                "actual_sha256": "1" * 64,
-                "expected_sha256": "1" * 64,
-                "actual_bytes": 1,
-                "expected_bytes": 1,
+                "actual_sha256": f"{index:064x}",
+                "expected_sha256": f"{index:064x}",
+                "actual_bytes": index,
+                "expected_bytes": index,
                 "issues": [],
-            },
-            {
-                "name": "cpp_generated_contract",
-                "ok": True,
-                "embeds_contract_hash": True,
-                "expected_contract_hash": contract_hash,
-                "actual_sha256": "2" * 64,
-                "expected_sha256": "2" * 64,
-                "actual_bytes": 2,
-                "expected_bytes": 2,
-                "issues": [],
-            },
-            {
-                "name": "tauri_browser_generated_contract",
-                "ok": True,
-                "embeds_contract_hash": True,
-                "expected_contract_hash": contract_hash,
-                "actual_sha256": "3" * 64,
-                "expected_sha256": "3" * 64,
-                "actual_bytes": 3,
-                "expected_bytes": 3,
-                "issues": [],
-            },
+            }
+            for index, name in enumerate(
+                evidence_importer.SOURCE_SYNC_REQUIRED_GENERATED_ARTIFACTS,
+                start=1,
+            )
         ],
         "consumers": _valid_source_sync_consumer_rows(),
         "issues": [],
@@ -2506,7 +2488,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             list(evidence_importer.SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES),
             result["source_sync_claim"]["actual_consumer_surface_names"],
         )
-        self.assertEqual(19, result["source_sync_claim"]["consumer_surface_count"])
+        self.assertEqual(
+            len(evidence_importer.SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES),
+            result["source_sync_claim"]["consumer_surface_count"],
+        )
         self.assertIn(
             "cpp_chart_uses_python_source_surface",
             result["source_sync_claim"]["consumer_surface_names"],
@@ -2585,7 +2570,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             list(evidence_importer.SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES),
             source_claim["actual_consumer_surface_names"],
         )
-        self.assertEqual(19, source_claim["consumer_surface_count"])
+        self.assertEqual(
+            len(evidence_importer.SOURCE_SYNC_REQUIRED_CONSUMER_SURFACES),
+            source_claim["consumer_surface_count"],
+        )
         self.assertIn("cpp_dashboard_uses_python_source_surface", source_claim["consumer_surface_names"])
         self.assertEqual("collect_required_runtime_evidence", model["phase"])
         self.assertFalse(model["can_claim_runtime_complete"])

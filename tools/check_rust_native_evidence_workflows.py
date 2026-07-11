@@ -34,6 +34,10 @@ SOURCE_SYNC_AUDIT_FRAGMENTS = (
     "path: artifacts/native-source-sync/native-source-sync-audit.json",
     "if-no-files-found: warn",
 )
+NATIVE_PARITY_DEPENDENCY_FRAGMENTS = (
+    "Install native parity dependencies",
+    'python -m pip install -e "./Languages/Python"',
+)
 
 
 def _repo_root() -> Path:
@@ -81,6 +85,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
             "contents: read",
             "uses: actions/setup-python@v6",
             'python-version: "3.14"',
+            *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}",
             "BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}",
             'TRADING_BOT_RUST_LIVE_SMOKE: "1"',
@@ -117,6 +122,7 @@ def _check_live_smoke(root: Path) -> dict[str, Any]:
             text,
             (
                 "Set up Python",
+                "Install native parity dependencies",
                 "Validate signed smoke inputs",
                 "Audit native source sync",
                 "Upload native source sync audit",
@@ -162,8 +168,14 @@ def _check_ci_rust_native_gate(root: Path) -> dict[str, Any]:
             "python3 tools/check_rust_native_live_smoke_preflight.py --json",
             "generated evidence source-control guard",
             "python tools/check_generated_evidence_source_control.py --json",
+            "release-platform-matrix-contract:",
+            "rust-smoke:",
         ),
     )
+    if text.count("Install native parity dependencies") < 2:
+        issues.append(
+            "CI must install native parity dependencies in both release-platform-matrix-contract and rust-smoke"
+        )
     issues.extend(
         _ordered(
             text,
@@ -208,6 +220,9 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
             "desktop_smoke_command:",
             "browser_test_command:",
             "contents: read",
+            "uses: actions/setup-python@v6",
+            'python-version: "3.14"',
+            *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "python tools/check_release_platform_matrix.py --schema-only",
             *SOURCE_SYNC_AUDIT_FRAGMENTS,
             "python tools/run_release_platform_probe.py",
@@ -232,6 +247,8 @@ def _check_release_platform_real_tests(root: Path) -> dict[str, Any]:
         _ordered(
             text,
             (
+                "Set up Python",
+                "Install native parity dependencies",
                 "Validate matrix contract",
                 "Audit native source sync",
                 "Upload native source sync audit",
@@ -273,6 +290,7 @@ def _check_release_evidence(root: Path) -> dict[str, Any]:
             "contents: read",
             "uses: actions/setup-python@v6",
             'python-version: "3.14"',
+            *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "platform_evidence_run_id",
             "platform_evidence_artifact_pattern",
             "GH_TOKEN: ${{ github.token }}",
@@ -311,6 +329,7 @@ def _check_release_evidence(root: Path) -> dict[str, Any]:
             text,
             (
                 "Set up Python",
+                "Install native parity dependencies",
                 "Validate release evidence inputs",
                 "Audit native source sync",
                 "Upload native source sync audit",
@@ -343,6 +362,9 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
             "LIVE_SMOKE_RUN_ID: ${{ inputs.live_smoke_run_id }}",
             "RELEASE_EVIDENCE_RUN_ID: ${{ inputs.release_evidence_run_id }}",
             "RUST_NATIVE_RUNTIME_EVIDENCE_DIR: ${{ github.workspace }}/${{ inputs.evidence_dir }}",
+            "uses: actions/setup-python@v6",
+            'python-version: "3.14"',
+            *NATIVE_PARITY_DEPENDENCY_FRAGMENTS,
             "Validate promotion audit inputs",
             "live_smoke_run_id must be a numeric GitHub Actions run id.",
             "release_evidence_run_id must be a numeric GitHub Actions run id.",
@@ -389,6 +411,8 @@ def _check_promotion_audit(root: Path) -> dict[str, Any]:
         _ordered(
             text,
             (
+                "Set up Python",
+                "Install native parity dependencies",
                 "Validate promotion audit inputs",
                 "Audit native source sync",
                 "Upload native source sync audit",

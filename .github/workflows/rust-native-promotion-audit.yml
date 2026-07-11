@@ -43,6 +43,13 @@ jobs:
           cache-dependency-path: |
             Languages/Python/pyproject.toml
 
+      - name: Install native parity dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python"
+
       - name: Install Rust native promotion dependencies
         shell: bash
         run: |
