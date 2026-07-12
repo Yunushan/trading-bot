@@ -117,6 +117,46 @@ async function resolveBrowserExecutable(browser, explicit) {
   throw new Error(`Could not find ${browser} executable. Tried: ${candidates.join(", ")}`);
 }
 
+async function runFirefoxBrowserContract(targetUrl) {
+  let firefox;
+  try {
+    ({ firefox } = await import("playwright"));
+  } catch (error) {
+    throw new Error(
+      `Firefox contract requires the pinned Playwright dependency. Run npm --prefix apps/web-dashboard ci first. ${error?.message || error}`,
+    );
+  }
+
+  let browser;
+  try {
+    browser = await firefox.launch({ headless: true });
+  } catch (error) {
+    throw new Error(
+      `Firefox contract requires the Playwright Firefox browser. Run npx --prefix apps/web-dashboard playwright install firefox first. ${error?.message || error}`,
+    );
+  }
+
+  try {
+    const page = await browser.newPage();
+    await page.goto(targetUrl, { waitUntil: "networkidle" });
+    const rawPayload = await page.locator("html").getAttribute(RESULT_ATTRIBUTE);
+    if (!rawPayload) {
+      throw new Error("Firefox browser contract did not produce a result payload.");
+    }
+    const payload = JSON.parse(decodeURIComponent(rawPayload));
+    if (!payload.ok) {
+      throw new Error(`Firefox browser contract failed in page: ${payload.error}`);
+    }
+    return {
+      browser: "firefox",
+      executable: "playwright-firefox",
+      payload,
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
 function harnessHtml() {
   return `<!doctype html>
 <meta charset="utf-8">
@@ -274,39 +314,48 @@ function parseBrowserResult(stdout) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const executable = await resolveBrowserExecutable(args.browser, args.executable);
+  if (!["chrome", "edge", "firefox"].includes(args.browser)) {
+    throw new Error(`Unsupported browser ${args.browser}; supported browser contract targets are chrome, edge, and firefox.`);
+  }
+  const executable = args.browser === "firefox" ? "" : await resolveBrowserExecutable(args.browser, args.executable);
   const profileDir = await mkdtemp(path.join(os.tmpdir(), "trading-bot-web-dashboard-browser-"));
   const { server, port } = await serveDashboard();
   const targetUrl = `http://127.0.0.1:${port}/__browser_contract_harness__.html`;
   try {
-    const commandArgs = [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--virtual-time-budget=5000",
-      `--user-data-dir=${profileDir}`,
-      "--dump-dom",
-      targetUrl,
-    ];
-    const result = await runProcess(executable, commandArgs, { timeoutMs: 30000 });
-    if (!result.ok) {
-      throw new Error(
-        `${args.browser} browser contract failed to launch or exited non-zero (${result.returncode}). ${result.stderr}`,
-      );
-    }
-    const payload = parseBrowserResult(result.stdout);
-    if (!payload.ok) {
-      throw new Error(`${args.browser} browser contract failed in page: ${payload.error}`);
+    let browserResult;
+    if (args.browser === "firefox") {
+      browserResult = await runFirefoxBrowserContract(targetUrl);
+    } else {
+      const commandArgs = [
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--virtual-time-budget=5000",
+        `--user-data-dir=${profileDir}`,
+        "--dump-dom",
+        targetUrl,
+      ];
+      const result = await runProcess(executable, commandArgs, { timeoutMs: 30000 });
+      if (!result.ok) {
+        throw new Error(
+          `${args.browser} browser contract failed to launch or exited non-zero (${result.returncode}). ${result.stderr}`,
+        );
+      }
+      const payload = parseBrowserResult(result.stdout);
+      if (!payload.ok) {
+        throw new Error(`${args.browser} browser contract failed in page: ${payload.error}`);
+      }
+      browserResult = { browser: args.browser, executable, payload };
     }
     console.log(
       JSON.stringify(
         {
           ok: true,
-          browser: args.browser,
-          executable,
-          userAgent: payload.userAgent,
-          tests: payload.tests,
+          browser: browserResult.browser,
+          executable: browserResult.executable,
+          userAgent: browserResult.payload.userAgent,
+          tests: browserResult.payload.tests,
           targetUrl,
         },
         null,

@@ -410,6 +410,7 @@ def _check_ok_from_output(*, check: Check, returncode: int, stdout: str) -> bool
 
 _PROMOTION_IMPORT_SOURCE_BINDING_ISSUE_MARKERS = (
     "current tracked source tree must be clean for promotion evidence validation",
+    "current promotion source tree must not contain untracked source/tool files",
     "current source tree must be clean for promotion evidence import",
     "commit must match current git commit",
     "python_source_contract_hash must match current Python source contract",

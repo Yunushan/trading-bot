@@ -372,8 +372,6 @@ def _required_workflow_inputs(target: dict[str, Any]) -> list[str]:
     inputs: list[str] = []
     if (target.get("kind") == "browser" or "browser-contract" in suites) and not has_builtin_browser_contract_command(target):
         inputs.append("browser_test_command")
-    if "desktop-release-smoke" in suites:
-        inputs.append("desktop_smoke_command")
     return inputs
 
 
@@ -467,6 +465,22 @@ def _workflow_dispatch_batch_plan(targets: list[dict[str, Any]], *, limit: int) 
         "manual_input_target_count": len(manual_input_targets),
         "manual_input_targets": limited_manual_input_targets,
         "manual_input_targets_truncated": limit > 0 and len(manual_input_targets) > limit,
+        "complete_matrix_dispatch": {
+            "workflow": "release-platform-real-tests.yml",
+            "workflow_dispatch_inputs": {
+                "target_id": "all",
+                "runner_labels_json": "",
+                "require_all_evidence": True,
+            },
+            "command": (
+                "gh workflow run release-platform-real-tests.yml "
+                "-f target_id=all -f require_all_evidence=true"
+            ),
+            "description": (
+                "Preferred promotion collection: run every checked-in release target in one "
+                "GitHub Actions workflow so the full evidence gate validates the combined artifacts."
+            ),
+        },
         "artifact_name_pattern": "release-platform-evidence-<target_id>",
         "validation_command": (
             "python tools/check_release_platform_matrix.py --require-evidence "

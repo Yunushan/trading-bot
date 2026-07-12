@@ -20,6 +20,7 @@ from tools import check_rust_native_live_smoke_preflight as live_smoke_preflight
 from tools import check_rust_native_runtime_evidence as runtime_evidence  # noqa: E402
 from tools import check_rust_native_evidence_workflows as evidence_workflows  # noqa: E402
 from tools import check_generated_evidence_source_control as evidence_source_control  # noqa: E402
+from tools import check_native_cpp as native_cpp  # noqa: E402
 from tools import check_release_platform_matrix as release_platform_matrix  # noqa: E402
 from tools import check_release_assets as release_assets  # noqa: E402
 from tools import import_rust_native_evidence_artifacts as evidence_importer  # noqa: E402
@@ -1722,6 +1723,18 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertNotIn("browser_test_command", workflow_batch["workflow_dispatch_inputs"][0])
         self.assertFalse(workflow_batch["commands_truncated"])
         self.assertEqual(0, workflow_batch["manual_input_target_count"])
+        self.assertEqual(
+            {
+                "target_id": "all",
+                "runner_labels_json": "",
+                "require_all_evidence": True,
+            },
+            workflow_batch["complete_matrix_dispatch"]["workflow_dispatch_inputs"],
+        )
+        self.assertIn(
+            "-f target_id=all -f require_all_evidence=true",
+            workflow_batch["complete_matrix_dispatch"]["command"],
+        )
         self.assertIn("--require-current-commit", workflow_batch["validation_command"])
         self.assertIn("write_rust_native_release_evidence.py", workflow_batch["aggregate_write_command"])
         self.assertEqual("windows-11-x64", result["local_browser_batch_plan"]["host"])
@@ -1834,12 +1847,13 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertNotIn("browser_test_command", edge_plan["required_workflow_inputs"])
         self.assertNotIn("browser_test_command", edge_plan["workflow_dispatch_example"])
 
-        self.assertFalse(firefox_plan["browser_contract_command_builtin"])
-        self.assertIn("browser_test_command", firefox_plan["required_workflow_inputs"])
-        self.assertIn(
-            "<real firefox browser contract command from external lab>",
-            firefox_plan["workflow_dispatch_example"],
+        self.assertTrue(firefox_plan["browser_contract_command_builtin"])
+        self.assertEqual(
+            "npm --prefix apps/web-dashboard run test:browser -- --browser=firefox",
+            firefox_plan["browser_contract_command"],
         )
+        self.assertNotIn("browser_test_command", firefox_plan["required_workflow_inputs"])
+        self.assertNotIn("browser_test_command", firefox_plan["workflow_dispatch_example"])
 
         batch_plan = release_evidence._workflow_dispatch_batch_plan([edge_target, firefox_target], limit=1)
         self.assertEqual(2, batch_plan["target_count"])
@@ -1847,15 +1861,10 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(1, batch_plan["command_count"])
         self.assertEqual(["browser-edge-windows-11-x64"], batch_plan["command_target_ids"])
         self.assertTrue(batch_plan["commands_truncated"])
-        self.assertEqual(1, batch_plan["manual_input_target_count"])
-        self.assertEqual("browser-firefox-windows-11-x64", batch_plan["manual_input_targets"][0]["target_id"])
-        self.assertEqual(["browser_test_command"], batch_plan["manual_input_targets"][0]["required_workflow_inputs"])
+        self.assertEqual(0, batch_plan["manual_input_target_count"])
+        self.assertEqual([], batch_plan["manual_input_targets"])
         self.assertEqual("browser-edge-windows-11-x64", batch_plan["workflow_dispatch_inputs"][0]["target_id"])
         self.assertNotIn("browser_test_command", batch_plan["workflow_dispatch_inputs"][0])
-        self.assertEqual(
-            "<real firefox browser contract command from external lab>",
-            batch_plan["manual_input_targets"][0]["workflow_dispatch_inputs"]["browser_test_command"],
-        )
 
     def test_readiness_audit_release_prerequisites_include_preflight_coverage(self):
         preflight_result = {
@@ -5326,12 +5335,41 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
             targets = release_platform_probe._local_browser_targets(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
 
         self.assertEqual(
-            ["browser-chrome-windows_11_x64", "browser-edge-windows_11_x64"],
+            [
+                "browser-chrome-windows_11_x64",
+                "browser-edge-windows_11_x64",
+                "browser-firefox-windows_11_x64",
+            ],
             sorted(str(target["id"]) for target in targets),
         )
         self.assertTrue(all(str(target["host"]) == "windows-11-x64" for target in targets))
-        self.assertNotIn("firefox", {str(target.get("browser")) for target in targets})
+        self.assertIn("firefox", {str(target.get("browser")) for target in targets})
         self.assertNotIn("internet-explorer", {str(target.get("browser")) for target in targets})
+
+    def test_release_matrix_maps_browser_targets_to_matching_declared_runners(self):
+        matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+        platform_targets, browser_targets, issues = release_platform_matrix._validate_matrix(matrix)
+
+        self.assertEqual([], issues)
+        windows_platform = next(target for target in platform_targets if target["id"] == "windows-11-x64")
+        self.assertEqual("self-hosted-windows-11", windows_platform["runner_kind"])
+        self.assertEqual(
+            ["self-hosted", "windows", "x64", "tb-release-platform", "windows-11-x64"],
+            windows_platform["runner_labels"],
+        )
+        expected_labels = {
+            "windows-11-x64": ["self-hosted", "windows", "x64", "tb-release-platform", "windows-11-x64"],
+            "ubuntu-24_04-x64": ["ubuntu-24.04"],
+            "macos-15-arm64": ["macos-15"],
+        }
+        expected_kinds = {
+            "windows-11-x64": "self-hosted-windows-11",
+            "ubuntu-24_04-x64": "github-hosted",
+            "macos-15-arm64": "github-hosted",
+        }
+        for target in browser_targets:
+            self.assertEqual(expected_kinds[target["host"]], target["runner_kind"])
+            self.assertEqual(expected_labels[target["host"]], target["runner_labels"])
 
     def test_release_platform_probe_local_browser_batch_writes_per_target_outputs(self):
         targets = [
@@ -5431,7 +5469,7 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         run_command.assert_called_once()
         self.assertEqual(expected_command, run_command.call_args.args[1])
 
-    def test_release_platform_probe_requires_lab_command_for_unsupported_browser_targets(self):
+    def test_release_platform_probe_uses_builtin_firefox_command(self):
         target = {
             "id": "browser-firefox-windows-11-x64",
             "kind": "browser",
@@ -5442,13 +5480,112 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         with (
             patch.dict(release_platform_probe.os.environ, {}, clear=True),
             patch.object(release_platform_probe.shutil, "which", return_value="npm.cmd"),
-            patch.object(release_platform_probe, "_run_command") as run_command,
+            patch.object(
+                release_platform_probe,
+                "_run_command",
+                return_value={"name": "browser-contract", "status": "passed"},
+            ) as run_command,
         ):
             results = release_platform_probe._suite_results(target, root=REPO_ROOT)
 
-        self.assertEqual("failed", results[0]["status"])
-        self.assertIn("real firefox browser contract command", results[0]["stderr"])
-        run_command.assert_not_called()
+        self.assertEqual("passed", results[0]["status"])
+        self.assertEqual(
+            ["npm.cmd", "--prefix", "apps/web-dashboard", "run", "test:browser", "--", "--browser=firefox"],
+            run_command.call_args.args[1],
+        )
+
+    def test_release_platform_probe_uses_builtin_native_desktop_smoke(self):
+        target = {
+            "id": "windows-11-x64",
+            "kind": "platform",
+            "test_suites": ["desktop-release-smoke"],
+        }
+
+        with (
+            patch.dict(release_platform_probe.os.environ, {}, clear=True),
+            patch.object(
+                release_platform_probe,
+                "_run_command",
+                return_value={"name": "desktop-release-smoke", "status": "passed"},
+            ) as run_command,
+        ):
+            results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual("passed", results[0]["status"])
+        self.assertEqual(
+            [
+                sys.executable,
+                "tools/check_native_cpp.py",
+                "--config",
+                "Release",
+                "--timeout",
+                "600",
+            ],
+            run_command.call_args.args[1],
+        )
+        self.assertEqual(900, run_command.call_args.kwargs["timeout"])
+
+    def test_release_platform_probe_runs_workspace_check_and_rust_core_tests(self):
+        target = {"id": "ubuntu-24_04-x64", "kind": "platform", "test_suites": ["native-build-smoke"]}
+
+        with (
+            patch.object(release_platform_probe.shutil, "which", return_value="cargo"),
+            patch.object(
+                release_platform_probe,
+                "_run_command",
+                side_effect=[
+                    {"name": "rust-workspace-check", "status": "passed"},
+                    {"name": "native-build-smoke", "status": "passed"},
+                ],
+            ) as run_command,
+        ):
+            results = release_platform_probe._suite_results(target, root=REPO_ROOT)
+
+        self.assertEqual(["rust-workspace-check", "native-build-smoke"], [row["name"] for row in results])
+        self.assertEqual(
+            ["cargo", "check", "--manifest-path", "experiments/rust-shells/Cargo.toml", "--workspace"],
+            run_command.call_args_list[0].args[1],
+        )
+        self.assertEqual(
+            [
+                "cargo",
+                "test",
+                "--manifest-path",
+                "experiments/rust-shells/Cargo.toml",
+                "-p",
+                "trading-bot-core",
+            ],
+            run_command.call_args_list[1].args[1],
+        )
+
+    def test_native_cpp_desktop_smoke_uses_offscreen_qt_on_non_windows_hosts(self):
+        with patch.dict(native_cpp.os.environ, {}, clear=True), patch.object(native_cpp.sys, "platform", "linux"):
+            environment = native_cpp._desktop_smoke_env(REPO_ROOT / "missing-build", "Release")
+        self.assertEqual("offscreen", environment["QT_QPA_PLATFORM"])
+
+        with patch.dict(native_cpp.os.environ, {}, clear=True), patch.object(native_cpp.sys, "platform", "win32"):
+            environment = native_cpp._desktop_smoke_env(REPO_ROOT / "missing-build", "Release")
+        self.assertNotIn("QT_QPA_PLATFORM", environment)
+
+    def test_native_cpp_uses_requested_release_build_type_with_single_config_generators(self):
+        with (
+            patch.object(native_cpp.sys, "platform", "linux"),
+            patch.object(native_cpp.shutil, "which", side_effect=["cmake", "ctest"]),
+            patch.object(native_cpp, "_run_step", return_value={"ok": True}) as run_step,
+        ):
+            report = native_cpp.check_native_cpp(
+                build_dir=REPO_ROOT / "build" / "test-native-release",
+                config="Release",
+                require_webengine=True,
+                enable_qt_deploy_script=None,
+                smoke_targets_only=True,
+                qt_version=None,
+                timeout=30,
+            )
+
+        self.assertTrue(report["ok"])
+        configure_command = run_step.call_args_list[0].args[1]
+        self.assertIn("-DCMAKE_BUILD_TYPE=Release", configure_command)
 
     def test_release_platform_cli_target_filter_limits_evidence_validation(self):
         payload = {
@@ -5490,6 +5627,66 @@ class RustNativeReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(1, report["target_count"])
         self.assertGreater(report["total_target_count"], report["target_count"])
         self.assertEqual("windows-11-x64", report["target_filter"])
+
+    def test_release_platform_cli_emits_all_targets_and_scopes_runner_overrides(self):
+        matrix_path = str(REPO_ROOT / "docs" / "release-platform-test-matrix.json")
+
+        all_stdout = io.StringIO()
+        with contextlib.redirect_stdout(all_stdout):
+            all_code = release_platform_matrix.main(
+                ["--matrix", matrix_path, "--emit-github-matrix"]
+            )
+        all_matrix = json.loads(all_stdout.getvalue())
+
+        focused_stdout = io.StringIO()
+        with contextlib.redirect_stdout(focused_stdout):
+            focused_code = release_platform_matrix.main(
+                [
+                    "--matrix",
+                    matrix_path,
+                    "--emit-github-matrix",
+                    "--target-filter",
+                    "browser-edge-windows_11_x64",
+                    "--runner-labels-json",
+                    '["self-hosted","tb-release-platform","windows-11-x64"]',
+                ]
+            )
+        focused_matrix = json.loads(focused_stdout.getvalue())
+
+        invalid_stdout = io.StringIO()
+        with contextlib.redirect_stdout(invalid_stdout):
+            invalid_code = release_platform_matrix.main(
+                [
+                    "--matrix",
+                    matrix_path,
+                    "--emit-github-matrix",
+                    "--runner-labels-json",
+                    '["self-hosted"]',
+                ]
+            )
+        invalid_matrix = json.loads(invalid_stdout.getvalue())
+
+        self.assertEqual(0, all_code)
+        self.assertEqual(12, len(all_matrix["include"]))
+        self.assertIn(
+            "browser-edge-windows_11_x64",
+            {item["target_id"] for item in all_matrix["include"]},
+        )
+        self.assertEqual(0, focused_code)
+        self.assertEqual(
+            [
+                {
+                    "target_id": "browser-edge-windows_11_x64",
+                    "kind": "browser",
+                    "runner_kind": "self-hosted-windows-11",
+                    "runner_labels_json": '["self-hosted","tb-release-platform","windows-11-x64"]',
+                    "test_suites": "browser-contract",
+                }
+            ],
+            focused_matrix["include"],
+        )
+        self.assertEqual(1, invalid_code)
+        self.assertEqual([], invalid_matrix["include"])
 
     def test_release_platform_cli_promotion_flags_require_source_bound_target_evidence(self):
         matrix = release_platform_matrix._load_json(REPO_ROOT / "docs" / "release-platform-test-matrix.json")

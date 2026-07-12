@@ -10,5 +10,8 @@
   "scripts": {
     "test": "node tests/render-preflight.test.mjs && node tests/auth-storage-stream.test.mjs && node tests/service-contract.test.mjs",
     "test:browser": "node tests/browser-contract.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.61.1"
   }
 }

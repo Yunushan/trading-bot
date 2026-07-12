@@ -39,6 +39,16 @@ if str(PYTHON_ROOT) not in sys.path:
 from app.native_parity import native_python_source_contract_hash  # noqa: E402
 
 
+DEFAULT_DESKTOP_RELEASE_SMOKE_COMMAND = (
+    sys.executable,
+    "tools/check_native_cpp.py",
+    "--config",
+    "Release",
+    "--timeout",
+    "600",
+)
+
+
 def _repo_root() -> Path:
     return REPO_ROOT
 
@@ -380,25 +390,33 @@ def _suite_results(target: dict[str, Any], *, root: Path) -> list[dict[str, Any]
         )
 
     if "desktop-release-smoke" in suites:
-        command = _shell_command_from_env("TB_RELEASE_DESKTOP_SMOKE_COMMAND")
-        if command is None:
-            results.append(
-                {
-                    "name": "desktop-release-smoke",
-                    "status": "failed",
-                    "stderr": "Set TB_RELEASE_DESKTOP_SMOKE_COMMAND to the real release binary smoke command for this runner.",
-                }
-            )
-        else:
-            results.append(_run_command("desktop-release-smoke", command, cwd=root, timeout=600))
+        command = _shell_command_from_env("TB_RELEASE_DESKTOP_SMOKE_COMMAND") or list(
+            DEFAULT_DESKTOP_RELEASE_SMOKE_COMMAND
+        )
+        results.append(_run_command("desktop-release-smoke", command, cwd=root, timeout=900))
 
     if "native-build-smoke" in suites:
         cargo = shutil.which("cargo")
         if cargo:
             results.append(
                 _run_command(
-                    "native-build-smoke",
+                    "rust-workspace-check",
                     [cargo, "check", "--manifest-path", "experiments/rust-shells/Cargo.toml", "--workspace"],
+                    cwd=root,
+                    timeout=900,
+                )
+            )
+            results.append(
+                _run_command(
+                    "native-build-smoke",
+                    [
+                        cargo,
+                        "test",
+                        "--manifest-path",
+                        "experiments/rust-shells/Cargo.toml",
+                        "-p",
+                        "trading-bot-core",
+                    ],
                     cwd=root,
                     timeout=900,
                 )

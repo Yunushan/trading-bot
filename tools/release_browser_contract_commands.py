@@ -9,6 +9,7 @@ from typing import Any
 SUPPORTED_BROWSER_CONTRACT_COMMANDS = {
     "chrome": "npm --prefix apps/web-dashboard run test:browser -- --browser=chrome",
     "edge": "npm --prefix apps/web-dashboard run test:browser -- --browser=edge",
+    "firefox": "npm --prefix apps/web-dashboard run test:browser -- --browser=firefox",
 }
 
 

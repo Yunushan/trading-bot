@@ -1203,6 +1203,20 @@ class ProductPackagingContractTests(unittest.TestCase):
         ):
             self.assertIn("OPERATIONAL_PREFLIGHT_RUNBOOK.md", docs_text)
 
+    def test_windows_11_release_runner_setup_helper_is_guarded(self):
+        helper = (REPO_ROOT / "tools" / "Setup-Windows11ReleaseRunner.ps1").read_text(encoding="utf-8")
+        for fragment in (
+            "SupportsShouldProcess",
+            "Assert-Windows11X64",
+            "Windows Server and Windows 10 are not accepted",
+            "tb-release-platform,windows-11-x64",
+            "Runner directory is not empty",
+            "Get-RunnerAssetUrl",
+            "No runner configuration was performed.",
+            "InstallService requires an elevated PowerShell session.",
+        ):
+            self.assertIn(fragment, helper)
+
     def test_ci_smoke_uses_canonical_service_wrapper(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         native_cpp_checker = (REPO_ROOT / "tools" / "check_native_cpp.py").read_text(encoding="utf-8")
@@ -1224,6 +1238,8 @@ class ProductPackagingContractTests(unittest.TestCase):
         self.assertIn("python tools/check_native_cpp.py", workflow)
         self.assertIn('"desktop release smoke"', native_cpp_checker)
         self.assertIn('"--smoke"', native_cpp_checker)
+        self.assertIn('env.setdefault("QT_QPA_PLATFORM", "offscreen")', native_cpp_checker)
+        self.assertIn('f"-DCMAKE_BUILD_TYPE={config}"', native_cpp_checker)
         self.assertIn("--no-require-webengine", workflow)
         self.assertIn("--no-enable-qt-deploy-script", workflow)
         self.assertIn("--smoke-targets-only", workflow)

@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       target_id:
-        description: "Target id from docs/release-platform-test-matrix.json expansion, for example ubuntu-24_04-x64 or browser-edge-windows-11-x64"
-        required: true
+        description: "Target id from docs/release-platform-test-matrix.json, for example browser-edge-windows_11_x64, or all to execute every target in one evidence run."
+        required: false
+        default: "all"
         type: string
       runner_labels_json:
-        description: "JSON string/array for runs-on, for example \"ubuntu-24.04\" or [\"self-hosted\",\"tb-release-platform\",\"windows-7-x64\"]"
-        required: true
-        default: "\"ubuntu-24.04\""
+        description: "Optional JSON array override for one focused target, for example [\"self-hosted\",\"tb-release-platform\",\"windows-7-x64\"]."
+        required: false
+        default: ""
         type: string
       require_all_evidence:
         description: "After this run, fail unless release-platform-evidence contains passed evidence for every matrix target."
@@ -18,7 +19,7 @@ on:
         type: boolean
         default: false
       desktop_smoke_command:
-        description: "Real release binary desktop smoke command for desktop-release-smoke targets, for example build/binance_cpp/Release/Trading-Bot-C++.exe --smoke"
+        description: "Optional override for the built-in native C++ Release build-and-smoke command."
         required: false
         default: ""
         type: string
@@ -32,9 +33,11 @@ permissions:
   contents: read
 
 jobs:
-  run-target:
-    name: Real Target Probe (${{ inputs.target_id }})
-    runs-on: ${{ fromJson(inputs.runner_labels_json) }}
+  prepare-targets:
+    name: Resolve Release Target Matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ steps.matrix.outputs.targets }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -50,6 +53,138 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e "./Languages/Python"
+
+      - name: Emit selected target matrix
+        id: matrix
+        shell: bash
+        env:
+          TARGET_ID: ${{ inputs.target_id }}
+          RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
+        run: |
+          set -euo pipefail
+          args=(--emit-github-matrix)
+          if [[ "$TARGET_ID" != "all" ]]; then
+            args+=(--target-filter "$TARGET_ID")
+          fi
+          if [[ -n "$RUNNER_LABELS_JSON" ]]; then
+            args+=(--runner-labels-json "$RUNNER_LABELS_JSON")
+          fi
+          targets="$(python tools/check_release_platform_matrix.py "${args[@]}")"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  run-target:
+    name: Real Target Probe (${{ matrix.target.target_id }})
+    needs: prepare-targets
+    runs-on: ${{ fromJson(matrix.target.runner_labels_json) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare-targets.outputs.targets).include }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node for browser contracts
+        if: ${{ startsWith(matrix.target.target_id, 'browser-') }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install browser contract dependencies
+        if: ${{ startsWith(matrix.target.target_id, 'browser-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix apps/web-dashboard ci
+
+      - name: Install Playwright Firefox
+        if: ${{ startsWith(matrix.target.target_id, 'browser-firefox-') && runner.os != 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --prefix apps/web-dashboard playwright install firefox
+
+      - name: Install Playwright Firefox with Linux dependencies
+        if: ${{ startsWith(matrix.target.target_id, 'browser-firefox-') && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --prefix apps/web-dashboard playwright install --with-deps firefox
+
+      - name: Install Playwright Google Chrome
+        if: ${{ startsWith(matrix.target.target_id, 'browser-chrome-') && runner.os != 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --prefix apps/web-dashboard playwright install chrome
+
+      - name: Install Playwright Google Chrome with Linux dependencies
+        if: ${{ startsWith(matrix.target.target_id, 'browser-chrome-') && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --prefix apps/web-dashboard playwright install --with-deps chrome
+
+      - name: Install Playwright Microsoft Edge
+        if: ${{ startsWith(matrix.target.target_id, 'browser-edge-') && runner.os != 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --prefix apps/web-dashboard playwright install msedge
+
+      - name: Install Playwright Microsoft Edge with Linux dependencies
+        if: ${{ startsWith(matrix.target.target_id, 'browser-edge-') && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --prefix apps/web-dashboard playwright install --with-deps msedge
+
+      - name: Install native parity dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python"
+
+      - name: Install Qt for Windows native release smoke
+        if: ${{ !startsWith(matrix.target.target_id, 'browser-') && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install 'aqtinstall==3.3.0'
+          python -m aqt install-qt --outputdir "$env:RUNNER_TEMP/qt" windows desktop 6.10.3 win64_msvc2022_64 -m qtwebengine qtwebsockets
+          $qtConfig = Get-ChildItem -Path "$env:RUNNER_TEMP/qt" -Recurse -Filter Qt6Config.cmake | Select-Object -First 1
+          if ($null -eq $qtConfig) { throw 'Qt6Config.cmake was not installed.' }
+          $qt6Dir = $qtConfig.Directory.FullName
+          $qtRoot = (Resolve-Path (Join-Path $qt6Dir '..\..\..')).Path
+          "Qt6_DIR=$qt6Dir" | Add-Content -Path $env:GITHUB_ENV
+          (Join-Path $qtRoot 'bin') | Add-Content -Path $env:GITHUB_PATH
+
+      - name: Install Qt for Unix native release smoke
+        if: ${{ !startsWith(matrix.target.target_id, 'browser-') && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'aqtinstall==3.3.0'
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            host=mac
+            arch=clang_64
+          else
+            host=linux
+            arch=linux_gcc_64
+          fi
+          python -m aqt install-qt --outputdir "$RUNNER_TEMP/qt" "$host" desktop 6.10.3 "$arch" -m qtwebengine qtwebsockets
+          qt_config="$(find "$RUNNER_TEMP/qt" -path '*/lib/cmake/Qt6/Qt6Config.cmake' -print -quit)"
+          test -n "$qt_config"
+          qt6_dir="$(dirname "$qt_config")"
+          qt_root="$(cd "$qt6_dir/../../.." && pwd)"
+          echo "Qt6_DIR=$qt6_dir" >> "$GITHUB_ENV"
+          echo "$qt_root/bin" >> "$GITHUB_PATH"
 
       - name: Validate matrix contract
         shell: bash
@@ -81,10 +216,10 @@ jobs:
           set -euo pipefail
           mkdir -p release-platform-evidence
           python tools/run_release_platform_probe.py \
-            --target-id "${{ inputs.target_id }}" \
+            --target-id "${{ matrix.target.target_id }}" \
             --require-clean-source \
             --require-native-source-sync \
-            --output "release-platform-evidence/${{ inputs.target_id }}.json"
+            --output "release-platform-evidence/${{ matrix.target.target_id }}.json"
 
       - name: Validate target evidence
         shell: bash
@@ -95,23 +230,35 @@ jobs:
             --require-current-commit \
             --require-clean-source \
             --evidence-dir release-platform-evidence \
-            --target-filter "${{ inputs.target_id }}"
+            --target-filter "${{ matrix.target.target_id }}"
 
       - name: Upload target evidence
         uses: actions/upload-artifact@v7
         with:
-          name: release-platform-evidence-${{ inputs.target_id }}
-          path: release-platform-evidence/${{ inputs.target_id }}.json
+          name: release-platform-evidence-${{ matrix.target.target_id }}
+          path: release-platform-evidence/${{ matrix.target.target_id }}.json
           if-no-files-found: error
 
   full-evidence-gate:
     name: Full Evidence Gate
-    needs: run-target
-    if: ${{ inputs.require_all_evidence }}
+    needs: [prepare-targets, run-target]
+    if: ${{ inputs.require_all_evidence || inputs.target_id == 'all' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install native parity dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e "./Languages/Python"
 
       - name: Download release platform evidence
         uses: actions/download-artifact@v7

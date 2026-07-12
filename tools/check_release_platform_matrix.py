@@ -162,17 +162,40 @@ def _expand_browser_targets(matrix: dict[str, Any]) -> list[dict[str, Any]]:
         if group.get("evidence_required") is not True:
             raise ValueError(f"{browser}.evidence_required must be true")
         template = _list_of_strings(group.get("runner_labels_template"), field=f"{browser}.runner_labels_template")
+        runner_kind_map = group.get("runner_kind_map")
+        if runner_kind_map is not None:
+            if not isinstance(runner_kind_map, dict):
+                raise ValueError(f"{browser}.runner_kind_map must be an object when provided")
+            unknown_hosts = sorted(set(runner_kind_map) - set(hosts))
+            if unknown_hosts:
+                raise ValueError(f"{browser}.runner_kind_map has unknown hosts: {', '.join(unknown_hosts)}")
+            invalid_hosts = sorted(
+                host for host, mapped_kind in runner_kind_map.items() if not str(mapped_kind or "").strip()
+            )
+            if invalid_hosts:
+                raise ValueError(f"{browser}.runner_kind_map has empty kinds: {', '.join(invalid_hosts)}")
         for host in hosts:
             host_slug = _slug(host)
             target_id = f"browser-{_slug(browser)}-{host_slug}"
-            runner_labels = [item.format(browser=_slug(browser), host=host_slug, target_id=target_id) for item in template]
+            label_map = group.get("runner_label_map")
+            if isinstance(label_map, dict) and host in label_map:
+                runner_labels = _list_of_strings(label_map[host], field=f"{browser}.runner_label_map[{host}]")
+            else:
+                runner_labels = [
+                    item.format(browser=_slug(browser), host=host_slug, target_id=target_id) for item in template
+                ]
+            runner_kind_for_host = (
+                str(runner_kind_map.get(host) or "").strip()
+                if isinstance(runner_kind_map, dict)
+                else ""
+            )
             targets.append(
                 {
                     "id": target_id,
                     "kind": "browser",
                     "browser": browser,
                     "host": host,
-                    "runner_kind": runner_kind,
+                    "runner_kind": runner_kind_for_host or runner_kind,
                     "runner_labels": runner_labels,
                     "test_suites": suites,
                     "evidence_required": True,
@@ -521,6 +544,29 @@ def _emit_matrix(targets: list[dict[str, Any]]) -> str:
     return json.dumps({"include": include}, separators=(",", ":"))
 
 
+def _override_runner_labels(
+    targets: list[dict[str, Any]], *, runner_labels_json: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Apply a focused-dispatch runner override without changing matrix policy."""
+
+    value = runner_labels_json.strip()
+    if not value:
+        return targets, []
+    if len(targets) != 1:
+        return [], ["--runner-labels-json requires a target filter that resolves exactly one target"]
+    try:
+        labels = json.loads(value)
+    except json.JSONDecodeError as exc:
+        return [], [f"--runner-labels-json must be valid JSON: {exc}"]
+    try:
+        normalized = _list_of_strings(labels, field="runner_labels_json")
+    except ValueError as exc:
+        return [], [str(exc)]
+    target = dict(targets[0])
+    target["runner_labels"] = normalized
+    return [target], []
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--matrix", default=str(DEFAULT_MATRIX_PATH), help="Path to release platform test matrix JSON.")
@@ -539,6 +585,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-dir", default="release-platform-evidence", help="Directory containing target evidence JSON files.")
     parser.add_argument("--emit-github-matrix", action="store_true", help="Print a GitHub Actions matrix JSON object.")
     parser.add_argument("--target-filter", default="", help="Only emit or validate targets whose id contains this text.")
+    parser.add_argument(
+        "--runner-labels-json",
+        default="",
+        help="Override runner labels for one focused emitted target; accepts a JSON string array.",
+    )
     parser.add_argument("--json", action="store_true", help="Print validation report as JSON.")
     args = parser.parse_args(argv)
 
@@ -558,6 +609,11 @@ def main(argv: list[str] | None = None) -> int:
     target_filter_active = bool(str(args.target_filter).strip())
     if target_filter_active and not filtered_targets:
         issues.append(f"target-filter matched no targets: {args.target_filter}")
+    filtered_targets, override_issues = _override_runner_labels(
+        filtered_targets,
+        runner_labels_json=str(args.runner_labels_json),
+    )
+    issues.extend(override_issues)
 
     source_binding_context = _source_binding_context(
         require_current_commit=bool(args.require_current_commit),

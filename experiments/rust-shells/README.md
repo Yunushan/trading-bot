@@ -301,9 +301,11 @@ required Rust release assets are present and
 --require-current-commit --require-clean-source` would pass for the same
 evidence directory. The preflight JSON's `missing_platform_evidence_plan`
 includes the exact `target_validation_command` to run after each target probe,
-and `workflow_dispatch_batch_plan` exposes the corresponding
-`release-platform-real-tests.yml` dispatch commands, command counts, target ids,
-structured workflow inputs, and manual-input placeholders. The Markdown runbook
+and `workflow_dispatch_batch_plan` exposes the corresponding focused
+`release-platform-real-tests.yml` dispatch commands plus a
+`complete_matrix_dispatch` command for the preferred `target_id: all` workflow,
+command counts, target ids, structured workflow inputs, and manual-input
+placeholders. The Markdown runbook
 prints the bounded command target list by default while the JSON keeps the full
 missing target list for automation. Pass `--missing-limit 0` when the operator
 runbook needs every missing target command instead of the default bounded list.
@@ -370,10 +372,21 @@ remaining promotion blockers for that source revision. The plan upload uses
 `always()` and `if-no-files-found: warn`, so a failed release-evidence attempt
 still leaves the operator runbook when checkout and Python tooling reached the
 plan step.
-The manual `.github/workflows/release-platform-real-tests.yml` target workflow
-also uploads `native-source-sync-audit` before the selected
-`release-platform-evidence-<target_id>` artifact, so reviewers can prove the
+The manual `.github/workflows/release-platform-real-tests.yml` workflow defaults
+to `target_id: all`, expands the checked-in release matrix into every declared
+platform and browser job, and validates their combined evidence in the same
+Actions run. Use a specific canonical target id only for focused recovery; an
+optional `runner_labels_json` override is restricted to that one target. Every
+matrix job uploads `native-source-sync-audit` before its
+`release-platform-evidence-<target_id>` artifact, so reviewers can prove each
 target evidence came from a Python-synchronized native source surface.
+Windows 11 x64 evidence is intentionally routed to a self-hosted runner with
+the `self-hosted`, `windows`, `x64`, `tb-release-platform`, and
+`windows-11-x64` labels; a GitHub `windows-2025` runner is Windows Server and
+does not prove the Windows 11 target. Ubuntu 24.04 x64 and macOS 15 arm64
+remain GitHub-hosted matrix targets. Use
+`pwsh -File tools/Setup-Windows11ReleaseRunner.ps1 -RepositoryUrl https://github.com/<owner>/<repo> -RegistrationToken <short-lived-token> -InstallService`
+to configure the Windows runner without overwriting an existing runner folder.
 
 Before any standalone native Rust runtime promotion, first prove the Python-owned
 C++/Rust/Tauri source catalogs are synchronized and export the current evidence

@@ -20,8 +20,8 @@
       "family": "windows",
       "versions": ["11"],
       "architectures": ["x64"],
-      "runner_kind": "github-hosted-or-self-hosted",
-      "runner_labels_template": ["windows-2025"],
+      "runner_kind": "self-hosted-windows-11",
+      "runner_labels_template": ["self-hosted", "windows", "x64", "tb-release-platform", "windows-11-x64"],
       "test_suites": ["platform-probe", "python-service-contract", "desktop-release-smoke", "native-build-smoke"],
       "evidence_required": true
     },
@@ -48,24 +48,54 @@
     {
       "browser": "chrome",
       "hosts": ["windows-11-x64", "ubuntu-24_04-x64", "macos-15-arm64"],
-      "runner_kind": "real-browser-or-browser-lab",
+      "runner_kind": "host-specific",
       "runner_labels_template": ["self-hosted", "tb-browser", "chrome-{host}"],
+      "runner_label_map": {
+        "windows-11-x64": ["self-hosted", "windows", "x64", "tb-release-platform", "windows-11-x64"],
+        "ubuntu-24_04-x64": ["ubuntu-24.04"],
+        "macos-15-arm64": ["macos-15"]
+      },
+      "runner_kind_map": {
+        "windows-11-x64": "self-hosted-windows-11",
+        "ubuntu-24_04-x64": "github-hosted",
+        "macos-15-arm64": "github-hosted"
+      },
       "test_suites": ["browser-contract"],
       "evidence_required": true
     },
     {
       "browser": "firefox",
       "hosts": ["windows-11-x64", "ubuntu-24_04-x64", "macos-15-arm64"],
-      "runner_kind": "real-browser-or-browser-lab",
+      "runner_kind": "host-specific",
       "runner_labels_template": ["self-hosted", "tb-browser", "firefox-{host}"],
+      "runner_label_map": {
+        "windows-11-x64": ["self-hosted", "windows", "x64", "tb-release-platform", "windows-11-x64"],
+        "ubuntu-24_04-x64": ["ubuntu-24.04"],
+        "macos-15-arm64": ["macos-15"]
+      },
+      "runner_kind_map": {
+        "windows-11-x64": "self-hosted-windows-11",
+        "ubuntu-24_04-x64": "github-hosted",
+        "macos-15-arm64": "github-hosted"
+      },
       "test_suites": ["browser-contract"],
       "evidence_required": true
     },
     {
       "browser": "edge",
       "hosts": ["windows-11-x64", "ubuntu-24_04-x64", "macos-15-arm64"],
-      "runner_kind": "real-browser-or-browser-lab",
+      "runner_kind": "host-specific",
       "runner_labels_template": ["self-hosted", "tb-browser", "edge-{host}"],
+      "runner_label_map": {
+        "windows-11-x64": ["self-hosted", "windows", "x64", "tb-release-platform", "windows-11-x64"],
+        "ubuntu-24_04-x64": ["ubuntu-24.04"],
+        "macos-15-arm64": ["macos-15"]
+      },
+      "runner_kind_map": {
+        "windows-11-x64": "self-hosted-windows-11",
+        "ubuntu-24_04-x64": "github-hosted",
+        "macos-15-arm64": "github-hosted"
+      },
       "test_suites": ["browser-contract"],
       "evidence_required": true
     }

@@ -116,6 +116,10 @@ def _desktop_smoke_env(build_dir: Path, config: str) -> dict[str, str]:
         paths.append(str(qt_bin))
     if paths:
         env["PATH"] = os.pathsep.join([*paths, env.get("PATH", "")])
+    # QApplication needs a display backend even though --smoke never shows a window.
+    # Hosted Linux/macOS release runners are headless, so prefer Qt's offscreen plugin.
+    if sys.platform != "win32":
+        env.setdefault("QT_QPA_PLATFORM", "offscreen")
     return env
 
 
@@ -161,7 +165,8 @@ def check_native_cpp(
     if enable_qt_deploy_script is not None:
         configure.append(f"-DTB_ENABLE_QT_DEPLOY_SCRIPT={'ON' if enable_qt_deploy_script else 'OFF'}")
     if sys.platform != "win32":
-        configure.append("-DCMAKE_BUILD_TYPE=Debug")
+        # Single-config generators honor CMAKE_BUILD_TYPE at configure time.
+        configure.append(f"-DCMAKE_BUILD_TYPE={config}")
     tests = [ctest, "--test-dir", str(build_dir), "-C", config, "--output-on-failure"]
 
     steps = [_run_step("configure", configure, cwd=root, timeout=timeout)]

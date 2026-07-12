@@ -276,7 +276,9 @@ diff whitespace.
   with runner labels, required workflow inputs, probe commands, promotion-grade
   `target_validation_command` values, and `gh workflow run` examples. It also
   includes `workflow_dispatch_batch_plan`, which turns the missing target list
-  into dispatch commands for `.github/workflows/release-platform-real-tests.yml`,
+  into focused recovery commands for `.github/workflows/release-platform-real-tests.yml`
+  and exposes `complete_matrix_dispatch` for the preferred one-run
+  `target_id: all` collection path,
   keeps target ids, command counts, and structured workflow inputs
   machine-readable, and lists targets that need manual workflow inputs such as a
   real desktop smoke command or external browser-lab command. The Markdown
@@ -299,9 +301,21 @@ diff whitespace.
   release promotion. Use `tools/write_rust_native_release_evidence.py` to create the Rust
   release artifact from real GitHub Rust release assets and passed
   release-platform evidence. The manual
-  `.github/workflows/release-platform-real-tests.yml` target workflow also
-  uploads `native-source-sync-audit` before the selected
-  `release-platform-evidence-<target_id>` artifact. Operators can also run the
+  `.github/workflows/release-platform-real-tests.yml` workflow defaults to
+  `target_id: all`, expands the checked-in 12-target release matrix into its
+  declared runners, and validates the combined
+  `release-platform-evidence-*` artifacts in the same run. A specific canonical
+  target id is for focused recovery only; `runner_labels_json` can override the
+  runner only for that one target. Each matrix job uploads
+  `native-source-sync-audit` before its `release-platform-evidence-<target_id>`
+  artifact. Windows 11 x64 evidence requires a self-hosted runner carrying
+  `self-hosted`, `windows`, `x64`, `tb-release-platform`, and
+  `windows-11-x64`; GitHub's `windows-2025` image is Windows Server and is not
+  accepted as Windows 11 evidence. Ubuntu 24.04 x64 and macOS 15 arm64 use
+  their matching GitHub-hosted runner labels. Configure the Windows runner with
+  `pwsh -File tools/Setup-Windows11ReleaseRunner.ps1 -RepositoryUrl https://github.com/<owner>/<repo> -RegistrationToken <short-lived-token> -InstallService`;
+  the helper validates the host, uses only the required custom labels, and
+  refuses to overwrite an existing runner directory. Operators can also run the
   manual `.github/workflows/rust-native-release-evidence.yml` workflow with a
   release tag and a platform-evidence Actions run id; it downloads
   `release-platform-evidence-*` artifacts after the native source-sync audit
@@ -384,14 +398,21 @@ diff whitespace.
   Those flags make target-level validation enforce the same current-commit,
   clean-source, Python source-contract, runtime-ready, and redaction binding
   before aggregation or import.
-  The manual `release-platform-real-tests.yml` workflow exposes
-  `desktop_smoke_command` and `browser_test_command` inputs so external labs can
-  pass the real release binary or override browser command for the selected
-  target. For supported Chromium-family browser targets, the probe can run
-  `npm --prefix apps/web-dashboard run test:browser -- --browser=chrome` or
-  `npm --prefix apps/web-dashboard run test:browser -- --browser=edge`
-  automatically when `npm` and the matching browser are available; other browser
-  targets need an external lab command that proves the declared browser. Local
+  The manual `release-platform-real-tests.yml` workflow defaults to
+  `target_id: all`; `desktop_smoke_command` remains available only as an
+  override; otherwise the
+  probe builds the native C++ Release target and runs its documented `--smoke`
+  command. The release workflow provisions Qt 6.10.3 with WebEngine and
+  WebSockets on the matching platform runner, then provisions the pinned
+  Playwright browser channels for Chrome, Edge, and Firefox;
+  `browser_test_command` remains available only as an explicit override. For
+  supported browser targets, the probe can run
+  `npm --prefix apps/web-dashboard run test:browser -- --browser=chrome`,
+  `npm --prefix apps/web-dashboard run test:browser -- --browser=edge`, or
+  `npm --prefix apps/web-dashboard run test:browser -- --browser=firefox`.
+  Firefox is executed with the pinned Playwright runtime; first run
+  `npx --prefix apps/web-dashboard playwright install firefox` after `npm ci`.
+  automatically when `npm` and the matching browser are available. Local
   operators can run
   `tools/run_release_platform_probe.py --list-local-browser-targets` to see the
   matching host/browser targets and

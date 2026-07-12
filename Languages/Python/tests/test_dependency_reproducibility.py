@@ -154,6 +154,38 @@ class DependencyReproducibilityTests(unittest.TestCase):
         self.assertIn("--stale-promotion-evidence --apply", result["remediation"])
         self.assertTrue(module._report_ok([result]))
 
+    def test_verify_all_downgrades_untracked_source_promotion_import_failure(self):
+        module = _load_verify_all_module()
+        check = module.Check(
+            "rust native evidence import audit",
+            (sys.executable,),
+            REPO_ROOT,
+        )
+        completed = module.subprocess.CompletedProcess(
+            list(check.command),
+            1,
+            stdout=json.dumps(
+                {
+                    "ok": False,
+                    "require_clean_source": True,
+                    "issues": [
+                        "artifact.json: current promotion source tree must not contain untracked "
+                        "source/tool files; untracked paths: tools/Setup-Windows11ReleaseRunner.ps1"
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(module.subprocess, "run", return_value=completed):
+            result = module._run_check(check, verbose=True)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["required"])
+        self.assertFalse(result["blocks_success"])
+        self.assertIn("clean candidate source tree", result["advisory_reason"])
+        self.assertTrue(module._report_ok([result]))
+
     def test_verify_all_downgrades_stale_commit_promotion_import_failure(self):
         module = _load_verify_all_module()
         check = module.Check(
