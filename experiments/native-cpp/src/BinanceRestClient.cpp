@@ -111,7 +111,7 @@ bool parseJsonNumber(const QJsonValue &value, double *out) {
     }
     bool ok = false;
     double parsed = value.toVariant().toDouble(&ok);
-    if (!ok) {
+    if (!ok || !qIsFinite(parsed)) {
         return false;
     }
     *out = parsed;

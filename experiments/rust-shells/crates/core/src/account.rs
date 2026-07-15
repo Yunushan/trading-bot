@@ -10,6 +10,7 @@ use crate::market_data::BinanceMarket;
 
 const DEFAULT_RECV_WINDOW_MS: u64 = 10_000;
 const POSITION_EPSILON: f64 = 1e-10;
+const PREFERRED_FUTURES_COLLATERAL_ASSETS: [&str; 3] = ["USDT", "BUSD", "USD"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinanceApiCredentials {
@@ -686,41 +687,50 @@ pub fn parse_futures_usdt_balance(
 
     let mut snapshot = None;
     if let Some(rows) = balance_payload.as_array() {
-        for row_value in rows {
-            let Some(row) = row_value.as_object() else {
-                continue;
-            };
-            let asset = row
-                .get("asset")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_uppercase();
-            if asset != "USDT" {
-                continue;
+        'preferred_asset: for preferred_asset in PREFERRED_FUTURES_COLLATERAL_ASSETS {
+            for row_value in rows {
+                let Some(row) = row_value.as_object() else {
+                    continue;
+                };
+                let asset = row
+                    .get("asset")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_uppercase();
+                if asset != preferred_asset {
+                    continue;
+                }
+                let total = first_f64(row, &["balance", "walletBalance", "crossWalletBalance"]);
+                let available = first_f64(row, &["availableBalance", "maxWithdrawAmount"]);
+                let Some(total) = total.or(available) else {
+                    continue;
+                };
+                snapshot = Some(BinanceAccountSnapshot {
+                    asset,
+                    usdt_balance: total,
+                    total_usdt_balance: total,
+                    available_usdt_balance: available.unwrap_or(total),
+                });
+                break 'preferred_asset;
             }
-            let total =
-                first_f64(row, &["balance", "walletBalance", "crossWalletBalance"]).unwrap_or(0.0);
-            let available =
-                first_f64(row, &["availableBalance", "maxWithdrawAmount"]).unwrap_or(total);
-            snapshot = Some(BinanceAccountSnapshot {
-                asset,
-                usdt_balance: total,
-                total_usdt_balance: total,
-                available_usdt_balance: available,
-            });
-            break;
         }
     }
 
-    let mut snapshot = snapshot.unwrap_or(BinanceAccountSnapshot {
+    if let Some(snapshot) = snapshot {
+        return Ok(snapshot);
+    }
+
+    let mut snapshot = BinanceAccountSnapshot {
         asset: "USDT".to_owned(),
         usdt_balance: 0.0,
         total_usdt_balance: 0.0,
         available_usdt_balance: 0.0,
-    });
+    };
 
     if let Some(account) = account_payload.and_then(Value::as_object) {
+        let mut has_total = false;
+        let mut has_available = false;
         if let Some(total) = first_f64(
             account,
             &["totalWalletBalance", "totalMarginBalance", "walletBalance"],
@@ -728,31 +738,48 @@ pub fn parse_futures_usdt_balance(
         .filter(|value| value.is_finite() && *value > 0.0)
         {
             snapshot.total_usdt_balance = total;
-            if snapshot.usdt_balance <= 0.0 {
-                snapshot.usdt_balance = total;
-            }
+            snapshot.usdt_balance = total;
+            has_total = true;
         }
         if let Some(available) =
             first_f64(account, &["availableBalance", "maxWithdrawAmount", "free"])
                 .filter(|value| value.is_finite() && *value >= 0.0)
         {
             snapshot.available_usdt_balance = available;
+            has_available = true;
         }
-        if let Some(asset_row) = find_asset_row(account.get("assets"), "USDT") {
-            if let Some(total) = first_f64(
-                asset_row,
-                &["walletBalance", "marginBalance", "availableBalance"],
-            )
-            .filter(|value| value.is_finite() && *value > 0.0)
-            {
-                snapshot.usdt_balance = total;
-                snapshot.total_usdt_balance = total;
-            }
-            if let Some(available) =
-                first_f64(asset_row, &["availableBalance", "maxWithdrawAmount"])
-                    .filter(|value| value.is_finite() && *value >= 0.0)
-            {
-                snapshot.available_usdt_balance = available;
+        if !has_total || !has_available {
+            for preferred_asset in PREFERRED_FUTURES_COLLATERAL_ASSETS {
+                let Some(asset_row) = find_asset_row(account.get("assets"), preferred_asset) else {
+                    continue;
+                };
+                let total = first_f64(
+                    asset_row,
+                    &["walletBalance", "marginBalance", "availableBalance"],
+                )
+                .filter(|value| *value > 0.0);
+                let available = first_f64(asset_row, &["availableBalance", "maxWithdrawAmount"])
+                    .filter(|value| *value >= 0.0);
+                if total.is_none() && available.is_none() {
+                    continue;
+                }
+                snapshot.asset = preferred_asset.to_owned();
+                if !has_total {
+                    if let Some(total) = total {
+                        snapshot.usdt_balance = total;
+                        snapshot.total_usdt_balance = total;
+                        has_total = true;
+                    }
+                }
+                if !has_available {
+                    if let Some(available) = available {
+                        snapshot.available_usdt_balance = available;
+                        has_available = true;
+                    }
+                }
+                if has_total && has_available {
+                    break;
+                }
             }
         }
     }
@@ -1194,7 +1221,9 @@ fn find_asset_row<'a>(
 ) -> Option<&'a Map<String, Value>> {
     let rows = rows_value.and_then(Value::as_array)?;
     for value in rows {
-        let row = value.as_object()?;
+        let Some(row) = value.as_object() else {
+            continue;
+        };
         if row
             .get("asset")
             .and_then(Value::as_str)
@@ -1280,11 +1309,12 @@ fn coerce_bool_flag(value: &Value) -> bool {
 }
 
 fn parse_json_f64(value: Option<&Value>) -> Option<f64> {
-    match value? {
+    let parsed = match value? {
         Value::Number(number) => number.as_f64(),
         Value::String(text) => text.trim().parse::<f64>().ok(),
         _ => None,
-    }
+    }?;
+    parsed.is_finite().then_some(parsed)
 }
 
 fn parse_json_i64(value: Option<&Value>) -> Option<i64> {
@@ -1522,9 +1552,9 @@ mod tests {
         let snapshot =
             parse_futures_usdt_balance(&balance_payload, Some(&account_payload)).expect("balance");
         assert_eq!(snapshot.asset, "USDT");
-        assert_eq!(snapshot.usdt_balance, 128.0);
-        assert_eq!(snapshot.total_usdt_balance, 128.0);
-        assert_eq!(snapshot.available_usdt_balance, 98.0);
+        assert_eq!(snapshot.usdt_balance, 125.5);
+        assert_eq!(snapshot.total_usdt_balance, 125.5);
+        assert_eq!(snapshot.available_usdt_balance, 100.25);
 
         let rows = parse_futures_balance_rows(&balance_payload).expect("rows");
         assert_eq!(
@@ -1536,6 +1566,53 @@ mod tests {
                 total: 125.5,
             }]
         );
+    }
+
+    #[test]
+    fn rejects_non_finite_exchange_numeric_strings() {
+        let balances = json!([
+            {"asset": "USDT", "balance": "NaN", "availableBalance": "inf"},
+            {"asset": "BUSD", "balance": "12.5", "availableBalance": "10.0"}
+        ]);
+        let fallback = parse_futures_usdt_balance(&balances, None).expect("BUSD fallback");
+        assert_eq!(fallback.asset, "BUSD");
+        assert_eq!(fallback.usdt_balance, 12.5);
+        assert_eq!(fallback.available_usdt_balance, 10.0);
+        assert!(
+            parse_futures_balance_rows(&balances)
+                .expect("balance rows")
+                .iter()
+                .all(|row| row.total.is_finite() && row.free.is_finite() && row.locked.is_finite())
+        );
+
+        let positions = json!([
+            {"symbol": "BTCUSDT", "positionAmt": "NaN", "markPrice": "65000"},
+            {"symbol": "ETHUSDT", "positionAmt": "0.5", "markPrice": "inf", "leverage": "10"}
+        ]);
+        let parsed = parse_open_futures_positions(&positions, None).expect("positions");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].symbol, "ETHUSDT");
+        assert!(parsed[0].position_amt.is_finite());
+        assert!(parsed[0].mark_price.is_finite());
+        assert!(parsed[0].notional.is_finite());
+    }
+
+    #[test]
+    fn futures_balance_fallback_skips_malformed_asset_rows() {
+        let balance_payload = json!([]);
+        let account_payload = json!({
+            "assets": [
+                null,
+                {"asset": "USDT", "walletBalance": "NaN"},
+                {"asset": "BUSD", "walletBalance": "8.5", "availableBalance": "7.0"}
+            ]
+        });
+
+        let snapshot = parse_futures_usdt_balance(&balance_payload, Some(&account_payload))
+            .expect("BUSD account-asset fallback");
+        assert_eq!(snapshot.asset, "BUSD");
+        assert_eq!(snapshot.usdt_balance, 8.5);
+        assert_eq!(snapshot.available_usdt_balance, 7.0);
     }
 
     #[test]

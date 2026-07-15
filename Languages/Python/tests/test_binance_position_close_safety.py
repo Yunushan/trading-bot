@@ -240,6 +240,33 @@ class BinancePositionCloseSafetyTests(unittest.TestCase):
         self.assertEqual(100.0, result["info"]["avgPrice"])
         self.assertEqual(1, wrapper.invalidations)
 
+    def test_exact_close_ignores_non_finite_exchange_exposure(self):
+        wrapper = _ExactCloseWrapper(
+            positions=[
+                {"symbol": "BTCUSDT", "positionAmt": "NaN", "positionSide": "BOTH"},
+                {"symbol": "BTCUSDT", "positionAmt": "Infinity", "positionSide": "BOTH"},
+            ]
+        )
+
+        result = close_futures_leg_exact(wrapper, "BTCUSDT", 1.0, "SELL")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual("position already flat", result["reason"])
+        self.assertEqual([], wrapper.orders)
+
+    def test_symbol_close_skips_non_finite_raw_exchange_exposure(self):
+        wrapper = _ExactCloseWrapper(positions=[])
+        wrapper.client = _RawPositionClient(
+            [{"symbol": "ETHUSDT", "positionAmt": "NaN", "positionSide": "BOTH"}]
+        )
+
+        result = close_futures_position(wrapper, "ETHUSDT")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(0, result["closed"])
+        self.assertEqual([], wrapper.orders)
+
     def test_exact_hedge_close_never_falls_back_to_reduce_only_without_position_side(self):
         wrapper = _ExactCloseWrapper(
             dual=True,

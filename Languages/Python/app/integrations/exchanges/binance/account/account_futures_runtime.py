@@ -6,6 +6,15 @@ from ..transport.helpers import _auth_error_hint_for
 from .account_cache_runtime import _is_testnet_mode
 
 
+def _finite_float(value) -> float | None:
+    """Return a finite numeric exchange value, rejecting NaN and infinity."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def get_futures_balance_usdt(self, *, force_refresh: bool = False) -> float:
     """Return the withdrawable/available balance for the primary futures asset."""
     preferred_assets = ("USDT", "BUSD", "USD")
@@ -19,31 +28,22 @@ def get_futures_balance_usdt(self, *, force_refresh: bool = False) -> float:
         if asset not in preferred_assets:
             continue
         for key in ("availableBalance", "crossWalletBalance", "balance", "walletBalance"):
-            val = balance.get(key)
-            if val is not None:
-                try:
-                    return float(val)
-                except Exception:
-                    continue
+            parsed = _finite_float(balance.get(key))
+            if parsed is not None:
+                return parsed
     acct_dict = self._get_futures_account_cached(force_refresh=force_refresh)
     if isinstance(acct_dict, dict):
         for key in ("availableBalance", "maxWithdrawAmount", "totalWalletBalance", "totalMarginBalance"):
-            val = acct_dict.get(key)
-            if val is not None:
-                try:
-                    return float(val)
-                except Exception:
-                    continue
+            parsed = _finite_float(acct_dict.get(key))
+            if parsed is not None:
+                return parsed
     if not force_refresh:
         acct_dict = self._get_futures_account_cached(force_refresh=True)
         if isinstance(acct_dict, dict):
             for key in ("availableBalance", "maxWithdrawAmount", "totalWalletBalance", "totalMarginBalance"):
-                val = acct_dict.get(key)
-                if val is not None:
-                    try:
-                        return float(val)
-                    except Exception:
-                        continue
+                parsed = _finite_float(acct_dict.get(key))
+                if parsed is not None:
+                    return parsed
     return 0.0
 
 
@@ -82,14 +82,8 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
     if isinstance(chosen_row, dict) and chosen_row:
         def _pick_float(keys: tuple[str, ...]) -> float | None:
             for key in keys:
-                val = chosen_row.get(key)
-                if val is None or val == "":
-                    continue
-                try:
-                    parsed = float(val)
-                except Exception:
-                    continue
-                if math.isfinite(parsed):
+                parsed = _finite_float(chosen_row.get(key))
+                if parsed is not None:
                     return parsed
             return None
 
@@ -101,14 +95,8 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
         if isinstance(acct_dict, dict):
             if available is None:
                 for key in ("availableBalance", "maxWithdrawAmount"):
-                    val = acct_dict.get(key)
-                    if val is None:
-                        continue
-                    try:
-                        parsed = float(val)
-                    except Exception:
-                        continue
-                    if math.isfinite(parsed):
+                    parsed = _finite_float(acct_dict.get(key))
+                    if parsed is not None:
                         available = parsed
                         break
             if wallet is None:
@@ -118,14 +106,8 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
                     "totalCrossWalletBalance",
                     "totalCrossBalance",
                 ):
-                    val = acct_dict.get(key)
-                    if val is None:
-                        continue
-                    try:
-                        parsed = float(val)
-                    except Exception:
-                        continue
-                    if math.isfinite(parsed):
+                    parsed = _finite_float(acct_dict.get(key))
+                    if parsed is not None:
                         wallet = parsed
                         break
 
@@ -140,37 +122,33 @@ def get_futures_balance_snapshot(self, *, force_refresh: bool = False) -> dict:
                             code = str(asset_row.get("asset") or "").upper()
                             if code in preferred_assets and code not in assets_map:
                                 assets_map[code] = asset_row
-                        chosen_asset = None
-                        for code in preferred_assets:
-                            if code in assets_map:
-                                asset = code
-                                chosen_asset = assets_map[code]
-                                break
-                        if isinstance(chosen_asset, dict) and chosen_asset:
+                        # Preserve partial data for the selected asset. When it has
+                        # no finite values at all, advance through the supported
+                        # collateral assets instead of treating an invalid USDT row
+                        # as authoritative over a valid BUSD/USD fallback.
+                        candidate_codes = (asset,) if available is not None or wallet is not None else preferred_assets
+                        for code in candidate_codes:
+                            chosen_asset = assets_map.get(code)
+                            if not isinstance(chosen_asset, dict) or not chosen_asset:
+                                continue
+                            candidate_available = None
+                            candidate_wallet = None
+                            for key in ("availableBalance", "maxWithdrawAmount", "crossWalletBalance"):
+                                candidate_available = _finite_float(chosen_asset.get(key))
+                                if candidate_available is not None:
+                                    break
+                            for key in ("walletBalance", "marginBalance", "balance", "crossWalletBalance"):
+                                candidate_wallet = _finite_float(chosen_asset.get(key))
+                                if candidate_wallet is not None:
+                                    break
+                            if candidate_available is None and candidate_wallet is None:
+                                continue
+                            asset = code
                             if available is None:
-                                for key in ("availableBalance", "maxWithdrawAmount", "crossWalletBalance"):
-                                    val = chosen_asset.get(key)
-                                    if val is None:
-                                        continue
-                                    try:
-                                        parsed = float(val)
-                                    except Exception:
-                                        continue
-                                    if math.isfinite(parsed):
-                                        available = parsed
-                                        break
+                                available = candidate_available
                             if wallet is None:
-                                for key in ("walletBalance", "marginBalance", "balance", "crossWalletBalance"):
-                                    val = chosen_asset.get(key)
-                                    if val is None:
-                                        continue
-                                    try:
-                                        parsed = float(val)
-                                    except Exception:
-                                        continue
-                                    if math.isfinite(parsed):
-                                        wallet = parsed
-                                        break
+                                wallet = candidate_wallet
+                            break
                     except Exception:
                         pass
 
@@ -291,12 +269,8 @@ def get_futures_wallet_balance(self, *, force_refresh: bool = False) -> float:
         if asset not in preferred_assets:
             continue
         for key in ("walletBalance", "marginBalance", "balance", "crossWalletBalance"):
-            val = entry.get(key)
-            if val is None:
-                continue
-            try:
-                parsed = float(val)
-            except Exception:
+            parsed = _finite_float(entry.get(key))
+            if parsed is None:
                 continue
             if parsed < 0.0 and best_val is None:
                 best_val = parsed
@@ -314,13 +288,9 @@ def get_futures_wallet_balance(self, *, force_refresh: bool = False) -> float:
             "totalCrossWalletBalance",
             "totalCrossBalance",
         ):
-            val = acct_dict.get(key)
-            if val is None:
-                continue
-            try:
-                return float(val)
-            except Exception:
-                continue
+            parsed = _finite_float(acct_dict.get(key))
+            if parsed is not None:
+                return parsed
     if not force_refresh:
         acct_dict = self._get_futures_account_cached(force_refresh=True)
         if isinstance(acct_dict, dict):
@@ -330,13 +300,9 @@ def get_futures_wallet_balance(self, *, force_refresh: bool = False) -> float:
                 "totalCrossWalletBalance",
                 "totalCrossBalance",
             ):
-                val = acct_dict.get(key)
-                if val is None:
-                    continue
-                try:
-                    return float(val)
-                except Exception:
-                    continue
+                parsed = _finite_float(acct_dict.get(key))
+                if parsed is not None:
+                    return parsed
     return 0.0
 
 
@@ -372,10 +338,9 @@ def get_total_unrealized_pnl(self) -> float:
         positions = self.list_open_futures_positions() or []
         total = 0.0
         for pos in positions:
-            try:
-                total += float(pos.get("unRealizedProfit") or 0.0)
-            except Exception:
-                continue
+            parsed = _finite_float(pos.get("unRealizedProfit"))
+            if parsed is not None:
+                total += parsed
         return float(total)
     except Exception:
         acct_dict = self._get_futures_account_cached()
@@ -384,10 +349,9 @@ def get_total_unrealized_pnl(self) -> float:
             if val is None:
                 val = acct_dict.get("totalCrossUnPnl")
             if val is not None:
-                try:
-                    return float(val)
-                except Exception:
-                    pass
+                parsed = _finite_float(val)
+                if parsed is not None:
+                    return parsed
     return 0.0
 
 
@@ -401,12 +365,9 @@ def get_total_wallet_balance(self) -> float:
             "totalCrossWalletBalance",
             "totalCrossBalance",
         ):
-            val = acct_dict.get(key)
-            if val is not None:
-                try:
-                    return float(val)
-                except Exception:
-                    continue
+            parsed = _finite_float(acct_dict.get(key))
+            if parsed is not None:
+                return parsed
     try:
         return float(self.get_total_usdt_value())
     except Exception:

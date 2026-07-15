@@ -18,7 +18,7 @@ from app.settings.live_safety import (
 def _int_value(value: object, default: int = 1) -> int:
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return int(default)
 
 
@@ -26,9 +26,10 @@ def _decimal_value(value: object) -> Decimal | None:
     if value in (None, ""):
         return None
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+    return parsed if parsed.is_finite() else None
 
 
 def _positive_filter(value: object) -> Decimal:
@@ -106,15 +107,25 @@ def _order_filter_errors(self, market_text: str, order_params: Mapping[str, Any]
     if not isinstance(filters, Mapping):
         return [f"{market_text} symbol filters invalid for {symbol}"]
 
-    quantity = _decimal_value(order_params.get("quantity"))
+    raw_quantity = order_params.get("quantity")
+    quantity = _decimal_value(raw_quantity)
     if quantity is None:
+        if raw_quantity not in (None, ""):
+            return [f"order quantity must be a finite number for {symbol}"]
         return []
 
     errors: list[str] = []
-    step_size = _positive_filter(filters.get("stepSize"))
-    min_qty = _positive_filter(filters.get("minQty"))
-    min_notional = _positive_filter(filters.get("minNotional"))
-    tick_size = _positive_filter(filters.get("tickSize"))
+    filter_values: dict[str, Decimal] = {}
+    for name in ("stepSize", "minQty", "minNotional", "tickSize"):
+        raw_value = filters.get(name)
+        parsed = _decimal_value(raw_value)
+        if raw_value not in (None, "") and parsed is None:
+            errors.append(f"{symbol} {name} must be a finite number")
+        filter_values[name] = parsed if parsed is not None and parsed > 0 else Decimal("0")
+    step_size = filter_values["stepSize"]
+    min_qty = filter_values["minQty"]
+    min_notional = filter_values["minNotional"]
+    tick_size = filter_values["tickSize"]
     is_risk_reducing_exit = market_text == "futures" and (
         _truthy_param(order_params.get("reduceOnly")) or _truthy_param(order_params.get("closePosition"))
     )
@@ -124,7 +135,10 @@ def _order_filter_errors(self, market_text: str, order_params: Mapping[str, Any]
     if step_size > 0 and not _aligned_to_step(quantity, step_size):
         errors.append(f"order quantity {quantity} is not aligned to {symbol} stepSize {step_size}")
 
-    price = _decimal_value(order_params.get("price"))
+    raw_price = order_params.get("price")
+    price = _decimal_value(raw_price)
+    if raw_price not in (None, "") and price is None:
+        errors.append(f"order price must be a finite number for {symbol}")
     if price is None:
         last_price = getattr(self, "get_last_price", None)
         if callable(last_price):

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import math
 import time
+
+
+def _finite_float(value: object, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_side: str | None = None):
     """Close exactly `qty` using reduce-only MARKET on the given `side`."""
     try:
         sym = (symbol or "").upper()
-        q = abs(float(qty or 0))
+        q = abs(_finite_float(qty))
         if q <= 0:
             return {"ok": False, "error": "qty<=0"}
         side_up = str(side or "SELL").upper()
@@ -26,7 +35,7 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             dual = bool(ps_norm)
         try:
             filters = self.get_futures_symbol_filters(sym) or {}
-            step = float(filters.get("stepSize") or 0.0)
+            step = _finite_float(filters.get("stepSize"))
         except Exception:
             step = 0.0
         qty_tol = 1e-12
@@ -49,8 +58,8 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
                 if str(row.get("symbol") or "").upper() != sym:
                     continue
                 try:
-                    amt = float(row.get("positionAmt") or 0.0)
-                except Exception:
+                    amt = _finite_float(row.get("positionAmt"))
+                except (AttributeError, TypeError, ValueError):
                     amt = 0.0
                 if abs(amt) <= qty_tol:
                     continue
@@ -87,17 +96,17 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
         def _coerce_order_qty(qty_value: float) -> tuple[float, str]:
             try:
                 text = self._format_quantity_for_order(qty_value, step)
-                q_norm = float(text or 0.0)
+                q_norm = _finite_float(text)
                 if q_norm > qty_tol:
                     return q_norm, text
             except Exception:
                 pass
             try:
                 text = self._format_quantity_for_order(qty_value, 0.0)
-                q_norm = float(text or 0.0)
+                q_norm = _finite_float(text)
                 return q_norm, text
             except Exception:
-                q_norm = max(0.0, float(qty_value or 0.0))
+                q_norm = max(0.0, _finite_float(qty_value))
                 return q_norm, f"{q_norm:.8f}"
 
         live_qty_preferred, known_preferred = _live_closeable_qty(ps_norm)
@@ -108,7 +117,7 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
         if live_qty > qty_tol:
             q = min(q, live_qty)
         if q <= qty_tol:
-            q = abs(float(qty or 0.0))
+            q = abs(_finite_float(qty))
         if q <= qty_tol and (known_preferred or known_fallback):
             return {"ok": True, "skipped": True, "symbol": sym, "reason": "position already flat"}
 
@@ -164,7 +173,7 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
                 except Exception:
                     pass
             self._invalidate_futures_positions_cache()
-            res = {"ok": True, "info": info, "requested_qty": float(qty or 0.0), "sent_qty": qty_send}
+            res = {"ok": True, "info": info, "requested_qty": _finite_float(qty), "sent_qty": qty_send}
             if ps_try:
                 res["positionSide"] = ps_try
             if via and via != "primary":
@@ -177,7 +186,7 @@ def close_futures_leg_exact(self, symbol: str, qty: float, side: str, position_s
             "ok": False,
             "error": error_text,
             "symbol": sym,
-            "requested_qty": float(qty or 0.0),
+            "requested_qty": _finite_float(qty),
             "position_side": ps_norm,
             "side": side_up,
         }
@@ -191,7 +200,7 @@ def close_futures_position(self, symbol: str):
         sym = (symbol or "").upper()
         try:
             filters = self.get_futures_symbol_filters(sym) or {}
-            step = float(filters.get("stepSize") or 0.0)
+            step = _finite_float(filters.get("stepSize"))
         except Exception:
             step = 0.0
         dual = bool(getattr(self, "_futures_dual_side", False) or self.get_futures_dual_side())
@@ -208,7 +217,7 @@ def close_futures_position(self, symbol: str):
                     rows.append(
                         {
                             "symbol": str(raw.get("symbol") or "").upper(),
-                            "positionAmt": float(raw.get("positionAmt") or 0.0),
+                            "positionAmt": _finite_float(raw.get("positionAmt")),
                             "positionSide": str(raw.get("positionSide") or raw.get("positionside") or "BOTH").upper(),
                         }
                     )
@@ -239,7 +248,7 @@ def close_futures_position(self, symbol: str):
                             fresh_rows.append(
                                 {
                                     "symbol": sym,
-                                    "positionAmt": float(raw.get("positionAmt") or 0.0),
+                                    "positionAmt": _finite_float(raw.get("positionAmt")),
                                     "positionSide": str(
                                         raw.get("positionSide") or raw.get("positionside") or "BOTH"
                                     ).upper(),
@@ -265,7 +274,7 @@ def close_futures_position(self, symbol: str):
         for row in rows:
             if (row.get("symbol") or "").upper() != sym:
                 continue
-            amt = float(row.get("positionAmt") or 0)
+            amt = _finite_float(row.get("positionAmt"))
             if abs(amt) < 1e-12:
                 continue
             side, target_ps = _resolve_close(amt, row.get("positionSide") or row.get("positionside"))
@@ -295,7 +304,7 @@ def close_futures_position(self, symbol: str):
                     try:
                         if str(fresh.get("symbol") or "").upper() != sym:
                             continue
-                        if abs(float(fresh.get("positionAmt") or 0.0)) > 1e-12:
+                        if abs(_finite_float(fresh.get("positionAmt"))) > 1e-12:
                             remaining.append(fresh)
                     except Exception:
                         continue

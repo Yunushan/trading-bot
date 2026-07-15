@@ -1,9 +1,60 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 
 from ..transport.helpers import _coerce_int
+
+POSITION_EPSILON = 1e-10
+
+
+def _finite_float(value) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _position_number(position: dict, *keys: str) -> float:
+    for key in keys:
+        parsed = _finite_float(position.get(key))
+        if parsed is not None:
+            return parsed
+    return 0.0
+
+
+def _normalize_open_position(position) -> dict | None:
+    if not isinstance(position, dict):
+        return None
+    amount = _position_number(position, "positionAmt")
+    if abs(amount) <= POSITION_EPSILON:
+        return None
+    leverage = _position_number(position, "leverage")
+    return {
+        "symbol": position.get("symbol"),
+        "positionAmt": amount,
+        "notional": _position_number(position, "notional"),
+        "initialMargin": _position_number(position, "initialMargin"),
+        "positionInitialMargin": _position_number(position, "positionInitialMargin", "initialMargin"),
+        "openOrderMargin": _position_number(position, "openOrderInitialMargin", "openOrderMargin"),
+        "isolatedWallet": _position_number(position, "isolatedWallet"),
+        "isolatedMargin": _position_number(position, "isolatedMargin"),
+        "maintMargin": _position_number(position, "maintMargin", "maintenanceMargin"),
+        "maintMarginRate": _position_number(position, "maintMarginRate", "maintenanceMarginRate"),
+        "marginRatio": _position_number(position, "marginRatio"),
+        "marginBalance": _position_number(position, "marginBalance"),
+        "walletBalance": _position_number(position, "walletBalance", "marginBalance"),
+        "entryPrice": _position_number(position, "entryPrice"),
+        "markPrice": _position_number(position, "markPrice"),
+        "marginType": position.get("marginType"),
+        "leverage": int(leverage),
+        "unRealizedProfit": _position_number(position, "unRealizedProfit"),
+        "liquidationPrice": _position_number(position, "liquidationPrice"),
+        "positionSide": position.get("positionSide") or position.get("positionside"),
+        "updateTime": _coerce_int(position.get("updateTime") or position.get("update_time")),
+    }
 
 
 def get_futures_dual_side(self) -> bool:
@@ -101,65 +152,17 @@ def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bo
         try:
             acc = self._get_futures_account_cached(force_refresh=True) or {}
             for pos in acc.get("positions", []):
-                amt = float(pos.get("positionAmt") or 0.0)
-                if abs(amt) <= 0.0:
-                    continue
-                row = {
-                    "symbol": pos.get("symbol"),
-                    "positionAmt": amt,
-                    "notional": float(pos.get("notional") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "initialMargin": float(pos.get("initialMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "positionInitialMargin": float(pos.get("positionInitialMargin") or pos.get("initialMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "openOrderMargin": float(pos.get("openOrderInitialMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "isolatedWallet": float(pos.get("isolatedWallet") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "isolatedMargin": float(pos.get("isolatedMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "maintMargin": float(pos.get("maintMargin") or pos.get("maintenanceMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "maintMarginRate": float(pos.get("maintMarginRate") or pos.get("maintenanceMarginRate") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "marginRatio": float(pos.get("marginRatio") or 0.0),
-                    "marginBalance": float(pos.get("marginBalance") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "walletBalance": float(pos.get("walletBalance") or pos.get("marginBalance") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "entryPrice": float(pos.get("entryPrice") or 0.0),
-                    "markPrice": float(pos.get("markPrice") or 0.0),
-                    "marginType": pos.get("marginType"),
-                    "leverage": int(float(pos.get("leverage") or 0)),
-                    "unRealizedProfit": float(pos.get("unRealizedProfit") or 0.0),
-                    "liquidationPrice": float(pos.get("liquidationPrice") or 0.0),
-                    "positionSide": (pos.get("positionSide") or pos.get("positionside")),
-                    "updateTime": _coerce_int(pos.get("updateTime") or pos.get("update_time")),
-                }
-                out.append(row)
+                row = _normalize_open_position(pos)
+                if row is not None:
+                    out.append(row)
         except Exception:
             pass
     else:
         for pos in infos or []:
             try:
-                amt = float(pos.get("positionAmt") or 0.0)
-                if abs(amt) <= 0.0:
-                    continue
-                row = {
-                    "symbol": pos.get("symbol"),
-                    "positionAmt": amt,
-                    "notional": float(pos.get("notional") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "initialMargin": float(pos.get("initialMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "positionInitialMargin": float(pos.get("positionInitialMargin") or pos.get("initialMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "openOrderMargin": float(pos.get("openOrderInitialMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "isolatedWallet": float(pos.get("isolatedWallet") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "isolatedMargin": float(pos.get("isolatedMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "maintMargin": float(pos.get("maintMargin") or pos.get("maintenanceMargin") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "maintMarginRate": float(pos.get("maintMarginRate") or pos.get("maintenanceMarginRate") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "marginRatio": float(pos.get("marginRatio") or 0.0),
-                    "marginBalance": float(pos.get("marginBalance") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "walletBalance": float(pos.get("walletBalance") or pos.get("marginBalance") or 0.0) if isinstance(pos, dict) else 0.0,
-                    "entryPrice": float(pos.get("entryPrice") or 0.0),
-                    "markPrice": float(pos.get("markPrice") or 0.0),
-                    "marginType": pos.get("marginType"),
-                    "leverage": int(float(pos.get("leverage") or 0)),
-                    "unRealizedProfit": float(pos.get("unRealizedProfit") or 0.0),
-                    "liquidationPrice": float(pos.get("liquidationPrice") or 0.0),
-                    "positionSide": (pos.get("positionSide") or pos.get("positionside")),
-                    "updateTime": _coerce_int(pos.get("updateTime") or pos.get("update_time")),
-                }
-                out.append(row)
+                row = _normalize_open_position(pos)
+                if row is not None:
+                    out.append(row)
             except Exception:
                 continue
     if risk_lookup:
@@ -170,13 +173,10 @@ def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bo
                 risk = risk_lookup.get((sym, side)) or risk_lookup.get((sym, "BOTH"))
                 if not isinstance(risk, dict):
                     continue
-                risk_ratio_raw = risk.get("marginRatio")
+                risk_ratio_raw = _finite_float(risk.get("marginRatio"))
                 if risk_ratio_raw is not None:
-                    try:
-                        row["marginRatioRaw"] = float(risk_ratio_raw)
-                        row["marginRatio"] = float(risk_ratio_raw)
-                    except Exception:
-                        pass
+                    row["marginRatioRaw"] = risk_ratio_raw
+                    row["marginRatio"] = risk_ratio_raw
 
                 def _safe_update(target_key, source_keys):
                     for src in source_keys:
@@ -185,11 +185,10 @@ def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bo
                         val = risk.get(src)
                         if val in (None, "", 0, 0.0):
                             continue
-                        try:
-                            row[target_key] = float(val)
-                        except Exception:
-                            row[target_key] = val
-                        return
+                        parsed = _finite_float(val)
+                        if parsed is not None:
+                            row[target_key] = parsed
+                            return
 
                 _safe_update("marginRatio", ["marginRatio"])
                 _safe_update("isolatedWallet", ["isolatedWallet"])
@@ -204,26 +203,14 @@ def list_open_futures_positions(self, *, max_age: float = 1.5, force_refresh: bo
                 _safe_update("entryPrice", ["entryPrice"])
                 _safe_update("markPrice", ["markPrice"])
                 _safe_update("leverage", ["leverage"])
-                try:
-                    maint_margin = float(row.get("maintMargin") or 0.0)
-                except Exception:
-                    maint_margin = 0.0
-                try:
-                    open_order_margin = float(row.get("openOrderMargin") or 0.0)
-                except Exception:
-                    open_order_margin = 0.0
-                try:
-                    wallet_balance = float(row.get("walletBalance") or row.get("marginBalance") or 0.0)
-                except Exception:
-                    wallet_balance = 0.0
-                try:
-                    unreal = float(row.get("unRealizedProfit") or 0.0)
-                except Exception:
-                    unreal = 0.0
+                maint_margin = _finite_float(row.get("maintMargin")) or 0.0
+                open_order_margin = _finite_float(row.get("openOrderMargin")) or 0.0
+                wallet_balance = _finite_float(row.get("walletBalance")) or _finite_float(row.get("marginBalance")) or 0.0
+                unreal = _finite_float(row.get("unRealizedProfit")) or 0.0
                 loss_component = abs(unreal) if unreal < 0 else 0.0
                 calc_ratio = ((maint_margin + open_order_margin + loss_component) / wallet_balance) * 100.0 if wallet_balance > 0.0 else 0.0
                 row["marginRatioCalc"] = calc_ratio
-                if float(row.get("marginRatio") or 0.0) <= 0.0 and calc_ratio > 0.0:
+                if (_finite_float(row.get("marginRatio")) or 0.0) <= 0.0 and calc_ratio > 0.0:
                     row["marginRatio"] = calc_ratio
             except Exception:
                 continue
@@ -246,12 +233,14 @@ def get_net_futures_position_amt(self, symbol: str) -> float:
     if not infos:
         return 0.0
     symbol_upper = str(symbol or "").strip().upper()
+    net_amount = 0.0
     for entry in infos:
         try:
             if str(entry.get("symbol", "")).upper() != symbol_upper:
                 continue
-            amt = float(entry.get("positionAmt") or entry.get("positionAmt", 0.0) or 0.0)
-            return amt
+            amount = _finite_float(entry.get("positionAmt"))
+            if amount is not None and abs(amount) > POSITION_EPSILON:
+                net_amount += amount
         except Exception:
             continue
-    return 0.0
+    return net_amount if abs(net_amount) > POSITION_EPSILON else 0.0

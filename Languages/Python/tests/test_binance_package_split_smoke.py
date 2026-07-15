@@ -618,6 +618,33 @@ class BinancePackageSplitSmokeTests(unittest.TestCase):
 
         self.assertEqual([], wrapper.client.orders)
 
+    def test_live_futures_submit_guard_blocks_non_finite_order_numbers(self):
+        wrapper = _GuardedFuturesAuditWrapper(live_safety_config=_live_ack_config())
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "quantity must be a finite number"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "NaN"}
+            )
+        with self.assertRaisesRegex(LiveTradingSafetyError, "price must be a finite number"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "LIMIT", "quantity": "0.10", "price": "Infinity"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
+    def test_live_futures_submit_guard_blocks_non_finite_exchange_filters(self):
+        wrapper = _GuardedFuturesAuditWrapper(
+            live_safety_config=_live_ack_config(),
+            filters={"stepSize": "NaN", "minQty": 0.01, "tickSize": 0.01, "minNotional": 5.0},
+        )
+
+        with self.assertRaisesRegex(LiveTradingSafetyError, "stepSize must be a finite number"):
+            wrapper._futures_create_order_with_fallback(
+                {"symbol": "ETHUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.10"}
+            )
+
+        self.assertEqual([], wrapper.client.orders)
+
     def test_live_futures_submit_guard_blocks_step_misaligned_order(self):
         wrapper = _GuardedFuturesAuditWrapper(
             live_safety_config=_live_ack_config(),
